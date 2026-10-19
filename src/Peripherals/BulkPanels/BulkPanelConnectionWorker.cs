@@ -53,12 +53,14 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             {
                 if (!_gate.IsEnabled(driver.HandlerId))
                 {
+                    _hub.SetOpenAccessDenied(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!_presence.UsbPresent(driver.VendorId, driver.ProductIds))
                 {
+                    _hub.SetOpenAccessDenied(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
@@ -116,6 +118,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             catch (Exception ex)
             {
                 ServiceLog.Error($"[{driver.HandlerId}] worker error: {ex.Message}");
+                _hub.SetOpenAccessDenied(false);
                 await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
             }
         }

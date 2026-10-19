@@ -103,6 +103,32 @@ public class BulkPanelConnectionWorkerTests
         }
     }
 
+    [Fact]
+    public async Task A_denied_panel_that_is_unplugged_clears_the_flag()
+    {
+        var usb = new SwitchableUsb { Present = true };
+        var driver = new FakeDriver();
+        var hub = new BulkPanelHub(driver);
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Devices.NexusControlEnabled.Add(driver.HandlerId));
+        var worker = new BulkPanelConnectionWorker(
+            new NoHid(), new DenyingPipeFactory { Deny = true }, hub, new DeviceControlGate(store), new HardwarePresence(usb),
+            connectPollMs: 50, presencePollMs: 50);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.True(await Eventually(() => hub.OpenAccessDenied));
+
+            usb.Present = false;
+            Assert.True(await Eventually(() => !hub.OpenAccessDenied));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static async Task<bool> Eventually(Func<bool> condition, int timeoutMs = 4000)
     {
         var sw = Stopwatch.StartNew();
