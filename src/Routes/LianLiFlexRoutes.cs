@@ -287,7 +287,7 @@ public static partial class LianLiFlexRoutes
             return Results.Json(response, AppJsonContext.Default.Slv3LcdScreensResponse);
         });
 
-        app.MapPost("/devices/lianli-flex/screen/settings", (Slv3LcdSettingsRequest body, FlexLcdHub lcd, IConfigStore store) =>
+        app.MapPost("/devices/lianli-flex/screen/settings", (Slv3LcdSettingsRequest body, FlexLcdHub lcd, FlexScreens flexScreens, IConfigStore store) =>
         {
             if (string.IsNullOrWhiteSpace(body.Serial))
             {
@@ -308,7 +308,7 @@ public static partial class LianLiFlexRoutes
             }
             if (body.Rotation.HasValue)
             {
-                lcd.Hub.SetRotation(body.Serial, body.Rotation.Value);
+                lcd.Hub.SetRotation(body.Serial, flexScreens.HardwareRotation(body.Serial, body.Rotation.Value));
             }
             store.Update(s =>
             {
