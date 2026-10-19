@@ -36,6 +36,9 @@ public interface ILightingProvider
     AudioSyncOptions GetAudioSyncOptions();
     ScreenSyncOptions GetScreenSyncOptions();
 
+    /// <summary>A read-only handle on the shared screen capture (never retargets one an effect holds); null when capture is unavailable.</summary>
+    Nexus.Service.Lighting.Capture.IScreenFrameSource? OpenScreenObserver() => null;
+
     void StartAnimate(AnimateHeadlessStart body);
 
     /// <summary>Runs a catalog effect at speed 0 as a held still frame.</summary>

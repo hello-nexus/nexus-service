@@ -1187,7 +1187,20 @@ public static class NexusServiceCollectionExtensions
                 sp.GetService<Nexus.Service.Lighting.LcdLockState>())));
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexConnectionWorker>();
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdConnectionWorker>();
-        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexScreens>();
+        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexSpriteLibrary>();
+        services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexScreenCapture(
+            () => sp.GetRequiredService<Nexus.Service.Lighting.ILightingProvider>().OpenScreenObserver(),
+            () => sp.GetRequiredService<Nexus.Service.Lighting.ILightingProvider>().GetScreenSyncOptions().SelectedMonitor));
+        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexExtraContent>(sp =>
+            new Nexus.Service.Peripherals.LianLiFlex.FlexExtraContent(
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaLibrary>(),
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexSpriteLibrary>(),
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexScreenCapture>()));
+        services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexScreens(
+            sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdHub>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>(),
+            null,
+            sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexExtraContent>()));
         services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => NewFanLcdStreamingWorker(
             sp, sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexScreens>()));
         services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>

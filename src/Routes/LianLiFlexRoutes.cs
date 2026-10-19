@@ -141,6 +141,7 @@ public static partial class LianLiFlexRoutes
     public static void MapLianLiFlexEndpoints(this WebApplication app)
     {
         MapRound2Endpoints(app);
+        MapScreenExtras(app);
 
         app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexScreens screens, IConfigStore store) =>
             Results.Json(BuildState(hub, store.Load(), screens), AppJsonContext.Default.LianLiFlexStateResponse));
@@ -277,6 +278,8 @@ public static partial class LianLiFlexRoutes
                     ColorA = settings.ColorA,
                     ColorB = settings.ColorB,
                     TempUnit = settings.TempUnit,
+                    Overlay = settings.Overlay,
+                    ScreenSource = settings.ScreenSource,
                     PanelDeviceId = Slv3LcdRoutes.PanelDeviceIdFor(panelRecords, screens, screen.Serial, settings),
                 });
             }
@@ -346,8 +349,17 @@ public static partial class LianLiFlexRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapPost("/devices/lianli-flex/screen/content", (Slv3LcdContentRequest body, IConfigStore store) =>
+        app.MapPost("/devices/lianli-flex/screen/content", (Slv3LcdContentRequest body, IConfigStore store, FlexSpriteLibrary sprites) =>
         {
+            if (IsExtraContent(body.ContentType))
+            {
+                if (ValidateExtraContent(body, sprites) is { } extraError)
+                {
+                    return Results.Json(ApiResponse.Fail(extraError), AppJsonContext.Default.ApiResponse);
+                }
+                store.Update(s => ApplyExtraContent(ScreenOf(s.Devices, body.Serial), body));
+                return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+            }
             if (Slv3LcdRoutes.ValidateContent(body) is { } contentError)
             {
                 return Results.Json(ApiResponse.Fail(contentError), AppJsonContext.Default.ApiResponse);

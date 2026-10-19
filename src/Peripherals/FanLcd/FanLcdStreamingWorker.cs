@@ -250,6 +250,16 @@ public sealed class FanLcdStreamingWorker : BackgroundService
                         }
 
                         default:
+                            if (_screens is IFanLcdExtraContent extra && extra.Handles(mode))
+                            {
+                                var (frame, delayMs) = extra.Render(serial, settings);
+                                if (frame is not null)
+                                {
+                                    _screens.PushImage(serial, frame);
+                                }
+                                await IdleAsync(serial, pick, Math.Max(delayMs, 10), ct).ConfigureAwait(false);
+                                break;
+                            }
                             await IdleAsync(serial, pick, IdlePollMs, ct).ConfigureAwait(false);
                             break;
                     }
@@ -268,6 +278,7 @@ public sealed class FanLcdStreamingWorker : BackgroundService
         finally
         {
             // After this loop's last push, so nothing it sends can follow the hand-back.
+            (_screens as IFanLcdExtraContent)?.ReleaseExtra(serial);
             _screens.SetPanelOwned(serial, false);
             _screens.Release(serial);
         }

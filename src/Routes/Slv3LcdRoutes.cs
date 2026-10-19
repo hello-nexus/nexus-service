@@ -47,6 +47,10 @@ public sealed class Slv3LcdScreenDto
     public string? PanelDeviceId { get; set; }
     /// <summary>Where the screen sits, e.g. "#1.2" (port 1, fan 2) on a Uni Fan TL; null when the family has no such label.</summary>
     public string? Label { get; set; }
+    /// <summary>Flex screens only: the motion of contentType "animation2d".</summary>
+    public Nexus.Service.Persistence.LianLiFlexOverlaySettings? Overlay { get; set; }
+    /// <summary>Flex screens only: the source of contentType "screen".</summary>
+    public Nexus.Service.Persistence.LianLiFlexScreenSource? ScreenSource { get; set; }
 }
 
 public sealed class Slv3LcdScreensResponse
@@ -89,6 +93,10 @@ public sealed class Slv3LcdContentRequest
     public string? ColorB { get; set; }
     /// <summary>"c" | "f". Display unit for a temperature sensor source.</summary>
     public string? TempUnit { get; set; }
+    /// <summary>Flex screens only: the motion of contentType "animation2d".</summary>
+    public Nexus.Service.Persistence.LianLiFlexOverlaySettings? Overlay { get; set; }
+    /// <summary>Flex screens only: the source of contentType "screen".</summary>
+    public Nexus.Service.Persistence.LianLiFlexScreenSource? ScreenSource { get; set; }
 }
 
 public sealed class Slv3LcdMediaDto
