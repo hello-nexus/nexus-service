@@ -11,7 +11,7 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Lighting;
 
 /// <summary>
-/// Exposes each Flex fan as a lighting device with one zone per vendor scope: TL Up / Down, SL-INF
+/// Exposes each Flex fan as a lighting device with one zone per scope: TL Up / Down, SL-INF
 /// Center / Inner / Outer. Identity is the receiver MAC. The engine drives a unit only while its
 /// mode is the Lighting page one; the frame writer decides, as for the wireless chains.
 /// </summary>

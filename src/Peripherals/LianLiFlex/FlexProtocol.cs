@@ -119,7 +119,7 @@ public static class FlexProtocol
         return f;
     }
 
-    /// <summary>Lowest duty percent the fan is asked for: TL 11, SL-INF 10; a request of zero maps to 5.</summary>
+    /// <summary>The duty percent actually requested: each family has a floor, and zero maps to a low stand-in that parks the fan.</summary>
     public static int ClampDutyPercent(FlexFamily family, int percent)
     {
         if (percent <= 0)

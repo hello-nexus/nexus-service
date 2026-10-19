@@ -5,7 +5,7 @@ using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 namespace Nexus.Service.Peripherals.LianLiFlex;
 
 /// <summary>
-/// One zone's look. Speed 0..4 maps to a multiplier of 7,6,5,4,3; Brightness 0..4 maps to 0,25,50,75,100 percent.
+/// One zone's look. Speed and Brightness are the 0..4 levels of the settings.
 /// </summary>
 public sealed record FlexZoneLook(string Key, int Speed, int Direction, int Brightness, IReadOnlyList<RgbColor> Colors);
 
@@ -35,7 +35,7 @@ public static class FlexAnimationComposer
 
     public static int BrightnessLevel(int brightness) => BrightnessLevels[Math.Clamp(brightness, 0, 4)];
 
-    /// <param name="infAttachFlag">SL-INF generator flag: 1 for a unit whose identity reports a fan count under 10 (the recorded units), 0 for a right-attached cable (fan count 10 or more).</param>
+    /// <param name="infAttachFlag">SL-INF generator flag: 1 for a unit whose identity reports a fan count under 10, 0 for a right-attached cable.</param>
     public static FlexComposedAnimation Compose(
         FlexFamily family, int fans, IReadOnlyDictionary<string, FlexZoneLook> zones, bool upDownSwap, int infAttachFlag = 1)
     {

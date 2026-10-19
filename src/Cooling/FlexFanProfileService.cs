@@ -202,14 +202,14 @@ public sealed class FlexFanProfileService
         }
     }
 
-    /// <summary>The vendor's Default: the shipped StdSP profile on the CPU, 120 mm, no Start/Stop.</summary>
+    /// <summary>Default: the shipped StdSP profile on the CPU, 120 mm, no Start/Stop.</summary>
     public string? Default(string mac) =>
         Apply(mac, new LianLiFlexFanProfileSettings { Profile = "stdsp", Source = "cpu", FanSize = 120 });
 
     public LianLiFlexFanProfileSettings Current(string mac) =>
         _store.Load().Devices.FlexUnits.TryGetValue(mac, out var u) ? u.FanProfile : new LianLiFlexFanProfileSettings();
 
-    /// <summary>The vendor's global MB RPM Sync: every unit follows the board header, or gets its stored profile back.</summary>
+    /// <summary>Global MB RPM Sync: every unit follows the board header, or gets its stored profile back.</summary>
     public void SetMbSync(bool enabled)
     {
         foreach (var unit in _hub.Units)

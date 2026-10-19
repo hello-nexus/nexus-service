@@ -49,7 +49,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
 
     public void SetAlert(IReadOnlyDictionary<string, (byte R, byte G, byte B)> colors) => _alert = colors;
 
-    // Alert color level: speed and brightness level 3 of the vendor look, 128 of 255.
+    // Alert color level: brightness level 3 of 4.
     private const int AlertScale = 128;
     private const int AlertRefreshMs = 1000;
 

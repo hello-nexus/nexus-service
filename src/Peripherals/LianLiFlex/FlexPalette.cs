@@ -3,7 +3,7 @@ using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
 namespace Nexus.Service.Peripherals.LianLiFlex;
 
-/// <summary>Builds the 4x4x3 colour table the generators index, capping each colour to the power limit.</summary>
+/// <summary>Builds the 4x4x3 color table the generators index, capping each color to the power limit.</summary>
 internal static class FlexPalette
 {
     public const int PowerCap = 600;
