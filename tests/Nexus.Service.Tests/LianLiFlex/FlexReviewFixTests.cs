@@ -195,7 +195,8 @@ public class FlexReviewFixTests
     {
         foreach (var mode in LianLiFlexRoutes.ModesOf(family))
         {
-            var defaults = mode.DefaultColors.Select(h => ColorOf(h)).ToList();
+            var palette = FlexDefaultPalettes.For(family, mode.Key).Count;
+            var defaults = mode.DefaultColors.Select(h => ColorOf(h)).Take(palette).ToList();
             byte[] Render(IReadOnlyList<RgbColor> explicitColors)
             {
                 var zones = new Dictionary<string, FlexZoneLook>
@@ -206,7 +207,12 @@ public class FlexReviewFixTests
             }
             var stored = FlexStoredLook.ZoneLooks(family, new LianLiFlexUnitSettings { Mode = mode.Key })["all"];
             var noColors = FlexAnimationComposer.Compose(family, 1, new Dictionary<string, FlexZoneLook> { ["all"] = stored }, false).Raw;
-            if (defaults.Count == 0)
+            if (defaults.Count == 0 && FlexDefaultPalettes.For(family, mode.Key).Count > 0)
+            {
+                // the swatch row is hidden, the effect still renders its built-in palette
+                Assert.Equal(0, mode.ColorsMax);
+            }
+            else if (defaults.Count == 0)
             {
                 // the effect takes no palette: any colors give the same frames
                 var other = new List<RgbColor> { new(1, 2, 3), new(4, 5, 6), new(7, 8, 9), new(10, 11, 12) };

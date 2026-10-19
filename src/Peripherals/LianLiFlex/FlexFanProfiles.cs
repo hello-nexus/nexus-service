@@ -100,12 +100,16 @@ public static class FlexFanProfiles
     }
 
     /// <summary>Sorts, clamps and de-duplicates user points; null when fewer than two remain.</summary>
-    public static List<(int Temp, int Rpm)>? Sanitize(IEnumerable<(int Temp, int Rpm)> points, int maxRpm = 2000)
+    public const int CurveMaxTemp = 100;
+    public const int CurveMinRpm = 350;
+
+    /// <summary>A user-edited curve: temperatures 0..100, speeds 350..max, one point per temperature, null with fewer than two.</summary>
+    public static List<(int Temp, int Rpm)>? Sanitize(IEnumerable<(int Temp, int Rpm)> points, int maxRpm = TlMaxRpm)
     {
         var map = new SortedDictionary<int, int>();
         foreach (var (t, r) in points)
         {
-            map[Math.Clamp(t, MinTemp, MaxTemp)] = Math.Clamp(r, 0, maxRpm);
+            map[Math.Clamp(t, MinTemp, CurveMaxTemp)] = Math.Clamp(r, CurveMinRpm, maxRpm);
         }
         return map.Count < 2 ? null : map.Select(kv => (kv.Key, kv.Value)).ToList();
     }

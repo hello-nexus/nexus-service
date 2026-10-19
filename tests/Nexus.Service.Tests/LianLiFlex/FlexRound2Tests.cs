@@ -151,25 +151,38 @@ public class FlexRound2Tests
     }
 
     [Fact]
-    public void Default_restores_the_shipped_standard_profile()
+    public void Default_keeps_the_selected_profile_and_drops_its_custom_points()
     {
         var (_, store, _, profiles) = Create();
-        profiles.Apply(Tl, new LianLiFlexFanProfileSettings { Profile = "fullsp", StartStop = true, Source = "gpu" });
+        var custom = new System.Collections.Generic.List<LianLiFlexCurvePoint> { new() { Temp = 30, Rpm = 400 }, new() { Temp = 70, Rpm = 1500 } };
+        var start = new LianLiFlexFanProfileSettings { Profile = "custom1", StartStop = true, Source = "gpu" };
+        start.Custom["custom1"] = custom;
+        profiles.Apply(Tl, start);
         Assert.Null(profiles.Default(Tl));
         var p = store.Load().Devices.FlexUnits[Tl].FanProfile;
-        Assert.Equal("stdsp", p.Profile);
-        Assert.Equal("cpu", p.Source);
-        Assert.False(p.StartStop);
+        Assert.Equal("custom1", p.Profile);
+        Assert.Equal("gpu", p.Source);
+        Assert.False(p.Custom.ContainsKey("custom1"));
+    }
+
+    [Fact]
+    public void Default_without_a_profile_selects_standard()
+    {
+        var (_, store, _, profiles) = Create();
+        Assert.Null(profiles.Default(Tl));
+        Assert.Equal("stdsp", store.Load().Devices.FlexUnits[Tl].FanProfile.Profile);
     }
 
     [Fact]
     public void Profile_points_are_sanitized()
     {
         Assert.Null(FlexFanProfiles.Sanitize(new[] { (30, 500) }));
-        var clean = FlexFanProfiles.Sanitize(new[] { (70, 9000), (30, -5), (30, 400) })!;
-        Assert.Equal(2, clean.Count);
-        Assert.Equal((30, 400), clean[0]);
-        Assert.Equal((70, 2000), clean[1]);
+        var clean = FlexFanProfiles.Sanitize(new[] { (70, 9000), (30, 100), (120, 800), (-5, 900) })!;
+        Assert.Equal(4, clean.Count);
+        Assert.Equal((0, 900), clean[0]);
+        Assert.Equal((30, 350), clean[1]);
+        Assert.Equal((70, 1900), clean[2]);
+        Assert.Equal((100, 800), clean[3]);
     }
 
     // ----- Quick/Sync -----

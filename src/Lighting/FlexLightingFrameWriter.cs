@@ -51,7 +51,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
 
     // Alert color level: brightness level 3 of 4.
     private const int AlertScale = 128;
-    private const int AlertRefreshMs = 1000;
+    private const int AlertRefreshMs = 43;
 
     private bool TickAlert(FlexUnit unit, UnitState st, long now)
     {

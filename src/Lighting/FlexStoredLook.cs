@@ -35,7 +35,12 @@ public static class FlexStoredLook
                 list.Add(new RgbColor((byte)(v >> 16), (byte)(v >> 8), (byte)v));
             }
         }
-        return list.Count == 0 ? FlexDefaultPalettes.For(family, key) : list;
+        var palette = FlexDefaultPalettes.For(family, key);
+        for (var i = list.Count; i < palette.Count; i++)
+        {
+            list.Add(palette[i]);
+        }
+        return list.Count == 0 ? palette : list;
     }
 
     public static Dictionary<string, FlexZoneLook> ZoneLooks(FlexFamily family, LianLiFlexUnitSettings look)

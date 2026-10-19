@@ -397,6 +397,21 @@ public static partial class LianLiFlexRoutes
         };
     }
 
+    private static LianLiFlexModeDto SyncMode(LianLiFlexModeDto m)
+    {
+        var count = FlexSwatchCounts.OfSync(m.Key);
+        return new LianLiFlexModeDto
+        {
+            Key = m.Key,
+            HasSpeed = m.HasSpeed,
+            HasDirection = m.HasDirection,
+            ColorsMin = 0,
+            ColorsMax = count,
+            Mergeable = true,
+            DefaultColors = FitDefaults(m.DefaultColors, count),
+        };
+    }
+
     internal static LianLiFlexSyncDto SyncDto(FlexGroupLighting group)
     {
         var leader = group.Leader();
@@ -410,7 +425,7 @@ public static partial class LianLiFlexRoutes
             Direction = leader.Direction,
             Brightness = leader.Brightness,
             Colors = leader.Colors.ToArray(),
-            Modes = ModesOf(family).Where(m => m.Mergeable).ToArray(),
+            Modes = ModesOf(family).Where(m => m.Mergeable).Select(m => SyncMode(m)).ToArray(),
             Members = members.Select(m => new LianLiFlexSyncMemberDto
             {
                 Mac = m.Mac,

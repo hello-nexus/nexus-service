@@ -202,9 +202,22 @@ public sealed class FlexFanProfileService
         }
     }
 
-    /// <summary>Default: the shipped StdSP profile on the CPU, 120 mm, no Start/Stop.</summary>
-    public string? Default(string mac) =>
-        Apply(mac, new LianLiFlexFanProfileSettings { Profile = "stdsp", Source = "cpu", FanSize = 120 });
+    /// <summary>
+    /// Default: the selected profile goes back to its shipped points and its duty is sent again; the
+    /// selection itself stays. With no profile chosen yet it selects StdSP on the CPU, 120 mm.
+    /// </summary>
+    public string? Default(string mac)
+    {
+        var current = Current(mac);
+        if (current.Profile.Length == 0 || current.Profile is "mbsync" or "fixed")
+        {
+            return Apply(mac, new LianLiFlexFanProfileSettings { Profile = "stdsp", Source = "cpu", FanSize = 120 });
+        }
+        var next = current.Clone();
+        next.Custom = new Dictionary<string, List<LianLiFlexCurvePoint>>(current.Custom);
+        next.Custom.Remove(next.Profile);
+        return Apply(mac, next);
+    }
 
     public LianLiFlexFanProfileSettings Current(string mac) =>
         _store.Load().Devices.FlexUnits.TryGetValue(mac, out var u) ? u.FanProfile : new LianLiFlexFanProfileSettings();

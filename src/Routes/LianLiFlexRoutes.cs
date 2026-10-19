@@ -428,19 +428,39 @@ public static partial class LianLiFlexRoutes
         for (var i = 0; i < modes.Length; i++)
         {
             var info = Slv3FanEffects.Find(rf, keys[i]);
-            var defaults = DefaultColorsOf(family, keys[i]);
+            var count = FlexSwatchCounts.Of(family, keys[i]);
+            var defaults = FitDefaults(DefaultColorsOf(family, keys[i]), count);
             modes[i] = new LianLiFlexModeDto
             {
                 Key = keys[i],
                 HasSpeed = info?.HasSpeed ?? true,
                 HasDirection = info?.HasDirection ?? false,
                 ColorsMin = 0,
-                ColorsMax = defaults.Length == 0 ? 0 : Math.Min(MaxColors, Math.Max(info?.ColorsMax ?? 0, defaults.Length)),
+                ColorsMax = count,
                 Mergeable = FlexMergeEffects.IsMergeable(family, keys[i]),
                 DefaultColors = defaults,
             };
         }
         return modes;
+    }
+
+    /// <summary>Cuts the default list to the swatch count, or fills it up with the stock palette when the effect offers more swatches than defaults.</summary>
+    internal static string[] FitDefaults(string[] defaults, int count)
+    {
+        var fit = new string[count];
+        for (var i = 0; i < count; i++)
+        {
+            if (i < defaults.Length)
+            {
+                fit[i] = defaults[i];
+            }
+            else
+            {
+                var c = FlexDefaultPalettes.MergeFallback[i % FlexDefaultPalettes.MergeFallback.Count];
+                fit[i] = $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+            }
+        }
+        return fit;
     }
 
     private static string[] DefaultColorsOf(FlexFamily family, string key)
