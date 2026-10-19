@@ -528,6 +528,7 @@ public sealed class UiSettingsPatch
 {
     public bool? ShowConflictAlerts { get; set; }
     public bool? AutoKillConflictsAtStartup { get; set; }
+    /// <summary>Ignored by POST /preferences; edit through POST /conflicts/whitelist.</summary>
     public List<string>? ConflictAutoKillExclusions { get; set; }
     public bool? NotifyConflictLaunches { get; set; }
     public bool? EndConflictsOnLaunch { get; set; }
