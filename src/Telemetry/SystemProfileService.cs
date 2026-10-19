@@ -34,6 +34,8 @@ internal sealed class SystemProfileService : BackgroundService
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan WarmupInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SteadyInterval = TimeSpan.FromMinutes(15);
+    internal static readonly TimeSpan ProfileMinResend = TimeSpan.FromHours(6);
+    internal static readonly TimeSpan ProfileRefresh = TimeSpan.FromHours(24);
     private const int MaxDevices = 80;
     private static readonly TimeSpan LayoutSnapshotInterval = TimeSpan.FromHours(24);
     private const int MaxWidgetTypes = 200;
@@ -45,7 +47,6 @@ internal sealed class SystemProfileService : BackgroundService
     private readonly DeviceManager _devices;
     private readonly ILightingDeviceProvider _lighting;
     private readonly IFanControlProvider _fans;
-    private string? _lastSignature;
     private DateTimeOffset _lastLayoutSnapshot = DateTimeOffset.MinValue;
 
     public SystemProfileService(ITelemetry telemetry, IConfigStore store,
@@ -159,12 +160,42 @@ internal sealed class SystemProfileService : BackgroundService
 
         // Dedupe: only emit when the profile actually changed.
         var signature = string.Join("|", props.Select(p => p.Item1 + "=" + Stringify(p.Item2)));
-        if (signature != _lastSignature)
+        switch (TryClaimProfileSend(_store, signature, DateTimeOffset.UtcNow))
         {
-            _lastSignature = signature;
-            _telemetry.Identify(props.ToArray());
+            case ProfileSend.Changed:
+                _telemetry.Identify(props.ToArray());
+                break;
+            case ProfileSend.Refresh:
+                // nexus-api only: PostHog is filtered out of this event and gets $identify on change alone.
+                _telemetry.Capture(TelemetryEvents.ProfileRefresh, props.ToArray());
+                break;
         }
         return true;
+    }
+
+    /// <summary>Persisted dedupe: a changed signature waits out <see cref="ProfileMinResend"/>, an unchanged one is resent after <see cref="ProfileRefresh"/> so a lost send heals.</summary>
+    /// <returns>What to send now; the signature is recorded when anything is.</returns>
+    internal static ProfileSend TryClaimProfileSend(IConfigStore store, string signature, DateTimeOffset now)
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature)));
+        var t = store.Load().Telemetry;
+        var hasSentAt = DateTimeOffset.TryParse(t.ProfileSentAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var sentAt);
+        if (t.ProfileSignature == hash)
+        {
+            if (!hasSentAt || now - sentAt < ProfileRefresh)
+                return ProfileSend.None;
+        }
+        else if (t.ProfileSignature.Length > 0 && hasSentAt && now - sentAt < ProfileMinResend)
+        {
+            return ProfileSend.None;
+        }
+        var kind = t.ProfileSignature == hash ? ProfileSend.Refresh : ProfileSend.Changed;
+        store.Update(s =>
+        {
+            s.Telemetry.ProfileSignature = hash;
+            s.Telemetry.ProfileSentAt = now.ToString("O", CultureInfo.InvariantCulture);
+        });
+        return kind;
     }
 
     /// <summary>
@@ -321,4 +352,11 @@ internal sealed class SystemProfileService : BackgroundService
         }
         return any ? (int)Math.Round(total) : null;
     }
+}
+
+internal enum ProfileSend
+{
+    None,
+    Changed,
+    Refresh,
 }

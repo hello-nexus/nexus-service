@@ -19,6 +19,7 @@ internal sealed class TelemetryFlushService : BackgroundService
 {
     private static readonly TimeSpan FlushInterval = TimeSpan.FromSeconds(30);
     private const int MaxBatch = 100;
+    private static readonly TimeSpan StopFlushTimeout = TimeSpan.FromSeconds(3);
 
     private readonly TelemetryClient _telemetry;
     private readonly IConfigStore _store;
@@ -52,7 +53,18 @@ internal sealed class TelemetryFlushService : BackgroundService
         } while (await WaitAsync(timer, stoppingToken).ConfigureAwait(false));
     }
 
-    private async Task FlushAsync(CancellationToken ct)
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        if (_sinks.Count == 0 || Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
+            return;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(StopFlushTimeout);
+        try { await FlushAsync(cts.Token).ConfigureAwait(false); }
+        catch (Exception ex) { Console.Error.WriteLine($"[telemetry] final flush failed: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    internal async Task FlushAsync(CancellationToken ct)
     {
         // Resolve the install id (and honor opt-out) once per flush.
         var distinctId = InstallIdentity.Resolve(_store);
@@ -66,7 +78,14 @@ internal sealed class TelemetryFlushService : BackgroundService
         while ((batch = _telemetry.DrainBatch(MaxBatch)).Count > 0)
         {
             foreach (var sink in _sinks)
-                await sink.SendAsync(distinctId, batch, ct).ConfigureAwait(false);
+            {
+                // One sink failing (PostHog blocked) must not starve the others.
+                try { await sink.SendAsync(distinctId, batch, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                {
+                    Console.Error.WriteLine($"[telemetry] {sink.GetType().Name} failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
         }
     }
 
