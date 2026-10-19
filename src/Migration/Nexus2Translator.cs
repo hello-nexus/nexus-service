@@ -14,7 +14,7 @@ internal static class Nexus2Translator
     /// than imported as an unsupported locale.</summary>
     public static readonly IReadOnlyList<string> SupportedLocales = new[]
     {
-        "de", "en", "es", "fr", "fur", "it", "ja", "ko", "nl", "pl", "pt", "pt-BR", "ru", "tr", "zh-CN", "zh-TW",
+        "cs", "de", "en", "es", "fr", "fur", "it", "ja", "ko", "nl", "pl", "pt", "pt-BR", "ru", "tr", "zh-CN", "zh-TW",
     };
 
     public static JsonElement? FindActiveProfile(JsonElement root)

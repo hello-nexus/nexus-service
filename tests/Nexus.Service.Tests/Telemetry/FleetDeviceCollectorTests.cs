@@ -26,6 +26,15 @@ public class FleetDeviceCollectorTests
             devices.Select(d => (d.Vid, d.Pid)).ToArray());
     }
 
+    [Theory]
+    [InlineData("USB2.0 Hub", false)]
+    [InlineData("USB3.1 Hub", false)]
+    [InlineData("Generic USB Hub", false)]
+    [InlineData("Uni Hub", true)]
+    [InlineData("Smart Hub", true)]
+    public void Generic_usb_hubs_are_dropped_by_word_but_branded_hubs_are_kept(string name, bool kept) =>
+        Assert.Equal(kept ? 1 : 0, FleetDeviceCollector.Collect(new[] { Entry(0x1111, 0x2222, name) }).Count);
+
     [Fact]
     public void Orders_by_id_so_enumeration_order_is_not_a_hardware_change()
     {
