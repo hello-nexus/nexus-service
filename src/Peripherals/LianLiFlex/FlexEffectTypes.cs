@@ -23,9 +23,13 @@ public enum FlexScope
     Outer,
 }
 
-/// <summary>Inputs of one effect render. Brightness is the 0..255 level applied inside the generators that bake it.</summary>
+/// <summary>
+/// Inputs of one effect render. Brightness is the 0..255 level applied inside the generators that bake it.
+/// SpeedMultiplier (7..3) only matters where zone animations are reconciled by interval.
+/// </summary>
 public sealed record FlexEffectRequest(
-    FlexScope Scope, int Fans, int Direction, int BrightnessLevel, IReadOnlyList<RgbColor> Colors);
+    FlexScope Scope, int Fans, int Direction, int BrightnessLevel, IReadOnlyList<RgbColor> Colors,
+    int SpeedMultiplier = 4, int RightAttach = 0);
 
 /// <summary>
 /// One rendered animation: <see cref="Frames"/> holds FrameCount * Leds * 3 bytes, frame-major,
