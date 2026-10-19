@@ -198,6 +198,30 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void A_fan_connected_by_USB_is_listed_flagged_and_never_bound_or_commanded()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        hub.WiredOwned = mac => string.Equals(mac, Convert.ToHexString(FanMac), StringComparison.OrdinalIgnoreCase);
+        for (var i = 0; i < 6; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+        var fan = hub.State.Fans[0];
+        Assert.True(fan.WiredOwned);
+        Assert.True(fan.UsbConnected);
+        Assert.False(fan.BoundToUs);
+        Assert.False(ManualBind(hub, Convert.ToHexString(FanMac), out var error));
+        Assert.Equal(Slv3Hub.WiredOwnedError, error);
+        var mac = Convert.ToHexString(FanMac);
+        Assert.False(hub.SetPortDuty(mac, 0, 50));
+        Assert.False(hub.Identify(mac));
+        Assert.False(hub.ResetChain(mac));
+        Assert.False(hub.SendRgbFrame(mac, new RgbColor[26], 100, 30, out _));
+        Assert.False(hub.Unbind(mac, out _));
+    }
+
+    [Fact]
     public void Bind_converges_on_the_first_tick_via_the_immediate_frame()
     {
         var (hub, net, _, _) = CreateConnectedHub();

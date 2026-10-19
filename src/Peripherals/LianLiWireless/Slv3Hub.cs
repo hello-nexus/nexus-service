@@ -73,6 +73,13 @@ public sealed class Slv3Hub : IDisposable
     public Func<string?>? UsbAioMac { get; set; }
     private volatile string? _usbAioMac;
 
+    /// <summary>Tells whether a MAC belongs to a fan that is plugged in over USB and driven by its own handler; the radio never binds, steers or writes to it.</summary>
+    public Func<string, bool>? WiredOwned { get; set; }
+
+    internal const string WiredOwnedError = "connected by USB";
+
+    private bool IsWiredOwned(string macHex) => !string.IsNullOrEmpty(macHex) && WiredOwned?.Invoke(macHex) == true;
+
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
 
@@ -990,12 +997,15 @@ public sealed class Slv3Hub : IDisposable
         var merged = new Dictionary<string, Slv3DeviceRecord>(StringComparer.Ordinal);
         foreach (var record in _lastFanRecords)
         {
-            merged[Convert.ToHexString(record.Mac)] = record;
+            if (!IsWiredOwned(Convert.ToHexString(record.Mac)))
+            {
+                merged[Convert.ToHexString(record.Mac)] = record;
+            }
         }
         foreach (var record in _pollRecords)
         {
             var key = Convert.ToHexString(record.Mac);
-            if (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key))
+            if (!IsWiredOwned(key) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
             {
                 merged[key] = record;
             }
@@ -2175,8 +2185,10 @@ public sealed class Slv3Hub : IDisposable
         Pwm = (int[])record.Pwm.Clone(),
         EffectIndex = Convert.ToHexString(record.EffectIndex),
         Stale = stale,
-        UsbConnected = record.IsHydroShift && _usbAioMac is { } usbMac
-            && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase),
+        UsbConnected = (record.IsHydroShift && _usbAioMac is { } usbMac
+            && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase))
+            || IsWiredOwned(Convert.ToHexString(record.Mac)),
+        WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)),
         CoolantTempC = record.CoolantTempC,
         FirmwareVersion = record.RfVersion,
         ArgbCableConnected = record.ArgbCableConnected,
@@ -2280,6 +2292,11 @@ public sealed class Slv3Hub : IDisposable
     public bool Bind(string macHex, out string error)
     {
         error = "";
+        if (IsWiredOwned(macHex))
+        {
+            error = WiredOwnedError;
+            return false;
+        }
         if (_lockBound)
         {
             error = LockedError;
@@ -2377,6 +2394,11 @@ public sealed class Slv3Hub : IDisposable
     public bool Unbind(string macHex, out string error)
     {
         error = "";
+        if (IsWiredOwned(macHex))
+        {
+            error = WiredOwnedError;
+            return false;
+        }
         if (_lockBound)
         {
             error = LockedError;
@@ -2505,6 +2527,10 @@ public sealed class Slv3Hub : IDisposable
 
     private bool QueueSequencedCommand(string macHex, byte rfCmd, string label, byte arg = 0)
     {
+        if (IsWiredOwned(macHex))
+        {
+            return false;
+        }
         if (!TryParseMac(macHex, out var mac))
         {
             return false;
@@ -2745,6 +2771,14 @@ public sealed class Slv3Hub : IDisposable
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, bool window,
         out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex)
     {
+        if (IsWiredOwned(macHex))
+        {
+            channel = 0;
+            rxType = 0;
+            packets = Array.Empty<byte[]>();
+            effectIndex = Array.Empty<byte>();
+            return false;
+        }
         channel = 0;
         rxType = 0;
         packets = Array.Empty<byte[]>();
@@ -2932,6 +2966,10 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool SetPortDuty(string macHex, int port, int? percent)
     {
+        if (IsWiredOwned(macHex))
+        {
+            return false;
+        }
         if (!TryParseMac(macHex, out var mac))
         {
             return false;

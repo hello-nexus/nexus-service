@@ -1086,14 +1086,18 @@ public static class NexusServiceCollectionExtensions
                               Nexus.Service.Peripherals.LianLiWireless.StubSlv3Discovery>();
 #endif
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.Slv3Hub>(sp =>
-            new Nexus.Service.Peripherals.LianLiWireless.Slv3Hub(
+        {
+            var wirelessHub = new Nexus.Service.Peripherals.LianLiWireless.Slv3Hub(
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.ISlv3Discovery>(),
 #if LINUX
                 port => new Nexus.Service.Peripherals.LianLiWireless.LinuxSlv3Transport(port.PortName, port.Role),
 #else
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3Transport(port.PortName, port.Role),
 #endif
-                lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>()));
+                lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>());
+            wirelessHub.WiredOwned = mac => sp.GetService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>()?.Find(mac) is not null;
+            return wirelessHub;
+        });
         services.AddSingleton<Nexus.Service.Cooling.Slv3CoolingProvider>(sp =>
         {
             var hub = sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3Hub>();
