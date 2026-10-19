@@ -4,8 +4,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text.Json;
 using Nexus.Service.Models.Activity;
+using Nexus.Service.Platform.Windows;
 
 namespace Nexus.Service.Activity;
 
@@ -74,28 +74,10 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
 
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            psi.ArgumentList.Add("-NoProfile");
-            psi.ArgumentList.Add("-Command");
-            psi.ArgumentList.Add("Get-StartApps | ConvertTo-Json -Compress");
-
-            using var proc = Process.Start(psi);
-            if (proc is null) return Array.Empty<Shortcut>();
-
-            var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(15000);
-
-            if (string.IsNullOrWhiteSpace(output))
+            var apps = ReadStartApps();
+            if (apps.Count == 0)
                 return Array.Empty<Shortcut>();
 
-            var apps = ParseStartAppsJson(output);
             FillProcessNames(apps);
 
             lock (_appLock)
@@ -322,7 +304,7 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
             }
         }
 
-        // Get-StartApps also returns bare exe paths, some behind a known-folder GUID prefix.
+        // The apps folder also lists bare exe paths, some behind a known-folder GUID prefix.
         return ExtractExecutablePathIcon(shortcut.Id);
     }
 
@@ -470,55 +452,25 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
 
     private static byte[] ExtractUwpIcon(string appId)
     {
-        var familyName = appId.Split('!')[0].Replace("'", "''");
-        var script = $"$pkg = Get-AppxPackage | Where-Object {{ $_.PackageFamilyName -eq '{familyName}' }} | Select-Object -First 1; " +
-            "if (-not $pkg) { exit 0 } " +
-            "try { $manifest = [xml](Get-Content (Join-Path $pkg.InstallLocation 'AppxManifest.xml')); " +
-            "$apps = $manifest.Package.Applications.Application; " +
-            "if ($apps -is [array]) { $app = $apps[0] } else { $app = $apps }; " +
-            "$logo = $app.VisualElements.Square44x44Logo; " +
-            "if (-not $logo) { $logo = $app.VisualElements.Square150x150Logo }; " +
-            "if (-not $logo) { exit 0 }; " +
-            "$logoFull = Join-Path $pkg.InstallLocation $logo; " +
-            "$dir = [IO.Path]::GetDirectoryName($logoFull); " +
-            "$base = [IO.Path]::GetFileNameWithoutExtension($logoFull); " +
-            "$ext = [IO.Path]::GetExtension($logoFull); " +
-            @"$candidates = Get-ChildItem $dir -Filter ""$base*$ext"" -EA SilentlyContinue | " +
-            @"Sort-Object { if ($_.Name -match 'scale-(\d+)') { [int]$Matches[1] } else { 0 } } -Descending; " +
-            "$target = $null; " +
-            "foreach ($c in $candidates) { if (Test-Path $c.FullName) { $target = $c.FullName; break } }; " +
-            "if (-not $target -and (Test-Path $logoFull)) { $target = $logoFull }; " +
-            "if ($target) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($target)) } " +
-            "} catch {}";
-
-        return RunPowerShellBase64(script, 15000);
-    }
-
-    private static byte[] RunPowerShellBase64(string script, int timeoutMs)
-    {
         try
         {
-            var psi = new ProcessStartInfo
+            var installPath = WindowsAppsFolder.FindPackageInstallPath(appId.Split('!')[0]);
+            if (installPath is null) return Array.Empty<byte>();
+
+            var logo = UwpLogoResolver.ManifestLogo(File.ReadAllText(Path.Combine(installPath, "AppxManifest.xml")));
+            if (string.IsNullOrEmpty(logo)) return Array.Empty<byte>();
+
+            var logoFull = Path.Combine(installPath, logo);
+            var dir = Path.GetDirectoryName(logoFull) ?? installPath;
+            string? target = null;
+            if (Directory.Exists(dir))
             {
-                FileName = "powershell.exe",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            psi.ArgumentList.Add("-NoProfile");
-            psi.ArgumentList.Add("-Command");
-            psi.ArgumentList.Add(script);
-
-            using var proc = Process.Start(psi);
-            if (proc is null) return Array.Empty<byte>();
-
-            var output = proc.StandardOutput.ReadToEnd().Trim();
-            proc.WaitForExit(timeoutMs);
-
-            if (string.IsNullOrEmpty(output)) return Array.Empty<byte>();
-
-            return Convert.FromBase64String(output);
+                var best = UwpLogoResolver.BestScaledFile(Path.GetFileName(logoFull),
+                    Directory.EnumerateFiles(dir).Select(Path.GetFileName).OfType<string>());
+                if (best is not null) target = Path.Combine(dir, best);
+            }
+            if (target is null && File.Exists(logoFull)) target = logoFull;
+            return target is null ? Array.Empty<byte>() : File.ReadAllBytes(target);
         }
         catch
         {
@@ -526,47 +478,20 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
         }
     }
 
-    private static List<Shortcut> ParseStartAppsJson(string json)
+    /// <summary>The Start apps as the shell lists them, minus uninstallers, ordered and de-duplicated by name.</summary>
+    private static List<Shortcut> ReadStartApps()
     {
         var apps = new List<Shortcut>();
-        try
+        foreach (var (name, appId) in WindowsAppsFolder.EnumerateStartApps(15000))
         {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            // Get-StartApps returns array when multiple, object when single
-            if (root.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var item in root.EnumerateArray())
-                    AddFromElement(apps, item);
-            }
-            else if (root.ValueKind == JsonValueKind.Object)
-            {
-                AddFromElement(apps, root);
-            }
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(appId)) continue;
+            if (name.Contains("uninstall", StringComparison.OrdinalIgnoreCase)) continue;
+            apps.Add(new Shortcut { Id = appId, Name = name, Path = appId });
         }
-        catch { }
 
         return apps
             .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
             .DistinctBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    private static void AddFromElement(List<Shortcut> apps, JsonElement el)
-    {
-        var name = el.TryGetProperty("Name", out var n) ? n.GetString() : null;
-        var appId = el.TryGetProperty("AppID", out var a) ? a.GetString() : null;
-        if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(appId)) return;
-
-        // Skip uninstallers and system entries
-        if (name.Contains("uninstall", StringComparison.OrdinalIgnoreCase)) return;
-
-        apps.Add(new Shortcut
-        {
-            Id = appId,
-            Name = name,
-            Path = appId,
-        });
     }
 }
