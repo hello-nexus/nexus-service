@@ -78,7 +78,7 @@ public static class ConflictAutostart
             // A Run value can be armed while the app still declines to start, so
             // an entry carrying a vendor gate is only live when that agrees.
             if (!VendorSaysItStarts(target)) continue;
-            foreach (var valueName in MatchingRunValues(hive.Value, target))
+            foreach (var valueName in MatchingRunValues(def, hive.Value, target))
             {
                 if (RunEntryEnabled(hive.Value, valueName))
                 {
@@ -179,7 +179,7 @@ public static class ConflictAutostart
             var hive = HiveFor(target.Kind);
             if (hive is null) continue;
             if (!VendorSaysItStarts(target)) continue;
-            foreach (var valueName in MatchingRunValues(hive.Value, target))
+            foreach (var valueName in MatchingRunValues(def, hive.Value, target))
             {
                 if (string.Equals(valueName, entry.EntryName, StringComparison.Ordinal)) return true;
             }
@@ -235,7 +235,7 @@ public static class ConflictAutostart
 
     /// <summary>Run value names in this hive whose command resolves to one of the recipe's executables.</summary>
     [SupportedOSPlatform("windows")]
-    private static List<string> MatchingRunValues(Hive hive, ConflictAutostartTarget target)
+    private static List<string> MatchingRunValues(ConflictAppDefinition def, Hive hive, ConflictAutostartTarget target)
     {
         var names = new List<string>();
         try
@@ -253,11 +253,26 @@ public static class ConflictAutostart
                 // value name: the value name is vendor- and version-stamped
                 // (iCUE runs from a value called "Corsair iCUE5 Software")
                 // and substring-matching it collides with unrelated entries.
-                if (MatchesExecutable(command, target.ExeNames)) names.Add(name);
+                if (MatchesExecutable(command, target.ExeNames) && SignerAllows(def, command)) names.Add(name);
             }
         }
         catch { /* an unreadable hive offers nothing rather than a guess */ }
         return names;
+    }
+
+    /// <summary>
+    /// For a signer-pinned app, whether the Run command's exe is signed by one of
+    /// its signers. A command whose exe cannot be located on disk is not gated,
+    /// so the recipe behaves as it always has there.
+    /// </summary>
+    private static bool SignerAllows(ConflictAppDefinition def, string command)
+    {
+        if (def.Signers.Length == 0) return true;
+        string exe;
+        try { exe = Environment.ExpandEnvironmentVariables(ExecutablePath(command)); }
+        catch { return true; }
+        if (!Path.IsPathRooted(exe) || !File.Exists(exe)) return true;
+        return ConflictSignerGate.Default.MatchesPath(def, exe);
     }
 
     /// <summary>Whether an entry is on: an absent or even-flagged StartupApproved record means enabled, which is also the state of an entry Task Manager has never touched.</summary>
