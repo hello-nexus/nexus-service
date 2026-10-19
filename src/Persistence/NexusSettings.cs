@@ -1507,6 +1507,10 @@ public sealed class DevicesSettings
     public TlLightingSettings TlLighting { get; set; } = new();
     /// <summary>Uni Fan TL LCD screens by screen key (L-Connect's serial, else port and fan); same content model as the SL wireless screens.</summary>
     public Dictionary<string, LianLiWirelessScreenSettings> TlLcdScreens { get; set; } = new();
+    /// <summary>TL / SL-INF LCD Flex fans' lighting by receiver MAC hex (uppercase).</summary>
+    public Dictionary<string, LianLiFlexUnitSettings> FlexUnits { get; set; } = new();
+    /// <summary>TL / SL-INF LCD Flex screens by screen serial; same content model as the SL wireless screens.</summary>
+    public Dictionary<string, LianLiWirelessScreenSettings> FlexLcdScreens { get; set; } = new();
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
@@ -1813,6 +1817,44 @@ public sealed class LianLiWirelessChainLighting
     public List<LianLiWirelessLane> Lanes { get; set; } = new();
     /// <summary>The chain plays the motherboard ARGB header through its sync cable instead of Nexus; null leaves the chain's own state alone.</summary>
     public bool? MotherboardArgb { get; set; }
+}
+
+/// <summary>
+/// What a Flex fan shows: the lighting engine's live frames (<see cref="LianLiWirelessChainLighting.ModeCustom"/>),
+/// one stored effect for the whole fan (an effect key), or one stored effect per zone (<see cref="ModePerZone"/>).
+/// </summary>
+public sealed class LianLiFlexUnitSettings
+{
+    public const string ModePerZone = "perZone";
+
+    public string Mode { get; set; } = LianLiWirelessChainLighting.ModeCustom;
+    public string? EffectMode { get; set; }
+    /// <summary>0 slowest .. 4 fastest.</summary>
+    public int Speed { get; set; } = 3;
+    public int Direction { get; set; }
+    /// <summary>0 off .. 4 full.</summary>
+    public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
+    /// <summary>The effect runs as one animation across every participating Flex fan.</summary>
+    public bool Merge { get; set; }
+    /// <summary>TL only: swaps which half is first.</summary>
+    public bool UpDownSwap { get; set; }
+    /// <summary>Position among the fans for merged effects and chained fan blocks.</summary>
+    public int SortIndex { get; set; }
+    /// <summary>One entry per zone in zone order, used by <see cref="ModePerZone"/>.</summary>
+    public List<LianLiFlexZoneSettings> Zones { get; set; } = new();
+    /// <summary>Signature of the stored package last uploaded, and the effect index it carried, so a restart with an unchanged look does not rewrite the receiver's flash.</summary>
+    public string? PackageSignature { get; set; }
+    public string? PackageEffectIndex { get; set; }
+}
+
+public sealed class LianLiFlexZoneSettings
+{
+    public string Mode { get; set; } = "rainbow";
+    public int Speed { get; set; } = 3;
+    public int Direction { get; set; }
+    public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
 }
 
 public sealed class LianLiWirelessLane

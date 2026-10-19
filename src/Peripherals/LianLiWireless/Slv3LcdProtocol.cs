@@ -47,6 +47,9 @@ public static class Slv3LcdProtocol
         SetFrameRate = 15,
         UpdateFireWare = 40,
         PushJpg = 101,
+        PushPng = 102,
+        PushLayer3 = 103,
+        CheckNewLcd = 128,
         GetPosIndex = 201,
     }
 
@@ -81,6 +84,33 @@ public static class Slv3LcdProtocol
         WriteUInt32LittleEndian(header, 4, timestampMs);
         header[8] = argByte;
         return header;
+    }
+
+    /// <summary>
+    /// Header of a layered PNG push: like <see cref="BuildLengthHeader"/> plus the layer origin
+    /// at [12..13] x and [14..15] y, both big-endian.
+    /// </summary>
+    public static byte[] BuildLayerHeader(CmdType cmd, uint timestampMs, int payloadLength, int x, int y)
+    {
+        var header = BuildLengthHeader(cmd, timestampMs, payloadLength);
+        header[12] = (byte)(x >> 8);
+        header[13] = (byte)x;
+        header[14] = (byte)(y >> 8);
+        header[15] = (byte)y;
+        return header;
+    }
+
+    /// <summary>The encrypted header followed by the payload, with no padding.</summary>
+    public static byte[] BuildUnpaddedBuffer(ReadOnlySpan<byte> encryptedHeader, ReadOnlySpan<byte> payload)
+    {
+        if (encryptedHeader.Length != HeaderCipherSize)
+        {
+            throw new ArgumentException($"Encrypted header must be {HeaderCipherSize} bytes.", nameof(encryptedHeader));
+        }
+        var buffer = new byte[HeaderCipherSize + payload.Length];
+        encryptedHeader.CopyTo(buffer);
+        payload.CopyTo(buffer.AsSpan(HeaderCipherSize));
+        return buffer;
     }
 
     /// <summary>

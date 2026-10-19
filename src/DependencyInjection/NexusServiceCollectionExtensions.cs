@@ -263,6 +263,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Slv3CoolingProvider.IsSlv3Id, sp.GetRequiredService<Nexus.Service.Cooling.Slv3CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.FlexCoolingProvider.IsFlexId, sp.GetRequiredService<Nexus.Service.Cooling.FlexCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
@@ -299,6 +301,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Slv3CoolingProvider.IsSlv3Id, sp.GetRequiredService<Nexus.Service.Cooling.Slv3CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.FlexCoolingProvider.IsFlexId, sp.GetRequiredService<Nexus.Service.Cooling.FlexCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -345,6 +349,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Slv3CoolingProvider.IsSlv3Id, sp.GetRequiredService<Nexus.Service.Cooling.Slv3CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.FlexCoolingProvider.IsFlexId, sp.GetRequiredService<Nexus.Service.Cooling.FlexCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
@@ -380,6 +386,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.CorsairLinkCoolingProvider.IsCorsairId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairLinkCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Slv3CoolingProvider.IsSlv3Id, sp.GetRequiredService<Nexus.Service.Cooling.Slv3CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.FlexCoolingProvider.IsFlexId, sp.GetRequiredService<Nexus.Service.Cooling.FlexCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -1152,6 +1160,49 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdScreens>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
 
+        // Lian Li TL LCD Flex / SL-INF LCD Flex: wired receiver (lighting, fan) plus screen per fan.
+#if WINDOWS
+        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.IFlexDiscovery,
+                              Nexus.Service.Peripherals.LianLiFlex.WindowsFlexDiscovery>();
+#else
+        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.IFlexDiscovery,
+                              Nexus.Service.Peripherals.LianLiFlex.StubFlexDiscovery>();
+#endif
+        services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexHub(
+            sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.IFlexDiscovery>(),
+#if WINDOWS
+            port => new Nexus.Service.Peripherals.LianLiFlex.FlexReceiverTransport(port.ReceiverPath)));
+#else
+            _ => throw new System.PlatformNotSupportedException()));
+#endif
+        services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexLcdHub(
+            new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdHub(
+                new Nexus.Service.Peripherals.LianLiFlex.FlexScreenDiscovery(
+                    sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.IFlexDiscovery>()),
+#if WINDOWS
+                port => new Nexus.Service.Peripherals.LianLiFlex.FlexLcdTransport(port.PortName),
+#else
+                port => new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdTransport(port.PortName),
+#endif
+                sp.GetService<Nexus.Service.Lighting.LcdLockState>())));
+        services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexConnectionWorker>();
+        services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdConnectionWorker>();
+        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexScreens>();
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => NewFanLcdStreamingWorker(
+            sp, sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexScreens>()));
+        services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
+            new Nexus.Service.Panel.Streams.FanLcdPanelDiscovery(
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexScreens>(),
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+        services.AddSingleton<Nexus.Service.Cooling.FlexCoolingProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.FlexLightingDeviceProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.FlexLightingFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingFrameWriter>());
+
         // SLV3 wireless RGB: one lighting device per bound fan chain (inner/outer
         // ring zones), streamed to the engine as a live single-frame RF_RgbSync
         // animation. No firmware ROM-effect catalog for v1.
@@ -1505,6 +1556,7 @@ public static class NexusServiceCollectionExtensions
         }
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiTlHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiWirelessHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiFlexHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Galahad2Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KrakenHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.CorsairLinkHandler>();
