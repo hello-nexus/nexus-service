@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Nexus.Service.Deck;
 using Nexus.Service.Devices.Firmware;
 using Nexus.Service.Models.Profiles;
+using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Persistence;
 using Nexus.Service.QSeries;
 
@@ -34,6 +35,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(LianLiFlexOverlaySettings))]
 [JsonSerializable(typeof(LianLiFlexOverlayParams))]
 [JsonSerializable(typeof(LianLiFlexScreenSource))]
+[JsonSerializable(typeof(FlexTemplate))]
 [JsonSerializable(typeof(LianLiFlexUnitSettings))]
 [JsonSerializable(typeof(Dictionary<string, LianLiFlexUnitSettings>))]
 [JsonSerializable(typeof(LianLiFlexZoneSettings))]

@@ -18,6 +18,11 @@ public sealed class LianLiFlexSpriteDto
     public int Height { get; set; }
 }
 
+public sealed class LianLiFlexCaptureRequest
+{
+    public LianLiFlexScreenSource? ScreenSource { get; set; }
+}
+
 public sealed class LianLiFlexSpritesResponse
 {
     public LianLiFlexSpriteDto[] Sprites { get; set; } = Array.Empty<LianLiFlexSpriteDto>();
@@ -132,6 +137,41 @@ public static partial class LianLiFlexRoutes
         {
             var list = ModularSources(key => reader.Read(key, "c").Value > 0f || key == "fanRpm");
             return Results.Json(new LianLiFlexModularSourcesResponse { Sources = list }, AppJsonContext.Default.LianLiFlexModularSourcesResponse);
+        });
+
+        // One captured frame of the shared screen capture, imported as an image in the screen media library.
+        app.MapPost("/devices/lianli-flex/media/capture", async (
+            LianLiFlexCaptureRequest? body, FlexScreenCapture capture, Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaLibrary library) =>
+        {
+            byte[]? jpeg = null;
+            var key = "capture-" + Guid.NewGuid().ToString("N");
+            for (var attempt = 0; attempt < 15 && jpeg is null; attempt++)
+            {
+                jpeg = capture.RenderJpeg(key, body?.ScreenSource);
+                if (jpeg is null)
+                {
+                    await System.Threading.Tasks.Task.Delay(100);
+                }
+            }
+            capture.Release(key);
+            if (jpeg is null)
+            {
+                return Results.Json(new Slv3LcdImportResponse { Error = true, Msg = "No screen frame available" },
+                    AppJsonContext.Default.Slv3LcdImportResponse, statusCode: 409);
+            }
+            var temp = Path.Combine(Path.GetTempPath(), $"nexus-flex-capture-{Guid.NewGuid():N}.jpg");
+            try
+            {
+                await File.WriteAllBytesAsync(temp, jpeg);
+                var result = await library.ImportAsync(temp, "capture.jpg");
+                return result.Ok
+                    ? Results.Json(new Slv3LcdImportResponse { MediaId = result.Item!.Id, Name = result.Item.Name, Kind = result.Item.Kind }, AppJsonContext.Default.Slv3LcdImportResponse)
+                    : Results.Json(new Slv3LcdImportResponse { Error = true, Msg = result.Error ?? "Import failed" }, AppJsonContext.Default.Slv3LcdImportResponse, statusCode: 400);
+            }
+            finally
+            {
+                try { File.Delete(temp); } catch (IOException) { }
+            }
         });
 
         app.MapGet("/devices/lianli-flex/sprites", (FlexSpriteLibrary sprites) =>

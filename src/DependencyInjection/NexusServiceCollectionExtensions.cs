@@ -1188,6 +1188,7 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexConnectionWorker>();
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdConnectionWorker>();
         services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexSpriteLibrary>();
+        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexTemplateStore>();
         services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexScreenCapture(
             () => sp.GetRequiredService<Nexus.Service.Lighting.ILightingProvider>().OpenScreenObserver(),
             () => sp.GetRequiredService<Nexus.Service.Lighting.ILightingProvider>().GetScreenSyncOptions().SelectedMonitor));
