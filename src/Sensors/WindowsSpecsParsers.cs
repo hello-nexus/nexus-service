@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Globalization;
 using System.Text;
 
@@ -229,12 +230,15 @@ internal static class WindowsSpecsParsers
     public static string? SelectDisplayConfig(IEnumerable<string> keyNames, IReadOnlyCollection<string> presentIds)
     {
         if (presentIds.Count == 0) return null;
-        var wanted = new HashSet<string>(presentIds, StringComparer.OrdinalIgnoreCase);
+        // A multiset: identical monitors without a serial descriptor share one id.
+        var wanted = presentIds.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToList();
         foreach (var name in keyNames)
         {
             var caret = name.IndexOf('^');
-            var ids = (caret >= 0 ? name[..caret] : name).Split('+');
-            if (ids.Length == wanted.Count && wanted.SetEquals(ids)) return name;
+            var ids = (caret >= 0 ? name[..caret] : name).Split('+')
+                .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (ids.SequenceEqual(wanted, StringComparer.OrdinalIgnoreCase)) return name;
         }
         return null;
     }

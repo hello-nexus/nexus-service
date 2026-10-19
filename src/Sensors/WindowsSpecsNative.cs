@@ -21,11 +21,12 @@ internal static partial class WindowsSpecsNative
     public static JsonObject Collect()
     {
         var root = new JsonObject();
+        var monitors = Safe(PresentMonitors) ?? new List<(string InstanceId, byte[]? Edid)>();
         root["os"] = Safe(ReadOs);
         root["ram"] = Safe(ReadRam) ?? new JsonArray();
         root["disks"] = Safe(ReadDisks) ?? new JsonArray();
-        root["monitors"] = Safe(ReadMonitors) ?? new JsonArray();
-        root["video"] = Safe(ReadVideo) ?? new JsonArray();
+        root["monitors"] = Safe(() => ReadMonitors(monitors)) ?? new JsonArray();
+        root["video"] = Safe(() => ReadVideo(monitors)) ?? new JsonArray();
         root["sound"] = Safe(ReadSound) ?? new JsonArray();
         root["net"] = Safe(ReadNet) ?? new JsonArray();
         root["oa3"] = Safe(ReadOa3Key) ?? "";
@@ -91,10 +92,12 @@ internal static partial class WindowsSpecsNative
 
     private const uint IoctlStorageQueryProperty = 0x002D1400;
     private const uint IoctlStorageGetDeviceNumber = 0x002D1080;
-    private const uint IoctlDiskGetLengthInfo = 0x0007405C;
+    private const uint IoctlDiskGetDriveGeometryEx = 0x000700A0;
     private const uint StorageDeviceProperty = 0;
     private const uint StorageDeviceSeekPenaltyProperty = 7;
-    private const int MaxPhysicalDrives = 32;
+    private const int MaxPhysicalDrives = 64;
+    private const uint BusTypeSpaces = 16;
+    private const int DiskGeometrySize = 24;
 
     private sealed record DiskRow(string Vendor, string Product, string FriendlyName, string MediaType, uint BusType, long Size);
 
@@ -102,7 +105,7 @@ internal static partial class WindowsSpecsNative
     {
         var rows = new JsonArray();
         foreach (var d in EnumeratePhysicalDisks()
-                     .Where(d => d.BusType != 7)
+                     .Where(d => d.BusType != 7 && d.BusType != BusTypeSpaces)
                      .OrderByDescending(d => d.Size))
         {
             rows.Add((JsonNode)new JsonObject
@@ -129,16 +132,9 @@ internal static partial class WindowsSpecsNative
 
     private static DiskRow? ReadPhysicalDisk(int number)
     {
-        var path = $@"\\.\PhysicalDrive{number}";
-        // Read access is what IOCTL_DISK_GET_LENGTH_INFO demands; the property
-        // queries work with no access at all, so fall back to that for the model.
-        var handle = CreateFile(path, GenericRead, FileShareReadWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
-        var readable = handle != InvalidHandle;
-        if (!readable)
-        {
-            handle = CreateFile(path, 0, FileShareReadWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
-            if (handle == InvalidHandle) return null;
-        }
+        // Access 0: the storage and geometry IOCTLs are FILE_ANY_ACCESS, so no raw-disk read handle is needed.
+        var handle = CreateFile($@"\\.\PhysicalDrive{number}", 0, FileShareReadWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
+        if (handle == InvalidHandle) return null;
 
         try
         {
@@ -147,14 +143,12 @@ internal static partial class WindowsSpecsNative
             var d = descriptor.Value;
             if (d.Removable) return null;
 
+            // DISK_GEOMETRY_EX: DISK_GEOMETRY, then DiskSize.
             long size = 0;
-            if (readable)
+            var geometry = new byte[256];
+            if (DeviceIoControl(handle, IoctlDiskGetDriveGeometryEx, null, 0, geometry, (uint)geometry.Length, out _, IntPtr.Zero))
             {
-                var lengthBuf = new byte[8];
-                if (DeviceIoControl(handle, IoctlDiskGetLengthInfo, null, 0, lengthBuf, 8, out _, IntPtr.Zero))
-                {
-                    size = BitConverter.ToInt64(lengthBuf, 0);
-                }
+                size = BitConverter.ToInt64(geometry, DiskGeometrySize);
             }
 
             var mediaType = "Unspecified";
@@ -171,7 +165,7 @@ internal static partial class WindowsSpecsNative
 
     private static byte[]? StorageQuery(IntPtr handle, uint propertyId, int outputSize)
     {
-        // STORAGE_PROPERTY_QUERY: PropertyId, QueryType (0 = standard), 4 bytes of AdditionalParameters.
+        // STORAGE_PROPERTY_QUERY: PropertyId, QueryType (standard), AdditionalParameters.
         var query = new byte[12];
         BitConverter.TryWriteBytes(query.AsSpan(0, 4), propertyId);
         var output = new byte[outputSize];
@@ -226,10 +220,10 @@ internal static partial class WindowsSpecsNative
         return monitors;
     }
 
-    private static JsonArray ReadMonitors()
+    private static JsonArray ReadMonitors(List<(string InstanceId, byte[]? Edid)> monitors)
     {
         var rows = new JsonArray();
-        foreach (var (_, edid) in PresentMonitors())
+        foreach (var (_, edid) in monitors)
         {
             rows.Add((JsonNode)new JsonObject
             {
@@ -240,7 +234,7 @@ internal static partial class WindowsSpecsNative
         return rows;
     }
 
-    private static JsonArray ReadVideo()
+    private static JsonArray ReadVideo(List<(string InstanceId, byte[]? Edid)> monitors)
     {
         var rows = new JsonArray();
         var adapter = new DisplayDevice { Size = (uint)Marshal.SizeOf<DisplayDevice>() };
@@ -255,7 +249,7 @@ internal static partial class WindowsSpecsNative
 
         // Session 0 has no desktop, so GDI sees no adapters there; the saved
         // display configuration for the connected monitors carries each path's mode.
-        foreach (var (width, height, hz) in SavedDisplayModes())
+        foreach (var (width, height, hz) in SavedDisplayModes(monitors))
         {
             rows.Add((JsonNode)VideoRow(width, height, hz));
         }
@@ -271,10 +265,10 @@ internal static partial class WindowsSpecsNative
 
     private const string DisplayConfigurationKey = @"SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration";
 
-    private static List<(int Width, int Height, int Hz)> SavedDisplayModes()
+    private static List<(int Width, int Height, int Hz)> SavedDisplayModes(List<(string InstanceId, byte[]? Edid)> monitors)
     {
         var modes = new List<(int, int, int)>();
-        var ids = PresentMonitors().Select(m => WindowsSpecsParsers.EdidConfigId(m.Edid)).Where(id => id.Length > 0).ToList();
+        var ids = monitors.Select(m => WindowsSpecsParsers.EdidConfigId(m.Edid)).Where(id => id.Length > 0).ToList();
         using var root = Registry.LocalMachine.OpenSubKey(DisplayConfigurationKey);
         if (root is null) return modes;
         var name = WindowsSpecsParsers.SelectDisplayConfig(root.GetSubKeyNames(), ids);
@@ -291,7 +285,7 @@ internal static partial class WindowsSpecsNative
             var height = Convert.ToInt32(path.GetValue("PrimSurfSize.cy") ?? 0);
             var numerator = Convert.ToUInt32(target.GetValue("VSyncFreq.Numerator") ?? 0);
             var denominator = Convert.ToUInt32(target.GetValue("VSyncFreq.Denominator") ?? 0);
-            // GDI reports the refresh rate truncated (59.95 Hz is 59).
+            // GDI reports the refresh rate truncated, not rounded.
             modes.Add((width, height, denominator == 0 ? 0 : (int)(numerator / denominator)));
         }
         return modes;
@@ -313,7 +307,7 @@ internal static partial class WindowsSpecsNative
 
     // ── Network ───────────────────────────────────────────────────────────
 
-    // MIB_IF_ROW2 offsets (x64, size 1352). HardwareInterface is bit 0 of the
+    // MIB_IF_ROW2 offsets (x64 layout). HardwareInterface is bit 0 of the
     // flags byte and is what Get-NetAdapter -Physical filters on.
     private const int IfRowSize = 1352;
     private const int IfRowIndexOffset = 8;
@@ -395,7 +389,6 @@ internal static partial class WindowsSpecsNative
     // ── P/Invoke ──────────────────────────────────────────────────────────
 
     private static readonly IntPtr InvalidHandle = new(-1);
-    private const uint GenericRead = 0x80000000;
     private const uint FileShareReadWrite = 0x3;
     private const uint OpenExisting = 3;
     private const uint DisplayDeviceAttachedToDesktop = 0x1;
@@ -480,12 +473,6 @@ internal static partial class WindowsSpecsNative
 
     [LibraryImport("iphlpapi.dll")]
     private static partial void FreeMibTable(IntPtr memory);
-
-    [LibraryImport("user32.dll")]
-    private static partial int GetDisplayConfigBufferSizes(uint flags, out uint pathCount, out uint modeCount);
-
-    [LibraryImport("user32.dll")]
-    private static partial int QueryDisplayConfig(uint flags, ref uint pathCount, [Out] byte[] paths, ref uint modeCount, [Out] byte[] modes, IntPtr topology);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool EnumDisplayDevices(string? device, uint index, ref DisplayDevice displayDevice, uint flags);

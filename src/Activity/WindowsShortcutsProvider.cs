@@ -16,6 +16,7 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
     private const int IconCachePruneMaxEntries = 500;
 
     private static readonly TimeSpan AppListCacheTtl = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan EmptyAppListCacheTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan IconCacheTtl = TimeSpan.FromHours(1);
     // An app with no extractable icon (no Start-Menu .lnk match / no UWP logo)
     // otherwise re-runs extraction on every GetIcon, since nothing is cached to
@@ -75,15 +76,14 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
         try
         {
             var apps = ReadStartApps();
-            if (apps.Count == 0)
-                return Array.Empty<Shortcut>();
+            if (apps.Count > 0)
+                FillProcessNames(apps);
 
-            FillProcessNames(apps);
-
+            // An empty list (hung or failed enumeration) is cached briefly so callers do not pile onto the shell.
             lock (_appLock)
             {
                 _appCache = apps;
-                _appCacheExpiry = DateTime.UtcNow + AppListCacheTtl;
+                _appCacheExpiry = DateTime.UtcNow + (apps.Count > 0 ? AppListCacheTtl : EmptyAppListCacheTtl);
             }
 
             return apps;

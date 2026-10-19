@@ -241,4 +241,18 @@ public class WindowsSpecsParsersTests
         Assert.Null(WindowsSpecsParsers.SelectDisplayConfig(keys, new[] { "SAM71AAHCST400731_11_07E6_F2" }));
         Assert.Null(WindowsSpecsParsers.SelectDisplayConfig(keys, Array.Empty<string>()));
     }
+
+    [Fact]
+    public void SelectDisplayConfig_TwoIdenticalMonitorsMatchAKeyWithTheIdTwice()
+    {
+        var keys = new[]
+        {
+            "DELA0B8_13_07E1_FD^1111",
+            "DELA0B8_13_07E1_FD+DELA0B8_13_07E1_FD^2222",
+        };
+        var present = new[] { "DELA0B8_13_07E1_FD", "DELA0B8_13_07E1_FD" };
+
+        Assert.Equal(keys[1], WindowsSpecsParsers.SelectDisplayConfig(keys, present));
+        Assert.Equal(keys[0], WindowsSpecsParsers.SelectDisplayConfig(keys, new[] { "DELA0B8_13_07E1_FD" }));
+    }
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Nexus.Service.Platform.Windows;
 
@@ -26,22 +27,42 @@ internal static unsafe partial class WindowsAppsFolder
     private const int ErrorSuccess = 0;
     private const int ErrorInsufficientBuffer = 122;
 
-    /// <summary>Every apps-folder entry as name plus parent-relative parsing name (the AppUserModelID for packaged apps). Empty on failure or timeout.</summary>
+    private static readonly object Gate = new();
+    private static Task<List<StartApp>>? s_inflight;
+
+    /// <summary>
+    /// Every apps-folder entry as name plus parent-relative parsing name (the
+    /// AppUserModelID for packaged apps). Empty on failure or timeout. One enumeration
+    /// runs at a time and later callers wait on it, so a hung shell costs a single thread.
+    /// </summary>
     public static List<StartApp> EnumerateStartApps(int timeoutMs)
     {
-        var apps = new List<StartApp>();
+        Task<List<StartApp>> task;
+        lock (Gate)
+        {
+            task = s_inflight ??= StartEnumeration();
+        }
+        return task.Wait(timeoutMs) ? task.Result : new List<StartApp>();
+    }
+
+    private static Task<List<StartApp>> StartEnumeration()
+    {
+        var done = new TaskCompletionSource<List<StartApp>>(TaskCreationOptions.RunContinuationsAsynchronously);
         // Shell namespace enumeration is apartment-threaded, so it gets its own STA thread.
         var thread = new Thread(() =>
         {
+            var apps = new List<StartApp>();
             var init = CoInitializeEx(IntPtr.Zero, CoInitApartmentThreaded);
             try { Enumerate(apps); }
             catch (Exception ex) { Console.Error.WriteLine($"[apps-folder] {ex.GetType().Name}: {ex.Message}"); }
             finally { if (init >= 0) CoUninitialize(); }
+            lock (Gate) { s_inflight = null; }
+            done.SetResult(apps);
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.IsBackground = true;
         thread.Start();
-        return thread.Join(timeoutMs) ? apps : new List<StartApp>();
+        return done.Task;
     }
 
     private static void Enumerate(List<StartApp> apps)

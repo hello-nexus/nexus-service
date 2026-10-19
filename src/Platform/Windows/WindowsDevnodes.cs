@@ -23,7 +23,7 @@ internal static partial class WindowsDevnodes
     private static readonly IntPtr InvalidHandle = new(-1);
 
     /// <summary>Every present devnode of a setup class, or of all classes (optionally under one enumerator such as USB) when none is given.</summary>
-    public static List<PresentDevice> EnumeratePresent(Guid? classGuid = null, string? enumerator = null)
+    public static List<PresentDevice> EnumeratePresent(Guid? classGuid = null, string? enumerator = null, bool friendlyNameFirst = false, bool idsOnly = false)
     {
         var devices = new List<PresentDevice>();
         IntPtr set;
@@ -47,8 +47,7 @@ internal static partial class WindowsDevnodes
             var data = new SpDevInfoData { Size = (uint)Marshal.SizeOf<SpDevInfoData>() };
             for (uint i = 0; SetupDiEnumDeviceInfo(set, i, ref data); i++)
             {
-                var name = ReadStringProperty(set, ref data, SpdrpDeviceDesc);
-                if (name.Length == 0) name = ReadStringProperty(set, ref data, SpdrpFriendlyName);
+                var name = idsOnly ? "" : ReadName(set, ref data, friendlyNameFirst);
 
                 var idBuffer = new char[512];
                 var instanceId = "";
@@ -63,6 +62,12 @@ internal static partial class WindowsDevnodes
                     }
                 }
 
+                if (idsOnly)
+                {
+                    devices.Add(new PresentDevice(instanceId, "", 0, ""));
+                    continue;
+                }
+
                 uint problem = 0;
                 if (CM_Get_DevNode_Status(out _, out var p, data.DevInst, 0) == 0) problem = p;
                 devices.Add(new PresentDevice(instanceId, name, problem, ReadStringProperty(set, ref data, SpdrpDriver)));
@@ -74,13 +79,22 @@ internal static partial class WindowsDevnodes
 
     /// <summary>The present USB devnode whose instance id ends in the adb serial, or null.</summary>
     public static string? FindPresentUsbInstanceId(string serial)
-        => WindowsSpecsParsers.PickUsbInstanceId(EnumeratePresent(enumerator: "USB").Select(d => d.InstanceId), serial);
+        => WindowsSpecsParsers.PickUsbInstanceId(EnumeratePresent(enumerator: "USB", idsOnly: true).Select(d => d.InstanceId), serial);
 
     /// <summary>DEVPKEY_Device_ProblemCode equivalent, or null when the devnode cannot be located.</summary>
     public static int? ReadProblemCode(string instanceId)
     {
         if (CM_Locate_DevNode(out var devInst, instanceId, CmLocateDevnodePhantom) != 0) return null;
         return CM_Get_DevNode_Status(out _, out var problem, devInst, 0) == 0 ? (int)problem : null;
+    }
+
+    // Win32_PnPEntity.Name prefers the friendly name; the sound list is verified against the description first.
+    private static string ReadName(IntPtr set, ref SpDevInfoData data, bool friendlyFirst)
+    {
+        var first = friendlyFirst ? SpdrpFriendlyName : SpdrpDeviceDesc;
+        var second = friendlyFirst ? SpdrpDeviceDesc : SpdrpFriendlyName;
+        var name = ReadStringProperty(set, ref data, first);
+        return name.Length > 0 ? name : ReadStringProperty(set, ref data, second);
     }
 
     private static string ReadStringProperty(IntPtr set, ref SpDevInfoData data, uint property)
