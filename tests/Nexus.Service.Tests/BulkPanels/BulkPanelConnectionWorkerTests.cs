@@ -74,6 +74,35 @@ public class BulkPanelConnectionWorkerTests
         }
     }
 
+    [Fact]
+    public async Task A_denied_open_sets_the_hub_flag_and_a_later_successful_open_clears_it()
+    {
+        var usb = new SwitchableUsb { Present = true };
+        var driver = new FakeDriver();
+        var hub = new BulkPanelHub(driver);
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Devices.NexusControlEnabled.Add(driver.HandlerId));
+        var pipes = new DenyingPipeFactory { Deny = true };
+        var worker = new BulkPanelConnectionWorker(
+            new NoHid(), pipes, hub, new DeviceControlGate(store), new HardwarePresence(usb),
+            connectPollMs: 50, presencePollMs: 50);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.True(await Eventually(() => hub.OpenAccessDenied));
+            Assert.False(hub.IsConnected);
+
+            pipes.Deny = false;
+            Assert.True(await Eventually(() => hub.IsConnected));
+            Assert.False(hub.OpenAccessDenied);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static async Task<bool> Eventually(Func<bool> condition, int timeoutMs = 4000)
     {
         var sw = Stopwatch.StartNew();
@@ -127,6 +156,20 @@ public class BulkPanelConnectionWorkerTests
             var pipe = new NullPipe();
             Opened.Enqueue(pipe);
             return pipe;
+        }
+    }
+
+    private sealed class DenyingPipeFactory : IBulkUsbPipeFactory
+    {
+        public volatile bool Deny;
+
+        public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId) =>
+            Open(vendorId, productId, writePipeId, readPipeId, out _);
+
+        public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId, out bool accessDenied)
+        {
+            accessDenied = Deny;
+            return Deny ? null : new NullPipe();
         }
     }
 
