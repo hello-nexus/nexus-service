@@ -86,12 +86,12 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
     private sealed class UnitState
     {
         public int StreamHash;
-        public long LastStreamMs = long.MinValue;
+        public long LastStreamMs = long.MinValue / 2;
         public bool Streaming;
         public string PendingSignature = "";
         public long PendingSinceMs;
         public string UploadedSignature = "";
-        public long LastUploadAttemptMs = long.MinValue;
+        public long LastUploadAttemptMs = long.MinValue / 2;
         public long UploadedAtMs;
     }
 

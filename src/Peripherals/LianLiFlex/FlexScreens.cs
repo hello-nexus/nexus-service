@@ -218,7 +218,7 @@ public sealed class FlexConnectionWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var lastDiscover = long.MinValue;
+        var lastDiscover = -(long)DiscoverMs;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
