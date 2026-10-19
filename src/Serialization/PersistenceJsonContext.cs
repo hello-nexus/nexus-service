@@ -2,7 +2,6 @@ using System.Text.Json.Serialization;
 using Nexus.Service.Deck;
 using Nexus.Service.Devices.Firmware;
 using Nexus.Service.Models.Profiles;
-using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Persistence;
 using Nexus.Service.QSeries;
 
@@ -27,15 +26,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, LianLiWirelessChainLighting>))]
 [JsonSerializable(typeof(LianLiAioScreenSettings))]
 [JsonSerializable(typeof(Dictionary<string, LianLiAioScreenSettings>))]
-[JsonSerializable(typeof(LianLiFlexFanProfileSettings))]
-[JsonSerializable(typeof(LianLiFlexCurvePoint))]
-[JsonSerializable(typeof(List<LianLiFlexCurvePoint>))]
-[JsonSerializable(typeof(Dictionary<string, List<LianLiFlexCurvePoint>>))]
-[JsonSerializable(typeof(LianLiFlexThermalAlertSettings))]
-[JsonSerializable(typeof(LianLiFlexOverlaySettings))]
-[JsonSerializable(typeof(LianLiFlexOverlayParams))]
-[JsonSerializable(typeof(LianLiFlexScreenSource))]
-[JsonSerializable(typeof(FlexTemplate))]
 [JsonSerializable(typeof(LianLiFlexUnitSettings))]
 [JsonSerializable(typeof(Dictionary<string, LianLiFlexUnitSettings>))]
 [JsonSerializable(typeof(LianLiFlexZoneSettings))]

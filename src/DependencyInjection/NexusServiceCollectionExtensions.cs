@@ -1191,23 +1191,10 @@ public static class NexusServiceCollectionExtensions
                 sp.GetService<Nexus.Service.Lighting.LcdLockState>())));
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexConnectionWorker>();
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdConnectionWorker>();
-        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexSpriteLibrary>();
-        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexTemplateStore>();
-        services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexScreenCapture(
-            () => sp.GetRequiredService<Nexus.Service.Lighting.ILightingProvider>().OpenScreenObserver(),
-            () => sp.GetRequiredService<Nexus.Service.Lighting.ILightingProvider>().GetScreenSyncOptions().SelectedMonitor,
-            monitorId => Nexus.Service.Peripherals.LianLiFlex.FlexScreenCapture.NativeSizeOf(
-                sp.GetRequiredService<Nexus.Service.Lighting.ILightingProvider>().GetScreenSyncOptions(), monitorId)));
-        services.AddSingleton<Nexus.Service.Peripherals.LianLiFlex.FlexExtraContent>(sp =>
-            new Nexus.Service.Peripherals.LianLiFlex.FlexExtraContent(
-                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaLibrary>(),
-                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexSpriteLibrary>(),
-                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexScreenCapture>()));
         services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexScreens(
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdHub>(),
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>(),
             null,
-            sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexExtraContent>(),
             mac => sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Devices.FlexUnits.TryGetValue(mac, out var look) ? look.SortIndex : 0));
         services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => NewFanLcdStreamingWorker(
             sp, sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexScreens>()));
@@ -1223,19 +1210,7 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingDeviceProvider>());
         services.AddSingleton<Nexus.Service.Lighting.FlexLightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingFrameWriter>());
-        services.AddSingleton<Nexus.Service.Lighting.IFlexAlertSink>(sp => sp.GetRequiredService<Nexus.Service.Lighting.FlexLightingFrameWriter>());
-        services.AddSingleton<Nexus.Service.Lighting.FlexThermalAlert>();
-        services.AddHostedService<Nexus.Service.Lighting.FlexThermalAlertWorker>();
         services.AddSingleton<Nexus.Service.Lighting.FlexGroupLighting>();
-        services.AddSingleton<Nexus.Service.Cooling.FlexFanProfileService>();
-        services.AddSingleton(sp =>
-        {
-            var profiles = sp.GetRequiredService<Nexus.Service.Cooling.FlexFanProfileService>();
-            return new Nexus.Service.Lighting.FlexApplyAll(
-                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>(),
-                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
-                profiles.Apply);
-        });
 
         // SLV3 wireless RGB: one lighting device per bound fan chain (inner/outer
         // ring zones), streamed to the engine as a live single-frame RF_RgbSync

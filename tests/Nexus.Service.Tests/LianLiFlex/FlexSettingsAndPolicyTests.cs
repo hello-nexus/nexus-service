@@ -73,4 +73,17 @@ public class FlexSettingsAndPolicyTests : IDisposable
         Assert.True(DeviceControlPolicy.IsExperimental("lianli-flex"));
         Assert.Equal("lian-li-l-connect", DeviceControlPolicy.ConflictAppFor("lianli-flex"));
     }
+
+    [Fact]
+    public void Settings_written_by_earlier_builds_with_removed_fields_still_load()
+    {
+        const string json = """
+            {"devices":{"flexUnits":{"6D1007F517E1":{"mode":"wave","fanProfile":{"profile":"quiet","custom":{}}}},
+            "flexThermalAlert":{"enabled":true},"flexLcdScreens":{"S":{"contentType":"screen","screenSource":{"displayId":"0"},"overlay":{"type":"circular"}}}}}
+            """;
+        var settings = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        Assert.NotNull(settings);
+        Assert.Equal("wave", settings!.Devices.FlexUnits["6D1007F517E1"].Mode);
+        Assert.Equal("screen", settings.Devices.FlexLcdScreens["S"].ContentType);
+    }
 }

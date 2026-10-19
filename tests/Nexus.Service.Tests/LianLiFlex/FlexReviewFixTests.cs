@@ -416,8 +416,6 @@ public class FlexReviewFixTests
         Assert.Equal("TL Flex", FlexNames.UnitName(units, tl, _ => 0));
         Assert.Equal("SL-INF Flex", FlexNames.UnitName(units, inf, _ => 0));
         Assert.Equal(new[] { tl.Mac, inf.Mac }, FlexNames.Ordered(units.Reverse(), mac => mac == tl.Mac ? 5 : 0).Select(u => u.Mac).ToArray());
-        Assert.Equal("Custom 2", FlexNames.ProfileName("custom2"));
-        Assert.Equal("StdSP", FlexNames.ProfileName("stdsp"));
     }
 
     [Fact]

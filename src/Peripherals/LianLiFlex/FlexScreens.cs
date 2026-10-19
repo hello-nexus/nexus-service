@@ -48,14 +48,13 @@ public sealed class FlexLcdHub
 }
 
 /// <summary>The Flex screens as an <see cref="IFanLcdScreens"/> family.</summary>
-public sealed class FlexScreens : IFanLcdScreens, IFanLcdExtraContent
+public sealed class FlexScreens : IFanLcdScreens
 {
     public const string Handler = "lianli-flex";
 
     private readonly FlexLcdHub _lcd;
     private readonly FlexHub _flex;
     private readonly FanLcdPanelOwnership _panelOwnership = new();
-    private readonly FlexExtraContent? _extra;
     private readonly System.Func<string, int>? _sortIndexOf;
     private readonly System.Func<long> _nowMs;
     private sealed class RestartState
@@ -80,9 +79,8 @@ public sealed class FlexScreens : IFanLcdScreens, IFanLcdExtraContent
     public const int RestartQuietMs = 3500;
     public const int RestartGiveUpMs = 20_000;
 
-    public FlexScreens(FlexLcdHub lcd, FlexHub flex, System.Func<long>? nowMs = null, FlexExtraContent? extra = null, System.Func<string, int>? sortIndexOf = null)
+    public FlexScreens(FlexLcdHub lcd, FlexHub flex, System.Func<long>? nowMs = null, System.Func<string, int>? sortIndexOf = null)
     {
-        _extra = extra;
         _sortIndexOf = sortIndexOf;
         _lcd = lcd;
         _flex = flex;
@@ -203,13 +201,6 @@ public sealed class FlexScreens : IFanLcdScreens, IFanLcdExtraContent
         }
         return "Lian Li LCD Flex";
     }
-
-    public bool Handles(string mode) => _extra?.Handles(mode) ?? false;
-
-    public (byte[]? Jpeg, int DelayMs) Render(string serial, LianLiWirelessScreenSettings settings) =>
-        _extra?.Render(serial, settings) ?? (null, 1000);
-
-    public void ReleaseExtra(string serial) => _extra?.ReleaseExtra(serial);
 
     /// <summary>
     /// Reboots the screen controller through its receiver and drops the screen handle so the next

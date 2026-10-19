@@ -18,7 +18,7 @@ namespace Nexus.Service.Lighting;
 /// other mode the unit's stored animation is built from its settings and uploaded once the
 /// settings have settled. Streaming never schedules a flash save; an upload does.
 /// </summary>
-public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlexAlertSink
+public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
 {
     private const int TickPeriodMs = 33;
     private const int MinStreamIntervalMs = 33;
@@ -43,46 +43,6 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
     private RgbColor[][] _segmentBuffers = Array.Empty<RgbColor[]>();
     private byte[] _wire = Array.Empty<byte>();
     private readonly Dictionary<string, UnitState> _state = new(StringComparer.OrdinalIgnoreCase);
-
-    private volatile IReadOnlyDictionary<string, (byte R, byte G, byte B)> _alert =
-        new Dictionary<string, (byte R, byte G, byte B)>();
-
-    public void SetAlert(IReadOnlyDictionary<string, (byte R, byte G, byte B)> colors) => _alert = colors;
-
-    // Alert color level: brightness level 3 of 4.
-    private const int AlertScale = 128;
-
-    private bool TickAlert(FlexUnit unit, UnitState st, long now)
-    {
-        if (!_alert.TryGetValue(unit.Mac, out var c))
-        {
-            if (st.AlertActive)
-            {
-                st.AlertActive = false;
-                st.RestoreWithoutSave = false;
-                st.RestoreSignature = st.UploadedSignature;
-                st.UploadedSignature = "";
-                st.PendingSignature = "";
-                st.Streaming = false;
-            }
-            return false;
-        }
-        st.AlertActive = true;
-        // Three of every four ticks send a frame: 22.5 per second at the 33 ms tick, as the vendor streams.
-        if ((st.AlertTicks++ & 3) == 3)
-        {
-            return true;
-        }
-        var frame = new byte[unit.LedCount * 3];
-        for (var i = 0; i < frame.Length; i += 3)
-        {
-            frame[i] = (byte)((c.R * AlertScale) >> 8);
-            frame[i + 1] = (byte)((c.G * AlertScale) >> 8);
-            frame[i + 2] = (byte)((c.B * AlertScale) >> 8);
-        }
-        _hub.SendLive(unit.Mac, frame);
-        return true;
-    }
 
     private readonly object _identifyLock = new();
     private readonly Dictionary<string, long> _identifyUntil = new(StringComparer.OrdinalIgnoreCase);
@@ -148,7 +108,6 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
         public long LastUploadAttemptMs = long.MinValue / 2;
         public long UploadedAtMs;
         public int DriftRetries;
-        public bool AlertActive;
         public Task<bool>? Upload;
         public string UploadSignature = "";
         public long UploadStartedMs;
@@ -157,7 +116,6 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
         public bool UploadedUnsaved;
         public bool UploadUnsavedPending;
         public string RestoreSignature = "";
-        public int AlertTicks;
     }
 
     public FlexLightingFrameWriter(
@@ -253,7 +211,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable, IFlex
                 st = new UnitState();
                 _state[unit.Mac] = st;
             }
-            if (TickIdentify(unit, st, now) || TickAlert(unit, st, now))
+            if (TickIdentify(unit, st, now))
             {
                 continue;
             }

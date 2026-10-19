@@ -23,15 +23,4 @@ public static class FlexNames
         var position = sameFamily.ToList().FindIndex(u => string.Equals(u.Mac, unit.Mac, StringComparison.OrdinalIgnoreCase));
         return sameFamily.Count > 1 && position > 0 ? $"{Short(unit.Family)} {position + 1}" : Short(unit.Family);
     }
-
-    public static string ProfileName(string profile) => profile switch
-    {
-        "quiet" => "Quiet",
-        "stdsp" => "StdSP",
-        "highsp" => "HighSP",
-        "fullsp" => "FullSP",
-        "fixed" => "Fixed",
-        _ when profile.StartsWith("custom", StringComparison.Ordinal) && profile.Length > 6 => $"Custom {profile[6..]}",
-        _ => profile,
-    };
 }

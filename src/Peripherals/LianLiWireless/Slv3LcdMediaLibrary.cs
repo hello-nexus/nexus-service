@@ -252,39 +252,6 @@ public sealed class Slv3LcdMediaLibrary
         }
     }
 
-    /// <summary>Stores already-encoded panel frames (400x400 JPEG) as one clip item.</summary>
-    public Slv3LcdMediaItem ImportFrames(string name, IReadOnlyList<byte[]> jpegFrames, int delayMs)
-    {
-        var id = MediaImporter.SanitizeId($"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():x}-{name}");
-        var dir = Path.Combine(_rootDir, id);
-        Directory.CreateDirectory(dir);
-        try
-        {
-            for (var i = 0; i < jpegFrames.Count; i++)
-            {
-                File.WriteAllBytes(Path.Combine(dir, $"frame-{i:D4}.jpg"), jpegFrames[i]);
-            }
-            var delays = new int[jpegFrames.Count];
-            Array.Fill(delays, delayMs);
-            var item = new Slv3LcdMediaItem
-            {
-                Id = id,
-                Name = name,
-                Kind = "video",
-                Frames = jpegFrames.Count,
-                Delays = delays,
-                ImportedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            };
-            SaveMeta(item);
-            return item;
-        }
-        catch
-        {
-            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
-            throw;
-        }
-    }
-
     private static int CountFrameFiles(string dir)
     {
         var count = 0;

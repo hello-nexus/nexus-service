@@ -307,8 +307,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         Sources = new[] { "default" },
     };
 
-    public Nexus.Service.Lighting.Capture.IScreenFrameSource? OpenScreenObserver() => _sharedSource?.CreateObserver();
-
     public ScreenSyncOptions GetScreenSyncOptions() => new()
     {
         Effects = new[] { "average" },
