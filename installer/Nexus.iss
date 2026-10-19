@@ -943,6 +943,15 @@ begin
   Result := '';
 end;
 
+function HasSwitch(const Name: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if SameName(ParamStr(I), Name) then Result := True;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
@@ -970,19 +979,28 @@ begin
     // "Keep my data" is the first/default button so Enter never wipes data;
     // "Remove all data" (the No button) adds --purge, clearing %ProgramData%\Nexus\.
     UninstArgs := '--uninstall';
-    SetArrayLength(Btns, 2);
-    Btns[0] := 'Keep my data';     // Yes -> keep (default)
-    Btns[1] := 'Remove all data';  // No  -> purge
-    if TaskDialogMsgBox('Keep your Nexus data?',
-        'Removing it permanently erases:' + #13#10 +
-        '     - All settings and profiles' + #13#10 +
-        '     - Installed apps and widget layouts' + #13#10 +
-        '     - Paired devices and remote sessions' + #13#10 +
-        '     - Screen-time history and imported media' + #13#10 +
-        '     - Logs, downloads and caches' + #13#10 + #13#10 +
-        'This can''t be undone.',
-        mbConfirmation, MB_YESNO, Btns, 0) = IDNO then
-      UninstArgs := UninstArgs + ' --purge';
+    // A silent uninstall has nobody to answer the dialog, and an unanswered
+    // dialog hangs it: keep the data unless /DELETEDATA asks for the purge.
+    if UninstallSilent() then
+    begin
+      if HasSwitch('/DELETEDATA') then UninstArgs := UninstArgs + ' --purge';
+    end
+    else
+    begin
+      SetArrayLength(Btns, 2);
+      Btns[0] := 'Keep my data';     // Yes -> keep (default)
+      Btns[1] := 'Remove all data';  // No  -> purge
+      if TaskDialogMsgBox('Keep your Nexus data?',
+          'Removing it permanently erases:' + #13#10 +
+          '     - All settings and profiles' + #13#10 +
+          '     - Installed apps and widget layouts' + #13#10 +
+          '     - Paired devices and remote sessions' + #13#10 +
+          '     - Screen-time history and imported media' + #13#10 +
+          '     - Logs, downloads and caches' + #13#10 + #13#10 +
+          'This can''t be undone.',
+          mbConfirmation, MB_YESNO, Btns, 0) = IDNO then
+        UninstArgs := UninstArgs + ' --purge';
+    end;
     TmpExe := ExpandConstant('{tmp}\nexus-uninst.exe');
     if FileCopy(ExpandConstant('{app}\{#MyAppExeName}'), TmpExe, False) then
       Exec(TmpExe, UninstArgs, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)
