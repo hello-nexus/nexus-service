@@ -491,6 +491,7 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
 
         return apps
             .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(a => a.Id, StringComparer.Ordinal)
             .DistinctBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }

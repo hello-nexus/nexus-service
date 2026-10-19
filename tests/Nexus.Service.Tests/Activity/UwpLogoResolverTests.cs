@@ -53,6 +53,18 @@ public class UwpLogoResolverTests
     }
 
     [Fact]
+    public void BestScaledFile_PrefersThePlainScaleOverContrastVariantsOfTheSameScale()
+    {
+        var files = new[]
+        {
+            "logo.contrast-black_scale-400.png", "logo.contrast-white_scale-400.png", "logo.scale-100.png",
+            "logo.scale-400.png", "logo.targetsize-256.png",
+        };
+
+        Assert.Equal("logo.scale-400.png", UwpLogoResolver.BestScaledFile("logo.png", files));
+    }
+
+    [Fact]
     public void BestScaledFile_EqualScales_KeepsTheFirstListed()
     {
         var files = new[] { "App.scale-200.png", "App.scale-200_contrast-black.png", "App.scale-200_contrast-white.png" };

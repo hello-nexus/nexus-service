@@ -37,20 +37,27 @@ internal static partial class UwpLogoResolver
     }
 
     /// <summary>
-    /// The highest-scale file named <c>base*ext</c>, the first listed among equals (the
-    /// plain variant sorts ahead of its contrast and altform siblings); null when none
-    /// match, so the caller falls back to the declared logo path.
+    /// The plain <c>base.scale-N.ext</c> file with the highest N, which is the image the
+    /// shell draws in the normal theme; else the highest-scale <c>base*ext</c> file, the
+    /// first listed among equals. Null when none match, so the caller falls back to the
+    /// declared logo path.
     /// </summary>
     public static string? BestScaledFile(string logoFileName, IEnumerable<string> fileNames)
     {
         var baseName = Path.GetFileNameWithoutExtension(logoFileName);
         var ext = Path.GetExtension(logoFileName);
-        return fileNames
+        var candidates = fileNames
             .Where(n => n.StartsWith(baseName, StringComparison.OrdinalIgnoreCase)
                 && n.EndsWith(ext, StringComparison.OrdinalIgnoreCase)
                 && n.Length >= baseName.Length + ext.Length)
+            .ToList();
+        var plainPrefix = baseName + ".scale-";
+        var plain = candidates
+            .Where(n => n.StartsWith(plainPrefix, StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(n.AsSpan(plainPrefix.Length, n.Length - plainPrefix.Length - ext.Length), out _))
             .OrderByDescending(Scale)
             .FirstOrDefault();
+        return plain ?? candidates.OrderByDescending(Scale).FirstOrDefault();
     }
 
     private static int Scale(string name)
