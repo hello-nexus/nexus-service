@@ -54,11 +54,44 @@ public sealed class FlexScreens : IFanLcdScreens
     private readonly FlexLcdHub _lcd;
     private readonly FlexHub _flex;
     private readonly FanLcdPanelOwnership _panelOwnership = new();
+    private readonly System.Func<long> _nowMs;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _restartUntil = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _versions = new(StringComparer.OrdinalIgnoreCase);
 
-    public FlexScreens(FlexLcdHub lcd, FlexHub flex)
+    /// <summary>
+    /// How long a restarting screen is left alone: it drops off the bus about a second after the
+    /// reboot command and is back about two seconds later. Its content loop is stopped for this
+    /// long, so the new loop opens the screen once and applies brightness and rotation first.
+    /// </summary>
+    public const int RestartQuietMs = 6000;
+
+    public FlexScreens(FlexLcdHub lcd, FlexHub flex, System.Func<long>? nowMs = null)
     {
         _lcd = lcd;
         _flex = flex;
+        _nowMs = nowMs ?? (() => Environment.TickCount64);
+    }
+
+    private bool Restarting(string serial) => _restartUntil.TryGetValue(serial, out var until) && _nowMs() < until;
+
+    /// <summary>The screen's firmware string once read; empty before.</summary>
+    public string VersionOf(string serial) => _versions.TryGetValue(serial, out var v) ? v : "";
+
+    /// <summary>Reads the firmware string of every open screen that has none yet.</summary>
+    internal void RefreshVersions()
+    {
+        foreach (var s in _lcd.Hub.Screens)
+        {
+            if (_versions.ContainsKey(s.Serial) || Restarting(s.Serial))
+            {
+                continue;
+            }
+            var v = _lcd.Hub.WithOpenTransport(s.Serial, t => t is IFlexScreenVersion f ? f.ReadVersion() : null);
+            if (!string.IsNullOrEmpty(v))
+            {
+                _versions[s.Serial] = v;
+            }
+        }
     }
 
     public string HandlerId => Handler;
@@ -70,7 +103,10 @@ public sealed class FlexScreens : IFanLcdScreens
         var serials = new List<string>();
         foreach (var s in _lcd.Hub.Screens)
         {
-            serials.Add(s.Serial);
+            if (!Restarting(s.Serial))
+            {
+                serials.Add(s.Serial);
+            }
         }
         return serials;
     }
@@ -81,12 +117,17 @@ public sealed class FlexScreens : IFanLcdScreens
     {
     }
 
-    public void SyncBrightness(string serial, LianLiWirelessScreenSettings settings, ref int applied, ref bool lockSlept) =>
-        _lcd.Hub.SyncBrightness(serial, settings, ref applied, ref lockSlept);
+    public void SyncBrightness(string serial, LianLiWirelessScreenSettings settings, ref int applied, ref bool lockSlept)
+    {
+        if (!Restarting(serial))
+        {
+            _lcd.Hub.SyncBrightness(serial, settings, ref applied, ref lockSlept);
+        }
+    }
 
-    public bool SetRotation(string serial, byte rotation) => _lcd.Hub.SetRotation(serial, rotation);
+    public bool SetRotation(string serial, byte rotation) => !Restarting(serial) && _lcd.Hub.SetRotation(serial, rotation);
 
-    public bool PushImage(string serial, byte[] jpeg) => _lcd.Hub.PushImageToSerial(serial, jpeg);
+    public bool PushImage(string serial, byte[] jpeg) => !Restarting(serial) && _lcd.Hub.PushImageToSerial(serial, jpeg);
 
     public void Release(string serial)
     {
@@ -128,6 +169,8 @@ public sealed class FlexScreens : IFanLcdScreens
         {
             return false;
         }
+        _restartUntil[unit.ScreenSerial] = _nowMs() + RestartQuietMs;
+        _versions.TryRemove(unit.ScreenSerial, out _);
         _lcd.Hub.Forget(unit.ScreenSerial, "restart");
         return true;
     }
@@ -139,11 +182,13 @@ public sealed class FlexLcdConnectionWorker : BackgroundService
     private const int PollMs = 2000;
 
     private readonly FlexLcdHub _lcd;
+    private readonly FlexScreens _screens;
     private readonly DeviceControlGate _gate;
 
-    public FlexLcdConnectionWorker(FlexLcdHub lcd, DeviceControlGate gate)
+    public FlexLcdConnectionWorker(FlexLcdHub lcd, FlexScreens screens, DeviceControlGate gate)
     {
         _lcd = lcd;
+        _screens = screens;
         _gate = gate;
     }
 
@@ -198,6 +243,7 @@ public sealed class FlexLcdConnectionWorker : BackgroundService
             }
         }
         hub.UpdateScreens(screens);
+        _screens.RefreshVersions();
     }
 }
 

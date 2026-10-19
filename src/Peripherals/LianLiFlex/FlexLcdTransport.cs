@@ -10,7 +10,7 @@ namespace Nexus.Service.Peripherals.LianLiFlex;
 /// and acks are never waited on (the SL-INF screen drops or delays them). Opening checks the
 /// screen generation and clears any overlay layers a previous owner left on the glass.
 /// </summary>
-public sealed class FlexLcdTransport : ISlv3LcdTransport
+public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
 {
     private const uint WriteTimeoutMs = 3000;
 
@@ -21,6 +21,7 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport
     private readonly System.Threading.Thread _drain;
     private volatile bool _stop;
     private bool _disposed;
+    private readonly System.Collections.Concurrent.BlockingCollection<byte[]> _replies = new(boundedCapacity: 16);
 
     public FlexLcdTransport(string devicePath)
     {
@@ -67,7 +68,13 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport
         var buf = new byte[1024];
         while (!_stop)
         {
-            Slv3WinUsbInterop.WinUsb_ReadPipe(_usb, Slv3LcdProtocol.ReadPipeId, buf, (uint)buf.Length, out _, IntPtr.Zero);
+            if (Slv3WinUsbInterop.WinUsb_ReadPipe(_usb, Slv3LcdProtocol.ReadPipeId, buf, (uint)buf.Length, out var n, IntPtr.Zero) && n > 0)
+            {
+                var frame = buf[..(int)n];
+                while (!_stop && !_replies.TryAdd(frame) && _replies.TryTake(out _))
+                {
+                }
+            }
         }
     }
 
@@ -82,6 +89,27 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport
     public bool SetBrightness(byte value) => WriteHeader(Slv3LcdProtocol.CmdType.BrigthSet, value);
 
     public bool SetRotation(byte value) => WriteHeader(Slv3LcdProtocol.CmdType.Rotate, value);
+
+    /// <summary>The screen's firmware string from its version query; null when it does not answer in time.</summary>
+    public string? ReadVersion()
+    {
+        while (_replies.TryTake(out _))
+        {
+        }
+        if (!WriteHeader(Slv3LcdProtocol.CmdType.GetVer, 0))
+        {
+            return null;
+        }
+        var deadline = Environment.TickCount64 + 800;
+        while (Environment.TickCount64 < deadline && _replies.TryTake(out var reply, 200))
+        {
+            if (reply.Length >= 40 && reply[0] == (byte)Slv3LcdProtocol.CmdType.GetVer)
+            {
+                return FlexScreenVersion.Parse(reply);
+            }
+        }
+        return null;
+    }
 
     public bool TryGetPosition(out byte groupIndex)
     {
@@ -144,6 +172,7 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport
         _drain.Join();
         lock (_io)
         {
+            _replies.Dispose();
             Slv3WinUsbInterop.WinUsb_Free(_usb);
             _file.Dispose();
             if (_writeEvent != IntPtr.Zero)

@@ -127,8 +127,8 @@ public static partial class LianLiFlexRoutes
 
     public static void MapLianLiFlexEndpoints(this WebApplication app)
     {
-        app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexLcdHub lcd, IConfigStore store) =>
-            Results.Json(BuildState(hub, store.Load()), AppJsonContext.Default.LianLiFlexStateResponse));
+        app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexScreens screens, IConfigStore store) =>
+            Results.Json(BuildState(hub, store.Load(), screens), AppJsonContext.Default.LianLiFlexStateResponse));
 
         app.MapGet("/devices/lianli-flex/lighting", (FlexHub hub, IConfigStore store) =>
             Results.Json(BuildLighting(hub, store.Load()), AppJsonContext.Default.LianLiFlexLightingResponse));
@@ -331,7 +331,7 @@ public static partial class LianLiFlexRoutes
         return screen;
     }
 
-    internal static LianLiFlexStateResponse BuildState(FlexHub hub, NexusSettings settings)
+    internal static LianLiFlexStateResponse BuildState(FlexHub hub, NexusSettings settings, FlexScreens? screens = null)
     {
         var units = hub.Units;
         var fans = new LianLiFlexFanDto[units.Length];
@@ -357,6 +357,7 @@ public static partial class LianLiFlexRoutes
                 EffectIndex = u.Info.EffectIndex,
                 Family = u.Family == FlexFamily.SlInfFlex ? "slInfFlex" : "tlFlex",
                 ScreenSerial = u.ScreenSerial,
+                LcdFirmware = screens?.VersionOf(u.ScreenSerial) ?? "",
                 LcdRestarting = u.LcdRestarting,
                 ReceiverBound = u.Info.RfBound,
                 SortIndex = look?.SortIndex ?? 0,

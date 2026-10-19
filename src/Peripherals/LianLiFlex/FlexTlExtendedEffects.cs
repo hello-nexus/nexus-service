@@ -58,6 +58,18 @@ public static class FlexTlExtendedEffects
 
     public static bool IsImplemented(string key) => Table.ContainsKey(key);
 
+    /// <summary>
+    /// The seed used for the three randomized effects. Their frame count depends on the seed
+    /// (voice 65..94, meteorShower 62..89); these seeds give the counts of the recorded
+    /// default packages (87, 76, 36), so frame count and interval match them.
+    /// </summary>
+    public static int SeedFor(string key) => key switch
+    {
+        "voice" => 117,
+        "meteorShower" => 13,
+        _ => DefaultSeed,
+    };
+
     /// <summary>Colors a request falls back to when it carries none (or too few) for the effect.</summary>
     public static IReadOnlyList<RgbColor> DefaultColors(string key) =>
         Table.TryGetValue(key, out var e) ? e.Defaults : Array.Empty<RgbColor>();

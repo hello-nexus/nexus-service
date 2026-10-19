@@ -135,7 +135,7 @@ public static class FlexStoredLook
             }
             return sb.ToString();
         }
-        sb.Append(unit.Family).Append('|').Append(unit.Fans).Append('|').Append(look.UpDownSwap).Append('|').Append(look.Merge)
+        sb.Append(unit.Family).Append('|').Append(unit.Fans).Append(unit.Info.FanNum >= 10 ? "|ra" : "").Append('|').Append(look.UpDownSwap).Append('|').Append(look.Merge)
             .Append('|').Append(look.SortIndex);
         foreach (var (zone, z) in ZoneLooks(unit.Family, look))
         {
@@ -174,7 +174,7 @@ public static class FlexStoredLook
                 }
                 return null;
             }
-            var anim = FlexAnimationComposer.Compose(unit.Family, unit.Fans, ZoneLooks(unit.Family, look), look.UpDownSwap);
+            var anim = FlexAnimationComposer.Compose(unit.Family, unit.Fans, ZoneLooks(unit.Family, look), look.UpDownSwap, unit.Info.FanNum >= 10 ? 0 : 1);
             return new Package
             {
                 Compressed = TinyUz.Compress(anim.Raw),

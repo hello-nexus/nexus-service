@@ -35,22 +35,23 @@ public static class FlexAnimationComposer
 
     public static int BrightnessLevel(int brightness) => BrightnessLevels[Math.Clamp(brightness, 0, 4)];
 
+    /// <param name="infAttachFlag">SL-INF generator flag: 1 for a unit whose identity reports a fan count under 10 (the recorded units), 0 for a right-attached cable (fan count 10 or more).</param>
     public static FlexComposedAnimation Compose(
-        FlexFamily family, int fans, IReadOnlyDictionary<string, FlexZoneLook> zones, bool upDownSwap)
+        FlexFamily family, int fans, IReadOnlyDictionary<string, FlexZoneLook> zones, bool upDownSwap, int infAttachFlag = 1)
     {
         fans = fans is < 1 or > 4 ? 4 : fans;
-        return family == FlexFamily.SlInfFlex ? ComposeSlInf(fans, zones) : ComposeTl(fans, zones, upDownSwap);
+        return family == FlexFamily.SlInfFlex ? ComposeSlInf(fans, zones, infAttachFlag) : ComposeTl(fans, zones, upDownSwap);
     }
 
-    private static FlexEffectRequest Request(FlexScope scope, int fans, FlexZoneLook look) =>
-        new(scope, fans, look.Direction, BrightnessLevel(look.Brightness), look.Colors, SpeedMultiplier(look.Key, look.Speed), 1);
+    private static FlexEffectRequest Request(FlexScope scope, int fans, FlexZoneLook look, int attachFlag = 1) =>
+        new(scope, fans, look.Direction, BrightnessLevel(look.Brightness), look.Colors, SpeedMultiplier(look.Key, look.Speed), attachFlag);
 
-    private static FlexComposedAnimation ComposeSlInf(int fans, IReadOnlyDictionary<string, FlexZoneLook> zones)
+    private static FlexComposedAnimation ComposeSlInf(int fans, IReadOnlyDictionary<string, FlexZoneLook> zones, int attachFlag)
     {
         var leds = fans * FlexSlInfEffects.LedsPerFan;
         if (zones.TryGetValue("all", out var all))
         {
-            var anim = FlexSlInfEffects.Render(all.Key, Request(FlexScope.All, fans, all));
+            var anim = FlexSlInfEffects.Render(all.Key, Request(FlexScope.All, fans, all, attachFlag));
             return new FlexComposedAnimation
             {
                 Raw = anim.Frames,
@@ -59,9 +60,9 @@ public static class FlexAnimationComposer
                 IntervalMs = anim.IntervalBaseMs * SpeedMultiplier(all.Key, all.Speed),
             };
         }
-        var inner = FlexSlInfEffects.RenderZone(zones["inner"].Key, 1, Request(FlexScope.Inner, fans, zones["inner"]));
-        var outer = FlexSlInfEffects.RenderZone(zones["outer"].Key, 0, Request(FlexScope.Outer, fans, zones["outer"]));
-        var center = FlexSlInfEffects.RenderZone(zones["center"].Key, 2, Request(FlexScope.Center, fans, zones["center"]));
+        var inner = FlexSlInfEffects.RenderZone(zones["inner"].Key, 1, Request(FlexScope.Inner, fans, zones["inner"], attachFlag));
+        var outer = FlexSlInfEffects.RenderZone(zones["outer"].Key, 0, Request(FlexScope.Outer, fans, zones["outer"], attachFlag));
+        var center = FlexSlInfEffects.RenderZone(zones["center"].Key, 2, Request(FlexScope.Center, fans, zones["center"], attachFlag));
         var (frames, count, interval) = FlexSlInfCombiner.Combine(inner, outer, center, fans);
         return new FlexComposedAnimation
         {
@@ -77,7 +78,7 @@ public static class FlexAnimationComposer
         var req = Request(scope, fans, look);
         return FlexTlEffects.IsImplemented(look.Key)
             ? FlexTlEffects.Render(look.Key, req)
-            : FlexTlExtendedEffects.Render(look.Key, req);
+            : FlexTlExtendedEffects.Render(look.Key, req, FlexTlExtendedEffects.SeedFor(look.Key));
     }
 
     private static FlexComposedAnimation ComposeTl(int fans, IReadOnlyDictionary<string, FlexZoneLook> zones, bool flip)
