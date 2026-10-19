@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Common;
 
 namespace Nexus.Service.Platform.Windows;
 
@@ -27,23 +28,15 @@ internal static unsafe partial class WindowsAppsFolder
     private const int ErrorSuccess = 0;
     private const int ErrorInsufficientBuffer = 122;
 
-    private static readonly object Gate = new();
-    private static Task<List<StartApp>>? s_inflight;
+    private static readonly SingleFlight<List<StartApp>> Flight = new(StartEnumeration, TimeSpan.FromMinutes(5));
 
     /// <summary>
     /// Every apps-folder entry as name plus parent-relative parsing name (the
-    /// AppUserModelID for packaged apps). Empty on failure or timeout. One enumeration
-    /// runs at a time and later callers wait on it, so a hung shell costs a single thread.
+    /// AppUserModelID for packaged apps). The task yields an empty list on failure. One
+    /// enumeration is shared by concurrent callers, and a hung one is abandoned after a
+    /// while so a hung shell costs one thread per attempt window.
     /// </summary>
-    public static List<StartApp> EnumerateStartApps(int timeoutMs)
-    {
-        Task<List<StartApp>> task;
-        lock (Gate)
-        {
-            task = s_inflight ??= StartEnumeration();
-        }
-        return task.Wait(timeoutMs) ? task.Result : new List<StartApp>();
-    }
+    public static Task<List<StartApp>> EnumerateStartAppsAsync() => Flight.Get();
 
     private static Task<List<StartApp>> StartEnumeration()
     {
@@ -56,7 +49,6 @@ internal static unsafe partial class WindowsAppsFolder
             try { Enumerate(apps); }
             catch (Exception ex) { Console.Error.WriteLine($"[apps-folder] {ex.GetType().Name}: {ex.Message}"); }
             finally { if (init >= 0) CoUninitialize(); }
-            lock (Gate) { s_inflight = null; }
             done.SetResult(apps);
         });
         thread.SetApartmentState(ApartmentState.STA);

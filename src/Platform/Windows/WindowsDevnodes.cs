@@ -88,7 +88,6 @@ internal static partial class WindowsDevnodes
         return CM_Get_DevNode_Status(out _, out var problem, devInst, 0) == 0 ? (int)problem : null;
     }
 
-    // Win32_PnPEntity.Name prefers the friendly name; the sound list is verified against the description first.
     private static string ReadName(IntPtr set, ref SpDevInfoData data, bool friendlyFirst)
     {
         var first = friendlyFirst ? SpdrpFriendlyName : SpdrpDeviceDesc;

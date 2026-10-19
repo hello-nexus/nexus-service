@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using Nexus.Service.Models.Activity;
 using Nexus.Service.Platform.Windows;
@@ -17,6 +18,7 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
 
     private static readonly TimeSpan AppListCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan EmptyAppListCacheTtl = TimeSpan.FromSeconds(30);
+    private const int StartAppsTimeoutMs = 15000;
     private static readonly TimeSpan IconCacheTtl = TimeSpan.FromHours(1);
     // An app with no extractable icon (no Start-Menu .lnk match / no UWP logo)
     // otherwise re-runs extraction on every GetIcon, since nothing is cached to
@@ -75,23 +77,38 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
 
         try
         {
-            var apps = ReadStartApps();
-            if (apps.Count > 0)
-                FillProcessNames(apps);
-
-            // An empty list (hung or failed enumeration) is cached briefly so callers do not pile onto the shell.
-            lock (_appLock)
+            var enumeration = WindowsAppsFolder.EnumerateStartAppsAsync();
+            if (!enumeration.Wait(StartAppsTimeoutMs))
             {
-                _appCache = apps;
-                _appCacheExpiry = DateTime.UtcNow + (apps.Count > 0 ? AppListCacheTtl : EmptyAppListCacheTtl);
+                // A shell that answers late still fills the cache for the next caller.
+                _ = enumeration.ContinueWith(
+                    t => { if (t.IsCompletedSuccessfully) CacheApps(BuildStartApps(t.Result)); },
+                    TaskScheduler.Default);
+                CacheApps(new List<Shortcut>());
+                return Array.Empty<Shortcut>();
             }
 
-            return apps;
+            return CacheApps(BuildStartApps(enumeration.Result));
         }
         catch
         {
             return Array.Empty<Shortcut>();
         }
+    }
+
+    private List<Shortcut> CacheApps(List<Shortcut> apps)
+    {
+        if (apps.Count > 0)
+            FillProcessNames(apps);
+
+        // An empty list (hung or failed enumeration) is cached briefly so callers do not pile onto the shell.
+        lock (_appLock)
+        {
+            _appCache = apps;
+            _appCacheExpiry = DateTime.UtcNow + (apps.Count > 0 ? AppListCacheTtl : EmptyAppListCacheTtl);
+        }
+
+        return apps;
     }
 
     /// <summary>Resolves every shortcut's process name from a single walk of
@@ -479,10 +496,10 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
     }
 
     /// <summary>The Start apps as the shell lists them, minus uninstallers, ordered and de-duplicated by name.</summary>
-    private static List<Shortcut> ReadStartApps()
+    private static List<Shortcut> BuildStartApps(IEnumerable<WindowsAppsFolder.StartApp> entries)
     {
         var apps = new List<Shortcut>();
-        foreach (var (name, appId) in WindowsAppsFolder.EnumerateStartApps(15000))
+        foreach (var (name, appId) in entries)
         {
             if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(appId)) continue;
             if (name.Contains("uninstall", StringComparison.OrdinalIgnoreCase)) continue;

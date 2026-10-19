@@ -146,7 +146,8 @@ internal static partial class WindowsSpecsNative
             // DISK_GEOMETRY_EX: DISK_GEOMETRY, then DiskSize.
             long size = 0;
             var geometry = new byte[256];
-            if (DeviceIoControl(handle, IoctlDiskGetDriveGeometryEx, null, 0, geometry, (uint)geometry.Length, out _, IntPtr.Zero))
+            if (DeviceIoControl(handle, IoctlDiskGetDriveGeometryEx, null, 0, geometry, (uint)geometry.Length, out var geometryBytes, IntPtr.Zero)
+                && geometryBytes >= DiskGeometrySize + sizeof(long))
             {
                 size = BitConverter.ToInt64(geometry, DiskGeometrySize);
             }
