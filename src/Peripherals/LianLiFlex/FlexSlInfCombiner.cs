@@ -9,6 +9,7 @@ internal sealed class FlexSlInfZone
     public required int FrameCount { get; init; }
     public required double IntervalBase { get; init; }
     public double Interval { get; init; }
+    public int SpeedMultiplier { get; init; } = 4;
 }
 
 /// <summary>Merges the inner, outer and center zone renders of a 44-LED fan into one animation.</summary>
@@ -17,12 +18,12 @@ internal static class FlexSlInfCombiner
     public const int LedsPerFan = 44;
 
     public static (byte[,,] Frames, int FrameCount, double Interval) Combine(
-        FlexSlInfZone inner, FlexSlInfZone outer, FlexSlInfZone center, int fans, int speedMultiplier)
+        FlexSlInfZone inner, FlexSlInfZone outer, FlexSlInfZone center, int fans)
     {
         var ledCount = fans * LedsPerFan;
         var baseMs = center.IntervalBase > 0.0 ? center.IntervalBase : Math.Max(outer.IntervalBase, inner.IntervalBase);
-        var interval = speedMultiplier * baseMs;
-        var centerInterval = speedMultiplier * center.IntervalBase;
+        var interval = inner.SpeedMultiplier * baseMs;
+        var centerInterval = center.Interval;
 
         var inA = inner.Frames;
         var outA = outer.Frames;

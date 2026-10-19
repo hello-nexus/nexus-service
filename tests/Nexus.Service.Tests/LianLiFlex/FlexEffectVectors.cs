@@ -26,6 +26,8 @@ public sealed class FlexEffectVector
     public required double IntervalMs { get; init; }
     public required bool ZoneOnly { get; init; }
     public required byte[] Raw { get; init; }
+    public bool UpDownSwap { get; init; }
+    public IReadOnlyDictionary<string, FlexZoneLook>? Zones { get; init; }
 
     public int BrightnessLevel => BrightnessPercent switch { 0 => 0, 25 => 64, 50 => 128, 75 => 192, _ => 255 };
 
@@ -39,6 +41,14 @@ public sealed class FlexEffectVector
 
     public static IEnumerable<object[]> Ids(Func<FlexEffectVector, bool> filter) =>
         All.Where(filter).Select(v => new object[] { v.Id });
+
+    private static Dictionary<string, FlexZoneLook> ReadZones(JsonElement zs) =>
+        zs.EnumerateObject().ToDictionary(p => p.Name, p => new FlexZoneLook(
+            p.Value.GetProperty("key").GetString()!,
+            p.Value.GetProperty("speed").GetInt32(),
+            p.Value.GetProperty("direction").GetInt32(),
+            p.Value.GetProperty("brightness").GetInt32(),
+            p.Value.GetProperty("colors").EnumerateArray().Select(c => new RgbColor(c[0].GetByte(), c[1].GetByte(), c[2].GetByte())).ToArray()));
 
     private static IReadOnlyList<FlexEffectVector> Load()
     {
@@ -65,6 +75,8 @@ public sealed class FlexEffectVector
                 IntervalMs = e.GetProperty("intervalMs").GetDouble(),
                 ZoneOnly = e.GetProperty("zoneOnly").GetBoolean(),
                 Raw = Convert.FromBase64String(e.GetProperty("framesB64").GetString()!),
+                UpDownSwap = e.TryGetProperty("upDownSwap", out var sw) && sw.GetBoolean(),
+                Zones = e.TryGetProperty("zones", out var zs) ? ReadZones(zs) : null,
             });
         }
         return list;

@@ -81,7 +81,7 @@ public static class FlexSlInfEffects
             var inner = RenderZone(entry, 1, fans, req);
             var outer = RenderZone(entry, 0, fans, req);
             var center = RenderZone(entry, 2, fans, req);
-            var (frames, count, interval) = FlexSlInfCombiner.Combine(inner, outer, center, fans, req.SpeedMultiplier);
+            var (frames, count, interval) = FlexSlInfCombiner.Combine(inner, outer, center, fans);
             return new FlexRawAnimation
             {
                 Frames = FlexPalette.Flatten(frames, count, leds),
@@ -107,6 +107,12 @@ public static class FlexSlInfEffects
         };
     }
 
+    internal static FlexSlInfZone RenderZone(string key, int zone, FlexEffectRequest req)
+    {
+        var fans = ClampFans(req.Fans);
+        return RenderZone(Table[key], zone, fans, req);
+    }
+
     private static FlexSlInfZone RenderZone(Entry entry, int zone, int fans, FlexEffectRequest req)
     {
         var modes = new FlexSlInfModes(fans, FlexPalette.Build(req.Colors));
@@ -118,6 +124,7 @@ public static class FlexSlInfEffects
             FrameCount = count,
             IntervalBase = baseMs,
             Interval = req.SpeedMultiplier * baseMs,
+            SpeedMultiplier = req.SpeedMultiplier,
         };
     }
 }

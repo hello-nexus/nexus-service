@@ -55,7 +55,7 @@ public class FlexEffectsTests
     }
 
     public static IEnumerable<object[]> WholeFanIds() =>
-        FlexEffectVector.Ids(v => !v.ZoneOnly && (v.Family == FlexFamily.SlInfFlex || FlexTlEffects.IsImplemented(v.Key)));
+        FlexEffectVector.Ids(v => v.Kind != "composed" && !v.ZoneOnly && (v.Family == FlexFamily.SlInfFlex || FlexTlEffects.IsImplemented(v.Key)));
 
     public static IEnumerable<object[]> ZoneIds() => FlexEffectVector.Ids(v => v.ZoneOnly);
 
