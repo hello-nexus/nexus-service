@@ -190,35 +190,18 @@ public static class FlexStoredLook
         }
     }
 
-    public static LianLiFlexUnitSettings WithSortIndex(LianLiFlexUnitSettings u, int sortIndex) => new()
+    public static LianLiFlexUnitSettings WithSortIndex(LianLiFlexUnitSettings u, int sortIndex)
     {
-        Mode = u.Mode,
-        EffectMode = u.EffectMode,
-        Speed = u.Speed,
-        Direction = u.Direction,
-        Brightness = u.Brightness,
-        Colors = u.Colors,
-        Merge = u.Merge,
-        UpDownSwap = u.UpDownSwap,
-        SortIndex = sortIndex,
-        Zones = u.Zones,
-        PackageSignature = u.PackageSignature,
-        PackageEffectIndex = u.PackageEffectIndex,
-    };
+        var c = u.Clone();
+        c.SortIndex = sortIndex;
+        return c;
+    }
 
-    public static LianLiFlexUnitSettings WithPackage(LianLiFlexUnitSettings u, string signature, string effectIndex) => new()
+    public static LianLiFlexUnitSettings WithPackage(LianLiFlexUnitSettings u, string signature, string effectIndex)
     {
-        Mode = u.Mode,
-        EffectMode = u.EffectMode,
-        Speed = u.Speed,
-        Direction = u.Direction,
-        Brightness = u.Brightness,
-        Colors = u.Colors,
-        Merge = u.Merge,
-        UpDownSwap = u.UpDownSwap,
-        SortIndex = u.SortIndex,
-        Zones = u.Zones,
-        PackageSignature = signature,
-        PackageEffectIndex = effectIndex,
-    };
+        var c = u.Clone();
+        c.PackageSignature = signature;
+        c.PackageEffectIndex = effectIndex;
+        return c;
+    }
 }

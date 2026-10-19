@@ -554,21 +554,17 @@ public static partial class LianLiFlexRoutes
                 Colors = p?.Colors is { } c ? new List<string>(c) : o.Colors,
             });
         }
-        var mode = body.Mode ?? old.Mode;
-        return new LianLiFlexUnitSettings
-        {
-            Mode = mode,
-            EffectMode = body.Mode is not null && body.Mode != LianLiWirelessChainLighting.ModeCustom ? body.Mode : old.EffectMode,
-            Speed = body.Speed.HasValue ? Math.Clamp(body.Speed.Value, 0, 4) : old.Speed,
-            Direction = body.Direction.HasValue ? Math.Clamp(body.Direction.Value, 0, 1) : old.Direction,
-            Brightness = body.Brightness.HasValue ? Math.Clamp(body.Brightness.Value, 0, 4) : old.Brightness,
-            Colors = body.Colors is not null ? new List<string>(body.Colors) : old.Colors,
-            Merge = body.Merge ?? old.Merge,
-            UpDownSwap = body.UpDownSwap ?? old.UpDownSwap,
-            SortIndex = body.SortIndex ?? old.SortIndex,
-            Zones = zones,
-            PackageSignature = old.PackageSignature,
-            PackageEffectIndex = old.PackageEffectIndex,
-        };
+        var next = old.Clone();
+        next.Mode = body.Mode ?? old.Mode;
+        next.EffectMode = body.Mode is not null && body.Mode != LianLiWirelessChainLighting.ModeCustom ? body.Mode : old.EffectMode;
+        next.Speed = body.Speed.HasValue ? Math.Clamp(body.Speed.Value, 0, 4) : old.Speed;
+        next.Direction = body.Direction.HasValue ? Math.Clamp(body.Direction.Value, 0, 1) : old.Direction;
+        next.Brightness = body.Brightness.HasValue ? Math.Clamp(body.Brightness.Value, 0, 4) : old.Brightness;
+        next.Colors = body.Colors is not null ? new List<string>(body.Colors) : old.Colors;
+        next.Merge = body.Merge ?? old.Merge;
+        next.UpDownSwap = body.UpDownSwap ?? old.UpDownSwap;
+        next.SortIndex = body.SortIndex ?? old.SortIndex;
+        next.Zones = zones;
+        return next;
     }
 }

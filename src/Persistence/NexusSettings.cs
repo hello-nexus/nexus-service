@@ -1512,6 +1512,10 @@ public sealed class DevicesSettings
     public Dictionary<string, LianLiFlexUnitSettings> FlexUnits { get; set; } = new();
     /// <summary>TL / SL-INF LCD Flex screens by screen serial; same content model as the SL wireless screens.</summary>
     public Dictionary<string, LianLiWirelessScreenSettings> FlexLcdScreens { get; set; } = new();
+    /// <summary>Thermal Alert for the Flex fans: one flat color per sensor above its threshold.</summary>
+    public LianLiFlexThermalAlertSettings FlexThermalAlert { get; set; } = new();
+    /// <summary>The Quick/Sync group switch of the Flex fans, mirrored for the UI.</summary>
+    public bool FlexSyncEnabled { get; set; }
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
@@ -1847,6 +1851,93 @@ public sealed class LianLiFlexUnitSettings
     /// <summary>Signature of the stored package last uploaded, and the effect index it carried, so a restart with an unchanged look does not rewrite the receiver's flash.</summary>
     public string? PackageSignature { get; set; }
     public string? PackageEffectIndex { get; set; }
+    /// <summary>0 or 1: this unit reads its slice of a merged strip back to front.</summary>
+    public int MergeDirection { get; set; }
+    /// <summary>The vendor fan profile, kept as a managed cooling curve; Profile "" leaves the fan to the Cooling page.</summary>
+    public LianLiFlexFanProfileSettings FanProfile { get; set; } = new();
+
+    /// <summary>Shallow copy; the lists are replaced, never edited, so sharing them is safe.</summary>
+    public LianLiFlexUnitSettings Clone() => (LianLiFlexUnitSettings)MemberwiseClone();
+}
+
+public sealed class LianLiFlexCurvePoint
+{
+    public int Temp { get; set; }
+    public int Rpm { get; set; }
+}
+
+public sealed class LianLiFlexFanProfileSettings
+{
+    /// <summary>"" | quiet | stdsp | highsp | fullsp | custom1..custom4 | fixed.</summary>
+    public string Profile { get; set; } = "";
+    /// <summary>cpu | gpu | water.</summary>
+    public string Source { get; set; } = "cpu";
+    /// <summary>120 or 140.</summary>
+    public int FanSize { get; set; } = 120;
+    public bool StartStop { get; set; }
+    public int FixedPercent { get; set; } = 50;
+    /// <summary>Points of custom1..custom4, by profile key.</summary>
+    public Dictionary<string, List<LianLiFlexCurvePoint>> Custom { get; set; } = new();
+    /// <summary>Id of the cooling curve this profile owns.</summary>
+    public string CurveId { get; set; } = "";
+}
+
+public sealed class LianLiFlexThermalAlertSettings
+{
+    public bool Enabled { get; set; }
+    public bool CpuEnabled { get; set; } = true;
+    public int CpuThreshold { get; set; } = 80;
+    public string CpuColor { get; set; } = "#FF0000";
+    public bool GpuEnabled { get; set; } = true;
+    public int GpuThreshold { get; set; } = 80;
+    public string GpuColor { get; set; } = "#0000FF";
+    /// <summary>"c" | "f"; display only, thresholds are stored in Celsius.</summary>
+    public string Unit { get; set; } = "c";
+    /// <summary>Receiver MACs the alert covers; empty = every Flex unit.</summary>
+    public List<string> Members { get; set; } = new();
+}
+
+/// <summary>A sprite moving over the screen's background (the vendor's 2D animation).</summary>
+public sealed class LianLiFlexOverlaySettings
+{
+    /// <summary>circular | rotate | bounce | collision.</summary>
+    public string Type { get; set; } = "circular";
+    public string SpriteMediaId { get; set; } = "";
+    /// <summary>1..10.</summary>
+    public int Speed { get; set; } = 5;
+    public bool Loop { get; set; } = true;
+    /// <summary>Percent, 50..200.</summary>
+    public int Zoom { get; set; } = 100;
+    /// <summary>0 clockwise, 1 counter-clockwise.</summary>
+    public int Direction { get; set; }
+    public int CenterX { get; set; } = 180;
+    public int CenterY { get; set; } = 180;
+    public LianLiFlexOverlayParams Params { get; set; } = new();
+}
+
+public sealed class LianLiFlexOverlayParams
+{
+    public int Radius { get; set; } = 100;
+    public int RotateAngle { get; set; } = 360;
+    public bool AutoReverse { get; set; }
+    public int UpHeight { get; set; } = 80;
+    /// <summary>Index into 0, .7, .8, .9, .95.</summary>
+    public int Bounciness { get; set; } = 2;
+    public double DwellSeconds { get; set; } = 0.2;
+    /// <summary>Index into .4, .7, 1.</summary>
+    public int RotationIntensity { get; set; } = 1;
+    public bool SelfRotate { get; set; }
+}
+
+/// <summary>Which screen the live "screen" content mirrors and which square of it.</summary>
+public sealed class LianLiFlexScreenSource
+{
+    /// <summary>Monitor id from the Screen Mirror monitor list; empty = the primary one.</summary>
+    public string DisplayId { get; set; } = "";
+    /// <summary>Normalized crop square (0..1); Size 0 = the largest centered square.</summary>
+    public double CropX { get; set; }
+    public double CropY { get; set; }
+    public double CropSize { get; set; }
 }
 
 public sealed class LianLiFlexZoneSettings
@@ -1984,6 +2075,10 @@ public sealed class LianLiWirelessScreenSettings
     public string? TempUnit { get; set; }
     /// <summary>User-chosen list position (0-based) so the numbered tiles match the physical fans; -1 = not set.</summary>
     public int Order { get; set; } = -1;
+    /// <summary>Flex screens only: the 2D animation of ContentType "animation2d".</summary>
+    public LianLiFlexOverlaySettings? Overlay { get; set; }
+    /// <summary>Flex screens only: the source of ContentType "screen".</summary>
+    public LianLiFlexScreenSource? ScreenSource { get; set; }
 }
 
 public sealed class LianLiLightingSettings
