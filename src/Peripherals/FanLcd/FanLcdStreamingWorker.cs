@@ -252,12 +252,15 @@ public sealed class FanLcdStreamingWorker : BackgroundService
                         default:
                             if (_screens is IFanLcdExtraContent extra && extra.Handles(mode))
                             {
+                                long frameStart = Environment.TickCount64;
                                 var (frame, delayMs) = extra.Render(serial, settings);
                                 if (frame is not null)
                                 {
                                     _screens.PushImage(serial, frame);
                                 }
-                                await IdleAsync(serial, pick, Math.Max(delayMs, 10), ct).ConfigureAwait(false);
+                                // The frame period includes the time spent rendering and sending.
+                                long spent = Environment.TickCount64 - frameStart;
+                                await IdleAsync(serial, pick, (int)Math.Max(delayMs - spent, 1), ct).ConfigureAwait(false);
                                 break;
                             }
                             await IdleAsync(serial, pick, IdlePollMs, ct).ConfigureAwait(false);

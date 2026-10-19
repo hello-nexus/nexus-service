@@ -17,7 +17,7 @@ public sealed class FlexScreenCapture : IDisposable
     public const int CaptureWidth = 640;
     public const int CaptureHeight = 360;
     private const int PanelEdge = FlexOverlayRenderer.FrameSize;
-    public const int FrameIntervalMs = 66;
+    public const int FrameIntervalMs = 33;
 
     private readonly Func<IScreenFrameSource?> _open;
     private readonly Func<string> _defaultMonitor;
