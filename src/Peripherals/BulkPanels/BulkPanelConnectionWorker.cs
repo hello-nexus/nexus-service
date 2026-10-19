@@ -127,6 +127,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
         pipe = null;
         hid = null;
         var driver = _hub.Driver;
+        var denied = false;
 
         for (int i = 0; i < driver.ProductIds.Count; i++)
         {
@@ -141,14 +142,17 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                     continue;
                 }
             }
-            pipe = _pipes.Open(driver.VendorId, pid, driver.WritePipeId, driver.ReadPipeId);
+            pipe = _pipes.Open(driver.VendorId, pid, driver.WritePipeId, driver.ReadPipeId, out var pidDenied);
+            denied |= pidDenied;
             if (pipe is not null)
             {
+                _hub.SetOpenAccessDenied(false);
                 return true;
             }
             hid?.Dispose();
             hid = null;
         }
+        _hub.SetOpenAccessDenied(denied);
         return false;
     }
 
