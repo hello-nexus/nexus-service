@@ -44,8 +44,21 @@ public sealed class LianLiFlexStateResponse
     public LianLiFlexFanDto[] Fans { get; set; } = Array.Empty<LianLiFlexFanDto>();
 }
 
+public sealed class LianLiFlexModeDto
+{
+    public string Key { get; set; } = "";
+    public bool HasSpeed { get; set; }
+    public bool HasDirection { get; set; }
+    public int ColorsMin { get; set; }
+    public int ColorsMax { get; set; }
+    public bool Mergeable { get; set; }
+    /// <summary>"#RRGGBB" palette the fan renders when no colors are set; empty when the effect takes none.</summary>
+    public string[] DefaultColors { get; set; } = Array.Empty<string>();
+}
+
 public sealed class LianLiFlexZoneDto
 {
+    public LianLiFlexModeDto[] Modes { get; set; } = Array.Empty<LianLiFlexModeDto>();
     public string Id { get; set; } = "";
     public int LedCount { get; set; }
     public string Mode { get; set; } = "";
@@ -75,7 +88,7 @@ public sealed class LianLiFlexChainLightingDto
     public int FanCount { get; set; }
     public int Lanes { get; set; }
     public int LedsPerLane { get; set; }
-    public Slv3LightingModeDto[] Modes { get; set; } = Array.Empty<Slv3LightingModeDto>();
+    public LianLiFlexModeDto[] Modes { get; set; } = Array.Empty<LianLiFlexModeDto>();
     public bool SupportsPerLane { get; set; }
     public string Mode { get; set; } = "";
     public string EffectMode { get; set; } = "";
@@ -214,12 +227,21 @@ public static partial class LianLiFlexRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapGet("/devices/lianli-flex/screens", (FlexLcdHub lcd, FlexScreens screens, IConfigStore store, StreamedPanelStore panelStore) =>
+        app.MapGet("/devices/lianli-flex/screens", (FlexHub hub, FlexLcdHub lcd, FlexScreens screens, IConfigStore store, StreamedPanelStore panelStore) =>
         {
             var screenSettings = store.Load().Devices.FlexLcdScreens;
             var panelRecords = panelStore.Load();
             var response = new Slv3LcdScreensResponse();
-            foreach (var screen in Slv3LcdRoutes.OrderScreens(lcd.Hub.Screens, screenSettings))
+            var listed = new List<Slv3LcdScreenInfo>(lcd.Hub.Screens);
+            foreach (var unit in hub.Units)
+            {
+                if (unit.LcdRestarting && unit.ScreenSerial.Length > 0
+                    && !listed.Exists(x => string.Equals(x.Serial, unit.ScreenSerial, StringComparison.OrdinalIgnoreCase)))
+                {
+                    listed.Add(new Slv3LcdScreenInfo { Serial = unit.ScreenSerial });
+                }
+            }
+            foreach (var screen in Slv3LcdRoutes.OrderScreens(listed, screenSettings))
             {
                 var settings = screenSettings.TryGetValue(screen.Serial, out var s) ? s : new LianLiWirelessScreenSettings();
                 response.Screens.Add(new Slv3LcdScreenDto
@@ -371,25 +393,42 @@ public static partial class LianLiFlexRoutes
         };
     }
 
-    internal static Slv3LightingModeDto[] ModesOf(FlexFamily family)
+    internal static LianLiFlexModeDto[] ModesOf(FlexFamily family)
     {
         var keys = FlexAnimationComposer.Keys(family);
         var rf = family == FlexFamily.SlInfFlex ? Slv3FanFamily.SlInfFlex : Slv3FanFamily.TlFlex;
-        var modes = new Slv3LightingModeDto[keys.Count];
+        var modes = new LianLiFlexModeDto[keys.Count];
         for (var i = 0; i < modes.Length; i++)
         {
             var info = Slv3FanEffects.Find(rf, keys[i]);
-            modes[i] = new Slv3LightingModeDto
+            var defaults = DefaultColorsOf(family, keys[i]);
+            modes[i] = new LianLiFlexModeDto
             {
                 Key = keys[i],
                 HasSpeed = info?.HasSpeed ?? true,
                 HasDirection = info?.HasDirection ?? false,
                 ColorsMin = 0,
-                ColorsMax = Math.Min(MaxColors, info?.ColorsMax ?? 0),
+                ColorsMax = Math.Min(MaxColors, Math.Max(info?.ColorsMax ?? 0, defaults.Length)),
                 Mergeable = FlexMergeEffects.IsMergeable(family, keys[i]),
+                DefaultColors = defaults,
             };
         }
         return modes;
+    }
+
+    private static string[] DefaultColorsOf(FlexFamily family, string key)
+    {
+        var colors = FlexDefaultPalettes.For(family, key);
+        if (colors.Count == 0 && family == FlexFamily.TlFlex)
+        {
+            colors = FlexTlExtendedEffects.DefaultColors(key);
+        }
+        var hex = new string[colors.Count];
+        for (var i = 0; i < hex.Length; i++)
+        {
+            hex[i] = $"#{colors[i].R:X2}{colors[i].G:X2}{colors[i].B:X2}";
+        }
+        return hex;
     }
 
     internal static LianLiFlexLightingResponse BuildLighting(FlexHub hub, NexusSettings settings)
@@ -404,6 +443,7 @@ public static partial class LianLiFlexRoutes
             settings.Devices.FlexUnits.TryGetValue(u.Mac, out var stored);
             var ls = stored ?? new LianLiFlexUnitSettings();
             var zoneIds = Nexus.Service.Lighting.FlexLightingDeviceProvider.ZonesOf(u.Family);
+            var modes = ModesOf(u.Family);
             var zones = new LianLiFlexZoneDto[zoneIds.Count];
             for (var i = 0; i < zones.Length; i++)
             {
@@ -411,6 +451,7 @@ public static partial class LianLiFlexRoutes
                 zones[i] = new LianLiFlexZoneDto
                 {
                     Id = zoneIds[i],
+                    Modes = modes,
                     LedCount = FlexProtocol.ZoneWireIndexes(u.Family, zoneIds[i]).Count,
                     Mode = z.Mode,
                     Speed = z.Speed,
@@ -426,11 +467,9 @@ public static partial class LianLiFlexRoutes
                 Model = Nexus.Service.Lighting.FlexLightingDeviceProvider.ModelName(u.Family),
                 FanType = u.Info.FansType,
                 FanCount = u.Fans,
-                Modes = ModesOf(u.Family),
+                Modes = modes,
                 Mode = ls.Mode,
-                EffectMode = ls.Mode != LianLiWirelessChainLighting.ModeCustom && ls.Mode != LianLiFlexUnitSettings.ModePerZone
-                    ? ls.Mode
-                    : ls.EffectMode ?? DefaultEffect,
+                EffectMode = ls.Mode != LianLiWirelessChainLighting.ModeCustom ? ls.Mode : ls.EffectMode ?? DefaultEffect,
                 Speed = ls.Speed,
                 Direction = ls.Direction,
                 Brightness = ls.Brightness,
@@ -519,9 +558,7 @@ public static partial class LianLiFlexRoutes
         return new LianLiFlexUnitSettings
         {
             Mode = mode,
-            EffectMode = body.Mode is not null && body.Mode != LianLiWirelessChainLighting.ModeCustom && body.Mode != LianLiFlexUnitSettings.ModePerZone
-                ? body.Mode
-                : old.EffectMode,
+            EffectMode = body.Mode is not null && body.Mode != LianLiWirelessChainLighting.ModeCustom ? body.Mode : old.EffectMode,
             Speed = body.Speed.HasValue ? Math.Clamp(body.Speed.Value, 0, 4) : old.Speed,
             Direction = body.Direction.HasValue ? Math.Clamp(body.Direction.Value, 0, 1) : old.Direction,
             Brightness = body.Brightness.HasValue ? Math.Clamp(body.Brightness.Value, 0, 4) : old.Brightness,

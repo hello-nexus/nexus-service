@@ -41,6 +41,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     /// <summary>Fires <see cref="DevicesChanged"/> only when the set of units or a unit's geometry changes.</summary>
     public void OnHubStateUpdated()
     {
+        EnsureUniqueSortIndexes();
         var sig = BuildSignature();
         if (sig == _lastSignature)
         {
@@ -55,6 +56,52 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         {
             // a subscriber failure must not break the worker
         }
+    }
+
+    /// <summary>
+    /// Gives every unit (RF-bound ones included) its own light-sequence position: a unit seen for
+    /// the first time, or one sharing a position, is renumbered; existing order is kept.
+    /// </summary>
+    internal void EnsureUniqueSortIndexes()
+    {
+        var units = _hub.Units;
+        if (units.Length == 0)
+        {
+            return;
+        }
+        var stored = _store.Load().Devices.FlexUnits;
+        var seen = new HashSet<int>();
+        var clean = true;
+        foreach (var u in units)
+        {
+            if (!stored.TryGetValue(u.Mac, out var l) || !seen.Add(l.SortIndex))
+            {
+                clean = false;
+                break;
+            }
+        }
+        if (clean)
+        {
+            return;
+        }
+        var ordered = new List<FlexUnit>(units);
+        ordered.Sort((a, b) =>
+        {
+            var ia = stored.TryGetValue(a.Mac, out var la) ? la.SortIndex : int.MaxValue;
+            var ib = stored.TryGetValue(b.Mac, out var lb) ? lb.SortIndex : int.MaxValue;
+            return ia != ib ? ia.CompareTo(ib) : string.CompareOrdinal(a.Mac, b.Mac);
+        });
+        _store.Update(s =>
+        {
+            var next = new Dictionary<string, LianLiFlexUnitSettings>(s.Devices.FlexUnits, StringComparer.Ordinal);
+            for (var i = 0; i < ordered.Count; i++)
+            {
+                var mac = ordered[i].Mac;
+                var old = next.TryGetValue(mac, out var o) ? o : new LianLiFlexUnitSettings();
+                next[mac] = FlexStoredLook.WithSortIndex(old, i);
+            }
+            s.Devices.FlexUnits = next;
+        });
     }
 
     private string BuildSignature()

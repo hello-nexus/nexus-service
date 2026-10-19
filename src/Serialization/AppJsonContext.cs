@@ -1228,6 +1228,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiFlexFanDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiFlexFanDto[]))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiFlexStateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LianLiFlexModeDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.LianLiFlexModeDto[]))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiFlexZoneDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiFlexZoneDto[]))]
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiFlexZonePatch))]

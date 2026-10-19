@@ -190,6 +190,22 @@ public static class FlexStoredLook
         }
     }
 
+    public static LianLiFlexUnitSettings WithSortIndex(LianLiFlexUnitSettings u, int sortIndex) => new()
+    {
+        Mode = u.Mode,
+        EffectMode = u.EffectMode,
+        Speed = u.Speed,
+        Direction = u.Direction,
+        Brightness = u.Brightness,
+        Colors = u.Colors,
+        Merge = u.Merge,
+        UpDownSwap = u.UpDownSwap,
+        SortIndex = sortIndex,
+        Zones = u.Zones,
+        PackageSignature = u.PackageSignature,
+        PackageEffectIndex = u.PackageEffectIndex,
+    };
+
     public static LianLiFlexUnitSettings WithPackage(LianLiFlexUnitSettings u, string signature, string effectIndex) => new()
     {
         Mode = u.Mode,

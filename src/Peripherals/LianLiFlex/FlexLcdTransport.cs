@@ -96,8 +96,10 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
         while (_replies.TryTake(out _))
         {
         }
+        var started = Environment.TickCount64;
         if (!WriteHeader(Slv3LcdProtocol.CmdType.GetVer, 0))
         {
+            Nexus.Service.Platform.ServiceLog.Warn($"[lianli-flex-lcd] version query write failed after {Environment.TickCount64 - started} ms for {PortName}");
             return null;
         }
         var deadline = Environment.TickCount64 + 800;

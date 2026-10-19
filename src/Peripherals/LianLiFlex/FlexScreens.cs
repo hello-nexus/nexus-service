@@ -56,6 +56,8 @@ public sealed class FlexScreens : IFanLcdScreens
     private readonly FanLcdPanelOwnership _panelOwnership = new();
     private readonly System.Func<long> _nowMs;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _restartUntil = new(StringComparer.OrdinalIgnoreCase);
+    private const int VersionRetryMs = 30_000;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _versionTried = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _versions = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -86,6 +88,12 @@ public sealed class FlexScreens : IFanLcdScreens
             {
                 continue;
             }
+            // A screen that does not answer is asked again only every VersionRetryMs.
+            if (_versionTried.TryGetValue(s.Serial, out var tried) && _nowMs() - tried < VersionRetryMs)
+            {
+                continue;
+            }
+            _versionTried[s.Serial] = _nowMs();
             var v = _lcd.Hub.WithOpenTransport(s.Serial, t => t is IFlexScreenVersion f ? f.ReadVersion() : null);
             if (!string.IsNullOrEmpty(v))
             {
@@ -171,6 +179,7 @@ public sealed class FlexScreens : IFanLcdScreens
         }
         _restartUntil[unit.ScreenSerial] = _nowMs() + RestartQuietMs;
         _versions.TryRemove(unit.ScreenSerial, out _);
+        _versionTried.TryRemove(unit.ScreenSerial, out _);
         _lcd.Hub.Forget(unit.ScreenSerial, "restart");
         return true;
     }

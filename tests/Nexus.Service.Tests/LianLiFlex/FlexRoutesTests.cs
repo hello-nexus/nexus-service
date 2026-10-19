@@ -78,4 +78,70 @@ public class FlexRoutesTests
         var lj = System.Text.Json.JsonSerializer.Serialize(lighting, Nexus.Service.Serialization.AppJsonContext.Default.LianLiFlexLightingResponse);
         Assert.Contains("\"supportsZones\":true", lj);
     }
+
+    [Fact]
+    public void Modes_carry_the_palette_the_fan_renders_without_user_colors()
+    {
+        var tl = LianLiFlexRoutes.ModesOf(FlexFamily.TlFlex).ToDictionary(m => m.Key);
+        Assert.Equal(new[] { "#AA00FF", "#00D7FF", "#00FF00", "#FFD800" }, tl["static"].DefaultColors);
+        Assert.Empty(tl["rainbow"].DefaultColors);
+        Assert.NotEmpty(tl["staggered"].DefaultColors);
+        Assert.All(tl.Values, m => Assert.True(m.ColorsMax >= m.DefaultColors.Length || m.ColorsMax == 4));
+    }
+
+    [Fact]
+    public void Per_zone_is_remembered_as_the_effect_mode()
+    {
+        var next = LianLiFlexRoutes.Patch(new LianLiFlexUnitSettings(), new LianLiFlexChainLightingRequest { Mode = "perZone" }, FlexFamily.TlFlex);
+        Assert.Equal("perZone", next.EffectMode);
+        var back = LianLiFlexRoutes.Patch(next, new LianLiFlexChainLightingRequest { Mode = "custom" }, FlexFamily.TlFlex);
+        Assert.Equal("perZone", back.EffectMode);
+        var response = LianLiFlexRoutes.BuildLighting(
+            HubOf(new FakeFlexTransport()), SettingsWith(back));
+        Assert.Equal("perZone", response.Chains[0].EffectMode);
+        Assert.NotEmpty(response.Chains[0].Zones[0].Modes);
+    }
+
+    private static FlexHub HubOf(FakeFlexTransport tx)
+    {
+        var discovery = new FakeFlexDiscovery();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        var hub = new FlexHub(discovery, _ => tx, new FlexClock().Func, null, _ => { });
+        hub.Refresh();
+        return hub;
+    }
+
+    private static NexusSettings SettingsWith(LianLiFlexUnitSettings look)
+    {
+        var s = new NexusSettings();
+        s.Devices.FlexUnits["6D1007F517E1"] = look;
+        return s;
+    }
+
+    [Fact]
+    public void Sort_indexes_become_unique_including_rf_bound_units()
+    {
+        var tx1 = new FakeFlexTransport("AAAAAAAAAAAA");
+        var tx2 = new FakeFlexTransport("BBBBBBBBBBBB", rxType: 3);
+        var tx3 = new FakeFlexTransport("CCCCCCCCCCCC");
+        var discovery = new FakeFlexDiscovery();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl("a"));
+        discovery.Ports.Add(FakeFlexDiscovery.Tl("b"));
+        discovery.Ports.Add(FakeFlexDiscovery.Tl("c"));
+        var hub = new FlexHub(discovery, p => p.ReceiverPath == "a" ? tx1 : p.ReceiverPath == "b" ? tx2 : tx3, new FlexClock().Func, null, _ => { });
+        hub.Refresh();
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Devices.FlexUnits["CCCCCCCCCCCC"] = new LianLiFlexUnitSettings { SortIndex = 0 };
+            s.Devices.FlexUnits["AAAAAAAAAAAA"] = new LianLiFlexUnitSettings { SortIndex = 0 };
+        });
+        var provider = new Nexus.Service.Lighting.FlexLightingDeviceProvider(hub, store, new Nexus.Service.Lighting.Np50IdentifyTracker());
+        provider.EnsureUniqueSortIndexes();
+        var units = store.Load().Devices.FlexUnits;
+        Assert.Equal(3, units.Count);
+        Assert.Equal(3, units.Values.Select(u => u.SortIndex).Distinct().Count());
+        Assert.True(units["AAAAAAAAAAAA"].SortIndex < units["CCCCCCCCCCCC"].SortIndex);
+        Assert.Equal(2, units["BBBBBBBBBBBB"].SortIndex);
+    }
 }
