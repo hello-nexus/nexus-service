@@ -152,8 +152,10 @@ public sealed class Slv3Hub : IDisposable
     internal const int SlotConflictLimit = 4;
     private const int SendLogInterval = 100;
     private readonly Dictionary<string, int> _conflictCounts = new(StringComparer.Ordinal);
-    // Consecutive polls a bound owned chain has reported a slot other than its saved one.
-    private readonly Dictionary<string, (int Slot, int Count)> _ownedSlotSightings = new(StringComparer.Ordinal);
+    // The answered poll the conflict counters last saw; a busy reply does not advance it.
+    private long _conflictPoll = -1;
+    // Consecutive answered polls a bound owned chain has reported a slot other than its saved one, and the last poll counted.
+    private readonly Dictionary<string, (int Slot, int Count, long Poll)> _ownedSlotSightings = new(StringComparer.Ordinal);
     internal Action<int> SleepMs { get; init; } = Thread.Sleep;
 
     private ISlv3Transport? _tx;
@@ -468,6 +470,7 @@ public sealed class Slv3Hub : IDisposable
         _pollRecords = new List<Slv3DeviceRecord>();
         _liveMasters.Clear();
         _conflictCounts.Clear();
+        _conflictPoll = -1;
         _ownedSlotSightings.Clear();
         _pendingCommands.Clear();
         _lastIssuedSeq.Clear();
@@ -936,10 +939,15 @@ public sealed class Slv3Hub : IDisposable
                     _ownedSlotSightings.Remove(key);
                     continue;
                 }
-                var seen = _ownedSlotSightings.TryGetValue(key, out var prior) && prior.Slot == record.RxType ? prior.Count + 1 : 1;
+                var sameSlot = _ownedSlotSightings.TryGetValue(key, out var prior) && prior.Slot == record.RxType;
+                if (sameSlot && chain.Poll <= prior.Poll)
+                {
+                    continue;
+                }
+                var seen = sameSlot ? prior.Count + 1 : 1;
                 if (seen < ChainConfirmSightings)
                 {
-                    _ownedSlotSightings[key] = (record.RxType, seen);
+                    _ownedSlotSightings[key] = (record.RxType, seen, chain.Poll);
                     continue;
                 }
                 _ownedSlotSightings.Remove(key);
@@ -972,7 +980,7 @@ public sealed class Slv3Hub : IDisposable
 
     // L-Connect SyncControlInfo: with the lock on, every poll each chain this hub keeps bound (bind_to_master) whose
     // reported slot, channel or master differs from its target gets one bind frame at the pipe it reports.
-    // With the lock off no chain is steered back; only an operation started here (manual Bind, Unbind, channel change, slot-conflict unbind) is carried on.
+    // With the lock off no chain is steered back; only an operation started here (manual Bind, Unbind, slot-conflict unbind, or a channel-only move of a chain already ours) is carried on.
     private void ReconcileLocked()
     {
         if (Slv3Protocol.MacIsZero(_masterMac))
@@ -1023,7 +1031,7 @@ public sealed class Slv3Hub : IDisposable
         {
             if (!_intents.TryGetValue(key, out var existing))
             {
-                AdoptLocked(key, merged[key]);
+                AdoptLocked(key, merged[key], merged);
             }
             else if (_lockBound && existing.Unbinding && _owned.ContainsKey(key) && !_userUnbound.Contains(key))
             {
@@ -1057,7 +1065,7 @@ public sealed class Slv3Hub : IDisposable
 
     // L-Connect adoption: with the lock on, a chain reporting our master is steered from its first sight and an
     // owned chain is steered whatever it reports. A chain this hub unbound that still reports our master is cleared again.
-    private void AdoptLocked(string key, Slv3DeviceRecord record)
+    private void AdoptLocked(string key, Slv3DeviceRecord record, Dictionary<string, Slv3DeviceRecord> merged)
     {
         var ours = Slv3Protocol.MacEquals(record.MasterMac, _masterMac);
         BindIntent intent;
@@ -1073,7 +1081,7 @@ public sealed class Slv3Hub : IDisposable
         {
             _unboundHere.Remove(key);
             var reported = ours && ValidSlot(record.RxType) ? record.RxType : (byte)0;
-            intent = new BindIntent(reported != 0 && (_owned[key] == reported || !RxClaimedLocked(reported, key))
+            intent = new BindIntent(reported != 0 && (!SlotHeldByOtherLocked(reported, key, merged) || (_owned[key] == reported && !IntentAimedAtLocked(reported, key)))
                 ? reported
                 : OwnedSlotOrUnusedLocked(key));
         }
@@ -1081,16 +1089,24 @@ public sealed class Slv3Hub : IDisposable
         {
             intent = new BindIntent(0) { Unbinding = true };
         }
-        else if (_lockBound && ours && _knownChains.ContainsKey(key))
+        else if (ours && _knownChains.ContainsKey(key))
         {
-            if (AdoptionCapReachedLocked())
+            if (!_lockBound)
+            {
+                if (!ValidSlot(record.RxType) || record.Channel == _channel)
+                {
+                    return;
+                }
+                intent = new BindIntent(record.RxType);
+            }
+            else if (AdoptionCapReachedLocked())
             {
                 intent = new BindIntent(0) { Unbinding = true };
                 _unboundHere.Add(key);
             }
             else
             {
-                intent = new BindIntent(ValidSlot(record.RxType) && !RxClaimedLocked(record.RxType, key)
+                intent = new BindIntent(ValidSlot(record.RxType) && !SlotHeldByOtherLocked(record.RxType, key, merged)
                     ? record.RxType
                     : GetRxUnusedLocked());
             }
@@ -1100,6 +1116,23 @@ public sealed class Slv3Hub : IDisposable
             return;
         }
         _intents[key] = intent;
+    }
+
+    // A slot another chain is aimed at or reports on our master; merged also holds owned chains not yet listed.
+    private bool SlotHeldByOtherLocked(byte slot, string key, Dictionary<string, Slv3DeviceRecord> merged)
+    {
+        if (RxClaimedLocked(slot, key))
+        {
+            return true;
+        }
+        foreach (var (otherKey, other) in merged)
+        {
+            if (otherKey != key && other.RxType == slot && IsBoundToUsLocked(other))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private bool AdoptionCapReachedLocked()
@@ -1140,13 +1173,16 @@ public sealed class Slv3Hub : IDisposable
         if (!NeedsBind(intent, record))
         {
             intent.Sends = 0;
+            intent.Manual = false;
             if (!_lockBound)
             {
                 _intents.Remove(key);
             }
             return;
         }
-        if (!_lockBound && !intent.Manual)
+        // Unlocked, only a manual Bind or a channel-only move of a chain already ours is carried on, never against a live foreign master.
+        if (!_lockBound && (IsLiveMasterLocked(record.MasterMac)
+            || !(intent.Manual || (IsBoundToUsLocked(record) && record.RxType == intent.TargetRx))))
         {
             _intents.Remove(key);
             return;
@@ -1191,6 +1227,11 @@ public sealed class Slv3Hub : IDisposable
             _conflictCounts.Clear();
             return;
         }
+        if (_devicePolls == _conflictPoll)
+        {
+            return;
+        }
+        _conflictPoll = _devicePolls;
         var seenKeys = new HashSet<string>(StringComparer.Ordinal);
         (string Key, byte Slot)? loser = null;
         foreach (var record in _pollRecords)
@@ -1277,30 +1318,24 @@ public sealed class Slv3Hub : IDisposable
         return byte.MaxValue;
     }
 
-    // A slot another chain reports on our master, is aimed at, or has saved as owned (an offline owned chain keeps its slot), other than <paramref name="except"/>.
+    // A slot another chain is aimed at or a listed chain reports on our master, other than <paramref name="except"/>.
     private bool RxClaimedLocked(byte slot, string? except)
     {
-        foreach (var record in _lastFanRecords.Concat(_pollRecords))
+        foreach (var record in _lastFanRecords)
         {
             if (record.RxType == slot && IsBoundToUsLocked(record) && Convert.ToHexString(record.Mac) != except)
             {
                 return true;
             }
         }
-        foreach (var (ownedKey, ownedSlot) in _owned)
-        {
-            if (ownedSlot == slot && ownedKey != except)
-            {
-                return true;
-            }
-        }
+        return IntentAimedAtLocked(slot, except);
+    }
+
+    private bool IntentAimedAtLocked(byte slot, string? except)
+    {
         foreach (var (key, intent) in _intents)
         {
-            if (key == except)
-            {
-                continue;
-            }
-            if (intent.TargetRx == slot || (TryGetRecordByKeyLocked(key, out var record) && record.RxType == slot))
+            if (key != except && intent.TargetRx == slot)
             {
                 return true;
             }
@@ -2932,31 +2967,6 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    // With the lock off only chains bound to us are walked over, and only until they report the new channel.
-    private void MarkChannelMigrationLocked()
-    {
-        if (_lockBound)
-        {
-            return;
-        }
-        foreach (var record in _lastFanRecords)
-        {
-            if (!IsBoundToUsLocked(record))
-            {
-                continue;
-            }
-            var key = Convert.ToHexString(record.Mac);
-            if (!_intents.TryGetValue(key, out var intent))
-            {
-                _intents[key] = new BindIntent(record.RxType) { Manual = true };
-            }
-            else if (!intent.Unbinding)
-            {
-                intent.Manual = true;
-            }
-        }
-    }
-
     /// <summary>Sets our operating channel; must be the default or an odd value (firmware rejects even). Every device bound to us is retargeted at once.</summary>
     public bool SetChannel(int channel)
     {
@@ -2968,7 +2978,6 @@ public sealed class Slv3Hub : IDisposable
         {
             _channel = (byte)channel;
             State.Channel = channel;
-            MarkChannelMigrationLocked();
             // L-Connect SwitchChannel: every chain kept bound reports the old channel and is walked over by the reconcile.
             RunPassLocked(() =>
             {
@@ -3104,7 +3113,7 @@ public sealed class Slv3Hub : IDisposable
 
         public byte TargetRx;
         public bool Unbinding;
-        // Started by a manual Bind or a channel change; the only bind an unlocked hub keeps sending.
+        // Started by a manual Bind; with the lock off it is sent until the chain confirms.
         public bool Manual;
         public bool NoSlotLogged;
         public int Sends;

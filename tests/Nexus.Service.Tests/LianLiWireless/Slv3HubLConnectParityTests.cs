@@ -143,14 +143,24 @@ public partial class Slv3HubTests
 
     [Theory]
     [MemberData(nameof(StrandedStates))]
-    public void Lock_off_sends_no_bind_frame_for_any_stranded_state(string state, byte[] master, byte rx, byte channel)
+    public void Lock_off_binds_only_a_chain_that_is_already_ours_and_differs_by_channel(string state, byte[] master, byte rx, byte channel)
     {
         var (hub, _, tx, _, _, _) = Stranded(master, rx, channel, lockOn: false);
 
         Ticks(hub, 3);
 
+        var channelOnly = Slv3Protocol.MacEquals(master, Ours) && rx >= Slv3Protocol.MinSlot && rx <= Slv3Protocol.MaxSlot
+            && channel != Slv3Protocol.DefaultChannel;
         var frames = AllBindFrames(tx);
-        Assert.True(frames.Count == 0, $"{state}: {frames.Count} bind frames");
+        if (channelOnly)
+        {
+            Assert.True(frames.Count >= 1, state);
+            Assert.All(frames, f => { Assert.Equal(channel, f[2]); Assert.Equal(rx, f[3]); });
+        }
+        else
+        {
+            Assert.True(frames.Count == 0, $"{state}: {frames.Count} bind frames");
+        }
     }
 
     [Fact]
@@ -1135,9 +1145,11 @@ public partial class Slv3HubTests
         net.Fans.Add(sibling);
 
         Ticks(hub, 1);
+        garbled.ReportedRx = null;
         Ticks(hub, 6);
 
         var towardsA = AllBindFrames(tx).Where(f => f.AsSpan(6, 6).SequenceEqual(a)).ToList();
+        Assert.NotEmpty(towardsA);
         Assert.All(towardsA, f => Assert.Equal(1, f[18]));
         Assert.Equal(1, garbled.RxType);
         Assert.Equal(4, sibling.RxType);
@@ -1225,15 +1237,84 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_stranded_chain_is_never_aimed_at_the_slot_an_offline_owned_chain_has_saved()
+    public void Two_owned_chains_that_swapped_slots_keep_the_slots_they_report()
     {
-        var offline = ChainMac(1);
-        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [Convert.ToHexString(offline)] = 3, [FanKey] = 3 });
-        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 0, Pwm = new byte[] { 6, 6, 6, 6 } });
+        var a = ChainMac(1);
+        var b = ChainMac(2);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [Convert.ToHexString(a)] = 3, [Convert.ToHexString(b)] = 4 });
+        net.Fans.Add(new SimulatedFan { Mac = a, MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } });
+        net.Fans.Add(new SimulatedFan { Mac = b, MasterMac = net.MasterMac, RxType = 3, Pwm = new byte[] { 6, 6, 6, 6 } });
 
-        Ticks(hub, 4);
+        Ticks(hub, 6);
+
+        Assert.Empty(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void Busy_replies_do_not_count_toward_the_owned_slot_sighting_gate()
+    {
+        var (hub, net, _, rx) = CreateConnectedHub();
+        var saved = new Dictionary<string, int>();
+        hub.OwnedDevicesLoad = () => new Dictionary<string, int> { [FanKey] = 1 };
+        hub.OwnedDevicesSave = owned =>
+        {
+            saved.Clear();
+            foreach (var (mac, slot) in owned)
+            {
+                saved[mac] = slot;
+            }
+        };
+        hub.LockBoundDevices = () => false;
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, Pwm = new byte[] { 6, 6, 6, 6 } };
+        net.Fans.Add(fan);
+        Ticks(hub, 5);
+
+        fan.ReportedRx = 7;
+        Ticks(hub, 1);
+        rx.BusyReads = true;
+        Ticks(hub, 5);
+        rx.BusyReads = false;
+        Ticks(hub, 1);
+        Assert.Equal(1, saved.GetValueOrDefault(FanKey, 1));
+
+        Ticks(hub, 1);
+        Assert.Equal(7, saved[FanKey]);
+    }
+
+    [Fact]
+    public void Busy_replies_neither_count_nor_reset_a_slot_conflict()
+    {
+        var (hub, net, tx, rx) = CreateConnectedHub();
+        hub.LockBoundDevices = () => false;
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("111111111111"), MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } });
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("222222222222"), MasterMac = net.MasterMac, RxType = 4, Pwm = new byte[] { 6, 6, 6, 6 } });
+
+        Ticks(hub, Slv3Hub.SlotConflictLimit);
+        rx.BusyReads = true;
+        Ticks(hub, 5);
+        Assert.Empty(AllBindFrames(tx));
+        rx.BusyReads = false;
+        Ticks(hub, 2);
 
         Assert.NotEmpty(AllBindFrames(tx));
-        Assert.DoesNotContain(AllBindFrames(tx), f => f[18] == 3);
+    }
+
+    [Fact]
+    public void A_manual_bind_is_dropped_once_a_live_foreign_master_takes_the_fan()
+    {
+        var (hub, net, tx, fan, _, _) = Stranded(new byte[6], 0, Slv3Protocol.DefaultChannel, ownedFan: false, lockOn: false);
+        Ticks(hub, 1);
+        fan.IgnoresBind = true;
+        Assert.True(ManualBind(hub, FanKey));
+        Ticks(hub, 2);
+        Assert.NotEmpty(AllBindFrames(tx));
+
+        fan.MasterMac = FarMaster;
+        net.Fans.Add(new SimulatedFan { Mac = FarMaster, DevType = 0xFF });
+        Ticks(hub, 1);
+        tx.SentFrames.Clear();
+        Ticks(hub, 4);
+
+        Assert.Empty(AllBindFrames(tx));
     }
 }
