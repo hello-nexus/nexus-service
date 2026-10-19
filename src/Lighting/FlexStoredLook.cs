@@ -20,34 +20,11 @@ public static class FlexStoredLook
         public required double IntervalMs { get; init; }
     }
 
-    private static readonly RgbColor[] DefaultSet =
-    {
-        new(170, 0, 255), new(0, 215, 255), new(0, 255, 0), new(255, 216, 0),
-    };
-
-    private static readonly RgbColor[] MeteorSet =
-    {
-        new(255, 0, 150), new(0, 215, 255), new(0, 255, 0), new(255, 215, 0),
-    };
-
-    private static readonly RgbColor[] ColorCycleSet =
-    {
-        new(255, 215, 0), new(0, 255, 0), new(0, 215, 255),
-    };
-
-    /// <summary>The palette used when the user has not picked colors.</summary>
-    public static IReadOnlyList<RgbColor> DefaultPalette(string key) => key switch
-    {
-        "meteor" => MeteorSet,
-        "colorCycle" => ColorCycleSet,
-        _ => DefaultSet,
-    };
-
-    public static IReadOnlyList<RgbColor> ColorsOf(string key, IReadOnlyList<string> hex)
+    public static IReadOnlyList<RgbColor> ColorsOf(FlexFamily family, string key, IReadOnlyList<string> hex)
     {
         if (hex.Count == 0)
         {
-            return DefaultPalette(key);
+            return FlexDefaultPalettes.For(family, key);
         }
         var list = new List<RgbColor>(hex.Count);
         foreach (var h in hex)
@@ -58,7 +35,7 @@ public static class FlexStoredLook
                 list.Add(new RgbColor((byte)(v >> 16), (byte)(v >> 8), (byte)v));
             }
         }
-        return list.Count == 0 ? DefaultPalette(key) : list;
+        return list.Count == 0 ? FlexDefaultPalettes.For(family, key) : list;
     }
 
     public static Dictionary<string, FlexZoneLook> ZoneLooks(FlexFamily family, LianLiFlexUnitSettings look)
@@ -71,13 +48,13 @@ public static class FlexStoredLook
             {
                 var z = i < look.Zones.Count ? look.Zones[i] : new LianLiFlexZoneSettings();
                 result[zones[i]] = new FlexZoneLook(z.Mode, Math.Clamp(z.Speed, 0, 4), z.Direction != 0 ? 1 : 0,
-                    Math.Clamp(z.Brightness, 0, 4), ColorsOf(z.Mode, z.Colors));
+                    Math.Clamp(z.Brightness, 0, 4), ColorsOf(family, z.Mode, z.Colors));
             }
         }
         else
         {
             result["all"] = new FlexZoneLook(look.Mode, Math.Clamp(look.Speed, 0, 4), look.Direction != 0 ? 1 : 0,
-                Math.Clamp(look.Brightness, 0, 4), ColorsOf(look.Mode, look.Colors));
+                Math.Clamp(look.Brightness, 0, 4), ColorsOf(family, look.Mode, look.Colors));
         }
         return result;
     }

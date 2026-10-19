@@ -26,6 +26,8 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
     private const int SettleMs = 300;
     private const int DriftConfirmMs = 1500;
     private const int RetryUploadMs = 2000;
+    // A receiver that never echoes the index must not be rewritten forever (each upload is a flash save).
+    private const int MaxDriftRetries = 2;
 
     private readonly LightingEngine _engine;
     private readonly FlexHub _hub;
@@ -93,6 +95,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         public string UploadedSignature = "";
         public long LastUploadAttemptMs = long.MinValue / 2;
         public long UploadedAtMs;
+        public int DriftRetries;
     }
 
     public FlexLightingFrameWriter(
@@ -307,6 +310,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             st.PendingSinceMs = now;
         }
         var drifted = st.UploadedSignature == signature
+            && st.DriftRetries < MaxDriftRetries
             && now - st.UploadedAtMs >= DriftConfirmMs
             && _hub.SentEffectIndex(unit.Mac).Length > 0
             && !string.Equals(unit.Info.EffectIndex, _hub.SentEffectIndex(unit.Mac), StringComparison.OrdinalIgnoreCase);
@@ -328,6 +332,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             return;
         }
         st.LastUploadAttemptMs = now;
+        st.DriftRetries = st.UploadedSignature == signature ? st.DriftRetries + 1 : 0;
         var package = FlexStoredLook.Build(unit, look);
         if (package is null)
         {

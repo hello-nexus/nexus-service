@@ -179,4 +179,114 @@ public class FlexLightingFrameWriterTests
         Assert.NotEmpty(s.Tx.Of(FlexProtocol.CmdLive));
         Assert.Empty(s.Tx.Of(FlexProtocol.CmdSave));
     }
+
+    private static void SetLook(Setup s, LianLiFlexUnitSettings look) => s.Store.Update(x => x.Devices.FlexUnits[Mac] = look);
+
+    private static void Run(Setup s, int ms)
+    {
+        for (var t = 0; t < ms; t += 100)
+        {
+            s.Clock.Now += 100;
+            s.Writer.Tick();
+            s.Hub.Tick();
+        }
+    }
+
+    [Fact]
+    public void A_stored_effect_uploads_once_after_the_settings_settle_and_saves_once_later()
+    {
+        var s = Create();
+        SetLook(s, new LianLiFlexUnitSettings { Mode = "rainbow" });
+        Run(s, 1000);
+        Assert.Single(s.Tx.Of(FlexProtocol.CmdEnable));
+        var header = s.Tx.Of(FlexProtocol.CmdPackage).First();
+        Assert.Equal(26, header[29]);
+        Assert.Equal(13, (header[27] << 8) | header[28]);
+        Assert.Empty(s.Tx.Of(FlexProtocol.CmdLive));
+        Assert.Empty(s.Tx.Of(FlexProtocol.CmdSave));
+        Run(s, FlexHub.SaveSettleMs + 500);
+        Assert.Single(s.Tx.Of(FlexProtocol.CmdSave));
+        Run(s, 20_000);
+        Assert.Single(s.Tx.Of(FlexProtocol.CmdEnable));
+        Assert.Single(s.Tx.Of(FlexProtocol.CmdSave));
+    }
+
+    [Fact]
+    public void Quick_successive_edits_upload_the_settled_value_and_save_once()
+    {
+        var s = Create();
+        for (var speed = 0; speed < 5; speed++)
+        {
+            SetLook(s, new LianLiFlexUnitSettings { Mode = "rainbow", Speed = speed });
+            Run(s, 100);
+        }
+        Run(s, 500);
+        Assert.Single(s.Tx.Of(FlexProtocol.CmdEnable));
+        Run(s, FlexHub.SaveSettleMs + 500);
+        Assert.Single(s.Tx.Of(FlexProtocol.CmdSave));
+    }
+
+    [Fact]
+    public void A_look_already_stored_on_the_receiver_is_not_uploaded_again()
+    {
+        var s = Create();
+        SetLook(s, new LianLiFlexUnitSettings { Mode = "rainbow" });
+        Run(s, 1000);
+        var look = s.Store.Load().Devices.FlexUnits[Mac];
+        Assert.False(string.IsNullOrEmpty(look.PackageSignature));
+        // the receiver echoes the index it was sent
+        s.Tx.Info[21] = Convert.FromHexString(look.PackageEffectIndex!)[0];
+        s.Tx.Info[22] = Convert.FromHexString(look.PackageEffectIndex!)[1];
+        s.Tx.Info[23] = Convert.FromHexString(look.PackageEffectIndex!)[2];
+        s.Tx.Info[24] = Convert.FromHexString(look.PackageEffectIndex!)[3];
+        var restarted = new FlexLightingFrameWriter(s.Engine, s.Hub, s.Store, new Np50IdentifyTracker(), s.Provider, s.Clock.Func);
+        var before = s.Tx.Of(FlexProtocol.CmdEnable).Count();
+        for (var i = 0; i < 20; i++)
+        {
+            s.Clock.Now += 100;
+            s.Hub.Tick();
+            restarted.Tick();
+        }
+        Assert.Equal(before, s.Tx.Of(FlexProtocol.CmdEnable).Count());
+    }
+
+    [Fact]
+    public void A_receiver_that_never_echoes_the_index_is_not_rewritten_forever()
+    {
+        var s = Create();
+        s.Tx.EchoEffectIndex = false;
+        SetLook(s, new LianLiFlexUnitSettings { Mode = "rainbow" });
+        Run(s, 60_000);
+        Assert.InRange(s.Tx.Of(FlexProtocol.CmdEnable).Count(), 1, 3);
+    }
+
+    [Fact]
+    public void Per_zone_looks_upload_one_package_for_the_whole_fan()
+    {
+        var s = Create();
+        SetLook(s, new LianLiFlexUnitSettings
+        {
+            Mode = LianLiFlexUnitSettings.ModePerZone,
+            Zones = new()
+            {
+                new LianLiFlexZoneSettings { Mode = "meteor" },
+                new LianLiFlexZoneSettings { Mode = "static" },
+            },
+        });
+        Run(s, 1000);
+        Assert.Single(s.Tx.Of(FlexProtocol.CmdEnable));
+        Assert.Equal(26, s.Tx.Of(FlexProtocol.CmdPackage).First()[29]);
+    }
+
+    [Fact]
+    public void Returning_to_the_lighting_page_mode_streams_again_without_saving()
+    {
+        var s = Create();
+        SetLook(s, new LianLiFlexUnitSettings { Mode = "rainbow" });
+        Run(s, 1000);
+        SetLook(s, new LianLiFlexUnitSettings { Mode = "custom" });
+        Paint(s.Frames[0], 9, 9, 9);
+        Run(s, 500);
+        Assert.NotEmpty(s.Tx.Of(FlexProtocol.CmdLive));
+    }
 }
