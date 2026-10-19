@@ -707,6 +707,7 @@ public static class LightingRoutes
     // keeps a stale entry from swallowing a later real change.
     private static readonly object _effectLock = new();
     private static (string? Persisted, string Signature) _lastCaptured = (null, "");
+    private static int _effectsInFlight;
 
     /// <summary>A flat color is one look whatever effect key the client sends alongside it.</summary>
     internal const string FlatEffect = "flat";
@@ -726,9 +727,9 @@ public static class LightingRoutes
                 return EffectSignature("screen", null);
             case "static":
                 // A non-flat static start nulls the color; a flat one never writes the effect.
-                return string.IsNullOrEmpty(lighting.Static.Color)
-                    ? EffectSignature("static", lighting.Static.Effect)
-                    : "static:" + FlatEffect;
+                return Nexus.Service.Lighting.StaticColorHex.TryParse(lighting.Static.Color, out _, out _, out _)
+                    ? "static:" + FlatEffect
+                    : EffectSignature("static", lighting.Static.Effect);
             default:
                 return EffectSignature("animate", sync);
         }
@@ -746,13 +747,26 @@ public static class LightingRoutes
     internal static void StartAndCapture(Nexus.Service.Telemetry.ITelemetry telemetry,
         Nexus.Service.Persistence.IConfigStore store, string routeMode, string? effect, string? color, Action start)
     {
-        var persistedBefore = PersistedEffectSignature(store.Load().Lighting);
-        start();
-        CaptureEffect(telemetry, routeMode, effect, persistedBefore, color);
+        Interlocked.Increment(ref _effectsInFlight);
+        try
+        {
+            var persistedBefore = PersistedEffectSignature(store.Load().Lighting);
+            start();
+            // Only the sole in-flight request may retire the last-captured pair: an
+            // overlapping request that read the same persisted look still needs it.
+            var persistedAfter = Volatile.Read(ref _effectsInFlight) == 1
+                ? PersistedEffectSignature(store.Load().Lighting)
+                : null;
+            CaptureEffect(telemetry, routeMode, effect, persistedBefore, color, persistedAfter);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _effectsInFlight);
+        }
     }
 
     internal static void CaptureEffect(Nexus.Service.Telemetry.ITelemetry telemetry, string routeMode, string? effect,
-        string persistedBefore = "", string? color = null)
+        string persistedBefore = "", string? color = null, string? persistedAfter = null)
     {
         var (mode, slug) = routeMode == "static" && !string.IsNullOrEmpty(color)
             ? ("static", FlatEffect)
@@ -764,7 +778,11 @@ public static class LightingRoutes
             // a change to ReferenceEquals would silently stop deduping.
             var seen = signature == persistedBefore
                 || (_lastCaptured.Persisted == persistedBefore && _lastCaptured.Signature == signature);
-            _lastCaptured = (persistedBefore, signature);
+            // A request that persisted its look is covered by the persisted compare
+            // from here on; keeping the pair would swallow the same change after an
+            // outside write (Deck, profile, MCP) restored the old look. Known edge:
+            // an unpersisted drag whose release is lost, then picking the persisted look.
+            _lastCaptured = persistedAfter == signature ? (null, "") : (persistedBefore, signature);
             if (seen) return;
         }
         telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.LightingEffectApplied,

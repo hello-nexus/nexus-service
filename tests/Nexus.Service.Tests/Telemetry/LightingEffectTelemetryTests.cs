@@ -174,6 +174,24 @@ public class LightingEffectTelemetryTests
     }
 
     [Fact]
+    public void The_same_change_after_an_outside_write_restored_the_old_look_counts_again()
+    {
+        var t = Fresh();
+        var store = StoreWith("plasma");
+        Animate(t, store, "fire");
+        store.Update(s => s.Lighting.Sync = "plasma"); // Deck button, profile, MCP or auto-restore
+        Animate(t, store, "fire");
+        Assert.Equal(2, t.Events.Count);
+    }
+
+    [Fact]
+    public void An_unparseable_persisted_static_color_is_not_flat()
+    {
+        var store = StoreWith("static", "stripes", "not-a-color");
+        Assert.Equal("static:stripes", LightingRoutes.PersistedEffectSignature(store.Load().Lighting));
+    }
+
+    [Fact]
     public void A_to_B_to_A_counts_every_change()
     {
         var t = Fresh();
