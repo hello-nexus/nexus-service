@@ -528,6 +528,7 @@ public sealed class UiSettingsPatch
 {
     public bool? ShowConflictAlerts { get; set; }
     public bool? AutoKillConflictsAtStartup { get; set; }
+    /// <summary>Accepted for older clients and ignored: a whole-list write from a client's cached copy erased choices made elsewhere. Edit through POST /conflicts/whitelist, which changes one app atomically.</summary>
     public List<string>? ConflictAutoKillExclusions { get; set; }
     public bool? NotifyConflictLaunches { get; set; }
     public bool? EndConflictsOnLaunch { get; set; }
