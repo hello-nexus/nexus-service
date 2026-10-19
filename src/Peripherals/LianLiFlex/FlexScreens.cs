@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -65,7 +66,7 @@ public sealed class FlexScreens : IFanLcdScreens
     /// reboot command and is back about two seconds later. Its content loop is stopped for this
     /// long, so the new loop opens the screen once and applies brightness and rotation first.
     /// </summary>
-    public const int RestartQuietMs = 6000;
+    public const int RestartQuietMs = 3500;
 
     public FlexScreens(FlexLcdHub lcd, FlexHub flex, System.Func<long>? nowMs = null)
     {
@@ -90,6 +91,10 @@ public sealed class FlexScreens : IFanLcdScreens
             }
             // A screen that does not answer is asked again only every VersionRetryMs.
             if (_versionTried.TryGetValue(s.Serial, out var tried) && _nowMs() - tried < VersionRetryMs)
+            {
+                continue;
+            }
+            if (!_lcd.Hub.OpenSerials().Contains(s.Serial, StringComparer.OrdinalIgnoreCase))
             {
                 continue;
             }
