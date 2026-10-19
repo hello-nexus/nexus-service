@@ -209,16 +209,28 @@ internal static partial class WindowsSpecsNative
 
     // ── Monitors, resolution ──────────────────────────────────────────────
 
-    private static readonly Guid MonitorClass = new("4d36e96e-e325-11ce-8c3d-00a0c9a2c1ed");
-    private static readonly Guid MediaClass = new("4d36e96c-e325-11ce-8c3d-00a0c9a2c1ed");
+    private static readonly Guid MonitorClass = new("4d36e96e-e325-11ce-bfc1-08002be10318");
+    private static readonly Guid NetClass = new("4d36e972-e325-11ce-bfc1-08002be10318");
+    private static readonly Guid MediaClass = new("4d36e96c-e325-11ce-bfc1-08002be10318");
+
+    private static List<(string InstanceId, byte[]? Edid)> PresentMonitors()
+    {
+        var monitors = new List<(string, byte[]?)>();
+        foreach (var device in WindowsDevnodes.EnumeratePresent(MonitorClass))
+        {
+            using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Enum\{device.InstanceId}\Device Parameters");
+            monitors.Add((device.InstanceId, key?.GetValue("EDID") as byte[]));
+        }
+        // WmiMonitorID lists monitors in instance id order.
+        monitors.Sort((x, y) => string.Compare(x.Item1, y.Item1, StringComparison.OrdinalIgnoreCase));
+        return monitors;
+    }
 
     private static JsonArray ReadMonitors()
     {
         var rows = new JsonArray();
-        foreach (var device in WindowsDevnodes.EnumeratePresent(MonitorClass))
+        foreach (var (_, edid) in PresentMonitors())
         {
-            using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Enum\{device.InstanceId}\Device Parameters");
-            var edid = key?.GetValue("EDID") as byte[];
             rows.Add((JsonNode)new JsonObject
             {
                 ["Name"] = WindowsSpecsParsers.EdidMonitorName(edid),
@@ -237,14 +249,52 @@ internal static partial class WindowsSpecsNative
             if ((adapter.StateFlags & DisplayDeviceAttachedToDesktop) == 0) continue;
             var mode = new DevMode { Size = (ushort)Marshal.SizeOf<DevMode>() };
             if (!EnumDisplaySettings(adapter.DeviceName, EnumCurrentSettings, ref mode)) continue;
-            rows.Add((JsonNode)new JsonObject
-            {
-                ["CurrentHorizontalResolution"] = (int)mode.PelsWidth,
-                ["CurrentVerticalResolution"] = (int)mode.PelsHeight,
-                ["CurrentRefreshRate"] = (int)mode.DisplayFrequency,
-            });
+            rows.Add((JsonNode)VideoRow((int)mode.PelsWidth, (int)mode.PelsHeight, (int)mode.DisplayFrequency));
+        }
+        if (rows.Count > 0) return rows;
+
+        // Session 0 has no desktop, so GDI sees no adapters there; the saved
+        // display configuration for the connected monitors carries each path's mode.
+        foreach (var (width, height, hz) in SavedDisplayModes())
+        {
+            rows.Add((JsonNode)VideoRow(width, height, hz));
         }
         return rows;
+    }
+
+    private static JsonObject VideoRow(int width, int height, int hz) => new()
+    {
+        ["CurrentHorizontalResolution"] = width,
+        ["CurrentVerticalResolution"] = height,
+        ["CurrentRefreshRate"] = hz,
+    };
+
+    private const string DisplayConfigurationKey = @"SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration";
+
+    private static List<(int Width, int Height, int Hz)> SavedDisplayModes()
+    {
+        var modes = new List<(int, int, int)>();
+        var ids = PresentMonitors().Select(m => WindowsSpecsParsers.EdidConfigId(m.Edid)).Where(id => id.Length > 0).ToList();
+        using var root = Registry.LocalMachine.OpenSubKey(DisplayConfigurationKey);
+        if (root is null) return modes;
+        var name = WindowsSpecsParsers.SelectDisplayConfig(root.GetSubKeyNames(), ids);
+        if (name is null) return modes;
+
+        using var config = root.OpenSubKey(name);
+        if (config is null) return modes;
+        foreach (var pathName in config.GetSubKeyNames().OrderBy(n => n, StringComparer.Ordinal))
+        {
+            using var path = config.OpenSubKey(pathName);
+            using var target = path?.OpenSubKey("00");
+            if (path is null || target is null) continue;
+            var width = Convert.ToInt32(path.GetValue("PrimSurfSize.cx") ?? 0);
+            var height = Convert.ToInt32(path.GetValue("PrimSurfSize.cy") ?? 0);
+            var numerator = Convert.ToUInt32(target.GetValue("VSyncFreq.Numerator") ?? 0);
+            var denominator = Convert.ToUInt32(target.GetValue("VSyncFreq.Denominator") ?? 0);
+            // GDI reports the refresh rate truncated (59.95 Hz is 59).
+            modes.Add((width, height, denominator == 0 ? 0 : (int)(numerator / denominator)));
+        }
+        return modes;
     }
 
     // ── Sound ─────────────────────────────────────────────────────────────
@@ -254,7 +304,8 @@ internal static partial class WindowsSpecsNative
         var rows = new JsonArray();
         foreach (var device in WindowsDevnodes.EnumeratePresent(MediaClass))
         {
-            if (device.ProblemCode != 0) continue;
+            // Software devices (SW\\) are not listed by Win32_SoundDevice.
+            if (device.ProblemCode != 0 || device.InstanceId.StartsWith(@"SW\", StringComparison.OrdinalIgnoreCase)) continue;
             rows.Add((JsonNode)new JsonObject { ["Name"] = device.Name });
         }
         return rows;
@@ -266,6 +317,7 @@ internal static partial class WindowsSpecsNative
     // flags byte and is what Get-NetAdapter -Physical filters on.
     private const int IfRowSize = 1352;
     private const int IfRowIndexOffset = 8;
+    private const int IfRowGuidOffset = 12;
     private const int IfRowDescriptionOffset = 542;
     private const int IfRowDescriptionChars = 257;
     private const int IfRowFlagsOffset = 1152;
@@ -277,6 +329,8 @@ internal static partial class WindowsSpecsNative
     private static unsafe JsonArray ReadNet()
     {
         var rows = new JsonArray();
+        // The interface table keeps rows for adapters whose device is gone; Get-NetAdapter lists only those with a present devnode.
+        var present = PresentNetworkInterfaceGuids();
         if (GetIfTable2(out var table) != 0 || table == IntPtr.Zero) return rows;
         try
         {
@@ -286,6 +340,7 @@ internal static partial class WindowsSpecsNative
             {
                 var row = new ReadOnlySpan<byte>((byte*)table + IfTableRowsOffset + ((long)i * IfRowSize), IfRowSize);
                 if ((row[IfRowFlagsOffset] & 0x01) == 0) continue;
+                if (!present.Contains(new Guid(row.Slice(IfRowGuidOffset, 16)))) continue;
 
                 var description = System.Text.Encoding.Unicode.GetString(row.Slice(IfRowDescriptionOffset, IfRowDescriptionChars * 2));
                 var end = description.IndexOf('\0');
@@ -302,10 +357,22 @@ internal static partial class WindowsSpecsNative
                         ["Status"] = up ? "Up" : "Disconnected",
                     }));
             }
-            foreach (var adapter in adapters.OrderBy(a => a.Index)) rows.Add((JsonNode)adapter.Row);
+            foreach (var adapter in adapters.OrderByDescending(a => a.Index)) rows.Add((JsonNode)adapter.Row);
         }
         finally { FreeMibTable(table); }
         return rows;
+    }
+
+    private static HashSet<Guid> PresentNetworkInterfaceGuids()
+    {
+        var guids = new HashSet<Guid>();
+        foreach (var device in WindowsDevnodes.EnumeratePresent(NetClass))
+        {
+            if (device.DriverKey.Length == 0) continue;
+            using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Control\Class\{device.DriverKey}");
+            if (key?.GetValue("NetCfgInstanceId") is string id && Guid.TryParse(id, out var guid)) guids.Add(guid);
+        }
+        return guids;
     }
 
     // ── OA3 key (ACPI MSDM) ───────────────────────────────────────────────
@@ -413,6 +480,12 @@ internal static partial class WindowsSpecsNative
 
     [LibraryImport("iphlpapi.dll")]
     private static partial void FreeMibTable(IntPtr memory);
+
+    [LibraryImport("user32.dll")]
+    private static partial int GetDisplayConfigBufferSizes(uint flags, out uint pathCount, out uint modeCount);
+
+    [LibraryImport("user32.dll")]
+    private static partial int QueryDisplayConfig(uint flags, ref uint pathCount, [Out] byte[] paths, ref uint modeCount, [Out] byte[] modes, IntPtr topology);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool EnumDisplayDevices(string? device, uint index, ref DisplayDevice displayDevice, uint flags);

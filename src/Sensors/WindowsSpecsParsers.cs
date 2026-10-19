@@ -199,4 +199,43 @@ internal static class WindowsSpecsParsers
         }
         return items;
     }
+
+    /// <summary>
+    /// The id the display driver stack uses for a monitor inside a
+    /// GraphicsDrivers\Configuration key name: manufacturer, product code, serial
+    /// text, week, year and the EDID checksum byte.
+    /// </summary>
+    public static string EdidConfigId(byte[]? edid)
+    {
+        if (edid is null || edid.Length < 128) return "";
+        var product = edid[10] | (edid[11] << 8);
+        var serial = "";
+        for (var i = 0; i < 4; i++)
+        {
+            var o = 54 + (i * 18);
+            if (edid[o] != 0 || edid[o + 1] != 0 || edid[o + 2] != 0 || edid[o + 3] != 0xFF) continue;
+            var text = Encoding.ASCII.GetString(edid, o + 5, 13);
+            var end = text.IndexOf('\n');
+            serial = (end >= 0 ? text[..end] : text).Trim();
+            break;
+        }
+        return $"{EdidManufacturer(edid)}{product:X4}{serial}_{edid[16]:X2}_{1990 + edid[17]:X4}_{edid[127]:X2}";
+    }
+
+    /// <summary>
+    /// The saved display-configuration key whose monitor set is exactly the
+    /// present monitors (key names read <c>id+id^hash</c>), or null.
+    /// </summary>
+    public static string? SelectDisplayConfig(IEnumerable<string> keyNames, IReadOnlyCollection<string> presentIds)
+    {
+        if (presentIds.Count == 0) return null;
+        var wanted = new HashSet<string>(presentIds, StringComparer.OrdinalIgnoreCase);
+        foreach (var name in keyNames)
+        {
+            var caret = name.IndexOf('^');
+            var ids = (caret >= 0 ? name[..caret] : name).Split('+');
+            if (ids.Length == wanted.Count && wanted.SetEquals(ids)) return name;
+        }
+        return null;
+    }
 }

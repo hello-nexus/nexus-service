@@ -199,4 +199,46 @@ public class WindowsSpecsParsersTests
         Assert.Equal(new[] { "USB\\A\\1", "USB\\B\\2" }, WindowsSpecsParsers.SplitMultiSz(buffer));
         Assert.Empty(WindowsSpecsParsers.SplitMultiSz(new char[] { '\0', '\0' }));
     }
+
+    private static byte[] BuildConfigEdid(string mfg, int product, string serial, int week, int year, byte checksum)
+    {
+        var edid = BuildEdid("X", mfg);
+        edid[10] = (byte)(product & 0xFF);
+        edid[11] = (byte)(product >> 8);
+        edid[16] = (byte)week;
+        edid[17] = (byte)(year - 1990);
+        edid[127] = checksum;
+        var o = 54 + (2 * 18);
+        edid[o + 3] = 0xFF;
+        Array.Fill(edid, (byte)0x20, o + 5, 13);
+        var text = Encoding.ASCII.GetBytes(serial + "\n");
+        Array.Copy(text, 0, edid, o + 5, Math.Min(text.Length, 13));
+        return edid;
+    }
+
+    [Theory]
+    [InlineData("DEL", 0xA0B8, "CFV9N7590TAS", 19, 2017, 0xFD, "DELA0B8CFV9N7590TAS_13_07E1_FD")]
+    [InlineData("RTK", 0x0004, "demoset-1", 8, 2023, 0xF3, "RTK0004demoset-1_08_07E7_F3")]
+    [InlineData("SAM", 0x71AA, "HCST400731", 17, 2022, 0xF2, "SAM71AAHCST400731_11_07E6_F2")]
+    public void EdidConfigId_MatchesTheDisplayConfigurationKeyNames(
+        string mfg, int product, string serial, int week, int year, int checksum, string expected)
+    {
+        Assert.Equal(expected, WindowsSpecsParsers.EdidConfigId(BuildConfigEdid(mfg, product, serial, week, year, (byte)checksum)));
+    }
+
+    [Fact]
+    public void SelectDisplayConfig_RequiresTheExactMonitorSet()
+    {
+        var keys = new[]
+        {
+            "DELA0B8CFV9N7590TAS_13_07E1_FD+DELA0B8CFV9N7591RYS_13_07E1_CF+CRXED00002125375656_17_07DB_83^542C",
+            "DELA0B8CFV9N7590TAS_13_07E1_FD+DELA0B8CFV9N7591RYS_13_07E1_CF^4A38",
+            "DELA0B8CFV9N7590TAS_13_07E1_FD^2EC3",
+        };
+        var present = new[] { "DELA0B8CFV9N7591RYS_13_07E1_CF", "DELA0B8CFV9N7590TAS_13_07E1_FD" };
+
+        Assert.Equal(keys[1], WindowsSpecsParsers.SelectDisplayConfig(keys, present));
+        Assert.Null(WindowsSpecsParsers.SelectDisplayConfig(keys, new[] { "SAM71AAHCST400731_11_07E6_F2" }));
+        Assert.Null(WindowsSpecsParsers.SelectDisplayConfig(keys, Array.Empty<string>()));
+    }
 }

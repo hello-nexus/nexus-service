@@ -37,8 +37,9 @@ internal static partial class UwpLogoResolver
     }
 
     /// <summary>
-    /// The highest-scale file named <c>base*ext</c> among <paramref name="fileNames"/>;
-    /// null when none match, so the caller falls back to the declared logo path.
+    /// The highest-scale file named <c>base*ext</c>, the first listed among equals (the
+    /// plain variant sorts ahead of its contrast and altform siblings); null when none
+    /// match, so the caller falls back to the declared logo path.
     /// </summary>
     public static string? BestScaledFile(string logoFileName, IEnumerable<string> fileNames)
     {

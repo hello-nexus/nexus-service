@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
@@ -9,21 +10,20 @@ namespace Nexus.Service.Platform.Windows;
 
 /// <summary>Present devnodes and their Device Manager problem codes through SetupAPI and cfgmgr32, in-process.</summary>
 [SupportedOSPlatform("windows")]
-internal static unsafe partial class WindowsDevnodes
+internal static partial class WindowsDevnodes
 {
-    internal readonly record struct PresentDevice(string InstanceId, string Name, uint ProblemCode);
+    internal readonly record struct PresentDevice(string InstanceId, string Name, uint ProblemCode, string DriverKey);
 
     private const uint DigcfPresent = 0x2;
     private const uint DigcfAllClasses = 0x4;
     private const uint SpdrpDeviceDesc = 0x0;
     private const uint SpdrpFriendlyName = 0xC;
-    private const uint CmGetIdListFilterEnumerator = 0x1;
-    private const uint CmGetIdListFilterPresent = 0x100;
+    private const uint SpdrpDriver = 0x9;
     private const uint CmLocateDevnodePhantom = 0x1;
     private static readonly IntPtr InvalidHandle = new(-1);
 
-    /// <summary>Every present devnode of a setup class, or of all classes when none is given.</summary>
-    public static List<PresentDevice> EnumeratePresent(Guid? classGuid = null)
+    /// <summary>Every present devnode of a setup class, or of all classes (optionally under one enumerator such as USB) when none is given.</summary>
+    public static List<PresentDevice> EnumeratePresent(Guid? classGuid = null, string? enumerator = null)
     {
         var devices = new List<PresentDevice>();
         IntPtr set;
@@ -33,7 +33,12 @@ internal static unsafe partial class WindowsDevnodes
         }
         else
         {
-            set = SetupDiGetClassDevsAll(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, DigcfPresent | DigcfAllClasses);
+            var enumeratorPtr = enumerator is null ? IntPtr.Zero : Marshal.StringToHGlobalUni(enumerator);
+            try
+            {
+                set = SetupDiGetClassDevsAll(IntPtr.Zero, enumeratorPtr, IntPtr.Zero, DigcfPresent | DigcfAllClasses);
+            }
+            finally { if (enumeratorPtr != IntPtr.Zero) Marshal.FreeHGlobal(enumeratorPtr); }
         }
         if (set == InvalidHandle) return devices;
 
@@ -42,22 +47,25 @@ internal static unsafe partial class WindowsDevnodes
             var data = new SpDevInfoData { Size = (uint)Marshal.SizeOf<SpDevInfoData>() };
             for (uint i = 0; SetupDiEnumDeviceInfo(set, i, ref data); i++)
             {
-                var name = ReadStringProperty(set, ref data, SpdrpFriendlyName);
-                if (name.Length == 0) name = ReadStringProperty(set, ref data, SpdrpDeviceDesc);
+                var name = ReadStringProperty(set, ref data, SpdrpDeviceDesc);
+                if (name.Length == 0) name = ReadStringProperty(set, ref data, SpdrpFriendlyName);
 
                 var idBuffer = new char[512];
                 var instanceId = "";
-                fixed (char* idPtr = idBuffer)
+                unsafe
                 {
-                    if (SetupDiGetDeviceInstanceId(set, ref data, idPtr, (uint)idBuffer.Length, out _))
+                    fixed (char* idPtr = idBuffer)
                     {
-                        instanceId = new string(idPtr);
+                        if (SetupDiGetDeviceInstanceId(set, ref data, idPtr, (uint)idBuffer.Length, out _))
+                        {
+                            instanceId = new string(idPtr);
+                        }
                     }
                 }
 
                 uint problem = 0;
                 if (CM_Get_DevNode_Status(out _, out var p, data.DevInst, 0) == 0) problem = p;
-                devices.Add(new PresentDevice(instanceId, name, problem));
+                devices.Add(new PresentDevice(instanceId, name, problem, ReadStringProperty(set, ref data, SpdrpDriver)));
             }
         }
         finally { SetupDiDestroyDeviceInfoList(set); }
@@ -66,22 +74,7 @@ internal static unsafe partial class WindowsDevnodes
 
     /// <summary>The present USB devnode whose instance id ends in the adb serial, or null.</summary>
     public static string? FindPresentUsbInstanceId(string serial)
-    {
-        if (CM_Get_Device_ID_List_Size(out var length, "USB", CmGetIdListFilterEnumerator | CmGetIdListFilterPresent) != 0
-            || length == 0)
-        {
-            return null;
-        }
-        var buffer = new char[length];
-        fixed (char* ptr = buffer)
-        {
-            if (CM_Get_Device_ID_List("USB", ptr, length, CmGetIdListFilterEnumerator | CmGetIdListFilterPresent) != 0)
-            {
-                return null;
-            }
-        }
-        return WindowsSpecsParsers.PickUsbInstanceId(WindowsSpecsParsers.SplitMultiSz(buffer), serial);
-    }
+        => WindowsSpecsParsers.PickUsbInstanceId(EnumeratePresent(enumerator: "USB").Select(d => d.InstanceId), serial);
 
     /// <summary>DEVPKEY_Device_ProblemCode equivalent, or null when the devnode cannot be located.</summary>
     public static int? ReadProblemCode(string instanceId)
@@ -128,7 +121,7 @@ internal static unsafe partial class WindowsDevnodes
 
     [LibraryImport("setupapi.dll", EntryPoint = "SetupDiGetDeviceInstanceIdW", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetupDiGetDeviceInstanceId(IntPtr set, ref SpDevInfoData data, char* buffer, uint size, out uint required);
+    private static unsafe partial bool SetupDiGetDeviceInstanceId(IntPtr set, ref SpDevInfoData data, char* buffer, uint size, out uint required);
 
     [LibraryImport("setupapi.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -139,10 +132,4 @@ internal static unsafe partial class WindowsDevnodes
 
     [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Locate_DevNodeW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint CM_Locate_DevNode(out uint devInst, string deviceId, uint flags);
-
-    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_Device_ID_List_SizeW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial uint CM_Get_Device_ID_List_Size(out uint length, string? filter, uint flags);
-
-    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_Device_ID_ListW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial uint CM_Get_Device_ID_List(string? filter, char* buffer, uint length, uint flags);
 }
