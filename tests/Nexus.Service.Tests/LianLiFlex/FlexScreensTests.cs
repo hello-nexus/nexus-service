@@ -64,14 +64,4 @@ public class FlexScreensTests
         Assert.False(screens.Restart("000000000000"));
         Assert.NotNull(fake);
     }
-
-    [Fact]
-    public void Version_replies_parse_to_the_firmware_string()
-    {
-        var reply = new byte[512];
-        reply[0] = 0x0A;
-        System.Text.Encoding.ASCII.GetBytes("lianli_fan_lcd_0001_2026072401").CopyTo(reply, 8);
-        Assert.Equal("lianli_fan_lcd_0001_2026072401", FlexScreenVersion.Parse(reply));
-        Assert.Equal("", FlexScreenVersion.Parse(new byte[4]));
-    }
 }

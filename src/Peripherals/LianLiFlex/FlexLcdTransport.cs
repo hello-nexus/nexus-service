@@ -21,7 +21,6 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
     private readonly System.Threading.Thread _drain;
     private volatile bool _stop;
     private bool _disposed;
-    private readonly System.Collections.Concurrent.BlockingCollection<byte[]> _replies = new(boundedCapacity: 16);
 
     public FlexLcdTransport(string devicePath)
     {
@@ -68,13 +67,7 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
         var buf = new byte[1024];
         while (!_stop)
         {
-            if (Slv3WinUsbInterop.WinUsb_ReadPipe(_usb, Slv3LcdProtocol.ReadPipeId, buf, (uint)buf.Length, out var n, IntPtr.Zero) && n > 0)
-            {
-                var frame = buf[..(int)n];
-                while (!_stop && !_replies.TryAdd(frame) && _replies.TryTake(out _))
-                {
-                }
-            }
+            Slv3WinUsbInterop.WinUsb_ReadPipe(_usb, Slv3LcdProtocol.ReadPipeId, buf, (uint)buf.Length, out _, IntPtr.Zero);
         }
     }
 
@@ -90,27 +83,30 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
 
     public bool SetRotation(byte value) => WriteHeader(Slv3LcdProtocol.CmdType.Rotate, value);
 
-    /// <summary>The screen's firmware string from its version query; null when it does not answer in time.</summary>
+    /// <summary>
+    /// The screen's USB product string, which ends in its firmware version. Read from the device
+    /// descriptors, not a screen command: the TL screen's command pipe stalls on a version query.
+    /// </summary>
     public string? ReadVersion()
     {
-        while (_replies.TryTake(out _))
+        lock (_io)
         {
-        }
-        var started = Environment.TickCount64;
-        if (!WriteHeader(Slv3LcdProtocol.CmdType.GetVer, 0))
-        {
-            Nexus.Service.Platform.ServiceLog.Warn($"[lianli-flex-lcd] version query write failed after {Environment.TickCount64 - started} ms for {PortName}");
-            return null;
-        }
-        var deadline = Environment.TickCount64 + 800;
-        while (Environment.TickCount64 < deadline && _replies.TryTake(out var reply, 200))
-        {
-            if (reply.Length >= 40 && reply[0] == (byte)Slv3LcdProtocol.CmdType.GetVer)
+            if (_disposed)
             {
-                return FlexScreenVersion.Parse(reply);
+                return null;
             }
+            var device = new byte[18];
+            if (!Slv3WinUsbInterop.WinUsb_GetDescriptor(_usb, 1, 0, 0, device, (uint)device.Length, out var got) || got < 18 || device[15] == 0)
+            {
+                return null;
+            }
+            var str = new byte[128];
+            if (!Slv3WinUsbInterop.WinUsb_GetDescriptor(_usb, 3, device[15], 0x0409, str, (uint)str.Length, out var n) || n < 4)
+            {
+                return null;
+            }
+            return System.Text.Encoding.Unicode.GetString(str, 2, (int)n - 2).Trim();
         }
-        return null;
     }
 
     public bool TryGetPosition(out byte groupIndex)
@@ -174,7 +170,7 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
         _drain.Join();
         lock (_io)
         {
-            _replies.Dispose();
+            
             Slv3WinUsbInterop.WinUsb_Free(_usb);
             _file.Dispose();
             if (_writeEvent != IntPtr.Zero)

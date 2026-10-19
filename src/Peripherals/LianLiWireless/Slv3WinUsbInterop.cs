@@ -47,6 +47,13 @@ internal static class Slv3WinUsbInterop
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool WinUsb_Free(IntPtr interfaceHandle);
 
+    /// <summary>Standard GET_DESCRIPTOR (device = 1, string = 3).</summary>
+    [DllImport("winusb.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool WinUsb_GetDescriptor(
+        IntPtr interfaceHandle, byte descriptorType, byte index, ushort languageId,
+        byte[] buffer, uint bufferLength, out uint lengthTransferred);
+
     [DllImport("winusb.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool WinUsb_WritePipe(
