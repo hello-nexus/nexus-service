@@ -497,35 +497,38 @@ public static class LightingRoutes
             return ApiResponse.Ok();
         }).LocalhostOnly();
         // Headless start endpoints
-        app.MapPost("/lighting/animate/headless-start", (AnimateHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/lighting/animate/headless-start", (AnimateHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
+            SeedEffectSignature(store.Load().Lighting);
             l.StartAnimate(body);
             CaptureEffect(telemetry, "animate", body.Effect);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
-        app.MapPost("/lighting/static/headless-start", (StaticHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/lighting/static/headless-start", (StaticHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
+            SeedEffectSignature(store.Load().Lighting);
             try { l.StartStatic(body); }
             catch (System.ArgumentException ex) { return Results.Ok(ApiResponse.Fail(ex.Message)); }
             CaptureEffect(telemetry, "static", body.Effect);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
-        app.MapPost("/lighting/screen/headless-start", (ScreenHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/lighting/screen/headless-start", (ScreenHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
+            SeedEffectSignature(store.Load().Lighting);
             l.StartScreen(body);
             if (!body.KeepMode)
             {
@@ -701,6 +704,34 @@ public static class LightingRoutes
     // mode: it tracks what is currently applied, so switching away and back is
     // two real transitions.
     private static string _lastEffectSignature = "";
+
+    // The slot is process-local and starts empty, but the running look is
+    // persisted. Re-reading it before each start makes a replay of the look
+    // already running (a page mount after a restart, an auto-restore, a profile
+    // or preset switch) dedupe, while a stop (sync "none") leaves it empty so
+    // the same look started again counts.
+    internal static void SeedEffectSignature(Nexus.Service.Persistence.LightingSettings lighting) =>
+        Interlocked.Exchange(ref _lastEffectSignature, PersistedEffectSignature(lighting));
+
+    internal static string PersistedEffectSignature(Nexus.Service.Persistence.LightingSettings lighting)
+    {
+        var sync = (lighting.Sync ?? "").Trim().ToLowerInvariant();
+        switch (sync)
+        {
+            case "":
+            case "none":
+            case "music":
+            case "media":
+            case "gif":
+                return "";
+            case "screen":
+                return EffectSignature("screen", null);
+            case "static":
+                return EffectSignature("static", lighting.Static.Effect);
+            default:
+                return EffectSignature("animate", sync);
+        }
+    }
 
     internal static void ResetEffectSignature() => Interlocked.Exchange(ref _lastEffectSignature, "");
 

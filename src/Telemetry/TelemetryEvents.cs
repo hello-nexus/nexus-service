@@ -11,6 +11,7 @@ public static class TelemetryEvents
     public const string DeviceConnected = "device_connected";
     public const string DeviceDisconnected = "device_disconnected";
     public const string FanSpeedSet = "fan_speed_set";
+    public const string FanControlTaken = "fan_control_taken";
     public const string FanCurveApplied = "fan_curve_applied";
     public const string LightingEffectApplied = "lighting_effect_applied";
     public const string WidgetOpened = "widget_opened";

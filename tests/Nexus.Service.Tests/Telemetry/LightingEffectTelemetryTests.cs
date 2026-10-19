@@ -101,4 +101,66 @@ public class LightingEffectTelemetryTests
         LightingRoutes.CaptureEffect(t, "animate", "plasma");
         Assert.Equal(2, t.Events.Count);
     }
+
+    [Fact]
+    public void A_replay_of_the_persisted_look_after_a_restart_is_silent()
+    {
+        var t = Fresh();
+        LightingRoutes.SeedEffectSignature(new Nexus.Service.Persistence.LightingSettings { Sync = "plasma" });
+        LightingRoutes.CaptureEffect(t, "animate", "plasma");
+        Assert.Empty(t.Events);
+    }
+
+    [Fact]
+    public void A_different_look_than_the_persisted_one_is_captured()
+    {
+        var t = Fresh();
+        LightingRoutes.SeedEffectSignature(new Nexus.Service.Persistence.LightingSettings { Sync = "plasma" });
+        LightingRoutes.CaptureEffect(t, "animate", "fire");
+        Assert.Single(t.Events);
+    }
+
+    [Fact]
+    public void After_a_stop_the_same_look_is_captured()
+    {
+        var t = Fresh();
+        LightingRoutes.SeedEffectSignature(new Nexus.Service.Persistence.LightingSettings { Sync = "plasma" });
+        LightingRoutes.SeedEffectSignature(new Nexus.Service.Persistence.LightingSettings { Sync = "none" });
+        LightingRoutes.CaptureEffect(t, "animate", "plasma");
+        Assert.Single(t.Events);
+    }
+
+    [Fact]
+    public void A_switch_that_bypassed_the_routes_does_not_leave_a_stale_slot()
+    {
+        var t = Fresh();
+        LightingRoutes.CaptureEffect(t, "animate", "plasma");
+        // A profile switch persisted fire without touching the routes.
+        LightingRoutes.SeedEffectSignature(new Nexus.Service.Persistence.LightingSettings { Sync = "fire" });
+        LightingRoutes.CaptureEffect(t, "animate", "fire");
+        Assert.Single(t.Events);
+    }
+
+    [Fact]
+    public void Static_and_screen_syncs_seed_their_own_signatures()
+    {
+        var t = Fresh();
+        var staticLook = new Nexus.Service.Persistence.LightingSettings { Sync = "static" };
+        staticLook.Static.Effect = "gradientlinear";
+        LightingRoutes.SeedEffectSignature(staticLook);
+        LightingRoutes.CaptureEffect(t, "static", "gradientlinear");
+        LightingRoutes.SeedEffectSignature(new Nexus.Service.Persistence.LightingSettings { Sync = "screen" });
+        LightingRoutes.CaptureEffect(t, "screen", null);
+        Assert.Empty(t.Events);
+    }
+
+    [Theory]
+    [InlineData("music")]
+    [InlineData("media")]
+    [InlineData("gif")]
+    [InlineData("")]
+    public void Modes_the_routes_do_not_track_seed_nothing(string sync)
+    {
+        Assert.Equal("", LightingRoutes.PersistedEffectSignature(new Nexus.Service.Persistence.LightingSettings { Sync = sync }));
+    }
 }
