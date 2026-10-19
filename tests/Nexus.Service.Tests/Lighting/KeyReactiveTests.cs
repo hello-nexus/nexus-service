@@ -1,3 +1,4 @@
+using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.KeyReactive;
 using Nexus.Service.Peripherals.Hyte.Keeb;
@@ -477,6 +478,50 @@ public class KeyReactiveTests
         Assert.Same(tcs.Task, done);
         var frame = await tcs.Task;
         Assert.Equal(0, frame[Led('W') * 3]);
+    }
+
+    // Presses Q once the engine is running, then returns the strongest red the Q key showed over the following frames.
+    private static async Task<(int Q, int OtherRed, int OtherBlue)> StrongestQRed(DeviceFrame board, KeyReactiveOverlay overlay, bool staticPin)
+    {
+        using var engine = new LightingEngine { KeyReactive = overlay, FrameIntervalMs = 10, Pins = new DevicePinTracker() };
+        if (staticPin) engine.Pins!.Set(board.Id, new DevicePin { Kind = DevicePinKinds.Static, Color = "#0000ff" });
+        engine.UpdateDevices(new[] { board });
+        var tcs = new TaskCompletionSource<(int, int, int)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var frames = 0;
+        var strongest = 0;
+        engine.OnFrame += _ =>
+        {
+            if (++frames == 1) { overlay.PressKey("Q"); return; }
+            strongest = Math.Max(strongest, board.LedBytes[Led('Q') * 3]);
+            if (frames > 12) tcs.TrySetResult((strongest, board.LedBytes[Led('W') * 3], board.LedBytes[Led('W') * 3 + 2]));
+        };
+        engine.SetEffect(new Nexus.Service.Lighting.Engine.Effects.BlackEffect());
+        var done = await Task.WhenAny(tcs.Task, Task.Delay(3000));
+        Assert.Same(tcs.Task, done);
+        return await tcs.Task;
+    }
+
+    [Fact]
+    public async Task Engine_paints_reactions_over_a_static_pin()
+    {
+        var overlay = new KeyReactiveOverlay();
+        overlay.Set(Id, Cfg(KeyReactionCatalog.Fade, KeyReactionCatalog.BackgroundEffect));
+        var board = Keyboard();
+        var seen = await StrongestQRed(board, overlay, staticPin: true);
+        Assert.InRange(seen.Q, 200, 255);
+        // Keys that were not pressed keep the pinned colour.
+        Assert.Equal(0, seen.OtherRed);
+        Assert.Equal(255, seen.OtherBlue);
+    }
+
+    [Fact]
+    public async Task Engine_keeps_reactions_off_a_device_under_a_test_pattern()
+    {
+        var overlay = new KeyReactiveOverlay();
+        overlay.Set(Id, Cfg(KeyReactionCatalog.Fade, KeyReactionCatalog.BackgroundEffect));
+        var board = Keyboard();
+        board.TestPattern = "none";
+        Assert.Equal(0, (await StrongestQRed(board, overlay, staticPin: true)).Q);
     }
 
     // ── Device-keyed config, hardware key sources, standalone paint ──
