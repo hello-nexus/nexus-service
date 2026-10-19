@@ -6,7 +6,7 @@ namespace Nexus.Service.Peripherals.LianLiFlex;
 #if WINDOWS
 /// <summary>
 /// One Flex screen: the same encrypted-header bulk protocol as the other fan screens, but frames
-/// go out at their natural length (no 102 400-byte padding), nothing is sent for a frame rate,
+/// go out at their natural length (no padding to a fixed size), nothing is sent for a frame rate,
 /// and acks are never waited on (the SL-INF screen drops or delays them). Opening checks the
 /// screen generation and clears any overlay layers a previous owner left on the display.
 /// </summary>
