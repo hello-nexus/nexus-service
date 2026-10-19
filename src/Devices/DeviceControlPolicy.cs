@@ -29,6 +29,7 @@ public static class DeviceControlPolicy
         ["lianli4"] = "lian-li-l-connect",
         ["lianli-tl"] = "lian-li-l-connect",
         ["lianli-wireless"] = "lian-li-l-connect",
+        ["lianli-flex"] = "lian-li-l-connect",
         ["lianli-aio"] = "lian-li-l-connect",
         ["lianli-hydroshift-lcd"] = "lian-li-l-connect",
         ["strimer"] = "lian-li-l-connect",
