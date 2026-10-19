@@ -38,8 +38,8 @@ public class FlexTlExtendedEffectsTests
     public static IEnumerable<object[]> ReferenceCases() =>
         Vectors.Value.RootElement.GetProperty("reference").EnumerateArray().Select((_, i) => new object[] { i });
 
-    private static JsonElement Recorded(string key) =>
-        Vectors.Value.RootElement.GetProperty("recorded").EnumerateArray()
+    private static JsonElement Expected(string key) =>
+        Vectors.Value.RootElement.GetProperty("expected").EnumerateArray()
             .First(e => e.GetProperty("key").GetString() == key);
 
     private static (int R, int G, int B) Led(byte[] frames, int frame, int led, int leds = Leds)
@@ -69,9 +69,9 @@ public class FlexTlExtendedEffectsTests
 
     [Theory]
     [MemberData(nameof(ExactKeys))]
-    public void Default_settings_match_the_recorded_frames_byte_for_byte(string key)
+    public void Default_settings_match_the_expected_frames_byte_for_byte(string key)
     {
-        var rec = Recorded(key);
+        var rec = Expected(key);
         var expected = Convert.FromBase64String(rec.GetProperty("rawFramesB64").GetString()!);
 
         var anim = FlexTlExtendedEffects.Render(key, Req());
@@ -85,25 +85,25 @@ public class FlexTlExtendedEffectsTests
 
     [Theory]
     [MemberData(nameof(SeededKeyRows))]
-    public void Seeded_effects_use_only_the_recorded_palette_and_stay_in_the_recorded_length_band(string key)
+    public void Seeded_effects_use_only_the_expected_palette_and_stay_in_the_expected_length_band(string key)
     {
-        var rec = Recorded(key);
-        var recorded = Convert.FromBase64String(rec.GetProperty("rawFramesB64").GetString()!);
-        var recordedFrames = rec.GetProperty("frames").GetInt32();
+        var rec = Expected(key);
+        var expected = Convert.FromBase64String(rec.GetProperty("rawFramesB64").GetString()!);
+        var expectedFrames = rec.GetProperty("frames").GetInt32();
 
         var anim = FlexTlExtendedEffects.Render(key, Req());
 
         Assert.Equal(Leds, anim.Leds);
         Assert.Equal(anim.FrameCount * Leds * 3, anim.Frames.Length);
-        Assert.Subset(RandomPalette(key), DistinctColors(recorded));
+        Assert.Subset(RandomPalette(key), DistinctColors(expected));
         Assert.Subset(RandomPalette(key), DistinctColors(anim.Frames));
         if (key == "kaleidoscope")
         {
-            Assert.Equal(recordedFrames, anim.FrameCount);
+            Assert.Equal(expectedFrames, anim.FrameCount);
         }
         else
         {
-            Assert.InRange(anim.FrameCount, recordedFrames * 3 / 4, recordedFrames * 5 / 4);
+            Assert.InRange(anim.FrameCount, expectedFrames * 3 / 4, expectedFrames * 5 / 4);
         }
     }
 
@@ -144,7 +144,7 @@ public class FlexTlExtendedEffectsTests
 
     [Theory]
     [MemberData(nameof(ReferenceCases))]
-    public void Non_default_settings_match_the_reference_run(int index)
+    public void Non_default_settings_match_the_reference_vectors(int index)
     {
         var row = Vectors.Value.RootElement.GetProperty("reference")[index];
         var colors = row.GetProperty("colors").EnumerateArray()

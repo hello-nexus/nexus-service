@@ -71,12 +71,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="LianLiFlex/Data/**/*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-
-  <ItemGroup>
     <!-- xUnit reads this from the output dir; without the copy the suite falls
          back to maxParallelThreads = processor count. -->
     <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
