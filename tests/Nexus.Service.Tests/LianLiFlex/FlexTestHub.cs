@@ -13,6 +13,8 @@ internal sealed class FakeFlexTransport : IFlexReceiverTransport
     public int Version { get; set; } = 22;
     public bool FailWrites { get; set; }
     public bool EchoEffectIndex { get; set; } = true;
+    /// <summary>A 0x14 command flips the "playing the board input" flag, as a unit with a cable does.</summary>
+    public bool EchoSyncBoard { get; set; } = true;
 
     public FakeFlexTransport(string mac = "6D1007F517E1", int fansType = 0x33, byte rxType = FlexProtocol.UnboundRxType, int rpm = 661, byte pwm = 0)
     {
@@ -35,6 +37,10 @@ internal sealed class FakeFlexTransport : IFlexReceiverTransport
         else if (frame[0] == FlexProtocol.CmdPackage && frame[1] == 0 && EchoEffectIndex)
         {
             Array.Copy(frame, 16, Info, 21, 4);
+        }
+        else if (frame[0] == FlexProtocol.CmdSyncBoard && EchoSyncBoard)
+        {
+            Info[29] = frame[1] == 1 ? (byte)(Info[29] | 0x40) : (byte)(Info[29] & ~0x40);
         }
         else if (frame[0] == FlexProtocol.CmdGetVer)
         {

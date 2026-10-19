@@ -441,6 +441,27 @@ public sealed class FlexHub : IDisposable
     public int? DesiredDuty(string mac) =>
         LinkOf(mac) is { } l && l.DesiredDuty >= 0 ? l.DesiredDuty : null;
 
+    /// <summary>Hands the receiver's lighting to the motherboard ARGB input (true) or back to USB. Never sent to an RF-bound receiver.</summary>
+    public bool SetMotherboardArgb(string mac, bool on)
+    {
+        if (LinkOf(mac) is not { } link || link.Info is not { RfBound: false })
+        {
+            return false;
+        }
+        if (!Monitor.TryEnter(link.Io))
+        {
+            return false;
+        }
+        try
+        {
+            return Send(link, FlexProtocol.BuildSyncBoard(on));
+        }
+        finally
+        {
+            Monitor.Exit(link.Io);
+        }
+    }
+
     /// <summary>Sends one live RGB frame (R,G,B per LED). Dropped when an upload holds the receiver.</summary>
     public bool SendLive(string mac, ReadOnlySpan<byte> rgb)
     {

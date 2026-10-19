@@ -111,6 +111,10 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         foreach (var u in _hub.Units)
         {
             sb.Append('|').Append(u.Mac).Append(':').Append(u.Fans).Append(':').Append(u.Family).Append(u.Controllable ? "" : ":bound");
+            if (PlaysMotherboardArgb(u, stored))
+            {
+                sb.Append(":argb");
+            }
             if (SwapOf(stored, u.Mac, u.Family))
             {
                 sb.Append(":swap");
@@ -158,17 +162,22 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         }
         var settings = _store.Load();
         var slot = 0;
-        foreach (var structure in BuildStructures())
+        // Units playing the motherboard input come last as cards the engine never drives.
+        foreach (var playsArgb in new[] { false, true })
         {
-            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            var reason = playsArgb ? LightingDevice.ReasonArgbInput : null;
+            foreach (var structure in BuildStructures(playsArgb))
             {
-                resp.Devices.Add(BuildCard(structure, zone, slot++, settings));
+                foreach (var zone in ZoneResolution.Resolve(structure, settings))
+                {
+                    resp.Devices.Add(BuildCard(structure, zone, slot++, settings, reason));
+                }
             }
         }
         return resp;
     }
 
-    private static LightingDevice BuildCard(DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings)
+    private static LightingDevice BuildCard(DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings, string? devicePageReason = null)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
@@ -201,6 +210,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
             ZoneResizable = false,
             DeviceId = structure.DeviceId,
             ZoneCustomizable = true,
+            DevicePageReason = devicePageReason,
         };
     }
 
@@ -333,13 +343,19 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     }
 
     /// <summary>Structures of the units the engine can drive: wired control available (not RF-bound elsewhere).</summary>
-    internal List<DeviceStructure> BuildStructures()
+    internal List<DeviceStructure> BuildStructures() => BuildStructures(playsArgb: false);
+
+    /// <summary>The unit plays its motherboard ARGB input: the saved choice, or with none saved, what the unit reports.</summary>
+    internal static bool PlaysMotherboardArgb(FlexUnit unit, IReadOnlyDictionary<string, LianLiFlexUnitSettings> stored) =>
+        (stored.TryGetValue(unit.Mac, out var look) ? look.MotherboardArgb : null) ?? unit.Info.PlayingMotherboardArgb;
+
+    private List<DeviceStructure> BuildStructures(bool playsArgb)
     {
         var structures = new List<DeviceStructure>();
         var stored = _store.Load().Devices.FlexUnits;
         foreach (var unit in _hub.Units)
         {
-            if (unit.Controllable)
+            if (unit.Controllable && PlaysMotherboardArgb(unit, stored) == playsArgb)
             {
                 structures.Add(BuildStructure(unit.Mac, unit.Family, unit.Fans, SwapOf(stored, unit.Mac, unit.Family)));
             }

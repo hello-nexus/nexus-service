@@ -1851,6 +1851,8 @@ public sealed class LianLiFlexUnitSettings
     public string? PackageEffectIndex { get; set; }
     /// <summary>0 or 1: this unit reads its slice of a merged strip back to front.</summary>
     public int MergeDirection { get; set; }
+    /// <summary>The unit plays the motherboard ARGB input through its sync cable instead of Nexus; null leaves the unit's own state alone.</summary>
+    public bool? MotherboardArgb { get; set; }
 
     /// <summary>Shallow copy; the lists are replaced, never edited, so sharing them is safe.</summary>
     public LianLiFlexUnitSettings Clone() => (LianLiFlexUnitSettings)MemberwiseClone();

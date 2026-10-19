@@ -217,6 +217,15 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             }
             settings.Devices.FlexUnits.TryGetValue(unit.Mac, out var look);
             look ??= new LianLiFlexUnitSettings();
+            ReconcileMotherboardArgb(unit, look, now);
+            if (FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, settings.Devices.FlexUnits))
+            {
+                // The unit shows its ARGB input: it takes no stored uploads and no live frames.
+                st.PendingSignature = "";
+                st.UploadedSignature = "";
+                st.Streaming = false;
+                continue;
+            }
             if (look.Mode == LianLiWirelessChainLighting.ModeCustom)
             {
                 st.PendingSignature = "";
@@ -237,6 +246,35 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
                     _state.Remove(k);
                 }
             }
+        }
+    }
+
+    private const long ArgbRetryMs = 5_000;
+    private const int MaxArgbRequests = 3;
+    private readonly Dictionary<string, (bool Want, long AtMs, int Sent)> _argbRequests = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Brings the unit's "playing the board input" flag to the saved choice: re-sent every few seconds, a few times, until the unit reports it.</summary>
+    private void ReconcileMotherboardArgb(FlexUnit unit, LianLiFlexUnitSettings look, long now)
+    {
+        if (look.MotherboardArgb is not { } want)
+        {
+            _argbRequests.Remove(unit.Mac);
+            return;
+        }
+        if (unit.Info.PlayingMotherboardArgb == want)
+        {
+            _argbRequests.Remove(unit.Mac);
+            return;
+        }
+        _argbRequests.TryGetValue(unit.Mac, out var last);
+        var fresh = last.Sent == 0 || last.Want != want;
+        if (!fresh && (last.Sent >= MaxArgbRequests || now - last.AtMs < ArgbRetryMs))
+        {
+            return;
+        }
+        if (_hub.SetMotherboardArgb(unit.Mac, want))
+        {
+            _argbRequests[unit.Mac] = (want, now, fresh ? 1 : last.Sent + 1);
         }
     }
 

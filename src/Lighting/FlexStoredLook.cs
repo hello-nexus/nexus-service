@@ -93,7 +93,7 @@ public static class FlexStoredLook
         var members = new List<(FlexUnit Unit, LianLiFlexUnitSettings Look)>();
         foreach (var u in units)
         {
-            if (u.Controllable && looks.TryGetValue(u.Mac, out var l) && Merges(l, u.Family))
+            if (u.Controllable && looks.TryGetValue(u.Mac, out var l) && Merges(l, u.Family) && !FlexLightingDeviceProvider.PlaysMotherboardArgb(u, looks))
             {
                 members.Add((u, l));
             }

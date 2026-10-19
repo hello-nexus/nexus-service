@@ -29,6 +29,7 @@ public static class FlexProtocol
     public const byte CmdLive = 0x11;
     public const byte CmdGetInfo = 0x12;
     public const byte CmdSetPwm = 0x13;
+    public const byte CmdSyncBoard = 0x14;
     public const byte CmdSave = 0x15;
     public const byte CmdRebootLcd = 0x17;
     public const byte CmdPackage = 0x18;
@@ -56,8 +57,8 @@ public static class FlexProtocol
     public static int LedsPerFan(FlexFamily family) => family == FlexFamily.SlInfFlex ? SlInfLedsPerFan : TlLedsPerFan;
 
     /// <summary>
-    /// First bytes this module may put on a receiver. Everything else (firmware, theme-data and
-    /// light-sync-to-board commands) stays unconstructible; <see cref="IsAllowed"/> also refuses a
+    /// First bytes this module may put on a receiver. Everything else (firmware and theme-data
+    /// commands) stays unconstructible; <see cref="IsAllowed"/> also refuses a
     /// save that clears the stored configuration.
     /// </summary>
     public static bool IsAllowed(ReadOnlySpan<byte> frame)
@@ -77,6 +78,8 @@ public static class FlexProtocol
             case CmdPackage:
             case CmdEnable:
                 return true;
+            case CmdSyncBoard:
+                return frame[1] <= 1;
             case CmdSave:
                 return frame[1] == 1;
             default:
@@ -143,6 +146,14 @@ public static class FlexProtocol
         f[2] = duty;
         f[3] = duty;
         f[4] = duty;
+        return f;
+    }
+
+    /// <summary>Hands the receiver's lighting to the motherboard ARGB input (on) or back to USB (off).</summary>
+    public static byte[] BuildSyncBoard(bool on)
+    {
+        var f = NewFrame(CmdSyncBoard);
+        f[1] = on ? (byte)1 : (byte)0;
         return f;
     }
 
@@ -302,6 +313,12 @@ public sealed class FlexReceiverInfo
     public int Fans => FanNum >= 10 ? FanNum - 10 : FanNum;
 
     public bool RfBound => RxType != FlexProtocol.UnboundRxType || MasterMac.Trim('0').Length > 0;
+
+    /// <summary>The ARGB sync cable to a motherboard header is plugged in.</summary>
+    public bool ArgbCableConnected => PortFlags.Length > 0 && (PortFlags[0] & 0x8) != 0;
+
+    /// <summary>The unit is playing the motherboard ARGB input instead of the host's lighting.</summary>
+    public bool PlayingMotherboardArgb => PortFlags.Length > 0 && (PortFlags[0] & 0x4) != 0;
 
     public bool PwmLinePresent => PortFlags.Length > 0 && (PortFlags[0] & 0x2) != 0;
 }

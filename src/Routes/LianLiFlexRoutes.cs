@@ -128,6 +128,8 @@ public sealed class LianLiFlexChainLightingRequest
     public LianLiFlexZonePatch[]? Zones { get; set; }
     public bool? UpDownSwap { get; set; }
     public int? SortIndex { get; set; }
+    /// <summary>Play the motherboard ARGB input (true) or return to USB (false).</summary>
+    public bool? MotherboardArgb { get; set; }
 }
 
 /// <summary>Routes of the TL LCD Flex and SL-INF LCD Flex fans (wired receiver + screen).</summary>
@@ -514,6 +516,9 @@ public static partial class LianLiFlexRoutes
                 Brightness = ls.Brightness,
                 Colors = ls.Colors.ToArray(),
                 Merge = ls.Merge,
+                MotherboardArgb = ls.MotherboardArgb,
+                ArgbCableConnected = u.Info.ArgbCableConnected,
+                PlayingMotherboardArgb = u.Info.PlayingMotherboardArgb,
                 Zones = zones,
                 UpDownSwap = u.Family == FlexFamily.TlFlex ? ls.UpDownSwap : null,
                 SortIndex = ls.SortIndex,
@@ -607,6 +612,7 @@ public static partial class LianLiFlexRoutes
         next.Colors = body.Colors is not null ? new List<string>(body.Colors) : old.Colors;
         next.Merge = body.Merge ?? old.Merge;
         next.UpDownSwap = body.UpDownSwap ?? old.UpDownSwap;
+        next.MotherboardArgb = body.MotherboardArgb ?? old.MotherboardArgb;
         next.Zones = zones;
         return next;
     }
