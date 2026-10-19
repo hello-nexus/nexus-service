@@ -470,10 +470,65 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// resume's re-enumeration from a real reseat. Written from the power-event
     /// thread and from the handed-off resume handler, read by the tick loop.
     /// </summary>
-    private void MarkHostResumed() =>
-        Interlocked.Exchange(ref _lastResumeAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+    private void MarkHostResumed()
+    {
+        var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
+        var previous = Interlocked.Exchange(ref _lastResumeAtTicks, nowTicks);
+        // The resume is stamped twice per event (power thread, then the hand-off), so
+        // only a stamp past the settle window opens a new escalation budget epoch.
+        if (previous == 0 || TimeSpan.FromTicks(nowTicks - previous) >= ResumeSettleWindow)
+        {
+            Interlocked.Exchange(ref _resumeEpochOpenedAtTicks, nowTicks);
+            Interlocked.Increment(ref _resumeBudgetEpoch);
+        }
+    }
 
     private long _lastResumeAtTicks;
+
+    /// <summary>
+    /// Counts host resumes. Fast Startup makes every PC startup a resume of one
+    /// long-lived service run, and qshell's one-shot bootstrap needs the rescue on
+    /// each, so the per-run escalation budget restarts per epoch.
+    /// </summary>
+    private long _resumeBudgetEpoch;
+    private long _resumeEpochOpenedAtTicks;
+
+    /// <summary>True once the serial was re-sighted after the current epoch opened, so its grace anchor is post-resume.</summary>
+    private bool SightedSinceResume(DateTimeOffset firstSeenAt) =>
+        firstSeenAt.UtcTicks > Interlocked.Read(ref _resumeEpochOpenedAtTicks);
+    private readonly Dictionary<string, long> _escalationBudgetEpochBySerial = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _staleSessionBudgetEpochBySerial = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _escalationSuppressLogged = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Restarts a serial's reboot budget the first time it is evaluated in a new
+    /// resume epoch, once the panel has been re-sighted after that resume (a panel
+    /// still on its pre-sleep anchor has had no post-resume grace). Returns true
+    /// when it reset. Within an epoch the count and cooldown stand, so a panel
+    /// that keeps failing stays capped.
+    /// </summary>
+    internal static bool ResetBudgetForResume(
+        string serial,
+        long epoch,
+        Dictionary<string, long> appliedEpochBySerial,
+        Dictionary<string, int> countBySerial,
+        Dictionary<string, DateTimeOffset>? lastEscalationBySerial,
+        bool sightedSinceResume = true)
+    {
+        if (!sightedSinceResume) return false;
+        appliedEpochBySerial.TryGetValue(serial, out var applied);
+        if (applied == epoch) return false;
+        appliedEpochBySerial[serial] = epoch;
+        countBySerial.Remove(serial);
+        lastEscalationBySerial?.Remove(serial);
+        return true;
+    }
+
+    /// <summary>The line to log when the budget blocks an escalation reboot, once per serial until the next reset; null when already logged or the block is only the short post-reboot settle.</summary>
+    internal static string? EscalationSuppressionMessage(string serial, string reason, HashSet<string> alreadyLogged) =>
+        !reason.StartsWith("another reboot", StringComparison.Ordinal) && alreadyLogged.Add(serial)
+            ? $"[qseries-port-watcher] {serial}: escalation reboot suppressed: {reason}"
+            : null;
 
     /// <summary>
     /// True while a host resume is recent enough that a changed transport id is
@@ -959,7 +1014,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
         // Re-arm the grace anchor on detach. _escalationRebootCountBySerial and
         // _lastEscalationRebootBySerial are deliberately NOT cleared here - like
         // _lastQshellRebootBySerial they must survive our reboot's re-enumeration
-        // so a still-stranded panel keeps its bounded attempt budget.
+        // so a still-stranded panel keeps its bounded attempt budget. Only a host
+        // resume restarts the budget (ResetBudgetForResume).
         foreach (var key in _firstSeenAtBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
         {
             _firstSeenAtBySerial.Remove(key);
@@ -2119,6 +2175,13 @@ public sealed class QSeriesPortWatcher : BackgroundService
         }
         if (reason is null) return;
 
+        ResetBudgetForResume(
+            device.Serial,
+            Interlocked.Read(ref _resumeBudgetEpoch),
+            _staleSessionBudgetEpochBySerial,
+            _staleSessionRebootCountBySerial,
+            lastEscalationBySerial: null,
+            SightedSinceResume(firstSeenAt));
         _staleSessionRebootCountBySerial.TryGetValue(device.Serial, out var rebootCount);
         if (!EscalationRebootPermitted(
                 rebootCount,
@@ -2272,7 +2335,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// <see cref="EscalationRetryCooldown"/> so a panel whose recovery reboot
     /// lands in another wedge gets further attempts, while a dead panel can't
     /// reboot-loop. NOT cleared on detach (survives the reboot's
-    /// re-enumeration); a fresh service start re-allows.
+    /// re-enumeration); a fresh service start or a host resume re-allows.
     /// </summary>
     private readonly Dictionary<string, int> _escalationRebootCountBySerial = new(StringComparer.Ordinal);
 
@@ -2282,7 +2345,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// <summary>Minimum gap between escalation reboots for one serial.</summary>
     private static readonly TimeSpan EscalationRetryCooldown = TimeSpan.FromMinutes(30);
 
-    /// <summary>Escalation reboots allowed per serial per service run.</summary>
+    /// <summary>Escalation reboots allowed per serial per service run or host resume.</summary>
     private const int MaxEscalationRebootsPerRun = 3;
 
     /// <summary>
@@ -3262,13 +3325,28 @@ public sealed class QSeriesPortWatcher : BackgroundService
             return;
         }
 
-        _escalationRebootCountBySerial.TryGetValue(device.Serial, out var rebootCount);
-        if (!EscalationRebootPermitted(
-                rebootCount,
-                _lastQshellRebootBySerial.TryGetValue(device.Serial, out var lastReboot) ? lastReboot : null,
-                _lastEscalationRebootBySerial.TryGetValue(device.Serial, out var lastEscalation) ? lastEscalation : null,
-                now))
+        if (ResetBudgetForResume(
+                device.Serial,
+                Interlocked.Read(ref _resumeBudgetEpoch),
+                _escalationBudgetEpochBySerial,
+                _escalationRebootCountBySerial,
+                _lastEscalationRebootBySerial,
+                SightedSinceResume(firstSeenAt)))
         {
+            _escalationSuppressLogged.Remove(device.Serial);
+        }
+        _escalationRebootCountBySerial.TryGetValue(device.Serial, out var rebootCount);
+        var suppressed = EscalationSuppressionReason(
+            rebootCount,
+            _lastQshellRebootBySerial.TryGetValue(device.Serial, out var lastReboot) ? lastReboot : null,
+            _lastEscalationRebootBySerial.TryGetValue(device.Serial, out var lastEscalation) ? lastEscalation : null,
+            now);
+        if (suppressed is not null)
+        {
+            if (EscalationSuppressionMessage(device.Serial, suppressed, _escalationSuppressLogged) is { } line)
+            {
+                ServiceLog.Info(line);
+            }
             return;
         }
 
@@ -3366,12 +3444,16 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// <see cref="QshellRebootCooldown"/> window after ANY reboot (a reseat
     /// reboot may still be playing out).
     /// </summary>
-    internal static bool EscalationRebootPermitted(int rebootCount, DateTimeOffset? lastAnyReboot, DateTimeOffset? lastEscalationReboot, DateTimeOffset now)
+    internal static bool EscalationRebootPermitted(int rebootCount, DateTimeOffset? lastAnyReboot, DateTimeOffset? lastEscalationReboot, DateTimeOffset now) =>
+        EscalationSuppressionReason(rebootCount, lastAnyReboot, lastEscalationReboot, now) is null;
+
+    /// <summary>Why the budget blocks an escalation reboot, or null when one is permitted.</summary>
+    internal static string? EscalationSuppressionReason(int rebootCount, DateTimeOffset? lastAnyReboot, DateTimeOffset? lastEscalationReboot, DateTimeOffset now)
     {
-        if (rebootCount >= MaxEscalationRebootsPerRun) return false;
-        if (lastAnyReboot is DateTimeOffset any && now - any < QshellRebootCooldown) return false;
-        if (lastEscalationReboot is DateTimeOffset escalation && now - escalation < EscalationRetryCooldown) return false;
-        return true;
+        if (rebootCount >= MaxEscalationRebootsPerRun) return $"{rebootCount}/{MaxEscalationRebootsPerRun} reboots used since the last host resume or service start";
+        if (lastAnyReboot is DateTimeOffset any && now - any < QshellRebootCooldown) return $"another reboot {(now - any).TotalSeconds:F0}s ago";
+        if (lastEscalationReboot is DateTimeOffset escalation && now - escalation < EscalationRetryCooldown) return $"last escalation reboot {(now - escalation).TotalMinutes:F0}min ago, cooldown {EscalationRetryCooldown.TotalMinutes:F0}min";
+        return null;
     }
 
     /// <summary>

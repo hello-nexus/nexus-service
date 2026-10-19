@@ -336,11 +336,22 @@ internal static class FactoryReset
         catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] wait failed: {ex.Message}"); }
     }
 
+    /// <summary>Removes the .bak before settings.json so a partial wipe never leaves a backup that the next boot would restore.</summary>
+    internal static void DeleteSettingsFiles(string rootPath)
+    {
+        var settings = System.IO.Path.Combine(rootPath, "settings.json");
+        foreach (var file in new[] { Nexus.Service.Persistence.AtomicJsonFile.BackupPathFor(settings), settings })
+        {
+            try { File.Delete(file); } catch { /* the directory wipe retries it */ }
+        }
+    }
+
     private static void DeleteRoots()
     {
         foreach (var root in Roots())
         {
             if (!Directory.Exists(root.Path)) continue;
+            DeleteSettingsFiles(root.Path);
             try
             {
                 if (root.Preserve.Length == 0)

@@ -65,6 +65,7 @@ public class NexusAppFactory : WebApplicationFactory<Program>
         // delete would restore the previous test's document.
         store.FlushNow();
         try { File.Delete(SettingsPath); } catch { /* already gone */ }
+        try { File.Delete(Nexus.Service.Persistence.AtomicJsonFile.BackupPathFor(SettingsPath)); } catch { /* already gone */ }
         store.Reload();
         if (FeaturesDecided)
         {

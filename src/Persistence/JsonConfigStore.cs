@@ -57,6 +57,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
             if (!File.Exists(SettingsPath))
             {
+                // A failed Replace can leave only the .bak behind; a fresh install has none and a factory reset deletes it before settings.json.
+                if (TryRecoverFromBackup(null))
+                {
+                    return _cached!;
+                }
                 // Fresh install only: anonymous telemetry defaults on here
                 // (opt-out model). Every other path (existing file, migrated
                 // file, corrupt-file fallback) keeps the field's own default
@@ -75,66 +80,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             try
             {
                 json = File.ReadAllText(SettingsPath);
-                _cached = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
-                // Valid JSON (e.g. a literal "null") but no data: the file
-                // still existed, so this is not a fresh install for the v8
-                // OnboardingCompleted migration below.
-                _cached ??= new NexusSettings { SchemaVersion = 0 };
-                // Pre-pin per-device locks and fan locks fold into pins before
-                // anything reads the document; a no-op once migrated.
-                var pinsMigrated = Nexus.Service.Lighting.PinMigration.Apply(_cached);
-                // A file with no schemaVersion key deserializes to the current
-                // version and would skip Migrate(), yet it is not a fresh install.
-                if (!HasTopLevelSchemaVersion(json))
-                {
-                    _cached.FeaturesOnboardingCompleted = true;
-                    Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn(_cached);
-                    _cached.GameSyncRemovedNotice = true;
-                    pinsMigrated = true;
-                }
-                if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
-                {
-                    Migrate(_cached);
-                    Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
-                    Persist(_cached);
-                }
-                else
-                {
-                    var recovered = pinsMigrated;
-                    if (NeedsDeckModesRecovery(_cached))
-                    {
-                        // A downgrade to a pre-deck-modes build (then a re-upgrade)
-                        // leaves SchemaVersion already at 18 - the schema-gated
-                        // migration above never runs again - while the old build's
-                        // own writes repopulated PhysicalDeckSettings.Legacy* with
-                        // nothing hoisted into Presets/Instances. Recover
-                        // independently of SchemaVersion whenever that exact
-                        // stranded shape shows up.
-                        Nexus.Service.Deck.DeckModesMigration.Apply(_cached);
-                        recovered = true;
-                    }
-                    if (NormalizeDeckInstanceModes(_cached))
-                    {
-                        recovered = true;
-                    }
-                    // A downgrade to an older build can write the removed mode back at the current schema version.
-                    if (Nexus.Service.Lighting.RemovedSyncModes.Apply(_cached.Lighting))
-                    {
-                        recovered = true;
-                    }
-                    if (Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached))
-                    {
-                        recovered = true;
-                    }
-                    if (recovered)
-                    {
-                        Persist(_cached);
-                    }
-                }
+                ParseAndMigrate(json);
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[nexus-service] settings.json corrupted, starting fresh: {ex.Message}");
+                Console.Error.WriteLine($"[nexus-service] settings.json unreadable: {ex.Message}");
                 // Preserve the unreadable file before overwriting it with
                 // defaults, so a single bad byte doesn't silently destroy the
                 // user's config with no recovery copy.
@@ -145,6 +95,12 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                     Console.Error.WriteLine($"[nexus-service] preserved corrupt settings at {backup}");
                 }
                 catch { /* best-effort backup; never block startup on it */ }
+                // Only a document that failed to parse is replaced from the backup; an IO or migration failure may leave a valid newer file.
+                if (ex is UnparseableSettingsException && TryRecoverFromBackup(json))
+                {
+                    return _cached!;
+                }
+                Console.Error.WriteLine("[nexus-service] starting fresh");
                 // The file existed but couldn't be read: not a fresh install
                 // for the v8 OnboardingCompleted migration, so route through
                 // Migrate() the same as any other pre-v8 document.
@@ -158,7 +114,111 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 Persist(_cached);
             }
 
-            return _cached;
+            return _cached!;
+        }
+    }
+
+    /// <summary>Deserializes and migrates <paramref name="json"/> into <c>_cached</c>, persisting when a migration changed it. Throws on unreadable JSON.</summary>
+    private void ParseAndMigrate(string json)
+    {
+        try
+        {
+            _cached = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
+        }
+        catch (JsonException ex)
+        {
+            throw new UnparseableSettingsException(ex);
+        }
+        if (_cached is null)
+        {
+            throw new UnparseableSettingsException(null);
+        }
+        // Pre-pin per-device locks and fan locks fold into pins before
+        // anything reads the document; a no-op once migrated.
+        var pinsMigrated = Nexus.Service.Lighting.PinMigration.Apply(_cached);
+        // A file with no schemaVersion key deserializes to the current
+        // version and would skip Migrate(), yet it is not a fresh install.
+        if (!HasTopLevelSchemaVersion(json))
+        {
+            _cached.FeaturesOnboardingCompleted = true;
+            Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn(_cached);
+            _cached.GameSyncRemovedNotice = true;
+            pinsMigrated = true;
+        }
+        if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
+        {
+            Migrate(_cached);
+            Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
+            Persist(_cached);
+        }
+        else
+        {
+            var recovered = pinsMigrated;
+            if (NeedsDeckModesRecovery(_cached))
+            {
+                // A downgrade to a pre-deck-modes build (then a re-upgrade)
+                // leaves SchemaVersion already at 18 - the schema-gated
+                // migration above never runs again - while the old build's
+                // own writes repopulated PhysicalDeckSettings.Legacy* with
+                // nothing hoisted into Presets/Instances. Recover
+                // independently of SchemaVersion whenever that exact
+                // stranded shape shows up.
+                Nexus.Service.Deck.DeckModesMigration.Apply(_cached);
+                recovered = true;
+            }
+            if (NormalizeDeckInstanceModes(_cached))
+            {
+                recovered = true;
+            }
+            // A downgrade to an older build can write the removed mode back at the current schema version.
+            if (Nexus.Service.Lighting.RemovedSyncModes.Apply(_cached.Lighting))
+            {
+                recovered = true;
+            }
+            if (Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached))
+            {
+                recovered = true;
+            }
+            if (recovered)
+            {
+                Persist(_cached);
+            }
+        }
+    }
+
+    private sealed class UnparseableSettingsException(Exception? inner) : Exception("settings.json did not parse", inner);
+
+    /// <summary>Restores the previous version AtomicJsonFile kept, once it parses in memory. <paramref name="primaryJson"/> is the unparseable settings.json text, whose sign-ins win over the backup's possibly rotated ones.</summary>
+    private bool TryRecoverFromBackup(string? primaryJson)
+    {
+        var backup = AtomicJsonFile.BackupPathFor(SettingsPath);
+        try
+        {
+            if (!File.Exists(backup))
+            {
+                return false;
+            }
+            var json = File.ReadAllText(backup);
+            if (JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings) is null)
+            {
+                return false;
+            }
+            // No backup kept here: the Replace would otherwise overwrite the good .bak with the corrupt file.
+            WriteAtomic(json, keepBackup: false);
+            ParseAndMigrate(json);
+            if (TryReadAuth(primaryJson) is { } auth)
+            {
+                _cached!.Auth = auth;
+                Persist(_cached);
+            }
+            Console.Error.WriteLine($"[nexus-service] ERR settings.json was unusable; recovered from {backup}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _cached = null;
+            Console.Error.WriteLine($"[nexus-service] settings backup unusable: {ex.Message}");
+            return false;
         }
     }
 
@@ -449,21 +509,19 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
     private void Persist(NexusSettings doc)
     {
-        // Used only for the first-run synchronous write (Load sees no settings
-        // file and writes defaults immediately). Runtime updates go through the
-        // debounced flush path.
+        // Synchronous write for Load-time defaults, migrations and recovery; runtime updates go through the debounced flush path.
         var json = JsonSerializer.Serialize(doc, PersistenceJsonContext.Default.NexusSettings);
         WriteAtomic(json);
     }
 
-    private void WriteAtomic(string json)
+    private void WriteAtomic(string json, bool keepBackup = true)
     {
         var dir = Path.GetDirectoryName(SettingsPath)!;
         Directory.CreateDirectory(dir);
         // Restrict the temp file BEFORE the token-bearing JSON goes into it; the
         // rename then carries 0600 onto settings.json every write.
         NexusDataPaths.CreateRestricted(AtomicJsonFile.TempPathFor(SettingsPath));
-        AtomicJsonFile.Write(SettingsPath, json);
+        AtomicJsonFile.Write(SettingsPath, json, keepBackup);
     }
 
     public void Dispose()
