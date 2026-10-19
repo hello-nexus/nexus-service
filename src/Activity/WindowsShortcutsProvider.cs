@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Runtime.InteropServices;
+using Nexus.Service.Common;
 using Nexus.Service.Models.Activity;
 using Nexus.Service.Platform.Windows;
 
@@ -32,6 +33,7 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
     private readonly IWindowsIconExtractor _iconExtractor;
     private readonly IconDiskCache _diskCache;
 
+    private readonly LatestRunValue<List<Shortcut>> _appCacheRun = new();
     private List<Shortcut>? _appCache;
     private DateTime _appCacheExpiry;
     private readonly object _appLock = new();
@@ -77,18 +79,21 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
 
         try
         {
-            var enumeration = WindowsAppsFolder.EnumerateStartAppsAsync();
-            if (!enumeration.Wait(StartAppsTimeoutMs))
+            var run = WindowsAppsFolder.EnumerateStartApps();
+            if (run.Id < 0)
+                return Array.Empty<Shortcut>();
+
+            if (!run.Task.Wait(StartAppsTimeoutMs))
             {
-                // A shell that answers late still fills the cache for the next caller.
-                _ = enumeration.ContinueWith(
-                    t => { if (t.IsCompletedSuccessfully) CacheApps(BuildStartApps(t.Result)); },
+                // The empty entry goes in first so a fast late completion is not overwritten by it.
+                CacheApps(run.Id, new List<Shortcut>());
+                _ = run.Task.ContinueWith(
+                    t => { if (t.IsCompletedSuccessfully) CacheApps(run.Id, BuildStartApps(t.Result)); },
                     TaskScheduler.Default);
-                CacheApps(new List<Shortcut>());
                 return Array.Empty<Shortcut>();
             }
 
-            return CacheApps(BuildStartApps(enumeration.Result));
+            return CacheApps(run.Id, BuildStartApps(run.Task.Result));
         }
         catch
         {
@@ -96,7 +101,7 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
         }
     }
 
-    private List<Shortcut> CacheApps(List<Shortcut> apps)
+    private List<Shortcut> CacheApps(long runId, List<Shortcut> apps)
     {
         if (apps.Count > 0)
             FillProcessNames(apps);
@@ -104,8 +109,11 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
         // An empty list (hung or failed enumeration) is cached briefly so callers do not pile onto the shell.
         lock (_appLock)
         {
-            _appCache = apps;
-            _appCacheExpiry = DateTime.UtcNow + (apps.Count > 0 ? AppListCacheTtl : EmptyAppListCacheTtl);
+            _appCacheRun.TryWrite(runId, list =>
+            {
+                _appCache = list;
+                _appCacheExpiry = DateTime.UtcNow + (list.Count > 0 ? AppListCacheTtl : EmptyAppListCacheTtl);
+            }, apps);
         }
 
         return apps;

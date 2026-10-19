@@ -28,15 +28,22 @@ internal static unsafe partial class WindowsAppsFolder
     private const int ErrorSuccess = 0;
     private const int ErrorInsufficientBuffer = 122;
 
-    private static readonly SingleFlight<List<StartApp>> Flight = new(StartEnumeration, TimeSpan.FromMinutes(5));
+    private const int MaxAbandonedEnumerations = 2;
+
+    private static readonly SingleFlight<List<StartApp>> Flight = new(
+        StartEnumeration,
+        TimeSpan.FromMinutes(5),
+        maxAbandoned: MaxAbandonedEnumerations,
+        fallback: () => new List<StartApp>(),
+        onStarved: () => Console.Error.WriteLine("[apps-folder] enumeration abandoned too often; skipping new attempts until the stuck ones finish"));
 
     /// <summary>
     /// Every apps-folder entry as name plus parent-relative parsing name (the
     /// AppUserModelID for packaged apps). The task yields an empty list on failure. One
-    /// enumeration is shared by concurrent callers, and a hung one is abandoned after a
-    /// while so a hung shell costs one thread per attempt window.
+    /// enumeration is shared by concurrent callers, a hung one is abandoned after a while,
+    /// and the number of abandoned threads is capped.
     /// </summary>
-    public static Task<List<StartApp>> EnumerateStartAppsAsync() => Flight.Get();
+    public static FlightRun<List<StartApp>> EnumerateStartApps() => Flight.GetRun();
 
     private static Task<List<StartApp>> StartEnumeration()
     {

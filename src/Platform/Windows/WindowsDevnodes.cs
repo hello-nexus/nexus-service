@@ -19,6 +19,9 @@ internal static partial class WindowsDevnodes
     private const uint SpdrpDeviceDesc = 0x0;
     private const uint SpdrpFriendlyName = 0xC;
     private const uint SpdrpDriver = 0x9;
+    private const uint CrBufferSmall = 0x1A;
+    private const uint DevPropTypeString = 0x12;
+    private const uint MaxPropertyBytes = 65536;
     private const uint CmLocateDevnodePhantom = 0x1;
     private static readonly IntPtr InvalidHandle = new(-1);
 
@@ -107,7 +110,13 @@ internal static partial class WindowsDevnodes
         var key = new DevPropKey { Fmtid = new Guid("b725f130-47ef-101a-a5f1-02608c9eebac"), Pid = 10 };
         var buffer = new byte[1024];
         var size = (uint)buffer.Length;
-        if (CM_Get_DevNode_Property(devInst, ref key, out _, buffer, ref size, 0) != 0) return "";
+        var result = CM_Get_DevNode_Property(devInst, ref key, out var type, buffer, ref size, 0);
+        if (result == CrBufferSmall && size > buffer.Length && size <= MaxPropertyBytes)
+        {
+            buffer = new byte[size];
+            result = CM_Get_DevNode_Property(devInst, ref key, out type, buffer, ref size, 0);
+        }
+        if (result != 0 || type != DevPropTypeString) return "";
         var text = Encoding.Unicode.GetString(buffer, 0, (int)Math.Min(size, (uint)buffer.Length));
         var end = text.IndexOf('\0');
         return (end >= 0 ? text[..end] : text).Trim();
