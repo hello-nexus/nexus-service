@@ -75,7 +75,7 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport
 
     public bool PushImage(byte[] jpeg)
     {
-        var header = Slv3LcdProtocol.EncryptHeader(Slv3LcdProtocol.BuildLengthHeader(Slv3LcdProtocol.CmdType.PushJpg, Stamp(), jpeg.Length));
+        var header = Slv3LcdProtocol.BuildFlexHeader(Slv3LcdProtocol.CmdType.PushJpg, Stamp(), length: jpeg.Length);
         return Write(Slv3LcdProtocol.BuildUnpaddedBuffer(header, jpeg));
     }
 
@@ -90,14 +90,12 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport
     }
 
     private bool WriteHeader(Slv3LcdProtocol.CmdType cmd, byte arg) =>
-        Write(Slv3LcdProtocol.BuildArgCommandHeader(cmd, Stamp(), arg));
+        Write(Slv3LcdProtocol.BuildFlexHeader(cmd, Stamp(), arg));
 
     private bool WritePayload(Slv3LcdProtocol.CmdType cmd, byte[] payload, int x, int y)
     {
-        var plain = cmd == Slv3LcdProtocol.CmdType.PushLayer3
-            ? Slv3LcdProtocol.BuildLayerHeader(cmd, Stamp(), payload.Length, x, y)
-            : Slv3LcdProtocol.BuildLengthHeader(cmd, Stamp(), payload.Length);
-        return Write(Slv3LcdProtocol.BuildUnpaddedBuffer(Slv3LcdProtocol.EncryptHeader(plain), payload));
+        var header = Slv3LcdProtocol.BuildFlexHeader(cmd, Stamp(), length: payload.Length, x: x, y: y);
+        return Write(Slv3LcdProtocol.BuildUnpaddedBuffer(header, payload));
     }
 
     private bool Write(byte[] buffer)
