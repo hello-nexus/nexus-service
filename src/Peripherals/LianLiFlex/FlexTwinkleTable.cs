@@ -401,8 +401,8 @@ internal static class FlexTwinkleTable
     private static byte[,] Build()
     {
         var flat = Convert.FromBase64String(Data);
-        var t = new byte[200, 174];
-        Buffer.BlockCopy(flat, 0, t, 0, flat.Length);
-        return t;
+        var levels = new byte[200, 174];
+        Buffer.BlockCopy(flat, 0, levels, 0, flat.Length);
+        return levels;
     }
 }
