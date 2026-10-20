@@ -30,6 +30,7 @@ public sealed class GlacialLcdWorker : BackgroundService
     private const int LogEveryMs = 60_000;
     private const int BackoffSliceMs = 500;
 
+    private readonly GlacialLcdLink _link;
     private readonly IHidEnumerator _hid;
     private readonly DeviceControlGate _gate;
     private readonly HardwarePresence _presence;
@@ -43,8 +44,10 @@ public sealed class GlacialLcdWorker : BackgroundService
 
     public GlacialLcdWorker(
         IHidEnumerator hid, DeviceControlGate gate, HardwarePresence presence, IConfigStore store, ISensorProvider sensors,
-        int connectPollMs = 5000)
+        GlacialLcdLink? link = null, int connectPollMs = 5000)
     {
+        _link = link ?? new GlacialLcdLink();
+        _link.Changed += RequestApply;
         _hid = hid;
         _gate = gate;
         _presence = presence;
@@ -128,8 +131,14 @@ public sealed class GlacialLcdWorker : BackgroundService
             Seed,
             message => Log(message, error: false),
             ChooseDefaultMode,
-            ModeLanded);
-        if (!screen.Open())
+            ModeLanded,
+            () => _link.Streaming);
+        bool opened;
+        lock (_link.Sync)
+        {
+            opened = screen.Open();
+        }
+        if (!opened)
         {
             Log("the panel did not take the opening reports", error: false);
             return false;
@@ -229,10 +238,26 @@ public sealed class GlacialLcdWorker : BackgroundService
         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(HandlerId))
         {
             await _wake.WaitAsync(LoopMs, stoppingToken).ConfigureAwait(false);
-            if (!screen.Reconcile() || !screen.Tick())
+            if (_link.Streaming && ReadSettings() is { BrightnessEdited: true, Brightness: 0 })
             {
-                Log("a report was refused; reopening", error: false);
-                return false;
+                // A lock-to-dark must not wait out a picture upload.
+                _link.RequestCancel();
+            }
+            // One owner of the panel at a time: an upload in progress holds this for its whole length.
+            if (Monitor.TryEnter(_link.Sync))
+            {
+                try
+                {
+                    if (!screen.Reconcile() || !screen.Tick())
+                    {
+                        Log("a report was refused; reopening", error: false);
+                        return false;
+                    }
+                }
+                finally
+                {
+                    Monitor.Exit(_link.Sync);
+                }
             }
             if (Environment.TickCount64 >= nextPresenceMs)
             {

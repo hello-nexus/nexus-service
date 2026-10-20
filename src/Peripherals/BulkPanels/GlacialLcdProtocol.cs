@@ -6,8 +6,9 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// <summary>
 /// The LCD on the ASUS ROG Crosshair X870E Glacial motherboard (USB VID/PID in <see cref="ProductId"/>), decoded from
 /// MB Manager traffic. Commands are fixed-size HID output reports (<see cref="ReportBytes"/>)
-/// led by <see cref="ReportId"/>. The picture upload over the vendor bulk interface is not
-/// implemented.
+/// led by <see cref="ReportId"/>. A custom picture is stored on the panel: a short report
+/// sequence announces it, one baseline JPEG follows on the vendor bulk interface in fixed-size
+/// transfers, and a last report pair shows it.
 ///
 /// Device replies are HID input reports that echo the opcode; the state reply is the only
 /// one with a payload and has the same layout as the settings write.
@@ -17,6 +18,28 @@ public static class GlacialLcdProtocol
     public const int ProductId = 0x1D93;
     public const int ReportBytes = 65;
     public const byte ReportId = 0xEC;
+
+    /// <summary>Size of every picture MB Manager uploaded, which is taken to be the panel's own.</summary>
+    public const int PanelWidth = 720;
+    public const int PanelHeight = 1280;
+
+    /// <summary>Baseline JPEG, 4:2:0, at the standard quantization tables scaled for this quality.</summary>
+    public const int JpegQuality = 75;
+
+    /// <summary>Every bulk transfer is this size; the last one is zero padded past the picture.</summary>
+    public const int ChunkBytes = 4096;
+
+    /// <summary>Spacing between bulk transfers in the captures, steady across every chunk.</summary>
+    public const int ChunkIntervalMs = 2100;
+
+    /// <summary>Gap between the size announce and the first bulk transfer.</summary>
+    public const int ChunkLeadMs = 502;
+
+    /// <summary>Gap between the end-of-upload report and the report pair that shows the picture.</summary>
+    public const int FinishSettleMs = 5898;
+
+    /// <summary>The slot the vendor app stored its pictures in.</summary>
+    public const int CustomSlot = 2;
 
     /// <summary>Mode bytes of the mode-select report.</summary>
     public const byte ModeOff = 0x00;
@@ -144,4 +167,49 @@ public static class GlacialLcdProtocol
         }
         bytes.AsSpan(0, length).CopyTo(field);
     }
+
+    /// <summary>
+    /// The reports MB Manager sends before the bulk transfers, each with the gap it left before
+    /// it, in the order captured: begin, flush, target slot, stage, then the 24-bit size.
+    /// </summary>
+    public static (byte[] Report, int GapMs)[] EncodeCustomImagePrelude(int jpegBytes)
+    {
+        if (jpegBytes <= 0 || jpegBytes > 0xFFFFFF)
+        {
+            throw new ArgumentOutOfRangeException(nameof(jpegBytes));
+        }
+        var begin = Report(0x71);
+        begin[2] = 0x01;
+        begin[3] = 0x01;
+        var flush = Report(0xF1);
+        var slot = Report(0x72);
+        slot[2] = 0x01;
+        slot[3] = 0x01;
+        slot[4] = CustomSlot;
+        var stage = Report(0x73);
+        stage[2] = 0x01;
+        var announce = Report(0x7F);
+        announce[2] = 0x02;
+        announce[3] = (byte)jpegBytes;
+        announce[4] = (byte)(jpegBytes >> 8);
+        announce[5] = (byte)(jpegBytes >> 16);
+        return new[] { (begin, 291), (flush, 25), (slot, 67), (stage, 112), (announce, 516) };
+    }
+
+    /// <summary>Sent after the last bulk transfer.</summary>
+    public static byte[] EncodeUploadEnd()
+    {
+        var report = Report(0x73);
+        report[2] = 0xFF;
+        return report;
+    }
+
+    /// <summary>Shows the stored custom picture: the static mode with the custom source and its slot.</summary>
+    public static byte[] EncodeCustomPicture(int slot = CustomSlot)
+    {
+        var report = EncodeMode(ModeStaticAsset, slot);
+        report[3] = 0x01;
+        return report;
+    }
 }
+

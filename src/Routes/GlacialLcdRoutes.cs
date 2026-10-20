@@ -45,44 +45,55 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("invalid slots"));
             }
-            store.Update(s =>
-            {
-                var g = s.Devices.GlacialLcd;
-                // Any change hands the panel to Nexus; each field the user sets is from then on written.
-                g.UserEdited = true;
-                if (body.Mode is not null || body.StaticAsset.HasValue || body.AnimatedAsset.HasValue)
-                {
-                    g.ModeChosen = true;
-                }
-                if (body.DisplayOn.HasValue) { g.DisplayOn = body.DisplayOn.Value; g.DisplayEdited = true; }
-                if (body.Mode is not null) { g.Mode = body.Mode; }
-                if (body.StaticAsset.HasValue) { g.StaticAsset = body.StaticAsset.Value; }
-                if (body.AnimatedAsset.HasValue) { g.AnimatedAsset = body.AnimatedAsset.Value; }
-                if (body.SlotCount.HasValue) { g.SlotCount = body.SlotCount.Value; }
-                if (body.Brightness.HasValue) { g.Brightness = Math.Clamp(body.Brightness.Value, 0, 100); g.BrightnessEdited = true; }
-                if (body.StayOnWhileAsleep.HasValue) { g.StayOnWhileAsleep = body.StayOnWhileAsleep.Value; g.SleepEdited = true; }
-                if (body.Slots is { } slots)
-                {
-                    g.Slots = g.Copy().Slots;
-                    while (g.Slots.Count < GlacialLcdProtocol.MaxMonitorSlots)
-                    {
-                        g.Slots.Add(new GlacialLcdSlot());
-                    }
-                    for (int i = 0; i < slots.Length; i++)
-                    {
-                        g.Slots[i] = new GlacialLcdSlot { Category = slots[i].Category, Sensor = slots[i].Sensor, Label = slots[i].Label };
-                    }
-                }
-                // Content changes only count once a mode is chosen; until then they are stored placeholders.
-                if (g.ModeChosen
-                    && (body.Mode is not null || body.StaticAsset.HasValue || body.AnimatedAsset.HasValue || body.SlotCount.HasValue || body.Slots is not null))
-                {
-                    g.ModePending = true;
-                }
-            });
+            store.Update(s => ApplyGlacialRequest(s.Devices.GlacialLcd, body));
             worker.RequestApply();
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
+    }
+
+    /// <summary>Applies a settings request to the saved state; separate from the route so it can be tested.</summary>
+    internal static void ApplyGlacialRequest(GlacialLcdSettings g, GlacialLcdSettingsRequest body)
+    {
+        bool wasChosen = g.ModeChosen;
+        string keyBefore = GlacialLcdScreen.ModeKeyOf(g.Copy());
+        // Any change hands the panel to Nexus; each field the user sets is from then on written.
+        g.UserEdited = true;
+        if (body.Mode is not null || body.StaticAsset.HasValue || body.AnimatedAsset.HasValue)
+        {
+            g.ModeChosen = true;
+        }
+        if (body.DisplayOn.HasValue) { g.DisplayOn = body.DisplayOn.Value; g.DisplayEdited = true; }
+        if (body.Mode is not null) { g.Mode = body.Mode; }
+        if (body.StaticAsset.HasValue) { g.StaticAsset = body.StaticAsset.Value; }
+        if (body.AnimatedAsset.HasValue) { g.AnimatedAsset = body.AnimatedAsset.Value; }
+        if (body.SlotCount.HasValue) { g.SlotCount = body.SlotCount.Value; }
+        if (body.Brightness.HasValue) { g.Brightness = Math.Clamp(body.Brightness.Value, 0, 100); g.BrightnessEdited = true; }
+        if (body.StayOnWhileAsleep.HasValue) { g.StayOnWhileAsleep = body.StayOnWhileAsleep.Value; g.SleepEdited = true; }
+        if (body.Slots is { } slots)
+        {
+            g.Slots = g.Copy().Slots;
+            while (g.Slots.Count < GlacialLcdProtocol.MaxMonitorSlots)
+            {
+                g.Slots.Add(new GlacialLcdSlot());
+            }
+            for (int i = 0; i < slots.Length; i++)
+            {
+                g.Slots[i] = new GlacialLcdSlot { Category = slots[i].Category, Sensor = slots[i].Sensor, Label = slots[i].Label };
+            }
+        }
+        // Turning the display on with no mode ever chosen selects the vendor's first-run animation.
+        if (body.DisplayOn == true && !g.ModeChosen)
+        {
+            g.ModeChosen = true;
+            g.Mode = GlacialLcdSettings.ModeAnimated;
+            g.AnimatedAsset = GlacialLcdSettings.FirstRunAnimation;
+        }
+        // Pending only when the panel is not already known to hold this content: a mode
+        // newly chosen, or a changed key. An unchanged key leaves the flag as it was.
+        if (g.ModeChosen && (!wasChosen || GlacialLcdScreen.ModeKeyOf(g.Copy()) != keyBefore))
+        {
+            g.ModePending = true;
+        }
     }
 
     private static GlacialLcdSettings ReadGlacial(IConfigStore store)

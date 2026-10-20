@@ -58,6 +58,9 @@ public sealed class NexusSettings
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
 
+    /// <summary>Hash of the last picture uploaded to each stored-picture LCD (key: device serial or handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
+    public Dictionary<string, string> LcdUploadHashes { get; set; } = new();
+
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
 

@@ -39,6 +39,7 @@ public class GlacialLcdScreenTests
         public int Reads;
         public GlacialLcdConfirmed Confirmed { get; } = new();
         public int DefaultModeChosen;
+        public bool Streaming;
         public GlacialLcdScreen Screen { get; private set; }
 
         public Rig(byte[]? stateReply)
@@ -66,6 +67,7 @@ public class GlacialLcdScreenTests
                 Warnings.Add,
                 () => DefaultModeChosen++,
                 Landed.Add,
+                () => Streaming,
                 () => Clock.Now,
                 _ => { });
 
@@ -532,6 +534,118 @@ public class GlacialLcdScreenTests
         Assert.True(rig.Screen.Reconcile());
 
         Assert.Contains(Report("EC 5C 01 00 00 1E 00 00 00 1E 14 00 00 00 00 1E"), rig.Take());
+    }
+
+    [Fact]
+    public void While_a_panel_streams_the_mode_is_left_alone_and_a_chosen_mode_returns_afterwards()
+    {
+        var rig = NewRig().Owned();
+        rig.Settings.Mode = GlacialLcdSettings.ModeStatic;
+        rig.Screen.Open();
+        rig.Take();
+        rig.Streaming = true;
+
+        rig.Settings.Mode = GlacialLcdSettings.ModeAnimated;
+        rig.SetBrightness(70);
+        Assert.True(rig.Screen.Reconcile());
+        // Brightness still goes through, without the mode repeats; the mode change waits.
+        AssertSequence(rig.Take(), "EC DC", "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46");
+        rig.Clock.Now += 60_000;
+        Assert.True(rig.Screen.Tick());
+        Assert.Empty(rig.Take());
+
+        rig.Streaming = false;
+        Assert.True(rig.Screen.Reconcile());
+        AssertSequence(rig.Take(), "EC DC", "EC 51 14 00 01");
+    }
+
+    [Fact]
+    public void When_streaming_stops_no_mode_is_selected_if_the_user_never_chose_one()
+    {
+        var rig = NewRig().Owned(modeChosen: false);
+        rig.Screen.Open();
+        rig.Take();
+        rig.Streaming = true;
+        rig.Screen.Reconcile();
+        rig.Streaming = false;
+
+        Assert.True(rig.Screen.Reconcile());
+
+        Assert.Empty(rig.Take());
+    }
+
+    [Fact]
+    public void An_unknown_display_state_does_not_hold_back_a_preset_pick()
+    {
+        var rig = NewRig(answering: false).Owned(modeChosen: false);
+        rig.Screen.Open();
+        rig.Take();
+        rig.SetDisplay(true);
+        rig.Settings.ModeChosen = true;
+        rig.Settings.Mode = GlacialLcdSettings.ModeStatic;
+        rig.Settings.StaticAsset = 4;
+
+        Assert.True(rig.Screen.Reconcile());
+
+        Assert.Contains(Report("EC 51 11 00 04"), rig.Take());
+    }
+
+    [Fact]
+    public void A_link_failure_during_the_seed_retry_fails_the_session()
+    {
+        var rig = NewRig(answering: false);
+        rig.Screen.Open();
+        rig.Hid.FailWrites = true;
+
+        Assert.False(rig.Screen.Tick());
+    }
+
+    private static GlacialLcdSettings Chosen()
+    {
+        var g = new GlacialLcdSettings { UserEdited = true, ModeChosen = true };
+        return g;
+    }
+
+    [Fact]
+    public void A_content_change_that_leaves_the_mode_key_alone_does_not_set_the_pending_flag()
+    {
+        var g = Chosen();
+        Nexus.Service.Routes.DevicesRoutes.ApplyGlacialRequest(g, new Nexus.Service.Routes.GlacialLcdSettingsRequest { AnimatedAsset = g.AnimatedAsset });
+        Assert.False(g.ModePending);
+
+        Nexus.Service.Routes.DevicesRoutes.ApplyGlacialRequest(g, new Nexus.Service.Routes.GlacialLcdSettingsRequest { AnimatedAsset = 0 });
+        Assert.True(g.ModePending);
+    }
+
+    [Fact]
+    public void Slots_alone_never_mark_a_mode_as_chosen()
+    {
+        var g = new GlacialLcdSettings();
+
+        Nexus.Service.Routes.DevicesRoutes.ApplyGlacialRequest(
+            g,
+            new Nexus.Service.Routes.GlacialLcdSettingsRequest
+            {
+                SlotCount = 2,
+                Slots = new[] { new Nexus.Service.Routes.GlacialLcdSlotDto { Category = "gpu" } },
+            });
+
+        Assert.False(g.ModeChosen);
+        Assert.False(g.ModePending);
+        Assert.Equal("gpu", g.Slots[0].Category);
+    }
+
+    [Fact]
+    public void Display_on_with_no_mode_chosen_sets_the_first_run_animation_in_the_route_itself()
+    {
+        var g = new GlacialLcdSettings();
+
+        Nexus.Service.Routes.DevicesRoutes.ApplyGlacialRequest(g, new Nexus.Service.Routes.GlacialLcdSettingsRequest { DisplayOn = true });
+
+        Assert.True(g.ModeChosen);
+        Assert.True(g.ModePending);
+        Assert.Equal((GlacialLcdSettings.ModeAnimated, GlacialLcdSettings.FirstRunAnimation), (g.Mode, g.AnimatedAsset));
+        Assert.True(g.DisplayEdited);
     }
 
     [Fact]

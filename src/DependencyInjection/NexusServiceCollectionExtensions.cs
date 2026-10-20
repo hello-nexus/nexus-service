@@ -1418,7 +1418,29 @@ public static class NexusServiceCollectionExtensions
             }
         }
 
-        // ROG Crosshair X870E Glacial LCD: native modes over HID only; Nexus renders nothing to it.
+        // ROG Crosshair X870E Glacial LCD: native modes over HID, plus a streamed-panel path that
+        // uploads frames as the panel's stored custom picture. The two share one link so only one
+        // of them talks to the panel at a time. The device row is the native handler's; the stream
+        // driver adds no handler of its own, so the Nexus Control switch is the same one.
+        var glacialLink = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink();
+        services.AddSingleton(glacialLink);
+        var glacialStreamDriver = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver(glacialLink);
+        var glacialStreamHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(glacialStreamDriver);
+        services.AddSingleton(glacialStreamHub);
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+        {
+            glacialStreamDriver.BindMemory(new Nexus.Service.Peripherals.BulkPanels.ConfigStoreLcdUploadMemory(
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+            return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
+                sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
+                sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
+                glacialStreamHub,
+                sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+                sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+        });
+        services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
+            new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
+                glacialStreamHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>()));
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>());
         services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(

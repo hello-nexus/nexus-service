@@ -60,6 +60,7 @@ public sealed class GlacialLcdScreen
     private readonly Action<string> _warn;
     private readonly Action _chooseDefaultMode;
     private readonly Action<string> _modeLanded;
+    private readonly Func<bool> _streaming;
     private readonly Func<long> _clock;
     private readonly Action<int> _pause;
 
@@ -68,6 +69,7 @@ public sealed class GlacialLcdScreen
     private long _settingsRetryAtMs;
     private int _announcedCount;
     private bool _seeded;
+    private bool _wasStreaming;
 
     public GlacialLcdScreen(
         IHidDevice hid,
@@ -78,6 +80,7 @@ public sealed class GlacialLcdScreen
         Action<string>? warn = null,
         Action? chooseDefaultMode = null,
         Action<string>? modeLanded = null,
+        Func<bool>? streaming = null,
         Func<long>? clock = null,
         Action<int>? pause = null)
     {
@@ -89,6 +92,7 @@ public sealed class GlacialLcdScreen
         _warn = warn ?? (_ => { });
         _chooseDefaultMode = chooseDefaultMode ?? (() => { });
         _modeLanded = modeLanded ?? (_ => { });
+        _streaming = streaming ?? (() => false);
         _clock = clock ?? (() => Environment.TickCount64);
         _pause = pause ?? (ms => System.Threading.Thread.Sleep(ms));
     }
@@ -141,6 +145,14 @@ public sealed class GlacialLcdScreen
     public bool Reconcile()
     {
         var wanted = _settings().Copy();
+        bool streaming = _streaming();
+        if (_wasStreaming && !streaming)
+        {
+            // The stored custom picture displaced the mode, so what the panel shows is unknown
+            // again; a mode the user chose is selected anew, none otherwise.
+            _confirmed.ModeKey = null;
+        }
+        _wasStreaming = streaming;
         if (!wanted.UserEdited)
         {
             return true;
@@ -149,17 +161,19 @@ public sealed class GlacialLcdScreen
         bool flagsPending = FlagEditPending(wanted.BrightnessEdited, wanted.Brightness, c.Brightness)
             || FlagEditPending(wanted.DisplayEdited, wanted.DisplayOn, c.DisplayOn)
             || FlagEditPending(wanted.SleepEdited, wanted.StayOnWhileAsleep, c.KeepOnWhileAsleep);
-        bool modeChanged = wanted.ModeChosen && ModeKeyOf(wanted) != c.ModeKey;
+        // While a Nexus Panel streams, the upload owns the mode.
+        bool modeChanged = !streaming && wanted.ModeChosen && ModeKeyOf(wanted) != c.ModeKey;
         if (!flagsPending && !modeChanged)
         {
             return true;
         }
 
         // A change that needs no reply goes out whether or not a settings write is waiting out a silent panel.
-        bool turningOn = wanted.DisplayEdited && wanted.DisplayOn && c.DisplayOn != true;
+        // An unknown display state is not a turn-on, so a preset pick is not held back by a silent panel.
+        bool turningOn = wanted.DisplayEdited && wanted.DisplayOn && c.DisplayOn == false;
         if (flagsPending && _clock() >= _settingsRetryAtMs)
         {
-            var step = WriteFlags(wanted, modeChanged);
+            var step = WriteFlags(wanted, modeChanged, streaming);
             if (step == Step.Failed)
             {
                 return false;
@@ -186,7 +200,11 @@ public sealed class GlacialLcdScreen
         if (!_seeded && _clock() >= _seedRetryAtMs)
         {
             var reply = ReadState();
-            if (reply is { Length: > 0 })
+            if (reply is null)
+            {
+                return false;
+            }
+            if (reply.Length > 0)
             {
                 RecordReply(reply);
             }
@@ -196,7 +214,7 @@ public sealed class GlacialLcdScreen
                 _warn("no state reply from the panel; will retry");
             }
         }
-        if (!saved.UserEdited || _confirmed.DisplayOn == false || _announcedCount == 0
+        if (!saved.UserEdited || _streaming() || _confirmed.DisplayOn == false || _announcedCount == 0
             || _confirmed.ModeKey is not { } key || !key.StartsWith("monitor:", StringComparison.Ordinal))
         {
             return true;
@@ -232,7 +250,7 @@ public sealed class GlacialLcdScreen
     /// One fresh query, then the settings write with only the edited fields changed, then what
     /// that change needs: a bare off, repeats of the mode select, or the full mode selection.
     /// </summary>
-    private Step WriteFlags(GlacialLcdSettings wanted, bool modeChanged)
+    private Step WriteFlags(GlacialLcdSettings wanted, bool modeChanged, bool streaming)
     {
         var reply = ReadState();
         if (reply is null)
@@ -260,14 +278,14 @@ public sealed class GlacialLcdScreen
         if (sleep is not null) { c.KeepOnWhileAsleep = sleep; }
 
         bool turnedOn = display == true;
-        bool defaultMode = turnedOn && !wanted.ModeChosen;
+        bool defaultMode = turnedOn && !wanted.ModeChosen && !streaming;
         if (defaultMode)
         {
             wanted.ModeChosen = true;
             wanted.Mode = GlacialLcdSettings.ModeAnimated;
             wanted.AnimatedAsset = GlacialLcdSettings.FirstRunAnimation;
         }
-        modeChanged = wanted.ModeChosen && ModeKeyOf(wanted) != c.ModeKey;
+        modeChanged = !streaming && wanted.ModeChosen && ModeKeyOf(wanted) != c.ModeKey;
 
         if (!wanted.DisplayOn)
         {
@@ -281,6 +299,10 @@ public sealed class GlacialLcdScreen
         // A display turn-on or a mode change selects the mode once, after the settings, so a
         // monitor's widgets always go out before its mode select; a bare brightness or sleep
         // change repeats the current mode select instead.
+        if (streaming)
+        {
+            return Step.Ok;
+        }
         bool reselect = wanted.ModeChosen && (modeChanged || turnedOn);
         if (!reselect)
         {

@@ -23,6 +23,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private readonly int _height;
     private int _filled;
     private volatile bool _disposed;
+    private bool _opened;
     private bool _dropLogged;
     private readonly PanelOrientationFilter _orientation = new();
     private Func<(bool Flip180, bool Mirror)> _orientationSource = () => (false, false);
@@ -224,6 +225,8 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             throw new IOException($"{_hub.Driver.Name} panel size unknown");
         }
         _filled = 0;
+        _opened = true;
+        _hub.Driver.StreamOpened();
         Volatile.Write(ref _lastSendMs, Environment.TickCount64);
         int keepaliveMs = _hub.Driver.KeepaliveMs;
         if (keepaliveMs > 0)
@@ -331,6 +334,11 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     public void Dispose()
     {
         _disposed = true;
+        if (_opened)
+        {
+            _opened = false;
+            _hub.Driver.StreamClosed();
+        }
         _keepalive?.Dispose();
         _keepalive = null;
         SecondaryMonitorFeed? monitor;

@@ -118,4 +118,29 @@ public class GlacialLcdTests
         Assert.Equal((byte)'1', report[GlacialLcdProtocol.SlotValueOffset]);
     }
 
+
+    [Fact]
+    public void The_custom_image_prelude_matches_the_complete_capture()
+    {
+        var prelude = GlacialLcdProtocol.EncodeCustomImagePrelude(0x5A12);
+
+        Assert.Equal(
+            new[] { Report("EC 71 01 01"), Report("EC F1"), Report("EC 72 01 01 02"), Report("EC 73 01"), Report("EC 7F 02 12 5A") },
+            prelude.Select(p => p.Report));
+        Assert.Equal(new[] { 291, 25, 67, 112, 516 }, prelude.Select(p => p.GapMs));
+    }
+
+    [Fact]
+    public void The_finish_step_is_the_captured_end_report_and_the_custom_picture_select()
+    {
+        Assert.Equal(Report("EC 73 FF"), GlacialLcdProtocol.EncodeUploadEnd());
+        Assert.Equal(Report("EC 51 11 01 02"), GlacialLcdProtocol.EncodeCustomPicture());
+    }
+
+    [Fact]
+    public void An_upload_size_outside_24_bits_is_refused()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeCustomImagePrelude(0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeCustomImagePrelude(0x1000000));
+    }
 }
