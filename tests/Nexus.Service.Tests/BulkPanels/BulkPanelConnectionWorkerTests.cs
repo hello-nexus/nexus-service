@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Devices;
@@ -42,6 +43,35 @@ public class BulkPanelConnectionWorkerTests
         {
             await worker.StopAsync(CancellationToken.None);
         }
+    }
+
+    [Fact]
+    public async Task A_driver_that_reads_hid_gets_an_overlapped_handle_and_others_do_not()
+    {
+        var usb = new SwitchableUsb { Present = true };
+        var store = new InMemoryConfigStore();
+        var opened = new ConcurrentBag<(string Path, bool ForInput)>();
+        foreach (IBulkPanelDriver driver in new IBulkPanelDriver[] { new GlacialLcdPanelDriver(), new RyujinPanelDriver() })
+        {
+            store.Update(s => s.Devices.NexusControlEnabled.Add(driver.HandlerId));
+            usb.Vendor = driver.VendorId;
+            usb.Product = driver.ProductIds[0];
+            var worker = new BulkPanelConnectionWorker(
+                new RecordingHid(driver.VendorId, driver.ProductIds[0], opened), new PipeFactory(), new BulkPanelHub(driver),
+                new DeviceControlGate(store), new HardwarePresence(usb), connectPollMs: 50, presencePollMs: 50);
+            await worker.StartAsync(CancellationToken.None);
+            try
+            {
+                Assert.True(await Eventually(() => opened.Any(o => o.Path == driver.HandlerId)));
+            }
+            finally
+            {
+                await worker.StopAsync(CancellationToken.None);
+            }
+        }
+
+        Assert.True(opened.First(o => o.Path == "asus-glacial-lcd").ForInput);
+        Assert.False(opened.First(o => o.Path == "asus-ryujin-lcd").ForInput);
     }
 
     [Fact]
@@ -146,9 +176,11 @@ public class BulkPanelConnectionWorkerTests
     private sealed class SwitchableUsb : IUsbEnumerator
     {
         public volatile bool Present;
+        public int Vendor = FakeDriver.Vid;
+        public int Product = FakeDriver.Pid;
 
         public List<UsbDeviceEntry> Enumerate() =>
-            Present ? new List<UsbDeviceEntry> { new() { VendorId = FakeDriver.Vid, ProductId = FakeDriver.Pid } } : new();
+            Present ? new List<UsbDeviceEntry> { new() { VendorId = Vendor, ProductId = Product } } : new();
     }
 
     private sealed class FakeDriver : IBulkPanelDriver
@@ -208,6 +240,34 @@ public class BulkPanelConnectionWorkerTests
         public bool Write(byte pipeId, ReadOnlySpan<byte> data) => true;
         public int Read(Span<byte> buffer, int timeoutMs) => 0;
         public void Dispose() { }
+    }
+
+    private sealed class RecordingHid : IHidEnumerator
+    {
+        private readonly int _vendor;
+        private readonly int _product;
+        private readonly ConcurrentBag<(string Path, bool ForInput)> _opened;
+
+        public RecordingHid(int vendor, int product, ConcurrentBag<(string Path, bool ForInput)> opened)
+        {
+            _vendor = vendor;
+            _product = product;
+            _opened = opened;
+        }
+
+        // The handler id stands in for the path so a test can tell the drivers apart.
+        public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) =>
+            vendorId == _vendor && productId == _product
+                ? new[] { new HidDeviceInfo { VendorId = vendorId, ProductId = productId, Path = _product == GlacialLcdProtocol.ProductId ? "asus-glacial-lcd" : "asus-ryujin-lcd", OutputReportByteLength = 65 } }
+                : Array.Empty<HidDeviceInfo>();
+
+        public IReadOnlyList<HidDeviceInfo> FindAll() => Array.Empty<HidDeviceInfo>();
+
+        public IHidDevice? Open(string path, bool forInput = false)
+        {
+            _opened.Add((path, forInput));
+            return null;
+        }
     }
 
     private sealed class NoHid : IHidEnumerator

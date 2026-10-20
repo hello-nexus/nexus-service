@@ -152,8 +152,29 @@ public class GlacialLcdTests
         return condition();
     }
 
-    private static GlacialLcdPanelDriver Fast(int chunkMs = 0, int refreshMs = 600_000, int backoffMs = 10, int cancelRetryMs = 600_000) =>
-        new(chunkMs, refreshMs, settleMs: 0, maxSettleMs: 0, backoffBaseMs: backoffMs, cancelRetryMs: cancelRetryMs);
+    /// <summary>Waits until the worker has taken at least two more looks, so "nothing happened" is a statement about its decision.</summary>
+    private static void WorkerLooksTwice(GlacialLcdPanelDriver driver)
+    {
+        int target = driver.Ticks + 2;
+        Assert.True(WaitUntil(() => driver.Ticks >= target));
+    }
+
+    private sealed class FakeClock
+    {
+        private long _now = 1_000_000;
+
+        public long Now => Interlocked.Read(ref _now);
+
+        public void Advance(long ms) => Interlocked.Add(ref _now, ms);
+    }
+
+    private static GlacialLcdPanelDriver Fast(
+        FakeClock? clock = null, int chunkMs = 0, int refreshMs = 600_000, int settleMs = 0, int maxSettleMs = 600_000,
+        int backoffMs = 10, int cancelRetryMs = 600_000)
+    {
+        clock ??= new FakeClock();
+        return new(chunkMs, refreshMs, settleMs, maxSettleMs, backoffMs, cancelRetryMs, () => clock.Now);
+    }
 
     [Fact]
     public void Connect_sends_the_vendor_opening_and_reports_the_jpeg_size()
@@ -200,7 +221,8 @@ public class GlacialLcdTests
     [Fact]
     public void A_frame_arriving_inside_the_cooldown_is_flushed_when_it_ends()
     {
-        var driver = Fast(refreshMs: 700);
+        var clock = new FakeClock();
+        var driver = Fast(clock, refreshMs: 700);
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
@@ -208,10 +230,11 @@ public class GlacialLcdTests
         driver.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
         driver.SendFrame(pipe, hid, Frame(noiseRows: 8));
-        Thread.Sleep(250);
+        WorkerLooksTwice(driver);
         Assert.Equal(1, driver.UploadsCompleted);
 
         // No further SendFrame: the driver flushes the pending frame by itself.
+        clock.Advance(700);
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
         driver.Disconnect(pipe, hid);
     }
@@ -219,32 +242,40 @@ public class GlacialLcdTests
     [Fact]
     public void A_frame_is_held_until_the_content_settles()
     {
-        var driver = new GlacialLcdPanelDriver(0, 600_000, settleMs: 900, maxSettleMs: 600_000, backoffBaseMs: 10, cancelRetryMs: 1);
+        var clock = new FakeClock();
+        var driver = Fast(clock, settleMs: 900);
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
-        Thread.Sleep(400);
+        clock.Advance(899);
+        WorkerLooksTwice(driver);
         Assert.Equal(0, driver.UploadAttempts);
+
+        clock.Advance(1);
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
         driver.Disconnect(pipe, hid);
     }
 
     [Fact]
-    public void Content_that_never_settles_is_uploaded_after_the_settle_ceiling()
+    public void Only_the_first_upload_after_a_connect_may_skip_the_settle_wait()
     {
-        var driver = new GlacialLcdPanelDriver(0, 600_000, settleMs: 600_000, maxSettleMs: 500, backoffBaseMs: 10, cancelRetryMs: 1);
+        var clock = new FakeClock();
+        var driver = Fast(clock, refreshMs: 100, settleMs: 600_000, maxSettleMs: 500);
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
 
-        int seed = 0;
-        Assert.True(WaitUntil(() =>
-        {
-            driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: ++seed));
-            return driver.UploadsCompleted == 1;
-        }));
+        driver.SendFrame(pipe, hid, Frame());
+        clock.Advance(500);
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+
+        // A page that never settles is not pushed again on a timer.
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4));
+        clock.Advance(100_000);
+        WorkerLooksTwice(driver);
+        Assert.Equal(1, driver.UploadAttempts);
         driver.Disconnect(pipe, hid);
     }
 
@@ -268,7 +299,7 @@ public class GlacialLcdTests
         var hid2 = new FakeHid();
         second.Connect(pipe2, hid2);
         second.SendFrame(pipe2, hid2, Frame());
-        Thread.Sleep(600);
+        WorkerLooksTwice(second);
 
         Assert.Equal(0, second.UploadAttempts);
         Assert.Empty(pipe2.Writes);
@@ -276,26 +307,58 @@ public class GlacialLcdTests
     }
 
     [Fact]
-    public void A_failed_upload_backs_off_instead_of_retrying_every_frame()
+    public void A_failed_upload_forgets_the_remembered_picture_and_backs_off()
     {
-        var driver = Fast(backoffMs: 800);
-        var pipe = new FakePipe { FailWrites = true };
+        var clock = new FakeClock();
+        var memory = new FakeMemory();
+        var driver = Fast(clock, refreshMs: 100, backoffMs: 800);
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
-
         driver.SendFrame(pipe, hid, Frame());
-        Assert.True(WaitUntil(() => driver.UploadAttempts == 1));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        Assert.Single(memory.Hashes);
+
+        pipe.FailWrites = true;
+        clock.Advance(100);
         driver.SendFrame(pipe, hid, Frame(noiseRows: 2));
-        Thread.Sleep(400);
-        Assert.Equal(1, driver.UploadAttempts);
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 2));
+        // The panel may hold half a picture, so nothing is remembered.
+        Assert.Empty(memory.Hashes);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 3));
+        WorkerLooksTwice(driver);
+        Assert.Equal(2, driver.UploadAttempts);
 
         pipe.FailWrites = false;
-        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        clock.Advance(800);
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
+        Assert.Single(memory.Hashes);
         driver.Disconnect(pipe, hid);
     }
 
     [Fact]
-    public void Disconnect_during_an_upload_returns_promptly()
+    public void The_cooldown_survives_a_reconnect()
+    {
+        var clock = new FakeClock();
+        var driver = Fast(clock);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe, hid);
+
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 5));
+        WorkerLooksTwice(driver);
+
+        Assert.Equal(1, driver.UploadAttempts);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Disconnect_during_an_upload_returns_promptly_and_a_new_connect_works()
     {
         var driver = Fast(chunkMs: 600_000);
         var pipe = new FakePipe();
@@ -309,6 +372,10 @@ public class GlacialLcdTests
 
         Assert.True(watch.ElapsedMilliseconds < 2000);
         Assert.False(driver.IsUploading);
+        // A stopped worker is never revived by the next connect: a fresh one takes over.
+        Assert.NotNull(driver.Connect(pipe, hid));
+        Assert.True(driver.SendFrame(pipe, hid, Frame()));
+        driver.Disconnect(pipe, hid);
     }
 
     [Fact]
@@ -331,9 +398,32 @@ public class GlacialLcdTests
     }
 
     [Fact]
+    public void A_deferred_brightness_that_fails_is_retried_by_the_driver_until_applied()
+    {
+        var clock = new FakeClock();
+        var driver = Fast(clock, chunkMs: 40);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 60));
+        Assert.True(WaitUntil(() => driver.IsUploading));
+        Assert.True(driver.SetBrightness(pipe, hid, 0));
+
+        // The panel stays silent after the upload, so the first apply fails.
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
+        WorkerLooksTwice(driver);
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0x5C);
+
+        hid.StateReply = Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32");
+        clock.Advance(10_000);
+        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, 0x14, false)))));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
     public void Brightness_zero_cancels_the_upload_and_applies_at_once()
     {
-        var driver = Fast(chunkMs: 600_000, cancelRetryMs: 600_000);
+        var driver = Fast(chunkMs: 600_000);
         var pipe = new FakePipe();
         var hid = new FakeHid { StateReply = Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32") };
         driver.Connect(pipe, hid);
@@ -364,15 +454,22 @@ public class GlacialLcdTests
     }
 
     [Fact]
-    public void Brightness_without_a_state_reply_writes_no_settings()
+    public void Brightness_without_a_state_reply_writes_no_settings_and_never_reads_without_a_timeout()
     {
-        var driver = Fast();
+        var clock = new FakeClock();
+        var driver = Fast(clock);
         var hid = new FakeHid();
         hid.Input.Enqueue(Report("EC 5C 00 00 00 0A 00 00 00 0A 11 00 00 00 00 0A"));
 
         Assert.False(driver.SetBrightness(new FakePipe(), hid, 30));
 
         Assert.Equal(new[] { GlacialLcdProtocol.EncodeQuery() }, hid.Writes);
+        // A read that waits forever would wedge the hub on a handle that ignores timeouts.
+        Assert.All(hid.ReadTimeouts, t => Assert.True(t >= 0));
+
+        // Inside the retry pause the panel is left alone.
+        Assert.False(driver.SetBrightness(new FakePipe(), hid, 30));
+        Assert.Single(hid.Writes);
     }
 
     [Fact]
@@ -384,6 +481,7 @@ public class GlacialLcdTests
         Assert.Equal(0x02, driver.WritePipeId);
         Assert.Equal(0x82, driver.ReadPipeId);
         Assert.True(driver.NeedsHidChannel);
+        Assert.True(driver.HidOpensForInput);
         Assert.True(driver.SupportsBrightness);
         Assert.Equal(0, ((IBulkPanelDriver)driver).KeepaliveMs);
         Assert.Equal(30 * 60 * 1000, GlacialLcdPanelDriver.DefaultRefreshIntervalMs);
@@ -396,6 +494,8 @@ public class GlacialLcdTests
         public string? Load(string key) => Hashes.TryGetValue(key, out var hash) ? hash : null;
 
         public void Save(string key, string hash) => Hashes[key] = hash;
+
+        public void Clear(string key) => Hashes.Remove(key);
     }
 
     private sealed class FakePipe : IBulkUsbPipe
@@ -469,10 +569,13 @@ public class GlacialLcdTests
         public bool GetInputReport(Span<byte> buffer) => false;
         public bool SetOutputReport(ReadOnlySpan<byte> report) => false;
 
+        public List<int> ReadTimeouts { get; } = new();
+
         public int Read(Span<byte> buffer, int timeoutMs)
         {
             lock (_lock)
             {
+                ReadTimeouts.Add(timeoutMs);
                 if (Input.Count == 0)
                 {
                     return 0;
