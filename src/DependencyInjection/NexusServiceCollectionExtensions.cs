@@ -1372,6 +1372,7 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver(),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver(),
+            new Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver(),
         })
         {
             var bulkPanelHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(bulkPanelDriver);
