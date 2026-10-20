@@ -13,9 +13,14 @@ CatalogFile=NexusVirtualDisplay.cat
 DriverVer= ; stamped by build.ps1
 
 [Manufacturer]
-%ManufacturerName%=Standard,NTamd64
+%ManufacturerName%=Standard,NTamd64,NTamd64.10.0...22000
 
+; Windows 10 has no WudfRd.inf to Include, so the undecorated section installs the inbox
+; WUDFRd.sys reflector itself. Windows 11 picks the more specific decorated section.
 [Standard.NTamd64]
+%DeviceName%=NexusVdd_InstallWin10, NexusVirtualDisplay
+
+[Standard.NTamd64.10.0...22000]
 %DeviceName%=NexusVdd_Install, NexusVirtualDisplay
 
 [SourceDisksFiles]
@@ -33,6 +38,27 @@ CopyFiles=UMDriverCopy
 Include=WUDFRD.inf
 Needs=WUDFRD.NT.HW
 AddReg=NexusVdd_HardwareDeviceSettings
+
+[NexusVdd_InstallWin10.NT]
+CopyFiles=UMDriverCopy
+
+[NexusVdd_InstallWin10.NT.hw]
+AddReg=NexusVdd_HardwareDeviceSettings
+
+[NexusVdd_InstallWin10.NT.Services]
+AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall
+
+[NexusVdd_InstallWin10.NT.Wdf]
+UmdfService=NexusVirtualDisplay,NexusVdd_Service
+UmdfServiceOrder=NexusVirtualDisplay
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[WUDFRD_ServiceInstall]
+DisplayName=%WudfRdDisplayName%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
 
 [NexusVdd_HardwareDeviceSettings]
 HKR,,"UpperFilters",%REG_MULTI_SZ%,"IndirectKmd"
@@ -62,6 +88,7 @@ NexusVirtualDisplay.dll
 ManufacturerName="Nexus"
 DiskName="Nexus Virtual Display Installation Disk"
 DeviceName="Nexus Virtual Display"
+WudfRdDisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
 
 REG_MULTI_SZ=0x00010000
 REG_SZ=0x00000000
