@@ -785,6 +785,17 @@ public sealed class Nexus2MigrationService
         try { File.Delete(path); } catch { /* temp file */ }
     }
 
+    private static string? ImportTileImageWithPoster(DeckImageStore images, string path)
+    {
+        var id = Nexus2Y70Translator.ImportTileImage(images, path);
+        if (id is not null && images.TryLoadStill(id) is null)
+        {
+            // Only a video lacks a still until its poster frame exists.
+            Task.Run(() => images.EnsurePosterAsync(id)).GetAwaiter().GetResult();
+        }
+        return id;
+    }
+
     private Nexus2ApplyResultDto ApplyY70Layout(JsonElement? y70, PanelDeviceRecord? y70Record, bool replaceCustomizedLayout)
     {
         const string id = "y70Layout";
@@ -796,7 +807,9 @@ public sealed class Nexus2MigrationService
         {
             return Skip(id, "no-y70-record");
         }
-        var translated = Nexus2Y70Translator.TranslateLayout(y);
+        var images = _services.GetService<DeckImageStore>();
+        var translated = Nexus2Y70Translator.TranslateLayout(
+            y, importTileImage: images is null ? null : path => ImportTileImageWithPoster(images, path));
         if (translated.Layout is null)
         {
             return Skip(id, "no-widgets");

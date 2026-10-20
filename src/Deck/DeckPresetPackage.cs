@@ -123,7 +123,7 @@ public sealed class DeckPackageReadResult
     public bool Ok => Error is null;
     public string? Error { get; init; }
     public DeckPackageManifest? Manifest { get; init; }
-    /// <summary>Every referenced image icon's id (sha256 hex, no extension) mapped to its validated bytes and original extension (".png" or ".jpg").</summary>
+    /// <summary>Every referenced image icon's id (sha256 hex, no extension) mapped to its validated bytes and original extension (".png", ".jpg", ".gif", ".mp4" or ".webm").</summary>
     public IReadOnlyDictionary<string, (byte[] Bytes, string Ext)> Assets { get; init; } = new Dictionary<string, (byte[], string)>();
 
     public static DeckPackageReadResult Fail(string error) => new() { Error = error };
@@ -138,7 +138,9 @@ public sealed class DeckPackageReadResult
 public static class DeckPresetPackage
 {
     public const long MaxPackageBytes = 20 * 1024 * 1024;
-    public const long MaxAssetBytes = 4 * 1024 * 1024;
+    public const long MaxAssetBytes = DeckImageStore.MaxAnimatedBytes;
+
+    private static readonly string[] AssetExtensions = [".png", ".jpg", ".gif", ".mp4", ".webm"];
 
     private const string PresetJsonName = "preset.json";
     private const string AssetsPrefix = "assets/";
@@ -197,7 +199,7 @@ public static class DeckPresetPackage
         {
             if (asset.Length > MaxAssetBytes)
             {
-                return DeckPackageReadResult.Fail($"asset {asset.Name} exceeds the 4 MB per-asset limit");
+                return DeckPackageReadResult.Fail($"asset {asset.Name} exceeds the 8 MB per-asset limit");
             }
         }
 
@@ -205,9 +207,8 @@ public static class DeckPresetPackage
         var assets = new Dictionary<string, (byte[], string)>(StringComparer.Ordinal);
         foreach (var id in referencedIds)
         {
-            var pngName = $"{AssetsPrefix}{id}.png";
-            var jpgName = $"{AssetsPrefix}{id}.jpg";
-            var asset = assetEntries.FirstOrDefault(a => a.Name == pngName || a.Name == jpgName);
+            var ext = AssetExtensions.FirstOrDefault(e => assetEntries.Any(a => a.Name == $"{AssetsPrefix}{id}{e}"));
+            var asset = ext is null ? null : assetEntries.First(a => a.Name == $"{AssetsPrefix}{id}{ext}");
             if (asset is null)
             {
                 return DeckPackageReadResult.Fail($"package is missing the asset for icon {id}");
@@ -218,7 +219,11 @@ public static class DeckPresetPackage
             {
                 return DeckPackageReadResult.Fail($"asset {asset.Name} hash does not match its file name");
             }
-            assets[id] = (bytes, asset.Name == pngName ? ".png" : ".jpg");
+            if (DeckImageStore.SniffExtension(bytes) != ext)
+            {
+                return DeckPackageReadResult.Fail($"asset {asset!.Name} content does not match its file type");
+            }
+            assets[id] = (bytes, ext!);
         }
 
         return new DeckPackageReadResult { Manifest = manifest, Assets = assets };
@@ -254,7 +259,7 @@ public static class DeckPresetPackage
                 {
                     continue;
                 }
-                var ext = loaded.Value.ContentType == "image/png" ? ".png" : ".jpg";
+                var ext = AssetExtensions.FirstOrDefault(e => DeckImageStore.ContentTypeFor(e) == loaded.Value.ContentType) ?? ".png";
                 using var assetStream = zip.CreateEntry($"{AssetsPrefix}{id}{ext}").Open();
                 assetStream.Write(loaded.Value.Bytes);
             }

@@ -123,9 +123,9 @@ public sealed class DeckKeyRenderer
             return null;
         }
         var canvas = RenderKit.NewImage(size, size);
-        if (icon is { Kind: "image" } && _imageStore.TryLoad(icon.Value) is { } loaded)
+        if (icon is { Kind: "image" } && _imageStore.TryLoadStill(icon.Value) is { } still)
         {
-            if (DecodeStored(icon.Value, loaded.Bytes) is { } source)
+            if (DecodeStored(icon.Value, still) is { } source)
             {
                 using (source)
                 {
@@ -231,9 +231,9 @@ public sealed class DeckKeyRenderer
         SKBitmap? customImage = null;
         SKBitmap? appIcon = null;
         var iconPending = false;
-        if (shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.TryLoad(display.Icon.Value) is { } loaded)
+        if (shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.TryLoadStill(display.Icon.Value) is { } still)
         {
-            customImage = DecodeStored(display.Icon.Value, loaded.Bytes);
+            customImage = DecodeStored(display.Icon.Value, still);
         }
         else if (shouldPaintIcon && display.Icon is not { Kind: "emoji" })
         {

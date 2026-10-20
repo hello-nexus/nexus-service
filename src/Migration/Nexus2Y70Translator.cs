@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using Nexus.Service.Deck;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Migration;
 
@@ -34,7 +35,7 @@ internal static class Nexus2Y70Translator
         ["lighting"] = "lighting",
     };
 
-    public static Nexus2Y70LayoutResult TranslateLayout(JsonElement y70, Func<string, bool>? fileExists = null)
+    public static Nexus2Y70LayoutResult TranslateLayout(JsonElement y70, Func<string, bool>? fileExists = null, Func<string, string?>? importTileImage = null)
     {
         var result = new Nexus2Y70LayoutResult();
         var pagesEl = Nexus2Json.GetArray(y70, "pages");
@@ -86,7 +87,7 @@ internal static class Nexus2Y70Translator
         }
 
         // The dock goes in after every other widget so none of them moves for it.
-        if (TranslateDock(y70, fileExists ?? File.Exists) is { } dock)
+        if (TranslateDock(y70, fileExists ?? File.Exists, importTileImage) is { } dock)
         {
             var deck = new PanelWidgetDto { Id = Guid.NewGuid().ToString(), Type = "deck", Size = DockSize };
             // Bottom row of page 1; when a widget holds it the strip follows the normal first-free-cell scan.
@@ -289,7 +290,7 @@ internal static class Nexus2Y70Translator
 
     /// <summary>Nexus 2's Y70 dock as deck key pages (4 keys each). Null when the dock is hidden, empty, or
     /// holds nothing that maps to a Nexus 3 key action: an all-empty deck would carry nothing over.</summary>
-    internal static Nexus2DockDeck? TranslateDock(JsonElement y70, Func<string, bool> fileExists)
+    internal static Nexus2DockDeck? TranslateDock(JsonElement y70, Func<string, bool> fileExists, Func<string, string?>? importTileImage = null)
     {
         if (Nexus2Json.GetBool(y70, "hideDock", false) || Nexus2Json.GetArray(y70, "dock") is not { } dockEl)
         {
@@ -301,7 +302,7 @@ internal static class Nexus2Y70Translator
             .ThenBy(t => t.index)
             .Select(t => t.item)
             .ToList();
-        var slots = items.Select(item => DockItemToSlot(item, fileExists)).ToList();
+        var slots = items.Select(item => DockItemToSlot(item, fileExists, importTileImage)).ToList();
         var mapped = slots.Count(s => s.Action is not null);
         if (mapped == 0)
         {
@@ -320,7 +321,7 @@ internal static class Nexus2Y70Translator
 
     /// <summary>One dock item as a deck key: a macros item whose macro has a Nexus 3 key action keeps it (and its title);
     /// every other item (a dock widget, a keystroke recording that is not one key press, a missing audio clip) is an empty key.</summary>
-    private static DeckSlot DockItemToSlot(JsonElement item, Func<string, bool> fileExists)
+    private static DeckSlot DockItemToSlot(JsonElement item, Func<string, bool> fileExists, Func<string, string?>? importTileImage)
     {
         var action = Nexus2Json.GetString(item, "type") == "macros" && Nexus2Json.GetObject(item, "macro") is { } macro
             ? DockMacroToAction(macro, fileExists)
@@ -330,7 +331,47 @@ internal static class Nexus2Y70Translator
             return new DeckSlot();
         }
         var title = Nexus2Json.GetObject(item, "title") is { } t ? Nexus2Json.GetString(t, "value") : null;
-        return new DeckSlot { Action = action, Label = string.IsNullOrWhiteSpace(title) ? null : title };
+        var slot = new DeckSlot { Action = action, Label = string.IsNullOrWhiteSpace(title) ? null : title };
+        // front is the tile face: type "image" holds the absolute path of the copied custom image or mp4.
+        if (importTileImage is not null
+            && Nexus2Json.GetObject(item, "front") is { } front
+            && Nexus2Json.GetString(front, "type") == "image"
+            && Nexus2Json.GetString(front, "path") is { Length: > 0 } imagePath
+            && importTileImage(imagePath) is { } imageId)
+        {
+            slot.Icon = new DeckIcon { Kind = "image", Value = imageId };
+        }
+        return slot;
+    }
+
+    /// <summary>Copies a Nexus 2 tile's custom image or video into the deck image store. Null (with a log line) when the file is missing, unsupported or over the store's cap.</summary>
+    internal static string? ImportTileImage(DeckImageStore images, string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists)
+            {
+                ServiceLog.Warn($"[nexus2-import] dock tile image not found: {path}");
+                return null;
+            }
+            if (info.Length > DeckImageStore.MaxAnimatedBytes)
+            {
+                ServiceLog.Warn($"[nexus2-import] dock tile image over the size cap, skipped: {path}");
+                return null;
+            }
+            var id = images.Store(File.ReadAllBytes(path));
+            if (id is null)
+            {
+                ServiceLog.Warn($"[nexus2-import] dock tile image is unsupported or over its type cap, skipped: {path}");
+            }
+            return id;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            ServiceLog.Warn($"[nexus2-import] dock tile image unreadable, skipped: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>A Windows path on a local drive ("C:\\..."); judged by text so it reads the same on any host.</summary>

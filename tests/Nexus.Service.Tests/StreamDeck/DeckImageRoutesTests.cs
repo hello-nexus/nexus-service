@@ -69,6 +69,45 @@ public sealed class DeckImageRoutesTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", ".gif", "image/gif")]
+    [InlineData("AAAAGGZ0eXBpc29tAAAAAA==", ".mp4", "video/mp4")]
+    [InlineData("GkXfowAAAAA=", ".webm", "video/webm")]
+    public async Task Upload_AcceptsAnimatedTypesAndServesThemBack(string base64, string ext, string contentType)
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        using (client)
+        {
+            var bytes = Convert.FromBase64String(base64);
+            var res = await client.PostAsync("/deck/images", FileUpload(bytes, "icon" + ext));
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var id = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+            Assert.True(File.Exists(Path.Combine(_root, id + ext)));
+
+            var get = await client.GetAsync($"/deck/images/{id}");
+            Assert.Equal(contentType, get.Content.Headers.ContentType!.MediaType);
+            Assert.Equal(bytes, await get.Content.ReadAsByteArrayAsync());
+        }
+    }
+
+    [Fact]
+    public async Task Upload_RejectsAStillOverTheStillCapButAllowsAnAnimatedFileOfThatSize()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        using (client)
+        {
+            var png = new byte[DeckImageStore.MaxBytes + 1];
+            TinyPng.CopyTo(png, 0);
+            var gif = new byte[DeckImageStore.MaxBytes + 1];
+            "GIF89a"u8.CopyTo(gif);
+
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/deck/images", FileUpload(png, "a.png"))).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/deck/images", FileUpload(gif, "a.gif"))).StatusCode);
+        }
+    }
+
     [Fact]
     public async Task Upload_RejectsANonImagePayload()
     {

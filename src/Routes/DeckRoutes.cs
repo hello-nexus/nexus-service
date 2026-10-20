@@ -449,6 +449,10 @@ public static class DeckRoutes
             foreach (var (assetId, asset) in read.Assets)
             {
                 images.StoreValidated(assetId, asset.Ext, asset.Bytes);
+                if (DeckImageStore.IsVideoExtension(asset.Ext))
+                {
+                    await images.EnsurePosterAsync(assetId, ctx.RequestAborted);
+                }
             }
 
             BroadcastPresetsChanged(hub, store);

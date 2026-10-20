@@ -28,9 +28,9 @@ public static class DeckImageRoutes
 
             // Reject before ReadFormAsync buffers the body: the framework's
             // multipart limit (~128MB) would otherwise let a body far over the
-            // per-image cap be spooled to disk before the length check below.
+            // animated-image cap be spooled to disk before the length check below.
             // The envelope allowance covers the multipart boundary + headers.
-            if (req.ContentLength is > DeckImageStore.MaxBytes + 16 * 1024)
+            if (req.ContentLength is > DeckImageStore.MaxAnimatedBytes + 16 * 1024)
             {
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "File too large" });
             }
@@ -42,7 +42,7 @@ public static class DeckImageRoutes
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "No file provided" });
             }
 
-            if (file.Length > DeckImageStore.MaxBytes)
+            if (file.Length > DeckImageStore.MaxAnimatedBytes)
             {
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "File too large" });
             }
@@ -58,6 +58,11 @@ public static class DeckImageRoutes
             if (id is null)
             {
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Unsupported image format" });
+            }
+
+            if (DeckImageStore.IsVideoExtension(DeckImageStore.SniffExtension(bytes)!))
+            {
+                await store.EnsurePosterAsync(id, req.HttpContext.RequestAborted);
             }
 
             return Results.Json(new DeckImageUploadResponse { Id = id }, AppJsonContext.Default.DeckImageUploadResponse);
