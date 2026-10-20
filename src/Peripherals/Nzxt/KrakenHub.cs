@@ -1377,6 +1377,10 @@ public sealed class KrakenHub : IDisposable
     /// </summary>
     public int IdleRefreshDelayMs()
     {
+        if (!_model.Rgb565DirectStream)
+        {
+            return PlusIdleWaitMs;
+        }
         long now = Clock();
         lock (_plusHoldLock)
         {
@@ -1459,6 +1463,10 @@ public sealed class KrakenHub : IDisposable
     /// </summary>
     public void ReleaseStream()
     {
+        if (!_model.Rgb565DirectStream)
+        {
+            return;
+        }
         lock (_plusHoldLock)
         {
             bool holdsStill = _plusSendingStill || (_plusActive && _plusHoldIsStill);
@@ -1530,6 +1538,12 @@ public sealed class KrakenHub : IDisposable
         {
             if (_lockDimmed)
             {
+                // Dropped while dark so the refresher stops waking; unlock re-shows it.
+                lock (_plusHoldLock)
+                {
+                    _plusStillDirty = false;
+                }
+                _lockPendingReupload = true;
                 return true;
             }
             source = _lastLcdFrame;

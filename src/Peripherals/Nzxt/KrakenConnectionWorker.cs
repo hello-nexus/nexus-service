@@ -19,6 +19,7 @@ public sealed class KrakenConnectionWorker : BackgroundService
 
     private readonly IHidEnumerator _hid;
     private readonly KrakenHub _hub;
+    private readonly KrakenIdleRefresher _refresher;
     private readonly KrakenLightingDeviceProvider _lighting;
     private readonly KrakenCoolingProvider _cooling;
     private readonly DeviceControlGate _gate;
@@ -34,38 +35,16 @@ public sealed class KrakenConnectionWorker : BackgroundService
     {
         _hid = hid;
         _hub = hub;
+        _refresher = new KrakenIdleRefresher(hub.IdleRefreshDelayMs, hub.RefreshIdleFrame);
         _lighting = lighting;
         _cooling = cooling;
         _gate = gate;
         _presence = presence;
     }
 
-    /// <summary>
-    /// Wakes on the hub's own deadline so the held frame is resent on the vendor's cadence,
-    /// independent of the status poll.
-    /// </summary>
-    private async Task RunIdleRefreshAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                await Task.Delay(_hub.IdleRefreshDelayMs(), stoppingToken).ConfigureAwait(false);
-                _hub.RefreshIdleFrame();
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex)
-        {
-            ServiceLog.Error($"[nzxt-kraken] idle refresh stopped: {ex.Message}");
-        }
-    }
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _ = RunIdleRefreshAsync(stoppingToken);
+        _ = _refresher.RunAsync(stoppingToken);
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -96,6 +75,7 @@ public sealed class KrakenConnectionWorker : BackgroundService
                     if (_hub.Connect())
                     {
                         started = true;
+                        _refresher.SetActive(_hub.Model.Rgb565DirectStream);
                         var snap = _hub.Snapshot;
                         ServiceLog.Info(
                             $"[nzxt-kraken] connected: {_hub.ModelName}, firmware {snap.FirmwareVersion}, " +
@@ -131,6 +111,7 @@ public sealed class KrakenConnectionWorker : BackgroundService
                 {
                     // Runs whenever Attach ran, including when Connect throws.
                     _hub.Detach();
+                    _refresher.SetActive(false);
                     if (started)
                     {
                         ServiceLog.Info("[nzxt-kraken] disconnected");

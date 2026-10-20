@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.Nzxt;
@@ -222,6 +224,96 @@ public class KrakenPlusV2HoldTests
         rig.Hub.RefreshIdleFrame();
         Assert.Equal(2, rig.Panel.Frames);
         Assert.Equal(1_000, rig.Hub.IdleRefreshDelayMs());
+    }
+
+    [Fact]
+    public void A_non_plus_model_gets_the_idle_wait_and_no_end_command_after_a_stream_release()
+    {
+        var device = new Hid();
+        var panel = new Lcd();
+        var hub = new KrakenHub(new Factory(panel));
+        hub.Attach(device, KrakenModel.Find(0x300C)!, 64);
+        Assert.True(hub.Connect());
+        Assert.True(hub.PushStreamFrame(new byte[KrakenModel.Find(0x300C)!.LcdFrameBytes]));
+        device.Writes.Clear();
+
+        hub.ReleaseStream();
+        Assert.Equal(250, hub.IdleRefreshDelayMs());
+        hub.RefreshIdleFrame();
+        Assert.Empty(device.Writes);
+    }
+
+    [Fact]
+    public void A_still_marked_while_the_pc_is_dark_gets_the_idle_wait_and_returns_on_unlock()
+    {
+        var rig = new Rig();
+        Assert.True(rig.Hub.UploadLcdImage(rig.Frame(1)));
+        Assert.True(rig.Hub.SetDisplayMode(KrakenDisplayMode.Liquid));
+        Assert.True(rig.Hub.SetDisplayMode(KrakenDisplayMode.Bucket));
+        Assert.Equal(20, rig.Hub.IdleRefreshDelayMs());
+
+        rig.Lock.Set(true);
+        rig.Advance(5_000);
+        rig.Hub.RefreshIdleFrame();
+        Assert.Equal(250, rig.Hub.IdleRefreshDelayMs());
+        Assert.Equal(1, rig.Panel.Frames);
+
+        rig.Lock.Set(false);
+        rig.Advance(5_000);
+        rig.Hub.RefreshIdleFrame();
+        Assert.Equal(2, rig.Panel.Frames);
+    }
+
+    [Fact]
+    public async Task The_refresh_loop_sleeps_without_waking_until_a_plus_is_connected()
+    {
+        int wakes = 0;
+        int refreshes = 0;
+        var loop = new KrakenIdleRefresher(() => { Interlocked.Increment(ref wakes); return 1; }, () => Interlocked.Increment(ref refreshes));
+        using var cts = new CancellationTokenSource();
+        var run = loop.RunAsync(cts.Token);
+
+        await Task.Delay(300);
+        Assert.Equal(0, Volatile.Read(ref wakes));
+
+        loop.SetActive(true);
+        await Task.Delay(200);
+        Assert.True(Volatile.Read(ref refreshes) > 0);
+
+        loop.SetActive(false);
+        await Task.Delay(100);
+        int settled = Volatile.Read(ref wakes);
+        await Task.Delay(200);
+        Assert.Equal(settled, Volatile.Read(ref wakes));
+
+        cts.Cancel();
+        await run;
+    }
+
+    [Fact]
+    public async Task The_refresh_loop_survives_an_exception()
+    {
+        int calls = 0;
+        var loop = new KrakenIdleRefresher(
+            () => 1,
+            () =>
+            {
+                if (Interlocked.Increment(ref calls) == 1)
+                {
+                    throw new InvalidOperationException("boom");
+                }
+            },
+            faultBackoffMs: 5);
+        using var cts = new CancellationTokenSource();
+        loop.SetActive(true);
+        var run = loop.RunAsync(cts.Token);
+
+        await Task.Delay(300);
+        Assert.True(Volatile.Read(ref calls) > 1);
+        Assert.False(run.IsCompleted);
+
+        cts.Cancel();
+        await run;
     }
 
     private sealed class Hid : IHidDevice
