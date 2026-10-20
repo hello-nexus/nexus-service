@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using Nexus.Service.Models.Sensors;
+using Nexus.Service.Persistence;
 using Nexus.Service.Sensors.Astral;
 using LibreHardwareMonitor.Hardware;
 
@@ -25,14 +26,15 @@ namespace Nexus.Service.Sensors;
 public sealed class LibreHardwareSensorProvider : ISensorProvider
 {
     private readonly LhmComputer _lhm;
-    private readonly AstralGpuSupplement _astral = new(new AstralNvApiClient());
+    private readonly AstralGpuSupplement _astral;
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
 
-    public LibreHardwareSensorProvider(LhmComputer lhm)
+    public LibreHardwareSensorProvider(LhmComputer lhm, IConfigStore store)
     {
         _lhm = lhm;
+        _astral = new AstralGpuSupplement(new AstralNvApiClient(), store);
     }
 
     public void BeforeSmartRead() => _lhm.BeforeSmartRead();
@@ -181,6 +183,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         GpuAdapterLuids.Attach(result, rawNames);
         return result;
     }
+
+    // GpuReadout.Id is the LHM identifier the supplement keys its cards by.
+    public IReadOnlyList<string> RecalibrateGpuLevelSense(string? gpuId) => _astral.RecalibrateLevelSense(gpuId);
+
+    public IReadOnlyList<GpuLevelSenseState> GetGpuLevelSenseStates() => _astral.GetLevelSenseStates();
 
     // LHM's HardwareType is authoritative for vendor; NVIDIA is always discrete,
     // Intel client GPUs always integrated. AMD is the ambiguous one: a discrete

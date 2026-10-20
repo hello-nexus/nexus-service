@@ -57,6 +57,8 @@ public sealed class NexusSettings
     public SentrySettings Sentry { get; set; } = new();
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
+    /// <summary>ROG Astral Level Sense calibrations keyed by AstralGpuSupplement.LevelSenseKey (adapter index + PCI subsystem id): the tilt each card had when calibrated, which its level is measured against. Written by the service; a card without one calibrates itself on its first readings. NOT profile-scoped: it describes how the card sits in this case.</summary>
+    public Dictionary<string, AstralLevelSenseCalibration> AstralLevelSense { get; set; } = new();
 
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
@@ -2271,6 +2273,15 @@ public sealed class SentrySettings
 
     /// <summary>Epoch ms of the last alert the cloud accepted or rate-limited. Null until one has gone out. Drives the one-alert-per-hour cooldown.</summary>
     public long? LastAlertAt { get; set; }
+}
+
+/// <summary>One ROG Astral card's Level Sense calibration: its smoothed X, Y and Z angles in degrees, and when it was taken (Unix ms). A calibration without Z is taken again.</summary>
+public sealed class AstralLevelSenseCalibration
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float? Z { get; set; }
+    public long CalibratedAtMs { get; set; }
 }
 
 /// <summary>Where a phone's Sentry alerts are pushed, as the phone's panel page registered it. Title and body are already translated; <c>{pc}</c> is filled at send time.</summary>

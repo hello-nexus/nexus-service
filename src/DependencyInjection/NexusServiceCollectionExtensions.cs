@@ -1512,6 +1512,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NollieHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.AsiahorseUmbraHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.TryxHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.AstralHandler>();
         // Registered as itself (not just IDeviceHandler) - StreamDeckRoutes.cs
         // injects the concrete type directly for GetWarning's detectedDevices.
         services.AddSingleton<Nexus.Service.Devices.Handlers.StreamDeckHandler>();
