@@ -622,25 +622,26 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         bool wantFps;
         lock (_lock)
         {
-            if (!_gate.IsEnabled("streamdeck"))
+            var enabled = _gate.IsEnabled("streamdeck");
+            if (!enabled)
             {
                 DisconnectAll(keepSimulated: true);
-                wantFps = false;
             }
-            else
+            _monitoringPaintedThisTick.Clear();
+            _monitoringFpsDemandThisTick = false;
+            RegisterSimulatedIfNeeded();
+            // With the gate off only the simulated deck remains, so the scan that opens real HID devices stays skipped.
+            if (enabled)
             {
-                _monitoringPaintedThisTick.Clear();
-                _monitoringFpsDemandThisTick = false;
-                RegisterSimulatedIfNeeded();
                 ReconcileHidSurfaces();
-                PumpSimulatedInput();
-                ApplyLockWakeExpiry();
-                ApplySleepAfterIdle();
-                RefreshMonitoringKeys();
-                RefreshWeatherKeys();
-                RefreshDialSegments();
-                wantFps = _monitoringFpsDemandThisTick;
             }
+            PumpSimulatedInput();
+            ApplyLockWakeExpiry();
+            ApplySleepAfterIdle();
+            RefreshMonitoringKeys();
+            RefreshWeatherKeys();
+            RefreshDialSegments();
+            wantFps = _monitoringFpsDemandThisTick;
         }
 
         // Outside the lock, like TryxPanoramaHub.Disconnect: releasing the last
@@ -3278,25 +3279,19 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         }
     }
 
-    /// <summary>Drops one deck's serial-keyed state, including the "{serial}:" prefixed monitoring and tile caches. Caller holds _lock.</summary>
+    /// <summary>Drops one deck's serial-keyed state with the same helpers as the unplug path in ReconcileHidSurfaces. Caller holds _lock.</summary>
     private void ForgetSerialLocked(string serial)
     {
         _folderPathsBySerial.Remove(serial);
         _lastInputAt.Remove(serial);
         _asleep.Remove(serial);
         _sleptForLock.Remove(serial);
-        _brightnessRamps.Remove(serial);
-        _anyRampActive = _brightnessRamps.Count > 0;
+        CancelBrightnessRampLocked(serial);
         _currentPageBySerial.Remove(serial);
         _heldKeysBySerial.Remove(serial);
         RemoveDialStateForSerial(serial);
-        _activeHolds.Remove(serial);
-        _anyHoldActive = _activeHolds.Count > 0;
-        var prefix = serial + ":";
-        foreach (var k in _monitoringHistory.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList()) { _monitoringHistory.Remove(k); }
-        foreach (var k in _monitoringLastHash.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList()) { _monitoringLastHash.Remove(k); }
-        foreach (var k in _monitoringLastPushedBytes.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList()) { _monitoringLastPushedBytes.Remove(k); }
-        foreach (var k in _tileBroadcastHash.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList()) { _tileBroadcastHash.Remove(k); }
+        RemoveAllHoldsForSerial(serial);
+        RemoveMonitoringStateForSerial(serial);
     }
 
     /// <summary>Never a literal 0% - the deck may be blanked at runtime brightness 0 by ApplySleepAfterIdle even though its persisted setting is not.</summary>

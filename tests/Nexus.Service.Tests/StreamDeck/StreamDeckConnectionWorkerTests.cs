@@ -409,8 +409,8 @@ public class StreamDeckConnectionWorkerTests
     public void Tick_GateDisabled_DoesNotDisposeTheSimulatedSurface()
     {
         // The simulated surface is a shared DI singleton the dev routes also
-        // hold a reference to; disabling Nexus Control must stop tracking it,
-        // not dispose the shared instance out from under those routes.
+        // hold a reference to; disabling Nexus Control releases real decks
+        // only and must not dispose the shared instance.
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         using var worker = NewWorker(f, simulated);
@@ -465,6 +465,61 @@ public class StreamDeckConnectionWorkerTests
 
         worker.ClearSimulatedModel();
         Assert.Empty(worker.Surfaces);
+    }
+
+    [Fact]
+    public async Task Tick_GateOff_StillDeliversSimulatedInputToTheExecutor()
+    {
+        var f = NewFixtures(devicePresent: false);
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        var action = new DeckAction { Type = "openUrl", Url = "https://example.com" };
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+        f.Gate.SetEnabled("streamdeck", false);
+
+        simulated.Poke(0, true);
+        worker.Tick();
+        if (worker.LastDispatchTask is not null)
+        {
+            await worker.LastDispatchTask;
+        }
+
+        var call = Assert.Single(f.Executor.Calls);
+        Assert.Same(action, call.Action);
+    }
+
+    [Fact]
+    public void Tick_GateOff_StillRefreshesMonitoringKeysOnTheSimulatedDeck()
+    {
+        var f = NewFixtures(devicePresent: false);
+        f.Sensors.CpuSensors = new[]
+        {
+            new HardwareSensor { Id = "cpu/core0", Name = "Core 0", Type = "Load", Value = 42f, Formatted = "42%", Parent = new SensorParent() },
+        };
+        var action = new DeckAction { Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number" };
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+        var before = simulated.SetKeyImageCallCount;
+        f.Gate.SetEnabled("streamdeck", false);
+        f.Sensors.CpuSensors = new[]
+        {
+            new HardwareSensor { Id = "cpu/core0", Name = "Core 0", Type = "Load", Value = 91f, Formatted = "91%", Parent = new SensorParent() },
+        };
+
+        worker.Tick();
+
+        Assert.True(simulated.SetKeyImageCallCount > before);
     }
 
     [Fact]

@@ -113,7 +113,7 @@ public class NollieConnectionWorkerTests
     [Fact]
     public void Nexus_control_off_releases_the_real_board_and_keeps_the_simulated_one()
     {
-        var real = Plug("REAL");
+        Plug("REAL");
         _worker.Tick();
         Assert.True(_worker.AttachSimulated(Vid, Pid));
         Assert.Equal(2, _hub.Controllers.Count);
