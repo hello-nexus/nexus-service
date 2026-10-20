@@ -2130,6 +2130,8 @@ public sealed class HydroShift2CurveSettings
     /// <summary>When Nexus is not driving the pump: true follows the motherboard header, false runs the
     /// power-on speed, null leaves the board as found.</summary>
     public bool? PumpFollowsMotherboard { get; set; }
+    /// <summary>The glass's Offline Mode (date and time shown while the PC is off). Null until set in Nexus, so a flag set in L-Connect is left alone.</summary>
+    public bool? OfflineMode { get; set; }
 }
 
 public sealed class Galahad2LightingSettings

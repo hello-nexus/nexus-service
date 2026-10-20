@@ -17,6 +17,77 @@ public class HydroShift2CurveTests
 {
     // ── protocol, pinned to bytes L-Connect sent the Y70's unit (USBPcap 2026-10-08) ──
 
+    [Theory]
+    [InlineData(true, 88953417u, "07EA0A14082A2101")]
+    [InlineData(false, 88975321u, "07EA0A14082A3700")]
+    public void Offline_mode_matches_the_captured_l_connect_set_clock(bool on, uint ts, string expected)
+    {
+        // Captured 2026-10-20: ON at local 08:42:33, OFF at 08:42:55.
+        var second = on ? 33 : 55;
+        var packet = HydroShift2Protocol.EncodeSetClock(
+            new DateTime(2026, 10, 20, 8, 42, second), ts, on ? HydroShift2Protocol.ClockOfflineOn : HydroShift2Protocol.ClockOfflineOff);
+        var plain = Plain(packet);
+        Assert.Equal(HydroShift2Protocol.CommandSetClock, plain[0]);
+        Assert.Equal(ts, BitConverter.ToUInt32(plain, 4));
+        Assert.Equal(expected, Convert.ToHexString(plain[8..16]));
+    }
+
+    [Fact]
+    public void The_apply_sequence_keeps_the_sync_only_mode()
+    {
+        var packet = HydroShift2Protocol.EncodeSetClock(new DateTime(2026, 10, 20, 8, 42, 33), 1);
+        Assert.Equal("07EA0A14082A2102", Convert.ToHexString(Plain(packet)[8..16]));
+    }
+
+    [Fact]
+    public void Offline_mode_is_unset_by_default_and_round_trips()
+    {
+        var settings = new NexusSettings();
+        Assert.Null(settings.Devices.HydroShift2Curve.OfflineMode);
+        settings.Devices.HydroShift2Curve.OfflineMode = true;
+        var json = System.Text.Json.JsonSerializer.Serialize(settings, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+        Assert.True(back.Devices.HydroShift2Curve.OfflineMode);
+    }
+
+    [Theory]
+    [InlineData(null, 1)]
+    [InlineData(true, 2)]
+    [InlineData(false, 2)]
+    public void Connect_sends_an_offline_mode_only_when_the_user_set_one(bool? mode, int setClocks)
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver { OfflineModeSource = () => mode };
+        Assert.NotNull(driver.Connect(pipe, null));
+        Assert.Equal(setClocks, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandSetClock));
+    }
+
+    [Fact]
+    public void Toggling_offline_mode_sends_the_mode_then_sync_only_and_stop_clock()
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver();
+        Assert.True(driver.ApplyOfflineMode(pipe, true));
+        Assert.Equal(
+            new[] { HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.CommandStopClock },
+            pipe.Commands);
+        Assert.Equal(
+            new byte[] { HydroShift2Protocol.ClockOfflineOn, 2 },
+            pipe.Commands.Select((c, i) => (c, i)).Where(t => t.c == HydroShift2Protocol.CommandSetClock).Select(t => pipe.Byte15[t.i]).ToArray());
+    }
+
+    private static byte[] Plain(byte[] packet)
+    {
+#pragma warning disable CA5351 // The glass's own framing.
+        using var des = System.Security.Cryptography.DES.Create();
+#pragma warning restore CA5351
+        des.Key = des.IV = System.Text.Encoding.ASCII.GetBytes("slv3tuzx");
+        des.Mode = System.Security.Cryptography.CipherMode.CBC;
+        des.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+        using var decryptor = des.CreateDecryptor();
+        return decryptor.TransformFinalBlock(packet, 0, 504);
+    }
+
     [Fact]
     public void Tilt_from_0_to_10_degrees_is_the_captured_move()
     {
@@ -373,6 +444,48 @@ public class HydroShift2CurveTests
         Assert.Equal(releaseCommands, pipe.Commands);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(false)]
+    public void Release_still_reboots_when_offline_mode_is_not_on(bool? mode)
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver { OfflineModeSource = () => mode };
+        Assert.NotNull(driver.Connect(pipe, null));
+        pipe.Commands.Clear();
+
+        driver.Disconnect(pipe, null);
+
+        Assert.Equal(new[] { HydroShift2Protocol.CommandStopPlay, HydroShift2CurveProtocol.CommandReboot }, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_display_released_with_offline_mode_on_reconnects_at_once()
+    {
+        long now = 1_000;
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver(() => now) { OfflineModeSource = () => true };
+        Assert.NotNull(driver.Connect(pipe, null));
+        driver.Disconnect(pipe, null);
+
+        Assert.NotNull(driver.Connect(pipe, null));
+    }
+
+    [Fact]
+    public void Release_with_offline_mode_on_skips_the_reboot_and_refreshes_the_clock()
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver { OfflineModeSource = () => true };
+        Assert.NotNull(driver.Connect(pipe, null));
+        pipe.Commands.Clear();
+        pipe.Byte15.Clear();
+
+        driver.Disconnect(pipe, null);
+
+        Assert.Equal(new[] { HydroShift2Protocol.CommandStopPlay, HydroShift2Protocol.CommandSetClock }, pipe.Commands);
+        Assert.Equal(HydroShift2Protocol.ClockOfflineOn, pipe.Byte15[1]);
+    }
+
     [Fact]
     public void Retiring_releases_the_live_session_then_leaves_the_glass_alone()
     {
@@ -639,6 +752,8 @@ public class HydroShift2CurveTests
         private readonly Queue<byte[]> _pending = new();
         public bool Answers { get; set; }
         public List<byte> Commands { get; } = new();
+        /// <summary>Byte 15 of each decrypted packet: the clock mode when the command is SetClock.</summary>
+        public List<byte> Byte15 { get; } = new();
 
         public bool Write(ReadOnlySpan<byte> data)
         {
@@ -649,8 +764,10 @@ public class HydroShift2CurveTests
             des.Mode = System.Security.Cryptography.CipherMode.CBC;
             des.Padding = System.Security.Cryptography.PaddingMode.None;
             using var decryptor = des.CreateDecryptor();
-            var command = decryptor.TransformFinalBlock(data[..8].ToArray(), 0, 8)[0];
+            var plain = decryptor.TransformFinalBlock(data[..16].ToArray(), 0, 16);
+            var command = plain[0];
             Commands.Add(command);
+            Byte15.Add(plain[15]);
             if (Answers)
             {
                 var reply = new byte[512];
