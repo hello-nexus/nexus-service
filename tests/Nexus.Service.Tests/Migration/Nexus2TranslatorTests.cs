@@ -26,6 +26,7 @@ public sealed class Nexus2TranslatorTests
     [Theory]
     [InlineData("de", "de")]
     [InlineData("PT-BR", "pt-BR")]
+    [InlineData("CS", "cs")]
     public void TranslateLanguage_MapsSupportedLocales(string n2Value, string expected)
     {
         using var doc = JsonDocument.Parse($$"""{ "settings": { "general": { "language": "{{n2Value}}" } } }""");

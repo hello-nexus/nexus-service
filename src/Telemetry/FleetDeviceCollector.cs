@@ -32,8 +32,6 @@ internal static class FleetDeviceCollector
     {
         "root hub",
         "host controller",
-        "usb hub",
-        "generic usb hub",
     };
 
     /// <summary>
@@ -77,12 +75,16 @@ internal static class FleetDeviceCollector
             .ToList();
     }
 
+    // "USB2.0 Hub", "USB3.1 Hub", "Generic USB Hub". Requires the usb prefix so a branded lighting hub ("Uni Hub") stays a reported peripheral.
+    private static readonly System.Text.RegularExpressions.Regex HubWord = new(@"\busb[0-9. ]*\s*hub\b", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     private static bool IsInfrastructureName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name))
             return false;
         var lower = name.Trim().ToLowerInvariant();
-        return InfrastructureNames.Any(n => lower.Contains(n, StringComparison.Ordinal));
+        return InfrastructureNames.Any(n => lower.Contains(n, StringComparison.Ordinal))
+            || HubWord.IsMatch(lower);
     }
 
     private static string Trim(string? value)

@@ -15,7 +15,7 @@ public class KrakenModelTests
 {
     [Theory]
     [InlineData(0x3012, 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.ChannelReport)]
-    [InlineData(0x3014, 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.ChannelReport)]
+    [InlineData(0x3014, 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None)]
     [InlineData(0x300C, 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.None)]
     [InlineData(0x300E, 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None)]
     [InlineData(0x3008, 320, 320, KrakenLcdFormat.Rgba8888, KrakenLightingProtocol.StreamedTables)]
@@ -50,10 +50,58 @@ public class KrakenModelTests
     }
 
     [Fact]
+    public void Only_the_Plus_V2_takes_the_rgb565_direct_stream()
+    {
+        Assert.Equal(new[] { 0x3014 }, KrakenModel.All.Where(m => m.Rgb565DirectStream).Select(m => m.ProductId));
+        var plus = KrakenModel.Find(0x3014)!;
+        Assert.Equal("NZXT Kraken Plus V2", plus.Name);
+        Assert.False(plus.DirectStream);
+        Assert.Equal(0x0B, plus.TelemetryInterval);
+        Assert.All(KrakenModel.All.Where(m => m.ProductId != 0x3014), m => Assert.Equal(0x01, m.TelemetryInterval));
+    }
+
+    [Fact]
+    public void Rgb565_high_byte_first_flips_each_pixel_and_the_default_is_unchanged()
+    {
+        // RGBA (0xFF, 0x00, 0x00): pixel 0xF800.
+        byte[] rgba = { 0xFF, 0x00, 0x00, 0xFF };
+        var low = new byte[2];
+        var high = new byte[2];
+        Rgb565Encoder.Encode(rgba, 1, 1, 0, low);
+        Rgb565Encoder.Encode(rgba, 1, 1, 0, high, highByteFirst: true);
+        Assert.Equal(new byte[] { 0x00, 0xF8 }, low);
+        Assert.Equal(new byte[] { 0xF8, 0x00 }, high);
+    }
+
+    [Fact]
+    public void Plus_v2_encode_allocates_no_per_frame_buffer()
+    {
+        var bgra = new byte[240 * 240 * 4];
+        new Random(1).NextBytes(bgra);
+        var dest = new byte[Rgb565Encoder.EncodedLength(240, 240)];
+        for (int i = 0; i < 50; i++)
+        {
+            Rgb565Encoder.Encode(bgra, 240, 240, 0, dest, true, true);
+        }
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        const int Runs = 200;
+        for (int i = 0; i < Runs; i++)
+        {
+            Rgb565Encoder.Encode(bgra, 240, 240, 0, dest, true, true);
+        }
+        sw.Stop();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Console.WriteLine($"plus-v2 encode: {sw.Elapsed.TotalMilliseconds / Runs:F3} ms/frame, {allocated} bytes allocated over {Runs} frames");
+        // Runtime noise aside (tiered JIT), a per-frame buffer would be 115200 bytes a frame.
+        Assert.True(allocated / Runs < 64, $"{allocated} bytes over {Runs} frames");
+    }
+
+    [Fact]
     public void Only_the_Z3_recreates_its_stream_buckets_at_fifteen_frames_a_second()
     {
         Assert.Equal(new[] { 0x3008 }, KrakenModel.All.Where(m => m.StreamRecreatesBuckets).Select(m => m.ProductId));
-        Assert.Equal(new[] { 0x3008 }, KrakenModel.All.Where(m => m.HasLcd && m.StreamFps != 30).Select(m => m.ProductId));
+        Assert.Equal(new[] { 0x3014, 0x3008 }, KrakenModel.All.Where(m => m.HasLcd && m.StreamFps != 30).Select(m => m.ProductId));
         Assert.Equal(15, KrakenModel.Find(0x3008)!.StreamFps);
     }
 

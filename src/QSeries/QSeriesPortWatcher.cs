@@ -25,6 +25,7 @@ using Nexus.Service.Panel;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using Nexus.Service.Platform.Windows;
 #if WINDOWS
 using Microsoft.Win32;
 #endif
@@ -197,8 +198,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// </summary>
     private readonly HashSet<string> _offlineNonQSeriesSerials = new(StringComparer.Ordinal);
 
-    /// <summary>Serial -> last USB instance-id lookup time; the lookup spawns
-    /// powershell, so it runs on the recovery-threshold cadence, not per tick.
+    /// <summary>Serial -> last USB instance-id lookup time; the lookup runs on the
+    /// recovery-threshold cadence, not per tick.
     /// Cleared when the serial returns online or detaches.</summary>
     private readonly Dictionary<string, DateTimeOffset> _lastInstanceIdLookupBySerial = new(StringComparer.Ordinal);
 
@@ -1130,8 +1131,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 continue;
             }
 
-            // The lookup spawns powershell, so throttle it to the recovery cadence
-            // rather than every tick. Deliberately NOT the offline path's dictionary:
+            // Throttle the lookup to the recovery cadence rather than every tick. Deliberately NOT the offline path's dictionary:
             // that one is cleared for every serial absent from the adb list, which is
             // this path's defining state, so sharing it meant no throttle at all.
             if (!force
@@ -1228,7 +1228,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             var offlineFor = now - since;
             if (!forceThis && offlineFor < OfflineRecoveryThreshold) continue;
 
-            // The lookup spawns powershell, so a serial it can't resolve (device
+            // A serial the lookup can't resolve (device
             // mid-re-enumeration, or a name mismatch) is retried on the threshold
             // cadence, not every tick - while _offlineSince stays truthful so the
             // logged duration accumulates.
@@ -1299,48 +1299,18 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
     /// <summary>
     /// USB composite InstanceId whose tail is the adb serial
-    /// (<c>USB\VID_xxxx&amp;PID_yyyy\&lt;serial&gt;</c>), via Get-PnpDevice.
+    /// (<c>USB\VID_xxxx&amp;PID_yyyy\&lt;serial&gt;</c>).
     /// </summary>
     private static string? TryFindUsbInstanceId(string adbSerial)
     {
         if (!OperatingSystem.IsWindows()) return null;
-        // Both callers reach this with a serial read off a device, so the charset is
-        // enforced here rather than at one call site: a quote would escape the
-        // PowerShell literal and run as LocalSystem, and a wildcard would silently
-        // widen the match to another devnode.
         if (!LooksLikeDeviceSerial(adbSerial)) return null;
-        // No -Class USB filter: a misbound panel does not enumerate under the USB
-        // setup class, so that filter excluded the exact devnode this lookup exists to
-        // find (measured on the Y70: the live parent is class USB, the misbind ghost
-        // is class USBDevice). -PresentOnly is load-bearing, not an optimisation: this
-        // serial also matches stale preloader devnodes, and without it -First 1
-        // returned the not-present PID_2048 ghost rather than the live panel. The
-        // USB\ prefix keeps the match on the USB enumerator; the serial charset is
-        // enforced above, so it cannot break out of the single-quoted literal or
-        // smuggle a -like wildcard.
-        var psScript =
-            "Get-PnpDevice -PresentOnly " +
-            "| Where-Object { $_.InstanceId -like 'USB\\*\\" + adbSerial + "' } " +
-            "| Select-Object -First 1 -ExpandProperty InstanceId";
+        // Present devnodes only, under the USB enumerator with no class filter: a
+        // misbound panel does not enumerate under the USB setup class, and this
+        // serial also matches stale preloader devnodes that are not present.
         try
         {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -NonInteractive -Command \"{psScript}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (p is null) return null;
-            if (!p.WaitForExit(5_000))
-            {
-                try { p.Kill(true); } catch { }
-                return null;
-            }
-            var stdout = p.StandardOutput.ReadToEnd().Trim();
-            return string.IsNullOrEmpty(stdout) ? null : stdout;
+            return WindowsDevnodes.FindPresentUsbInstanceId(adbSerial);
         }
         catch
         {
@@ -1395,31 +1365,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
     private static int? TryReadDeviceProblemCode(string instanceId)
     {
         if (!OperatingSystem.IsWindows()) return null;
-        // The id comes from TryFindUsbInstanceId, which enforces the serial
-        // charset; the quotes below still cannot be broken out of.
-        if (instanceId.Contains('\'') || instanceId.Contains('"')) return null;
-        var psScript =
-            "(Get-PnpDeviceProperty -InstanceId '" + instanceId
-            + "' -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop).Data";
         try
         {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -NonInteractive -Command \"{psScript}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (p is null) return null;
-            if (!p.WaitForExit(10_000))
-            {
-                try { p.Kill(true); } catch { }
-                return null;
-            }
-            var text = p.StandardOutput.ReadToEnd().Trim();
-            return int.TryParse(text, out var code) ? code : null;
+            return WindowsDevnodes.ReadProblemCode(instanceId);
         }
         catch
         {
@@ -1639,12 +1587,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
         && entry.Name.Contains("HYTE", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// A device's own serial, not a synthesised one, and safe to interpolate into the
-    /// instance-id query. Rejects the parent-id token a composite interface node
+    /// A device's own serial, not a synthesised one. Rejects the parent-id token a composite interface node
     /// carries (<c>7&amp;1a2b3c&amp;0&amp;0000</c>), which would address the wrong
-    /// devnode, and anything outside the alphanumeric/-/_ set real serials use - which
-    /// also rules out a quote breaking out of the PowerShell literal and the
-    /// <c>-like</c> wildcards that would silently widen the match.
+    /// devnode, and anything outside the alphanumeric/-/_ set real serials use.
     /// </summary>
     internal static bool LooksLikeDeviceSerial(string serial)
     {

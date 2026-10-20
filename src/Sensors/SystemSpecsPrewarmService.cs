@@ -7,8 +7,7 @@ namespace Nexus.Service.Sensors;
 /// <summary>
 /// Fills the <see cref="SystemSpecsCollector"/> cache in the background after
 /// the host reports ready, so the first Devices → System Specs request hits a
-/// warm cache (~5 ms) instead of paying for a cold PowerShell spawn (~400 ms
-/// even with the consolidated single-call script).
+/// warm cache instead of paying for the native hardware reads.
 ///
 /// Must not delay host startup. <see cref="Task.Yield"/> hands control back to
 /// <c>BackgroundService.StartAsync</c> immediately so the host completes boot

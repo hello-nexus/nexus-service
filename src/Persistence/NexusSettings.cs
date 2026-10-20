@@ -19,9 +19,9 @@ public sealed class NexusSettings
     /// a migration in <c>JsonConfigStore.Load()</c>. Lives as a constant so
     /// tests and tooling can reference "current" without bit-rotting.
     /// </summary>
-    public const int CurrentSchemaVersion = 24;
+    public const int CurrentSchemaVersion = 25;
 
-    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). v19 keeps Stream Deck and Tryx on for an upgrading install that never chose (their default turned off) and seeds the default conflict whitelist (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration"/>). v20 keeps the NZXT Kraken and ZMatrices LCD on for an upgrading install that never chose, since their defaults turned off (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn"/>). v21 marks any pre-existing settings.json as features-onboarded again, since Lighting and Cooling now read off until that flag is set. v22 opts an existing install's mice into OpenRGB (see <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn"/>), since new installs hold them off. v23 rewrites the removed Game Sync lighting mode to static and sets <see cref="GameSyncRemovedNotice"/> on an upgrade. v24 moves the stored lighting render backend "wgl" (the old default) to "angle", the new default. The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
+    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). v19 keeps Stream Deck and Tryx on for an upgrading install that never chose (their default turned off) and seeds the default conflict whitelist (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration"/>). v20 keeps the NZXT Kraken and ZMatrices LCD on for an upgrading install that never chose, since their defaults turned off (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn"/>). v21 marks any pre-existing settings.json as features-onboarded again, since Lighting and Cooling now read off until that flag is set. v22 opts an existing install's mice into OpenRGB (see <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn"/>), since new installs hold them off. v23 rewrites the removed Game Sync lighting mode to static and sets <see cref="GameSyncRemovedNotice"/> on an upgrade. v24 moves the stored lighting render backend "wgl" (the old default) to "angle", the new default. v25 moves a stored keeb firmware brightness equal to the old default to the new default (the old default was always persisted). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public ThemeSettings Theme { get; set; } = new();
@@ -84,6 +84,9 @@ public sealed class NexusSettings
 
     /// <summary>One-time flag: the device sharing category's initial seed of StreamDeck+Keeb into every profile file has run. Workstation-level, not profile-scoped.</summary>
     public bool DeviceCategorySeeded { get; set; }
+
+    /// <summary>One-time flag: profile files written before the keeb brightness default changed have had their stored old-default level moved to the new default. Workstation-level, not profile-scoped.</summary>
+    public bool KeebBrightnessProfilesMigrated { get; set; }
 
     /// <summary>OTA self-update settings. NOT profile-scoped: workstation-level.</summary>
     public UpdateSettings Update { get; set; } = new();
@@ -290,6 +293,18 @@ public sealed class TelemetrySettings
 
     /// <summary>Hash of the specs summary last delivered to nexus-api; a changed hash triggers a re-send.</summary>
     public string FleetSpecsHash { get; set; } = "";
+
+    /// <summary>Hash of the profile signature last sent as the PostHog $identify and nexus-api profile event; persisted so a restart does not resend an unchanged profile.</summary>
+    public string ProfileSignature { get; set; } = "";
+
+    /// <summary>Round-trip UTC timestamp of the last profile send; a changed signature waits out a minimum interval after it.</summary>
+    public string ProfileSentAt { get; set; } = "";
+
+    /// <summary>Last installed-RAM total seen with DIMM detail; bridges reads that fall back to the OS-usable figure so specs do not alternate between the two.</summary>
+    public long FleetRamBytes { get; set; }
+
+    /// <summary>Last non-empty GPU list (sorted, " + " joined); bridges reads where GPU enumeration came back empty.</summary>
+    public string FleetGpu { get; set; } = "";
 
     /// <summary>Latched true by SystemProfileService the first time the Y70 handler reports connected; sent in fleet specs as y70Seen.</summary>
     public bool FleetY70Seen { get; set; }
@@ -516,6 +531,7 @@ public sealed class UiSettingsPatch
 {
     public bool? ShowConflictAlerts { get; set; }
     public bool? AutoKillConflictsAtStartup { get; set; }
+    /// <summary>Ignored by POST /preferences; edit through POST /conflicts/whitelist.</summary>
     public List<string>? ConflictAutoKillExclusions { get; set; }
     public bool? NotifyConflictLaunches { get; set; }
     public bool? EndConflictsOnLaunch { get; set; }
@@ -1495,6 +1511,12 @@ public sealed class DevicesSettings
     public TlLightingSettings TlLighting { get; set; } = new();
     /// <summary>Uni Fan TL LCD screens by screen key (L-Connect's serial, else port and fan); same content model as the SL wireless screens.</summary>
     public Dictionary<string, LianLiWirelessScreenSettings> TlLcdScreens { get; set; } = new();
+    /// <summary>TL / SL-INF LCD Flex fans' lighting by receiver MAC hex (uppercase).</summary>
+    public Dictionary<string, LianLiFlexUnitSettings> FlexUnits { get; set; } = new();
+    /// <summary>TL / SL-INF LCD Flex screens by screen serial; same content model as the SL wireless screens.</summary>
+    public Dictionary<string, LianLiWirelessScreenSettings> FlexLcdScreens { get; set; } = new();
+    /// <summary>The Quick/Sync group switch of the Flex fans, mirrored for the UI.</summary>
+    public bool FlexSyncEnabled { get; set; }
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
@@ -1745,6 +1767,9 @@ public sealed class LianLiWirelessSettings
 
     /// <summary>Devices Nexus bound to its dongle, by MAC hex (uppercase), with the slot each last held; an unbound one is bound back.</summary>
     public Dictionary<string, int> OwnedDevices { get; set; } = new();
+
+    /// <summary>L-Connect's device lock: owned devices are bound back from any state, including another master. A missing value reads as on.</summary>
+    public bool LockBoundDevices { get; set; } = true;
 }
 
 /// <summary>What a HydroShift II's screen shows while Nexus drives its pump.</summary>
@@ -1798,6 +1823,51 @@ public sealed class LianLiWirelessChainLighting
     public List<LianLiWirelessLane> Lanes { get; set; } = new();
     /// <summary>The chain plays the motherboard ARGB header through its sync cable instead of Nexus; null leaves the chain's own state alone.</summary>
     public bool? MotherboardArgb { get; set; }
+}
+
+/// <summary>
+/// What a Flex fan shows: the lighting engine's live frames (<see cref="LianLiWirelessChainLighting.ModeCustom"/>),
+/// one stored effect for the whole fan (an effect key), or one stored effect per zone (<see cref="ModePerZone"/>).
+/// </summary>
+public sealed class LianLiFlexUnitSettings
+{
+    public const string ModePerZone = "perZone";
+
+    public string Mode { get; set; } = LianLiWirelessChainLighting.ModeCustom;
+    public string? EffectMode { get; set; }
+    /// <summary>0 slowest .. 4 fastest.</summary>
+    public int Speed { get; set; } = 3;
+    public int Direction { get; set; }
+    /// <summary>0 off .. 4 full.</summary>
+    public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
+    /// <summary>The effect runs as one animation across every participating Flex fan.</summary>
+    public bool Merge { get; set; }
+    /// <summary>TL only: swaps which half is first.</summary>
+    public bool UpDownSwap { get; set; }
+    /// <summary>Position among the fans for merged effects and chained fan blocks.</summary>
+    public int SortIndex { get; set; }
+    /// <summary>One entry per zone in zone order, used by <see cref="ModePerZone"/>.</summary>
+    public List<LianLiFlexZoneSettings> Zones { get; set; } = new();
+    /// <summary>Signature of the stored package last uploaded, and the effect index it carried, so a restart with an unchanged look does not rewrite the receiver's flash.</summary>
+    public string? PackageSignature { get; set; }
+    public string? PackageEffectIndex { get; set; }
+    /// <summary>0 or 1: this unit reads its slice of a merged strip back to front.</summary>
+    public int MergeDirection { get; set; }
+    /// <summary>The unit plays the motherboard ARGB input through its sync cable instead of Nexus; null leaves the unit's own state alone.</summary>
+    public bool? MotherboardArgb { get; set; }
+
+    /// <summary>Shallow copy; the lists are replaced, never edited, so sharing them is safe.</summary>
+    public LianLiFlexUnitSettings Clone() => (LianLiFlexUnitSettings)MemberwiseClone();
+}
+
+public sealed class LianLiFlexZoneSettings
+{
+    public string Mode { get; set; } = "rainbow";
+    public int Speed { get; set; } = 3;
+    public int Direction { get; set; }
+    public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
 }
 
 public sealed class LianLiWirelessLane

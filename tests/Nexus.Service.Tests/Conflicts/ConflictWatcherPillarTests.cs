@@ -9,6 +9,9 @@ namespace Nexus.Service.Tests.Conflicts;
 
 public class ConflictWatcherPillarTests
 {
+    // These tests use fake pids, so the signer-pinned entries need a gate that vouches for them.
+    public static readonly ConflictSignerGate TrustAll = new(_ => "x.exe", _ => new("Micro-Star Corsair Mercier NZXT Razer Elgato", null));
+
     private static Dictionary<string, List<(int Pid, string? Path)>> Running(params string[] names) =>
         names.ToDictionary(n => n, n => new List<(int, string?)> { (100, null) }, System.StringComparer.OrdinalIgnoreCase);
 
@@ -16,7 +19,7 @@ public class ConflictWatcherPillarTests
         Dictionary<string, List<(int Pid, string? Path)>> processes, System.Func<string, bool>? displayInUse = null)
     {
         var store = new InMemoryConfigStore();
-        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), displayInUse, () => processes) { HandlerCacheMs = 0 };
+        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), displayInUse, () => processes, null, TrustAll) { HandlerCacheMs = 0 };
         return (watcher, store);
     }
 
@@ -87,7 +90,7 @@ public class ConflictHandlerFilterTests
         {
             ["iCUE"] = new() { (100, null) },
         };
-        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), null, () => processes, h => inUse && h == "corsair")
+        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), null, () => processes, h => inUse && h == "corsair", ConflictWatcherPillarTests.TrustAll)
         {
             HandlerCacheMs = 0,
         };
@@ -115,7 +118,7 @@ public class ConflictDisplayLaunchTests
             s.Features.Lighting = false;
             s.Features.Cooling = false;
         });
-        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), h => driving && h == "nzxt-kraken", Cam) { HandlerCacheMs = 0 };
+        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), h => driving && h == "nzxt-kraken", Cam, null, ConflictWatcherPillarTests.TrustAll) { HandlerCacheMs = 0 };
         Assert.Empty(watcher.GetConflicts());
 
         driving = true;
@@ -135,7 +138,7 @@ public class ConflictDisplayLaunchTests
             s.Features.Cooling = false;
             s.Ui.ConflictAutoKillExclusions.Clear();
         });
-        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), h => driving && h == "nzxt-kraken", Cam) { HandlerCacheMs = 0 };
+        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), h => driving && h == "nzxt-kraken", Cam, null, ConflictWatcherPillarTests.TrustAll) { HandlerCacheMs = 0 };
         var notifier = new ConflictLaunchNotifier(watcher, store);
         var launched = new List<string>();
         notifier.AppLaunched += a => launched.Add(a.Id);
@@ -153,7 +156,7 @@ public class ConflictDisplayLaunchTests
         var store = new InMemoryConfigStore();
         store.Update(s => s.Ui.ConflictAutoKillExclusions.Clear());
         var processes = new Dictionary<string, List<(int Pid, string? Path)>>(System.StringComparer.OrdinalIgnoreCase);
-        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), null, () => processes) { HandlerCacheMs = 0 };
+        var watcher = new ConflictWatcher(new MultiplexHub(), null, new FeatureGates(store), null, () => processes, null, ConflictWatcherPillarTests.TrustAll) { HandlerCacheMs = 0 };
         var notifier = new ConflictLaunchNotifier(watcher, store);
         var launched = new List<string>();
         notifier.AppLaunched += a => launched.Add(a.Id);

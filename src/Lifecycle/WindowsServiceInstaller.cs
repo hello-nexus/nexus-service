@@ -8,6 +8,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
 using Microsoft.Win32;
+using Nexus.Service.Platform.Windows;
 
 namespace Nexus.Service.Lifecycle;
 
@@ -515,12 +516,10 @@ internal static class WindowsServiceInstaller
         // Nexus.exe.
         //
         // On a normal install the Inno [Icons] entry already wrote this same
-        // {group}\Nexus.lnk natively (no PowerShell), so this method's job there
-        // is just the .url cleanup below. The WScript.Shell write runs only when
+        // {group}\Nexus.lnk natively, so this method's job there
+        // is just the .url cleanup below. The IShellLink write runs only when
         // the .lnk is absent - i.e. a bare-EXE self-install
         // (WindowsLauncher.NotInstalled -> RunInstall), where Inno never runs.
-        // Built in a child powershell.exe to keep the COM IShellLink out of this
-        // AOT binary; on hardened hosts where it fails the Inno copy still stands.
         var startMenu = Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu);
         var dir = Path.Combine(startMenu, "Programs", "Nexus");
         Directory.CreateDirectory(dir);
@@ -536,19 +535,11 @@ internal static class WindowsServiceInstaller
         if (File.Exists(lnk)) return; // Inno already wrote it; nothing to do but the .url cleanup above.
 
         var workingDir = Path.GetDirectoryName(targetExe) ?? string.Empty;
-        var script =
-            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('" + PsQuote(lnk) + "');" +
-            "$s.TargetPath='" + PsQuote(targetExe) + "';" +
-            "$s.WorkingDirectory='" + PsQuote(workingDir) + "';" +
-            "$s.IconLocation='" + PsQuote(targetExe) + ",0';" +
-            "$s.Description='Open the Nexus dashboard';" +
-            "$s.Save()";
-        var (code, _) = RunCli("powershell.exe", new[] { "-NoProfile", "-NonInteractive", "-Command", script });
-        if (code != 0) Log($"WARN Start Menu .lnk creation returned exit {code}");
+        if (!WindowsShellLink.Create(lnk, targetExe, workingDir, targetExe, 0, "Open the Nexus dashboard"))
+        {
+            Log("WARN Start Menu .lnk creation failed");
+        }
     }
-
-    // Single-quoted PowerShell string literal escaping (double the quote).
-    private static string PsQuote(string s) => s.Replace("'", "''");
 
     private static void DeleteShortcut(string installDir)
     {

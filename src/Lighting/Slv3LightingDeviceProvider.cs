@@ -5,6 +5,7 @@ using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Mappings;
 using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Models.Devices;
+using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -568,6 +569,12 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var edgeBars = family is Slv3FanFamily.Slv3Led or Slv3FanFamily.Slv3Lcd && ledsPerRing == EdgeBarLeds + EdgeLineLeds;
         var (innerU, innerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: true) : BuildFanRingUV(fan.FanCount, InnerRadius, ledsPerRing);
         var (outerU, outerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: false) : BuildFanRingUV(fan.FanCount, OuterRadius, outerPerRing);
+        if (family is Slv3FanFamily.TlFlex or Slv3FanFamily.SlInfFlex)
+        {
+            var flex = family == Slv3FanFamily.TlFlex ? FlexFamily.TlFlex : FlexFamily.SlInfFlex;
+            (innerU, innerV) = FlexFanLayout.Positions(flex, fan.FanCount, 0, ledsPerRing);
+            (outerU, outerV) = FlexFanLayout.Positions(flex, fan.FanCount, ledsPerRing, outerPerRing);
+        }
         var innerName = edgeBars ? "Top" : "Inner Ring";
         var outerName = edgeBars ? "Bottom" : "Outer Ring";
 

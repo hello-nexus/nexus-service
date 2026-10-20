@@ -80,6 +80,8 @@ public sealed unsafe partial class LinuxSlv3Transport : ISlv3Transport
     public Slv3DongleRole Role { get; }
     public string PortName { get; }
 
+    public bool LastWriteTimedOut { get; private set; }
+
     public bool RfSend(ReadOnlySpan<byte> frame)
     {
         if (_disposed)
@@ -89,6 +91,7 @@ public sealed unsafe partial class LinuxSlv3Transport : ISlv3Transport
         var buffer = frame.ToArray();
         lock (_ioLock)
         {
+            LastWriteTimedOut = false;
             if (_fd < 0)
             {
                 return false;
@@ -109,6 +112,7 @@ public sealed unsafe partial class LinuxSlv3Transport : ISlv3Transport
             // Same policy as the WinUSB transport: the RX reset re-enumerates the TX
             // (the old node then fails ENODEV), so anything but a timeout closes this
             // TX handle and the hub reopens it.
+            LastWriteTimedOut = err == ETIMEDOUT;
             if (Role == Slv3DongleRole.Tx && err != ETIMEDOUT && !_dead)
             {
                 _dead = true;

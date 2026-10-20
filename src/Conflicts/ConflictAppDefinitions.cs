@@ -67,6 +67,9 @@ public sealed class ConflictAppDefinition
     /// <summary>Process names to match against <c>Process.GetProcesses().ProcessName</c>.</summary>
     public string[] ProcessNames { get; init; } = Array.Empty<string>();
 
+    /// <summary>Substrings (case-insensitive) one of which the process's exe identity must contain for a name hit to count: the Authenticode signer subject, or the file's company name when unsigned. Empty keeps the name-only match. See <see cref="ConflictSignerGate"/>.</summary>
+    public string[] Signers { get; init; } = Array.Empty<string>();
+
     /// <summary>Windows service names to stop, in order, when ending this app - for apps whose background service holds the hardware. Empty for most.</summary>
     public string[] WindowsServiceNames { get; init; } = Array.Empty<string>();
 
@@ -131,6 +134,7 @@ public static class ConflictAppCatalog
             AlsoHandlers = new[] { "nzxt-kraken" },
             DisplayHandlers = new[] { "nzxt-kraken" },
             ProcessNames = new[] { "NZXT CAM", "CAM", "NZXT CAM Beta", "NZXT CAM Service", "NZXTCAM" },
+            Signers = new[] { "NZXT" },
             // Stopped alongside the processes on End task. CAMService is NZXT's
             // own; Windows' unrelated "camsvc" (svchost -k osprivacy) must never
             // appear here.
@@ -262,6 +266,7 @@ public static class ConflictAppCatalog
             DisplayName = "MSI Afterburner",
             Category = "monitoring",
             ProcessNames = new[] { "MSIAfterburner" },
+            Signers = new[] { "Micro-Star" },
         },
         new()
         {
@@ -286,6 +291,7 @@ public static class ConflictAppCatalog
             DisplayName = "MSI Control Center",
             Category = "monitoring",
             ProcessNames = new[] { "ControlCenter" },
+            Signers = new[] { "Micro-Star" },
         },
         new()
         {
@@ -371,6 +377,7 @@ public static class ConflictAppCatalog
                 "Corsair.Service", "Corsair.Service.CpuldRemote64", "Corsair.Service.DisplayAdapter",
                 "CorsairDeviceControlService", "CueLLAccessService", "CorsairService",
             },
+            Signers = new[] { "Corsair" },
             WindowsServiceNames = new[] { "CorsairDeviceListerService" },
             // The Run value alone is NOT evidence iCUE starts: "iCUE Launcher.exe
             // --autorun" runs either way and then honours iCUE's own setting.
@@ -408,6 +415,7 @@ public static class ConflictAppCatalog
             // none of the Synapse 3 names, so without it Synapse 4 is invisible
             // to the watcher.
             ProcessNames = new[] { "RazerAppEngine", "Razer Synapse 3", "RzSynapse", "Razer Synapse Service", "RazerCentralService", "Razer Central" },
+            Signers = new[] { "Razer" },
             // Synapse 4 autostarts from a per-user Run value ("RazerAppEngine"
             // -> RazerAppEngine.exe --autoStart=1), read out of the console
             // user's hive from the LocalSystem service.
@@ -444,8 +452,8 @@ public static class ConflictAppCatalog
             DisplayName = "Lian Li L-Connect",
             Category = "lighting",
             AlsoCategory = "cooling",
-            AlsoHandlers = new[] { "lianli", "lianli2", "lianli3", "lianli4", "lianli-tl", "lianli-wireless", "lianli-aio", "lianli-hydroshift2", "lianli-hydroshift2-curve" },
-            DisplayHandlers = new[] { "lianli-hydroshift-lcd", "lianli-galahad2-lcd", "lianli-screen88", "lianli-hydroshift2", "lianli-hydroshift2-curve", "lianli-tl-lcd", "lianli-wireless" },
+            AlsoHandlers = new[] { "lianli", "lianli2", "lianli3", "lianli4", "lianli-tl", "lianli-wireless", "lianli-flex", "lianli-aio", "lianli-hydroshift2", "lianli-hydroshift2-curve" },
+            DisplayHandlers = new[] { "lianli-hydroshift-lcd", "lianli-galahad2-lcd", "lianli-screen88", "lianli-hydroshift2", "lianli-hydroshift2-curve", "lianli-tl-lcd", "lianli-wireless", "lianli-flex" },
             ProcessNames = new[] { "L-Connect 3", "L-Connect", "LConnect3", "LConnect" },
             // Watcher first so it cannot restart the main service.
             WindowsServiceNames = new[] { "LConnectServiceWatcher", "LConnectService" },
@@ -506,6 +514,7 @@ public static class ConflictAppCatalog
             Category = "peripherals",
             // macOS runs it as "Stream Deck" (with a space).
             ProcessNames = new[] { "StreamDeck", "Stream Deck" },
+            Signers = new[] { "Corsair", "Elgato" },
         },
 
         // ── Other peripheral / lighting vendors ────────────────────────────
@@ -637,6 +646,7 @@ public static class ConflictAppCatalog
             DisplayName = "FanControl",
             Category = "cooling",
             ProcessNames = new[] { "FanControl" },
+            Signers = new[] { "Mercier" },
         },
         new()
         {

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.Versioning;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,11 +18,10 @@ namespace Nexus.Service.Sensors;
 /// callers paste them straight into the UI or a shared rig summary.
 ///
 /// Reads from <see cref="ISensorProvider"/> for the LHM-resident basics
-/// (CPU / GPU model, motherboard, memory total) and runs a single PowerShell
-/// session on Windows that emits one JSON blob with all the extras LHM
-/// doesn't surface: hostname, OS build, RAM stick layout, monitor model +
-/// resolution, sound card, network adapters. One process spawn keeps the cold
-/// first call under ~500 ms.
+/// (CPU / GPU model, motherboard, memory total) and reads the extras LHM
+/// doesn't surface on Windows in-process via <see cref="WindowsSpecsNative"/>:
+/// OS build, RAM stick layout, disks, monitor model + resolution, sound card,
+/// network adapters.
 ///
 /// Cached for the lifetime of the service; no TTL since hardware specs (CPU,
 /// motherboard, monitor model, NIC) don't change while the process is alive.
@@ -44,7 +44,7 @@ public sealed class SystemSpecsCollector
     /// Async accessor that guarantees the LHM background open has finished
     /// before reading hardware-name fields. Once cached, returns the snapshot
     /// in microseconds. The very first call after boot pays the ~1-3 s LHM
-    /// open + ~400 ms Build (PowerShell enrichment on Windows).
+    /// open + the Build (native enrichment on Windows).
     /// </summary>
     public async Task<SystemSpecsResponse> GetAsync(CancellationToken ct = default)
     {
@@ -84,8 +84,7 @@ public sealed class SystemSpecsCollector
             EnrichMac(s);
 
         // Storage fallback for paths the platform-specific enrichment didn't
-        // fill in (today: macOS - Windows always populates Storage via the
-        // single PS script below).
+        // fill in (today: macOS).
         if (string.IsNullOrWhiteSpace(s.Storage))
         {
             var brand = _sensors.GetStorageBrandModel();
@@ -105,62 +104,27 @@ public sealed class SystemSpecsCollector
         catch { return ""; }
     }
 
-    // ── Windows enrichment (single PowerShell, JSON output) ───────────────
+    // ── Windows enrichment (in-process native reads) ──────────────────────
 
-    // One process spawn covers OS, RAM DIMMs, physical disks, EDID monitor
-    // names, video controller mode, sound endpoints, and physical network
-    // adapters. PowerShell start-up dominates at ~200-500 ms; the queries
-    // themselves are sub-50 ms each.
-    //
-    // `@(...)` wrappers force array form even for single-row results so the
-    // C# parser doesn't have to branch on JsonObject vs JsonArray.
-    private const string WindowsSpecsScript = @"
-$ErrorActionPreference = 'SilentlyContinue'
-$os = Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object Caption,Version
-$ram = @(Get-CimInstance -ClassName Win32_PhysicalMemory | Select-Object Capacity,Speed,ConfiguredClockSpeed,Manufacturer,PartNumber,SMBIOSMemoryType)
-$disks = @(Get-PhysicalDisk | Where-Object { $_.BusType -ne 'USB' -and $_.MediaType -ne 'Removable' } | Sort-Object Size -Descending | Select-Object FriendlyName,MediaType,BusType,Size)
-$mon = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID | ForEach-Object {
-  [PSCustomObject]@{
-    Name = (($_.UserFriendlyName | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ }) -join '')
-    Mfg  = (($_.ManufacturerName  | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ }) -join '')
-  }
-})
-$vc = @(Get-CimInstance -ClassName Win32_VideoController | Select-Object CurrentHorizontalResolution,CurrentVerticalResolution,CurrentRefreshRate)
-$sound = @(Get-CimInstance -ClassName Win32_SoundDevice | Where-Object { $_.Status -eq 'OK' } | Select-Object Name)
-$net = @(Get-NetAdapter -Physical | Select-Object InterfaceDescription,LinkSpeed,Status)
-$oa3 = (Get-CimInstance -ClassName SoftwareLicensingService).OA3xOriginalProductKey
-@{ os = $os; ram = $ram; disks = $disks; monitors = $mon; video = $vc; sound = $sound; net = $net; oa3 = $oa3 } | ConvertTo-Json -Depth 4 -Compress
-";
-
+    [SupportedOSPlatform("windows")]
     private static void EnrichWindows(SystemSpecsResponse s)
     {
-        // -EncodedCommand takes a Base64 UTF-16LE blob and is the only fully
-        // reliable way to ship a multi-line script into powershell.exe from
-        // a service-context Process.Start. -Command "-" (stdin) silently
-        // returns nothing under LocalSystem on PS 5.1; the ArgumentList
-        // escape rules also choke on the script's curly braces. EncodedCommand
-        // sidesteps both. 10 s timeout is above the observed ~400 ms warm path.
-        var encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(WindowsSpecsScript));
-        var json = ShellExecutor.Run(
-            "powershell.exe", 10_000,
-            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-EncodedCommand", encoded);
+        var obj = WindowsSpecsNative.Collect();
 
-        if (string.IsNullOrWhiteSpace(json)) return;
+        // Each field applies on its own so one failed read cannot blank the rest.
+        TryApply(() => ApplyOs(s, obj["os"]));
+        TryApply(() => ApplyRam(s, obj["ram"]));
+        TryApply(() => ApplyDisks(s, obj["disks"]));
+        TryApply(() => ApplyMonitors(s, obj["monitors"], obj["video"]));
+        TryApply(() => ApplySound(s, obj["sound"]));
+        TryApply(() => ApplyNet(s, obj["net"]));
+        TryApply(() => s.Oa3ProductKey = JsonString(obj["oa3"]).Trim());
+    }
 
-        JsonNode? root;
-        try { root = JsonNode.Parse(json); }
-        catch { return; }
-        var obj = root?.AsObject();
-        if (obj is null) return;
-
-        ApplyOs(s, obj["os"]);
-        ApplyRam(s, obj["ram"]);
-        ApplyDisks(s, obj["disks"]);
-        ApplyMonitors(s, obj["monitors"], obj["video"]);
-        ApplySound(s, obj["sound"]);
-        ApplyNet(s, obj["net"]);
-        s.Oa3ProductKey = JsonString(obj["oa3"]).Trim();
+    private static void TryApply(Action apply)
+    {
+        try { apply(); }
+        catch (Exception ex) { Console.Error.WriteLine($"[system-specs] {ex.GetType().Name}: {ex.Message}"); }
     }
 
     private static void ApplyOs(SystemSpecsResponse s, JsonNode? node)

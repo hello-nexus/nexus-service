@@ -183,7 +183,7 @@ public sealed class KeebFirmwareLightingDefaults
     // Lighting.KeyReactions and resets them to these values.
     public string Speed { get; set; } = "Standard";
     public string Direction { get; set; } = "Forward";
-    public int Brightness { get; set; } = 80;
+    public int Brightness { get; set; } = 100;
     public bool KeyReactive { get; set; }
     public bool KeyReactiveMask { get; set; }
     public string KeyReactiveMode { get; set; } = "SingleKey";

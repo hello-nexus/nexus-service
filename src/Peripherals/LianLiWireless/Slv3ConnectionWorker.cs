@@ -12,12 +12,17 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// Connects the SLV3 dongles and drives the hub on L-Connect's cadence
 /// (MasterDevice.Run): <see cref="Slv3Hub.PollTick"/> every
 /// <see cref="PollPeriodMs"/> and <see cref="Slv3Hub.DriveTick"/> on every
-/// other one.
+/// <see cref="DriveEveryTicks"/>th one.
 /// </summary>
 public sealed class Slv3ConnectionWorker : BackgroundService
 {
     private const int ConnectPollMs = 5000;
-    private const int PollPeriodMs = 500;
+    // The GetDev period of L-Connect 2.1.29 and a drive pass on every DriveEveryTicks-th poll to match its GetMac/ClockSync block (Y70 USBPcap capture).
+    internal const int PollPeriodMs = 336;
+    internal const int DriveEveryTicks = 3;
+
+    /// <summary>Runs the next tick: the drive pass on every DriveEveryTicks-th, a plain poll otherwise.</summary>
+    internal static bool RunTick(Slv3Hub hub, ref int tick) => tick++ % DriveEveryTicks == 0 ? hub.DriveTick() : hub.PollTick();
     private const int MaxConsecutiveFailures = 3;
 
     private readonly Slv3Hub _hub;
@@ -51,11 +56,10 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                     try
                     {
                         var failures = 0;
-                        var halfTick = false;
+                        var tick = 0;
                         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("lianli-wireless"))
                         {
-                            var ok = halfTick ? _hub.PollTick() : _hub.DriveTick();
-                            halfTick = !halfTick;
+                            var ok = RunTick(_hub, ref tick);
                             if (ok)
                             {
                                 failures = 0;

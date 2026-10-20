@@ -338,8 +338,8 @@ public static class PanelBgRoutes
                     if (OperatingSystem.IsWindows())
                     {
                         var registry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
-                        if (registry is null ||
-                            !await Nexus.Service.Helper.Domains.FileDialogCommands.OpenFolderAsync(registry, dir))
+                        var outcome = await Nexus.Service.Helper.Domains.FileDialogCommands.TryOpenFolderAsync(registry, dir);
+                        if (Nexus.Service.Helper.OpenFolderOutcomes.IsFailure(outcome))
                         {
                             return Results.Problem("no interactive user session", statusCode: StatusCodes.Status503ServiceUnavailable);
                         }
