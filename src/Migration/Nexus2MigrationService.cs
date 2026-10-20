@@ -420,7 +420,7 @@ public sealed class Nexus2MigrationService
             var result = id switch
             {
                 "appearance" => await ApplyAppearanceAsync(y70, read.ConfigDir, y70Record),
-                "y70Layout" => ApplyY70Layout(y70, y70Record, replaceCustomizedLayout),
+                "y70Layout" => await ApplyY70LayoutAsync(y70, y70Record, replaceCustomizedLayout),
                 "q60Face" => ApplyQ60Face(q60Software, q60Record, replaceCustomizedLayout),
                 "wallpapers" => await ApplyWallpaperAsync(q60Software, read.ConfigDir, q60Record),
                 "gallerySources" => ApplyGallerySources(y70),
@@ -785,7 +785,26 @@ public sealed class Nexus2MigrationService
         try { File.Delete(path); } catch { /* temp file */ }
     }
 
-    private Nexus2ApplyResultDto ApplyY70Layout(JsonElement? y70, PanelDeviceRecord? y70Record, bool replaceCustomizedLayout)
+    private async Task ImportTileImagesAsync(Nexus2DockDeck dock)
+    {
+        if (dock.TileImages.Count == 0 || _services.GetService<DeckImageStore>() is not { } images)
+        {
+            return;
+        }
+        var ids = new List<string>();
+        foreach (var (slot, path) in dock.TileImages)
+        {
+            if (Nexus2Y70Translator.ImportTileImage(images, path) is { } id)
+            {
+                slot.Icon = new DeckIcon { Kind = "image", Value = id };
+                ids.Add(id);
+            }
+        }
+        // A no-op for a still; a video gets its poster frame so the physical key has something to draw.
+        await Task.WhenAll(ids.Select(id => images.EnsurePosterAsync(id)));
+    }
+
+    private async Task<Nexus2ApplyResultDto> ApplyY70LayoutAsync(JsonElement? y70, PanelDeviceRecord? y70Record, bool replaceCustomizedLayout)
     {
         const string id = "y70Layout";
         if (y70 is not { } y)
@@ -814,6 +833,7 @@ public sealed class Nexus2MigrationService
         // it never finds a missing instance and seeds a default one.
         if (translated.Dock is { } dock)
         {
+            await ImportTileImagesAsync(dock);
             StoreDockDeck(dock);
         }
 

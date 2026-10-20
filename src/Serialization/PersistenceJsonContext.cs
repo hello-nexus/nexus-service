@@ -87,6 +87,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(ThemeSettings))]
 [JsonSerializable(typeof(MonitoringSettings))]
 [JsonSerializable(typeof(PanelSettings))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPreset))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceRecord))]
 [JsonSerializable(typeof(OverlaySettings))]
 [JsonSerializable(typeof(UnitsSettings))]
 [JsonSerializable(typeof(DiagnosticsSettings))]

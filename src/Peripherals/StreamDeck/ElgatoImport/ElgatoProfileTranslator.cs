@@ -487,7 +487,8 @@ public sealed class ElgatoProfileTranslator
                 return null;
             }
             var bytes = ElgatoReadOnlyIo.ReadAllBytes(absolutePath);
-            return _images.Store(bytes);
+            // The import is synchronous, so a video (which needs an async poster frame) is not carried over.
+            return DeckImageStore.SniffExtension(bytes) is { } ext && DeckImageStore.IsVideoExtension(ext) ? null : _images.Store(bytes);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
