@@ -120,4 +120,21 @@ public class KeebProviderSettingsTests
         store.Update(s => s.Keeb.FirmwareLighting.Brightness = level);
         Assert.Equal(expected, Nexus.Service.Lighting.KeebLightingFrameWriter.KeebStreamLevel(store.Load()), 3);
     }
+
+    private static Nexus.Service.Persistence.NexusSettings Parse(string json) =>
+        System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+
+    [Fact]
+    public void Fresh_install_firmware_brightness_defaults_to_full()
+    {
+        Assert.Equal(100, Parse("{}").Keeb.FirmwareLighting.Brightness);
+        Assert.Equal(100, new StubKeebProvider(new InMemoryConfigStore()).GetSettings().Brightness);
+    }
+
+    [Fact]
+    public void A_stored_firmware_brightness_is_not_rewritten_by_the_new_default()
+    {
+        var s = Parse("{\"keeb\":{\"firmwareLighting\":{\"brightness\":80}}}");
+        Assert.Equal(80, s.Keeb.FirmwareLighting.Brightness);
+    }
 }
