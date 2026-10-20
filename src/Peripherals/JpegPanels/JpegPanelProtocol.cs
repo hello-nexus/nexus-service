@@ -43,9 +43,10 @@ public enum JpegPanelHeaderStyle
 
     /// <summary>
     /// ASUS ROG Strix SLC IV LCD, measured from a customer's USB capture. The ASRock layout
-    /// with one difference: bytes 3-4 of the report (after the id) carry the wall-clock second
-    /// of the minute, constant across one frame, where the ASRock row leaves them zero.
-    /// The chunk index and the total are single bytes, so a frame cannot exceed 255 chunks.
+    /// with one difference: the byte after the length field carries the wall-clock second of the
+    /// minute, constant across one frame, and the byte after it stays zero. The ASRock row leaves
+    /// both zero. The chunk index and the total are single bytes, so a frame is capped at what
+    /// a byte can count.
     /// </summary>
     AsusFramed,
 }

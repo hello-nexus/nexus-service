@@ -176,8 +176,8 @@ public sealed record JpegPanelModel(
 
     /// <summary>
     /// ASUS ROG Strix SLC IV 360 ARGB LCD AIO. Measured from a customer's USB capture of
-    /// Armoury Crate: 720x720 baseline JPEG, 4:2:0, about 22 frames a second, chunked as the
-    /// ASRock panel is (see <see cref="AsusSlc4LcdHandshake"/> for the control channel).
+    /// Armoury Crate: square baseline JPEG frames, chunked as the ASRock panel is (see
+    /// <see cref="AsusSlc4LcdHandshake"/> for the control channel).
     /// Pump, fans and ARGB were not captured and are not driven.
     /// </summary>
     public static readonly JpegPanelModel AsusSlc4Lcd = new(
