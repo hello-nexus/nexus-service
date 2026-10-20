@@ -178,6 +178,10 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
                 oriented = _turned;
             }
             jpeg = _encoder.Encode(oriented);
+            if (!JpegPanelProtocol.FitsChunkCounter(model.HeaderStyle, model.ReportLength, jpeg.Length))
+            {
+                jpeg = EncodeToFit(model, oriented, jpeg);
+            }
         }
         catch (Exception ex)
         {
@@ -220,6 +224,30 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         _statsWindowStartMs = nowMs;
     }
 
+    /// <summary>Lower qualities tried, in order, for a frame too busy to fit the panel's chunk counter.</summary>
+    private static readonly int[] StepDownQualities = { 70, 55, 40, 25 };
+
+    private BgraJpegEncoder?[]? _stepDown;
+
+    /// <summary>
+    /// Re-encodes a frame the panel cannot number at lower quality until it fits, the way the
+    /// SLV3 image import steps down. If none fits the last attempt is returned and the hub refuses it.
+    /// </summary>
+    private ReadOnlySpan<byte> EncodeToFit(JpegPanelModel model, ReadOnlySpan<byte> bgra, ReadOnlySpan<byte> current)
+    {
+        _stepDown ??= new BgraJpegEncoder?[StepDownQualities.Length];
+        for (int i = 0; i < StepDownQualities.Length; i++)
+        {
+            var encoder = _stepDown[i] ??= new BgraJpegEncoder(model.Width, model.Height, StepDownQualities[i]);
+            current = encoder.Encode(bgra);
+            if (JpegPanelProtocol.FitsChunkCounter(model.HeaderStyle, model.ReportLength, current.Length))
+            {
+                break;
+            }
+        }
+        return current;
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -228,5 +256,12 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         }
         _disposed = true;
         _encoder.Dispose();
+        if (_stepDown is not null)
+        {
+            foreach (var encoder in _stepDown)
+            {
+                encoder?.Dispose();
+            }
+        }
     }
 }

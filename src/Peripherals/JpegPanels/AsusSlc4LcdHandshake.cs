@@ -173,10 +173,14 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
         }
         if (_outstanding.Count >= MaxOutstanding)
         {
+            // The pending enable is the one entry a stream depends on, so it is never the one evicted.
             int oldest = int.MaxValue;
-            foreach (var key in _outstanding.Keys)
+            foreach (var pair in _outstanding)
             {
-                oldest = Math.Min(oldest, key);
+                if (pair.Value != "realtimeDisplay")
+                {
+                    oldest = Math.Min(oldest, pair.Key);
+                }
             }
             _outstanding.Remove(oldest);
         }
@@ -222,6 +226,10 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
                 {
                     reply = copy;
                     return true;
+                }
+                if (Environment.TickCount64 >= deadline)
+                {
+                    break;
                 }
                 continue;
             }
@@ -315,10 +323,11 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
 
     private static bool IsOk(byte[] reply)
     {
-        var status = AsRockLcdProtocol.ParseStatus(AsRockLcdProtocol.Decode(reply));
-        if (status is not null)
+        var decoded = AsRockLcdProtocol.Decode(reply);
+        if (decoded.Length > 0)
         {
-            return status == "200";
+            // A decoded reply answers for itself; one with no status is not an OK.
+            return AsRockLcdProtocol.ParseStatus(decoded) == "200";
         }
         // Nothing decoded and the reply layout was never captured; fall back to the status text itself.
         return Printable(reply).Contains(" 200", StringComparison.Ordinal);

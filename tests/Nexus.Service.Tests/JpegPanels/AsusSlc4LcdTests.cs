@@ -121,6 +121,27 @@ public class AsusSlc4LcdTests
     }
 
     [Fact]
+    public void A_noise_frame_is_stepped_down_until_it_fits_the_chunk_counter()
+    {
+        var model = JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() };
+        using var hub = new JpegPanelHub(model);
+        var device = new RecordingHidDevice { Responder = AllOk };
+        Assert.True(hub.Attach(device));
+        using var transport = new Nexus.Service.Panel.Streams.JpegPanelStreamTransport(hub, "SLC4");
+        transport.Open();
+
+        // Incompressible content: at the default quality this is far past 255 chunks.
+        var frame = new byte[720 * 720 * 4];
+        new Random(7).NextBytes(frame);
+        device.Writes.Clear();
+
+        transport.Write(frame);
+
+        Assert.InRange(device.Writes.Count, 1, 255);
+        Assert.Equal(device.Writes.Count, device.Writes[0][6]);
+    }
+
+    [Fact]
     public void Model_is_a_720_square_on_the_captured_ids()
     {
         var model = JpegPanelModel.Find(0x0B05, 0x1DE6);
@@ -135,7 +156,7 @@ public class AsusSlc4LcdTests
     [Fact]
     public void Attach_replays_the_vendor_start_sequence_in_order()
     {
-        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
+        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() });
         var device = new RecordingHidDevice { Responder = AllOk };
 
         Assert.True(hub.Attach(device));
@@ -275,7 +296,7 @@ public class AsusSlc4LcdTests
     [Fact]
     public void Brightness_change_does_not_wait_for_a_reply()
     {
-        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
+        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() });
         var device = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(device);
         device.Writes.Clear();
@@ -289,7 +310,7 @@ public class AsusSlc4LcdTests
     [Fact]
     public void Attach_with_a_rejected_write_drops_the_handle()
     {
-        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
+        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() });
         var device = new RecordingHidDevice { FailWrites = true };
 
         Assert.False(hub.Attach(device));
@@ -300,7 +321,7 @@ public class AsusSlc4LcdTests
     [Fact]
     public void Brightness_sends_the_captured_value_message_and_is_reasserted_on_attach()
     {
-        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
+        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() });
         var device = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(device);
         device.Writes.Clear();
@@ -329,7 +350,7 @@ public class AsusSlc4LcdTests
     [Fact]
     public void Detach_stops_the_realtime_display_without_a_disconnect()
     {
-        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
+        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() });
         var device = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(device);
         device.Writes.Clear();
@@ -343,7 +364,7 @@ public class AsusSlc4LcdTests
     [Fact]
     public void SendFrame_writes_one_report_per_chunk_with_the_report_id_first()
     {
-        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
+        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() });
         var device = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(device);
         device.Writes.Clear();

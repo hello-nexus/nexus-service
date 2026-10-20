@@ -184,6 +184,13 @@ public static class JpegPanelProtocol
         return take;
     }
 
+    /// <summary>
+    /// False when the style numbers its chunks in a byte and this frame needs more than that.
+    /// Only <see cref="JpegPanelHeaderStyle.AsusFramed"/> refuses such a frame.
+    /// </summary>
+    public static bool FitsChunkCounter(JpegPanelHeaderStyle style, int reportLength, int jpegLength) =>
+        style != JpegPanelHeaderStyle.AsusFramed || ChunkCount(style, reportLength, jpegLength) <= byte.MaxValue;
+
     /// <summary>Reports one frame needs at this report length. Always at least one.</summary>
     public static int ChunkCount(JpegPanelHeaderStyle style, int reportLength, int jpegLength)
     {
