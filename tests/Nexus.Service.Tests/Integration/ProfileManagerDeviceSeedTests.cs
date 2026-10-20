@@ -122,6 +122,7 @@ public class ProfileManagerDeviceSeedTests : IDisposable
         {
           "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
           "deviceCategorySeeded": true,
+          "panelsCategorySeeded": true,
           "streamDeck": { "decks": { "SN-ROOT": { "name": "Root Deck" } } },
           "keeb": { "rotaryLeft": "Volume" }
         }
