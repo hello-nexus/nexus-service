@@ -47,11 +47,10 @@ public static class DeckImageRoutes
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "File too large" });
             }
 
-            byte[] bytes;
-            using (var ms = new MemoryStream())
+            var bytes = new byte[file.Length];
+            await using (var upload = file.OpenReadStream())
             {
-                await file.CopyToAsync(ms);
-                bytes = ms.ToArray();
+                await upload.ReadExactlyAsync(bytes);
             }
 
             var id = store.Store(bytes);
@@ -84,7 +83,7 @@ public static class DeckImageRoutes
             var (bytes, contentType) = loaded.Value;
             // Content-addressed: the id IS the hash, so it is a valid ETag with no extra hashing.
             ctx.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
-            return Results.File(bytes, contentType, entityTag: new EntityTagHeaderValue($"\"{id}\""));
+            return Results.File(bytes, contentType, entityTag: new EntityTagHeaderValue($"\"{id}\""), enableRangeProcessing: true);
         }).AllowPanel();
 
         // A panel has no route to the open internet, so the fetch has to happen

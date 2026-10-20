@@ -199,7 +199,7 @@ public static class DeckPresetPackage
         {
             if (asset.Length > MaxAssetBytes)
             {
-                return DeckPackageReadResult.Fail($"asset {asset.Name} exceeds the 8 MB per-asset limit");
+                return DeckPackageReadResult.Fail($"asset {asset.Name} exceeds the {MaxAssetBytes / (1024 * 1024)} MB per-asset limit");
             }
         }
 

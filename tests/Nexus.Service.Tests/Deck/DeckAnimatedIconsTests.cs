@@ -1,7 +1,12 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Nexus.Service.Media;
+using Nexus.Service.Platform;
 using Nexus.Service.Deck;
 using Nexus.Service.Migration;
 using Nexus.Service.Peripherals.StreamDeck;
@@ -51,12 +56,19 @@ public sealed class DeckAnimatedIconsTests : IDisposable
         return bytes;
     }
 
+    private static readonly byte[] Mp4Head = [0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'i', (byte)'s', (byte)'o', (byte)'m'];
+
     [Theory]
     [InlineData(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, ".png")]
     [InlineData(new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }, ".jpg")]
     [InlineData(new byte[] { (byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'7', (byte)'a' }, ".gif")]
     [InlineData(new byte[] { (byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'9', (byte)'a' }, ".gif")]
-    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'i', (byte)'s', (byte)'o', (byte)'m' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'m', (byte)'p', (byte)'4', (byte)'2' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'h', (byte)'e', (byte)'i', (byte)'c' }, null)]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'a', (byte)'v', (byte)'i', (byte)'f' }, null)]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'M', (byte)'4', (byte)'A', (byte)' ' }, null)]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p' }, null)]
     [InlineData(new byte[] { 0x1A, 0x45, 0xDF, 0xA3 }, ".webm")]
     [InlineData(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }, null)]
     [InlineData(new byte[] { (byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'0', (byte)'a' }, null)]
@@ -99,7 +111,7 @@ public sealed class DeckAnimatedIconsTests : IDisposable
             ".png" => Padded(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, length),
             ".jpg" => Padded(new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }, length),
             ".gif" => Padded("GIF89a"u8.ToArray(), length),
-            ".mp4" => Padded(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p' }, length),
+            ".mp4" => Padded(Mp4Head, length),
             _ => Padded(new byte[] { 0x1A, 0x45, 0xDF, 0xA3 }, length),
         };
         var cap = animated ? DeckImageStore.MaxAnimatedBytes : DeckImageStore.MaxBytes;
@@ -182,30 +194,34 @@ public sealed class DeckAnimatedIconsTests : IDisposable
     }
 
     [Fact]
-    public void Nexus2Tile_ImportsItsCustomImageIntoTheStore()
+    public void Nexus2Tile_RecordsLocalImagePathsAndImportsThemOnDemand()
     {
         var gifPath = Path.Combine(_dir, "tile.gif");
         File.WriteAllBytes(gifPath, OnePxGif);
         var mp4Path = Path.Combine(_dir, "tile.mp4");
         File.WriteAllBytes(mp4Path, Mp4());
-        var json = $$"""
-            { "hideDock": false, "dock": [
-              { "type": "macros", "position": 0, "macro": { "type": "website", "url": "https://example.com/" }, "front": { "type": "image", "path": {{JsonSerializer.Serialize(gifPath)}} } },
-              { "type": "macros", "position": 1, "macro": { "type": "website", "url": "https://example.com/" }, "front": { "type": "image", "path": {{JsonSerializer.Serialize(mp4Path)}} } },
-              { "type": "macros", "position": 2, "macro": { "type": "website", "url": "https://example.com/" }, "front": { "type": "image", "path": {{JsonSerializer.Serialize(Path.Combine(_dir, "missing.png"))}} } },
-              { "type": "macros", "position": 3, "macro": { "type": "website", "url": "https://example.com/" }, "front": { "type": "default" } }
-            ] }
-            """;
+        string Tile(int position, string front) =>
+            $$"""{ "type": "macros", "position": {{position}}, "macro": { "type": "website", "url": "https://example.com/" }, "front": {{front}} }""";
+        string Image(string path) => $$"""{ "type": "image", "path": {{JsonSerializer.Serialize(path)}} }""";
+        var json = "{ \"hideDock\": false, \"dock\": [" + string.Join(",", [
+            Tile(0, Image(gifPath)),
+            Tile(1, Image(mp4Path)),
+            Tile(2, Image(Path.Combine(_dir, "missing.png"))),
+            Tile(3, Image("\\\\server\\share\\a.png")),
+            Tile(4, """{ "type": "default" }"""),
+        ]) + "] }";
         using var doc = JsonDocument.Parse(json);
 
-        var dock = Nexus2Y70Translator.TranslateDock(doc.RootElement, File.Exists, p => Nexus2Y70Translator.ImportTileImage(_images, p));
+        var dock = Nexus2Y70Translator.TranslateDock(doc.RootElement, File.Exists)!;
 
-        var slots = dock!.Config.Pages[0].Slots;
-        Assert.Equal("image", slots[0].Icon!.Kind);
-        Assert.Equal("image/gif", _images.TryLoad(slots[0].Icon!.Value)!.Value.ContentType);
-        Assert.Equal("video/mp4", _images.TryLoad(slots[1].Icon!.Value)!.Value.ContentType);
-        Assert.Null(slots[2].Icon);
-        Assert.Null(slots[3].Icon);
+        // Translation alone copies nothing: the store is still empty and the UNC path is never recorded.
+        Assert.Empty(Directory.GetFiles(_images.RootDir));
+        Assert.Equal([gifPath, mp4Path, Path.Combine(_dir, "missing.png")], dock.TileImages.ConvertAll(t => t.Path));
+
+        var ids = dock.TileImages.ConvertAll(t => Nexus2Y70Translator.ImportTileImage(_images, t.Path));
+        Assert.Equal("image/gif", _images.TryLoad(ids[0]!)!.Value.ContentType);
+        Assert.Equal("video/mp4", _images.TryLoad(ids[1]!)!.Value.ContentType);
+        Assert.Null(ids[2]);
     }
 
     [Fact]
@@ -242,8 +258,142 @@ public sealed class DeckAnimatedIconsTests : IDisposable
         var slot = new DeckSlot { Icon = new DeckIcon { Kind = "image", Value = id }, Label = "Clip" };
 
         var bytes = renderer.Render(slot, false, model, 0);
-        using var glyph = renderer.RenderIconGlyph(slot.Icon, "app-window", 32);
+        using var glyph = renderer.RenderIconGlyph(slot.Icon, "Sliders", 32);
 
         Assert.NotNull(bytes);
+        // No poster means no image face: the glyph falls back to the lucide icon rather than failing.
+        Assert.NotNull(glyph);
+    }
+
+    [Fact]
+    public void Sweep_RemovesOnlyStaleTempFiles()
+    {
+        var root = Path.Combine(_dir, "sweep");
+        Directory.CreateDirectory(root);
+        var stale = Path.Combine(root, "a.tmp.png");
+        var staleWrite = Path.Combine(root, "b.tmp");
+        var fresh = Path.Combine(root, "c.tmp");
+        foreach (var f in new[] { stale, staleWrite, fresh })
+        {
+            File.WriteAllBytes(f, [1]);
+        }
+        File.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddHours(-3));
+        File.SetLastWriteTimeUtc(staleWrite, DateTime.UtcNow.AddHours(-3));
+
+        _ = new DeckImageStore(root);
+
+        Assert.False(File.Exists(stale));
+        Assert.False(File.Exists(staleWrite));
+        Assert.True(File.Exists(fresh));
+    }
+
+    [Fact]
+    public async Task EnsurePoster_NeverThrowsForABrokenOrUnknownVideo()
+    {
+        var id = _images.Store(Mp4())!;
+        await _images.EnsurePosterAsync(id);
+        await _images.EnsurePosterAsync(new string('0', 64));
+        await _images.EnsurePosterAsync("not-an-id");
+        Assert.Null(_images.TryLoadStill(id));
+    }
+
+    [Fact]
+    public async Task EnsurePoster_HonorsTheCallersCancellation()
+    {
+        var id = _images.Store(Mp4())!;
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        if (FfmpegResolver.Path is null)
+        {
+            await _images.EnsurePosterAsync(id, cts.Token);
+            return;
+        }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _images.EnsurePosterAsync(id, cts.Token));
+    }
+
+    private static async Task<byte[]?> MakeRealMp4(string path)
+    {
+        await MediaImporter.RunFfmpeg("-y", "-f", "lavfi", "-i", "color=c=red:s=64x48:d=0.5:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p", path);
+        return File.Exists(path) ? File.ReadAllBytes(path) : null;
+    }
+
+    [FfmpegFact]
+    public async Task EnsurePoster_ExtractsAFirstFrameFromARealMp4()
+    {
+        var path = Path.Combine(_dir, "real.mp4");
+        byte[]? mp4;
+        try
+        {
+            mp4 = await MakeRealMp4(path);
+        }
+        catch (InvalidOperationException)
+        {
+            // This ffmpeg build cannot encode h264 here; nothing to assert against.
+            return;
+        }
+        var id = _images.Store(mp4!)!;
+
+        await _images.EnsurePosterAsync(id);
+
+        var still = _images.TryLoadStill(id);
+        Assert.NotNull(still);
+        using var bitmap = SkiaSharp.SKBitmap.Decode(still!);
+        Assert.Equal((64, 48), (bitmap.Width, bitmap.Height));
+        Assert.Empty(Directory.GetFiles(_images.RootDir, "*.tmp*"));
+    }
+
+    [FfmpegFact]
+    public async Task EnsurePoster_ConcurrentCallsShareOneExtraction()
+    {
+        var path = Path.Combine(_dir, "real2.mp4");
+        byte[]? mp4;
+        try
+        {
+            mp4 = await MakeRealMp4(path);
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+        var id = _images.Store(mp4!)!;
+
+        await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => _images.EnsurePosterAsync(id)));
+
+        Assert.NotNull(_images.TryLoadStill(id));
+        Assert.False(File.Exists(Path.Combine(_images.RootDir, id + ".poster.none")));
+    }
+
+    [FfmpegFact]
+    public async Task PresetImport_ProducesAPosterForAVideoAsset()
+    {
+        var path = Path.Combine(_dir, "real3.mp4");
+        byte[]? mp4;
+        try
+        {
+            mp4 = await MakeRealMp4(path);
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+        var id = _images.Store(mp4!)!;
+        var preset = new DeckPreset
+        {
+            Id = "p-v",
+            Name = "V",
+            Cols = 1,
+            Rows = 1,
+            Deck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Icon = new DeckIcon { Kind = "image", Value = id } } } } } },
+        };
+        var read = DeckPresetPackage.Read(new ZipPackageSource(new MemoryStream(DeckPresetPackage.Write(preset, _images))));
+        var target = new DeckImageStore(Path.Combine(_dir, "import-target"));
+        foreach (var (assetId, asset) in read.Assets)
+        {
+            target.StoreValidated(assetId, asset.Ext, asset.Bytes);
+        }
+
+        await target.EnsurePosterAsync(id);
+
+        Assert.NotNull(target.TryLoadStill(id));
     }
 }

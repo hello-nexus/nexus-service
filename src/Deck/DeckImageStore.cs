@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -36,6 +37,7 @@ public sealed class DeckImageStore
     {
         _rootDir = rootDir;
         Directory.CreateDirectory(_rootDir);
+        SweepStaleTemps();
     }
 
     public string RootDir => _rootDir;
@@ -173,12 +175,61 @@ public sealed class DeckImageStore
 
     /// <summary>
     /// Extracts a first-frame PNG next to a stored MP4/WebM so a physical key
-    /// (which shows a still) has something to draw. Best effort: no ffmpeg or
-    /// a failed decode leaves no poster and the key shows its default icon.
+    /// (which shows a still) has something to draw. Best effort and never
+    /// throws except OperationCanceledException from the caller's own token: no
+    /// ffmpeg or a failed decode leaves no poster (a failed one is remembered so
+    /// a re-post does not respawn ffmpeg) and the key shows its default icon.
+    /// Concurrent calls for one id share a single extraction, and the work is
+    /// not cancelled by one caller leaving.
     /// </summary>
-    public async Task EnsurePosterAsync(string id, CancellationToken ct = default)
+    public Task EnsurePosterAsync(string id, CancellationToken ct = default)
     {
-        if (!IsValidId(id) || File.Exists(PosterPath(id)) || FfmpegResolver.Path is null)
+        if (!IsValidId(id) || File.Exists(PosterPath(id)) || File.Exists(PosterFailedPath(id)) || FfmpegResolver.Path is null)
+        {
+            return Task.CompletedTask;
+        }
+        Task work;
+        lock (_posterLock)
+        {
+            if (!_posterInFlight.TryGetValue(id, out work!))
+            {
+                work = Task.Run(() => ExtractPosterAsync(id));
+                _posterInFlight[id] = work;
+            }
+        }
+        return work.WaitAsync(ct);
+    }
+
+    private async Task ExtractPosterAsync(string id)
+    {
+        try
+        {
+            await PosterGate.WaitAsync();
+            try
+            {
+                await ExtractPosterCoreAsync(id);
+            }
+            finally
+            {
+                PosterGate.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[deck] poster frame for {id} failed: {ex.Message}");
+        }
+        finally
+        {
+            lock (_posterLock)
+            {
+                _posterInFlight.Remove(id);
+            }
+        }
+    }
+
+    private async Task ExtractPosterCoreAsync(string id)
+    {
+        if (File.Exists(PosterPath(id)))
         {
             return;
         }
@@ -190,26 +241,78 @@ public sealed class DeckImageStore
         var tmp = Path.Combine(_rootDir, id + "." + Path.GetRandomFileName() + ".tmp.png");
         try
         {
-            await MediaImporter.RunFfmpeg(PosterTimeoutSeconds, ct, ["-y", "-i", source, "-frames:v", "1", tmp]);
-            if (File.Exists(tmp) && !File.Exists(PosterPath(id)))
+            // Bounded so a 4K source never decodes to a full-size bitmap per cache miss; never upscaled.
+            var scale = $"scale='min({PosterMaxEdge},iw)':'min({PosterMaxEdge},ih)':force_original_aspect_ratio=decrease";
+            await MediaImporter.RunFfmpeg(PosterTimeoutSeconds, CancellationToken.None, ["-y", "-i", source, "-frames:v", "1", "-vf", scale, tmp]);
+            if (File.Exists(tmp))
             {
-                File.Move(tmp, PosterPath(id));
+                File.Move(tmp, PosterPath(id), overwrite: true);
+            }
+            else
+            {
+                MarkPosterFailed(id);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             ServiceLog.Warn($"[deck] poster frame for {id} failed: {ex.Message}");
+            MarkPosterFailed(id);
         }
         finally
         {
-            if (File.Exists(tmp))
+            TryDelete(tmp);
+        }
+    }
+
+    private string PosterFailedPath(string id) => Path.Combine(_rootDir, id + ".poster.none");
+
+    private void MarkPosterFailed(string id)
+    {
+        try
+        {
+            File.WriteAllBytes(PosterFailedPath(id), []);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>Drops temp files a crashed write or killed ffmpeg left behind; the age floor keeps a live writer's file safe.</summary>
+    private void SweepStaleTemps()
+    {
+        try
+        {
+            var cutoff = DateTime.UtcNow - StaleTempAge;
+            foreach (var path in Directory.EnumerateFiles(_rootDir, "*.tmp").Concat(Directory.EnumerateFiles(_rootDir, "*.tmp.png")))
             {
-                File.Delete(tmp);
+                if (File.GetLastWriteTimeUtc(path) < cutoff)
+                {
+                    TryDelete(path);
+                }
             }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
         }
     }
 
     private const int PosterTimeoutSeconds = 15;
+    private const int PosterMaxEdge = 256;
+    private static readonly TimeSpan StaleTempAge = TimeSpan.FromHours(1);
+    private static readonly SemaphoreSlim PosterGate = new(2);
+    private readonly object _posterLock = new();
+    private readonly Dictionary<string, Task> _posterInFlight = new(StringComparer.Ordinal);
 
     public static int MaxBytesFor(string ext) => ext is ".png" or ".jpg" ? MaxBytes : MaxAnimatedBytes;
 
@@ -224,6 +327,11 @@ public sealed class DeckImageStore
     };
 
     public static bool IsVideoExtension(string ext) => ext is ".mp4" or ".webm";
+
+    // ISO-BMFF also wraps HEIC, AVIF, M4A and 3GP stills/audio; only video major brands count as MP4.
+    private static bool IsVideoBrand(string brand) =>
+        brand is "isom" or "iso2" or "iso3" or "iso4" or "iso5" or "iso6" or "mp41" or "mp42" or "avc1"
+            or "M4V " or "M4VH" or "M4VP" or "dash" or "mmp4" or "qt  ";
 
     public static string? SniffExtension(byte[] bytes)
     {
@@ -242,7 +350,8 @@ public sealed class DeckImageStore
         {
             return ".gif";
         }
-        if (bytes.Length >= 8 && bytes[4] == 'f' && bytes[5] == 't' && bytes[6] == 'y' && bytes[7] == 'p')
+        if (bytes.Length >= 12 && bytes[4] == 'f' && bytes[5] == 't' && bytes[6] == 'y' && bytes[7] == 'p' &&
+            IsVideoBrand(System.Text.Encoding.ASCII.GetString(bytes, 8, 4)))
         {
             return ".mp4";
         }

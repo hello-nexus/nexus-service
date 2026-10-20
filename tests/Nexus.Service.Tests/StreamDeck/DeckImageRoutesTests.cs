@@ -92,6 +92,27 @@ public sealed class DeckImageRoutesTests : IDisposable
     }
 
     [Fact]
+    public async Task VideoGet_HonorsByteRanges()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        using (client)
+        {
+            var bytes = new byte[1000];
+            "\0\0\0\u0018ftypisom"u8.CopyTo(bytes);
+            var res = await client.PostAsync("/deck/images", FileUpload(bytes, "a.mp4"));
+            var id = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+
+            var request = new HttpRequestMessage(HttpMethod.Get, $"/deck/images/{id}");
+            request.Headers.Range = new RangeHeaderValue(10, 19);
+            var get = await client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.PartialContent, get.StatusCode);
+            Assert.Equal(bytes[10..20], await get.Content.ReadAsByteArrayAsync());
+        }
+    }
+
+    [Fact]
     public async Task Upload_RejectsAStillOverTheStillCapButAllowsAnAnimatedFileOfThatSize()
     {
         var (factory, client) = Boot();

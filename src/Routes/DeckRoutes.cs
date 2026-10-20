@@ -404,6 +404,12 @@ public static class DeckRoutes
                 return Results.Json(ApiResponse.Fail("preset.json is missing name"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
 
+            // Assets first: a preset must never be saved while its images are still missing.
+            foreach (var (assetId, asset) in read.Assets)
+            {
+                images.StoreValidated(assetId, asset.Ext, asset.Bytes);
+            }
+
             var capped = false;
             var nameTaken = false;
             DeckPreset? created = null;
@@ -446,14 +452,10 @@ public static class DeckRoutes
                 return Results.Json(ApiResponse.Fail("preset_name_taken"), AppJsonContext.Default.ApiResponse, statusCode: 409);
             }
 
-            foreach (var (assetId, asset) in read.Assets)
-            {
-                images.StoreValidated(assetId, asset.Ext, asset.Bytes);
-                if (DeckImageStore.IsVideoExtension(asset.Ext))
-                {
-                    await images.EnsurePosterAsync(assetId, ctx.RequestAborted);
-                }
-            }
+            // Posters are best effort and detached from the request token: an abort here must not strand a committed preset.
+            await Task.WhenAll(read.Assets
+                .Where(a => DeckImageStore.IsVideoExtension(a.Value.Ext))
+                .Select(a => images.EnsurePosterAsync(a.Key)));
 
             BroadcastPresetsChanged(hub, store);
             return Results.Json(new DeckPresetResponse { Preset = ToFull(created!) }, AppJsonContext.Default.DeckPresetResponse);

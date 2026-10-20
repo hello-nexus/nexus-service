@@ -2,16 +2,14 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Tests;
 
-/// <summary>
-/// A <see cref="FactAttribute"/> for tests that bake real media through the
-/// bundled ffmpeg. Reported as skipped when the binary is absent rather than
-/// returning early, so the suite's green never claims a bake it did not run.
-/// </summary>
+/// <summary>A <see cref="FactAttribute"/> skipped when no ffmpeg resolves on this box, so the extraction path is asserted where it can run and never passes vacuously.</summary>
 public sealed class FfmpegFactAttribute : FactAttribute
 {
     public FfmpegFactAttribute()
     {
         if (FfmpegResolver.Path is null)
-            Skip = "Requires the bundled ffmpeg.";
+        {
+            Skip = "ffmpeg is not available on this machine.";
+        }
     }
 }

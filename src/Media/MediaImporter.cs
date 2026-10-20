@@ -264,6 +264,8 @@ public static class MediaImporter
             try
             {
                 proc.Kill(entireProcessTree: true);
+                // Windows holds the output file open until the process is gone.
+                proc.WaitForExit(2000);
             }
             catch { }
             // A caller-cancelled run is not a timeout - let the caller's own
