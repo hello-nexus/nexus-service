@@ -59,6 +59,7 @@ public static class PanelPresets
         to.Font = from.Font;
         to.ThemeSyncWithDesktop = from.ThemeSyncWithDesktop;
         to.AccentSyncWithDesktop = from.AccentSyncWithDesktop;
+        to.WidgetSize = from.WidgetSize;
     }
 
     public static PanelPresetsResponse ToResponse(PanelDeviceRecord record) => new()

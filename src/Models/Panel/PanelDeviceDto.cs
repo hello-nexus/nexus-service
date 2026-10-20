@@ -166,6 +166,9 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
     /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
     public string? WidgetSize { get; set; }
+    /// <summary>Profile files only: hash of the monitor fingerprint this record was saved from (see <see cref="Nexus.Service.Persistence.PanelProfileData"/>). Never set on a live record.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? FingerprintKey { get; set; }
     /// <summary>
     /// Last known Corsair Xeneon Edge native display settings (vendor HID),
     /// applied/read through /displays/{id}/xeneon-settings. Display-bound
@@ -262,6 +265,8 @@ public interface IPanelPersonalization
     string? Font { get; set; }
     bool? ThemeSyncWithDesktop { get; set; }
     bool? AccentSyncWithDesktop { get; set; }
+    /// <summary>Travels with <see cref="Layout"/>: the web re-plans and saves both together.</summary>
+    string? WidgetSize { get; set; }
 }
 
 /// <summary>
@@ -306,6 +311,7 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public string? Font { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
+    public string? WidgetSize { get; set; }
 
     IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }

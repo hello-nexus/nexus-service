@@ -109,6 +109,9 @@ public sealed class DisplayTopologyEntryDto
     public bool DdcEnabled { get; set; } = true;
     public string? AssignedPanelDeviceId { get; set; }
     public string? AssignedPanelName { get; set; }
+    /// <summary>Server-side only: lets a promote record the fingerprint at once instead of waiting for a relink scan.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public DisplayFingerprint? Fingerprint { get; set; }
 }
 
 public sealed class DisplayTopologyResponse

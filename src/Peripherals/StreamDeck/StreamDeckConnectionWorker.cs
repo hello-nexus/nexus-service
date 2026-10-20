@@ -295,6 +295,25 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         _strip = new DeckStripRenderer(keyRenderer);
         _hub.OnTopicFirstSubscriber += OnStreamDeckTilesFirstSubscriber;
         _sessionLock?.LockChanged += OnSessionLockChanged;
+        _keyRenderer.PosterReady += OnPosterReady;
+    }
+
+    /// <summary>
+    /// A video icon's poster frame landed after its key was painted with the
+    /// fallback face. The pressed-variant cache was derived from that face, so
+    /// drop it, then repaint every deck (cached faces make that cheap).
+    /// </summary>
+    internal void OnPosterReady(string imageId)
+    {
+        lock (_lock)
+        {
+            _pressedImageCache.Clear();
+            _pressedImageLru.Clear();
+            foreach (var surface in _surfaces.Values.ToList())
+            {
+                PushCurrentView(surface, viewChanged: false);
+            }
+        }
     }
 
     /// <summary>
@@ -3301,6 +3320,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     {
         _hub.OnTopicFirstSubscriber -= OnStreamDeckTilesFirstSubscriber;
         _sessionLock?.LockChanged -= OnSessionLockChanged;
+        _keyRenderer.PosterReady -= OnPosterReady;
         DisconnectAll();
         // A host stop that is not a process exit leaves IFpsProvider holding
         // this source otherwise, so ETW capture would keep running with no
