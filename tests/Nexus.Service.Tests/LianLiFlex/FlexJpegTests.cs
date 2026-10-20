@@ -71,4 +71,50 @@ public class FlexJpegTests
         Assert.Equal(0x22, Sampling(half));
         Assert.Same(half, FlexJpeg.To420(half));
     }
+
+    private static byte[] Sof(byte marker, byte precision, params byte[] samplings)
+    {
+        var body = new System.Collections.Generic.List<byte> { precision, 0x01, 0x90, 0x01, 0x90, (byte)samplings.Length };
+        for (var k = 0; k < samplings.Length; k++)
+        {
+            body.AddRange(new byte[] { (byte)(k + 1), samplings[k], 0 });
+        }
+        var length = body.Count + 2;
+        var bytes = new System.Collections.Generic.List<byte> { 0xFF, 0xD8, 0xFF, marker, (byte)(length >> 8), (byte)length };
+        bytes.AddRange(body);
+        bytes.AddRange(new byte[] { 0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9 });
+        return bytes.ToArray();
+    }
+
+    [Theory]
+    [InlineData(0xC0, 8, 0x22, 0x11, 0x11, true)]
+    [InlineData(0xC0, 8, 0x12, 0x12, 0x12, false)]
+    [InlineData(0xC0, 8, 0x11, 0x11, 0x11, false)]
+    [InlineData(0xC0, 8, 0x22, 0x22, 0x22, false)]
+    [InlineData(0xC0, 8, 0x22, 0x11, 0x12, false)]
+    [InlineData(0xC0, 12, 0x22, 0x11, 0x11, false)]
+    [InlineData(0xC1, 8, 0x22, 0x11, 0x11, false)]
+    [InlineData(0xC2, 8, 0x22, 0x11, 0x11, false)]
+    [InlineData(0xC3, 8, 0x22, 0x11, 0x11, false)]
+    [InlineData(0xC9, 8, 0x22, 0x11, 0x11, false)]
+    [InlineData(0xCF, 8, 0x22, 0x11, 0x11, false)]
+    public void Only_an_8_bit_baseline_jpeg_with_luma_2x2_and_chroma_1x1_passes_through(int marker, int precision, int y, int cb, int cr, bool passes)
+    {
+        Assert.Equal(passes, FlexJpeg.IsBaseline420OrUnknown(Sof((byte)marker, (byte)precision, (byte)y, (byte)cb, (byte)cr)));
+    }
+
+    [Fact]
+    public void A_one_component_jpeg_is_not_a_420_picture()
+    {
+        Assert.False(FlexJpeg.IsBaseline420OrUnknown(Sof(0xC0, 8, 0x11)));
+    }
+
+    [Fact]
+    public void A_converted_picture_is_made_once_per_loaded_frame()
+    {
+        var full = Encode(SkiaSharp.SKJpegEncoderDownsample.Downsample444);
+        var first = FlexJpeg.Prepare(full);
+        Assert.Same(first, FlexJpeg.Prepare(full));
+        Assert.NotSame(first, FlexJpeg.Prepare((byte[])full.Clone()));
+    }
 }
