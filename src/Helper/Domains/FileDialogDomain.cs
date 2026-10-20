@@ -39,6 +39,7 @@ public static class FileDialogCommands
     public const string OpenFolderType = "dialog.openFolder";
     private const int TimeoutMs = 600_000;
     private const int OpenFolderAckMs = 5000;
+    private const int OpenFolderWriteMarginMs = 1000;
 
     /// <summary>
     /// Open a folder in Explorer inside the user session, brought in front
@@ -63,10 +64,12 @@ public static class FileDialogCommands
         // The ack timeout starts only after the pipe write, which a frozen helper with a full pipe never completes.
         try
         {
-            await send.WaitAsync(TimeSpan.FromMilliseconds(OpenFolderAckMs + 1000), ct).ConfigureAwait(false);
+            await send.WaitAsync(TimeSpan.FromMilliseconds(OpenFolderAckMs + OpenFolderWriteMarginMs), ct).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
+            // Reads a later fault (helper killed mid-write) so it is not reported as unobserved.
+            _ = send.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
             ServiceLog.Warn("[helper] dialog.openFolder send did not complete in time");
             return OpenFolderOutcome.TimedOut;
         }
