@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.Hid;
 using Xunit;
@@ -120,7 +121,7 @@ public class GlacialLcdTests
 
     // ── Driver ──
 
-    private static byte[] Frame()
+    private static byte[] Frame(int noiseRows = 0, int seed = 1)
     {
         var frame = new byte[GlacialLcdProtocol.Width * GlacialLcdProtocol.Height * 4];
         for (int i = 0; i < frame.Length; i += 4)
@@ -130,38 +131,61 @@ public class GlacialLcdTests
             frame[i + 2] = 0x20;
             frame[i + 3] = 0xFF;
         }
+        if (noiseRows > 0)
+        {
+            new Random(seed).NextBytes(frame.AsSpan(0, noiseRows * GlacialLcdProtocol.Width * 4));
+        }
         return frame;
     }
+
+    private static bool WaitUntil(Func<bool> condition, int timeoutMs = 20_000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+            Thread.Sleep(10);
+        }
+        return condition();
+    }
+
+    private static GlacialLcdPanelDriver Fast(int chunkMs = 0, int refreshMs = 600_000, int backoffMs = 10, int cancelRetryMs = 600_000) =>
+        new(chunkMs, refreshMs, settleMs: 0, maxSettleMs: 0, backoffBaseMs: backoffMs, cancelRetryMs: cancelRetryMs);
 
     [Fact]
     public void Connect_sends_the_vendor_opening_and_reports_the_jpeg_size()
     {
-        var driver = new GlacialLcdPanelDriver(0);
+        var driver = Fast();
         var hid = new FakeHid();
 
         var geometry = driver.Connect(new FakePipe(), hid);
 
         Assert.Equal((GlacialLcdProtocol.Width, GlacialLcdProtocol.Height), geometry);
         Assert.Equal(new[] { GlacialLcdProtocol.EncodeHello(), GlacialLcdProtocol.EncodeQuery() }, hid.Writes);
-        Assert.Null(driver.Connect(new FakePipe(), null));
+        driver.Disconnect(new FakePipe(), hid);
+        Assert.Null(Fast().Connect(new FakePipe(), null));
     }
 
     [Fact]
     public void A_frame_uploads_as_the_captured_prelude_then_announce_then_4k_chunks_of_one_jpeg()
     {
-        var driver = new GlacialLcdPanelDriver(0);
+        var driver = Fast();
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
-        hid.Writes.Clear();
+        int opening = hid.Writes.Count;
 
         Assert.True(driver.SendFrame(pipe, hid, Frame()));
-        Assert.True(driver.WaitIdle(30_000));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
 
         var prelude = GlacialLcdProtocol.EncodeCustomImagePrelude();
-        Assert.Equal(GlacialLcdProtocol.EncodeQuery(), hid.Writes[0]);
-        Assert.Equal(prelude, hid.Writes.Skip(1).Take(4));
-        var announce = hid.Writes[5];
+        var writes = hid.Writes.Skip(opening).ToList();
+        Assert.Equal(GlacialLcdProtocol.EncodeQuery(), writes[0]);
+        Assert.Equal(prelude, writes.Skip(1).Take(4));
+        var announce = writes[5];
         int size = announce[3] | (announce[4] << 8) | (announce[5] << 16);
         Assert.Equal(Report("EC 7F 02").Take(3), announce.Take(3));
         var jpeg = pipe.Writes.SelectMany(w => w).ToArray();
@@ -170,68 +194,167 @@ public class GlacialLcdTests
         Assert.Equal(new byte[] { 0xFF, 0xD9 }, jpeg.TakeLast(2));
         Assert.All(pipe.Writes.SkipLast(1), w => Assert.Equal(GlacialLcdProtocol.ChunkBytes, w.Length));
         Assert.InRange(pipe.Writes[^1].Length, 1, GlacialLcdProtocol.ChunkBytes);
+        driver.Disconnect(pipe, hid);
     }
 
     [Fact]
-    public void A_second_frame_inside_the_refresh_interval_is_not_uploaded()
+    public void A_frame_arriving_inside_the_cooldown_is_flushed_when_it_ends()
     {
-        var driver = new GlacialLcdPanelDriver(0, 60_000);
+        var driver = Fast(refreshMs: 700);
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
-        Assert.True(driver.WaitIdle(30_000));
-        int chunks = pipe.Writes.Count;
-        var other = Frame();
-        other[100] ^= 0xFF;
-        Assert.True(driver.SendFrame(pipe, hid, other));
-        Assert.True(driver.WaitIdle(30_000));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 8));
+        Thread.Sleep(250);
+        Assert.Equal(1, driver.UploadsCompleted);
 
-        Assert.Equal(chunks, pipe.Writes.Count);
+        // No further SendFrame: the driver flushes the pending frame by itself.
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
+        driver.Disconnect(pipe, hid);
     }
 
     [Fact]
-    public void An_identical_frame_after_the_interval_is_not_uploaded_again()
+    public void A_frame_is_held_until_the_content_settles()
     {
-        var driver = new GlacialLcdPanelDriver(0, 0);
+        var driver = new GlacialLcdPanelDriver(0, 600_000, settleMs: 900, maxSettleMs: 600_000, backoffBaseMs: 10, cancelRetryMs: 1);
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
-        Assert.True(driver.WaitIdle(30_000));
-        int chunks = pipe.Writes.Count;
-        driver.SendFrame(pipe, hid, Frame());
-        Assert.True(driver.WaitIdle(30_000));
-
-        Assert.Equal(chunks, pipe.Writes.Count);
+        Thread.Sleep(400);
+        Assert.Equal(0, driver.UploadAttempts);
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe, hid);
     }
 
     [Fact]
-    public void A_failed_chunk_write_lets_the_next_frame_retry()
+    public void Content_that_never_settles_is_uploaded_after_the_settle_ceiling()
     {
-        var driver = new GlacialLcdPanelDriver(0, 60_000);
+        var driver = new GlacialLcdPanelDriver(0, 600_000, settleMs: 600_000, maxSettleMs: 500, backoffBaseMs: 10, cancelRetryMs: 1);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        int seed = 0;
+        Assert.True(WaitUntil(() =>
+        {
+            driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: ++seed));
+            return driver.UploadsCompleted == 1;
+        }));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_picture_the_panel_already_holds_is_not_uploaded_again_after_a_reconnect()
+    {
+        var memory = new FakeMemory();
+        var first = Fast();
+        first.BindMemory(memory);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        first.Connect(pipe, hid);
+        first.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => first.UploadsCompleted == 1));
+        first.Disconnect(pipe, hid);
+        Assert.Single(memory.Hashes);
+
+        var second = Fast();
+        second.BindMemory(memory);
+        var pipe2 = new FakePipe();
+        var hid2 = new FakeHid();
+        second.Connect(pipe2, hid2);
+        second.SendFrame(pipe2, hid2, Frame());
+        Thread.Sleep(600);
+
+        Assert.Equal(0, second.UploadAttempts);
+        Assert.Empty(pipe2.Writes);
+        second.Disconnect(pipe2, hid2);
+    }
+
+    [Fact]
+    public void A_failed_upload_backs_off_instead_of_retrying_every_frame()
+    {
+        var driver = Fast(backoffMs: 800);
         var pipe = new FakePipe { FailWrites = true };
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
-        Assert.True(driver.WaitIdle(30_000));
-        pipe.FailWrites = false;
-        driver.SendFrame(pipe, hid, Frame());
-        Assert.True(driver.WaitIdle(30_000));
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 1));
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 2));
+        Thread.Sleep(400);
+        Assert.Equal(1, driver.UploadAttempts);
 
-        Assert.NotEmpty(pipe.Writes);
+        pipe.FailWrites = false;
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe, hid);
     }
 
     [Fact]
-    public void Brightness_follows_the_query_then_settings_sequence_and_keeps_the_panel_state()
+    public void Disconnect_during_an_upload_returns_promptly()
     {
-        var driver = new GlacialLcdPanelDriver(0);
+        var driver = Fast(chunkMs: 600_000);
+        var pipe = new FakePipe();
         var hid = new FakeHid();
-        hid.Replies.Add(Report("EC 51"));
-        hid.Replies.Add(Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32 14"));
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
+        Assert.True(WaitUntil(() => pipe.Writes.Count >= 1));
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        driver.Disconnect(pipe, hid);
+
+        Assert.True(watch.ElapsedMilliseconds < 2000);
+        Assert.False(driver.IsUploading);
+    }
+
+    [Fact]
+    public void Brightness_during_an_upload_waits_for_it_and_then_applies()
+    {
+        var driver = Fast(chunkMs: 40);
+        var pipe = new FakePipe();
+        var hid = new FakeHid { StateReply = Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32 14") };
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 60));
+        Assert.True(WaitUntil(() => driver.IsUploading));
+        int before = hid.Writes.Count;
+
+        Assert.True(driver.SetBrightness(pipe, hid, 70));
+        Assert.Equal(before, hid.Writes.Count);
+
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(70, 0x14, true)))));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Brightness_zero_cancels_the_upload_and_applies_at_once()
+    {
+        var driver = Fast(chunkMs: 600_000, cancelRetryMs: 600_000);
+        var pipe = new FakePipe();
+        var hid = new FakeHid { StateReply = Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32") };
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
+        Assert.True(WaitUntil(() => pipe.Writes.Count >= 1));
+
+        Assert.True(driver.SetBrightness(pipe, hid, 0));
+
+        Assert.True(WaitUntil(() => !driver.IsUploading, 2000));
+        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, 0x14, false))), 2000));
+        Assert.Equal(0, driver.UploadsCompleted);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Brightness_uses_only_a_fresh_state_reply()
+    {
+        var driver = Fast();
+        var hid = new FakeHid { StateReply = Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32 14") };
+        // An older reply left in the queue must not be mistaken for the answer.
+        hid.Input.Enqueue(Report("EC 5C 00 00 00 0A 00 00 00 0A 11 00 00 00 00 0A"));
 
         Assert.True(driver.SetBrightness(new FakePipe(), hid, 70));
 
@@ -241,14 +364,15 @@ public class GlacialLcdTests
     }
 
     [Fact]
-    public void Brightness_without_a_state_reply_still_writes_settings()
+    public void Brightness_without_a_state_reply_writes_no_settings()
     {
-        var driver = new GlacialLcdPanelDriver(0);
+        var driver = Fast();
         var hid = new FakeHid();
+        hid.Input.Enqueue(Report("EC 5C 00 00 00 0A 00 00 00 0A 11 00 00 00 00 0A"));
 
-        Assert.True(driver.SetBrightness(new FakePipe(), hid, 30));
+        Assert.False(driver.SetBrightness(new FakePipe(), hid, 30));
 
-        Assert.Equal(GlacialLcdProtocol.EncodeSettings(30, GlacialLcdProtocol.ModeAnimatedAsset, false), hid.Writes[1]);
+        Assert.Equal(new[] { GlacialLcdProtocol.EncodeQuery() }, hid.Writes);
     }
 
     [Fact]
@@ -262,11 +386,28 @@ public class GlacialLcdTests
         Assert.True(driver.NeedsHidChannel);
         Assert.True(driver.SupportsBrightness);
         Assert.Equal(0, ((IBulkPanelDriver)driver).KeepaliveMs);
+        Assert.Equal(30 * 60 * 1000, GlacialLcdPanelDriver.DefaultRefreshIntervalMs);
+    }
+
+    private sealed class FakeMemory : ILcdUploadMemory
+    {
+        public Dictionary<string, string> Hashes { get; } = new();
+
+        public string? Load(string key) => Hashes.TryGetValue(key, out var hash) ? hash : null;
+
+        public void Save(string key, string hash) => Hashes[key] = hash;
     }
 
     private sealed class FakePipe : IBulkUsbPipe
     {
-        public List<byte[]> Writes { get; } = new();
+        private readonly object _lock = new();
+        private readonly List<byte[]> _writes = new();
+
+        public List<byte[]> Writes
+        {
+            get { lock (_lock) { return _writes.ToList(); } }
+        }
+
         public bool FailWrites { get; set; }
 
         public bool Write(ReadOnlySpan<byte> data)
@@ -275,7 +416,10 @@ public class GlacialLcdTests
             {
                 return false;
             }
-            Writes.Add(data.ToArray());
+            lock (_lock)
+            {
+                _writes.Add(data.ToArray());
+            }
             return true;
         }
 
@@ -286,10 +430,19 @@ public class GlacialLcdTests
 
     private sealed class FakeHid : IHidDevice
     {
-        private int _replyIndex;
+        private readonly object _lock = new();
+        private readonly List<byte[]> _writes = new();
 
-        public List<byte[]> Writes { get; } = new();
-        public List<byte[]> Replies { get; } = new();
+        public List<byte[]> Writes
+        {
+            get { lock (_lock) { return new List<byte[]>(_writes); } }
+        }
+
+        /// <summary>Input reports waiting to be read.</summary>
+        public Queue<byte[]> Input { get; } = new();
+
+        /// <summary>Queued as input each time the state query is written; null models a panel that stays silent.</summary>
+        public byte[]? StateReply { get; set; }
 
         public int VendorId => 0x0B05;
         public int ProductId => GlacialLcdProtocol.ProductId;
@@ -300,7 +453,14 @@ public class GlacialLcdTests
 
         public bool Write(ReadOnlySpan<byte> report)
         {
-            Writes.Add(report.ToArray());
+            lock (_lock)
+            {
+                _writes.Add(report.ToArray());
+                if (report[1] == 0xDC && StateReply is { } reply)
+                {
+                    Input.Enqueue(reply);
+                }
+            }
             return true;
         }
 
@@ -311,13 +471,16 @@ public class GlacialLcdTests
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
-            if (_replyIndex >= Replies.Count)
+            lock (_lock)
             {
-                return 0;
+                if (Input.Count == 0)
+                {
+                    return 0;
+                }
+                var reply = Input.Dequeue();
+                reply.CopyTo(buffer);
+                return reply.Length;
             }
-            var reply = Replies[_replyIndex++];
-            reply.CopyTo(buffer);
-            return reply.Length;
         }
 
         public void Dispose() { }

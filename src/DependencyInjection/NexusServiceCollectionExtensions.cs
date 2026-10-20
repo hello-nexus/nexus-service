@@ -1384,6 +1384,11 @@ public static class NexusServiceCollectionExtensions
                 {
                     BindScreen88Portrait(sp, screen88);
                 }
+                if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver glacial)
+                {
+                    glacial.BindMemory(new Nexus.Service.Peripherals.BulkPanels.ConfigStoreLcdUploadMemory(
+                        sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+                }
                 return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
                     sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                     sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),

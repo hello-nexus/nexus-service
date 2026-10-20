@@ -4,8 +4,8 @@ using System.Text;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
-/// The LCD on the ASUS ROG Crosshair X870E Glacial motherboard (USB 0B05:1D93), decoded from
-/// MB Manager traffic. Commands are 65-byte HID output reports, report id 0xEC; custom
+/// The LCD on the ASUS ROG Crosshair X870E Glacial motherboard (USB VID/PID in <see cref="ProductId"/>), decoded from
+/// MB Manager traffic. Commands are fixed-size HID output reports (<see cref="ReportBytes"/>) led by <see cref="ReportId"/>; custom
 /// pictures ride a vendor bulk interface as one baseline JPEG in fixed-size transfers.
 ///
 /// Device replies are HID input reports that echo the opcode; the 0x5C state reply is the
@@ -42,10 +42,10 @@ public static class GlacialLcdProtocol
     public const byte ModeAnimatedAsset = 0x14;
     public const byte ModeHardwareMonitor = 0x21;
 
-    /// <summary>The hardware monitor shows one to three widgets.</summary>
+    /// <summary>Most widgets the hardware monitor shows at once.</summary>
     public const int MaxMonitorSlots = 3;
 
-    /// <summary>Label field of a slot report: bytes 3 to 20. The value text starts at byte 21.</summary>
+    /// <summary>Label field of a slot report, from the byte after the slot index up to <see cref="SlotValueOffset"/>.</summary>
     public const int SlotLabelBytes = 18;
     public const int SlotValueOffset = 21;
 
@@ -116,8 +116,8 @@ public static class GlacialLcdProtocol
 
     /// <summary>
     /// One monitor widget: slot index, label and value as UTF-8, each NUL padded in a fixed
-    /// field. The app resends every slot about every 5 s while the mode is active, and writes
-    /// temperatures as the number, a dot, one decimal, then the degree Celsius sign (U+2103).
+    /// field. The app resends every slot on a short timer while the mode is active, and writes
+    /// temperatures as the number, a dot, one decimal, then the degree Celsius sign.
     /// </summary>
     public static byte[] EncodeSlot(int slot, string label, string value)
     {
