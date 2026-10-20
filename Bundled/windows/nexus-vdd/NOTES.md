@@ -13,7 +13,7 @@ used under the Microsoft Public License (MS-PL).
 | --- | --- |
 | `Driver.cpp` / `Driver.h` | The driver. One monitor with an EDID ("NXS0001", native timing = requested size, physical size at 96 dpi). Frames go to `Global\NexusVirtualDisplayFrame` + `Global\NexusVirtualDisplayFrameReady`. |
 | `Host.cpp` | `NexusVirtualDisplayHost.exe`: creates the software device (`SWD\NexusVirtualDisplay\NexusVirtualDisplay`) and removes it when its parent exits or the stop event is set. Native because `SwDeviceCreate` returns `ERROR_MOD_NOT_FOUND` when called from .NET (both .NET Framework and .NET 10); the same call from C++ succeeds. |
-| `NexusVirtualDisplay.inf` | Hardware id `NexusVirtualDisplay`, `IddCx0102`, `IndirectKmd` upper filter. |
+| `NexusVirtualDisplay.inf` | Hardware id `NexusVirtualDisplay`, `IddCx0102`, `IndirectKmd` upper filter. Windows 11 (`NTamd64.10.0...22000`) includes `WudfRd.inf` for the reflector; Windows 10 ships no such INF, so the undecorated `NTamd64` section adds the inbox `WUDFRd.sys` service itself (never shipped). |
 | `build.ps1` | Builds with the VS Build Tools and the WDK from the `Microsoft.Windows.WDK.x64` NuGet package (downloaded into `build\wdk`, no WDK install), stamps the INF with the numeric `VERSION`, runs Inf2Cat, and with `-Sign -DlibPath <Azure.CodeSigning.Dlib.dll>` signs the DLL, the host and then the catalog. Output: `Bundled\win-x64\vdd`. The release workflow runs it before the publish. |
 
 The service writes the monitor size to `HKLM\SOFTWARE\Nexus\VirtualDisplay` (`Width`, `Height`)
