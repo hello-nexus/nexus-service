@@ -175,6 +175,26 @@ public sealed record JpegPanelModel(
     { Handshake = new AsRockLcdHandshake() };
 
     /// <summary>
+    /// ASUS ROG Strix SLC IV 360 ARGB LCD AIO. Measured from a customer's USB capture of
+    /// Armoury Crate: 720x720 baseline JPEG, 4:2:0, about 22 frames a second, chunked as the
+    /// ASRock panel is (see <see cref="AsusSlc4LcdHandshake"/> for the control channel).
+    /// Pump, fans and ARGB were not captured and are not driven.
+    /// </summary>
+    public static readonly JpegPanelModel AsusSlc4Lcd = new(
+        HandlerId: "asus-slc4-lcd",
+        Name: "ASUS ROG Strix SLC IV LCD",
+        VendorId: 0x0B05,
+        ProductIds: new[] { 0x1DE6 },
+        Width: 720,
+        Height: 720,
+        Circular: false,
+        ReportLength: 1025,
+        HeaderStyle: JpegPanelHeaderStyle.AsusFramed,
+        Selector: 0x5C,
+        Surface: Models.Panel.PanelSurfaces.LcdSquare)
+    { Fps = 22, Handshake = new AsusSlc4LcdHandshake() };
+
+    /// <summary>
     /// Wired UNI FAN TL LCD: one HID device per fan screen, so it stays out of <see cref="All"/>
     /// and <see cref="TlLcdPanels"/> copies this row per screen with its own handshake. Its handler
     /// id names the screens' panel family; the screens follow the Uni Fan TL's switch.
@@ -201,6 +221,7 @@ public sealed record JpegPanelModel(
         CorsairCapellix,
         IdCoolingFx,
         AsRockLcd,
+        AsusSlc4Lcd,
     };
 
     /// <summary>
