@@ -111,6 +111,9 @@ licenses. Their respective license texts ship alongside the bundled binaries.
   bundled `dfu-util/` directory)
 - **Communication boundary**: spawned as a child process by the firmware
   flasher to write device firmware in DFU mode; not linked against
+- **Linux binary**: statically links libusb 1.0.27 (LGPL-2.1, see
+  `COPYING.libusb`) and musl 1.2.5 (MIT, see `COPYING.musl`); build details in
+  `Bundled/linux-x64/dfu-util/README.md`
 
 ## Android platform-tools (adb)
 

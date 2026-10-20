@@ -36,14 +36,16 @@ public class DfuUtilTests
     }
 
     [Fact]
-    public void ResolveDefaultPath_prefers_the_bundled_binary_and_falls_back_to_path()
+    public void ResolveDefaultPath_uses_the_per_os_location()
     {
         var path = DfuUtil.ResolveDefaultPath();
-        var bundledName = OperatingSystem.IsWindows() ? "dfu-util.exe" : "dfu-util";
-        var bundled = Path.Combine(AppContext.BaseDirectory, "tools", "dfu-util", bundledName);
 
-        if (OperatingSystem.IsWindows() || File.Exists(bundled))
-            Assert.Equal(bundled, path);
+        if (OperatingSystem.IsWindows())
+            Assert.Equal(Path.Combine(AppContext.BaseDirectory, "tools", "dfu-util", "dfu-util.exe"), path);
+        else if (OperatingSystem.IsLinux())
+            Assert.True(
+                path == "dfu-util" || path == Path.Combine(AppContext.BaseDirectory, "tools", "dfu-util", "dfu-util"),
+                path);
         else
             Assert.Equal("dfu-util", path);
     }

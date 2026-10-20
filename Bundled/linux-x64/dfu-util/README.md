@@ -1,12 +1,14 @@
 # dfu-util (linux-x64)
 
 Static musl build of dfu-util 0.11, statically linked against libusb 1.0.27
-(udev backend disabled, so there is no libudev dependency). Used by the
+(udev backend disabled, so there is no libudev dependency) and musl 1.2.5
+(the libc of alpine:3.20, package musl 1.2.5-r3). Used by the
 firmware flasher; `ldd` reports "not a dynamic executable".
 
 | Input | URL | SHA-256 |
 | --- | --- | --- |
 | dfu-util-0.11.tar.gz | https://dfu-util.sourceforge.net/releases/dfu-util-0.11.tar.gz | b4b53ba21a82ef7e3d4c47df2952adf5fa494f499b6b0b57c58c5d04ae8ff19e |
+| musl-1.2.5.tar.gz (COPYRIGHT only) | https://musl.libc.org/releases/musl-1.2.5.tar.gz | a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4 |
 | libusb-1.0.27.tar.bz2 | https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.tar.bz2 | ffaa41d741a8a3bee244ac8e54a72ea05bf2879663c098c82fc5757853441575 |
 
 The dfu-util tarball matches the maintainer-published MD5
@@ -29,5 +31,6 @@ make LDFLAGS=-static
 strip src/dfu-util
 ```
 
-COPYING is dfu-util's GPL-2.0; COPYING.libusb is libusb's LGPL-2.1. Rebuild
+COPYING is dfu-util's GPL-2.0; COPYING.libusb is libusb's LGPL-2.1;
+COPYING.musl is musl's MIT notice. Rebuild
 from the sources above to relink against a modified libusb.
