@@ -264,4 +264,54 @@ public class FlexRiskFixTests
         hub.SetDuty(Mac, null);
         Assert.Null(hub.PendingDuty(Mac));
     }
+
+    [Fact]
+    public void Releasing_everything_also_covers_a_receiver_that_is_away_so_it_returns_on_the_header()
+    {
+        var (hub, tx, _, discovery) = Hub();
+        hub.SetDuty(Mac, 60);
+        discovery.Ports.Clear();
+        hub.Refresh();
+        Assert.Empty(hub.Units);
+
+        hub.ReleaseAllDuty();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        hub.Refresh();
+        hub.Tick();
+
+        Assert.Equal(FlexProtocol.BuildFollowMotherboard(), tx.Of(FlexProtocol.CmdSetPwm).Last());
+    }
+
+    [Fact]
+    public void Repeating_the_same_request_does_not_restart_the_pending_window()
+    {
+        var tx = new FakeFlexTransport(Mac, pwm: FlexProtocol.PwmFollowMotherboard);
+        var discovery = new FakeFlexDiscovery();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        var clock = new FlexClock();
+        var hub = new FlexHub(discovery, _ => tx, clock.Func, () => new DateTime(2026, 10, 19, 12, 0, 0), _ => { });
+        hub.Refresh();
+        hub.SetDuty(Mac, 40);
+        for (var i = 0; i < 5; i++)
+        {
+            clock.Now += 700;
+            hub.SetDuty(Mac, 40);
+        }
+        Assert.Null(hub.PendingDuty(Mac));
+        hub.SetDuty(Mac, 50);
+        Assert.NotNull(hub.PendingDuty(Mac));
+    }
+
+    [Fact]
+    public void The_pending_duty_is_the_percent_the_receiver_will_echo_not_the_raw_request()
+    {
+        var tx = new FakeFlexTransport(Mac, pwm: FlexProtocol.PwmFollowMotherboard);
+        var discovery = new FakeFlexDiscovery();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        var hub = new FlexHub(discovery, _ => tx, new FlexClock().Func, () => new DateTime(2026, 10, 19, 12, 0, 0), _ => { });
+        hub.Refresh();
+        hub.SetDuty(Mac, 5);
+        Assert.Equal(FlexProtocol.DecodeDuty(FlexProtocol.EncodeDuty(FlexFamily.TlFlex, 5)), hub.PendingDuty(Mac));
+        Assert.True(hub.PendingDuty(Mac) > 5);
+    }
 }

@@ -119,6 +119,46 @@ public class FlexCanvasLayoutTests
         }
     }
 
+    [Theory]
+    [InlineData(3, 3, 5)]
+    [InlineData(1, 9, 5)]
+    [InlineData(2, 2, 14)]
+    [InlineData(3, 3, 25)]
+    public void The_strip_wraps_inside_the_canvas_and_the_grid_never_reaches_it(int units, int fansPerUnit, int otherDevices)
+    {
+        var discovery = new FakeFlexDiscovery();
+        for (var u = 0; u < units; u++)
+        {
+            discovery.Ports.Add(FakeFlexDiscovery.Tl("tl" + u));
+        }
+        var hub = new FlexHub(discovery, p => new FakeFlexTransport("6D1007F517E" + int.Parse(p.ReceiverPath[2..]).ToString("X"), fans: fansPerUnit), new FlexClock().Func, null, _ => { });
+        hub.Refresh();
+        var provider = new FlexLightingDeviceProvider(hub, new InMemoryConfigStore(), new Np50IdentifyTracker());
+        var settings = new NexusSettings();
+        var blocks = provider.UnitBlocks(settings);
+        var band = provider.BandHeight(settings);
+        Assert.Equal(units, blocks.Count);
+        Assert.All(blocks.Values, b =>
+        {
+            Assert.True(b.x >= 0 && b.x + b.w <= 1000f);
+            Assert.True(b.y >= 600f - band && b.y + b.h <= 600f);
+        });
+        var list = blocks.Values.ToList();
+        for (var i = 0; i < list.Count; i++)
+        {
+            for (var j = i + 1; j < list.Count; j++)
+            {
+                var a = list[i];
+                var b = list[j];
+                Assert.False(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h);
+            }
+        }
+
+        var devices = Enumerable.Range(0, otherDevices).Select(n => new LightingDevice { Id = "openrgb-l-" + n }).ToList();
+        CompositeLightingDeviceProvider.ApplyDefaultLayouts(devices, settings, band);
+        Assert.All(devices, d => Assert.True(d.CanvasY + d.CanvasH <= 600f - band + 0.01f));
+    }
+
     private static (float, float, float, float) Rect(LightingDevice d) => (d.CanvasX, d.CanvasY, d.CanvasW, d.CanvasH);
 }
 

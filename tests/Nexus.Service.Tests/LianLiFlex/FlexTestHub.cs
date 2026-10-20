@@ -20,9 +20,9 @@ internal sealed class FakeFlexTransport : IFlexReceiverTransport
     /// <summary>A 0x13 command changes the duty the info echo reports, as the receiver does.</summary>
     public bool EchoPwm { get; set; }
 
-    public FakeFlexTransport(string mac = "6D1007F517E1", int fansType = 0x33, byte rxType = FlexProtocol.UnboundRxType, int rpm = 661, byte pwm = 0)
+    public FakeFlexTransport(string mac = "6D1007F517E1", int fansType = 0x33, byte rxType = FlexProtocol.UnboundRxType, int rpm = 661, byte pwm = 0, int fans = 1)
     {
-        Info = InfoFrame(mac, fansType, rxType, rpm, pwm);
+        Info = InfoFrame(mac, fansType, rxType, rpm, pwm, fans);
     }
 
     public bool IsOpen => true;
@@ -77,14 +77,14 @@ internal sealed class FakeFlexTransport : IFlexReceiverTransport
 
     public IEnumerable<byte[]> Of(byte cmd) => Written.Where(f => f[0] == cmd);
 
-    public static byte[] InfoFrame(string mac, int fansType, byte rxType, int rpm, byte pwm)
+    public static byte[] InfoFrame(string mac, int fansType, byte rxType, int rpm, byte pwm, int fans = 1)
     {
         var f = new byte[64];
         f[0] = FlexProtocol.CmdGetInfo;
         Convert.FromHexString(mac).CopyTo(f, 1);
         f[13] = 8;
         f[14] = rxType;
-        f[20] = 1;
+        f[20] = (byte)fans;
         f[25] = (byte)fansType;
         f[29] = (byte)(0x20 | ((rpm >> 8) & 0xF));
         f[30] = (byte)rpm;

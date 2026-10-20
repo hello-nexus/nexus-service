@@ -410,16 +410,24 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     }
 
     private const float BlockX = 40f;
-    private const float BlockY = 460f;
     private const float FanSize = 110f;
     private const float BlockGap = 30f;
+    private const float RowGap = 10f;
+    private const float CanvasWidth = 1000f;
+    private const float CanvasHeight = 600f;
 
     /// <summary>
     /// Where a unit's zones sit on the canvas when the user has not moved them: every zone of a unit
     /// shares one block (the fan face, one square per fan), and the blocks follow each other left to
-    /// right in light-sequence order. The zones' own LED positions place them inside the block.
+    /// right in light-sequence order, wrapping to a new row at the canvas edge. The zones' own LED
+    /// positions place them inside the block.
     /// </summary>
-    internal Dictionary<string, (float x, float y, float w, float h)> UnitBlocks(NexusSettings settings)
+    internal Dictionary<string, (float x, float y, float w, float h)> UnitBlocks(NexusSettings settings) => Layout(settings).Blocks;
+
+    /// <summary>Height of the band along the bottom of the canvas the Flex fans take; the default grid keeps out of it.</summary>
+    internal float BandHeight(NexusSettings settings) => Layout(settings).Band;
+
+    private (Dictionary<string, (float x, float y, float w, float h)> Blocks, float Band) Layout(NexusSettings settings)
     {
         var order = _hub.Units.Where(u => u.Controllable)
             .OrderBy(u => settings.Devices.FlexUnits.TryGetValue(u.Mac, out var look) ? look.SortIndex : 0)
@@ -430,21 +438,39 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         {
             foreach (var unit in order)
             {
-                blocks[unit.Mac] = (0f, 0f, 1000f, 600f);
+                blocks[unit.Mac] = (0f, 0f, CanvasWidth, CanvasHeight);
             }
-            return blocks;
+            return (blocks, 0f);
         }
+        var usable = CanvasWidth - (2f * BlockX);
+        var placed = new List<(string Mac, float X, int Row, float W)>();
         var x = BlockX;
+        var row = 0;
         foreach (var unit in order)
         {
-            var width = FanSize * Math.Max(1, unit.Fans);
-            blocks[unit.Mac] = (x, BlockY, width, FanSize);
+            var width = Math.Min(FanSize * Math.Max(1, unit.Fans), usable);
+            if (x > BlockX && x + width > BlockX + usable)
+            {
+                x = BlockX;
+                row++;
+            }
+            placed.Add((unit.Mac, x, row, width));
             x += width + BlockGap;
         }
-        return blocks;
+        if (placed.Count == 0)
+        {
+            return (blocks, 0f);
+        }
+        var band = ((row + 1) * (FanSize + RowGap)) + RowGap;
+        var top = CanvasHeight - band;
+        foreach (var (mac, bx, brow, bw) in placed)
+        {
+            blocks[mac] = (bx, top + RowGap + (brow * (FanSize + RowGap)), bw, FanSize);
+        }
+        return (blocks, band);
     }
 
     private static (float x, float y, float w, float h) BlockOf(
         Dictionary<string, (float x, float y, float w, float h)> blocks, DeviceStructure structure) =>
-        blocks.TryGetValue(MacFromDeviceId(structure.DeviceId), out var block) ? block : (BlockX, BlockY, FanSize, FanSize);
+        blocks.TryGetValue(MacFromDeviceId(structure.DeviceId), out var block) ? block : (BlockX, CanvasHeight - FanSize - RowGap, FanSize, FanSize);
 }

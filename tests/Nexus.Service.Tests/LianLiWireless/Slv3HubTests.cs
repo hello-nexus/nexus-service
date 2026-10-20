@@ -296,6 +296,33 @@ public partial class Slv3HubTests
         Assert.True(hub.State.Fans[0].BoundToUs);
     }
 
+    [Theory]
+    [InlineData(Slv3Hub.WiredReleaseMaxSends - 2, false)]
+    [InlineData(Slv3Hub.WiredReleaseMaxSends - 1, true)]
+    public void A_wired_release_sends_exactly_the_cap_of_frames_the_first_one_included(int ticksAway, bool stillBound)
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        var fan = new SimulatedFan { Mac = FanMac };
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        hub.SetLockBoundDevices(false);
+        net.Fans.Clear();
+        Assert.True(hub.Unbind(mac, out _));
+        for (var i = 0; i < ticksAway; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.Equal(stillBound, hub.State.Fans[0].BoundToUs);
+    }
+
     [Fact]
     public void Bind_converges_on_the_first_tick_via_the_immediate_frame()
     {

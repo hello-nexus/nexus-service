@@ -456,8 +456,25 @@ public sealed class FlexHub : IDisposable
         _wantedDuty[mac.ToUpperInvariant()] = wanted;
         if (LinkOf(mac) is { } link)
         {
+            // The pending window starts when the request changes, not on every repeat of it.
+            if (link.DesiredDuty != wanted)
+            {
+                link.DesiredDutyAtMs = _nowMs();
+            }
             link.DesiredDuty = wanted;
-            link.DesiredDutyAtMs = _nowMs();
+        }
+    }
+
+    /// <summary>Hands every receiver, attached or away, back to the motherboard header, so none comes back at a stale duty.</summary>
+    public void ReleaseAllDuty()
+    {
+        foreach (var key in _wantedDuty.Keys)
+        {
+            _wantedDuty[key] = -1;
+        }
+        foreach (var unit in Units)
+        {
+            SetDuty(unit.Mac, null);
         }
     }
 
@@ -481,7 +498,8 @@ public sealed class FlexHub : IDisposable
         }
         var echo = info.Pwm.Length > 0 ? info.Pwm[0] : -1;
         var expected = link.DesiredDuty == -1 ? FlexProtocol.PwmFollowMotherboard : FlexProtocol.EncodeDuty(link.Port.Family, link.DesiredDuty);
-        return echo == expected ? null : link.DesiredDuty;
+        // The percent the receiver will echo (it has a floor), so the card does not jump when the echo arrives.
+        return echo == expected ? null : (link.DesiredDuty == -1 ? -1 : FlexProtocol.DecodeDuty(expected));
     }
 
     /// <summary>Hands the receiver's lighting to the motherboard ARGB input (true) or back to USB. Never sent to an RF-bound receiver.</summary>

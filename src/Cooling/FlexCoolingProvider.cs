@@ -104,10 +104,7 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
 
     public void ReleaseAll()
     {
-        foreach (var unit in _hub.Units)
-        {
-            _hub.SetDuty(unit.Mac, null);
-        }
+        _hub.ReleaseAllDuty();
     }
 
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(

@@ -94,7 +94,7 @@ public sealed class Slv3Hub : IDisposable
         return true;
     }
 
-    /// <summary>Polls a release of a wired fan is repeated before it is given up.</summary>
+    /// <summary>Unbind frames, the first one included, a release of a wired fan sends before it is given up.</summary>
     internal const int WiredReleaseMaxSends = 20;
 
     private bool IsWiredOwned(string macHex) => !string.IsNullOrEmpty(macHex) && WiredOwned?.Invoke(macHex) == true;
@@ -2460,7 +2460,7 @@ public sealed class Slv3Hub : IDisposable
             else
             {
                 ServiceLog.Info($"[lianli-wireless] unbind requested for {key}");
-                _intents[key] = new BindIntent(0) { Unbinding = true };
+                _intents[key] = new BindIntent(0) { Unbinding = true, Sends = IsWiredOwned(macHex) ? 1 : 0 };
                 SendBindFrameLocked(existing, 0, unbind: true);
             }
         }

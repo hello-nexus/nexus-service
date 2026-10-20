@@ -419,7 +419,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         }
 
         // Must run AFTER the CNVS / NP50 / MiniHub merges so newly-added hub devices also pick up a default slot.
-        ApplyDefaultLayouts(rgb.Devices, settings);
+        ApplyDefaultLayouts(rgb.Devices, settings, _flex.BandHeight(settings));
 
         // Mirror into engine frames so running effects sample from the same rectangles. Without this, RgbBridge's
         // existing-frame-wins rule would pin pre-grid coordinates in memory. O(N²), trivial for typical N (<30).
@@ -442,7 +442,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     /// persisted devices too so the slot for any one device is stable across calls (resetting one card doesn't
     /// shuffle the others).
     /// </summary>
-    internal static void ApplyDefaultLayouts(List<LightingDevice> devices, NexusSettings settings)
+    internal static void ApplyDefaultLayouts(List<LightingDevice> devices, NexusSettings settings, float reserveBottom = 0f)
     {
         var layouts = settings.Lighting.DeviceLayouts;
         // The Flex provider places its own fans (one block per fan, in light-sequence order) for both its
@@ -455,7 +455,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             if (IsFlexId(dev.Id)) continue;
             var index = slot++;
             if (layouts.ContainsKey(dev.Id)) continue;
-            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(index, total);
+            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(index, total, reserveBottom);
             dev.CanvasX = x; dev.CanvasY = y; dev.CanvasW = w; dev.CanvasH = h;
         }
     }
