@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -121,6 +120,36 @@ public sealed class ObsProviderStreamTimerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UnobservedRestartWithLongerObsDuration_Reseeds()
+    {
+        _server.StreamActive = true;
+        _server.StreamDurationMs = 30_000;
+        await _provider.GetStatusAsync(default);
+
+        _time.AdvanceMs(120_000);
+        _server.StreamDurationMs = 60_000;
+        var status = await _provider.GetStatusAsync(default);
+
+        Assert.Equal(60_000, status.StreamingDurationMs);
+    }
+
+    [Fact]
+    public async Task ToggleStartWhileStatusReReadLags_StillStartsAtZero()
+    {
+        _server.StreamActive = false;
+        _server.LagAfterToggle = true;
+
+        var started = await _provider.ToggleStreamingAsync(default);
+        Assert.True(started.Streaming);
+        Assert.Equal(0, started.StreamingDurationMs);
+
+        _time.AdvanceMs(3_000);
+        _server.StreamDurationMs = 3_000;
+        var status = await _provider.GetStatusAsync(default);
+        Assert.Equal(3_000, status.StreamingDurationMs);
+    }
+
+    [Fact]
     public async Task SocketReconnectWhileLive_KeepsStart()
     {
         _server.StreamActive = true;
@@ -147,22 +176,36 @@ public sealed class ObsProviderStreamTimerTests : IAsyncLifetime
 
     private sealed class FakeObsServer : IDisposable
     {
-        private readonly HttpListener _listener = new();
+        private readonly HttpListener _listener;
         private readonly CancellationTokenSource _cts = new();
         private readonly List<WebSocket> _sockets = [];
 
         public int Port { get; }
         public volatile bool StreamActive;
         public long StreamDurationMs;
+        public volatile bool LagAfterToggle;
+        private int _staleReads;
 
         public FakeObsServer()
         {
-            var probe = new TcpListener(IPAddress.Loopback, 0);
-            probe.Start();
-            Port = ((IPEndPoint)probe.LocalEndpoint).Port;
-            probe.Stop();
-            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
-            _listener.Start();
+            var random = new Random();
+            for (var attempt = 0; ; attempt++)
+            {
+                var port = random.Next(20_000, 60_000);
+                var listener = new HttpListener();
+                listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+                try
+                {
+                    listener.Start();
+                    _listener = listener;
+                    Port = port;
+                    break;
+                }
+                catch (HttpListenerException) when (attempt < 20)
+                {
+                    listener.Close();
+                }
+            }
             _ = Task.Run(AcceptLoop);
         }
 
@@ -191,12 +234,19 @@ public sealed class ObsProviderStreamTimerTests : IAsyncLifetime
                 {
                     return;
                 }
-                var ws = (await ctx.AcceptWebSocketAsync(null)).WebSocket;
-                lock (_sockets)
+                try
                 {
-                    _sockets.Add(ws);
+                    var ws = (await ctx.AcceptWebSocketAsync(null)).WebSocket;
+                    lock (_sockets)
+                    {
+                        _sockets.Add(ws);
+                    }
+                    _ = Task.Run(() => Serve(ws));
                 }
-                _ = Task.Run(() => Serve(ws));
+                catch
+                {
+                    ctx.Response.Abort();
+                }
             }
         }
 
@@ -217,7 +267,7 @@ public sealed class ObsProviderStreamTimerTests : IAsyncLifetime
                     {
                         "GetSceneList" => "{\"currentProgramSceneName\":\"Scene\",\"scenes\":[{\"sceneName\":\"Scene\",\"sceneUuid\":\"u\"}]}",
                         "GetRecordStatus" => "{\"outputActive\":false,\"outputDuration\":0}",
-                        "GetStreamStatus" => $"{{\"outputActive\":{(StreamActive ? "true" : "false")},\"outputDuration\":{StreamDurationMs}}}",
+                        "GetStreamStatus" => StreamStatus(),
                         "ToggleStream" => ToggleStream(),
                         _ => "{}",
                     };
@@ -230,9 +280,23 @@ public sealed class ObsProviderStreamTimerTests : IAsyncLifetime
             }
         }
 
+        private string StreamStatus()
+        {
+            var reported = StreamActive;
+            if (Interlocked.Exchange(ref _staleReads, 0) > 0)
+            {
+                reported = !reported;
+            }
+            return $"{{\"outputActive\":{(reported ? "true" : "false")},\"outputDuration\":{StreamDurationMs}}}";
+        }
+
         private string ToggleStream()
         {
             StreamActive = !StreamActive;
+            if (LagAfterToggle)
+            {
+                _staleReads = 1;
+            }
             return $"{{\"outputActive\":{(StreamActive ? "true" : "false")}}}";
         }
 
