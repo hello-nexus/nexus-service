@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Mappings;
@@ -161,7 +162,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
             return resp;
         }
         var settings = _store.Load();
-        var slot = 0;
+        var blocks = UnitBlocks(settings);
         // Units playing the motherboard input come last as cards the engine never drives.
         foreach (var playsArgb in new[] { false, true })
         {
@@ -170,21 +171,21 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
             {
                 foreach (var zone in ZoneResolution.Resolve(structure, settings))
                 {
-                    resp.Devices.Add(BuildCard(structure, zone, slot++, settings, reason));
+                    resp.Devices.Add(BuildCard(structure, zone, BlockOf(blocks, structure), settings, reason));
                 }
             }
         }
         return resp;
     }
 
-    private static LightingDevice BuildCard(DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings, string? devicePageReason = null)
+    private static LightingDevice BuildCard(DeviceStructure structure, ResolvedZone zone, (float x, float y, float w, float h) block, NexusSettings settings, string? devicePageReason = null)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var layouts = settings.Lighting.DeviceLayouts;
         var isOn = !disabled.Contains(zone.Id);
         prefs.TryGetValue(zone.Id, out var pref);
-        var (defX, defY, defW, defH) = DefaultLayout(slot);
+        var (defX, defY, defW, defH) = block;
         layouts.TryGetValue(zone.Id, out var layout);
         return new LightingDevice
         {
@@ -293,12 +294,12 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         var layouts = settings.Lighting.DeviceLayouts;
         var frames = new List<DeviceFrame>();
         var idx = startingIndex;
-        var slot = 0;
+        var blocks = UnitBlocks(settings);
         foreach (var structure in BuildStructures())
         {
             foreach (var zone in ZoneResolution.Resolve(structure, settings))
             {
-                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, slot++, layouts, ref idx));
+                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, BlockOf(blocks, structure), layouts, ref idx));
             }
         }
         if (_frameCache.Count > frames.Count)
@@ -320,9 +321,9 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     }
 
     private DeviceFrame BuildOrReuseFrame(
-        string id, int ledCount, int slot, IReadOnlyDictionary<string, DeviceLayout> layouts, ref int idx)
+        string id, int ledCount, (float x, float y, float w, float h) block, IReadOnlyDictionary<string, DeviceLayout> layouts, ref int idx)
     {
-        var (defX, defY, defW, defH) = DefaultLayout(slot);
+        var (defX, defY, defW, defH) = block;
         layouts.TryGetValue(id, out var layout);
         var rot = ((((layout?.Rotation ?? 0) % 360) + 360) % 360);
         var thisIdx = idx++;
@@ -407,17 +408,34 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         return structure;
     }
 
-    internal static (float x, float y, float w, float h) DefaultLayout(int slot)
+    private const float BlockX = 40f;
+    private const float BlockY = 370f;
+    private const float FanSize = 110f;
+    private const float BlockGap = 30f;
+
+    /// <summary>
+    /// Where a unit's zones sit on the canvas when the user has not moved them: every zone of a unit
+    /// shares one block (the fan face, one square per fan), and the blocks follow each other left to
+    /// right in light-sequence order. The zones' own LED positions place them inside the block.
+    /// </summary>
+    internal Dictionary<string, (float x, float y, float w, float h)> UnitBlocks(NexusSettings settings)
     {
-        const float BaseX = 40f;
-        const float Y = 370f;
-        const float W = 120f;
-        const float H = 105f;
-        const float Gap = 140f;
-        const int Cols = 4;
-        const int Rows = 2;
-        const float RowGap = 105f;
-        var s = ((slot % (Cols * Rows)) + (Cols * Rows)) % (Cols * Rows);
-        return (BaseX + ((s % Cols) * Gap), Y + ((s / Cols) * RowGap), W, H);
+        var order = _hub.Units.Where(u => u.Controllable)
+            .OrderBy(u => settings.Devices.FlexUnits.TryGetValue(u.Mac, out var look) ? look.SortIndex : 0)
+            .ThenBy(u => u.Mac, StringComparer.Ordinal)
+            .ToList();
+        var blocks = new Dictionary<string, (float, float, float, float)>(StringComparer.OrdinalIgnoreCase);
+        var x = BlockX;
+        foreach (var unit in order)
+        {
+            var width = FanSize * Math.Max(1, unit.Fans);
+            blocks[unit.Mac] = (x, BlockY, width, FanSize);
+            x += width + BlockGap;
+        }
+        return blocks;
     }
+
+    private static (float x, float y, float w, float h) BlockOf(
+        Dictionary<string, (float x, float y, float w, float h)> blocks, DeviceStructure structure) =>
+        blocks.TryGetValue(MacFromDeviceId(structure.DeviceId), out var block) ? block : (BlockX, BlockY, FanSize, FanSize);
 }
