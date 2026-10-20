@@ -268,7 +268,7 @@ public sealed partial class LightingEngine : IDisposable
     // for the rest of the tick after SampleDevicesFromCanvas returns.
     private bool[] _overlaid = Array.Empty<bool>();
     // The subset of _overlaid that key reactions must not paint over. A static pin
-    // owns its device's colours yet is the base a reaction composes onto.
+    // owns its device's colors yet is the base a reaction composes onto.
     private bool[] _reactionBlocked = Array.Empty<bool>();
 
     /// <summary>
@@ -2166,6 +2166,12 @@ public sealed partial class LightingEngine : IDisposable
         if (_reactionBlocked.Length < devices.Length) _reactionBlocked = new bool[devices.Length];
         var blocked = _reactionBlocked;
         Array.Clear(blocked, 0, devices.Length);
+        // The one place a device is claimed, so the two arrays cannot drift apart.
+        void Claim(int index, bool blocksReactions)
+        {
+            owned[index] = true;
+            blocked[index] = blocksReactions;
+        }
         PruneAssignments(devices);
         var studio = _studioOverlay;
         if (studio is not null)
@@ -2194,8 +2200,7 @@ public sealed partial class LightingEngine : IDisposable
                         dev.SetLed(i, 0, 0, 0);
                     }
                 }
-                owned[di] = true;
-                blocked[di] = true;
+                Claim(di, blocksReactions: true);
                 continue;
             }
 
@@ -2203,8 +2208,7 @@ public sealed partial class LightingEngine : IDisposable
             if (studio is not null && dev.TestPattern is null && _studioCanvas is not null)
             {
                 PaintStudioOverlay(dev, previewCount, _studioCanvas);
-                owned[di] = true;
-                blocked[di] = true;
+                Claim(di, blocksReactions: true);
                 continue;
             }
 
@@ -2219,14 +2223,14 @@ public sealed partial class LightingEngine : IDisposable
                 if (Nexus.Service.Lighting.StaticColorHex.TryParse(assignment.Color, out var cr, out var cg, out var cb))
                 {
                     for (int i = 0; i < previewCount; i++) dev.SetLed(i, cr, cg, cb);
-                    owned[di] = true;
+                    Claim(di, blocksReactions: false);
                     continue;
                 }
                 var render = RenderAssignment(dev.Id, assignment);
                 if (render is not null)
                 {
                     PaintFromAssignment(dev, previewCount, render);
-                    owned[di] = true;
+                    Claim(di, blocksReactions: false);
                     continue;
                 }
             }
@@ -2237,8 +2241,7 @@ public sealed partial class LightingEngine : IDisposable
                 if (pattern == "none")
                 {
                     dev.Fill(0, 0, 0);
-                    owned[di] = true;
-                    blocked[di] = true;
+                    Claim(di, blocksReactions: true);
                 }
                 else
                 {
@@ -2285,8 +2288,7 @@ public sealed partial class LightingEngine : IDisposable
                         }
                         // Short UV arrays would leave a tail the canvas still
                         // has to fill, so only a full sweep claims the device.
-                        owned[di] = covered >= previewCount;
-                        blocked[di] = owned[di];
+                        if (covered >= previewCount) Claim(di, blocksReactions: true);
                     }
                     // No UVs: nothing was painted, so the canvas sample stands.
                 }

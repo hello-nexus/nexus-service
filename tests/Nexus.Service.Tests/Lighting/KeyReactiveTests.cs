@@ -480,48 +480,157 @@ public class KeyReactiveTests
         Assert.Equal(0, frame[Led('W') * 3]);
     }
 
-    // Presses Q once the engine is running, then returns the strongest red the Q key showed over the following frames.
-    private static async Task<(int Q, int OtherRed, int OtherBlue)> StrongestQRed(DeviceFrame board, KeyReactiveOverlay overlay, bool staticPin)
+    private readonly record struct Px(int R, int G, int B);
+
+    // Runs the engine over `board`, presses Q on the first frame, and returns the Q and W pixels of the next frames.
+    private static async Task<(List<Px> Q, List<Px> W)> PressQ(
+        DeviceFrame board, KeyReactiveOverlay overlay, IEffect main, Action<LightingEngine>? arrange = null, Func<int, Task>? atFrame = null, int frameCount = 14)
     {
         using var engine = new LightingEngine { KeyReactive = overlay, FrameIntervalMs = 10, Pins = new DevicePinTracker() };
-        if (staticPin) engine.Pins!.Set(board.Id, new DevicePin { Kind = DevicePinKinds.Static, Color = "#0000ff" });
+        arrange?.Invoke(engine);
         engine.UpdateDevices(new[] { board });
-        var tcs = new TaskCompletionSource<(int, int, int)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var q = new List<Px>();
+        var w = new List<Px>();
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var frames = 0;
-        var strongest = 0;
         engine.OnFrame += _ =>
         {
+            if (done.Task.IsCompleted) return;
             if (++frames == 1) { overlay.PressKey("Q"); return; }
-            strongest = Math.Max(strongest, board.LedBytes[Led('Q') * 3]);
-            if (frames > 12) tcs.TrySetResult((strongest, board.LedBytes[Led('W') * 3], board.LedBytes[Led('W') * 3 + 2]));
+            var b = board.LedBytes;
+            q.Add(new Px(b[Led('Q') * 3], b[Led('Q') * 3 + 1], b[Led('Q') * 3 + 2]));
+            w.Add(new Px(b[Led('W') * 3], b[Led('W') * 3 + 1], b[Led('W') * 3 + 2]));
+            if (frames > frameCount) done.TrySetResult();
         };
-        engine.SetEffect(new Nexus.Service.Lighting.Engine.Effects.BlackEffect());
-        var done = await Task.WhenAny(tcs.Task, Task.Delay(3000));
-        Assert.Same(tcs.Task, done);
-        return await tcs.Task;
+        engine.SetEffect(main);
+        Assert.Same(done.Task, await Task.WhenAny(done.Task, Task.Delay(3000)));
+        return (q, w);
     }
 
-    [Fact]
-    public async Task Engine_paints_reactions_over_a_static_pin()
+    private static KeyReactiveOverlay Armed()
     {
         var overlay = new KeyReactiveOverlay();
         overlay.Set(Id, Cfg(KeyReactionCatalog.Fade, KeyReactionCatalog.BackgroundEffect));
+        return overlay;
+    }
+
+    private sealed class FillFx : IEffect
+    {
+        private readonly byte _r, _g, _b;
+        public FillFx(byte r, byte g, byte b) { _r = r; _g = g; _b = b; }
+        public string Name => "fill";
+        public void RenderFrame(CanvasBuffer canvas, double tickMs) => canvas.Fill(_r, _g, _b);
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public async Task Engine_paints_reactions_over_a_hex_static_pin()
+    {
+        var (q, w) = await PressQ(Keyboard(), Armed(), new Nexus.Service.Lighting.Engine.Effects.BlackEffect(),
+            e => e.Pins!.Set(Id, new DevicePin { Kind = DevicePinKinds.Static, Color = "#0000ff" }));
+        Assert.InRange(q.Max(p => p.R), 200, 255);
+        // Keys that were not pressed keep the pinned color.
+        Assert.All(w, p => Assert.Equal(new Px(0, 0, 255), p));
+    }
+
+    [Fact]
+    public async Task Engine_paints_reactions_over_a_static_look_pin()
+    {
+        var (q, w) = await PressQ(Keyboard(), Armed(), new FillFx(0, 255, 0), e =>
+        {
+            e.StaticPinEffectFactory = _ => new FillFx(0, 0, 255);
+            e.Pins!.Set(Id, new DevicePin { Kind = DevicePinKinds.Static, Effect = "stripes" });
+        });
+        Assert.InRange(q.Max(p => p.R), 200, 255);
+        Assert.All(w, p => Assert.Equal(new Px(0, 0, 255), p));
+    }
+
+    [Fact]
+    public async Task A_static_look_that_is_still_compiling_reacts_over_the_canvas_never_black_then_lands()
+    {
+        using var gpu = new Nexus.Service.Lighting.Engine.Gpu.GpuContext(160, 90);
+        var landed = new ManualResetEventSlim(false);
+        var overlay = Armed();
         var board = Keyboard();
-        var seen = await StrongestQRed(board, overlay, staticPin: true);
-        Assert.InRange(seen.Q, 200, 255);
-        // Keys that were not pressed keep the pinned colour.
-        Assert.Equal(0, seen.OtherRed);
-        Assert.Equal(255, seen.OtherBlue);
+        using var engine = new LightingEngine { KeyReactive = overlay, FrameIntervalMs = 10, Pins = new DevicePinTracker() };
+        engine.StaticPinEffectFactory = _ => new Nexus.Service.Lighting.Engine.Gpu.ShaderEffect("stripes", gpu, "")
+        {
+            TestRender = (canvas, _) =>
+            {
+                if (!landed.IsSet) return false;
+                canvas.Fill(0, 0, 255);
+                return true;
+            },
+        };
+        engine.Pins!.Set(Id, new DevicePin { Kind = DevicePinKinds.Static, Effect = "stripes" });
+        engine.UpdateDevices(new[] { board });
+        var gate = new object();
+        var wSeen = new List<Px>();
+        var qMaxRed = 0;
+        var frames = 0;
+        var pendingDone = new TaskCompletionSource();
+        var landedDone = new TaskCompletionSource();
+        engine.OnFrame += _ =>
+        {
+            if (landedDone.Task.IsCompleted) return;
+            frames++;
+            if (frames == 1) { overlay.PressKey("Q"); return; }
+            var b = board.LedBytes;
+            lock (gate)
+            {
+                wSeen.Add(new Px(b[Led('W') * 3], b[Led('W') * 3 + 1], b[Led('W') * 3 + 2]));
+                qMaxRed = Math.Max(qMaxRed, b[Led('Q') * 3]);
+                if (!landed.IsSet && frames > 14) pendingDone.TrySetResult();
+                if (landed.IsSet && wSeen[^1] == new Px(0, 0, 255)) landedDone.TrySetResult();
+            }
+        };
+        engine.SetEffect(new FillFx(0, 255, 0));
+
+        Assert.Same(pendingDone.Task, await Task.WhenAny(pendingDone.Task, Task.Delay(3000)));
+        // Pending: the canvas shows through, with the reaction on top.
+        Assert.All(wSeen.Select((p, i) => (p, i)), t => Assert.True(t.p == new Px(0, 255, 0), $"frame {t.i} W was {t.p}"));
+        Assert.All(wSeen, p => Assert.Equal(new Px(0, 255, 0), p));
+
+        landed.Set();
+        Assert.Same(landedDone.Task, await Task.WhenAny(landedDone.Task, Task.Delay(3000)));
+        // The landed look replaces the canvas fallback, uncached from the pending frames, and no frame went black.
+        lock (gate) { Assert.DoesNotContain(new Px(0, 0, 0), wSeen); }
     }
 
     [Fact]
-    public async Task Engine_keeps_reactions_off_a_device_under_a_test_pattern()
+    public async Task Engine_keeps_reactions_off_a_device_under_an_editor_highlight()
     {
-        var overlay = new KeyReactiveOverlay();
-        overlay.Set(Id, Cfg(KeyReactionCatalog.Fade, KeyReactionCatalog.BackgroundEffect));
+        var board = Keyboard();
+        board.HighlightLeds = new HashSet<int> { Led('Q') };
+        var (q, _) = await PressQ(board, Armed(), new FillFx(0, 255, 0));
+        Assert.All(q, p => Assert.Equal(new Px(255, 255, 255), p));
+    }
+
+    [Fact]
+    public async Task Engine_keeps_reactions_off_a_device_under_the_studio_overlay()
+    {
+        var (q, _) = await PressQ(Keyboard(), Armed(), new FillFx(0, 0, 255),
+            e => e.SetStudioOverlay(new FillFx(0, 255, 0)));
+        Assert.All(q, p => Assert.Equal(new Px(0, 255, 0), p));
+    }
+
+    [Fact]
+    public async Task Engine_keeps_reactions_off_a_device_under_a_full_coverage_sweep()
+    {
+        var board = Keyboard();
+        board.TestPattern = "horizontal";
+        var (q, _) = await PressQ(board, Armed(), new FillFx(0, 255, 0));
+        // The sweep is gray; a reaction would put pure red on Q.
+        Assert.All(q, p => Assert.True(p.R == p.G && p.G == p.B, $"Q was {p}"));
+    }
+
+    [Fact]
+    public async Task Engine_keeps_reactions_off_a_device_under_a_blackout_test_pattern()
+    {
         var board = Keyboard();
         board.TestPattern = "none";
-        Assert.Equal(0, (await StrongestQRed(board, overlay, staticPin: true)).Q);
+        var (q, _) = await PressQ(board, Armed(), new FillFx(0, 255, 0));
+        Assert.All(q, p => Assert.Equal(new Px(0, 0, 0), p));
     }
 
     // ── Device-keyed config, hardware key sources, standalone paint ──
