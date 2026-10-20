@@ -1084,7 +1084,6 @@ public sealed class PanelDeviceRegistry
         return copy;
     }
 
-    // The response clone: DisplayFingerprint and SiblingDisplayIds stay in the store, off the wire.
     /// <summary>
     /// True when the record holds anything beyond what a freshly minted one with the same
     /// identity and capabilities does: a layout, a theme, a background, a flag the user set.
@@ -1104,6 +1103,24 @@ public sealed class PanelDeviceRegistry
             != System.Text.Json.JsonSerializer.Serialize(fresh, Serialization.AppJsonContext.Default.PanelDeviceRecord);
     }
 
+    /// <summary>
+    /// <see cref="IsCustomized(PanelDeviceRecord)"/> on the stored instance, not a response clone,
+    /// which leaves out presets, the active preset and the display fields.
+    /// </summary>
+    public bool IsCustomized(string id)
+    {
+        var customized = false;
+        _store.Read(s =>
+        {
+            if (s.PanelDevices.TryGetValue(id, out var stored))
+            {
+                customized = IsCustomized(stored);
+            }
+        });
+        return customized;
+    }
+
+    // The response clone: DisplayFingerprint and SiblingDisplayIds stay in the store, off the wire.
     private static PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord

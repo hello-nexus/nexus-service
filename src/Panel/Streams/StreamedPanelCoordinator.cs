@@ -50,7 +50,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly StreamedPanelStore _store;
     private readonly PanelDeviceRegistry _registry;
     private readonly Func<string, bool> _removePanel;
-    private readonly Func<PanelDeviceRecord, bool> _isCustomized;
+    private readonly Func<string, bool> _isCustomized;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
@@ -77,10 +77,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Action<string>? notifyPanelChanged = null,
         LcdLockState? lockState = null,
         Func<string, bool>? removePanel = null,
-        Func<PanelDeviceRecord, bool>? isCustomized = null)
+        Func<string, bool>? isCustomized = null)
     {
         _removePanel = removePanel ?? registry.Remove;
-        _isCustomized = isCustomized ?? PanelDeviceRegistry.IsCustomized;
+        _isCustomized = isCustomized ?? registry.IsCustomized;
         _discoveries = discoveries.ToList();
         _store = store;
         _registry = registry;
@@ -832,9 +832,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     }
 
     /// <summary>
-    /// Leaves one panel record for the device's family, under the fixed key: a customized one if
-    /// any (the most recently seen of them), else the most recently seen, whatever serial or key it was stored under, with the others removed through the
-    /// same cleanup a delete does. Idempotent, so it also tidies a mix left by an earlier build.
+    /// Gives the device's family one record under the fixed key: the most recently seen
+    /// customized one, else the most recently seen, whatever serial or key it was stored under.
+    /// Records that are not customized are removed through the same cleanup a delete does; a
+    /// customized record is never removed, so two of them both stay (the other under its own key).
+    /// Idempotent, so it also tidies a mix left by an earlier build.
     /// </summary>
     private void AdoptFamilyRecords(Dictionary<string, StreamedPanelRecord> records, StreamedPanelDeviceInfo info)
     {
@@ -848,23 +850,56 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             return;
         }
-        // The user's layout and theme outrank "streamed most recently": a boot that minted an
-        // empty record and streamed to it last must not cost the record they customized.
-        var keep = members.FirstOrDefault(m => _isCustomized(m.Panel!));
+        var customized = members.Where(m => IsCustomized(m.Panel!.Id)).Select(m => m.Panel!.Id).ToHashSet(StringComparer.Ordinal);
+        var keep = members.FirstOrDefault(m => customized.Contains(m.Panel!.Id));
         if (keep.Panel is null)
         {
             keep = members[0];
         }
+        var changed = false;
         foreach (var m in members)
         {
-            records.Remove(m.Serial);
+            if (m.Record.PanelDeviceId == keep.Record.PanelDeviceId)
+            {
+                changed |= m.Serial != info.Serial && records.Remove(m.Serial);
+            }
+            else if (!customized.Contains(m.Panel!.Id))
+            {
+                records.Remove(m.Serial);
+                _removePanel(m.Panel.Id);
+                changed = true;
+            }
+            else if (m.Serial == info.Serial)
+            {
+                // The fixed key goes to the survivor; this customized record keeps a key of its own.
+                records.Remove(m.Serial);
+                records[$"{info.Serial}~{m.Panel.Id}"] = m.Record;
+                changed = true;
+            }
         }
-        foreach (var m in members.Where(m => m.Record.PanelDeviceId != keep.Record.PanelDeviceId))
+        if (!records.TryGetValue(info.Serial, out var current) || current.PanelDeviceId != keep.Record.PanelDeviceId)
         {
-            _removePanel(m.Panel!.Id);
+            records[info.Serial] = keep.Record;
+            changed = true;
         }
-        records[info.Serial] = keep.Record;
-        _store.Save(records);
+        if (changed)
+        {
+            _store.Save(records);
+        }
+    }
+
+    /// <summary>Unknown is treated as customized: a check that fails must never lead to a delete, nor escape the session start.</summary>
+    private bool IsCustomized(string panelId)
+    {
+        try
+        {
+            return _isCustomized(panelId);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[streamed-panel] customized check failed for '{panelId}': {ex.GetType().Name}: {ex.Message}");
+            return true;
+        }
     }
 
     /// <summary>

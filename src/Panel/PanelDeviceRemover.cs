@@ -1,3 +1,4 @@
+using System;
 using Nexus.Service.Platform;
 using Nexus.Service.Sockets;
 
@@ -25,8 +26,23 @@ public sealed class PanelDeviceRemover
     /// A record is customized when it stores anything beyond a fresh one, or when its device
     /// folder holds uploaded background media (the files live outside the record).
     /// </summary>
-    public bool IsCustomized(Models.Panel.PanelDeviceRecord record) =>
-        PanelDeviceRegistry.IsCustomized(record) || _bgLibrary.ListItems(record.Id).Count > 0;
+    public bool IsCustomized(string id)
+    {
+        if (_registry.IsCustomized(id))
+        {
+            return true;
+        }
+        try
+        {
+            return _bgLibrary.ListItems(id).Count > 0;
+        }
+        catch (Exception ex)
+        {
+            // Unknown is treated as customized: a listing that fails must never lead to a delete.
+            ServiceLog.Warn($"[panel] media listing for '{id}' failed: {ex.GetType().Name}: {ex.Message}");
+            return true;
+        }
+    }
 
     /// <summary>False when the id is unknown.</summary>
     public bool Remove(string id)

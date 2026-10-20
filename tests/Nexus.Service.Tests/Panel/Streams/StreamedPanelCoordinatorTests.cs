@@ -510,13 +510,74 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         _coordinator = new StreamedPanelCoordinator(
             new[] { _discovery }, _store, _registry, _gate, notifyOverlay: null, nowMs: () => _nowMs,
             notifyPanelChanged: _panelChanges.Add,
-            isCustomized: r => r.Id == withMedia.Id || PanelDeviceRegistry.IsCustomized(r));
+            isCustomized: id => id == withMedia.Id || _registry.IsCustomized(id));
         _discovery.Devices.Add(SingleUnit("fixed-key"));
 
         _coordinator.TickOnce();
 
         Assert.Equal(withMedia.Id, Assert.Single(_coordinator.GetAssignments().Assignments).PanelDeviceId);
         Assert.Null(_registry.Get(bareLater.Id));
+    }
+
+    [Fact]
+    public void Two_customized_records_are_both_kept_and_only_one_takes_the_fixed_key()
+    {
+        var first = FamilyRecord("first", 1_000);
+        Touch(first.Id);
+        var second = FamilyRecord("second", 2_000);
+        _config.Update(s => s.PanelDevices[second.Id].ThemeMode = "dark");
+        var bare = FamilyRecord("bare", 3_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["fixed-key"] = new() { PanelDeviceId = first.Id },
+            ["serial-b"] = new() { PanelDeviceId = second.Id },
+            ["serial-c"] = new() { PanelDeviceId = bare.Id },
+        });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        Coordinator().TickOnce();
+
+        // The most recently seen customized record streams; nothing the user changed is deleted.
+        Assert.Equal(second.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.NotNull(_registry.Get(first.Id));
+        Assert.NotNull(_registry.Get(second.Id));
+        Assert.Null(_registry.Get(bare.Id));
+        var stored = _store.Load();
+        Assert.Equal(second.Id, stored["fixed-key"].PanelDeviceId);
+        Assert.Contains(stored.Values, r => r.PanelDeviceId == first.Id);
+        Assert.DoesNotContain(stored.Values, r => r.PanelDeviceId == bare.Id);
+    }
+
+    [Fact]
+    public void A_customized_check_that_fails_keeps_every_record_and_does_not_escape()
+    {
+        var a = FamilyRecord("a", 1_000);
+        var b = FamilyRecord("b", 2_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["a"] = new() { PanelDeviceId = a.Id },
+            ["b"] = new() { PanelDeviceId = b.Id },
+        });
+        _coordinator = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate, notifyOverlay: null, nowMs: () => _nowMs,
+            notifyPanelChanged: _panelChanges.Add, isCustomized: _ => throw new IOException("listing failed"));
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        _coordinator.TickOnce();
+
+        Assert.Single(_coordinator.GetAssignments().Assignments);
+        Assert.NotNull(_registry.Get(a.Id));
+        Assert.NotNull(_registry.Get(b.Id));
+    }
+
+    [Fact]
+    public void The_customized_check_looks_at_the_stored_record_including_presets_a_clone_leaves_out()
+    {
+        var record = FamilyRecord("presets", 1_000);
+        _config.Update(s => s.PanelDevices[record.Id].ActivePresetId = "preset-1");
+
+        Assert.True(_registry.IsCustomized(record.Id));
+        Assert.False(PanelDeviceRegistry.IsCustomized(_registry.Get(record.Id)!));
     }
 
     [Fact]
