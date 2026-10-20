@@ -227,6 +227,7 @@ internal static class AppBootstrap
             ReapplyAfterProfileSwitch(sp, curveEngine, lightingEngine, lightingProvider, configStore);
             ReapplyPanelsAfterProfileSwitch(sp, configStore);
         };
+        sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>().FingerprintsChanged += profileManager.StampFingerprintKeys;
         profileManager.PanelsChanged += () => ReapplyPanelsAfterProfileSwitch(sp, configStore);
     }
 

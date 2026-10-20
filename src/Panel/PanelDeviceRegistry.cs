@@ -40,6 +40,9 @@ public sealed class PanelDeviceRegistry
     /// </summary>
     public event Action<PanelDeviceRecord>? DisplayRecordReady;
 
+    /// <summary>Raised (record ids) after a record's display fingerprint was first recorded or changed, so profile files can pick up its match key.</summary>
+    public event Action<IReadOnlyList<string>>? FingerprintsChanged;
+
     /// <param name="canReuse">Narrows which record a single-instance surface may reuse; null allows any.</param>
     public PanelDeviceRecord Allocate(string? displayName, PanelDeviceCapabilities? capabilities, Func<PanelDeviceRecord, bool>? canReuse = null)
     {
@@ -211,12 +214,17 @@ public sealed class PanelDeviceRegistry
             return (Array.Empty<(string, string, string)>(), pending);
 
         var applied = new List<(string RecordId, string OldDisplayId, string NewDisplayId)>();
+        var fingerprinted = new List<string>();
         _store.Update(s =>
         {
             var plan = PanelDisplayRelink.Plan(Snapshot(s.PanelDevices.Values), attached);
             foreach (var (recordId, fingerprint) in plan.Backfills)
             {
-                if (s.PanelDevices.TryGetValue(recordId, out var record)) record.DisplayFingerprint = fingerprint;
+                if (s.PanelDevices.TryGetValue(recordId, out var record))
+                {
+                    record.DisplayFingerprint = fingerprint;
+                    fingerprinted.Add(recordId);
+                }
             }
             foreach (var (recordId, siblings) in plan.SiblingUpdates)
             {
@@ -228,12 +236,14 @@ public sealed class PanelDeviceRegistry
                 if (!s.PanelDevices.TryGetValue(move.RecordId, out var record)) continue;
                 record.DisplayId = move.NewDisplayId;
                 record.DisplayFingerprint = move.Fingerprint;
+                fingerprinted.Add(move.RecordId);
                 applied.Add((move.RecordId, move.OldDisplayId, move.NewDisplayId));
                 ServiceLog.Info($"[panel-relink] record {move.RecordId} display '{move.OldDisplayId}' -> '{move.NewDisplayId}' "
                     + $"(fingerprint {move.Fingerprint.Manufacturer}:{move.Fingerprint.Product} serial {move.Fingerprint.Serial})");
             }
         });
         if (applied.Count > 0) _store.FlushNow();
+        if (fingerprinted.Count > 0) FingerprintsChanged?.Invoke(fingerprinted);
         return (applied, pending);
     }
 

@@ -588,4 +588,41 @@ public class ProfilePanelsTests : IDisposable
 
         Assert.Equal(first, second);
     }
+
+    [Fact]
+    public void A_late_fingerprint_reaches_every_profile_file_and_rematches_a_recreated_record()
+    {
+        _store.Update(s =>
+        {
+            var m = Monitor("m", "d1", "SER1");
+            m.DisplayFingerprint = null;
+            m.AccentColor = "#bbbbbb";
+            s.PanelDevices["m"] = m;
+        });
+        _pm.Initialize();
+        var a = _pm.GetActiveEntry()!.Id;
+        var b = _pm.CreateProfile("B").Id;
+        _pm.CreateProfile("C");
+        var path = (string id) => Path.Combine(_dir, $"profile-{id}.json");
+        Assert.DoesNotContain("fingerprintKey", File.ReadAllText(path(a)));
+
+        var fp = new DisplayFingerprint { Manufacturer = "ACR", Product = "0A1B", Serial = 1, SerialText = "SER1" };
+        _store.Update(s => s.PanelDevices["m"].DisplayFingerprint = fp);
+        _pm.StampFingerprintKeys(new[] { "m" });
+
+        var key = PanelProfileData.FingerprintKey(fp)!;
+        Assert.Contains(key, File.ReadAllText(path(a)));
+        Assert.Contains(key, File.ReadAllText(path(b)));
+
+        // Demote and re-promote: a new record id with the same monitor.
+        _store.Update(s =>
+        {
+            s.PanelDevices.Clear();
+            var again = Monitor("m2", "d9", "SER1");
+            s.PanelDevices["m2"] = again;
+        });
+        _pm.SwitchProfile(b);
+
+        Assert.Equal("#bbbbbb", Live("m2").AccentColor);
+    }
 }

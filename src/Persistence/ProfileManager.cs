@@ -928,6 +928,42 @@ public sealed partial class ProfileManager : IDisposable
         });
     }
 
+    /// <summary>
+    /// A panel record's display fingerprint was just recorded or changed: every other profile file holding
+    /// that record id gets its match key (and nothing else), so the record can be re-matched by fingerprint
+    /// after it is recreated. The active profile re-saves itself on the store change.
+    /// </summary>
+    public void StampFingerprintKeys(IReadOnlyList<string> recordIds)
+    {
+        lock (_lock)
+        {
+            var live = _store.Load().PanelDevices;
+            foreach (var entry in _manifest.Profiles)
+            {
+                if (entry.Id == _manifest.ActiveProfileId || ReadProfileFile(entry.Id) is not { } file)
+                {
+                    continue;
+                }
+                var changed = false;
+                foreach (var id in recordIds)
+                {
+                    if (live.TryGetValue(id, out var record)
+                        && file.PanelDevices.TryGetValue(id, out var saved)
+                        && PanelProfileData.FingerprintKey(record.DisplayFingerprint) is { } key
+                        && saved.FingerprintKey != key)
+                    {
+                        saved.FingerprintKey = key;
+                        changed = true;
+                    }
+                }
+                if (changed)
+                {
+                    WriteAtomic(ProfileFilePath(entry.Id), JsonSerializer.Serialize(file, PersistenceJsonContext.Default.NexusSettings));
+                }
+            }
+        }
+    }
+
     /// <summary>The id of the profile currently active, for callers that default an import target to it.</summary>
     public string ActiveProfileId
     {
