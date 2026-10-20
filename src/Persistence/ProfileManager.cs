@@ -557,7 +557,7 @@ public sealed partial class ProfileManager : IDisposable
                 entry = existing;
             }
 
-            panelsAdded = absorbPanelLooks && AbsorbImportedPanels(data, entry.Name);
+            var importedPanels = absorbPanelLooks ? ShareImportedPanels(data) : null;
             var json = JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings);
             WriteAtomic(ProfileFilePath(id), json);
             SaveManifest();
@@ -568,16 +568,16 @@ public sealed partial class ProfileManager : IDisposable
                 LoadProfileIntoSettings(id);
                 _dirty = false;
             }
-        }
-
-        if (panelsAdded)
-        {
-            PanelsChanged?.Invoke();
+            panelsAdded = MergeImportedPanels(importedPanels, entry.Name);
         }
 
         if (reactivate)
         {
             OnProfileSwitched?.Invoke();
+        }
+        else if (panelsAdded)
+        {
+            PanelsChanged?.Invoke();
         }
 
         return entry;
@@ -707,22 +707,39 @@ public sealed partial class ProfileManager : IDisposable
         OnProfileSwitched?.Invoke();
     }
 
-    /// <summary>With Panels shared an imported file's looks would be overwritten on the next flush, so they become presets on the matching live panels and the file takes the shared copy. Caller holds the lock.</summary>
-    private bool AbsorbImportedPanels(NexusSettings data, string profileName)
+    /// <summary>With Panels shared the imported file takes the live shared copy and the imported looks are returned for <see cref="MergeImportedPanels"/>; null when Panels is per-profile. Caller holds the lock.</summary>
+    private NexusSettings? ShareImportedPanels(NexusSettings data)
     {
         var live = _store.Load();
         if (!live.SharedCategories.Contains(ProfileSharing.Panels))
+        {
+            return null;
+        }
+        var imported = new NexusSettings { PanelDevices = data.PanelDevices, HasPanelsData = data.HasPanelsData };
+        // Left in place, the imported entries would read as predecessors of the live records.
+        data.PanelDevices = new Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>();
+        ProfileSharing.WriteCategory(data, live, ProfileSharing.Panels);
+        return imported;
+    }
+
+    /// <summary>Adds the imported looks as presets on the matching live panels once the profile file is written, and flushes so every profile file holds them. Caller holds the lock.</summary>
+    private bool MergeImportedPanels(NexusSettings? imported, string profileName)
+    {
+        if (imported is null)
         {
             return false;
         }
         var added = false;
         var skipped = 0;
-        _store.Update(s => added = PanelProfileData.MergeImportedLooks(s, data, profileName, out skipped));
+        _store.Update(s => added = PanelProfileData.MergeImportedLooks(s, imported, profileName, out skipped));
         if (skipped > 0)
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[profiles] imported panel looks over the preset cap were skipped: {skipped}");
         }
-        ProfileSharing.WriteCategory(data, _store.Load(), ProfileSharing.Panels);
+        if (added)
+        {
+            FlushActiveProfile();
+        }
         return added;
     }
 
@@ -731,6 +748,7 @@ public sealed partial class ProfileManager : IDisposable
         Nexus.Service.Lighting.PinMigration.Apply(data);
         bool reactivate = false;
         var panelsAdded = false;
+        NexusSettings? importedPanels = null;
         ProfileEntry entry;
         lock (_lock)
         {
@@ -761,7 +779,7 @@ public sealed partial class ProfileManager : IDisposable
                 // list stay valid; adopt the imported name's casing.
                 existing.Name = trimmed;
                 existing.UpdatedAt = now;
-                panelsAdded = AbsorbImportedPanels(data, trimmed);
+                importedPanels = ShareImportedPanels(data);
                 var replaceJson = JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings);
                 WriteAtomic(ProfileFilePath(existing.Id), replaceJson);
                 SaveManifest();
@@ -776,6 +794,7 @@ public sealed partial class ProfileManager : IDisposable
                     _dirty = false;
                 }
                 entry = existing;
+                panelsAdded = MergeImportedPanels(importedPanels, trimmed);
             }
             else
             {
@@ -787,12 +806,13 @@ public sealed partial class ProfileManager : IDisposable
                 var id = Guid.NewGuid().ToString("N")[..8];
                 entry = new ProfileEntry { Id = id, Name = trimmed, CreatedAt = now, UpdatedAt = now };
 
-                panelsAdded = AbsorbImportedPanels(data, trimmed);
+                importedPanels = ShareImportedPanels(data);
                 var json = JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings);
                 WriteAtomic(ProfileFilePath(id), json);
 
                 _manifest.Profiles.Add(entry);
                 SaveManifest();
+                panelsAdded = MergeImportedPanels(importedPanels, trimmed);
             }
         }
 
@@ -800,8 +820,7 @@ public sealed partial class ProfileManager : IDisposable
         {
             OnProfileSwitched?.Invoke();
         }
-
-        if (panelsAdded)
+        else if (panelsAdded)
         {
             PanelsChanged?.Invoke();
         }

@@ -138,11 +138,13 @@ public static class PanelProfileData
             dst.Presets ??= new List<PanelPreset>();
             var known = new HashSet<string>(dst.Presets.Select(LookKey));
             known.Add(LookKey(dst));
-            var candidates = new List<(string Name, IPanelPersonalization Look)> { (profileName, src) };
-            candidates.AddRange((src.Presets ?? new()).Select(p => (p.Name, (IPanelPersonalization)p)));
+            // The imported record is the loaded preset's working copy, so that preset's stored copy is stale.
+            var loaded = src.Presets?.Find(p => p.Id == src.ActivePresetId);
+            var candidates = new List<(string Name, IPanelPersonalization Look)> { (loaded?.Name ?? profileName, src) };
+            candidates.AddRange((src.Presets ?? new()).Where(p => p != loaded).Select(p => (p.Name, (IPanelPersonalization)p)));
             foreach (var (name, look) in candidates)
             {
-                if (!known.Add(LookKey(look)))
+                if (IsDefaultCandidate(look, dst) || !known.Add(LookKey(look)))
                 {
                     continue;
                 }
@@ -164,11 +166,21 @@ public static class PanelProfileData
         return changed;
     }
 
+    // Seeded layouts carry fresh ids, so layouts compare by shape.
     private static string LookKey(IPanelPersonalization look)
     {
         var copy = new PanelPreset();
         PanelPresets.Copy(look, copy);
-        return Json(copy);
+        var layout = copy.Layout;
+        copy.Layout = null;
+        return Json(copy) + (layout is null ? "" : Shape(layout));
+    }
+
+    private static bool IsDefaultCandidate(IPanelPersonalization look, PanelDeviceRecord on)
+    {
+        var probe = new PanelDeviceRecord { Capabilities = on.Capabilities };
+        PanelPresets.Copy(look, probe);
+        return IsDefaultLook(probe);
     }
 
     private static string UniquePresetName(List<PanelPreset> existing, string name)
