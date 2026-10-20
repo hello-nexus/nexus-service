@@ -132,11 +132,25 @@ public sealed class GlacialLcdWorker : BackgroundService
             message => Log(message, error: false),
             ChooseDefaultMode,
             ModeLanded,
-            () => _link.Streaming);
-        bool opened;
-        lock (_link.Sync)
+            () => _link.Streaming,
+            () => _link.ShowPending = true,
+            () => _link.BrightnessOverride);
+        bool opened = false;
+        // An upload holds the panel for its whole length; wait for it without blocking shutdown.
+        while (!stoppingToken.IsCancellationRequested)
         {
-            opened = screen.Open();
+            if (Monitor.TryEnter(_link.Sync, LoopMs))
+            {
+                try
+                {
+                    opened = screen.Open();
+                }
+                finally
+                {
+                    Monitor.Exit(_link.Sync);
+                }
+                break;
+            }
         }
         if (!opened)
         {
@@ -167,7 +181,8 @@ public sealed class GlacialLcdWorker : BackgroundService
     private void Seed(int brightness, bool displayOn, bool keepOn) => _store.Update(s =>
     {
         var g = s.Devices.GlacialLcd;
-        if (!g.BrightnessEdited) { g.Brightness = brightness; }
+        // A lock dim in force is not the panel's own level, so it is not taken as the saved one.
+        if (!g.BrightnessEdited && _link.BrightnessOverride is null) { g.Brightness = brightness; }
         if (!g.DisplayEdited) { g.DisplayOn = displayOn; }
         if (!g.SleepEdited) { g.StayOnWhileAsleep = keepOn; }
     });
@@ -235,14 +250,18 @@ public sealed class GlacialLcdWorker : BackgroundService
     {
         int misses = 0;
         long nextPresenceMs = Environment.TickCount64 + PresencePollMs;
+        int lastSavedBrightness = ReadSettings().Brightness;
         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(HandlerId))
         {
             await _wake.WaitAsync(LoopMs, stoppingToken).ConfigureAwait(false);
-            if (_link.Streaming && ReadSettings() is { BrightnessEdited: true, Brightness: 0 })
+            var saved = ReadSettings();
+            if (saved.Brightness != lastSavedBrightness)
             {
-                // A lock-to-dark must not wait out a picture upload.
-                _link.RequestCancel();
+                // The user moved the slider, which ends any lock dim.
+                lastSavedBrightness = saved.Brightness;
+                _link.ClearBrightnessOverride();
             }
+            PublishToUpload(screen, saved);
             // One owner of the panel at a time: an upload in progress holds this for its whole length.
             if (Monitor.TryEnter(_link.Sync))
             {
@@ -258,6 +277,12 @@ public sealed class GlacialLcdWorker : BackgroundService
                 {
                     Monitor.Exit(_link.Sync);
                 }
+                var after = screen.PendingFlagEdits();
+                if (!after.Brightness && !after.Display && !after.Sleep)
+                {
+                    _link.NativePending = false;
+                    _link.ClearCancel();
+                }
             }
             if (Environment.TickCount64 >= nextPresenceMs)
             {
@@ -270,6 +295,25 @@ public sealed class GlacialLcdWorker : BackgroundService
             }
         }
         return true;
+    }
+
+    /// <summary>Tells the upload whether the display is dark, whether a native edit is waiting, and cancels a running upload for the edits that must not wait.</summary>
+    private void PublishToUpload(GlacialLcdScreen screen, GlacialLcdSettings saved)
+    {
+        int level = _link.BrightnessOverride ?? saved.Brightness;
+        _link.Dark = !saved.DisplayOn || level == 0;
+        if (!_link.Streaming)
+        {
+            _link.NativePending = false;
+            return;
+        }
+        var pending = screen.PendingFlagEdits();
+        _link.NativePending = pending.Brightness || pending.Display || pending.Sleep;
+        // A dark display or a sleep edit must not sit behind the transfer; other edits wait their turn.
+        if (pending.Sleep || (pending.Display && !saved.DisplayOn) || (pending.Brightness && level == 0))
+        {
+            _link.RequestCancel();
+        }
     }
 
     private IHidDevice? OpenHid()

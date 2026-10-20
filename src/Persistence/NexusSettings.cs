@@ -2163,6 +2163,9 @@ public sealed class GlacialLcdSettings
     public const string ModeAnimated = "animated";
     public const string ModeMonitor = "monitor";
 
+    /// <summary>A Nexus Panel streams to the display as its stored custom picture; the user picks this explicitly.</summary>
+    public const string ModePanel = "panel";
+
     /// <summary>The animation the vendor app starts on.</summary>
     public const int FirstRunAnimation = 1;
 
@@ -2188,6 +2191,9 @@ public sealed class GlacialLcdSettings
     public List<GlacialLcdSlot> Slots { get; set; } = DefaultSlots();
     public int Brightness { get; set; } = 50;
     public bool StayOnWhileAsleep { get; set; }
+
+    /// <summary>True when the user has picked the Nexus Panel mode, which is when the stream may own the display.</summary>
+    public static bool StreamChosen(GlacialLcdSettings s) => s.UserEdited && s.ModeChosen && s.Mode == ModePanel;
 
     public static List<GlacialLcdSlot> DefaultSlots() => new()
     {

@@ -48,13 +48,16 @@ public sealed class ConfigStoreLcdUploadMemory : ILcdUploadMemory
 
 /// <summary>
 /// Shared by the native-mode worker and the streamed-panel driver so only one of them talks to
-/// the panel at a time: a mutex both take around their HID traffic, and a flag that says a
-/// Nexus Panel is streaming to it.
+/// the panel at a time: a mutex both take around their HID traffic, and the flags they use to
+/// hand it over.
 /// </summary>
 public sealed class GlacialLcdLink
 {
+    private readonly object _streamLock = new();
+    private object? _streamOwner;
     private volatile bool _streaming;
     private volatile bool _cancelUpload;
+    private int _brightnessOverride = -1;
 
     /// <summary>Held for each pass of the native worker and for the whole of an upload.</summary>
     public object Sync { get; } = new();
@@ -62,25 +65,75 @@ public sealed class GlacialLcdLink
     /// <summary>True while a Nexus Panel is assigned to the display; the native worker then leaves the mode alone.</summary>
     public bool Streaming => _streaming;
 
-    /// <summary>Asks a running upload to stop, so a lock-to-dark brightness does not wait out the transfer.</summary>
+    /// <summary>The native worker has edits waiting, so the upload does not start another before they go out.</summary>
+    public volatile bool NativePending;
+
+    /// <summary>The display is off or at zero brightness, so there is nothing to upload to.</summary>
+    public volatile bool Dark;
+
+    /// <summary>The panel may not be showing the stored picture: set when a stream opens and when a native write may have changed what shows.</summary>
+    public volatile bool ShowPending;
+
+    /// <summary>Asks a running upload to stop, so a dark display or a sleep edit does not wait out the transfer.</summary>
     public bool CancelRequested => _cancelUpload;
 
-    /// <summary>Raised when the streaming flag flips, so the native worker looks again at once.</summary>
+    /// <summary>A brightness the coordinator asked for, such as a lock dim, which is not the user's saved one; null when none.</summary>
+    public int? BrightnessOverride
+    {
+        get
+        {
+            int value = Volatile.Read(ref _brightnessOverride);
+            return value < 0 ? null : value;
+        }
+    }
+
+    /// <summary>Raised when the streaming flag flips or a brightness override changes, so the native worker looks again at once.</summary>
     public event Action? Changed;
 
-    public void SetStreaming(bool streaming)
+    /// <summary>Raised when a cancel is requested, so the upload's pacing wait ends.</summary>
+    public event Action? Cancelled;
+
+    public void StreamOpened(object stream)
     {
-        if (_streaming == streaming)
+        lock (_streamLock)
         {
-            return;
+            _streamOwner = stream;
+            _streaming = true;
         }
-        _streaming = streaming;
+        ShowPending = true;
         Changed?.Invoke();
     }
 
-    public void RequestCancel() => _cancelUpload = true;
+    /// <summary>Ends the stream only if <paramref name="stream"/> is the one that is open; a stale transport's close is ignored.</summary>
+    public void StreamClosed(object stream)
+    {
+        lock (_streamLock)
+        {
+            if (!ReferenceEquals(_streamOwner, stream))
+            {
+                return;
+            }
+            _streamOwner = null;
+            _streaming = false;
+        }
+        Changed?.Invoke();
+    }
+
+    public void RequestCancel()
+    {
+        _cancelUpload = true;
+        Cancelled?.Invoke();
+    }
 
     public void ClearCancel() => _cancelUpload = false;
+
+    public void SetBrightnessOverride(int percent)
+    {
+        Volatile.Write(ref _brightnessOverride, Math.Clamp(percent, 0, 100));
+        Changed?.Invoke();
+    }
+
+    public void ClearBrightnessOverride() => Volatile.Write(ref _brightnessOverride, -1);
 }
 
 /// <summary>
@@ -88,7 +141,9 @@ public sealed class GlacialLcdLink
 /// takes a stored custom picture, so each frame is a full upload: a worker thread owned by the
 /// driver encodes the newest rendered frame as JPEG and sends it whenever it differs from the
 /// picture the panel already holds, one upload after another. The upload is slow by the
-/// vendor's own pacing, so frames that arrive meanwhile collapse into the latest one.
+/// vendor's own pacing, so frames that arrive meanwhile collapse into the latest one. It runs
+/// only while the user has chosen the Nexus Panel mode, stays out of the way of native edits,
+/// and sends nothing while the display is dark.
 /// </summary>
 public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 {
@@ -104,12 +159,16 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// <summary>Longest wait between retries of a failing upload.</summary>
     public const int BackoffCapMs = 5 * 60 * 1000;
 
-    /// <summary>Delay before the picture is uploaded again after a brightness of zero interrupted it.</summary>
+    /// <summary>Delay before the picture is uploaded again after a native edit cancelled it.</summary>
     public const int DefaultCancelRetryMs = 5000;
 
+    /// <summary>The remembered picture is written to settings only once it has stood this long, and when the stream stops.</summary>
+    public const int PersistAfterMs = 10 * 60 * 1000;
+
     private const int PollMs = 200;
-    private const int JoinOnDisconnectMs = 5000;
+    private const int JoinOnDisconnectMs = 250;
     private const int WarnEveryMs = 60_000;
+    private const int ShowRetryMs = 5000;
 
     private readonly GlacialLcdLink _link;
     private readonly int _paceScalePercent;
@@ -143,7 +202,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     // Guarded by _stateLock; outlives a worker so the remembered picture and backoff carry over a reconnect.
     private string? _lastHash;
+    private string? _persistedHash;
+    private long _hashSetMs;
     private long _nextAllowedMs;
+    private long _nextShowMs;
     private int _failures;
 
     private string _memoryKey = "";
@@ -174,6 +236,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         _backoffBaseMs = backoffBaseMs;
         _cancelRetryMs = cancelRetryMs;
         _clock = clock ?? (() => Environment.TickCount64);
+        _link.Cancelled += () => _abort.Set();
     }
 
     public string HandlerId => GlacialLcdWorker.HandlerId;
@@ -182,19 +245,31 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     public IReadOnlyList<int> ProductIds { get; } = new[] { GlacialLcdProtocol.ProductId };
     public string Surface => Models.Panel.PanelSurfaces.LcdSquare;
 
-    /// <summary>The overlay only needs to hand over a frame now and then; the worker decides what is uploaded.</summary>
+    /// <summary>The overlay hands over a frame about this often; the worker decides what is uploaded.</summary>
     public int Fps => 1;
 
     public byte WritePipeId => 0x02;
     public byte ReadPipeId => 0x82;
     public bool NeedsHidChannel => true;
 
-    /// <summary>The upload sequence reads nothing today, but the shared worker opens one handle per driver and this one is overlapped like the native worker's.</summary>
+    /// <summary>The handle is opened overlapped, like the native worker's, so any read it makes honors its timeout.</summary>
     public bool HidOpensForInput => true;
 
-    public void StreamOpened() => _link.SetStreaming(true);
+    /// <summary>A second LCD on the same surface must not share this panel's layout record.</summary>
+    public bool MultiInstance => true;
 
-    public void StreamClosed() => _link.SetStreaming(false);
+    /// <summary>A dim from the coordinator, such as on PC lock, goes through the native brightness write.</summary>
+    public bool SupportsBrightness => true;
+
+    public bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent)
+    {
+        _link.SetBrightnessOverride(percent);
+        return true;
+    }
+
+    public void StreamOpened(object stream) => _link.StreamOpened(stream);
+
+    public void StreamClosed(object stream) => _link.StreamClosed(stream);
 
     /// <summary>Uploads that ran to the finish step.</summary>
     public int UploadsCompleted => Volatile.Read(ref _uploadsCompleted);
@@ -237,9 +312,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             var remembered = _memory?.Load(_memoryKey);
             lock (_stateLock)
             {
+                _persistedHash = remembered;
                 if (remembered is not null)
                 {
                     _lastHash = remembered;
+                    _hashSetMs = _clock();
                 }
             }
             start.Thread = new Thread(() => Run(start)) { IsBackground = true, Name = "glacial-lcd-stream" };
@@ -306,6 +383,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                     {
                         UploadPending(state, ref encoder, ref snapshot);
                     }
+                    else
+                    {
+                        ShowIfNeeded(state);
+                    }
+                    PersistIfStable();
                 }
                 catch (Exception ex)
                 {
@@ -320,8 +402,15 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
     }
 
+    /// <summary>True when an upload may start: streaming, the display lit, no native edit waiting, and past any backoff.</summary>
+    private bool CanUpload() => _link.Streaming && !_link.Dark && !_link.NativePending;
+
     private bool Ready()
     {
+        if (!CanUpload())
+        {
+            return false;
+        }
         long now = _clock();
         lock (_stateLock)
         {
@@ -334,6 +423,64 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             return _pending && (now - _lastChangeMs >= _settleMs || now - _firstPendingMs >= _maxSettleMs);
         }
+    }
+
+    /// <summary>
+    /// A picture the panel is known to hold needs no upload, but the panel may have been left
+    /// showing something else (a stream just opened, a native write, a display turn-on), so the
+    /// show step alone is sent.
+    /// </summary>
+    private void ShowIfNeeded(WorkerState state)
+    {
+        if (!_link.ShowPending || !CanUpload())
+        {
+            return;
+        }
+        long now = _clock();
+        IHidDevice? hid;
+        lock (_stateLock)
+        {
+            if (_lastHash is null || now < _nextShowMs)
+            {
+                return;
+            }
+            _nextShowMs = now + ShowRetryMs;
+        }
+        lock (_hidLock)
+        {
+            hid = state.Stop ? null : _hid;
+        }
+        if (hid is null)
+        {
+            return;
+        }
+        lock (_link.Sync)
+        {
+            if (state.Stop || !CanUpload())
+            {
+                return;
+            }
+            _link.ShowPending = false;
+            if (!hid.Write(GlacialLcdProtocol.EncodeQuery()) || !hid.Write(GlacialLcdProtocol.EncodeCustomPicture()))
+            {
+                _link.ShowPending = true;
+            }
+        }
+    }
+
+    private void PersistIfStable()
+    {
+        string? hash;
+        lock (_stateLock)
+        {
+            if (_lastHash is null || _lastHash == _persistedHash || _clock() - _hashSetMs < PersistAfterMs)
+            {
+                return;
+            }
+            hash = _lastHash;
+            _persistedHash = hash;
+        }
+        _memory?.Save(_memoryKey, hash);
     }
 
     private void UploadPending(WorkerState state, ref BgraJpegEncoder? encoder, ref byte[]? snapshot)
@@ -358,6 +505,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             if (hash == _lastHash)
             {
+                // Already stored; ShowIfNeeded sends the show step if the panel may be elsewhere.
                 return;
             }
         }
@@ -381,14 +529,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _uploading = true;
         }
         _abort.Reset();
-        _link.ClearCancel();
-        Interlocked.Increment(ref _uploadAttempts);
-        // From the first report on, the panel may hold a partial picture, so it holds nothing known.
-        lock (_stateLock)
+        if (ShouldStop(state))
         {
-            _lastHash = null;
+            // A cancel that arrived before the reset is still set; honor it instead of losing it.
+            FinishUploading(state);
+            MarkPending();
+            return;
         }
-        _memory?.Clear(_memoryKey);
+        Interlocked.Increment(ref _uploadAttempts);
 
         var outcome = UploadOutcome.Failed;
         var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -403,32 +551,26 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         catch (Exception ex)
         {
             // A write that failed because the link was torn down is a cancel, not a fault.
-            outcome = state.Stop ? UploadOutcome.Cancelled : UploadOutcome.Failed;
+            outcome = ShouldStop(state) ? UploadOutcome.Cancelled : UploadOutcome.Failed;
             if (!state.Stop)
             {
                 Failed($"upload failed: {ex.GetType().Name}: {ex.Message}");
             }
         }
         watch.Stop();
+        FinishUploading(state);
 
-        lock (_hidLock)
-        {
-            // A worker that outlived its disconnect must not clear the flag of the one that replaced it.
-            if (_current is null || ReferenceEquals(_current, state))
-            {
-                _uploading = false;
-            }
-        }
         long now = _clock();
         if (outcome == UploadOutcome.Done)
         {
             lock (_stateLock)
             {
                 _lastHash = hash;
+                _hashSetMs = now;
                 _failures = 0;
                 _nextAllowedMs = 0;
             }
-            _memory?.Save(_memoryKey, hash);
+            _link.ShowPending = false;
             Interlocked.Increment(ref _uploadsCompleted);
             ServiceLog.Info($"[{HandlerId}] picture uploaded, {jpeg.Length} bytes in {watch.ElapsedMilliseconds} ms");
         }
@@ -456,6 +598,18 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 _nextAllowedMs = now + delay;
             }
             Failed($"upload failed after {watch.ElapsedMilliseconds} ms; retrying in {delay / 1000} s");
+        }
+    }
+
+    private void FinishUploading(WorkerState state)
+    {
+        lock (_hidLock)
+        {
+            // A worker that outlived its disconnect must not clear the flag of the one that replaced it.
+            if (_current is null || ReferenceEquals(_current, state))
+            {
+                _uploading = false;
+            }
         }
     }
 
@@ -540,7 +694,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         foreach (var (report, gapMs) in GlacialLcdProtocol.EncodeCustomImagePrelude(jpeg.Length))
         {
-            if (Pause(gapMs))
+            if (Pause(gapMs) || ShouldStop(state))
             {
                 return UploadOutcome.Cancelled;
             }
@@ -552,28 +706,42 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 }
             }
         }
-        if (Pause(GlacialLcdProtocol.ChunkLeadMs))
+        if (Pause(GlacialLcdProtocol.ChunkLeadMs) || ShouldStop(state))
         {
             return UploadOutcome.Cancelled;
         }
         var chunk = new byte[GlacialLcdProtocol.ChunkBytes];
+        var chunkTimer = new System.Diagnostics.Stopwatch();
         for (int offset = 0; offset < jpeg.Length; offset += GlacialLcdProtocol.ChunkBytes)
         {
             if (ShouldStop(state))
             {
                 return UploadOutcome.Cancelled;
             }
+            if (offset == 0)
+            {
+                // From the first transfer on, the panel holds a partial picture, so it holds nothing known.
+                ForgetPicture();
+            }
             // The last transfer is a full chunk, zero padded past the picture's end.
             Array.Clear(chunk);
             jpeg.AsSpan(offset, Math.Min(GlacialLcdProtocol.ChunkBytes, jpeg.Length - offset)).CopyTo(chunk);
+            chunkTimer.Restart();
             if (!pipe.Write(chunk))
             {
                 return Fail();
             }
-            if (Pause(GlacialLcdProtocol.ChunkIntervalMs))
+            // Submit to submit: the gap counts from this write's start, so a slow write does not stretch it.
+            int scaled = (int)((long)GlacialLcdProtocol.ChunkIntervalMs * _paceScalePercent / 100);
+            int remaining = scaled - (int)chunkTimer.ElapsedMilliseconds;
+            if (remaining > 0 && _abort.Wait(remaining))
             {
                 return UploadOutcome.Cancelled;
             }
+        }
+        if (ShouldStop(state))
+        {
+            return UploadOutcome.Cancelled;
         }
         lock (_hidLock)
         {
@@ -582,7 +750,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 return Fail();
             }
         }
-        if (Pause(GlacialLcdProtocol.FinishSettleMs))
+        if (Pause(GlacialLcdProtocol.FinishSettleMs) || ShouldStop(state))
         {
             return UploadOutcome.Cancelled;
         }
@@ -597,8 +765,20 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         return UploadOutcome.Done;
     }
 
-    /// <summary>Nothing streams to a panel that has no backlight command of its own here; brightness belongs to the native page.</summary>
-    public bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent) => false;
+    private void ForgetPicture()
+    {
+        bool stored;
+        lock (_stateLock)
+        {
+            _lastHash = null;
+            stored = _persistedHash is not null;
+            _persistedHash = null;
+        }
+        if (stored)
+        {
+            _memory?.Clear(_memoryKey);
+        }
+    }
 
     /// <summary>The panel holds its picture, so there is nothing to resend.</summary>
     public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => true;
@@ -616,7 +796,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         if (state is not null)
         {
-            // A worker that outlives the join stays stopped; the next connect gets its own.
+            // The worker stops on its own; a short join keeps the hub's lock from waiting out a pacing gap.
             state.Stop = true;
             _abort.Set();
             _wake.Set();
@@ -626,6 +806,19 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             _latest = null;
             _pending = false;
+        }
+        string? hash;
+        lock (_stateLock)
+        {
+            hash = _lastHash is not null && _lastHash != _persistedHash ? _lastHash : null;
+            if (hash is not null)
+            {
+                _persistedHash = hash;
+            }
+        }
+        if (hash is not null)
+        {
+            _memory?.Save(_memoryKey, hash);
         }
     }
 }

@@ -21,7 +21,7 @@ public static partial class DevicesRoutes
         app.MapPut("/devices/asus-glacial-lcd/settings", (GlacialLcdSettingsRequest body, IConfigStore store, GlacialLcdWorker worker) =>
         {
             if (body.Mode is not null
-                && body.Mode is not (GlacialLcdSettings.ModeStatic or GlacialLcdSettings.ModeAnimated or GlacialLcdSettings.ModeMonitor))
+                && body.Mode is not (GlacialLcdSettings.ModeStatic or GlacialLcdSettings.ModeAnimated or GlacialLcdSettings.ModeMonitor or GlacialLcdSettings.ModePanel))
             {
                 return Results.BadRequest(ApiResponse.Fail("unknown mode"));
             }
@@ -149,7 +149,7 @@ public sealed class GlacialLcdStateResponse
     public bool DisplayOn { get; set; }
     /// <summary>False until the user has picked a mode, when the mode, asset and widget fields are placeholders and the panel's actual mode is unknown.</summary>
     public bool ModeChosen { get; set; }
-    /// <summary>"static", "animated" or "monitor".</summary>
+    /// <summary>"static", "animated", "monitor" or "panel" (a Nexus Panel streams to the display).</summary>
     public string Mode { get; set; } = "";
     public int StaticAsset { get; set; }
     public int AnimatedAsset { get; set; }

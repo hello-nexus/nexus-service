@@ -226,7 +226,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         }
         _filled = 0;
         _opened = true;
-        _hub.Driver.StreamOpened();
+        _hub.Driver.StreamOpened(this);
         Volatile.Write(ref _lastSendMs, Environment.TickCount64);
         int keepaliveMs = _hub.Driver.KeepaliveMs;
         if (keepaliveMs > 0)
@@ -334,19 +334,25 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     public void Dispose()
     {
         _disposed = true;
-        if (_opened)
+        try
         {
-            _opened = false;
-            _hub.Driver.StreamClosed();
+            _keepalive?.Dispose();
+            _keepalive = null;
+            SecondaryMonitorFeed? monitor;
+            lock (_monitorLock)
+            {
+                monitor = _monitor;
+                Volatile.Write(ref _monitor, null);
+            }
+            monitor?.Dispose();
         }
-        _keepalive?.Dispose();
-        _keepalive = null;
-        SecondaryMonitorFeed? monitor;
-        lock (_monitorLock)
+        finally
         {
-            monitor = _monitor;
-            Volatile.Write(ref _monitor, null);
+            if (_opened)
+            {
+                _opened = false;
+                _hub.Driver.StreamClosed(this);
+            }
         }
-        monitor?.Dispose();
     }
 }

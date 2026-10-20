@@ -40,6 +40,8 @@ public class GlacialLcdScreenTests
         public GlacialLcdConfirmed Confirmed { get; } = new();
         public int DefaultModeChosen;
         public bool Streaming;
+        public int Disturbed;
+        public int? Override;
         public GlacialLcdScreen Screen { get; private set; }
 
         public Rig(byte[]? stateReply)
@@ -68,6 +70,8 @@ public class GlacialLcdScreenTests
                 () => DefaultModeChosen++,
                 Landed.Add,
                 () => Streaming,
+                () => Disturbed++,
+                () => Override,
                 () => Clock.Now,
                 _ => { });
 
@@ -646,6 +650,85 @@ public class GlacialLcdScreenTests
         Assert.True(g.ModePending);
         Assert.Equal((GlacialLcdSettings.ModeAnimated, GlacialLcdSettings.FirstRunAnimation), (g.Mode, g.AnimatedAsset));
         Assert.True(g.DisplayEdited);
+    }
+
+    [Fact]
+    public void The_nexus_panel_mode_is_never_selected_natively()
+    {
+        var rig = NewRig().Owned(modeChosen: false);
+        rig.Screen.Open();
+        rig.Take();
+
+        rig.Settings.ModeChosen = true;
+        rig.Settings.Mode = GlacialLcdSettings.ModePanel;
+        Assert.True(rig.Screen.Reconcile());
+
+        Assert.Empty(rig.Take());
+    }
+
+    [Fact]
+    public void A_display_edit_while_streaming_marks_the_panel_as_possibly_off_the_stored_picture()
+    {
+        var rig = NewRig().Owned();
+        rig.Settings.Mode = GlacialLcdSettings.ModePanel;
+        rig.Screen.Open();
+        rig.Take();
+        rig.Streaming = true;
+
+        rig.SetDisplay(false);
+        rig.Screen.Reconcile();
+        rig.SetDisplay(true);
+        rig.Screen.Reconcile();
+
+        Assert.Equal(2, rig.Disturbed);
+        Assert.DoesNotContain(rig.Take(), w => w[1] == 0x51 && w[2] == 0x14);
+    }
+
+    [Fact]
+    public void Pending_flag_edits_are_reported_per_kind()
+    {
+        var rig = NewRig().Owned();
+        rig.Screen.Open();
+        rig.Take();
+        Assert.Equal((false, false, false), rig.Screen.PendingFlagEdits());
+
+        rig.SetBrightness(0);
+        rig.SetSleep(true);
+
+        Assert.Equal((true, false, true), rig.Screen.PendingFlagEdits());
+    }
+
+    [Fact]
+    public void A_coordinator_dim_goes_through_the_settings_write_and_the_saved_level_returns_after_it()
+    {
+        var rig = new Rig(Report("EC 5C 00 00 00 28 00 00 00 28 14 00 00 00 00 28"));
+        rig.Settings.Brightness = 40;
+        rig.Screen.Open();
+        rig.Take();
+
+        rig.Override = 0;
+        Assert.True(rig.Screen.Reconcile());
+        Assert.Contains(Report("EC 5C 01 00 00 00 00 00 00 00 14 00 00 00 00 00"), rig.Take());
+
+        rig.Override = null;
+        Assert.True(rig.Screen.Reconcile());
+        Assert.Contains(Report("EC 5C 01 00 00 28 00 00 00 28 14 00 00 00 00 28"), rig.Take());
+
+        Assert.True(rig.Screen.Reconcile());
+        Assert.Empty(rig.Take());
+    }
+
+    [Fact]
+    public void The_stream_owns_the_display_only_when_the_user_picked_the_nexus_panel_mode()
+    {
+        var g = new GlacialLcdSettings();
+        Assert.False(GlacialLcdSettings.StreamChosen(g));
+
+        Nexus.Service.Routes.DevicesRoutes.ApplyGlacialRequest(g, new Nexus.Service.Routes.GlacialLcdSettingsRequest { Mode = GlacialLcdSettings.ModePanel });
+        Assert.True(GlacialLcdSettings.StreamChosen(g));
+
+        Nexus.Service.Routes.DevicesRoutes.ApplyGlacialRequest(g, new Nexus.Service.Routes.GlacialLcdSettingsRequest { Mode = GlacialLcdSettings.ModeStatic });
+        Assert.False(GlacialLcdSettings.StreamChosen(g));
     }
 
     [Fact]

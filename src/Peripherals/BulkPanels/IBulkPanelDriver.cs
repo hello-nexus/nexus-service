@@ -41,15 +41,18 @@ public interface IBulkPanelDriver
     /// </summary>
     bool HidOpensForInput => false;
 
-    /// <summary>A Nexus Panel stream started on this panel; for a driver that shares the device with another owner.</summary>
-    void StreamOpened()
+    /// <summary>A Nexus Panel stream started on this panel; for a driver that shares the device with another owner. <paramref name="stream"/> identifies the stream, so a late close cannot end a newer one.</summary>
+    void StreamOpened(object stream)
     {
     }
 
     /// <summary>The Nexus Panel stream on this panel ended.</summary>
-    void StreamClosed()
+    void StreamClosed(object stream)
     {
     }
+
+    /// <summary>The panel never shares a Nexus Panel record with another device's screen.</summary>
+    bool MultiInstance => false;
 
     /// <summary>
     /// Runs the opening handshake and reports the panel geometry to drive. Null means the

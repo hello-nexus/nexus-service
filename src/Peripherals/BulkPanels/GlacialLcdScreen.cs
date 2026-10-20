@@ -19,6 +19,9 @@ public sealed class GlacialLcdConfirmed
 
     /// <summary>Key of the mode last sent and taken, or assumed held after a restart; null when unknown.</summary>
     public string? ModeKey { get; set; }
+
+    /// <summary>A Nexus Panel was streaming at the last look, so the stored custom picture may have displaced the mode.</summary>
+    public bool WasStreaming { get; set; }
 }
 
 /// <summary>
@@ -61,6 +64,8 @@ public sealed class GlacialLcdScreen
     private readonly Action _chooseDefaultMode;
     private readonly Action<string> _modeLanded;
     private readonly Func<bool> _streaming;
+    private readonly Action _panelDisturbed;
+    private readonly Func<int?> _brightnessOverride;
     private readonly Func<long> _clock;
     private readonly Action<int> _pause;
 
@@ -69,7 +74,7 @@ public sealed class GlacialLcdScreen
     private long _settingsRetryAtMs;
     private int _announcedCount;
     private bool _seeded;
-    private bool _wasStreaming;
+    private bool _dimmed;
 
     public GlacialLcdScreen(
         IHidDevice hid,
@@ -81,6 +86,8 @@ public sealed class GlacialLcdScreen
         Action? chooseDefaultMode = null,
         Action<string>? modeLanded = null,
         Func<bool>? streaming = null,
+        Action? panelDisturbed = null,
+        Func<int?>? brightnessOverride = null,
         Func<long>? clock = null,
         Action<int>? pause = null)
     {
@@ -93,6 +100,8 @@ public sealed class GlacialLcdScreen
         _chooseDefaultMode = chooseDefaultMode ?? (() => { });
         _modeLanded = modeLanded ?? (_ => { });
         _streaming = streaming ?? (() => false);
+        _panelDisturbed = panelDisturbed ?? (() => { });
+        _brightnessOverride = brightnessOverride ?? (() => null);
         _clock = clock ?? (() => Environment.TickCount64);
         _pause = pause ?? (ms => System.Threading.Thread.Sleep(ms));
     }
@@ -102,8 +111,51 @@ public sealed class GlacialLcdScreen
     {
         GlacialLcdSettings.ModeStatic => "static:" + s.StaticAsset,
         GlacialLcdSettings.ModeMonitor => "monitor:" + s.SlotCount + ":" + SlotKey(s),
+        GlacialLcdSettings.ModePanel => "panel",
         _ => "animated:" + s.AnimatedAsset,
     };
+
+    /// <summary>The saved state with a coordinator-requested brightness, such as a lock dim, in place of the saved one.</summary>
+    private GlacialLcdSettings Wanted()
+    {
+        var wanted = _settings().Copy();
+        if (_brightnessOverride() is int level)
+        {
+            wanted.Brightness = level;
+            wanted.BrightnessEdited = true;
+            wanted.UserEdited = true;
+            _dimmed = true;
+        }
+        else if (_dimmed)
+        {
+            // The dim ended: the saved level goes back to the panel even if the user never set one.
+            if (_confirmed.Brightness == wanted.Brightness)
+            {
+                _dimmed = false;
+            }
+            else
+            {
+                wanted.BrightnessEdited = true;
+                wanted.UserEdited = true;
+            }
+        }
+        return wanted;
+    }
+
+    /// <summary>Which settings edits still differ from the panel, so the worker can hold off an upload and cancel one that should not finish first.</summary>
+    public (bool Brightness, bool Display, bool Sleep) PendingFlagEdits()
+    {
+        var wanted = Wanted();
+        if (!wanted.UserEdited)
+        {
+            return (false, false, false);
+        }
+        var c = _confirmed;
+        return (
+            FlagEditPending(wanted.BrightnessEdited, wanted.Brightness, c.Brightness),
+            FlagEditPending(wanted.DisplayEdited, wanted.DisplayOn, c.DisplayOn),
+            FlagEditPending(wanted.SleepEdited, wanted.StayOnWhileAsleep, c.KeepOnWhileAsleep));
+    }
 
     /// <summary>
     /// The app-start pair (hello, one state query); the reply seeds the fields the user has
@@ -130,7 +182,7 @@ public sealed class GlacialLcdScreen
         {
             _confirmed.ModeKey = ModeKeyOf(wanted);
         }
-        if (wanted.UserEdited && wanted.ModeChosen && wanted.DisplayOn && wanted.Mode == GlacialLcdSettings.ModeMonitor)
+        if (wanted.UserEdited && wanted.ModeChosen && wanted.DisplayOn && wanted.Mode == GlacialLcdSettings.ModeMonitor && !_streaming())
         {
             if (SelectMode(wanted) == Step.Failed)
             {
@@ -144,15 +196,15 @@ public sealed class GlacialLcdScreen
     /// <summary>Sends what the user changed and the panel does not hold yet.</summary>
     public bool Reconcile()
     {
-        var wanted = _settings().Copy();
+        var wanted = Wanted();
         bool streaming = _streaming();
-        if (_wasStreaming && !streaming)
+        if (_confirmed.WasStreaming && !streaming)
         {
             // The stored custom picture displaced the mode, so what the panel shows is unknown
             // again; a mode the user chose is selected anew, none otherwise.
             _confirmed.ModeKey = null;
         }
-        _wasStreaming = streaming;
+        _confirmed.WasStreaming = streaming;
         if (!wanted.UserEdited)
         {
             return true;
@@ -162,7 +214,7 @@ public sealed class GlacialLcdScreen
             || FlagEditPending(wanted.DisplayEdited, wanted.DisplayOn, c.DisplayOn)
             || FlagEditPending(wanted.SleepEdited, wanted.StayOnWhileAsleep, c.KeepOnWhileAsleep);
         // While a Nexus Panel streams, the upload owns the mode.
-        bool modeChanged = !streaming && wanted.ModeChosen && ModeKeyOf(wanted) != c.ModeKey;
+        bool modeChanged = !streaming && OwnsMode(wanted) && ModeKeyOf(wanted) != c.ModeKey;
         if (!flagsPending && !modeChanged)
         {
             return true;
@@ -229,6 +281,9 @@ public sealed class GlacialLcdScreen
         return SendSlots(current);
     }
 
+    /// <summary>A native mode the user chose; the Nexus Panel mode is the upload's, never selected here.</summary>
+    private static bool OwnsMode(GlacialLcdSettings s) => s.ModeChosen && s.Mode != GlacialLcdSettings.ModePanel;
+
     private static bool FlagEditPending<T>(bool edited, T wanted, T? known)
         where T : struct, IEquatable<T> => edited && (known is null || !wanted.Equals(known.Value));
 
@@ -263,7 +318,7 @@ public sealed class GlacialLcdScreen
         }
         RecordReply(reply);
         // The seed may have moved fields the user never edited; edits are judged against the reply.
-        wanted = _settings().Copy();
+        wanted = Wanted();
         var c = _confirmed;
         int? brightness = FlagEditPending(wanted.BrightnessEdited, wanted.Brightness, c.Brightness) ? wanted.Brightness : null;
         bool? display = FlagEditPending(wanted.DisplayEdited, wanted.DisplayOn, c.DisplayOn) ? wanted.DisplayOn : null;
@@ -285,7 +340,13 @@ public sealed class GlacialLcdScreen
             wanted.Mode = GlacialLcdSettings.ModeAnimated;
             wanted.AnimatedAsset = GlacialLcdSettings.FirstRunAnimation;
         }
-        modeChanged = !streaming && wanted.ModeChosen && ModeKeyOf(wanted) != c.ModeKey;
+        modeChanged = !streaming && OwnsMode(wanted) && ModeKeyOf(wanted) != c.ModeKey;
+
+        if (streaming && display is not null)
+        {
+            // A display turn-on or turn-off may leave the panel off the stored picture.
+            _panelDisturbed();
+        }
 
         if (!wanted.DisplayOn)
         {
@@ -303,10 +364,10 @@ public sealed class GlacialLcdScreen
         {
             return Step.Ok;
         }
-        bool reselect = wanted.ModeChosen && (modeChanged || turnedOn);
+        bool reselect = OwnsMode(wanted) && (modeChanged || turnedOn);
         if (!reselect)
         {
-            return wrote && wanted.ModeChosen ? RepeatModeSelect(wanted) : Step.Ok;
+            return wrote && OwnsMode(wanted) ? RepeatModeSelect(wanted) : Step.Ok;
         }
         var step = SelectAndLand(wanted);
         if (step == Step.Ok && defaultMode)

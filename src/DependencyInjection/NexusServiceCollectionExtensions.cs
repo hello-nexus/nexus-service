@@ -1440,7 +1440,16 @@ public static class NexusServiceCollectionExtensions
         });
         services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
-                glacialStreamHub, sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>()));
+                glacialStreamHub,
+                sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(),
+                // The display is the stream's only when the user has picked the Nexus Panel mode; until then it keeps its own modes.
+                withheld: () =>
+                {
+                    bool chosen = false;
+                    sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
+                        s => chosen = Nexus.Service.Persistence.GlacialLcdSettings.StreamChosen(s.Devices.GlacialLcd));
+                    return !chosen;
+                }));
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>());
         services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(

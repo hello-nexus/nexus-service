@@ -59,10 +59,15 @@ public class GlacialLcdDriverTests
         public void Advance(long ms) => Interlocked.Add(ref _now, ms);
     }
 
-    private static GlacialLcdPanelDriver Fast(GlacialLcdLink? link = null, FakeClock? clock = null, int paceScale = 0, int settleMs = 0, int backoffMs = 10)
+    private static GlacialLcdPanelDriver Fast(GlacialLcdLink? link = null, FakeClock? clock = null, int paceScale = 0, int settleMs = 0, int backoffMs = 10, bool streaming = true)
     {
         clock ??= new FakeClock();
-        return new GlacialLcdPanelDriver(link ?? new GlacialLcdLink(), paceScale, settleMs, 600_000, backoffMs, 10, () => clock.Now);
+        link ??= new GlacialLcdLink();
+        if (streaming)
+        {
+            link.StreamOpened(new object());
+        }
+        return new GlacialLcdPanelDriver(link, paceScale, settleMs, 600_000, backoffMs, 10, () => clock.Now);
     }
 
     [Fact]
@@ -155,6 +160,8 @@ public class GlacialLcdDriverTests
         first.Connect(pipe, hid);
         first.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => first.UploadsCompleted == 1));
+        // The remembered picture is written when the stream stops, not per upload.
+        Assert.Empty(memory.Hashes);
         first.Disconnect(pipe, hid);
         Assert.Single(memory.Hashes);
 
@@ -169,6 +176,8 @@ public class GlacialLcdDriverTests
 
         Assert.Equal(0, second.UploadAttempts);
         Assert.Empty(pipe2.Writes);
+        // The panel is known to hold it, so only the show step goes out.
+        Assert.True(WaitUntil(() => hid2.Writes.Any(w => w.AsSpan().SequenceEqual(Report("EC 51 11 01 02")))));
         second.Disconnect(pipe2, hid2);
     }
 
@@ -184,12 +193,13 @@ public class GlacialLcdDriverTests
         driver.Connect(pipe, hid);
         driver.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
-        Assert.Single(memory.Hashes);
+        clock.Advance(GlacialLcdPanelDriver.PersistAfterMs);
+        Assert.True(WaitUntil(() => memory.Hashes.Count == 1));
 
         pipe.FailWrites = true;
         driver.SendFrame(pipe, hid, Frame(noiseRows: 2));
         Assert.True(WaitUntil(() => driver.UploadAttempts == 2));
-        Assert.Empty(memory.Hashes);
+        Assert.True(WaitUntil(() => memory.Hashes.Count == 0));
         driver.SendFrame(pipe, hid, Frame(noiseRows: 3));
         int looks = driver.Ticks + 2;
         Assert.True(WaitUntil(() => driver.Ticks >= looks));
@@ -199,6 +209,7 @@ public class GlacialLcdDriverTests
         clock.Advance(800);
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
         driver.Disconnect(pipe, hid);
+        Assert.Single(memory.Hashes);
     }
 
     [Fact]
@@ -250,18 +261,115 @@ public class GlacialLcdDriverTests
         driver.Disconnect(pipe, hid);
     }
 
+    private static void Looked(GlacialLcdPanelDriver driver)
+    {
+        int looks = driver.Ticks + 2;
+        Assert.True(WaitUntil(() => driver.Ticks >= looks));
+    }
+
+    [Fact]
+    public void Nothing_uploads_until_a_stream_is_open()
+    {
+        var driver = Fast(streaming: false);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Looked(driver);
+
+        Assert.Equal(0, driver.UploadAttempts);
+        Assert.Empty(pipe.Writes);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_dark_display_or_a_waiting_native_edit_holds_the_upload()
+    {
+        var link = new GlacialLcdLink();
+        var driver = Fast(link);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        link.Dark = true;
+        driver.SendFrame(pipe, hid, Frame());
+        Looked(driver);
+        Assert.Equal(0, driver.UploadAttempts);
+
+        link.Dark = false;
+        link.NativePending = true;
+        Looked(driver);
+        Assert.Equal(0, driver.UploadAttempts);
+
+        link.NativePending = false;
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_cancel_that_sent_no_bulk_data_keeps_the_remembered_picture()
+    {
+        var link = new GlacialLcdLink();
+        var memory = new FakeMemory();
+        memory.Hashes["FAKE"] = "ABC";
+        var driver = Fast(link);
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        link.RequestCancel();
+        driver.SendFrame(pipe, hid, Frame());
+        Looked(driver);
+
+        Assert.Equal("ABC", memory.Hashes["FAKE"]);
+        Assert.Empty(pipe.Writes);
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0xF1);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_stale_transports_close_cannot_end_a_newer_stream()
+    {
+        var link = new GlacialLcdLink();
+        var old = new object();
+        var current = new object();
+        link.StreamOpened(old);
+        link.StreamOpened(current);
+
+        link.StreamClosed(old);
+        Assert.True(link.Streaming);
+
+        link.StreamClosed(current);
+        Assert.False(link.Streaming);
+    }
+
+    [Fact]
+    public void A_coordinator_dim_becomes_a_brightness_override_for_the_native_worker()
+    {
+        var link = new GlacialLcdLink();
+        var driver = Fast(link);
+
+        Assert.True(driver.SetBrightness(new FakePipe(), new FakeHid(), 20));
+
+        Assert.Equal(20, link.BrightnessOverride);
+        Assert.True(driver.MultiInstance);
+    }
+
     [Fact]
     public void The_stream_flag_follows_the_stream_open_and_close_hooks()
     {
         var link = new GlacialLcdLink();
         int changes = 0;
         link.Changed += () => changes++;
-        var driver = Fast(link);
+        var driver = Fast(link, streaming: false);
 
-        driver.StreamOpened();
+        var stream = new object();
+        driver.StreamOpened(stream);
         Assert.True(link.Streaming);
-        driver.StreamOpened();
-        driver.StreamClosed();
+        Assert.True(link.ShowPending);
+        driver.StreamClosed(stream);
 
         Assert.False(link.Streaming);
         Assert.Equal(2, changes);
@@ -277,7 +385,7 @@ public class GlacialLcdDriverTests
         Assert.Equal(0x82, driver.ReadPipeId);
         Assert.True(driver.NeedsHidChannel);
         Assert.True(driver.HidOpensForInput);
-        Assert.False(((IBulkPanelDriver)driver).SupportsBrightness);
+        Assert.True(((IBulkPanelDriver)driver).SupportsBrightness);
         Assert.Equal("lcd-square", driver.Surface);
     }
 
