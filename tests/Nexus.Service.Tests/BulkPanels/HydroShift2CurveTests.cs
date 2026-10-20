@@ -17,6 +17,68 @@ public class HydroShift2CurveTests
 {
     // ── protocol, pinned to bytes L-Connect sent the Y70's unit (USBPcap 2026-10-08) ──
 
+    [Theory]
+    [InlineData(true, "07EA0A14082A2101")]
+    [InlineData(false, "07EA0A14082A2100")]
+    public void Offline_mode_is_the_captured_set_clock_with_mode_1_or_0(bool on, string expected)
+    {
+        var packet = HydroShift2Protocol.EncodeSetClock(
+            new DateTime(2026, 10, 20, 8, 42, 33), 1, on ? HydroShift2Protocol.ClockOfflineOn : HydroShift2Protocol.ClockOfflineOff);
+        Assert.Equal(expected, Convert.ToHexString(PlainParams(packet)));
+    }
+
+    [Fact]
+    public void The_apply_sequence_keeps_the_sync_only_mode()
+    {
+        var packet = HydroShift2Protocol.EncodeSetClock(new DateTime(2026, 10, 20, 8, 42, 33), 1);
+        Assert.Equal("07EA0A14082A2102", Convert.ToHexString(PlainParams(packet)));
+    }
+
+    [Fact]
+    public void Offline_mode_is_unset_by_default_and_round_trips()
+    {
+        var settings = new NexusSettings();
+        Assert.Null(settings.Devices.HydroShift2Curve.OfflineMode);
+        settings.Devices.HydroShift2Curve.OfflineMode = true;
+        var json = System.Text.Json.JsonSerializer.Serialize(settings, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+        Assert.True(back.Devices.HydroShift2Curve.OfflineMode);
+    }
+
+    [Theory]
+    [InlineData(null, 1)]
+    [InlineData(true, 2)]
+    [InlineData(false, 2)]
+    public void Connect_sends_an_offline_mode_only_when_the_user_set_one(bool? mode, int setClocks)
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver { OfflineModeSource = () => mode };
+        Assert.NotNull(driver.Connect(pipe, null));
+        Assert.Equal(setClocks, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandSetClock));
+    }
+
+    [Fact]
+    public void Toggling_offline_mode_sends_one_set_clock()
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver();
+        Assert.True(driver.SetOfflineMode(pipe, true));
+        Assert.Equal(new[] { HydroShift2Protocol.CommandSetClock }, pipe.Commands);
+    }
+
+    private static byte[] PlainParams(byte[] packet)
+    {
+#pragma warning disable CA5351 // The glass's own framing.
+        using var des = System.Security.Cryptography.DES.Create();
+#pragma warning restore CA5351
+        des.Key = des.IV = System.Text.Encoding.ASCII.GetBytes("slv3tuzx");
+        des.Mode = System.Security.Cryptography.CipherMode.CBC;
+        des.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+        using var decryptor = des.CreateDecryptor();
+        var plain = decryptor.TransformFinalBlock(packet, 0, 504);
+        return plain[8..16];
+    }
+
     [Fact]
     public void Tilt_from_0_to_10_degrees_is_the_captured_move()
     {

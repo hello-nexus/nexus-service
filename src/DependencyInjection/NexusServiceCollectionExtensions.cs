@@ -1812,10 +1812,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveMedia>();
         services.AddSingleton(sp =>
         {
+            var store = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            driver.OfflineModeSource = () => store.Load().Devices.HydroShift2Curve.OfflineMode;
             var player = new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer(
                 hub, driver,
                 sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveMedia>(),
-                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                store,
                 sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
                 lockSleeping: id => sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.IsLockDark(id) == true);
             sp.GetService<Nexus.Service.Lighting.LcdLockState>()?.Changed += _ => player.Wake();

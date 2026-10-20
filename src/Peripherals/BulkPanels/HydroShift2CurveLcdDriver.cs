@@ -57,6 +57,9 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     private long _settledAt;
     private int _resumed;
 
+    /// <summary>The user's Offline Mode, or null while never set in Nexus (the glass's own flag is then left as found).</summary>
+    public Func<bool?>? OfflineModeSource { get; set; }
+
     public HydroShift2CurveLcdDriver(Func<long>? now = null)
     {
         _now = now ?? (() => Environment.TickCount64);
@@ -117,6 +120,12 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty);
         Command(pipe, HydroShift2CurveProtocol.CommandWarnSwitch, stackalloc byte[] { 0 });
         Command(pipe, HydroShift2CurveProtocol.CommandHideShow, new byte[32]);
+        // L-Connect re-sends its Offline Mode on connect. Nexus does so only for a mode the user set here,
+        // and the sync-only SetClock below leaves the firmware flag alone.
+        if (OfflineModeSource?.Invoke() is { } offline)
+        {
+            SetOfflineMode(pipe, offline);
+        }
         Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
         Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
         Command(pipe, HydroShift2CurveProtocol.CommandClearPng, ReadOnlySpan<byte>.Empty);
@@ -166,6 +175,11 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     /// <summary>Sets the backlight without changing the remembered <see cref="Brightness"/>.</summary>
     public bool SetBacklight(IBulkUsbPipe pipe, int percent) =>
         Command(pipe, HydroShift2Protocol.CommandBrightness, stackalloc byte[] { (byte)(Math.Clamp(percent, 0, 100) / 2) });
+
+    /// <summary>Sets the firmware flag that shows the date and time while the PC is off, as L-Connect's toggle does.</summary>
+    public bool SetOfflineMode(IBulkUsbPipe pipe, bool on) =>
+        Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(
+            DateTime.Now, NextTimestamp(), on ? HydroShift2Protocol.ClockOfflineOn : HydroShift2Protocol.ClockOfflineOff)) is not null;
 
     /// <summary>Readies the decoder for a video and returns the chunk size the glass takes, 0 when it did not answer.</summary>
     public int BeginVideo(IBulkUsbPipe pipe, int frameRate)

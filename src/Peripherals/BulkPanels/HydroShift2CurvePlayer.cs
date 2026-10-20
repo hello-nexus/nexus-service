@@ -79,6 +79,9 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
         _hub.Detach();
     }
 
+    /// <summary>Sends the Offline Mode now; a glass that is not attached gets it at its next connect.</summary>
+    public void ApplyOfflineMode(bool on) => _hub.Exchange(pipe => _driver.SetOfflineMode(pipe, on), false);
+
     /// <summary>Settings changed: act now rather than on the next tick.</summary>
     public void Wake()
     {
