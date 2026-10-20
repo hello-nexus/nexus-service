@@ -217,13 +217,17 @@ public sealed class RgbBridge : IDisposable
     // device that silently lost state - direct-mode timeout, USB
     // re-enumeration, another OpenRGB client writing over us - still self-heals
     // the way the unconditional 30fps push did, just a second later instead of
-    // 33ms. Cleared wholesale in SyncPhysicalBuffers (device list changed) and
-    // after BlackoutAsync, so a stale entry can never suppress a real write.
+    // 33ms. A controller that persists every write (RgbDevice.PersistsEveryWrite)
+    // has no heartbeat. Cleared in SyncPhysicalBuffers on every refresh, except
+    // for a persisting controller whose id and LED layout are unchanged, and
+    // wholesale after BlackoutAsync, so a stale entry can never suppress a real write.
     private readonly ConcurrentDictionary<int, RgbColor[]> _lastPushed = new();
     private readonly ConcurrentDictionary<int, long> _lastPushTicks = new();
     private const long HeartbeatMs = 1000;
     // Physical indices of controllers that persist every write (RgbDevice.PersistsEveryWrite). They get no heartbeat and a default rate cap. Replaced wholesale on device-set change.
     private volatile HashSet<int> _physSelfSaving = new();
+    // Physical index -> id and LED layout of each persisting controller at the last sync; a match keeps its push state across refreshes.
+    private Dictionary<int, string> _physSelfSavingLayout = new();
     // Physical index -> user cap in Hz for devices that have one, rebuilt every frame.
     private readonly Dictionary<int, int> _physCapsHz = new();
     // Physical index -> stable OpenRGB device id, the key LightingMaxRates uses. Replaced wholesale on device-set change.
@@ -1944,14 +1948,14 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
+    private static string SelfSavingLayout(RgbDevice d)
+        => d.StableId + "|" + d.LedCount + "|" + string.Join(',', d.Zones.Select(z => z.LedCount));
+
     internal void SyncPhysicalBuffers(IReadOnlyList<RgbDevice> devices)
     {
-        // Indices are being re-derived, so every dedup baseline is suspect.
-        _lastPushed.Clear();
-        _lastPushTicks.Clear();
-        _pushLimiter.Reset();
         var stableIds = new Dictionary<int, string>();
         var selfSaving = new HashSet<int>();
+        var layouts = new Dictionary<int, string>();
         foreach (var d in devices)
         {
             if (d.LedCount > 0)
@@ -1960,9 +1964,32 @@ public sealed class RgbBridge : IDisposable
                 if (d.PersistsEveryWrite)
                 {
                     selfSaving.Add(d.Address);
+                    layouts[d.Address] = SelfSavingLayout(d);
                 }
             }
         }
+        // Indices are being re-derived, so every dedup baseline is suspect. A
+        // persisting controller with the same id and layout keeps its baseline:
+        // clearing it would re-send an identical frame (and write it to the
+        // controller's memory) on every refresh.
+        var previous = _physSelfSavingLayout;
+        bool Keep(int idx) => layouts.TryGetValue(idx, out var now) && previous.TryGetValue(idx, out var before) && now == before;
+        foreach (var k in _lastPushed.Keys)
+        {
+            if (!Keep(k))
+            {
+                _lastPushed.TryRemove(k, out _);
+            }
+        }
+        foreach (var k in _lastPushTicks.Keys)
+        {
+            if (!Keep(k))
+            {
+                _lastPushTicks.TryRemove(k, out _);
+            }
+        }
+        _pushLimiter.Retain(Keep);
+        _physSelfSavingLayout = layouts;
         _physStableIds = stableIds;
         _physSelfSaving = selfSaving;
         SizePhysicalBuffers(_physBuffers, devices);

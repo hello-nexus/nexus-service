@@ -75,6 +75,9 @@ public sealed class RgbDevice
         }
     }
 
+    /// <summary>A fixed-size zone of a persisting controller: the driver ignores a resize there, so none is offered or applied.</summary>
+    public bool IgnoresResize(RgbZone zone) => zone.IsFixedSize && PersistsEveryWrite;
+
     private string? _stableId;
 
     /// <summary>

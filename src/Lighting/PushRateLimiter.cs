@@ -59,4 +59,16 @@ public sealed class PushRateLimiter<TKey> where TKey : notnull
     }
 
     public void Reset() => _schedules.Clear();
+
+    /// <summary>Drops the schedule of every key <paramref name="keep"/> rejects.</summary>
+    public void Retain(Func<TKey, bool> keep)
+    {
+        foreach (var key in _schedules.Keys)
+        {
+            if (!keep(key))
+            {
+                _schedules.TryRemove(key, out _);
+            }
+        }
+    }
 }

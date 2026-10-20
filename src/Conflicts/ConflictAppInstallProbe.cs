@@ -69,15 +69,17 @@ public sealed class ConflictAppInstallProbe : IConflictAppInstallProbe
             return installed;
         }
         var services = WindowsServiceController.ListServices();
-        if (services.Count == 0)
-        {
-            // The enumeration returns empty on failure as readily as on an empty
-            // SCM, and a false seed here is permanent. Answer nothing instead.
-            return installed;
-        }
         foreach (var def in ConflictAppCatalog.All)
         {
-            if (_cache.GetOrAdd(def.Id, HasService(def, services) || HasInstallPath(def, Environment.ExpandEnvironmentVariables, File.Exists)))
+            if (HasInstallPath(def, Environment.ExpandEnvironmentVariables, File.Exists))
+            {
+                _cache[def.Id] = true;
+                installed.Add(def.Id);
+                continue;
+            }
+            // The enumeration returns empty on failure as readily as on an empty
+            // SCM, and a false seed from it is permanent. Seed nothing then.
+            if (services.Count > 0 && _cache.GetOrAdd(def.Id, HasService(def, services)))
             {
                 installed.Add(def.Id);
             }

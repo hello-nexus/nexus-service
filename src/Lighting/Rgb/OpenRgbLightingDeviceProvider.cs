@@ -337,6 +337,10 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
                 && int.TryParse(id.AsSpan(stableId.Length + 1), out zoneIndex)
                 && zoneIndex >= 0)
             {
+                if (zoneIndex < devices[i].Zones.Count && devices[i].IgnoresResize(devices[i].Zones[zoneIndex]))
+                {
+                    return false;
+                }
                 physicalIndex = devices[i].Address;
                 deviceId = stableId;
                 return true;

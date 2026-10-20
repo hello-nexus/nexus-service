@@ -150,18 +150,7 @@ public class SelfSavingControllerTests : IDisposable
     }
 
     [Fact]
-    public void Card_reports_the_default_cap_for_a_self_saving_device_only()
-    {
-        var settings = new NexusSettings();
-        var cards = OpenRgbZoneSupport.BuildCards(new[] { Polychrome() }, settings, isInit: true).Devices;
-        Assert.All(cards, c => Assert.Equal(RgbDevice.SelfSavingDefaultCapHz, c.MaxRateHz));
-
-        var direct = OpenRgbZoneSupport.BuildCards(new[] { Board(Mode("Direct", 0)) }, settings, isInit: true).Devices;
-        Assert.All(direct, c => Assert.Null(c.MaxRateHz));
-    }
-
-    [Fact]
-    public void Fixed_zones_are_not_resizable_and_ignore_a_saved_count()
+    public void Fixed_zones_of_a_self_saving_controller_are_not_resizable_and_ignore_a_saved_count()
     {
         var dev = Polychrome();
         var settings = new NexusSettings();
@@ -175,6 +164,88 @@ public class SelfSavingControllerTests : IDisposable
         Assert.Equal(10, structure.Segments[1].LedCount);
         Assert.True(structure.Segments[2].Resizable);
         Assert.Equal(20, structure.Segments[2].LedCount);
+    }
+
+    [Fact]
+    public void Fixed_zones_of_other_controllers_keep_resize_and_saved_counts()
+    {
+        var dev = Board(Mode("Direct", 0), Mode("Static", 0));
+        var settings = new NexusSettings();
+        settings.Devices.ZoneLedCounts[$"{dev.StableId}-1"] = 8;
+
+        var structure = OpenRgbZoneSupport.BuildStructure(dev, settings);
+
+        Assert.True(structure.Segments[1].Resizable);
+        Assert.Equal(8, structure.Segments[1].LedCount);
+    }
+
+    private static IEnumerable<RgbDevice> One(RgbDevice d) => new[] { d };
+
+    private (OpenRgbLightingDeviceProvider Provider, TestableConfigStore Store) ProviderFor(RgbDevice dev)
+    {
+        var store = new TestableConfigStore(Path.Combine(_dir, "provider-settings.json"));
+        var bridge = NewBridge();
+        typeof(RgbBridge).GetField("_devices", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(bridge, One(dev).ToList());
+        return (new OpenRgbLightingDeviceProvider(bridge, store), store);
+    }
+
+    [Fact]
+    public void Resize_route_refuses_a_fixed_zone_of_a_self_saving_controller_but_not_other_zones()
+    {
+        var dev = Polychrome();
+        var (provider, store) = ProviderFor(dev);
+
+        provider.SetZoneLedCount($"{dev.StableId}-1", 8);
+        Assert.False(store.Load().Devices.ZoneLedCounts.ContainsKey($"{dev.StableId}-1"));
+
+        provider.SetZoneLedCount($"{dev.StableId}-2", 20);
+        Assert.Equal(20, store.Load().Devices.ZoneLedCounts[$"{dev.StableId}-2"]);
+    }
+
+    [Fact]
+    public void Resize_route_still_saves_a_fixed_zone_of_another_controller()
+    {
+        var dev = Board(Mode("Direct", 0));
+        var (provider, store) = ProviderFor(dev);
+
+        provider.SetZoneLedCount($"{dev.StableId}-1", 8);
+        Assert.Equal(8, store.Load().Devices.ZoneLedCounts[$"{dev.StableId}-1"]);
+    }
+
+    [Fact]
+    public void Refreshes_do_not_repush_an_unchanged_self_saving_controller_and_a_layout_change_does()
+    {
+        using var bridge = NewBridge();
+        var dev = Polychrome();
+        var buf = new RgbColor[dev.LedCount];
+        var devices = new[] { dev };
+
+        bridge.SyncPhysicalBuffers(devices);
+        Assert.True(bridge.ShouldPush(dev.Address, buf, 15, 1000, persistsEveryWrite: true));
+        for (var i = 1; i <= 5; i++)
+        {
+            bridge.SyncPhysicalBuffers(new[] { Polychrome() });
+            Assert.False(bridge.ShouldPush(dev.Address, buf, 15, 1000 + i * 3000, persistsEveryWrite: true));
+        }
+
+        var resized = Polychrome();
+        resized.Zones[2].LedCount = 12;
+        bridge.SyncPhysicalBuffers(new[] { resized });
+        Assert.True(bridge.ShouldPush(dev.Address, buf, 15, 30_000, persistsEveryWrite: true));
+    }
+
+    [Fact]
+    public void Refreshes_still_reset_the_baseline_of_a_normal_device()
+    {
+        using var bridge = NewBridge();
+        var dev = Board(Mode("Direct", 0));
+        var buf = new RgbColor[dev.LedCount];
+
+        bridge.SyncPhysicalBuffers(new[] { dev });
+        Assert.True(bridge.ShouldPush(dev.Address, buf, 0, 1000));
+        bridge.SyncPhysicalBuffers(new[] { dev });
+        Assert.True(bridge.ShouldPush(dev.Address, buf, 0, 1100));
     }
 
     private static string Expand(string p) => p.Replace("%ProgramFiles(x86)%", "C:\\Program Files (x86)");
