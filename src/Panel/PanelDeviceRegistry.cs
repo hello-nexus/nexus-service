@@ -40,6 +40,9 @@ public sealed class PanelDeviceRegistry
     /// </summary>
     public event Action<PanelDeviceRecord>? DisplayRecordReady;
 
+    /// <summary>Raised after Allocate mints a new record (a reused single-instance record does not raise it), before the caller can customize it.</summary>
+    public event Action<PanelDeviceRecord>? RecordCreated;
+
     /// <summary>Raised (record ids) after a record's display fingerprint was first recorded or changed, so profile files can pick up its match key.</summary>
     public event Action<IReadOnlyList<string>>? FingerprintsChanged;
 
@@ -50,6 +53,7 @@ public sealed class PanelDeviceRegistry
         var surface = capabilities?.Surface;
 
         PanelDeviceRecord? result = null;
+        var created = false;
         _store.Update(s =>
         {
             // Single-instance surfaces (Y70, Q-series) are one physical panel
@@ -92,8 +96,10 @@ public sealed class PanelDeviceRegistry
             };
             s.PanelDevices[record.Id] = record;
             result = Clone(record);
+            created = true;
         });
 
+        if (created) RecordCreated?.Invoke(result!);
         return result!;
     }
 

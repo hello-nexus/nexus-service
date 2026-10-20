@@ -229,14 +229,16 @@ internal static class AppBootstrap
         };
         var panelRegistry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
         panelRegistry.FingerprintsChanged += profileManager.StampFingerprintKeys;
-        // A re-promoted monitor gets a new record id; the active profile's saved look for it applies at once.
-        panelRegistry.DisplayRecordReady += record =>
+        // A record created after its look was saved (a re-promoted monitor, a Y70 or cooler after settings were lost) adopts the active profile's saved look.
+        void AdoptSavedLook(Nexus.Service.Models.Panel.PanelDeviceRecord record)
         {
             if (profileManager.AdoptSavedLook(record.Id) && sp.GetService<MultiplexHub>() is { } hub)
             {
                 PanelTopics.BroadcastPanelDevice(hub, record.Id);
             }
-        };
+        }
+        panelRegistry.DisplayRecordReady += AdoptSavedLook;
+        panelRegistry.RecordCreated += AdoptSavedLook;
         profileManager.PanelsChanged += () => ReapplyPanelsAfterProfileSwitch(sp, configStore);
     }
 

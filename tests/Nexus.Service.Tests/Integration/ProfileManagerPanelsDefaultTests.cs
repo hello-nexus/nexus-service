@@ -1,5 +1,6 @@
 using Nexus.Service.Models.Panel;
 using System.Text.Json;
+using Nexus.Service.Panel;
 using Nexus.Service.Persistence;
 using Nexus.Service.Serialization;
 
@@ -146,6 +147,53 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
             Assert.Contains("#222222", after2);
             Assert.Contains("#020202", after2);
             Assert.Equal("#010101", store.Load().Tryx.OverlayColor);
+        }
+        finally { pm.Dispose(); store.Dispose(); }
+    }
+
+    private static readonly PanelDeviceCapabilities Y70Caps = new() { Surface = PanelSurfaces.Y70, Orientation = "landscape" };
+
+    [Fact]
+    public void Y70_created_after_lost_settings_adopts_the_saved_look_and_a_shared_flush_keeps_it()
+    {
+        WriteTwoProfiles();
+        File.WriteAllText(Path.Combine(_dir, "profile-p1.json"), FileWithLook("#111111", "#010101"));
+        File.WriteAllText(Path.Combine(_dir, "profile-p2.json"), FileWithLook("#111111", "#010101"));
+        File.WriteAllText(_settingsPath, "{ not json");
+
+        var (store, pm) = Boot();
+        try
+        {
+            var registry = new PanelDeviceRegistry(store);
+            registry.RecordCreated += r => pm.AdoptSavedLook(r.Id);
+
+            var record = registry.Allocate("Y70", Y70Caps);
+            Assert.Equal("#111111", store.Load().PanelDevices[record.Id].AccentColor);
+
+            pm.SwitchProfile("p2");
+            pm.SwitchProfile("p1");
+
+            Assert.Contains("#111111", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
+            Assert.Contains("#111111", File.ReadAllText(Path.Combine(_dir, "profile-p2.json")));
+            Assert.Equal("#111111", store.Load().PanelDevices[record.Id].AccentColor);
+            Assert.Single(store.Load().PanelDevices);
+        }
+        finally { pm.Dispose(); store.Dispose(); }
+    }
+
+    [Fact]
+    public void Brand_new_panel_with_no_saved_look_stays_default()
+    {
+        var (store, pm) = Boot();
+        try
+        {
+            var registry = new PanelDeviceRegistry(store);
+            registry.RecordCreated += r => pm.AdoptSavedLook(r.Id);
+
+            var record = registry.Allocate("Y70", Y70Caps);
+
+            Assert.True(PanelProfileData.IsDefaultLook(store.Load().PanelDevices[record.Id]));
+            Assert.Single(store.Load().PanelDevices);
         }
         finally { pm.Dispose(); store.Dispose(); }
     }
