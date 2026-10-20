@@ -244,6 +244,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// <summary>A second LCD on the same surface must not share this panel's layout record.</summary>
     public bool MultiInstance => true;
 
+    /// <summary>The panel's USB serial read as a manufacturer string early in boot, so the stream and the remembered picture are keyed on the handler id.</summary>
+    public bool SingleUnitPerPc => true;
+
     public void StreamOpened(object stream) => _link.StreamOpened(stream);
 
     public void StreamClosed(object stream) => _link.StreamClosed(stream);
@@ -285,7 +288,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         if (start is not null)
         {
-            _memoryKey = hid.Serial is { Length: > 0 } serial ? serial : HandlerId;
+            _memoryKey = HandlerId;
             var remembered = _memory?.Load(_memoryKey);
             lock (_stateLock)
             {
@@ -475,7 +478,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _latest.CopyTo(snapshot, 0);
             _pending = false;
         }
-        encoder ??= new BgraJpegEncoder(GlacialLcdProtocol.PanelWidth, GlacialLcdProtocol.PanelHeight, GlacialLcdProtocol.JpegQuality);
+        encoder ??= new BgraJpegEncoder(GlacialLcdProtocol.PanelWidth, GlacialLcdProtocol.PanelHeight, GlacialLcdProtocol.StreamJpegQuality);
         byte[] jpeg = encoder.Encode(snapshot).ToArray();
         string hash = Convert.ToHexString(SHA256.HashData(jpeg));
         lock (_stateLock)
@@ -561,6 +564,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         else if (state.Stop)
         {
             // Torn down mid-upload: no delay, no backoff, and the frame state belongs to the next worker.
+            return;
+        }
+        else if (outcome == UploadOutcome.Superseded)
+        {
+            // A newer settled frame is already pending; the next pass uploads it with no delay.
             return;
         }
         else if (outcome == UploadOutcome.Cancelled)
@@ -652,7 +660,18 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     {
         Done,
         Cancelled,
+        Superseded,
         Failed,
+    }
+
+    /// <summary>A newer frame has settled while this upload runs, so finishing the old picture would only be replaced.</summary>
+    private bool NewerFrameWaiting()
+    {
+        long now = _clock();
+        lock (_frameLock)
+        {
+            return _pending && (now - _lastChangeMs >= _settleMs || now - _firstPendingMs >= _maxSettleMs);
+        }
     }
 
     /// <summary>A pacing wait from the capture; true when it was cut short by a cancel.</summary>
@@ -707,6 +726,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 return UploadOutcome.Cancelled;
             }
+            if (NewerFrameWaiting())
+            {
+                // Between transfers and before the end report, so the panel is never left with a half-finished show.
+                return UploadOutcome.Superseded;
+            }
             // The last transfer is a full chunk, zero padded past the picture's end.
             Array.Clear(chunk);
             jpeg.AsSpan(offset, Math.Min(GlacialLcdProtocol.ChunkBytes, jpeg.Length - offset)).CopyTo(chunk);
@@ -726,6 +750,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         if (ShouldStop(state))
         {
             return UploadOutcome.Cancelled;
+        }
+        if (NewerFrameWaiting())
+        {
+            return UploadOutcome.Superseded;
         }
         lock (_hidLock)
         {
@@ -791,6 +819,15 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _latest = null;
             _pending = false;
         }
+        PersistNow();
+    }
+
+    /// <summary>
+    /// Writes the remembered picture to settings now. The disconnect does it, but a service
+    /// shutdown skips the disconnect, so the shutdown path calls this before the settings flush.
+    /// </summary>
+    public void PersistNow()
+    {
         string? hash;
         lock (_stateLock)
         {

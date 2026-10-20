@@ -55,6 +55,12 @@ public interface IBulkPanelDriver
     bool MultiInstance => false;
 
     /// <summary>
+    /// One such panel per PC, whose USB serial is not reliable early in boot: the stream is keyed
+    /// on the handler id instead, and a record an earlier build stored under a serial is adopted.
+    /// </summary>
+    bool SingleUnitPerPc => false;
+
+    /// <summary>
     /// Runs the opening handshake and reports the panel geometry to drive. Null means the
     /// panel is not usable, which the worker treats as "try again later" rather than a
     /// hard failure. A panel that reports its own resolution returns what it reported, not

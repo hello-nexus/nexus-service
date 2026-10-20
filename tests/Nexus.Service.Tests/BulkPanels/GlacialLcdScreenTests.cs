@@ -119,6 +119,9 @@ public class GlacialLcdScreenTests
 
     private const string Slot0 = "EC 53 00 43 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 34 33 2E 30 E2 84 83";
     private const string Slot1 = "EC 53 01 43 50 55 20 50 61 63 6B 61 67 65 00 00 00 00 00 00 00 35 37 2E 30 E2 84 83";
+    // With three widgets the first two are written swapped: wire index 0 carries the second widget.
+    private const string Wire0 = "EC 53 00 43 50 55 20 50 61 63 6B 61 67 65 00 00 00 00 00 00 00 35 37 2E 30 E2 84 83";
+    private const string Wire1 = "EC 53 01 43 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 34 33 2E 30 E2 84 83";
     private const string Slot2 = "EC 53 02 47 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33 30 2E 37 E2 84 83";
 
     [Fact]
@@ -175,7 +178,7 @@ public class GlacialLcdScreenTests
 
         Assert.True(rig.Screen.Open());
 
-        AssertSequence(rig.Take(), "EC 82", "EC DC", "EC DC", Slot0, Slot1, Slot2, "EC 52 00 02", "EC 51 21", Slot0, Slot1, Slot2);
+        AssertSequence(rig.Take(), "EC 82", "EC DC", "EC DC", Wire0, Wire1, Slot2, "EC 52 00 02", "EC 51 21", Wire0, Wire1, Slot2);
     }
 
     [Fact]
@@ -187,6 +190,18 @@ public class GlacialLcdScreenTests
         rig.Screen.Open();
 
         AssertSequence(rig.Take(), "EC 82", "EC DC");
+    }
+
+    [Fact]
+    public void With_fewer_than_three_widgets_the_slots_go_out_in_their_own_order()
+    {
+        var rig = NewRig().Owned();
+        rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
+        rig.Settings.SlotCount = 2;
+
+        rig.Screen.Open();
+
+        AssertSequence(rig.Take().Skip(3), Slot0, Slot1, "EC 52 00 01", "EC 51 21", Slot0, Slot1);
     }
 
     [Theory]
@@ -354,7 +369,7 @@ public class GlacialLcdScreenTests
         Assert.True(rig.Screen.Reconcile());
 
         AssertSequence(
-            rig.Take(), "EC DC", "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46", "EC DC", Slot0, Slot1, Slot2, "EC 52 00 02", "EC 51 21", Slot0, Slot1, Slot2);
+            rig.Take(), "EC DC", "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46", "EC DC", Wire0, Wire1, Slot2, "EC 52 00 02", "EC 51 21", Wire0, Wire1, Slot2);
     }
 
     [Fact]

@@ -26,6 +26,9 @@ public static class GlacialLcdProtocol
     /// <summary>Baseline JPEG, 4:2:0, at the standard quantization tables scaled for this quality.</summary>
     public const int JpegQuality = 75;
 
+    /// <summary>The quality frames are encoded at for upload: lower than the vendor app's, so a picture is fewer transfers, with text still clean at this size.</summary>
+    public const int StreamJpegQuality = 65;
+
     /// <summary>Every bulk transfer is this size; the last one is zero padded past the picture.</summary>
     public const int ChunkBytes = 4096;
 

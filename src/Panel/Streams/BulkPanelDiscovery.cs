@@ -45,7 +45,8 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
         {
             new StreamedPanelDeviceInfo
             {
-                Serial = _hub.Serial ?? driver.HandlerId,
+                Serial = driver.SingleUnitPerPc ? driver.HandlerId : _hub.Serial ?? driver.HandlerId,
+                AdoptsFamilyRecords = driver.SingleUnitPerPc,
                 Profile = new StreamedPanelProfile
                 {
                     Kind = driver.HandlerId,

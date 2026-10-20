@@ -463,15 +463,18 @@ public sealed class GlacialLcdScreen
     private bool SendSlots(GlacialLcdSettings s)
     {
         int count = Math.Clamp(s.SlotCount, 1, GlacialLcdProtocol.MaxMonitorSlots);
-        for (int i = 0; i < count; i++)
+        for (int wire = 0; wire < count; wire++)
         {
+            // With three widgets the panel shows the first two the other way round (reported
+            // on the customer's panel, one or two are fine), so they are written swapped.
+            int i = count == GlacialLcdProtocol.MaxMonitorSlots && wire < 2 ? 1 - wire : wire;
             var slot = i < s.Slots.Count ? s.Slots[i] : new GlacialLcdSlot();
             var (label, value) = _reader(slot, i);
-            if (!_hid.Write(GlacialLcdProtocol.EncodeSlot(i, label, value)))
+            if (!_hid.Write(GlacialLcdProtocol.EncodeSlot(wire, label, value)))
             {
                 return false;
             }
-            if (i + 1 < count)
+            if (wire + 1 < count)
             {
                 _pause(BurstGapMs);
             }

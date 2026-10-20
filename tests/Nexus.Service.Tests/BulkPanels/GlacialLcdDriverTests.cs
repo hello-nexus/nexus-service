@@ -111,7 +111,10 @@ public class GlacialLcdDriverTests
 
         var jpeg = pipe.Writes.SelectMany(c => c).ToArray();
         // The captured picture's first luminance row of the quantization table, and its frame header: 1280 high, 720 wide, 3 components.
-        Assert.Equal(new byte[] { 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07 }, jpeg.Skip(25).Take(10));
+        // The standard luminance table scaled for the upload quality, first row in zigzag order.
+        var standard = new[] { 16, 11, 12, 14, 12, 10, 16, 14, 13, 14 };
+        int scale = 200 - 2 * GlacialLcdProtocol.StreamJpegQuality;
+        Assert.Equal(standard.Select(v => (byte)Math.Max(1, (v * scale + 50) / 100)), jpeg.Skip(25).Take(10));
         int at = IndexOf(jpeg, new byte[] { 0xFF, 0xC0 });
         Assert.Equal((1280, 720, 3), ((jpeg[at + 5] << 8) | jpeg[at + 6], (jpeg[at + 7] << 8) | jpeg[at + 8], (int)jpeg[at + 9]));
         driver.Disconnect(pipe, hid);
@@ -312,7 +315,7 @@ public class GlacialLcdDriverTests
     {
         var link = new GlacialLcdLink();
         var memory = new FakeMemory();
-        memory.Hashes["FAKE"] = "ABC";
+        memory.Hashes["asus-glacial-lcd"] = "ABC";
         var driver = Fast(link);
         driver.BindMemory(memory);
         var pipe = new FakePipe();
@@ -323,7 +326,7 @@ public class GlacialLcdDriverTests
         driver.SendFrame(pipe, hid, Frame());
         Looked(driver);
 
-        Assert.Equal("ABC", memory.Hashes["FAKE"]);
+        Assert.Equal("ABC", memory.Hashes["asus-glacial-lcd"]);
         Assert.Empty(pipe.Writes);
         Assert.DoesNotContain(hid.Writes, w => w[1] == 0xF1);
         driver.Disconnect(pipe, hid);
@@ -334,7 +337,7 @@ public class GlacialLcdDriverTests
     {
         var link = new GlacialLcdLink();
         var memory = new FakeMemory();
-        memory.Hashes["FAKE"] = "ABC";
+        memory.Hashes["asus-glacial-lcd"] = "ABC";
         var driver = Fast(link);
         driver.BindMemory(memory);
         var pipe = new FakePipe();
@@ -382,6 +385,52 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
+    public void A_newer_settled_frame_ends_a_running_upload_between_transfers_before_the_end_report()
+    {
+        var link = new GlacialLcdLink();
+        var driver = Fast(link);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        // The first transfer is the moment the newer frame arrives.
+        pipe.OnWrite = () =>
+        {
+            if (pipe.Writes.Count == 1)
+            {
+                driver.SendFrame(pipe, hid, Frame(noiseRows: 100, seed: 9));
+            }
+        };
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+
+        Assert.Equal(2, driver.UploadAttempts);
+        // The first upload stopped after one transfer and never sent its end report; the second finished.
+        Assert.Equal(1, hid.Writes.Count(w => w[1] == 0x73 && w[2] == 0xFF));
+        Assert.Equal(1, hid.Writes.Count(w => w[1] == 0x51));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void The_remembered_picture_is_written_by_persist_now_under_the_fixed_key()
+    {
+        var memory = new FakeMemory();
+        var driver = Fast();
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        Assert.Empty(memory.Hashes);
+
+        driver.PersistNow();
+
+        Assert.Equal(new[] { "asus-glacial-lcd" }, memory.Hashes.Keys);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
     public void A_stale_transports_close_cannot_end_a_newer_stream()
     {
         var link = new GlacialLcdLink();
@@ -424,6 +473,7 @@ public class GlacialLcdDriverTests
         Assert.Equal(0x02, driver.WritePipeId);
         Assert.Equal(0x82, driver.ReadPipeId);
         Assert.True(driver.NeedsHidChannel);
+        Assert.True(driver.SingleUnitPerPc);
         Assert.True(driver.HidOpensForInput);
         Assert.False(((IBulkPanelDriver)driver).SupportsBrightness);
         Assert.True(driver.MultiInstance);
@@ -453,6 +503,9 @@ public class GlacialLcdDriverTests
 
         public bool FailWrites { get; set; }
 
+        /// <summary>Runs after each transfer is recorded.</summary>
+        public Action? OnWrite { get; set; }
+
         public bool Write(ReadOnlySpan<byte> data)
         {
             if (FailWrites)
@@ -463,6 +516,7 @@ public class GlacialLcdDriverTests
             {
                 _writes.Add(data.ToArray());
             }
+            OnWrite?.Invoke();
             return true;
         }
 

@@ -419,6 +419,31 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void A_single_unit_panel_adopts_the_oldest_family_record_and_drops_the_duplicates()
+    {
+        var older = _registry.Allocate("older", new PanelDeviceCapabilities { Surface = "monitor", Family = "fake-fs" });
+        Thread.Sleep(5);
+        var newer = _registry.Allocate("newer", new PanelDeviceCapabilities { Surface = "monitor", Family = "fake-fs" });
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["365233833333"] = new() { PanelDeviceId = older.Id },
+            ["AsusTek Computer Inc."] = new() { PanelDeviceId = newer.Id },
+        });
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "fixed-key",
+            AdoptsFamilyRecords = true,
+            Profile = new StreamedPanelProfile { Kind = "fake-fs", Family = "fake-fs", DisplayName = "Fake Panel", Surface = "monitor", CssWidth = 640, CssHeight = 480, Fps = 30 },
+        });
+
+        Coordinator().TickOnce();
+
+        Assert.Equal(older.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(newer.Id));
+        Assert.Equal(new[] { "fixed-key" }, _store.Load().Keys);
+    }
+
+    [Fact]
     public void Gate_off_closes_immediately_without_linger()
     {
         _discovery.Devices.Add(Device());

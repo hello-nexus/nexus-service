@@ -967,6 +967,15 @@ static void FastServiceShutdown(WebApplication app)
         }),
         Task.Run(() =>
         {
+            // The fast teardown skips the hubs' disconnect, so the remembered picture is written before the flush.
+            try
+            {
+                foreach (var hub in sp.GetServices<Nexus.Service.Peripherals.BulkPanels.BulkPanelHub>())
+                {
+                    (hub.Driver as Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver)?.PersistNow();
+                }
+            }
+            catch { }
             try { sp.GetService<IConfigStore>()?.FlushNow(); } catch { }
             try { sp.GetService<ProfileManager>()?.SaveActiveProfile(); } catch { }
         }),

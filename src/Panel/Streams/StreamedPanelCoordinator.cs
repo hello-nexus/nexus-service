@@ -778,6 +778,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private string ResolvePanelDeviceId(StreamedPanelDeviceInfo info)
     {
         var records = _store.Load();
+        if (info.AdoptsFamilyRecords && !records.ContainsKey(info.Serial))
+        {
+            AdoptFamilyRecords(records, info);
+        }
         if (records.TryGetValue(info.Serial, out var rec)
             && !string.IsNullOrEmpty(rec.PanelDeviceId)
             && _registry.Get(rec.PanelDeviceId) is not null
@@ -819,6 +823,39 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         records[info.Serial] = rec;
         _store.Save(records);
         return record.Id;
+    }
+
+    /// <summary>
+    /// Moves the oldest panel record of the device's family, stored under an earlier build's
+    /// serial, to the fixed key and removes the rest, so a serial that changed between boots
+    /// leaves one record with the user's layout instead of several.
+    /// </summary>
+    private void AdoptFamilyRecords(Dictionary<string, StreamedPanelRecord> records, StreamedPanelDeviceInfo info)
+    {
+        var family = info.Profile.Family;
+        var matches = records
+            .Select(pair => (Serial: pair.Key, Record: pair.Value, Panel: string.IsNullOrEmpty(pair.Value.PanelDeviceId) ? null : _registry.Get(pair.Value.PanelDeviceId)))
+            .Where(m => m.Panel is not null && string.Equals(m.Panel.Capabilities?.Family, family, StringComparison.Ordinal))
+            .OrderBy(m => m.Panel!.FirstSeenAt)
+            .ToList();
+        if (matches.Count == 0)
+        {
+            return;
+        }
+        var keep = matches[0];
+        foreach (var m in matches)
+        {
+            records.Remove(m.Serial);
+        }
+        foreach (var m in matches.Skip(1))
+        {
+            if (m.Record.PanelDeviceId != keep.Record.PanelDeviceId)
+            {
+                _registry.Remove(m.Panel!.Id);
+            }
+        }
+        records[info.Serial] = keep.Record;
+        _store.Save(records);
     }
 
     /// <summary>

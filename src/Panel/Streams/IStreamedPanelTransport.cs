@@ -11,6 +11,12 @@ public sealed class StreamedPanelDeviceInfo
 {
     public required string Serial { get; init; }
     public required StreamedPanelProfile Profile { get; init; }
+
+    /// <summary>
+    /// The device is the only one of its family and <see cref="Serial"/> is a fixed key, so a
+    /// record stored under another serial for the same family is an earlier build's and is adopted.
+    /// </summary>
+    public bool AdoptsFamilyRecords { get; init; }
 }
 
 /// <summary>
