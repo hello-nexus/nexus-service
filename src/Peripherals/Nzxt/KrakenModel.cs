@@ -53,7 +53,9 @@ public sealed record KrakenModel(
     bool DirectStream = false,
     bool StreamRecreatesBuckets = false,
     bool FirmwareGif = false,
-    int StreamFps = 30)
+    int StreamFps = 30,
+    bool Rgb565DirectStream = false,
+    byte TelemetryInterval = 0x01)
 {
     public bool HasLcd => LcdFormat != KrakenLcdFormat.None;
 
@@ -72,9 +74,11 @@ public sealed record KrakenModel(
     {
         // Bench unit. Firmware 1.2.0; 512-byte HID reports.
         new(0x3012, "NZXT Kraken Elite V2", 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.ChannelReport),
-        // Same panel and same wire format as 0x3012 - NZXT's own driver treats the two SKUs
-        // as one device.
-        new(0x3014, "NZXT Kraken Elite V2", 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.ChannelReport),
+        // Kraken Plus V2. 240x240, no ARGB, and no bucket store: the firmware NAKs bucket
+        // commands. Frames go straight to the panel as RGB565, high byte first, on any
+        // firmware, and the vendor protocol refreshes the panel once a second when idle.
+        new(0x3014, "NZXT Kraken Plus V2", 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None,
+            StreamFps: 20, Rgb565DirectStream: true, TelemetryInterval: 0x0B),
 
         // 2023 Kraken Elite. Same 640x640 Q565 panel; no ARGB anywhere on the pump, so no
         // lighting to drive. Its 0x72 channel tuples moved at firmware 2.1.1, hence

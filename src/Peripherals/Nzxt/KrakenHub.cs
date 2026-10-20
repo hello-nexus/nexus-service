@@ -58,6 +58,7 @@ public sealed class KrakenHub : IDisposable
     private volatile KrakenSnapshot _snapshot = KrakenSnapshot.Empty;
     // Last image pushed, stored unrotated so a rotation change can re-render it.
     private byte[]? _lastLcdFrame;
+    private int _lastNakKey;
     // Last GIF pushed, panel-sized and unrotated; rotating it takes ffmpeg, so the caller does.
     private byte[]? _lastLcdGif;
 
@@ -478,7 +479,7 @@ public sealed class KrakenHub : IDisposable
 
             // Starts the cooler's telemetry stream. Without it the accessory table is not
             // populated yet and the lighting query answers with zero channels.
-            WriteLocked(KrakenProtocol.EncodeSetUpdateInterval());
+            WriteLocked(KrakenProtocol.EncodeSetUpdateInterval(_model.TelemetryInterval));
             WriteLocked(KrakenProtocol.EncodeStartReporting());
 
             var channels = _model.Lighting == KrakenLightingProtocol.None
@@ -802,9 +803,10 @@ public sealed class KrakenHub : IDisposable
                 return false;
             }
             _snapshot = _snapshot.WithDisplayMode(mode);
-            if (_directStream)
+            if (_directStream || _model.Rgb565DirectStream)
             {
                 _streamReady = false;
+                _plusActive = false;
             }
             return true;
         }
@@ -952,6 +954,10 @@ public sealed class KrakenHub : IDisposable
         {
             return false;
         }
+        if (_model.Rgb565DirectStream)
+        {
+            return UploadPlusStillLocked(source, quarterTurns);
+        }
         int encoded = EncodeLcdPayloadLocked(source, quarterTurns, sourceIsBgra: false, out var format);
         return UploadBucketLocked(_lcdScratch.AsSpan(0, encoded), format);
     }
@@ -1079,6 +1085,10 @@ public sealed class KrakenHub : IDisposable
         {
             return false;
         }
+        if (_model.Rgb565DirectStream)
+        {
+            return PushPlusFrame(bgra);
+        }
         if (_directStream)
         {
             return PushDirectFrame(bgra);
@@ -1155,6 +1165,181 @@ public sealed class KrakenHub : IDisposable
                 return true;
             }
         }
+    }
+
+
+    // Plus V2 live stream (KrakenModel.Rgb565DirectStream). The wire buffer holds the last
+    // encoded frame, which is what the idle refresh resends; the source copy lets an
+    // unchanged frame skip the encode. All of it is guarded by _lcdTransferLock.
+    private const long PlusIdleResendMs = 1000;
+    private byte[]? _plusWire;
+    private byte[]? _plusSource;
+    private byte[]? _plusHeader;
+    private int _plusTurns;
+    private long _plusSentAtMs;
+    private volatile bool _plusActive;
+    private byte[]? _plusPendingStill;
+    private static readonly byte[] PlusBeginSession = KrakenProtocol.EncodeBeginLiveSession();
+    private static readonly byte[] PlusCancel = KrakenProtocol.EncodeCancelTransfers();
+    private static readonly byte[] PlusStart = KrakenProtocol.EncodeStartDirectTransfer(KrakenProtocol.BulkFormatRgb565);
+    private static readonly byte[] PlusEnd = KrakenProtocol.EncodeEndTransfer();
+
+    /// <summary>
+    /// One live frame on the Plus V2: <c>36 01 00 01 06</c>, a 20-byte header, RGB565 with
+    /// the high byte first, <c>36 02</c>. No bucket exists on this firmware. An unchanged
+    /// frame is not re-encoded and is held back until the idle refresh is due.
+    /// </summary>
+    private bool PushPlusFrame(ReadOnlySpan<byte> bgra)
+    {
+        lock (_lcdTransferLock)
+        {
+            if (LockDimmed)
+            {
+                return true;
+            }
+            int w = _lcdWidth, h = _lcdHeight;
+            int turns = _snapshot.LcdOrientationQuarterTurns;
+            var now = Clock();
+            bool changed = _plusPendingStill != null
+                || _plusSource == null || _plusSource.Length != bgra.Length
+                || _plusWire == null || turns != _plusTurns
+                || !bgra.SequenceEqual(_plusSource);
+            if (!changed && _plusActive && now - Volatile.Read(ref _plusSentAtMs) < PlusIdleResendMs)
+            {
+                return true;
+            }
+            if (changed)
+            {
+                _plusPendingStill = null;
+                int len = Rgb565Encoder.EncodedLength(w, h);
+                if (_plusWire == null || _plusWire.Length != len)
+                {
+                    _plusWire = new byte[len];
+                    _plusHeader = KrakenProtocol.EncodeBulkHeader(KrakenProtocol.BulkFormatRgb565, len);
+                }
+                if (_plusSource == null || _plusSource.Length != bgra.Length)
+                {
+                    _plusSource = new byte[bgra.Length];
+                }
+                Rgb565Encoder.Encode(bgra, w, h, turns, _plusWire, sourceIsBgra: true, highByteFirst: true);
+                bgra.CopyTo(_plusSource);
+                _plusTurns = turns;
+            }
+            return SendPlusWireLocked(now);
+        }
+    }
+
+    /// <summary>
+    /// Resends the last frame once a second while the stream is otherwise quiet; the panel
+    /// drops back to its own readout if the host goes silent. No-op for every other model
+    /// and when no Plus V2 frame is being held.
+    /// </summary>
+    public void RefreshIdleFrame()
+    {
+        if (!_plusActive || !Monitor.TryEnter(_lcdTransferLock))
+        {
+            return;
+        }
+        try
+        {
+            if (!_plusActive || Clock() - Volatile.Read(ref _plusSentAtMs) < PlusIdleResendMs)
+            {
+                return;
+            }
+            var pending = Interlocked.Exchange(ref _plusPendingStill, null);
+            if (pending != null)
+            {
+                _plusWire = pending;
+                _plusSource = null;
+            }
+            if (_plusWire != null && !LockDimmed)
+            {
+                SendPlusWireLocked(Clock());
+            }
+        }
+        finally
+        {
+            Monitor.Exit(_lcdTransferLock);
+        }
+    }
+
+    /// <summary>Ends the held frame so the idle refresh stops and the panel returns to its readout.</summary>
+    public void ReleaseStream()
+    {
+        _plusActive = false;
+    }
+
+    // Caller holds _lcdTransferLock. The device lock covers only the HID steps.
+    private bool SendPlusWireLocked(long now)
+    {
+        var wire = _plusWire;
+        var header = _plusHeader;
+        IKrakenLcdTransport lcd;
+        lock (_lock)
+        {
+            if (_device == null || _lcd == null || wire == null || header == null)
+            {
+                return false;
+            }
+            lcd = _lcd;
+            if (!_streamReady)
+            {
+                WriteLocked(PlusBeginSession);
+                WriteLocked(PlusCancel);
+                _snapshot = _snapshot.WithDisplayMode(KrakenDisplayMode.Liquid);
+                _streamReady = true;
+            }
+            if (!WriteLocked(PlusStart))
+            {
+                _streamReady = false;
+                return false;
+            }
+        }
+        // The header is its own bulk transfer, then the whole frame in one.
+        if (!lcd.Write(header) || !lcd.Write(wire))
+        {
+            lock (_lock) { _streamReady = false; }
+            return false;
+        }
+        lock (_lock)
+        {
+            if (_device == null || !WriteLocked(PlusEnd))
+            {
+                _streamReady = false;
+                return false;
+            }
+        }
+        Volatile.Write(ref _plusSentAtMs, now);
+        _plusActive = true;
+        return true;
+    }
+
+    // Still image, called with _lock held like the bucket upload it replaces. Uses its own
+    // buffer so it never races the live stream's; the refresh adopts it afterwards.
+    private bool UploadPlusStillLocked(byte[] rgba, int quarterTurns)
+    {
+        int len = Rgb565Encoder.EncodedLength(_lcdWidth, _lcdHeight);
+        var wire = new byte[len];
+        Rgb565Encoder.Encode(rgba, _lcdWidth, _lcdHeight, quarterTurns, wire, sourceIsBgra: false, highByteFirst: true);
+        var header = KrakenProtocol.EncodeBulkHeader(KrakenProtocol.BulkFormatRgb565, len);
+        if (_device == null || _lcd == null)
+        {
+            return false;
+        }
+        WriteLocked(PlusBeginSession);
+        WriteLocked(PlusCancel);
+        if (!WriteLocked(PlusStart) || !_lcd.Write(header) || !_lcd.Write(wire) || !WriteLocked(PlusEnd))
+        {
+            _streamReady = false;
+            return false;
+        }
+        _streamReady = true;
+        _snapshot = _snapshot.WithDisplayMode(KrakenDisplayMode.Liquid);
+        _plusHeader = header;
+        Volatile.Write(ref _plusPendingStill, wire);
+        Volatile.Write(ref _plusSentAtMs, Clock());
+        _plusActive = true;
+        return true;
     }
 
     /// <summary>
@@ -1430,13 +1615,20 @@ public sealed class KrakenHub : IDisposable
             {
                 if (span[14] == request[0] && span[15] == request[1])
                 {
-                    ServiceLog.Warn($"[nzxt-kraken] device rejected command {span[14]:X2} {span[15]:X2}");
+                    // Once per distinct command, so a device that rejects every frame logs once.
+                    int nakKey = (span[14] << 8) | span[15];
+                    if (_lastNakKey != nakKey)
+                    {
+                        _lastNakKey = nakKey;
+                        ServiceLog.Warn($"[nzxt-kraken] device rejected command {span[14]:X2} {span[15]:X2}");
+                    }
                     return null;
                 }
                 continue;
             }
             if (span.Length > 1 && span[0] == replyReportId && span[1] == replySubCommand)
             {
+                _lastNakKey = 0;
                 return buf[..n];
             }
         }
@@ -1482,6 +1674,7 @@ public sealed class KrakenHub : IDisposable
             _snapshot = KrakenSnapshot.Empty;
             // A re-attached cooler may hold buckets from before; the next stream re-enters.
             _streamReady = false;
+            _plusActive = false;
             Volatile.Write(ref _streamRetryAtMs, 0);
             Volatile.Write(ref _streamFailures, 0);
             _lcd?.Dispose();

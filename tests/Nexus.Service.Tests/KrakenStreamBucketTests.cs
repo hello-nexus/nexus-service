@@ -20,6 +20,7 @@ public class KrakenStreamBucketTests
     // ack what it is asked. The 2023 Kraken streams through buckets; the 2023 Elite does not.
     private static readonly KrakenModel BucketStreamNoRgb = KrakenModel.Find(0x300E)!;
     private static readonly KrakenModel EliteNoRgb = KrakenModel.Find(0x300C)!;
+    private static readonly KrakenModel PlusV2 = KrakenModel.Find(0x3014)!;
     private static readonly KrakenModel Z3 = KrakenModel.Find(0x3008)!;
 
     [Fact]
@@ -94,6 +95,118 @@ public class KrakenStreamBucketTests
         // The direct-path transfer size divides a full frame evenly.
         Assert.All(lcd.ChunkSizes, n => Assert.Equal(245_760, n));
         Assert.Equal(KrakenDisplayMode.Liquid, hub.Snapshot.DisplayMode);
+    }
+
+    [Fact]
+    public void Plus_v2_streams_rgb565_high_byte_first_without_touching_buckets()
+    {
+        var hid = new AckingHidDevice { FirmwareMajor = 1 };
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(hid, PlusV2, KrakenProtocol.ReportLength);
+        Assert.True(hub.Connect());
+        hid.Writes.Clear();
+
+        var frame = new byte[PlusV2.LcdFrameBytes];
+        for (int i = 0; i < frame.Length; i += 4)
+        {
+            // BGRA pure red: RGB565 0xF800.
+            frame[i + 2] = 0xFF;
+            frame[i + 3] = 0xFF;
+        }
+        Assert.True(hub.PushStreamFrame(frame));
+
+        Assert.DoesNotContain(hid.Writes, w => w[0] == 0x32 || (w[0] == 0x38 && w[2] == (byte)KrakenDisplayMode.Bucket));
+        Assert.Equal(new byte[] { 0x36, 0x04 }, hid.Writes[0][..2]);
+        Assert.Equal(new byte[] { 0x36, 0x03 }, hid.Writes[1][..2]);
+        Assert.Equal(new byte[] { 0x36, 0x01, 0x00, 0x01, 0x06 }, hid.Writes[2][..5]);
+        Assert.Equal(new byte[] { 0x36, 0x02 }, hid.Writes[3][..2]);
+        Assert.Equal(4, hid.Writes.Count);
+        Assert.Equal(512, hid.Writes[2].Length);
+
+        var header = Assert.Single(lcd.Headers);
+        Assert.Equal(
+            new byte[] { 0x12, 0xFA, 0x01, 0xE8, 0xAB, 0xCD, 0xEF, 0x98, 0x76, 0x54, 0x32, 0x10, 0x06, 0, 0, 0, 0x00, 0xC2, 0x01, 0x00 },
+            header);
+        Assert.Equal(new[] { 115200 }, lcd.ChunkSizes);
+        Assert.Equal(0xF8, lcd.LastPayloadFirstBytes[0]);
+        Assert.Equal(0x00, lcd.LastPayloadFirstBytes[1]);
+    }
+
+    [Fact]
+    public void Plus_v2_holds_an_unchanged_frame_until_the_idle_refresh_then_resends_the_cached_bytes()
+    {
+        long now = 1_000;
+        var hid = new AckingHidDevice();
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd)) { Clock = () => now };
+        hub.Attach(hid, PlusV2, KrakenProtocol.ReportLength);
+        Assert.True(hub.Connect());
+
+        var frame = new byte[PlusV2.LcdFrameBytes];
+        Assert.True(hub.PushStreamFrame(frame));
+        now += 100;
+        Assert.True(hub.PushStreamFrame(frame));
+        hub.RefreshIdleFrame();
+        Assert.Equal(1, lcd.Frames);
+
+        now += 1_000;
+        hub.RefreshIdleFrame();
+        Assert.Equal(2, lcd.Frames);
+
+        frame[0] = 0x80;
+        now += 10;
+        Assert.True(hub.PushStreamFrame(frame));
+        Assert.Equal(3, lcd.Frames);
+
+        hub.ReleaseStream();
+        now += 5_000;
+        hub.RefreshIdleFrame();
+        Assert.Equal(3, lcd.Frames);
+    }
+
+    [Fact]
+    public void Plus_v2_still_image_goes_through_the_direct_transfer_and_is_refreshed()
+    {
+        long now = 1_000;
+        var hid = new AckingHidDevice();
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd)) { Clock = () => now };
+        hub.Attach(hid, PlusV2, KrakenProtocol.ReportLength);
+        Assert.True(hub.Connect());
+        hid.Writes.Clear();
+
+        Assert.True(hub.UploadLcdImage(new byte[PlusV2.LcdFrameBytes]));
+        Assert.DoesNotContain(hid.Writes, w => w[0] == 0x32);
+        Assert.Equal(1, lcd.Frames);
+
+        now += 1_100;
+        hub.RefreshIdleFrame();
+        Assert.Equal(2, lcd.Frames);
+    }
+
+    [Fact]
+    public void Plus_v2_init_uses_its_telemetry_interval_and_skips_the_lighting_query()
+    {
+        var hid = new AckingHidDevice();
+        var hub = new KrakenHub(new FixedLcdFactory(new RecordingLcdTransport()));
+        hub.Attach(hid, PlusV2, KrakenProtocol.ReportLength);
+        Assert.True(hub.Connect());
+
+        Assert.Contains(hid.Writes, w => w[0] == 0x70 && w[1] == 0x02 && w[2] == 0x01 && w[3] == 0xB8 && w[4] == 0x0B);
+        Assert.DoesNotContain(hid.Writes, w => w[0] == 0x20 && w[1] == 0x03);
+    }
+
+    [Fact]
+    public void Elite_2023_update_interval_and_start_bytes_are_unchanged()
+    {
+        var hid = new AckingHidDevice();
+        var hub = new KrakenHub(new FixedLcdFactory(new RecordingLcdTransport()));
+        hub.Attach(hid, EliteNoRgb, 64);
+        Assert.True(hub.Connect());
+
+        Assert.Contains(hid.Writes, w => w[0] == 0x70 && w[1] == 0x02 && w[4] == 0x01);
+        Assert.Equal(new byte[] { 0x36, 0x01, 0x00, 0x01, 0x09 }, KrakenProtocol.EncodeStartDirectTransfer()[..5]);
     }
 
     [Fact]
@@ -464,6 +577,7 @@ public class KrakenStreamBucketTests
         public int Frames { get; private set; }
         public List<byte[]> Headers { get; } = new();
         public List<int> ChunkSizes { get; } = new();
+        public byte[] LastPayloadFirstBytes { get; private set; } = Array.Empty<byte>();
         public bool Write(ReadOnlySpan<byte> data)
         {
             if (data.Length == 20)
@@ -474,6 +588,7 @@ public class KrakenStreamBucketTests
             else
             {
                 ChunkSizes.Add(data.Length);
+                LastPayloadFirstBytes = data[..Math.Min(2, data.Length)].ToArray();
             }
             return true;
         }

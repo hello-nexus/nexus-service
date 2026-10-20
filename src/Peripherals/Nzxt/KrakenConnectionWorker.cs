@@ -94,6 +94,7 @@ public sealed class KrakenConnectionWorker : BackgroundService
                                     break;
                                 }
                             }
+                            _hub.RefreshIdleFrame();
                             _lighting.OnHubStateUpdated();
                             await Task.Delay(StatusPollMs, stoppingToken).ConfigureAwait(false);
                         }
