@@ -129,9 +129,8 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
             if (_wasStreaming)
             {
                 _wasStreaming = false;
-                // Release first: Apply must write the user's own animation back.
-                _applier.ReleaseFirmwareAnimation();
-                _applier.Apply();
+                // Apply must write the user's own animation back, so streaming ends first.
+                _applier.EndStream();
             }
             return;
         }

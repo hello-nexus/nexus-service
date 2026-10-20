@@ -121,6 +121,20 @@ public sealed partial class ProfileManager : IDisposable
                 _store.Update(s => s.DeviceCategorySeeded = true);
             }
 
+            // Profile files were seeded with the old keeb brightness default, and a profile
+            // switch copies the Device category from the primary file over the workstation
+            // settings, so the old default would come back after the settings migration.
+            // Same marker shape as the seed above; files that arrive later (cloud restore,
+            // import) cannot be told apart from a level the user chose and are left alone.
+            if (!root.KeebBrightnessProfilesMigrated)
+            {
+                foreach (var p in _manifest.Profiles)
+                {
+                    MigrateProfileKeebBrightness(p.Id);
+                }
+                _store.Update(s => s.KeebBrightnessProfilesMigrated = true);
+            }
+
             // Every settings mutation marks the active profile dirty so the
             // background flush picks it up. Without this, lighting/cooling/
             // panel/etc. routes that call _store.Update never propagate to the
@@ -931,6 +945,20 @@ public sealed partial class ProfileManager : IDisposable
             return null;
         }
     }
+
+    /// <summary>Moves a profile file's stored keeb brightness from the old default to the new one, rewriting the file only when it changed.</summary>
+    private void MigrateProfileKeebBrightness(string profileId)
+    {
+        var data = ReadProfileFile(profileId);
+        if (data?.Keeb?.FirmwareLighting is not { Brightness: KeebBrightnessOldDefault } firmware)
+        {
+            return;
+        }
+        firmware.Brightness = Nexus.Service.Defaults.InstallDefaults.Keeb.FirmwareLighting.Brightness;
+        WriteAtomic(ProfileFilePath(profileId), JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings));
+    }
+
+    private const int KeebBrightnessOldDefault = 80;
 
     /// <summary>Reads the on-disk profile file, applies the named categories from <paramref name="source"/> via <see cref="ProfileSharing.ApplyCategory"/>, and writes it back atomically. Used to mirror shared-category writes to the Primary, and to propagate values when sharing is turned off.</summary>
     private void UpdateProfileFile(string profileId, IEnumerable<string> categories, NexusSettings source)

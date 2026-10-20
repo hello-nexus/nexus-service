@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Models.Common;
 using Nexus.Service.Models.Peripherals.Keeb;
 using Nexus.Service.Peripherals.Hyte.Keeb;

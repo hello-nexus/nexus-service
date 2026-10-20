@@ -403,25 +403,121 @@ public class KeebStreamBrightnessTests
     }
 
     [Fact]
-    public async Task A_poll_whose_read_straddles_a_detent_discards_its_stale_byte()
+    public async Task A_poll_whose_read_straddles_a_settings_rewrite_discards_its_stale_byte()
     {
         using var rig = new Rig(level: 50, global: 0.8f);
         rig.Applier.SuppressFirmwareAnimation();
         rig.Applier.ResetKnobBaseline();
-        rig.Applier.PollKnobToGlobal(true);           // baseline recorded at 50
+        rig.Applier.PollKnobToGlobal(true);           // baseline recorded at the level, 50
+        MoveDeviceByte(rig, +10);
+        rig.Applier.PollKnobToGlobal(true);           // the turn is counted: baseline 60, global 0.9
+        Assert.Equal(0.9f, rig.Global, 2);
 
         rig.Hid.Device.HoldNextSettingsRead = true;
         var poll = Task.Run(() => rig.Applier.PollKnobToGlobal(true));
         Assert.True(rig.Hid.Device.ReadEntered.Wait(5000));
-        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);   // +5 global, re-baselines
-        MoveDeviceByte(rig, +5);                      // the firmware moved its byte with the detent
-        rig.Hid.Device.ReleaseRead.Set();             // the parked read returns the pre-detent byte
+        rig.Applier.Apply();                          // rewrites the byte to the level (50) and re-baselines
+        rig.Hid.Device.ReleaseRead.Set();             // the parked read returns the pre-rewrite byte, 60
         await poll.WaitAsync(TimeSpan.FromSeconds(5));
 
-        rig.Applier.PollKnobToGlobal(true);           // records the post-detent byte as the baseline
-        rig.Applier.PollKnobToGlobal(true);           // unchanged
+        rig.Applier.PollKnobToGlobal(true);           // records 50 as the baseline
+        rig.Applier.PollKnobToGlobal(true);
 
+        Assert.Equal(0.9f, rig.Global, 2);
+    }
+
+    [Fact]
+    public void A_poll_that_reads_the_moved_byte_before_the_detent_event_counts_the_turn_once()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);
+
+        MoveDeviceByte(rig, +5);                      // the firmware moves its byte
+        rig.Pump(6);                                  // the poll reads it first: +5
         Assert.Equal(0.85f, rig.Global, 2);
+
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);   // then the event arrives
+        rig.Pump(6);
+        Assert.Equal(0.85f, rig.Global, 2);
+
+        // From now on events alone drive global; the byte poll stands down.
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        MoveDeviceByte(rig, +5);
+        rig.Pump(10);
+        Assert.Equal(0.9f, rig.Global, 2);
+        Assert.Equal(50, rig.Level);
+    }
+
+    [Fact]
+    public void Without_detent_events_the_byte_poll_still_follows_the_knob()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);
+
+        MoveDeviceByte(rig, +5);
+        rig.Pump(6);
+        MoveDeviceByte(rig, +5);
+        rig.Pump(6);
+        MoveDeviceByte(rig, -10);
+        rig.Pump(6);
+
+        Assert.Equal(0.8f, rig.Global, 2);
+        MoveDeviceByte(rig, +10);
+        rig.Pump(6);
+        Assert.Equal(0.9f, rig.Global, 2);
+    }
+
+    [Fact]
+    public void A_reconnect_makes_the_service_learn_again_whether_the_firmware_reports_detents()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);   // events seen: the poll stands down
+        rig.Pump(4);
+        Assert.Equal(0.85f, rig.Global, 2);
+        MoveDeviceByte(rig, +10);
+        rig.Pump(6);
+        Assert.Equal(0.85f, rig.Global, 2);
+
+        rig.Applier.SeedBaselines();                  // what the connection worker does on a reconnect
+        rig.Applier.ResetKnobBaseline();
+        rig.Pump(6);                                  // baseline recorded
+        MoveDeviceByte(rig, +5);
+        rig.Pump(6);
+
+        Assert.Equal(0.9f, rig.Global, 2);
+    }
+
+    [Fact]
+    public async Task Ending_a_stream_never_lets_the_knob_moved_byte_become_the_level()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(4);
+        using var stop = new CancellationTokenSource();
+        var syncing = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested) rig.Applier.SyncFromDevice();
+        });
+        try
+        {
+            for (var i = 0; i < 40; i++)
+            {
+                MoveDeviceByte(rig, i % 2 == 0 ? +10 : -10);   // a knob turn made while streaming
+                rig.Applier.EndStream();
+                Assert.Equal(50, rig.Level);
+                rig.Applier.SuppressFirmwareAnimation();
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            await syncing.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        Assert.Equal(50, rig.Level);
     }
 
     [Fact]

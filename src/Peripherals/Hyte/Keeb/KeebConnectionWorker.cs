@@ -5,7 +5,6 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
-using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Peripherals.Keeb;
 using Nexus.Service.Platform;
 

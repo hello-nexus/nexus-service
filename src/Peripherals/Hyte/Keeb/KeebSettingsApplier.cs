@@ -21,8 +21,7 @@ namespace Nexus.Service.Peripherals.Hyte.Keeb;
 /// host callback - which <see cref="SyncFromDevice"/> reads back.
 /// FirmwareLighting.Brightness is the keeb's own level. With the firmware
 /// animation showing, the knob moves it on the device and
-/// <see cref="SyncFromDevice"/> adopts the byte. While a software effect streams the
-/// frame writer scales the keeb stream by that level on top of the global master,
+/// <see cref="SyncFromDevice"/> adopts the byte. While the frame writer streams, it scales the keeb stream by that level on top of the global master,
 /// and the knob changes the global master only (<see cref="HandleEncoderScroll"/>,
 /// <see cref="PollKnobToGlobal"/>): the level never flows into global.
 /// </summary>
@@ -57,10 +56,19 @@ public sealed class KeebSettingsApplier
     // outside the lock, so a poll that saw the generation change while reading holds a
     // result from before that event and must discard it.
     private int _knobGen;
+    // Set once a detent event has arrived since the last connect: the firmware reports
+    // detents, so they alone step global and the byte poll stands down.
+    private bool _detentsSeen;
+    // Global points the byte poll has applied that a late detent event may still claim
+    // (the poll can read the moved byte before the event arrives), and when.
+    private int _pollCredit;
+    private long _pollCreditAtMs;
+    private const long PollCreditWindowMs = 1000;
     // Set while the frame writer streams (a software effect, or key reactions alone).
-    // It is the one signal for "the firmware animation is suppressed and the knob drives
-    // global": the provider, the knob handlers and SyncFromDevice all gate on it. Any settings write that lands during
-    // a stream must not put an animated mode back on the device: the firmware
+    // It is the one signal for "the firmware animation is suppressed and the knob
+    // drives global": the provider, the knob handlers and SyncFromDevice all gate on it.
+    // Any settings write that lands during a stream must not put an animated mode on
+    // the device: the firmware
     // would repaint between our frames and fight the stream (camera-verified:
     // our yellow alternating with the firmware's animation).
     private volatile bool _streaming;
@@ -132,13 +140,22 @@ public sealed class KeebSettingsApplier
         if (!_hub.IsConnected) return false;
         try
         {
-            var page = KeebSettingsCodec.BuildSettingsPage(_store.Load().Keeb);
-            if (_streaming) page[3] = KeebSettingsCodec.AnimationModeByte("static");
-            var ok = _hub.WriteSettings(page);
-            // The write puts the level back in the device byte; during a stream the poll
-            // must not count that as a knob turn.
-            if (_streaming) ResetKnobBaseline();
-            return ok;
+            lock (_gate)
+            {
+                var page = KeebSettingsCodec.BuildSettingsPage(_store.Load().Keeb);
+                if (_streaming) page[3] = KeebSettingsCodec.AnimationModeByte("static");
+                var ok = _hub.WriteSettings(page);
+                if (ok)
+                {
+                    // The device now holds these bytes: SyncFromDevice must not read our own
+                    // write back as a knob turn.
+                    _lastAnimByte = page[3];
+                    _lastBrightByte = page[4];
+                }
+                // During a stream the poll must not count the byte rewrite as a knob turn.
+                if (_streaming) ResetKnobBaselineLocked();
+                return ok;
+            }
         }
         catch (Exception ex)
         {
@@ -198,7 +215,7 @@ public sealed class KeebSettingsApplier
     /// byte per detent, the detent steps global once: it re-baselines the byte poll, so
     /// the poll only records the byte afterwards and never counts the same turn again.
     ///
-    /// Only while a software effect streams: the knob then steps the global master
+    /// Only while the frame writer streams: the knob then steps the global master
     /// every device follows and leaves the keeb's own level alone, so the stream is
     /// global x level without squaring. With the firmware animation showing the
     /// device handles the knob itself and <see cref="SyncFromDevice"/> adopts the
@@ -211,11 +228,23 @@ public sealed class KeebSettingsApplier
         var settings = _store.Load().Keeb;
         var fn = encoder == KeebProtocol.KeebEncoder.Left ? settings.RotaryLeft : settings.RotaryRight;
         if (!string.Equals(fn, "BrightnessAdjustment", StringComparison.OrdinalIgnoreCase)) return false;
-        if (!_streaming) return true;
 
         var step = up ? KnobStepPercent : -KnobStepPercent;
         lock (_gate)
         {
+            // The firmware reports detents, so from here the byte poll stands down.
+            var firstEvent = !_detentsSeen;
+            _detentsSeen = true;
+            if (!_streaming) return true;
+            // The poll may have read the moved byte just before this first event arrived;
+            // that detent is already in global.
+            var claimed = firstEvent && _pollCredit * step > 0 && Environment.TickCount64 - _pollCreditAtMs < PollCreditWindowMs;
+            _pollCredit = 0;
+            if (claimed)
+            {
+                ResetKnobBaselineLocked();
+                return true;
+            }
             _store.Update(s =>
             {
                 var now = (int)Math.Round(s.Lighting.GlobalBrightness * 100);
@@ -231,13 +260,22 @@ public sealed class KeebSettingsApplier
     /// <summary>Percent per rotary detent.</summary>
     private const int KnobStepPercent = 5;
 
-    /// <summary>Hand the firmware animation back; the next Apply restores it.</summary>
-    public void ReleaseFirmwareAnimation() => _streaming = false;
+    /// <summary>
+    /// Hand the firmware animation back and restore it, as one gated step: a
+    /// <see cref="SyncFromDevice"/> in between would adopt a knob-moved byte as the level.
+    /// </summary>
+    public bool EndStream()
+    {
+        lock (_gate)
+        {
+            _streaming = false;
+            return Apply();
+        }
+    }
 
     /// <summary>
     /// Forget the knob position so the next read only records the byte as the baseline,
-    /// whatever its value. The frame writer calls this when a software effect starts
-    /// streaming, so the keeb level never reads as a knob turn.
+    /// whatever its value. The frame writer calls this when it starts streaming, so the keeb level never reads as a knob turn.
     /// </summary>
     public void ResetKnobBaseline()
     {
@@ -263,6 +301,10 @@ public sealed class KeebSettingsApplier
         if (!_hub.IsConnected) return;
         lock (_gate)
         {
+            // A reconnect may be a different firmware or a different state: learn again
+            // whether it reports detents.
+            _detentsSeen = false;
+            _pollCredit = 0;
             var raw = _hub.ReadSettings();
             var animIndex = OperatingSystem.IsWindows() ? 3 : 2;
             var brightIndex = animIndex + 1;
@@ -273,10 +315,11 @@ public sealed class KeebSettingsApplier
     }
 
     /// <summary>
-    /// On a <paramref name="readByte"/> tick while a software effect streams, read the
+    /// On a <paramref name="readByte"/> tick while the frame writer streams, read the
     /// firmware brightness byte. The first read of a stream only records the baseline;
     /// after that each change in the byte moves the global master by the same amount.
     /// The byte's absolute value is the keeb level and is never copied into global.
+    /// Does nothing once a detent event has been seen: events alone then step global.
     /// The frame writer calls this.
     /// </summary>
     public void PollKnobToGlobal(bool readByte)
@@ -284,7 +327,11 @@ public sealed class KeebSettingsApplier
         if (!readByte || !_hub.IsConnected) return;
         var changed = false;
         int generation;
-        lock (_gate) { generation = _knobGen; }
+        lock (_gate)
+        {
+            if (_detentsSeen) return;
+            generation = _knobGen;
+        }
         var raw = ReadSettingsOffStream();
         lock (_gate)
         {
@@ -307,6 +354,8 @@ public sealed class KeebSettingsApplier
                 s.Lighting.GlobalBrightness = Math.Clamp(now + delta, 0, 100) / 100f;
                 Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
             });
+            _pollCredit = delta;
+            _pollCreditAtMs = Environment.TickCount64;
             changed = true;
         }
         if (changed) PanelTopics.BroadcastLighting(_panel);
@@ -316,7 +365,7 @@ public sealed class KeebSettingsApplier
     /// Mutate the persisted keeb state and (when <paramref name="writeDevice"/>)
     /// write the full page to the device, as one gated step so the read-back poll
     /// can't interleave between the store mutate and the byte write. Callers pass
-    /// writeDevice=false while a software effect streams: the 0x06 page write would
+    /// writeDevice=false while the frame writer streams: the 0x06 page write would
     /// flash the firmware animation through the live stream, and the frame writer
     /// re-writes the page when streaming stops anyway.
     /// </summary>
@@ -374,9 +423,8 @@ public sealed class KeebSettingsApplier
             effect = KeebSettingsCodec.AnimationModeName((byte)animByte);
             brightness = KeebSettingsCodec.BrightnessPercentFromByte((byte)brightByte);
             // The byte is the firmware animation brightness; adopt it as the keeb
-            // level. The connection worker only calls this with no software effect
-            // (the firmware animation showing); while streaming the frame writer
-            // follows the knob into global instead, see PollKnobToGlobal.
+            // level. Both workers call this unconditionally; it does nothing while the
+            // frame writer streams, which follows the knob into global instead, see PollKnobToGlobal.
             _store.Update(s =>
             {
                 if (animChanged && effect is not null
