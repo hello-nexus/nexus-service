@@ -71,6 +71,9 @@ public class HydroShift2CurveTests
         Assert.Equal(
             new[] { HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.CommandStopClock },
             pipe.Commands);
+        Assert.Equal(
+            new byte[] { HydroShift2Protocol.ClockOfflineOn, 2 },
+            pipe.Commands.Select((c, i) => (c, i)).Where(t => t.c == HydroShift2Protocol.CommandSetClock).Select(t => pipe.Byte15[t.i]).ToArray());
     }
 
     private static byte[] Plain(byte[] packet)
@@ -707,6 +710,8 @@ public class HydroShift2CurveTests
         private readonly Queue<byte[]> _pending = new();
         public bool Answers { get; set; }
         public List<byte> Commands { get; } = new();
+        /// <summary>Byte 15 of each decrypted packet: the clock mode when the command is SetClock.</summary>
+        public List<byte> Byte15 { get; } = new();
 
         public bool Write(ReadOnlySpan<byte> data)
         {
@@ -717,8 +722,10 @@ public class HydroShift2CurveTests
             des.Mode = System.Security.Cryptography.CipherMode.CBC;
             des.Padding = System.Security.Cryptography.PaddingMode.None;
             using var decryptor = des.CreateDecryptor();
-            var command = decryptor.TransformFinalBlock(data[..8].ToArray(), 0, 8)[0];
+            var plain = decryptor.TransformFinalBlock(data[..16].ToArray(), 0, 16);
+            var command = plain[0];
             Commands.Add(command);
+            Byte15.Add(plain[15]);
             if (Answers)
             {
                 var reply = new byte[512];
