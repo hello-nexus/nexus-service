@@ -301,7 +301,7 @@ public sealed class DeckImageStore
         && !IsPosterFailed(id)
         && FfmpegAvailable;
 
-    private bool FfmpegAvailable => _runFfmpeg is not null || FfmpegResolver.Path is not null;
+    private bool FfmpegAvailable => _runFfmpeg is not null || FfmpegResolver.MayBeAvailable;
 
     private bool IsPosterFailed(string id)
     {
@@ -335,11 +335,6 @@ public sealed class DeckImageStore
     {
         try
         {
-            // Earlier builds persisted a failure marker; failure memory is in-process now.
-            foreach (var marker in Directory.EnumerateFiles(_rootDir, "*.poster.none"))
-            {
-                TryDelete(marker);
-            }
             var cutoff = DateTime.UtcNow - StaleTempAge;
             foreach (var path in Directory.EnumerateFiles(_rootDir, "*.tmp").Concat(Directory.EnumerateFiles(_rootDir, "*.tmp.png")))
             {

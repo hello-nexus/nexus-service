@@ -512,24 +512,11 @@ public sealed class DeckAnimatedIconsTests : IDisposable
     }
 
     [Fact]
-    public void Constructor_SweepsLeftoverFailureMarkers()
-    {
-        var root = Path.Combine(_dir, "markers");
-        Directory.CreateDirectory(root);
-        var marker = Path.Combine(root, new string('a', 64) + ".poster.none");
-        File.WriteAllBytes(marker, []);
-
-        _ = new DeckImageStore(root);
-
-        Assert.False(File.Exists(marker));
-    }
-
-    [Fact]
     public void FfmpegPathCache_DoesNotReprobeAMissWithinTheWindow()
     {
         var probes = 0;
         long now = 0;
-        var cache = new FfmpegPathCache(() => { probes++; return null; }, () => now);
+        var cache = new FfmpegPathCache(() => { probes++; return (null, false); }, () => now);
 
         for (var i = 0; i < 5; i++)
         {
@@ -543,10 +530,23 @@ public sealed class DeckAnimatedIconsTests : IDisposable
     }
 
     [Fact]
+    public void FfmpegPathCache_ProbesAgainWhenACandidateExistsButItsProbeFailed()
+    {
+        var probes = 0;
+        var cache = new FfmpegPathCache(() => { probes++; return (null, true); }, () => 0);
+
+        Assert.Null(cache.Path);
+        Assert.Null(cache.Path);
+
+        Assert.Equal(2, probes);
+        Assert.True(cache.CandidateExists);
+    }
+
+    [Fact]
     public void FfmpegPathCache_KeepsAFoundPath()
     {
         var probes = 0;
-        var cache = new FfmpegPathCache(() => { probes++; return "/x/ffmpeg"; }, () => 0);
+        var cache = new FfmpegPathCache(() => { probes++; return ("/x/ffmpeg", true); }, () => 0);
 
         Assert.Equal("/x/ffmpeg", cache.Path);
         Assert.Equal("/x/ffmpeg", cache.Path);

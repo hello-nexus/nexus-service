@@ -229,11 +229,6 @@ public class StreamDeckConnectionWorkerTests
 
             release.SetResult();
             await images.EnsurePosterAsync(id);
-            // The event handler runs on the extraction thread right after publish; give it a moment to take the worker lock.
-            for (var i = 0; i < 100 && simulated.SetKeyImageCallCount == before; i++)
-            {
-                await System.Threading.Tasks.Task.Delay(50);
-            }
 
             Assert.True(simulated.SetKeyImageCallCount > before);
         }
