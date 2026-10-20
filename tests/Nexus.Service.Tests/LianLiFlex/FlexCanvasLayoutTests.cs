@@ -1,5 +1,6 @@
 using System.Linq;
 using Nexus.Service.Lighting;
+using Nexus.Service.Models.Devices;
 using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Persistence;
 using Xunit;
@@ -66,4 +67,36 @@ public class FlexCanvasLayoutTests
         var frame = provider.BuildFrames(0).First(f => f.Id == id);
         Assert.Equal(700f, frame.X);
     }
+
+    [Fact]
+    public void The_canvas_grid_gives_every_zone_of_one_fan_the_fans_slot_and_leaves_saved_layouts_alone()
+    {
+        var devices = new System.Collections.Generic.List<LightingDevice>
+        {
+            new() { Id = "openrgb-l-a" },
+            new() { Id = "lianli-flex:" + Tl + ":up" },
+            new() { Id = "lianli-flex:" + Tl + ":down" },
+            new() { Id = "lianli-flex:" + Inf + ":center" },
+            new() { Id = "lianli-flex:" + Inf + ":inner" },
+            new() { Id = "lianli-flex:" + Inf + ":outer" },
+        };
+        var settings = new NexusSettings();
+        settings.Lighting.DeviceLayouts["lianli-flex:" + Inf + ":outer"] = new DeviceLayout { X = 5, Y = 6, W = 7, H = 8 };
+        var before = devices[4].CanvasX;
+
+        CompositeLightingDeviceProvider.ApplyDefaultLayouts(devices, settings);
+
+        Rect(devices[1]).Should_Equal(Rect(devices[2]));
+        Rect(devices[3]).Should_Equal(Rect(devices[4]));
+        Assert.NotEqual(Rect(devices[1]), Rect(devices[3]));
+        Assert.NotEqual(Rect(devices[0]), Rect(devices[1]));
+        Assert.Equal(before, devices[5].CanvasX);
+    }
+
+    private static (float, float, float, float) Rect(LightingDevice d) => (d.CanvasX, d.CanvasY, d.CanvasW, d.CanvasH);
+}
+
+internal static class RectAssert
+{
+    public static void Should_Equal(this (float, float, float, float) actual, (float, float, float, float) expected) => Assert.Equal(expected, actual);
 }

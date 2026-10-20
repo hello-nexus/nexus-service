@@ -444,14 +444,44 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     internal static void ApplyDefaultLayouts(List<LightingDevice> devices, NexusSettings settings)
     {
         var layouts = settings.Lighting.DeviceLayouts;
-        var total = devices.Count;
-        for (var i = 0; i < total; i++)
+        // One slot per device, except the zones of one Flex fan: they share their fan's slot, so the fan
+        // lands on the canvas as one block and its LEDs sit in it by position.
+        var slotOf = new int[devices.Count];
+        var flexSlots = new Dictionary<string, int>(StringComparer.Ordinal);
+        var total = 0;
+        for (var i = 0; i < devices.Count; i++)
+        {
+            var unit = FlexUnitKey(devices[i].Id);
+            if (unit is not null && flexSlots.TryGetValue(unit, out var shared))
+            {
+                slotOf[i] = shared;
+                continue;
+            }
+            slotOf[i] = total;
+            if (unit is not null)
+            {
+                flexSlots[unit] = total;
+            }
+            total++;
+        }
+        for (var i = 0; i < devices.Count; i++)
         {
             var dev = devices[i];
             if (layouts.ContainsKey(dev.Id)) continue;
-            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(i, total);
+            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(slotOf[i], total);
             dev.CanvasX = x; dev.CanvasY = y; dev.CanvasW = w; dev.CanvasH = h;
         }
+    }
+
+    /// <summary>"lianli-flex:{MAC}" for a Flex zone id, else null.</summary>
+    private static string? FlexUnitKey(string id)
+    {
+        if (!IsFlexId(id))
+        {
+            return null;
+        }
+        var second = id.IndexOf(':', "lianli-flex:".Length);
+        return second < 0 ? id : id[..second];
     }
 
     public void SetDisabled(IReadOnlyList<string> ids)

@@ -354,7 +354,8 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     {
         var structures = new List<DeviceStructure>();
         var stored = _store.Load().Devices.FlexUnits;
-        foreach (var unit in _hub.Units)
+        // In light-sequence order, so the fans land on the canvas side by side in that order.
+        foreach (var unit in _hub.Units.OrderBy(u => stored.TryGetValue(u.Mac, out var look) ? look.SortIndex : 0).ThenBy(u => u.Mac, StringComparer.Ordinal))
         {
             if (unit.Controllable && PlaysMotherboardArgb(unit, stored) == playsArgb)
             {
