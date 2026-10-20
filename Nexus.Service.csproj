@@ -896,6 +896,7 @@
     <Compile Remove="src/Activity/WindowsNetworkProvider.cs" />
     <Compile Remove="src/Activity/WindowsVolumeProvider.cs" />
     <Compile Remove="src/Fps/WindowsFpsProvider.cs" />
+    <Compile Remove="src/Fps/EtwFpsTraceRunner.cs" />
     <Compile Remove="src/Peripherals/Keeb/WindowsInputter.cs" />
     <Compile Remove="src/Lifecycle/PawnIoProvider.cs" />
     <Compile Remove="src/Devices/Detection/WindowsUsbEnumerator.cs" />

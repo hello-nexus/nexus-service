@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.DependencyInjection;
@@ -109,6 +111,13 @@ public class FlexCanvasLayoutTests
         services.AddLogging();
         services.AddHttpClient();
         services.AddSingleton(hub);
+        // A fresh install (no settings.json, as on CI) defaults to full-canvas rects, which this grid test must not
+        // inherit from, nor read or write the machine's real settings.json. An existing document keeps the grid.
+        var settingsDir = Path.Combine(Path.GetTempPath(), "nexus-flexcanvas-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(settingsDir);
+        var settingsPath = Path.Combine(settingsDir, "settings.json");
+        File.WriteAllText(settingsPath, "{}");
+        services.AddSingleton<IConfigStore>(new JsonConfigStore(settingsPath));
         return (services.BuildServiceProvider(), hub, discovery);
     }
 
