@@ -73,7 +73,7 @@ public sealed class PanelAutoPromotion
                     display.Manufacturer, display.Model, display.Name,
                     display.Resolution?.Width ?? 0, display.Resolution?.Height ?? 0,
                     display.ScaleFactor, display.IsTouch, display.Orientation, display.Dpi);
-                var (record, _) = _registry.AllocateForDisplay(display.Id, display.Name, capabilities);
+                var (record, _) = _registry.AllocateForDisplay(display.Id, display.Name, capabilities, display.Fingerprint);
                 (markSeen ??= new List<string>()).Add(identity);
                 (promoted ??= new List<string>()).Add(record.Id);
                 ServiceLog.Info($"[panel-auto-promote] '{display.Name}' ({identity}) promoted to panel {record.Id}");

@@ -227,7 +227,16 @@ internal static class AppBootstrap
             ReapplyAfterProfileSwitch(sp, curveEngine, lightingEngine, lightingProvider, configStore);
             ReapplyPanelsAfterProfileSwitch(sp, configStore);
         };
-        sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>().FingerprintsChanged += profileManager.StampFingerprintKeys;
+        var panelRegistry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
+        panelRegistry.FingerprintsChanged += profileManager.StampFingerprintKeys;
+        // A re-promoted monitor gets a new record id; the active profile's saved look for it applies at once.
+        panelRegistry.DisplayRecordReady += record =>
+        {
+            if (profileManager.AdoptSavedLook(record.Id) && sp.GetService<MultiplexHub>() is { } hub)
+            {
+                PanelTopics.BroadcastPanelDevice(hub, record.Id);
+            }
+        };
         profileManager.PanelsChanged += () => ReapplyPanelsAfterProfileSwitch(sp, configStore);
     }
 

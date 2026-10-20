@@ -107,7 +107,7 @@ public sealed class PanelDeviceRegistry
     /// monitor and orphan a record on demote. Returns
     /// <c>Created == false</c> with the existing record when already bound.
     /// </summary>
-    public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities)
+    public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities, Nexus.Service.Models.Displays.DisplayFingerprint? fingerprint = null)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var record = new PanelDeviceRecord
@@ -118,6 +118,7 @@ public sealed class PanelDeviceRegistry
             LastSeenAt = now,
             Capabilities = capabilities,
             DisplayId = displayId,
+            DisplayFingerprint = fingerprint,
         };
 
         PanelDeviceRecord? result = null;
@@ -136,6 +137,7 @@ public sealed class PanelDeviceRegistry
                     candidate.Enabled = true;
                     candidate.Capabilities = capabilities ?? candidate.Capabilities;
                     candidate.LastSeenAt = now;
+                    candidate.DisplayFingerprint ??= fingerprint;
                     activated = true;
                 }
                 result = Clone(candidate);

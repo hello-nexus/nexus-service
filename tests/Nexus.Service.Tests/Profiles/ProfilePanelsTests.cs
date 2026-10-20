@@ -625,4 +625,71 @@ public class ProfilePanelsTests : IDisposable
 
         Assert.Equal("#bbbbbb", Live("m2").AccentColor);
     }
+
+    private static readonly DisplayFingerprint Fp = new() { Manufacturer = "ACR", Product = "0A1B", Serial = 1, SerialText = "SER1" };
+
+    private static int Count(string text, string needle) => text.Split(needle).Length - 1;
+
+    private (PanelDeviceRegistry Registry, string A, string B) PromoteAndCustomize()
+    {
+        var registry = new PanelDeviceRegistry(_store);
+        _pm.Initialize();
+        registry.DisplayRecordReady += record => _pm.AdoptSavedLook(record.Id);
+        var a = _pm.GetActiveEntry()!.Id;
+        var caps = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor };
+        var first = registry.AllocateForDisplay("d1", "Mon", caps, Fp).Record;
+        _store.Update(s => s.PanelDevices[first.Id].AccentColor = "#aaaaaa");
+        var b = _pm.CreateProfile("B").Id;
+        _store.Update(s => s.PanelDevices[first.Id].AccentColor = "#bbbbbb");
+        _pm.SwitchProfile(a);
+        return (registry, a, b);
+    }
+
+    private string Repromote(PanelDeviceRegistry registry)
+    {
+        var old = _store.Load().PanelDevices.Values.Single(r => r.DisplayId == "d1").Id;
+        registry.DisablePanelForDisplay("d1");
+        _store.Update(s => s.PanelDevices.Remove(old));
+        return registry.AllocateForDisplay("d1", "Mon", new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor }, Fp).Record.Id;
+    }
+
+    [Fact]
+    public void Repromoted_monitor_adopts_the_active_look_at_once_and_each_file_keeps_one_entry()
+    {
+        var (registry, a, b) = PromoteAndCustomize();
+        var key = PanelProfileData.FingerprintKey(Fp)!;
+
+        var n = Repromote(registry);
+
+        Assert.Equal("#aaaaaa", Live(n).AccentColor);
+        _pm.SwitchProfile(b);
+        Assert.Equal("#bbbbbb", Live(n).AccentColor);
+        _pm.SwitchProfile(a);
+        Assert.Equal(1, Count(File.ReadAllText(Path.Combine(_dir, $"profile-{a}.json")), key));
+        Assert.Equal(1, Count(File.ReadAllText(Path.Combine(_dir, $"profile-{b}.json")), key));
+
+        var n2 = Repromote(registry);
+        Assert.Equal("#aaaaaa", Live(n2).AccentColor);
+        _pm.SwitchProfile(b);
+        Assert.Equal("#bbbbbb", Live(n2).AccentColor);
+    }
+
+    [Fact]
+    public void A_customized_new_record_is_not_overwritten_by_an_older_saved_entry()
+    {
+        var (registry, a, _) = PromoteAndCustomize();
+        var old = _store.Load().PanelDevices.Values.Single().Id;
+        _pm.SaveActiveProfile();
+        registry.DisablePanelForDisplay("d1");
+        _store.Update(s => s.PanelDevices.Remove(old));
+        var n = registry.AllocateForDisplay("d1", "Mon", new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor }, Fp).Record.Id;
+        _store.Update(s => s.PanelDevices[n].AccentColor = "#cccccc");
+
+        _pm.SaveActiveProfile();
+        _pm.SwitchProfile(_pm.GetManifest().Profiles.First(p => p.Id != a).Id);
+        _pm.SwitchProfile(a);
+
+        Assert.Equal("#cccccc", Live(n).AccentColor);
+        Assert.Equal(1, Count(File.ReadAllText(Path.Combine(_dir, $"profile-{a}.json")), PanelProfileData.FingerprintKey(Fp)!));
+    }
 }

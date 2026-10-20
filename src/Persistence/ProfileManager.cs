@@ -953,6 +953,7 @@ public sealed partial class ProfileManager : IDisposable
                         && saved.FingerprintKey != key)
                     {
                         saved.FingerprintKey = key;
+                        PanelProfileData.CollapseKey(file, id);
                         changed = true;
                     }
                 }
@@ -962,6 +963,34 @@ public sealed partial class ProfileManager : IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// A display-bound record was just allocated or re-enabled. When its look is still the default and the
+    /// active profile holds a saved entry for the same monitor, that look applies to the live record now.
+    /// </summary>
+    public bool AdoptSavedLook(string recordId)
+    {
+        NexusSettings? file;
+        lock (_lock)
+        {
+            file = ReadProfileFile(_manifest.ActiveProfileId);
+        }
+        if (file is null || !file.HasPanelsData)
+        {
+            return false;
+        }
+        var adopted = false;
+        _store.Update(s =>
+        {
+            if (s.PanelDevices.TryGetValue(recordId, out var record) && PanelProfileData.IsDefaultLook(record))
+            {
+                var only = new NexusSettings { PanelDevices = { [recordId] = record } };
+                PanelProfileData.ApplyToLive(only, file);
+                adopted = !PanelProfileData.IsDefaultLook(record);
+            }
+        });
+        return adopted;
     }
 
     /// <summary>The id of the profile currently active, for callers that default an import target to it.</summary>

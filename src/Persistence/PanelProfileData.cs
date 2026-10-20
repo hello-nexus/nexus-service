@@ -50,8 +50,12 @@ public static class PanelProfileData
         var now = Clock();
         var oldest = now - KeepAbsentFor;
         var bytes = 0;
+        // One entry per monitor: a saved entry sharing a live record's fingerprint key under another id is
+        // that record's predecessor, so it is replaced below and never retained next to it.
+        var liveKeys = live.Select(r => r.FingerprintKey ?? FingerprintKey(r.DisplayFingerprint)).Where(k => k is not null).ToHashSet();
         var absent = file.PanelDevices.Values
-            .Where(saved => !matched.ContainsKey(saved) && DateTimeOffset.FromUnixTimeMilliseconds(saved.LastSeenAt) >= oldest)
+            .Where(saved => !matched.ContainsKey(saved) && !(saved.FingerprintKey is { } k && liveKeys.Contains(k))
+                && DateTimeOffset.FromUnixTimeMilliseconds(saved.LastSeenAt) >= oldest)
             .OrderByDescending(saved => saved.LastSeenAt);
         foreach (var saved in absent)
         {
@@ -64,7 +68,20 @@ public static class PanelProfileData
         }
         foreach (var record in live)
         {
-            records[record.Id] = Strip(record);
+            var stripped = Strip(record);
+            // A record recreated under a new id (a re-promoted monitor) starts at the default look; the
+            // predecessor entry for the same panel keeps the user's.
+            var older = file.PanelDevices.Values
+                .Where(saved => saved.Id != record.Id
+                    && ((matched.TryGetValue(saved, out var m) && ReferenceEquals(m, record))
+                        || (stripped.FingerprintKey is not null && saved.FingerprintKey == stripped.FingerprintKey)))
+                .OrderByDescending(saved => saved.LastSeenAt)
+                .FirstOrDefault();
+            if (older is not null && IsDefaultLook(record))
+            {
+                CopyLook(older, stripped);
+            }
+            records[record.Id] = stripped;
         }
         file.PanelDevices = records;
         file.HasPanelsData = true;
@@ -168,6 +185,31 @@ public static class PanelProfileData
 
     private static bool IsPhone(PanelDeviceRecord r) =>
         string.Equals(r.Capabilities?.Surface, PanelSurfaces.Phone, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Leaves a single entry for <paramref name="id"/>'s fingerprint key: other entries under that key are dropped,
+    /// and the survivor takes the newest dropped entry's look when its own is still the default.
+    /// </summary>
+    public static void CollapseKey(NexusSettings file, string id)
+    {
+        if (!file.PanelDevices.TryGetValue(id, out var keep) || keep.FingerprintKey is not { } key)
+        {
+            return;
+        }
+        var others = file.PanelDevices.Values.Where(r => r.Id != id && r.FingerprintKey == key).OrderByDescending(r => r.LastSeenAt).ToList();
+        if (others.Count == 0)
+        {
+            return;
+        }
+        if (IsDefaultLook(keep))
+        {
+            CopyLook(others[0], keep);
+        }
+        foreach (var o in others)
+        {
+            file.PanelDevices.Remove(o.Id);
+        }
+    }
 
     /// <summary>One-time fix for presets saved before WidgetSize joined them: they take their record's size.</summary>
     public static void BackfillPresetWidgetSize(NexusSettings settings)
