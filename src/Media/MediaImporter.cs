@@ -265,7 +265,8 @@ public static class MediaImporter
             {
                 proc.Kill(entireProcessTree: true);
                 // Windows holds the output file open until the process is gone.
-                proc.WaitForExit(2000);
+                using var reap = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await proc.WaitForExitAsync(reap.Token);
             }
             catch { }
             // A caller-cancelled run is not a timeout - let the caller's own
@@ -277,7 +278,7 @@ public static class MediaImporter
         if (proc.ExitCode != 0)
         {
             var tail = stderr.Length > 400 ? stderr[^400..] : stderr;
-            throw new InvalidOperationException($"ffmpeg exit {proc.ExitCode}: {tail.Trim()}");
+            throw new FfmpegExitException($"ffmpeg exit {proc.ExitCode}: {tail.Trim()}");
         }
         return stderr;
     }
@@ -325,3 +326,6 @@ public static class MediaImporter
         public static CommitResult Failure(string error) => new(null, error);
     }
 }
+
+/// <summary>ffmpeg ran to completion and exited non-zero, as opposed to failing to start or timing out.</summary>
+internal sealed class FfmpegExitException(string message) : InvalidOperationException(message);

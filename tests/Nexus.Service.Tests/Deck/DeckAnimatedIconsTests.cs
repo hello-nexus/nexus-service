@@ -68,6 +68,13 @@ public sealed class DeckAnimatedIconsTests : IDisposable
     [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'h', (byte)'e', (byte)'i', (byte)'c' }, null)]
     [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'a', (byte)'v', (byte)'i', (byte)'f' }, null)]
     [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'M', (byte)'4', (byte)'A', (byte)' ' }, null)]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'X', (byte)'A', (byte)'V', (byte)'C' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'M', (byte)'S', (byte)'N', (byte)'V' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'i', (byte)'s', (byte)'o', (byte)'7' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'i', (byte)'s', (byte)'o', (byte)'8' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'i', (byte)'s', (byte)'o', (byte)'9' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'m', (byte)'p', (byte)'7', (byte)'1' }, ".mp4")]
+    [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'f', (byte)'4', (byte)'v', (byte)' ' }, ".mp4")]
     [InlineData(new byte[] { 0, 0, 0, 0x20, (byte)'f', (byte)'t', (byte)'y', (byte)'p' }, null)]
     [InlineData(new byte[] { 0x1A, 0x45, 0xDF, 0xA3 }, ".webm")]
     [InlineData(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }, null)]
@@ -311,9 +318,9 @@ public sealed class DeckAnimatedIconsTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _images.EnsurePosterAsync(id, cts.Token));
     }
 
-    private static async Task<byte[]?> MakeRealMp4(string path)
+    private static async Task<byte[]?> MakeRealMp4(string path, string size = "64x48")
     {
-        await MediaImporter.RunFfmpeg("-y", "-f", "lavfi", "-i", "color=c=red:s=64x48:d=0.5:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p", path);
+        await MediaImporter.RunFfmpeg("-y", "-f", "lavfi", "-i", $"color=c=red:s={size}:d=0.5:r=10", "-c:v", "libx264", "-pix_fmt", "yuv420p", path);
         return File.Exists(path) ? File.ReadAllBytes(path) : null;
     }
 
@@ -396,4 +403,116 @@ public sealed class DeckAnimatedIconsTests : IDisposable
 
         Assert.NotNull(target.TryLoadStill(id));
     }
+
+    [FfmpegFact]
+    public async Task EnsurePoster_BoundsALargeSourceToTheMaxEdge()
+    {
+        byte[]? mp4;
+        try
+        {
+            mp4 = await MakeRealMp4(Path.Combine(_dir, "wide.mp4"), "640x360");
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+        var id = _images.Store(mp4!)!;
+
+        await _images.EnsurePosterAsync(id);
+
+        using var bitmap = SkiaSharp.SKBitmap.Decode(_images.TryLoadStill(id)!);
+        Assert.Equal(256, Math.Max(bitmap.Width, bitmap.Height));
+        Assert.Equal((256, 144), (bitmap.Width, bitmap.Height));
+    }
+
+    private (DeckImageStore Store, string Id, Func<int> Calls) FakeRunnerStore(Func<string[], Task<string>> run)
+    {
+        var calls = 0;
+        var store = new DeckImageStore(Path.Combine(_dir, "fake-" + Guid.NewGuid().ToString("N")[..6]), (_, _, args) =>
+        {
+            calls++;
+            return run(args);
+        });
+        return (store, store.Store(Mp4())!, () => calls);
+    }
+
+    [Fact]
+    public async Task EnsurePoster_FfmpegRejectingTheFileIsRememberedAndNotRetried()
+    {
+        var (store, id, calls) = FakeRunnerStore(_ => throw new FfmpegExitException("ffmpeg exit 1: bad"));
+
+        await store.EnsurePosterAsync(id);
+        await store.EnsurePosterAsync(id);
+
+        Assert.True(File.Exists(Path.Combine(store.RootDir, id + ".poster.none")));
+        Assert.Equal(1, calls());
+        Assert.False(store.IsPosterPending(id));
+    }
+
+    [Fact]
+    public async Task EnsurePoster_CleanExitWithNoOutputIsRemembered()
+    {
+        var (store, id, _) = FakeRunnerStore(_ => Task.FromResult(""));
+
+        await store.EnsurePosterAsync(id);
+
+        Assert.True(File.Exists(Path.Combine(store.RootDir, id + ".poster.none")));
+    }
+
+    [Fact]
+    public async Task EnsurePoster_TimeoutAndSpawnFailureLeaveNoMarkerSoARetryRuns()
+    {
+        var spawn = false;
+        var (store, id, calls) = FakeRunnerStore(_ => spawn
+            ? throw new System.ComponentModel.Win32Exception("access denied")
+            : throw new InvalidOperationException("ffmpeg timed out after 15s"));
+
+        await store.EnsurePosterAsync(id);
+        spawn = true;
+        await store.EnsurePosterAsync(id);
+
+        Assert.False(File.Exists(Path.Combine(store.RootDir, id + ".poster.none")));
+        Assert.Equal(2, calls());
+        Assert.True(store.IsPosterPending(id));
+    }
+
+    [Fact]
+    public async Task EnsurePoster_SuccessfulRunPublishesThePoster()
+    {
+        var (store, id, _) = FakeRunnerStore(args =>
+        {
+            File.WriteAllBytes(args[^1], OnePxPng);
+            return Task.FromResult("");
+        });
+
+        await store.EnsurePosterAsync(id);
+
+        Assert.Equal(OnePxPng, store.TryLoadStill(id));
+        Assert.False(store.IsPosterPending(id));
+    }
+
+    [Fact]
+    public async Task Renderer_DoesNotCacheTheFallbackFaceWhileAPosterIsPending()
+    {
+        var model = StreamDeckModels.ByProductId(0x0080)!;
+        var (store, id, _) = FakeRunnerStore(args =>
+        {
+            using var bmp = new SkiaSharp.SKBitmap(8, 8);
+            bmp.Erase(SkiaSharp.SKColors.Lime);
+            using var data = bmp.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+            File.WriteAllBytes(args[^1], data.ToArray());
+            return Task.FromResult("");
+        });
+        var renderer = new DeckKeyRenderer(store, new NullShortcutsProvider(), new NullProcessIconProvider());
+        var slot = new DeckSlot { Icon = new DeckIcon { Kind = "image", Value = id } };
+
+        var before = renderer.Render(slot, false, model, 0);
+        await store.EnsurePosterAsync(id);
+        var after = renderer.Render(slot, false, model, 0);
+
+        Assert.NotEqual(before, after);
+    }
+
+    private static readonly byte[] OnePxPng = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
 }

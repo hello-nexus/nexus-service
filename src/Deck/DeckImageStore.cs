@@ -34,7 +34,14 @@ public sealed class DeckImageStore
     }
 
     public DeckImageStore(string rootDir)
+        : this(rootDir, null)
     {
+    }
+
+    /// <summary>runFfmpeg replaces the real process run so tests can drive the poster failure paths.</summary>
+    internal DeckImageStore(string rootDir, Func<int, CancellationToken, string[], Task<string>>? runFfmpeg)
+    {
+        _runFfmpeg = runFfmpeg;
         _rootDir = rootDir;
         Directory.CreateDirectory(_rootDir);
         SweepStaleTemps();
@@ -184,7 +191,7 @@ public sealed class DeckImageStore
     /// </summary>
     public Task EnsurePosterAsync(string id, CancellationToken ct = default)
     {
-        if (!IsValidId(id) || File.Exists(PosterPath(id)) || File.Exists(PosterFailedPath(id)) || FfmpegResolver.Path is null)
+        if (!IsValidId(id) || File.Exists(PosterPath(id)) || File.Exists(PosterFailedPath(id)) || !FfmpegAvailable)
         {
             return Task.CompletedTask;
         }
@@ -241,9 +248,9 @@ public sealed class DeckImageStore
         var tmp = Path.Combine(_rootDir, id + "." + Path.GetRandomFileName() + ".tmp.png");
         try
         {
-            // Bounded so a 4K source never decodes to a full-size bitmap per cache miss; never upscaled.
+            // Bounded to the largest key face; never upscaled.
             var scale = $"scale='min({PosterMaxEdge},iw)':'min({PosterMaxEdge},ih)':force_original_aspect_ratio=decrease";
-            await MediaImporter.RunFfmpeg(PosterTimeoutSeconds, CancellationToken.None, ["-y", "-i", source, "-frames:v", "1", "-vf", scale, tmp]);
+            await (_runFfmpeg ?? MediaImporter.RunFfmpeg)(PosterTimeoutSeconds, CancellationToken.None, ["-y", "-i", source, "-frames:v", "1", "-vf", scale, tmp]);
             if (File.Exists(tmp))
             {
                 File.Move(tmp, PosterPath(id), overwrite: true);
@@ -256,13 +263,27 @@ public sealed class DeckImageStore
         catch (Exception ex)
         {
             ServiceLog.Warn($"[deck] poster frame for {id} failed: {ex.Message}");
-            MarkPosterFailed(id);
+            // Only a decode ffmpeg itself rejected is permanent; a timeout or a spawn failure (AV holding the exe) is retried on the next request.
+            if (ex is FfmpegExitException)
+            {
+                MarkPosterFailed(id);
+            }
         }
         finally
         {
             TryDelete(tmp);
         }
     }
+
+    /// <summary>True while a stored video still lacks its poster and extraction can yet succeed, so a renderer should not cache its fallback face.</summary>
+    public bool IsPosterPending(string id) =>
+        IsValidId(id)
+        && FfmpegAvailable
+        && !File.Exists(PosterPath(id))
+        && !File.Exists(PosterFailedPath(id))
+        && Extensions.Where(IsVideoExtension).Any(e => File.Exists(Path.Combine(_rootDir, id + e)));
+
+    private bool FfmpegAvailable => _runFfmpeg is not null || FfmpegResolver.Path is not null;
 
     private string PosterFailedPath(string id) => Path.Combine(_rootDir, id + ".poster.none");
 
@@ -311,6 +332,7 @@ public sealed class DeckImageStore
     private const int PosterMaxEdge = 256;
     private static readonly TimeSpan StaleTempAge = TimeSpan.FromHours(1);
     private static readonly SemaphoreSlim PosterGate = new(2);
+    private readonly Func<int, CancellationToken, string[], Task<string>>? _runFfmpeg;
     private readonly object _posterLock = new();
     private readonly Dictionary<string, Task> _posterInFlight = new(StringComparer.Ordinal);
 
@@ -331,6 +353,7 @@ public sealed class DeckImageStore
     // ISO-BMFF also wraps HEIC, AVIF, M4A and 3GP stills/audio; only video major brands count as MP4.
     private static bool IsVideoBrand(string brand) =>
         brand is "isom" or "iso2" or "iso3" or "iso4" or "iso5" or "iso6" or "mp41" or "mp42" or "avc1"
+            or "iso7" or "iso8" or "iso9" or "mp71" or "XAVC" or "MSNV" or "f4v "
             or "M4V " or "M4VH" or "M4VP" or "dash" or "mmp4" or "qt  ";
 
     public static string? SniffExtension(byte[] bytes)

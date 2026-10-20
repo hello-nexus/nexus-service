@@ -404,7 +404,18 @@ public static class DeckRoutes
                 return Results.Json(ApiResponse.Fail("preset.json is missing name"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
 
-            // Assets first: a preset must never be saved while its images are still missing.
+            // Cheap pre-check so a rejected import writes no assets; the Update below re-checks atomically.
+            var existing = store.Load().StreamDeck.Presets;
+            if (existing.Count >= PresetCap)
+            {
+                return Results.Json(ApiResponse.Fail("Deck preset cap of 50 reached"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+            if (existing.Any(p => string.Equals(p.Name, trimmedName, System.StringComparison.OrdinalIgnoreCase)))
+            {
+                return Results.Json(ApiResponse.Fail("preset_name_taken"), AppJsonContext.Default.ApiResponse, statusCode: 409);
+            }
+
+            // Assets before the commit: a preset must never be saved while its images are still missing.
             foreach (var (assetId, asset) in read.Assets)
             {
                 images.StoreValidated(assetId, asset.Ext, asset.Bytes);
@@ -452,12 +463,15 @@ public static class DeckRoutes
                 return Results.Json(ApiResponse.Fail("preset_name_taken"), AppJsonContext.Default.ApiResponse, statusCode: 409);
             }
 
-            // Posters are best effort and detached from the request token: an abort here must not strand a committed preset.
-            await Task.WhenAll(read.Assets
-                .Where(a => DeckImageStore.IsVideoExtension(a.Value.Ext))
-                .Select(a => images.EnsurePosterAsync(a.Key)));
-
             BroadcastPresetsChanged(hub, store);
+
+            // Posters are best effort and finish after the response: the renderer shows its fallback face (uncached) until each lands.
+            var videoIds = read.Assets.Where(a => DeckImageStore.IsVideoExtension(a.Value.Ext)).Select(a => a.Key).ToList();
+            if (videoIds.Count > 0)
+            {
+                _ = Task.WhenAll(videoIds.Select(id => images.EnsurePosterAsync(id)));
+            }
+
             return Results.Json(new DeckPresetResponse { Preset = ToFull(created!) }, AppJsonContext.Default.DeckPresetResponse);
         }).LocalhostOnly();
 

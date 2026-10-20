@@ -239,6 +239,11 @@ public sealed class DeckKeyRenderer
         {
             appIcon = LoadAppIcon(display, ref transient, out iconPending);
         }
+        if (customImage is null && shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.IsPosterPending(display.Icon.Value))
+        {
+            // The video's poster frame is still being extracted: the fallback face must not be cached over it.
+            transient = true;
+        }
         var iconOnBlack = (customImage is not null || appIcon is not null) && !display.ExplicitColor;
         var background = iconOnBlack ? SKColors.Black : RenderKit.ParseColor(display.ColorHex, SKColors.Black);
         // Selected: brighten a real accent; an icon on black keeps the ring
