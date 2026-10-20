@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Nexus.Service.Persistence;
 
@@ -63,9 +64,10 @@ public static class ProfileSharing
     /// individual Cooling fields, so it must run after Cooling replaces the
     /// whole block.
     /// </summary>
-    public static NexusSettings ExtractShareable(NexusSettings source)
+    public static NexusSettings ExtractShareable(NexusSettings source, NexusSettings? prior = null)
     {
-        var extract = new NexusSettings();
+        // Panel records the profile file holds for panels absent from this PC ride along.
+        var extract = new NexusSettings { PanelDevices = prior?.PanelDevices.ToDictionary(kv => kv.Key, kv => kv.Value) ?? new() };
         for (var i = 0; i < All.Count; i++)
         {
             WriteCategory(extract, source, All[i]);

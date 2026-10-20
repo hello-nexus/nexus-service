@@ -809,6 +809,7 @@ public sealed class PanelDeviceRegistry
             record.Font = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
+            record.WidgetSize = null;
             // Presets are personalization too, and they reference the media
             // the caller deletes.
             record.Presets = null;

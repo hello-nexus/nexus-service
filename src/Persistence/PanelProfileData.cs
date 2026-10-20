@@ -1,37 +1,54 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
+using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Persistence;
 
 /// <summary>
 /// Everything the Panels profile category carries, in one place. A profile
 /// file holds panel records stripped to personalization plus the match keys
-/// (id, surface, display fingerprint), and the cooler display content blocks.
+/// (id, surface, hashed display fingerprint), and the cooler display content
+/// blocks, under the <see cref="NexusSettings.HasPanelsData"/> marker.
 /// Identity, display binding, capabilities, timestamps, enabled state and
 /// hardware or mount settings stay with the live records and never travel.
 /// A new personalization field joins through <see cref="IPanelPersonalization"/>
 /// and <see cref="PanelPresets.Copy"/>; a new cooler content field is one line
-/// in <see cref="CopyCoolerContent"/> (or <see cref="CopyScreenContent"/>).
+/// in <see cref="CopyCoolerContent"/> or a screen copier. A layout migration
+/// that walks <c>NexusSettings.PanelDevices</c> must run on a profile file
+/// before <see cref="ApplyToLive"/> copies from it (see ProfileManager.LoadProfileIntoSettings).
 /// </summary>
 public static class PanelProfileData
 {
-    /// <summary>Writes a profile-file or export copy of <paramref name="source"/>'s panel data onto <paramref name="file"/>, replacing what it held.</summary>
+    /// <summary>
+    /// Writes a profile-file or export copy of <paramref name="source"/>'s panel data onto <paramref name="file"/>.
+    /// Records the file already holds that match no source record are kept, so looks for panels that
+    /// exist only on another PC survive a save here.
+    /// </summary>
     public static void WriteTo(NexusSettings file, NexusSettings source)
     {
+        var live = source.PanelDevices.Values.Where(r => !IsPhone(r)).ToList();
+        var matched = Pair(file.PanelDevices.Values.ToList(), live);
         var records = new Dictionary<string, PanelDeviceRecord>(StringComparer.Ordinal);
-        foreach (var live in source.PanelDevices.Values)
+        foreach (var saved in file.PanelDevices.Values)
         {
-            if (IsPhone(live))
+            if (!matched.ContainsKey(saved))
             {
-                continue;
+                records[saved.Id] = saved;
             }
-            records[live.Id] = Strip(live);
+        }
+        foreach (var record in live)
+        {
+            records[record.Id] = Strip(record);
         }
         file.PanelDevices = records;
+        file.HasPanelsData = true;
 
         file.Tryx = new TryxSettings();
         file.Devices = new DevicesSettings();
@@ -40,23 +57,22 @@ public static class PanelProfileData
 
     /// <summary>
     /// Copies panel data from a profile file onto the matching live records. Never creates or removes a record
-    /// or screen, and leaves unmatched panels as they are. A file with no panel records (written before the
-    /// category existed) leaves the cooler content alone too.
+    /// or screen, and leaves unmatched panels as they are. A file without the marker (written before the
+    /// category existed) changes nothing.
     /// </summary>
     public static void ApplyToLive(NexusSettings live, NexusSettings file)
     {
-        if (file.PanelDevices.Count == 0)
+        if (!file.HasPanelsData)
         {
             return;
         }
-        foreach (var saved in file.PanelDevices.Values)
+        var saved = file.PanelDevices.Values.ToList();
+        var targets = live.PanelDevices.Values.Where(r => !IsPhone(r)).ToList();
+        foreach (var (src, dst) in Pair(saved, targets))
         {
-            var target = Match(live, saved);
-            if (target is null)
-            {
-                continue;
-            }
-            CopyLook(saved, target);
+            CopyLook(src, dst);
+            // A layout left unset on a streamed strip reseeds the way a personalization reset does.
+            dst.Layout ??= PanelLayoutDefaults.StripSeedFor(dst);
         }
         CopyCoolerContent(file, live, creating: false);
     }
@@ -69,32 +85,66 @@ public static class PanelProfileData
         {
             PanelPresets.Copy(blank, record);
             record.Layout = PanelLayoutDefaults.StripSeedFor(record);
-            record.LightingSelection = null;
-            record.CoolingSelection = null;
             record.Presets = null;
             record.ActivePresetId = null;
         }
 
-        var fresh = new NexusSettings();
-        CopyCoolerContent(fresh, target, creating: false);
-        foreach (var screen in AllScreens(target))
+        CopyCoolerContent(new NexusSettings(), target, creating: false);
+        foreach (var screen in target.Devices.TlLcdScreens.Values.Concat(target.Devices.LianLiWireless.Screens.Values))
         {
             CopyScreenContent(new LianLiWirelessScreenSettings(), screen);
         }
+        foreach (var aio in target.Devices.LianLiWireless.AioScreens.Values)
+        {
+            CopyAioContent(new LianLiAioScreenSettings(), aio);
+        }
     }
 
-    /// <summary>True when the record's look equals a never-customized one (no personalization, no presets).</summary>
+    /// <summary>True when a live record's look equals a never-customized one: no presets, no personalization, and a layout that is unset, the strip seed, or the surface's install default.</summary>
     public static bool IsDefaultLook(PanelDeviceRecord record)
     {
         if (record.Presets is { Count: > 0 } || record.ActivePresetId is not null)
         {
             return false;
         }
-        var blank = new PanelPreset();
         var copy = new PanelPreset();
         PanelPresets.Copy(record, copy);
-        return JsonSerializer.Serialize(copy, Serialization.PersistenceJsonContext.Default.PanelPreset)
-            == JsonSerializer.Serialize(blank, Serialization.PersistenceJsonContext.Default.PanelPreset);
+        var layout = copy.Layout;
+        copy.Layout = null;
+        if (Json(copy) != Json(new PanelPreset()))
+        {
+            return false;
+        }
+        if (layout is null)
+        {
+            return true;
+        }
+        var shape = Shape(layout);
+        var seed = PanelLayoutDefaults.StripSeedFor(record);
+        return (seed is not null && shape == Shape(seed))
+            || shape == Shape(PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? PanelSurfaces.Y70));
+    }
+
+    /// <summary>The match key a profile file stores in place of the raw monitor fingerprint, which names the EDID serial.</summary>
+    public static string? FingerprintKey(DisplayFingerprint? fp)
+    {
+        if (fp is null)
+        {
+            return null;
+        }
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{fp.Manufacturer}|{fp.Product}|{fp.Serial}|{fp.SerialText}"));
+        return Convert.ToHexString(bytes);
+    }
+
+    private static string Json(PanelPreset p) => JsonSerializer.Serialize(p, PersistenceJsonContext.Default.PanelPreset);
+
+    // Ids are regenerated per build, so shapes compare with ids normalized.
+    private static string Shape(PanelLayoutDto layout)
+    {
+        var clone = JsonSerializer.Deserialize(
+            JsonSerializer.SerializeToUtf8Bytes(layout, PersistenceJsonContext.Default.PanelLayoutDto),
+            PersistenceJsonContext.Default.PanelLayoutDto)!;
+        return JsonSerializer.Serialize(PanelLayoutDefaults.WithStableIds(clone, ""), PersistenceJsonContext.Default.PanelLayoutDto);
     }
 
     private static bool IsPhone(PanelDeviceRecord r) =>
@@ -106,7 +156,7 @@ public static class PanelProfileData
         {
             Id = live.Id,
             Capabilities = new PanelDeviceCapabilities { Surface = live.Capabilities?.Surface },
-            DisplayFingerprint = live.DisplayFingerprint,
+            FingerprintKey = live.FingerprintKey ?? FingerprintKey(live.DisplayFingerprint),
         };
         CopyLook(live, stripped);
         return stripped;
@@ -131,46 +181,60 @@ public static class PanelProfileData
         return clone;
     }
 
-    /// <summary>Same id, else the one live record of the same single-instance surface, else a monitor with the same fingerprint.</summary>
-    private static PanelDeviceRecord? Match(NexusSettings live, PanelDeviceRecord saved)
+    /// <summary>
+    /// Pairs saved records with live ones, each side used once. Same id first. Then a single-instance
+    /// surface, only when exactly one saved and one live record are left on it (a multi-screen cooler
+    /// registers several records on one surface, and those pair by id alone). Then a monitor fingerprint
+    /// key, only when it is unique on both sides, so identical monitors never swap looks.
+    /// </summary>
+    private static Dictionary<PanelDeviceRecord, PanelDeviceRecord> Pair(List<PanelDeviceRecord> saved, List<PanelDeviceRecord> live)
     {
-        if (live.PanelDevices.TryGetValue(saved.Id, out var byId) && !IsPhone(byId))
+        var pairs = new Dictionary<PanelDeviceRecord, PanelDeviceRecord>();
+        var claimed = new HashSet<PanelDeviceRecord>();
+        foreach (var s in saved)
         {
-            return byId;
+            var hit = live.FirstOrDefault(l => string.Equals(l.Id, s.Id, StringComparison.Ordinal));
+            if (hit is not null && claimed.Add(hit))
+            {
+                pairs[s] = hit;
+            }
         }
 
-        var surface = saved.Capabilities?.Surface;
-        if (surface is not null && PanelSurfaces.IsSingleInstance(surface))
-        {
-            return live.PanelDevices.Values
-                .Where(r => string.Equals(r.Capabilities?.Surface, surface, StringComparison.Ordinal))
-                .OrderByDescending(r => r.LastSeenAt)
-                .FirstOrDefault();
-        }
+        PairUnique(saved, live, pairs, claimed, r =>
+            r.Capabilities?.Surface is { } surface && PanelSurfaces.IsSingleInstance(surface) ? surface : null);
+        PairUnique(saved, live, pairs, claimed, r => r.FingerprintKey ?? FingerprintKey(r.DisplayFingerprint));
+        return pairs;
+    }
 
-        if (saved.DisplayFingerprint is { } fp)
+    private static void PairUnique(
+        List<PanelDeviceRecord> saved, List<PanelDeviceRecord> live,
+        Dictionary<PanelDeviceRecord, PanelDeviceRecord> pairs, HashSet<PanelDeviceRecord> claimed,
+        Func<PanelDeviceRecord, string?> key)
+    {
+        var open = saved.Where(s => !pairs.ContainsKey(s) && key(s) is not null).ToList();
+        foreach (var group in open.GroupBy(s => key(s)!))
         {
-            return live.PanelDevices.Values.FirstOrDefault(r =>
-                r.DisplayFingerprint is { } rf
-                && rf.Manufacturer == fp.Manufacturer
-                && rf.Product == fp.Product
-                && rf.Serial == fp.Serial
-                && rf.SerialText == fp.SerialText);
+            var left = live.Where(l => !claimed.Contains(l) && key(l) == group.Key).ToList();
+            if (group.Count() == 1 && left.Count == 1)
+            {
+                pairs[group.First()] = left[0];
+                claimed.Add(left[0]);
+            }
         }
-        return null;
     }
 
     /// <summary>
-    /// Cooler display content: Corsair LCD media, the Lian Li fan screens (wireless and Uni Fan TL) and the
-    /// Tryx overlay and media. Brightness, rotation, lock sleep, order and device-held media stay hardware-side.
-    /// With <paramref name="creating"/> false only screens the destination already has are touched.
+    /// Cooler display content: Corsair LCD media, the Lian Li fan and AIO screens and the Tryx overlay and
+    /// media. Brightness, rotation, lock sleep, order and device-held media stay hardware-side. With
+    /// <paramref name="creating"/> false only screens the destination already has are touched.
     /// </summary>
     private static void CopyCoolerContent(NexusSettings from, NexusSettings to, bool creating)
     {
         to.Devices.Corsair.LcdSelectedMediaId = from.Devices.Corsair.LcdSelectedMediaId;
 
-        CopyScreens(from.Devices.TlLcdScreens, to.Devices.TlLcdScreens, creating);
-        CopyScreens(from.Devices.LianLiWireless.Screens, to.Devices.LianLiWireless.Screens, creating);
+        CopyEntries(from.Devices.TlLcdScreens, to.Devices.TlLcdScreens, creating, CopyScreenContent);
+        CopyEntries(from.Devices.LianLiWireless.Screens, to.Devices.LianLiWireless.Screens, creating, CopyScreenContent);
+        CopyEntries(from.Devices.LianLiWireless.AioScreens, to.Devices.LianLiWireless.AioScreens, creating, CopyAioContent);
 
         var f = from.Tryx;
         var t = to.Tryx;
@@ -192,12 +256,10 @@ public static class PanelProfileData
         t.SlideshowFinishVideos = f.SlideshowFinishVideos;
     }
 
-    private static void CopyScreens(
-        Dictionary<string, LianLiWirelessScreenSettings> from,
-        Dictionary<string, LianLiWirelessScreenSettings> to,
-        bool creating)
+    private static void CopyEntries<T>(Dictionary<string, T> from, Dictionary<string, T> to, bool creating, Action<T, T> copy)
+        where T : new()
     {
-        foreach (var (key, screen) in from)
+        foreach (var (key, entry) in from)
         {
             if (!to.TryGetValue(key, out var dest))
             {
@@ -205,10 +267,10 @@ public static class PanelProfileData
                 {
                     continue;
                 }
-                dest = new LianLiWirelessScreenSettings();
+                dest = new T();
                 to[key] = dest;
             }
-            CopyScreenContent(screen, dest);
+            copy(entry, dest);
         }
     }
 
@@ -226,6 +288,18 @@ public static class PanelProfileData
         to.TempUnit = from.TempUnit;
     }
 
-    private static IEnumerable<LianLiWirelessScreenSettings> AllScreens(NexusSettings s) =>
-        s.Devices.TlLcdScreens.Values.Concat(s.Devices.LianLiWireless.Screens.Values);
+    private static void CopyAioContent(LianLiAioScreenSettings from, LianLiAioScreenSettings to)
+    {
+        to.Theme = from.Theme;
+        to.LabelColor = from.LabelColor;
+        to.ValueColor = from.ValueColor;
+        to.UnitColor = from.UnitColor;
+        to.ShowCpuTemp = from.ShowCpuTemp;
+        to.ShowCpuLoad = from.ShowCpuLoad;
+        to.ShowGpuTemp = from.ShowGpuTemp;
+        to.ShowGpuLoad = from.ShowGpuLoad;
+        to.ShowFanSpeed = from.ShowFanSpeed;
+        to.LoopInterval = from.LoopInterval;
+        to.NexusWidgets = from.NexusWidgets;
+    }
 }

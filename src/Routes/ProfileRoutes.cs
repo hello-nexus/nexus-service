@@ -84,10 +84,6 @@ public static class ProfileRoutes
                 PanelTopics.BroadcastPrefs(hub);
                 PanelTopics.BroadcastLighting(hub);
                 PanelTopics.BroadcastCooling(hub);
-                foreach (var panelId in s.PanelDevices.Keys)
-                {
-                    PanelTopics.BroadcastPanelDevice(hub, panelId);
-                }
                 return Results.Ok(new SwitchProfileResponse { Switched = id, Prefs = prefs });
             }
             catch (KeyNotFoundException)

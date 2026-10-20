@@ -61,27 +61,56 @@ public sealed class TryxPanoramaHub : IDisposable
         _configStore = configStore;
 
         var saved = configStore.Load().Tryx;
-        _overlay = new TryxOverlayConfig
-        {
-            Items = ToRuntimeItems(saved.OverlayItems),
-            Color = saved.OverlayColor,
-            Align = saved.OverlayAlign,
-            Filter = saved.OverlayFilter,
-            Opacity = saved.OverlayOpacity,
-            Font = saved.OverlayFont,
-            Size = saved.OverlaySize,
-            Docked = saved.OverlayDocked,
-        };
+        _overlay = new TryxOverlayConfig { Docked = saved.OverlayDocked };
+        State.Brightness = saved.Brightness;
+        LoadContent(saved, Array.Empty<string>());
+    }
+
+    private void LoadContent(TryxSettings saved, IReadOnlyList<string> customMedia)
+    {
+        _overlay.Items = ToRuntimeItems(saved.OverlayItems);
+        _overlay.Color = saved.OverlayColor;
+        _overlay.Align = saved.OverlayAlign;
+        _overlay.Filter = saved.OverlayFilter;
+        _overlay.Opacity = saved.OverlayOpacity;
+        _overlay.Font = saved.OverlayFont;
+        _overlay.Size = saved.OverlaySize;
         State.CurrentMedia = saved.CurrentMedia;
         State.CurrentMediaIsCustom = saved.CurrentMediaIsCustom;
-        State.Brightness = saved.Brightness;
         _slideshow.Configure(new TryxSlideshowConfig
         {
             Enabled = saved.SlideshowEnabled,
             IntervalSec = saved.SlideshowIntervalSec,
             Shuffle = saved.SlideshowShuffle,
             FinishVideos = saved.SlideshowFinishVideos,
-        }, State.CurrentMedia, Array.Empty<string>(), NowMs());
+        }, State.CurrentMedia, customMedia, NowMs());
+    }
+
+    /// <summary>
+    /// Re-reads the persisted content after a profile switch or Panels apply and pushes it to a
+    /// connected panel: the wallpaper (a custom clip only when the panel still holds it) and the overlay.
+    /// Brightness and the docked flag stay as they are.
+    /// </summary>
+    public void ReloadFromSettings()
+    {
+        var saved = _configStore.Load().Tryx;
+        lock (_txGate)
+        {
+            LoadContent(saved, ListCustomMedia());
+            if (!IsConnected)
+            {
+                return;
+            }
+            var held = !State.CurrentMediaIsCustom || AvailableCustomMediaFilenames.Contains(State.CurrentMedia);
+            if (!string.IsNullOrEmpty(State.CurrentMedia) && held)
+            {
+                SendReliable(TryxRkProtocol.BuildPreset(State.CurrentMedia, Wire(State.ScreenEnabled), State.Brightness));
+            }
+            SendReliable(TryxRkProtocol.BuildOverlay(
+                BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(_overlay.Color),
+                _overlay.Font, _overlay.Size, _overlay.Align));
+            _fps.SetDemand(FpsDemandSource, OverlayUsesFps());
+        }
     }
 
     private static long NowMs() => Environment.TickCount64;

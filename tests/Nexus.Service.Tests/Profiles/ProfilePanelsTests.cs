@@ -1,4 +1,8 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Nexus.Service.Lifecycle;
+using Nexus.Service.Panel;
+using Nexus.Service.Sockets;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Persistence;
@@ -281,5 +285,231 @@ public class ProfilePanelsTests : IDisposable
         Assert.Equal("Y70", r.DisplayName);
         Assert.True(r.Flip180);
         Assert.Equal(new TryxSettings().OverlayColor, s.Tryx.OverlayColor);
+    }
+
+    private static PanelDeviceRecord Lcd(string id, string? accent = null) => new()
+    {
+        Id = id,
+        Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound },
+        AccentColor = accent,
+    };
+
+    private static NexusSettings FileWith(params PanelDeviceRecord[] saved)
+    {
+        var file = new NexusSettings { HasPanelsData = true };
+        foreach (var r in saved)
+        {
+            file.PanelDevices[r.Id] = r;
+        }
+        return file;
+    }
+
+    [Fact]
+    public void Several_lcd_round_records_match_by_id_only()
+    {
+        var live = new NexusSettings();
+        live.PanelDevices["l1"] = Lcd("l1");
+        live.PanelDevices["l2"] = Lcd("l2");
+        ProfileSharing.ApplyCategory(live, FileWith(Lcd("l1", "#111111"), Lcd("l2", "#222222")), ProfileSharing.Panels);
+        Assert.Equal("#111111", live.PanelDevices["l1"].AccentColor);
+        Assert.Equal("#222222", live.PanelDevices["l2"].AccentColor);
+
+        var other = new NexusSettings();
+        other.PanelDevices["x1"] = Lcd("x1", "#keep1");
+        other.PanelDevices["x2"] = Lcd("x2", "#keep2");
+        ProfileSharing.ApplyCategory(other, FileWith(Lcd("l1", "#111111"), Lcd("l2", "#222222")), ProfileSharing.Panels);
+        Assert.Equal("#keep1", other.PanelDevices["x1"].AccentColor);
+        Assert.Equal("#keep2", other.PanelDevices["x2"].AccentColor);
+    }
+
+    [Fact]
+    public void Single_surface_fallback_needs_exactly_one_on_each_side()
+    {
+        var live = new NexusSettings();
+        live.PanelDevices["new"] = Lcd("new", "#keep");
+        ProfileSharing.ApplyCategory(live, FileWith(Lcd("old1", "#abc"), Lcd("old2", "#abd")), ProfileSharing.Panels);
+        Assert.Equal("#keep", live.PanelDevices["new"].AccentColor);
+
+        var y = new NexusSettings();
+        y.PanelDevices["y-new"] = Y70("y-new");
+        var saved = Y70("y-old");
+        saved.AccentColor = "#abc";
+        ProfileSharing.ApplyCategory(y, FileWith(saved), ProfileSharing.Panels);
+        Assert.Equal("#abc", y.PanelDevices["y-new"].AccentColor);
+    }
+
+    [Fact]
+    public void Identical_monitors_without_a_serial_are_not_matched_across_ids()
+    {
+        PanelDeviceRecord Plain(string id, string? accent = null)
+        {
+            var m = Monitor(id, "d-" + id, "");
+            m.DisplayFingerprint!.Serial = 0;
+            m.DisplayFingerprint.SerialText = null;
+            m.AccentColor = accent;
+            return m;
+        }
+
+        var saved = ProfileSharing.ExtractShareable(new NexusSettings
+        {
+            PanelDevices = { ["a"] = Plain("a", "#aaa"), ["b"] = Plain("b", "#bbb") },
+        });
+        var live = new NexusSettings();
+        live.PanelDevices["c"] = Plain("c", "#keep");
+        live.PanelDevices["d"] = Plain("d", "#keep");
+
+        ProfileSharing.ApplyCategory(live, saved, ProfileSharing.Panels);
+
+        Assert.Equal("#keep", live.PanelDevices["c"].AccentColor);
+        Assert.Equal("#keep", live.PanelDevices["d"].AccentColor);
+    }
+
+    [Fact]
+    public void Fingerprint_travels_hashed_with_no_raw_serial()
+    {
+        var source = new NexusSettings();
+        source.PanelDevices["m"] = Monitor("m", "d1", "SECRET-SERIAL-77");
+        var json = JsonSerializer.Serialize(ProfileSharing.ExtractShareable(source), PersistenceJsonContext.Default.NexusSettings);
+
+        Assert.DoesNotContain("SECRET-SERIAL-77", json);
+        Assert.DoesNotContain("ACR", json);
+        Assert.Contains(PanelProfileData.FingerprintKey(source.PanelDevices["m"].DisplayFingerprint)!, json);
+    }
+
+    [Fact]
+    public void WidgetSize_travels_with_layout_and_presets()
+    {
+        var source = new NexusSettings();
+        var r = Y70();
+        r.WidgetSize = PanelWidgetSizes.Small;
+        r.Layout = new PanelLayoutDto { Surface = "y70" };
+        r.Presets = new() { new PanelPreset { Id = "p", WidgetSize = PanelWidgetSizes.Large } };
+        source.PanelDevices[r.Id] = r;
+
+        var live = new NexusSettings();
+        live.PanelDevices[r.Id] = Y70();
+        ProfileSharing.ApplyCategory(live, ProfileSharing.ExtractShareable(source), ProfileSharing.Panels);
+
+        Assert.Equal(PanelWidgetSizes.Small, live.PanelDevices[r.Id].WidgetSize);
+        Assert.Equal(PanelWidgetSizes.Large, live.PanelDevices[r.Id].Presets![0].WidgetSize);
+
+        var preset = new PanelPreset();
+        PanelPresets.Copy(r, preset);
+        Assert.Equal(PanelWidgetSizes.Small, preset.WidgetSize);
+    }
+
+    [Fact]
+    public void Corsair_only_profile_switches_content_and_null_media_clears_it()
+    {
+        var file = new NexusSettings { HasPanelsData = true };
+        var live = new NexusSettings();
+        live.Devices.Corsair.LcdSelectedMediaId = "old";
+        live.Devices.Corsair.LcdBrightness = 60;
+
+        ProfileSharing.ApplyCategory(live, file, ProfileSharing.Panels);
+
+        Assert.Null(live.Devices.Corsair.LcdSelectedMediaId);
+        Assert.Equal(60, live.Devices.Corsair.LcdBrightness);
+
+        var unmarked = new NexusSettings();
+        live.Devices.Corsair.LcdSelectedMediaId = "keep";
+        ProfileSharing.ApplyCategory(live, unmarked, ProfileSharing.Panels);
+        Assert.Equal("keep", live.Devices.Corsair.LcdSelectedMediaId);
+    }
+
+    [Fact]
+    public void WriteTo_keeps_saved_records_for_panels_absent_here()
+    {
+        var file = FileWith(Lcd("elsewhere", "#eee"));
+        var source = new NexusSettings();
+        source.PanelDevices["y70-a"] = Y70();
+        source.PanelDevices["y70-a"].AccentColor = "#here";
+
+        ProfileSharing.WriteCategory(file, source, ProfileSharing.Panels);
+
+        Assert.Equal("#eee", file.PanelDevices["elsewhere"].AccentColor);
+        Assert.Equal("#here", file.PanelDevices["y70-a"].AccentColor);
+
+        // A record that pairs with a live one by surface is replaced, not duplicated.
+        var again = FileWith(Y70("y70-old"));
+        ProfileSharing.WriteCategory(again, source, ProfileSharing.Panels);
+        Assert.Single(again.PanelDevices);
+        Assert.True(again.PanelDevices.ContainsKey("y70-a"));
+    }
+
+    [Fact]
+    public void Strip_seeded_and_install_default_layouts_count_as_default_looks()
+    {
+        var strip = new PanelDeviceRecord
+        {
+            Id = "w",
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1600, CssHeight = 400 },
+        };
+        strip.Layout = PanelLayoutDefaults.StripSeedFor(strip);
+        Assert.NotNull(strip.Layout);
+        Assert.True(PanelProfileData.IsDefaultLook(strip));
+
+        var y = Y70();
+        y.Layout = PanelLayoutDefaults.WithStableIds(PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70), "id");
+        Assert.True(PanelProfileData.IsDefaultLook(y));
+
+        y.AccentColor = "#fff";
+        Assert.False(PanelProfileData.IsDefaultLook(y));
+    }
+
+    [Fact]
+    public void AioScreens_round_trip_content_but_not_brightness()
+    {
+        var source = new NexusSettings();
+        source.PanelDevices["y70-a"] = Y70();
+        source.Devices.LianLiWireless.AioScreens["AA"] = new LianLiAioScreenSettings { Theme = 3, ShowFanSpeed = true, LabelColor = "#123456", Brightness = 10 };
+
+        var live = new NexusSettings();
+        live.PanelDevices["y70-a"] = Y70();
+        live.Devices.LianLiWireless.AioScreens["AA"] = new LianLiAioScreenSettings { Brightness = 77 };
+        ProfileSharing.ApplyCategory(live, ProfileSharing.ExtractShareable(source), ProfileSharing.Panels);
+
+        var aio = live.Devices.LianLiWireless.AioScreens["AA"];
+        Assert.Equal(3, aio.Theme);
+        Assert.True(aio.ShowFanSpeed);
+        Assert.Equal("#123456", aio.LabelColor);
+        Assert.Equal(77, aio.Brightness);
+    }
+
+    [Fact]
+    public void Panels_reapply_broadcasts_every_record_from_any_switch_path()
+    {
+        var store = new JsonConfigStore(Path.Combine(_dir, "s2.json"));
+        try
+        {
+            store.Update(s =>
+            {
+                s.PanelDevices["a"] = Y70("a");
+                s.PanelDevices["b"] = Lcd("b");
+            });
+            var hub = new MultiplexHub();
+            var seen = new List<string>();
+            hub.OnBroadcastForTest += (topic, _) => seen.Add(topic);
+            using var sub = hub.AddTestSubscription(PanelTopics.PanelDevice);
+            var sp = new ServiceCollection().AddSingleton(hub).BuildServiceProvider();
+
+            AppBootstrap.ReapplyPanelsAfterProfileSwitch(sp, store);
+
+            Assert.Equal(2, seen.Count(t => t == PanelTopics.PanelDevice));
+        }
+        finally { store.Dispose(); }
+    }
+
+    [Fact]
+    public void Resetting_panels_on_the_active_profile_raises_the_reapply_event()
+    {
+        _pm.Initialize();
+        var raised = 0;
+        _pm.OnProfileSwitched += () => raised++;
+
+        _pm.ResetCategory(_pm.GetActiveEntry()!.Id, ProfileSharing.Panels);
+        _pm.ResetCategory(_pm.GetActiveEntry()!.Id, ProfileSharing.Theme);
+
+        Assert.Equal(1, raised);
     }
 }

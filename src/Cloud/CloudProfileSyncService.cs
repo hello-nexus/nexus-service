@@ -805,9 +805,11 @@ public sealed class CloudProfileSyncService : BackgroundService
         }
         // Auto-allocated records and cooler content present before the user customizes anything must not
         // make a fresh profile look edited.
+        var defaultLooks = settings.PanelDevices.Values.Where(PanelProfileData.IsDefaultLook).Select(r => r.Id).ToHashSet();
         projection.PanelDevices = projection.PanelDevices
-            .Where(kv => !PanelProfileData.IsDefaultLook(kv.Value))
+            .Where(kv => !defaultLooks.Contains(kv.Key))
             .ToDictionary(kv => kv.Key, kv => kv.Value);
+        projection.HasPanelsData = false;
         projection.Tryx = new TryxSettings();
         projection.Devices = new DevicesSettings();
         return JsonSerializer.Serialize(projection, PersistenceJsonContext.Default.NexusSettings);

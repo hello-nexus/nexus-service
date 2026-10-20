@@ -223,7 +223,34 @@ internal static class AppBootstrap
         // dictionary lookup against the DI cache.
         var sp = app.Services;
         profileManager.OnProfileSwitched += () =>
+        {
             ReapplyAfterProfileSwitch(sp, curveEngine, lightingEngine, lightingProvider, configStore);
+            ReapplyPanelsAfterProfileSwitch(sp, configStore);
+        };
+    }
+
+    /// <summary>
+    /// The Panels category changed live panel looks and cooler content, whichever path raised the event
+    /// (HTTP, tray, MCP, delete, import, cloud pull, reset, sharing): connected panels re-render and the
+    /// Tryx display re-pushes. Corsair and the Lian Li screens read their content each worker pass.
+    /// </summary>
+    internal static void ReapplyPanelsAfterProfileSwitch(IServiceProvider sp, IConfigStore configStore)
+    {
+        try
+        {
+            if (sp.GetService<MultiplexHub>() is { } hub)
+            {
+                foreach (var panelId in configStore.Load().PanelDevices.Keys.ToList())
+                {
+                    PanelTopics.BroadcastPanelDevice(hub, panelId);
+                }
+            }
+            sp.GetService<Nexus.Service.Peripherals.Tryx.Panorama.TryxPanoramaHub>()?.ReloadFromSettings();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[profiles] panel reapply failed: {ex.Message}");
+        }
     }
 
     // Extracted from InitializeProfiles' OnProfileSwitched closure so it is

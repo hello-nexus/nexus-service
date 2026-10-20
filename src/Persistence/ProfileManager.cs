@@ -326,7 +326,7 @@ public sealed partial class ProfileManager : IDisposable
 
             if (profileId == _manifest.ActiveProfileId)
             {
-                return ProfileSharing.ExtractShareable(_store.Load());
+                return ProfileSharing.ExtractShareable(_store.Load(), ReadProfileFile(profileId));
             }
 
             var filePath = ProfileFilePath(profileId);
@@ -856,10 +856,10 @@ public sealed partial class ProfileManager : IDisposable
     private void LoadProfileIntoSettings(string profileId)
     {
         // Profile JSONs only carry per-profile data (Lighting, Cooling,
-        // Device, and the Theme + Dashboard subsets of Ui). Keeb is now
-        // profile-scoped via the Device category (ApplyCategory below).
-        // Hardware-bound state (Y70, Devices, every Panel* field on Ui, the
-        // OS tray/status toggles) lives at NexusSettings root and follows the
+        // Device, Theme, Dashboard and Panels). Hardware-bound state (Y70,
+        // Devices apart from the cooler display content Panels carries, panel
+        // identity and hardware settings, every Panel* field on Ui, the OS
+        // tray/status toggles) lives at NexusSettings root and follows the
         // device, not the active profile - so we do not copy those sections
         // from the profile file. They keep whatever the canonical
         // settings.json already loaded into in-memory.
@@ -897,6 +897,11 @@ public sealed partial class ProfileManager : IDisposable
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Theme);
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Dashboard);
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Device);
+            // Panels copies looks onto the matching LIVE panel records only, never
+            // adding or removing one, so the file's stripped entries cannot replace
+            // identity or hardware settings. Before the layout migrations below, so
+            // they walk the copied layouts.
+            ProfileSharing.ApplyCategory(s, data, ProfileSharing.Panels);
 
             // Pre-v11 profiles carry widget types under the legacy
             // marketplace: prefix; rewrite after the category copies so the
@@ -909,11 +914,6 @@ public sealed partial class ProfileManager : IDisposable
             // its Dashboard category can carry deck widgets with inline
             // config.deck. Idempotent - a no-op on an already-migrated profile.
             Nexus.Service.Deck.DeckModesMigration.Apply(s);
-
-            // Panels copies looks onto the matching LIVE panel records only: it
-            // never adds or removes a record, so the profile file's stripped
-            // entries cannot replace identity or hardware settings.
-            ProfileSharing.ApplyCategory(s, data, ProfileSharing.Panels);
         });
     }
 
@@ -1145,6 +1145,7 @@ public sealed partial class ProfileManager : IDisposable
     /// <summary>Reset one category. If shared, the reset is redirected to the Primary's JSON regardless of the named profileId, and the in-memory state is updated so the active profile reflects defaults immediately. If per-profile, the named profile's JSON is reset for that category; if the named profile is the active one, in-memory is also cleared.</summary>
     public void ResetCategory(string profileId, string category)
     {
+        var panelsReset = false;
         lock (_lock)
         {
             if (_manifest.Profiles.All(p => p.Id != profileId))
@@ -1182,12 +1183,20 @@ public sealed partial class ProfileManager : IDisposable
                     UpdateProfileFile(profileId, new[] { normalized }, data);
                 }
             }
+            panelsReset = normalized == ProfileSharing.Panels && (isShared || profileId == _manifest.ActiveProfileId);
+        }
+
+        // Live panel looks changed: the same reapply a switch runs re-renders panels and re-pushes cooler content.
+        if (panelsReset)
+        {
+            OnProfileSwitched?.Invoke();
         }
     }
 
     /// <summary>Reset the per-profile (non-shared) categories on the named profile. Shared categories are identical across every profile under the eager-copy model and are NOT touched by this operation - if the user wants to reset a shared category they use the per-category reset on the Categories list, which clears it everywhere.</summary>
     public void ResetProfile(string profileId)
     {
+        var panelsReset = false;
         lock (_lock)
         {
             if (_manifest.Profiles.All(p => p.Id != profileId))
@@ -1216,6 +1225,7 @@ public sealed partial class ProfileManager : IDisposable
                         ProfileSharing.ResetCategory(s, cat);
                     }
                 });
+                panelsReset = perProfileCats.Contains(ProfileSharing.Panels);
             }
             else
             {
@@ -1226,6 +1236,11 @@ public sealed partial class ProfileManager : IDisposable
                 }
                 UpdateProfileFile(profileId, perProfileCats, data);
             }
+        }
+
+        if (panelsReset)
+        {
+            OnProfileSwitched?.Invoke();
         }
     }
 }
