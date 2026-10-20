@@ -65,12 +65,35 @@ public class FlexCanvasLayoutTests
             new() { Id = "openrgb-l-a" },
             new() { Id = "lianli-flex:" + Tl + ":up" },
             new() { Id = "lianli-flex:" + Tl + ":down" },
+            new() { Id = "openrgb-l-b" },
         };
         var settings = new NexusSettings();
-        settings.Lighting.DeviceLayouts["lianli-flex:" + Tl + ":down"] = new DeviceLayout { X = 700, Y = 200, W = 50, H = 40 };
+        settings.Lighting.DeviceLayouts["openrgb-l-a"] = new DeviceLayout { X = 700, Y = 200, W = 50, H = 40 };
+        var saved = Rect(devices[0]);
         CompositeLightingDeviceProvider.ApplyDefaultLayouts(devices, settings);
-        Assert.Equal(CanvasGridLayout.Slot(1, 2), Rect(devices[1]));
-        Assert.Equal(0f, devices[2].CanvasX);
+        Assert.Equal(saved, Rect(devices[0]));
+        Assert.Equal(CanvasGridLayout.Slot(1, 3), Rect(devices[1]));
+        Assert.Equal(CanvasGridLayout.Slot(1, 3), Rect(devices[2]));
+        Assert.Equal(CanvasGridLayout.Slot(2, 3), Rect(devices[3]));
+    }
+
+    [Fact]
+    public void A_frame_build_asks_for_the_default_rects_once()
+    {
+        var (sp, _, _) = Build();
+        var provider = sp.GetRequiredService<FlexLightingDeviceProvider>();
+        var composite = sp.GetRequiredService<ILightingDeviceProvider>();
+        var asked = 0;
+        var real = provider.DefaultRects!;
+        provider.DefaultRects = () =>
+        {
+            asked++;
+            return real();
+        };
+        Assert.NotEmpty(composite.GetAll().Devices);
+        var frames = provider.BuildFrames(0);
+        Assert.True(frames.Count >= 2);
+        Assert.Equal(1, asked);
     }
 
     private static (ServiceProvider Sp, FlexHub Hub, FakeFlexDiscovery Discovery) Build()

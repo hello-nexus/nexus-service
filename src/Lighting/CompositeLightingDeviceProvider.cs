@@ -83,7 +83,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         _lianLi   = lianLi;
         _lianLiWireless = lianLiWireless;
         _flex = flex;
-        _flex.DefaultRectOf = FlexDefaultRect;
+        _flex.DefaultRects = FlexDefaultRects;
         _corsair  = corsair;
         _strimer  = strimer;
         _galahad2 = galahad2;
@@ -157,7 +157,9 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
 
     public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _flex.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _hydroShiftLcd.IsConnected || _umbra.IsConnected || _smart.IsConnected;
 
-    public GetLightingDevicesResponse GetAll()
+    public GetLightingDevicesResponse GetAll() => Listing(mirrorIntoEngine: true);
+
+    private GetLightingDevicesResponse Listing(bool mirrorIntoEngine)
     {
         var rgb = _openRgb.GetAll();
 
@@ -424,14 +426,17 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
 
         // Mirror into engine frames so running effects sample from the same rectangles. Without this, RgbBridge's
         // existing-frame-wins rule would pin pre-grid coordinates in memory. O(N²), trivial for typical N (<30).
-        foreach (var frame in _engine.Devices)
+        if (mirrorIntoEngine)
         {
-            for (var i = 0; i < rgb.Devices.Count; i++)
+            foreach (var frame in _engine.Devices)
             {
-                var dev = rgb.Devices[i];
-                if (dev.Id != frame.Id) continue;
-                frame.X = dev.CanvasX; frame.Y = dev.CanvasY; frame.W = dev.CanvasW; frame.H = dev.CanvasH;
-                break;
+                for (var i = 0; i < rgb.Devices.Count; i++)
+                {
+                    var dev = rgb.Devices[i];
+                    if (dev.Id != frame.Id) continue;
+                    frame.X = dev.CanvasX; frame.Y = dev.CanvasY; frame.W = dev.CanvasW; frame.H = dev.CanvasH;
+                    break;
+                }
             }
         }
         return rgb;
@@ -487,17 +492,22 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         return second < 0 ? id : id[..second];
     }
 
-    /// <summary>The default rect of a Flex zone without a saved layout, as the grid places it; null for a saved or unknown zone.</summary>
-    private (float x, float y, float w, float h)? FlexDefaultRect(string id)
+    /// <summary>
+    /// The grid rect of every Flex zone without a saved layout, from one listing that does not touch the
+    /// engine's frames (the Flex provider asks while it builds them).
+    /// </summary>
+    private IReadOnlyDictionary<string, (float x, float y, float w, float h)> FlexDefaultRects()
     {
-        var devices = GetAll().Devices;
-        var settings = _store.Load();
-        if (settings.Lighting.DeviceLayouts.ContainsKey(id))
+        var saved = _store.Load().Lighting.DeviceLayouts;
+        var rects = new Dictionary<string, (float, float, float, float)>(StringComparer.Ordinal);
+        foreach (var device in Listing(mirrorIntoEngine: false).Devices)
         {
-            return null;
+            if (IsFlexId(device.Id) && !saved.ContainsKey(device.Id))
+            {
+                rects[device.Id] = (device.CanvasX, device.CanvasY, device.CanvasW, device.CanvasH);
+            }
         }
-        var card = devices.FirstOrDefault(d => d.Id == id);
-        return card is null ? null : (card.CanvasX, card.CanvasY, card.CanvasW, card.CanvasH);
+        return rects;
     }
 
     public void SetDisabled(IReadOnlyList<string> ids)

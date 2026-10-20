@@ -295,11 +295,14 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         var frames = new List<DeviceFrame>();
         var idx = startingIndex;
         var slot = 0;
+        var defaults = DefaultRects?.Invoke();
         foreach (var structure in BuildStructures())
         {
             foreach (var zone in ZoneResolution.Resolve(structure, settings))
             {
-                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, DefaultRectOf?.Invoke(zone.Id) ?? DefaultLayout(slot++), layouts, ref idx));
+                var placed = defaults is not null && defaults.TryGetValue(zone.Id, out var rect) ? rect : DefaultLayout(slot);
+                slot++;
+                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, placed, layouts, ref idx));
             }
         }
         if (_frameCache.Count > frames.Count)
@@ -410,12 +413,12 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     }
 
     /// <summary>
-    /// The composite provider's default rect for a zone that has no saved layout, so the frames this
-    /// provider contributes sit where its cards are placed; set by the composite.
+    /// The composite provider's default rect of every zone without a saved layout, asked once per
+    /// <see cref="BuildFrames"/>, so the frames this provider contributes sit where its cards are placed.
     /// </summary>
-    internal Func<string, (float x, float y, float w, float h)?>? DefaultRectOf { get; set; }
+    internal Func<IReadOnlyDictionary<string, (float x, float y, float w, float h)>>? DefaultRects { get; set; }
 
-    /// <summary>4-col, 2-row placeholder grid, like the other first-party providers; the composite provider places the zones for real.</summary>
+    /// <summary>The placeholder grid of the other first-party providers; the composite provider places the zones for real.</summary>
     internal static (float x, float y, float w, float h) DefaultLayout(int slot)
     {
         const float BaseX = 40f;
