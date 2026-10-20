@@ -468,7 +468,7 @@ public static class PanelBgImporter
         return new[]
         {
             "-filter_complex",
-            $"[0:v]{ScaleFilter(crop, w, h, fitWhole, alpha: false)}[fg];color=black:s={w}x{h}{rate}[bg];[bg][fg]overlay=shortest=1",
+            $"[0:v]{ScaleFilter(crop, w, h, fitWhole, alpha: false, matte: true)}[fg];color=black:s={w}x{h}{rate}[bg];[bg][fg]overlay=shortest=1",
         };
     }
 
@@ -483,11 +483,12 @@ public static class PanelBgImporter
     /// bars are transparent when the output keeps alpha, opaque otherwise.
     /// The pad runs in a packed RGB format: on a chroma-subsampled frame ffmpeg
     /// rounds the pad canvas down to the subsampling multiple, which leaves it
-    /// smaller than the scaled frame for an odd target (error -22).
+    /// smaller than the scaled frame for an odd target (error -22). A matte
+    /// foreground keeps its alpha (rgba) so the overlay flattens it onto black.
     /// </summary>
-    internal static string ScaleFilter(CropRect crop, int w, int h, bool fitWhole, bool alpha) =>
+    internal static string ScaleFilter(CropRect crop, int w, int h, bool fitWhole, bool alpha, bool matte = false) =>
         fitWhole
-            ? $"{crop.ToFfmpegCrop()},{FitScale(w, h)},format={(alpha ? "rgba" : "rgb24")},pad={w}:{h}:-1:-1:color={(alpha ? "black@0" : "black")}"
+            ? $"{crop.ToFfmpegCrop()},{FitScale(w, h)},format={(alpha || matte ? "rgba" : "rgb24")},pad={w}:{h}:-1:-1:color={(alpha ? "black@0" : "black")}"
             : $"{crop.ToFfmpegCrop()},scale={w}:{h}";
 
     private static string[] CropScaleArgs(CropRect crop, int w, int h, bool matte, bool animated, bool fitWhole, bool alpha = false) =>
