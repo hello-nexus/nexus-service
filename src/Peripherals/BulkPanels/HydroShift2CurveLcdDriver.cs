@@ -229,8 +229,9 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     }
 
     /// <summary>
-    /// Hands the glass back to its own screen, which only a reboot brings back. A handshake that
-    /// never completed sends no reboot, so a glass still coming back from one is not sent round again.
+    /// Hands the glass back to its own screen, which only a reboot brings back. With Offline Mode on it
+    /// sends StopPlay and a SetClock instead, as L-Connect does, since a reboot resets the glass clock.
+    /// A handshake that never completed sends no reboot, so a glass still coming back is not sent round again.
     /// </summary>
     public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid)
     {

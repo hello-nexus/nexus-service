@@ -444,6 +444,33 @@ public class HydroShift2CurveTests
         Assert.Equal(releaseCommands, pipe.Commands);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(false)]
+    public void Release_still_reboots_when_offline_mode_is_not_on(bool? mode)
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver { OfflineModeSource = () => mode };
+        Assert.NotNull(driver.Connect(pipe, null));
+        pipe.Commands.Clear();
+
+        driver.Disconnect(pipe, null);
+
+        Assert.Equal(new[] { HydroShift2Protocol.CommandStopPlay, HydroShift2CurveProtocol.CommandReboot }, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_display_released_with_offline_mode_on_reconnects_at_once()
+    {
+        long now = 1_000;
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver(() => now) { OfflineModeSource = () => true };
+        Assert.NotNull(driver.Connect(pipe, null));
+        driver.Disconnect(pipe, null);
+
+        Assert.NotNull(driver.Connect(pipe, null));
+    }
+
     [Fact]
     public void Release_with_offline_mode_on_skips_the_reboot_and_refreshes_the_clock()
     {
