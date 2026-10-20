@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using Nexus.Service.Platform.Windows;
 
 namespace Nexus.Service.Conflicts;
@@ -38,6 +39,11 @@ public sealed class ConflictAppInstallProbe : IConflictAppInstallProbe
         {
             return false;
         }
+        var def = ConflictWatcher.FindById(appId);
+        if (def is not null && HasInstallPath(def, Environment.ExpandEnvironmentVariables, File.Exists))
+        {
+            return _cache.GetOrAdd(appId, true);
+        }
         var services = WindowsServiceController.ListServices();
         if (services.Count == 0)
         {
@@ -45,7 +51,6 @@ public sealed class ConflictAppInstallProbe : IConflictAppInstallProbe
             // failed, and a cached answer is permanent - so decline to cache one.
             return false;
         }
-        var def = ConflictWatcher.FindById(appId);
         return _cache.GetOrAdd(appId, def is not null && HasService(def, services));
     }
 
@@ -72,7 +77,7 @@ public sealed class ConflictAppInstallProbe : IConflictAppInstallProbe
         }
         foreach (var def in ConflictAppCatalog.All)
         {
-            if (_cache.GetOrAdd(def.Id, HasService(def, services)))
+            if (_cache.GetOrAdd(def.Id, HasService(def, services) || HasInstallPath(def, Environment.ExpandEnvironmentVariables, File.Exists)))
             {
                 installed.Add(def.Id);
             }
@@ -99,6 +104,20 @@ public sealed class ConflictAppInstallProbe : IConflictAppInstallProbe
         foreach (var svc in services)
         {
             if (Matches(wanted, svc.Key) || Matches(wanted, svc.DisplayName))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Whether any of the app's install paths exists. The existence check is injected so tests need no filesystem.</summary>
+    internal static bool HasInstallPath(ConflictAppDefinition def, Func<string, string> expand, Func<string, bool> exists)
+    {
+        foreach (var raw in def.InstallPaths)
+        {
+            var path = expand(raw);
+            if (path.Length > 0 && !path.Contains('%') && exists(path))
             {
                 return true;
             }

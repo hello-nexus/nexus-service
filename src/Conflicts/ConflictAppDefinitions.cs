@@ -73,6 +73,9 @@ public sealed class ConflictAppDefinition
     /// <summary>Windows service names to stop, in order, when ending this app - for apps whose background service holds the hardware. Empty for most.</summary>
     public string[] WindowsServiceNames { get; init; } = Array.Empty<string>();
 
+    /// <summary>Executable paths (environment variables allowed) whose presence marks the app installed, for apps that register no service. Windows only.</summary>
+    public string[] InstallPaths { get; init; } = Array.Empty<string>();
+
     /// <summary>OpenRGB vendor strings (substring, case-insensitive) whose devices this app drives. Empty for apps that map to no OpenRGB device.</summary>
     public string[] Vendors { get; init; } = Array.Empty<string>();
 
@@ -257,6 +260,7 @@ public static class ConflictAppCatalog
             DisplayName = "ASRock Polychrome RGB",
             Category = "lighting",
             ProcessNames = new[] { "AsrPolychromeRGB" },
+            InstallPaths = new[] { @"%ProgramFiles(x86)%\ASRock Utility\ASRRGBLED\AsrPolychromeRGB.exe" },
         },
 
         // ── MSI ────────────────────────────────────────────────────────────

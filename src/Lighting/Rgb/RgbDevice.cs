@@ -46,6 +46,35 @@ public sealed class RgbDevice
         return null;
     }
 
+    /// <summary>Write-rate cap applied to <see cref="PersistsEveryWrite"/> devices when the user set none.</summary>
+    public const int SelfSavingDefaultCapHz = 15;
+
+    /// <summary>
+    /// True for a controller that stores every write in its own memory: no Direct
+    /// mode to stream into, and every mode flagged automatic-save (ASRock
+    /// Polychrome). Requiring all modes rather than the active one keeps the
+    /// answer independent of which mode the controller reported at connect.
+    /// Such a controller must be written only when a frame changes, and slowly.
+    /// </summary>
+    public bool PersistsEveryWrite
+    {
+        get
+        {
+            if (Modes.Count == 0)
+            {
+                return false;
+            }
+            foreach (var m in Modes)
+            {
+                if (m.Name == "Direct" || !m.AutomaticallySaves)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
     private string? _stableId;
 
     /// <summary>
@@ -135,4 +164,9 @@ public sealed class RgbMode
     public uint ColorMode { get; set; }
     /// <summary>Raw mode-entry bytes as they appeared in the controller-data response.</summary>
     public byte[] Bytes { get; set; } = System.Array.Empty<byte>();
+    /// <summary>MODE_FLAG_* bits from the mode entry.</summary>
+    public uint Flags { get; set; }
+    /// <summary>MODE_FLAG_AUTOMATIC_SAVE: the controller persists every write of this mode to its own memory.</summary>
+    public const uint FlagAutomaticSave = 1u << 9;
+    public bool AutomaticallySaves => (Flags & FlagAutomaticSave) != 0;
 }
