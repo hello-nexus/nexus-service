@@ -5,8 +5,9 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
 /// The LCD on the ASUS ROG Crosshair X870E Glacial motherboard (USB VID/PID in <see cref="ProductId"/>), decoded from
-/// MB Manager traffic. Commands are fixed-size HID output reports (<see cref="ReportBytes"/>) led by <see cref="ReportId"/>; custom
-/// pictures ride a vendor bulk interface as one baseline JPEG in fixed-size transfers.
+/// MB Manager traffic. Commands are fixed-size HID output reports (<see cref="ReportBytes"/>)
+/// led by <see cref="ReportId"/>. The picture upload over the vendor bulk interface is not
+/// implemented.
 ///
 /// Device replies are HID input reports that echo the opcode; the 0x5C state reply is the
 /// only one with a payload and has the same layout as the 0x5C write.
@@ -16,25 +17,6 @@ public static class GlacialLcdProtocol
     public const int ProductId = 0x1D93;
     public const int ReportBytes = 65;
     public const byte ReportId = 0xEC;
-
-    /// <summary>
-    /// The size of every JPEG MB Manager uploaded. The panel is taken to be this size; the
-    /// capture carries no query that reports it.
-    /// </summary>
-    public const int Width = 720;
-    public const int Height = 1280;
-
-    /// <summary>Baseline JPEG, 4:2:0; the quantization tables in MB Manager's uploads are the standard ones at this quality.</summary>
-    public const int JpegQuality = 75;
-
-    public const int ChunkBytes = 4096;
-
-    /// <summary>
-    /// Spacing between bulk transfer submissions in the capture, steady across every chunk.
-    /// Whether the panel or the app sets that pace is not visible in a submit-only trace,
-    /// so the driver keeps it.
-    /// </summary>
-    public const int ChunkIntervalMs = 2100;
 
     /// <summary>Mode byte of a 0x51 report.</summary>
     public const byte ModeOff = 0x00;
@@ -90,15 +72,30 @@ public static class GlacialLcdProtocol
     }
 
     /// <summary>
-    /// The read-modify-write form: the fresh state reply with the settings fields changed and
-    /// the write flag set, so any byte the captures never showed set is carried through.
+    /// The read-modify-write form: the fresh state reply with only the given fields changed
+    /// and the write flag set, so every other byte, set or not in the captures, is carried
+    /// through unchanged.
     /// </summary>
-    public static byte[] EncodeSettingsFrom(ReadOnlySpan<byte> stateReply, int brightnessPercent, bool displayOn, bool keepOnWhileAsleep)
+    public static byte[] EncodeSettingsEdit(ReadOnlySpan<byte> stateReply, int? brightnessPercent, bool? displayOn, bool? keepOnWhileAsleep)
     {
         var report = new byte[ReportBytes];
         stateReply[..Math.Min(stateReply.Length, ReportBytes)].CopyTo(report);
         report[2] = 0x01;
-        PatchSettings(report, brightnessPercent, displayOn, keepOnWhileAsleep);
+        if (brightnessPercent is int percent)
+        {
+            byte level = (byte)Math.Clamp(percent, 0, 100);
+            report[5] = level;
+            report[9] = level;
+            report[15] = level;
+        }
+        if (displayOn is bool on)
+        {
+            report[10] = on ? DisplayOnFlag : (byte)0;
+        }
+        if (keepOnWhileAsleep is bool keep)
+        {
+            report[16] = keep ? SleepKeepOn : (byte)0;
+        }
         return report;
     }
 
@@ -168,35 +165,5 @@ public static class GlacialLcdProtocol
             length--;
         }
         bytes.AsSpan(0, length).CopyTo(field);
-    }
-
-    /// <summary>The four reports MB Manager sends, in order, before it announces a custom picture.</summary>
-    public static byte[][] EncodeCustomImagePrelude()
-    {
-        var begin = Report(0x71);
-        begin[2] = 0x01;
-        begin[3] = 0x01;
-        var flush = Report(0xF1);
-        var slot = Report(0x72);
-        slot[2] = 0x01;
-        slot[3] = 0x01;
-        var target = Report(0x73);
-        target[2] = 0x01;
-        return new[] { begin, flush, slot, target };
-    }
-
-    /// <summary>Announces a JPEG of <paramref name="jpegBytes"/> on the bulk pipe (24-bit little endian).</summary>
-    public static byte[] EncodeJpegAnnounce(int jpegBytes)
-    {
-        if (jpegBytes <= 0 || jpegBytes > 0xFFFFFF)
-        {
-            throw new ArgumentOutOfRangeException(nameof(jpegBytes));
-        }
-        var report = Report(0x7F);
-        report[2] = 0x02;
-        report[3] = (byte)jpegBytes;
-        report[4] = (byte)(jpegBytes >> 8);
-        report[5] = (byte)(jpegBytes >> 16);
-        return report;
     }
 }

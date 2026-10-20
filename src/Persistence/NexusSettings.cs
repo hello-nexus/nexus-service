@@ -1519,7 +1519,7 @@ public sealed class DevicesSettings
     public bool FlexSyncEnabled { get; set; }
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
-    /// <summary>What the ROG Crosshair X870E Glacial LCD shows. Service-side so it survives a restart and is re-applied on connect.</summary>
+    /// <summary>What the ROG Crosshair X870E Glacial LCD shows. Service-side so it survives a restart; only what differs from the panel's own state is sent, and a monitor the user chose is resumed on connect.</summary>
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();

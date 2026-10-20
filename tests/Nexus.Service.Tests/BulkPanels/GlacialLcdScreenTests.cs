@@ -37,12 +37,18 @@ public class GlacialLcdScreenTests
         public List<(int Brightness, bool DisplayOn, bool KeepOn)> Seeds { get; } = new();
         public List<string> Warnings { get; } = new();
         public int Reads;
-        public GlacialLcdScreen Screen { get; }
+        public GlacialLcdConfirmed Confirmed { get; } = new();
+        public int DefaultModeChosen;
+        public GlacialLcdScreen Screen { get; private set; }
 
         public Rig(byte[]? stateReply)
         {
             Hid.StateReply = stateReply;
-            Screen = new GlacialLcdScreen(
+            Screen = NewScreen();
+        }
+
+        /// <summary>A fresh session over the same panel, as after a reconnect: the confirmed state carries over.</summary>
+        public GlacialLcdScreen NewScreen() => Screen = new GlacialLcdScreen(
                 Hid,
                 () => Settings.Copy(),
                 (slot, index) =>
@@ -55,11 +61,12 @@ public class GlacialLcdScreenTests
                         _ => ("GPU", "30.7\u2103"),
                     };
                 },
+                Confirmed,
                 (b, d, k) => Seeds.Add((b, d, k)),
                 Warnings.Add,
+                () => DefaultModeChosen++,
                 () => Clock.Now,
                 _ => { });
-        }
 
         /// <summary>The user has changed something and chosen the mode, which is when Nexus starts writing.</summary>
         public Rig Owned(bool modeChosen = true)
@@ -292,7 +299,7 @@ public class GlacialLcdScreenTests
     [Fact]
     public void A_mode_picked_while_the_display_is_off_is_held_until_it_comes_on()
     {
-        var rig = NewRig().Owned();
+        var rig = new Rig(Report("EC 5C 00 00 00 32 00 00 00 32 00 00 00 00 00 32")).Owned();
         rig.Settings.DisplayOn = false;
         rig.Screen.Open();
         rig.Take();
@@ -364,6 +371,58 @@ public class GlacialLcdScreenTests
         Assert.Equal(0xAA, settings[11]);
         Assert.Equal(0xBB, settings[12]);
         Assert.Equal(0x14, settings[10]);
+    }
+
+    [Fact]
+    public void Turning_the_display_on_before_any_mode_was_chosen_selects_the_first_run_animation()
+    {
+        var rig = new Rig(Report("EC 5C 00 00 00 32 00 00 00 32 00 00 00 00 00 32")).Owned(modeChosen: false);
+        rig.Settings.DisplayOn = false;
+        rig.Screen.Open();
+        rig.Take();
+
+        rig.Settings.DisplayOn = true;
+        Assert.True(rig.Screen.Reconcile());
+
+        AssertSequence(rig.Take(), "EC DC", "EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32", "EC DC", "EC 51 14 00 01");
+        Assert.Equal(1, rig.DefaultModeChosen);
+    }
+
+    [Fact]
+    public void An_edit_that_never_landed_is_sent_after_a_reconnect_and_nothing_else_is()
+    {
+        var rig = NewRig(answering: false).Owned();
+        rig.Settings.Mode = GlacialLcdSettings.ModeStatic;
+        rig.Screen.Open();
+        rig.Settings.Brightness = 70;
+        rig.Screen.Reconcile();
+        rig.Take();
+
+        rig.Hid.StateReply = Report(StateReply);
+        var second = rig.NewScreen();
+        second.Open();
+        rig.Take();
+        rig.Clock.Now += GlacialLcdScreen.NoReplyRetryMs;
+        Assert.True(second.Reconcile());
+
+        // Brightness only: the saved mode is not reselected and the monitor is not restarted.
+        AssertSequence(rig.Take(), "EC DC", "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46", "EC DC", "EC 51 11 00 03", "EC DC", "EC 51 11 00 03");
+    }
+
+    [Fact]
+    public void The_settings_write_changes_only_the_edited_field_and_keeps_the_rest_of_the_reply()
+    {
+        var rig = new Rig(Report("EC 5C 00 00 00 28 00 00 00 29 14 00 00 00 00 2A 14")).Owned(modeChosen: false);
+        rig.Settings.Brightness = 40;
+        rig.Settings.StayOnWhileAsleep = true;
+        rig.Screen.Open();
+        rig.Take();
+
+        rig.Settings.DisplayOn = false;
+        rig.Screen.Reconcile();
+
+        var settings = rig.Take().First(w => w[1] == 0x5C);
+        Assert.Equal(Report("EC 5C 01 00 00 28 00 00 00 29 00 00 00 00 00 2A 14"), settings);
     }
 
     [Fact]

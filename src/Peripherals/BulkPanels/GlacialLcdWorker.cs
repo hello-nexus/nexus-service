@@ -28,6 +28,7 @@ public sealed class GlacialLcdWorker : BackgroundService
     private const int MaxBackoffMs = 5 * 60 * 1000;
     private const int StableSessionMs = 30_000;
     private const int LogEveryMs = 60_000;
+    private const int BackoffSliceMs = 500;
 
     private readonly IHidEnumerator _hid;
     private readonly DeviceControlGate _gate;
@@ -36,6 +37,7 @@ public sealed class GlacialLcdWorker : BackgroundService
     private readonly ISensorProvider _sensors;
     private readonly int _connectPollMs;
     private readonly SemaphoreSlim _wake = new(0, 1);
+    private readonly GlacialLcdConfirmed _confirmed = new();
     private volatile bool _connected;
     private long _lastLogMs = long.MinValue;
 
@@ -82,7 +84,7 @@ public sealed class GlacialLcdWorker : BackgroundService
                 else
                 {
                     failures++;
-                    await Task.Delay(Backoff(failures), stoppingToken).ConfigureAwait(false);
+                    await BackoffAsync(Backoff(failures), stoppingToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException)
@@ -93,7 +95,7 @@ public sealed class GlacialLcdWorker : BackgroundService
             {
                 failures++;
                 Log($"worker error: {ex.Message}", error: true);
-                await Task.Delay(Backoff(failures), stoppingToken).ConfigureAwait(false);
+                await BackoffAsync(Backoff(failures), stoppingToken).ConfigureAwait(false);
             }
         }
     }
@@ -122,8 +124,10 @@ public sealed class GlacialLcdWorker : BackgroundService
             hid,
             ReadSettings,
             (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index),
+            _confirmed,
             Seed,
-            message => Log(message, error: false));
+            message => Log(message, error: false),
+            ChooseDefaultMode);
         if (!screen.Open())
         {
             Log("the panel did not take the opening reports", error: false);
@@ -160,6 +164,36 @@ public sealed class GlacialLcdWorker : BackgroundService
             g.StayOnWhileAsleep = keepOn;
         }
     });
+
+    /// <summary>Records the first-run animation the screen just selected, so the saved state matches the panel.</summary>
+    private void ChooseDefaultMode() => _store.Update(s =>
+    {
+        var g = s.Devices.GlacialLcd;
+        if (!g.ModeChosen)
+        {
+            g.ModeChosen = true;
+            g.Mode = GlacialLcdSettings.ModeAnimated;
+            g.AnimatedAsset = 1;
+        }
+    });
+
+    /// <summary>A backoff wait that ends early when the gate flips, the panel appears or goes, or a change is requested.</summary>
+    private async Task BackoffAsync(int delayMs, CancellationToken ct)
+    {
+        bool enabled = _gate.IsEnabled(HandlerId);
+        bool present = _presence.UsbPresent(0x0B05, GlacialLcdProtocol.ProductId);
+        long until = Environment.TickCount64 + delayMs;
+        while (Environment.TickCount64 < until)
+        {
+            int slice = (int)Math.Min(BackoffSliceMs, until - Environment.TickCount64);
+            if (await _wake.WaitAsync(Math.Max(slice, 1), ct).ConfigureAwait(false)
+                || _gate.IsEnabled(HandlerId) != enabled
+                || _presence.UsbPresent(0x0B05, GlacialLcdProtocol.ProductId) != present)
+            {
+                return;
+            }
+        }
+    }
 
     private void Log(string message, bool error)
     {

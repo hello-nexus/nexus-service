@@ -103,19 +103,4 @@ public class GlacialLcdTests
         Assert.Equal((byte)'1', report[GlacialLcdProtocol.SlotValueOffset]);
     }
 
-    [Fact]
-    public void Custom_image_prelude_matches_the_capture()
-    {
-        var reports = GlacialLcdProtocol.EncodeCustomImagePrelude();
-        Assert.Equal(
-            new[] { Report("EC 71 01 01"), Report("EC F1"), Report("EC 72 01 01"), Report("EC 73 01") },
-            reports);
-    }
-
-    [Fact]
-    public void Jpeg_announce_matches_the_captured_size_field()
-    {
-        Assert.Equal(Report("EC 7F 02 DC B6 04"), GlacialLcdProtocol.EncodeJpegAnnounce(0x04B6DC));
-        Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeJpegAnnounce(0));
-    }
 }

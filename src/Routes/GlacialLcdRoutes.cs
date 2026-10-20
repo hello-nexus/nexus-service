@@ -40,7 +40,8 @@ public static partial class DevicesRoutes
             if (body.Slots is { } slots
                 && (slots.Length > GlacialLcdProtocol.MaxMonitorSlots
                     || slots.Any(s => s is null || s.Category is null || s.Sensor is null || s.Label is null
-                        || (s.Category.Length > 0 && !GlacialSensorCategories.Contains(s.Category)))))
+                        || (s.Category.Length > 0 && !GlacialSensorCategories.Contains(s.Category))
+                        || (s.Category.Length == 0 && s.Sensor.Length > 0))))
             {
                 return Results.BadRequest(ApiResponse.Fail("invalid slots"));
             }
@@ -88,6 +89,7 @@ public static partial class DevicesRoutes
     private static GlacialLcdStateResponse BuildGlacialState(GlacialLcdSettings g, bool connected, ISensorProvider sensors) => new()
     {
         IsConnected = connected,
+        ModeChosen = g.ModeChosen,
         DisplayOn = g.DisplayOn,
         Mode = g.Mode,
         StaticAsset = g.StaticAsset,
@@ -128,6 +130,8 @@ public sealed class GlacialLcdStateResponse
 {
     public bool IsConnected { get; set; }
     public bool DisplayOn { get; set; }
+    /// <summary>False until the user has picked a mode, when the mode, asset and widget fields are placeholders and the panel's actual mode is unknown.</summary>
+    public bool ModeChosen { get; set; }
     /// <summary>"static", "animated" or "monitor".</summary>
     public string Mode { get; set; } = "";
     public int StaticAsset { get; set; }
