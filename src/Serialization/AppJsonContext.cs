@@ -1446,6 +1446,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<Nexus.Service.Deck.DeckSequenceStep>))]
 // Deck key icon image store (POST/GET /deck/images)
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckImageUploadResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckImageStageRequest))]
 // Deck Modes: host-wide presets + instances (src/Routes/DeckRoutes.cs).
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckPresetSummary))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Deck.DeckPresetSummary>))]

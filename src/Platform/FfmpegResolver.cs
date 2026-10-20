@@ -14,22 +14,18 @@ namespace Nexus.Service.Platform;
 /// </summary>
 public static class FfmpegResolver
 {
-    private static string? _cachedPath;
+    private static readonly FfmpegPathCache Cache = new(Locate, () => Environment.TickCount64);
 
-    public static string? Path
-    {
-        get
-        {
-            if (_cachedPath is not null)
-            {
-                return _cachedPath;
-            }
-            _cachedPath = Locate();
-            return _cachedPath;
-        }
-    }
+    public static string? Path => Cache.Path;
 
-    private static string? Locate()
+    /// <summary>
+    /// True when ffmpeg resolved, or a candidate file exists whose probe failed (slow or erroring), so a caller on a hot
+    /// path can proceed and let the real run surface the failure instead of probing again. Never spawns a process
+    /// once a miss is cached.
+    /// </summary>
+    public static bool MayBeAvailable => Cache.Path is not null || Cache.CandidateExists;
+
+    private static (string? Path, bool CandidateExists) Locate()
     {
         string[] candidates = OperatingSystem.IsWindows()
             ? new[]
@@ -46,14 +42,17 @@ public static class FfmpegResolver
                 "/usr/bin/ffmpeg",
                 "ffmpeg",
             };
+        var candidateExists = false;
         foreach (var path in candidates)
         {
             if (Probe(path))
             {
-                return path;
+                return (path, true);
             }
+            // A bare name is a PATH lookup, so only a rooted file can be seen to exist.
+            candidateExists |= System.IO.Path.IsPathRooted(path) && File.Exists(path);
         }
-        return null;
+        return (null, candidateExists);
     }
 
     private static bool Probe(string path)
@@ -80,6 +79,45 @@ public static class FfmpegResolver
         catch
         {
             return false;
+        }
+    }
+}
+
+/// <summary>
+/// Remembers a found path for the process lifetime and a miss for a few minutes, so a missing ffmpeg never costs a
+/// process-spawning probe per call. A failed probe while a candidate file exists (timeout, AV hold) is not a miss and
+/// is probed again on the next call.
+/// </summary>
+internal sealed class FfmpegPathCache(Func<(string? Path, bool CandidateExists)> locate, Func<long> tickMs)
+{
+    private const long MissCacheMs = 5 * 60 * 1000;
+    private string? _path;
+    private long _missUntil;
+    private bool _candidateExists;
+
+    public bool CandidateExists => _candidateExists;
+
+    public string? Path
+    {
+        get
+        {
+            if (_path is not null)
+            {
+                return _path;
+            }
+            var now = tickMs();
+            if (now < _missUntil)
+            {
+                return null;
+            }
+            var (path, candidateExists) = locate();
+            _path = path;
+            _candidateExists = candidateExists;
+            if (path is null && !candidateExists)
+            {
+                _missUntil = now + MissCacheMs;
+            }
+            return _path;
         }
     }
 }
