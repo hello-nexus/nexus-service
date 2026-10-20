@@ -1,9 +1,6 @@
-using System.Runtime.InteropServices;
 using Nexus.Service.Activity;
 using Nexus.Service.Models.Activity;
 using Nexus.Service.Models.Sensors;
-using Microsoft.Diagnostics.Tracing;
-using Microsoft.Diagnostics.Tracing.Session;
 
 namespace Nexus.Service.Fps;
 
@@ -15,13 +12,17 @@ public sealed class WindowsFpsProvider : IFpsProvider
     private const float GaugeMaximumFrameMs = 50f;
     private const string SensorName = "FPS";
     private const string FrameTimeName = "Frame Time";
-    private const string SessionPrefix = "Nexus-Fps-";
-    private static readonly string SessionName = SessionPrefix + Environment.ProcessId;
-    private static readonly Guid DxgKrnlProviderGuid = new("802EC45A-1E99-4B83-9920-87C98277BA9D");
-    private static readonly TraceEventID PresentInfoEventId = (TraceEventID)0x00b8;
-    // Present_Info's keyword per the DxgKrnl manifest (PresentMon's
-    // Microsoft_Windows_DxgKrnl.h: Present = 0x8000000).
-    private const ulong DxgKrnlPresentKeyword = 0x8000000;
+    private const double CleanExitBackoffSeconds = 5;
+    private const double CleanExitBackoffCapSeconds = 300;
+    private const int CleanExitStreakCap = 6;
+    private const double HealthyRunSeconds = 60;
+    private const double FailureBackoffSeconds = 10;
+    private const int LogIntervalSeconds = 30;
+
+    // Process-wide so two providers (or a restart inside one) can never mint
+    // the same logger name; a stale task's stop by name then cannot reach a
+    // newer capture's session.
+    private static int s_sessionSeq;
 
     // The nexus-service runs as LocalSystem in Session 0, which has no
     // interactive desktop - GetForegroundWindow() from here always returns
@@ -29,6 +30,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
     // ScreenTimePoller and publishes the PID through IScreenTimeProvider,
     // so we read the target PID from there.
     private readonly IScreenTimeProvider _screenTime;
+    private readonly IFpsTraceRunner _runner;
     private readonly object _gate = new();
     private readonly object _transitionGate = new();
     private readonly FpsCalculator _calculator = new();
@@ -37,7 +39,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
     private CancellationTokenSource? _cts;
     private Task? _focusTask;
     private Task? _traceTask;
-    private TraceEventSession? _session;
+    private string? _sessionName;
     private int _targetPid;
     private string _targetName = "";
     private double _fps;
@@ -45,11 +47,27 @@ public sealed class WindowsFpsProvider : IFpsProvider
     private DateTime _lastPresentUtc = DateTime.MinValue;
     private DateTime _nextStartAllowedUtc = DateTime.MinValue;
     private DateTime _lastErrorLoggedUtc = DateTime.MinValue;
+    private DateTime _captureStartedUtc = DateTime.MinValue;
+    private readonly double _cleanExitBaseSeconds;
+    // Consecutive captures that ended on their own without delivering a
+    // present or running a healthy stretch; doubles the restart backoff.
+    private int _cleanExitStreak;
 
     public WindowsFpsProvider(IScreenTimeProvider screenTime)
+        : this(screenTime, new EtwFpsTraceRunner(), CleanExitBackoffSeconds)
+    {
+    }
+
+    internal WindowsFpsProvider(IScreenTimeProvider screenTime, IFpsTraceRunner runner, double cleanExitBaseSeconds)
     {
         _screenTime = screenTime;
+        _runner = runner;
+        _cleanExitBaseSeconds = cleanExitBaseSeconds;
     }
+
+    internal static string NextSessionName() =>
+        EtwFpsTraceRunner.SessionPrefix + Environment.ProcessId + "-" + Interlocked.Increment(ref s_sessionSeq);
+
 
     /// <summary>Adds or removes <paramref name="source"/> from the demand set and starts
     /// or stops capture to match. Call every tick with a fixed source id (idempotent
@@ -72,14 +90,25 @@ public sealed class WindowsFpsProvider : IFpsProvider
         {
             bool want;
             lock (_gate) { want = _demands.Count > 0; }
-            if (want) StartCapture();
-            else StopCapture();
+            if (want)
+            {
+                // Demand is re-asserted every tick, so a capture whose trace or
+                // focus task ended on its own is noticed here and restarted
+                // once its backoff passes.
+                RecoverIfTasksEnded();
+                StartCapture();
+            }
+            else
+            {
+                StopCapture();
+            }
         }
     }
 
     private void StartCapture()
     {
         CancellationTokenSource cts;
+        string sessionName;
         lock (_gate)
         {
             if (_cts is not null || DateTime.UtcNow < _nextStartAllowedUtc)
@@ -87,11 +116,14 @@ public sealed class WindowsFpsProvider : IFpsProvider
 
             cts = new CancellationTokenSource();
             _cts = cts;
+            sessionName = NextSessionName();
+            _sessionName = sessionName;
+            _captureStartedUtc = DateTime.UtcNow;
             ResetTargetLocked();
         }
 
         var focusTask = Task.Run(() => FocusLoopAsync(cts.Token), cts.Token);
-        var traceTask = Task.Run(() => TraceLoop(cts.Token), cts.Token);
+        var traceTask = Task.Run(() => TraceLoop(cts, sessionName));
         lock (_gate)
         {
             if (ReferenceEquals(_cts, cts))
@@ -107,7 +139,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
         CancellationTokenSource? cts;
         Task? focusTask;
         Task? traceTask;
-        TraceEventSession? session;
+        string? sessionName;
         lock (_gate)
         {
             cts = _cts;
@@ -119,16 +151,35 @@ public sealed class WindowsFpsProvider : IFpsProvider
             traceTask = _traceTask;
             _focusTask = null;
             _traceTask = null;
-            session = _session;
-            _session = null;
+            sessionName = _sessionName;
+            _sessionName = null;
             ResetTargetLocked();
         }
 
         try { cts.Cancel(); } catch { }
-        StopSession(session);
+        if (sessionName is not null)
+            _runner.Stop(sessionName);
 
         _ = Task.WhenAll(IgnoreFaults(focusTask), IgnoreFaults(traceTask))
             .ContinueWith(_ => cts.Dispose(), TaskScheduler.Default);
+    }
+
+    // Tears a capture down when its trace or focus task finished without a
+    // stop request. TraceLoop reports its own early exits; this catches any
+    // path that ended a task without going through FailCapture.
+    private void RecoverIfTasksEnded()
+    {
+        CancellationTokenSource? cts;
+        bool ended;
+        lock (_gate)
+        {
+            cts = _cts;
+            ended = cts is not null
+                && ((_traceTask?.IsCompleted ?? false) || (_focusTask?.IsCompleted ?? false));
+        }
+
+        if (ended)
+            FailCapture(cts!, "capture task ended unexpectedly", cleanExit: true);
     }
 
     public HardwareComponent GetComponent()
@@ -238,87 +289,58 @@ public sealed class WindowsFpsProvider : IFpsProvider
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[fps] foreground scan failed: {ex.Message}");
+            LogLimited($"[fps] foreground scan failed: {ex.Message}");
         }
     }
 
-    private void TraceLoop(CancellationToken token)
+    private void TraceLoop(CancellationTokenSource cts, string sessionName)
     {
-        TraceEventSession? session = null;
-        Action<TraceEvent>? onEvent = null;
-
+        var token = cts.Token;
         try
         {
-            TryStopExistingSession();
+            if (token.IsCancellationRequested)
+                return;
 
-            session = new TraceEventSession(SessionName);
-            session.StopOnDispose = true;
-            lock (_gate)
-            {
-                if (_cts is null || token.IsCancellationRequested)
-                    return;
-                _session = session;
-            }
+            _runner.SweepStale(EtwFpsTraceRunner.SessionPrefix + Environment.ProcessId + "-");
 
-            using var stopRegistration = token.Register(static state => StopSession((TraceEventSession?)state), session);
-            onEvent = HandleTraceEvent;
-            session.Source.Dynamic.All += onEvent;
-            // A bare EnableProvider means every keyword at Verbose - the full
-            // DxgKrnl stream (scheduler, VidMm, HAGS logging), all marshalled
-            // into managed code while HandleTraceEvent keeps only Present_Info.
-            // Keyword + event-id filtering bounds the session to presents.
-            session.EnableProvider(
-                DxgKrnlProviderGuid,
-                TraceEventLevel.Informational,
-                matchAnyKeywords: DxgKrnlPresentKeyword,
-                options: new TraceEventProviderOptions
-                {
-                    EventIDsToEnable = new[] { (int)PresentInfoEventId },
-                });
-            session.Source.Process();
+            _runner.Run(sessionName, (pid, ticks) => OnPresent(cts, pid, ticks), token);
+
+            // Run only returns on its own when the logger was stopped from
+            // outside (logman, another tool, the kernel). Capture is dead but
+            // _cts is still set, so without this nothing would ever restart it.
+            if (!token.IsCancellationRequested)
+                FailCapture(cts, "ETW trace ended unexpectedly", cleanExit: true);
         }
         catch (Exception ex) when (!token.IsCancellationRequested)
         {
-            HandleTraceFailure(ex);
+            FailCapture(cts, ex.Message, cleanExit: false, ex is UnauthorizedAccessException ? double.MaxValue : FailureBackoffSeconds);
         }
         finally
         {
-            if (session is not null)
+            // The name is unique to this capture, so this can only ever stop
+            // this task's own logger.
+            _runner.Stop(sessionName);
+            lock (_gate)
             {
-                // Source re-throws the start failure (access denied when not elevated),
-                // which would fault this task after HandleTraceFailure dropped it.
-                try
-                {
-                    if (onEvent is not null)
-                        session.Source.Dynamic.All -= onEvent;
-                }
-                catch { }
-
-                StopSession(session);
-                lock (_gate)
-                {
-                    if (ReferenceEquals(_session, session))
-                        _session = null;
-                }
+                if (_sessionName == sessionName)
+                    _sessionName = null;
             }
         }
     }
 
-    private void HandleTraceEvent(TraceEvent data)
+    private void OnPresent(CancellationTokenSource cts, int pid, long ticks)
     {
-        if (data.ProviderGuid != DxgKrnlProviderGuid || data.ID != PresentInfoEventId)
-            return;
-
         var targetPid = Volatile.Read(ref _targetPid);
-        if (targetPid <= 0 || data.ProcessID != targetPid)
+        if (targetPid <= 0 || pid != targetPid)
             return;
 
         lock (_gate)
         {
-            if (_cts is null || data.ProcessID != _targetPid)
+            if (!ReferenceEquals(_cts, cts) || pid != _targetPid)
                 return;
 
-            _fps = _calculator.AddFrameTicks(data.TimeStamp.Ticks);
+            _cleanExitStreak = 0;
+            _fps = _calculator.AddFrameTicks(ticks);
             _hasValue = _calculator.Count >= 2;
             _lastPresentUtc = DateTime.UtcNow;
         }
@@ -342,30 +364,64 @@ public sealed class WindowsFpsProvider : IFpsProvider
         return false;
     }
 
-    private void HandleTraceFailure(Exception ex)
+    // Only the capture that is still current may fail it: a stale task's late
+    // error must not tear down a newer capture. Access denied backs off
+    // permanently (double.MaxValue); a clean exit doubles its backoff per
+    // consecutive occurrence up to a cap, so a logger that keeps ending
+    // immediately is not recreated every few seconds forever.
+    private void FailCapture(CancellationTokenSource cts, string reason, bool cleanExit, double backoffSeconds = 0)
     {
-        CancellationTokenSource? cts;
+        string? sessionName;
         lock (_gate)
         {
-            cts = _cts;
+            if (!ReferenceEquals(_cts, cts))
+                return;
+
             _cts = null;
             _focusTask = null;
             _traceTask = null;
-            _session = null;
-            _nextStartAllowedUtc = ex is UnauthorizedAccessException
+            sessionName = _sessionName;
+            _sessionName = null;
+            if (cleanExit)
+            {
+                if ((DateTime.UtcNow - _captureStartedUtc).TotalSeconds >= HealthyRunSeconds)
+                {
+                    _cleanExitStreak = 0;
+                }
+
+                backoffSeconds = Math.Min(
+                    CleanExitBackoffCapSeconds,
+                    _cleanExitBaseSeconds * (1 << Math.Min(_cleanExitStreak, CleanExitStreakCap)));
+                _cleanExitStreak++;
+            }
+
+            _nextStartAllowedUtc = backoffSeconds == double.MaxValue
                 ? DateTime.MaxValue
-                : DateTime.UtcNow.AddSeconds(10);
+                : DateTime.UtcNow.AddSeconds(backoffSeconds);
             ResetTargetLocked();
         }
 
-        try { cts?.Cancel(); } catch { }
+        try { cts.Cancel(); } catch { }
+        if (sessionName is not null)
+            _runner.Stop(sessionName);
 
-        var now = DateTime.UtcNow;
-        if ((now - _lastErrorLoggedUtc).TotalSeconds >= 30)
+        LogLimited($"[fps] ETW capture unavailable: {reason}");
+    }
+
+    // One shared limiter for every [fps] error line, so a persistently
+    // failing environment logs at most once per interval.
+    private void LogLimited(string line)
+    {
+        lock (_gate)
         {
+            var now = DateTime.UtcNow;
+            if ((now - _lastErrorLoggedUtc).TotalSeconds < LogIntervalSeconds)
+                return;
+
             _lastErrorLoggedUtc = now;
-            Console.Error.WriteLine($"[fps] ETW capture unavailable: {ex.Message}");
         }
+
+        Console.Error.WriteLine(line);
     }
 
     private void ResetTargetLocked()
@@ -387,46 +443,6 @@ public sealed class WindowsFpsProvider : IFpsProvider
         catch { }
     }
 
-    // An ETW logger is a kernel object that outlives the process that made it,
-    // so a hard kill or a crash strands one under the dead pid's name. Windows
-    // caps loggers at 64 and a full table fails session creation with a bare
-    // COM HRESULT, so the whole prefix is swept, not just this pid's name.
-    private static void TryStopExistingSession()
-    {
-        IEnumerable<string> names;
-        try { names = TraceEventSession.GetActiveSessionNames(); }
-        catch { names = new[] { SessionName }; }
-
-        foreach (var name in names)
-        {
-            if (!name.StartsWith(SessionPrefix, StringComparison.Ordinal))
-                continue;
-
-            try { TraceEventSession.GetActiveSession(name)?.Stop(); }
-            catch { }
-            StopSessionByName(name);
-        }
-    }
-
-    private static void StopSession(TraceEventSession? session)
-    {
-        if (session is null)
-            return;
-
-        try { session.Source.StopProcessing(); } catch { }
-        try { session.Stop(); } catch { }
-        try { session.Dispose(); } catch { }
-        StopSessionByName(SessionName);
-    }
-
-    private static void StopSessionByName(string sessionName)
-    {
-        var properties = new EventTraceProperties();
-        properties.Wnode.BufferSize = (uint)Marshal.SizeOf<EventTraceProperties>();
-        try { _ = ControlTrace(0, sessionName, ref properties, EventTraceControlStop); }
-        catch { }
-    }
-
     private (int Pid, string Name) GetForegroundTargetFromHelper()
     {
         FocusSession? session;
@@ -436,49 +452,5 @@ public sealed class WindowsFpsProvider : IFpsProvider
         if (session is null) return (0, "");
         if (!int.TryParse(session.Id, out var pid) || pid <= 0) return (0, "");
         return (pid, session.Name ?? "");
-    }
-
-    private const uint EventTraceControlStop = 1;
-
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern uint ControlTrace(
-        ulong sessionHandle,
-        string sessionName,
-        ref EventTraceProperties properties,
-        uint controlCode);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct EventTraceProperties
-    {
-        public WnodeHeader Wnode;
-        public uint BufferSize;
-        public uint MinimumBuffers;
-        public uint MaximumBuffers;
-        public uint MaximumFileSize;
-        public uint LogFileMode;
-        public uint FlushTimer;
-        public uint EnableFlags;
-        public int AgeLimit;
-        public int NumberOfBuffers;
-        public uint FreeBuffers;
-        public uint EventsLost;
-        public uint BuffersWritten;
-        public uint LogBuffersLost;
-        public uint RealTimeBuffersLost;
-        public IntPtr LoggerThreadId;
-        public uint LogFileNameOffset;
-        public uint LoggerNameOffset;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WnodeHeader
-    {
-        public uint BufferSize;
-        public uint ProviderId;
-        public ulong HistoricalContext;
-        public ulong TimeStamp;
-        public Guid Guid;
-        public uint ClientContext;
-        public uint Flags;
     }
 }
