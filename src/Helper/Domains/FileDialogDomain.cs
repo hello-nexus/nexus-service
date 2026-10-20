@@ -38,12 +38,13 @@ public static class FileDialogCommands
     public const string PickType = "dialog.pick";
     public const string OpenFolderType = "dialog.openFolder";
     private const int TimeoutMs = 600_000;
+    private const int OpenFolderAckMs = 5000;
 
     /// <summary>
     /// Open a folder in Explorer inside the user session, brought in front
-    /// of the app window. Waits for the helper's ack, bounded by a short
-    /// timeout; a missing ack is reported as <see cref="OpenFolderOutcome.TimedOut"/>
-    /// because Explorer may still appear.
+    /// of the app window. The whole send is time-bounded; a missing ack is
+    /// reported as <see cref="OpenFolderOutcome.TimedOut"/> because Explorer
+    /// may still appear.
     /// </summary>
     public static async Task<OpenFolderOutcome> TryOpenFolderAsync(HelperRegistry? r, string path, CancellationToken ct = default)
     {
@@ -53,12 +54,24 @@ public static class FileDialogCommands
             return OpenFolderOutcome.NoHelper;
         }
 
-        var result = await conn.SendCommandAsync(
+        var send = conn.SendCommandAsync(
             OpenFolderType,
             new FileDialogRequest { Path = path },
             AppJsonContext.Default.FileDialogRequest,
-            timeoutMs: 5000,
-            ct: ct).ConfigureAwait(false);
+            timeoutMs: OpenFolderAckMs,
+            ct: ct);
+        // The ack timeout starts only after the pipe write, which a frozen helper with a full pipe never completes.
+        try
+        {
+            await send.WaitAsync(TimeSpan.FromMilliseconds(OpenFolderAckMs + 1000), ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            ServiceLog.Warn("[helper] dialog.openFolder send did not complete in time");
+            return OpenFolderOutcome.TimedOut;
+        }
+
+        var result = await send.ConfigureAwait(false);
         var outcome = OpenFolderOutcomes.FromResult(result.Ok, result.Error);
         if (outcome == OpenFolderOutcome.TimedOut)
         {
