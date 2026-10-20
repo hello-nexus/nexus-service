@@ -233,11 +233,36 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
     }
 
     // OpenRGB detectors that share a PID with a natively driven Kraken (NZXTHue2ControllerDetect.cpp).
+    // A null detector: OpenRGB has none for that PID.
+    private static readonly Dictionary<int, string?> KrakenDetectors = new()
+    {
+        [0x3012] = "NZXT Kraken 2024 ELITE Series RGB",
+        [0x2007] = "NZXT Kraken X3 Series",
+        [0x2014] = "NZXT Kraken X3 Series RGB",
+        [0x3008] = null,
+    };
+
+    public static TheoryData<int, string> ClaimedKrakenDetectors()
+    {
+        var data = new TheoryData<int, string>();
+        foreach (var (pid, detector) in KrakenDetectors)
+            if (detector != null) data.Add(pid, detector);
+        return data;
+    }
+
+    [Fact]
+    public void Every_natively_lit_kraken_is_listed_with_its_openrgb_detector()
+    {
+        foreach (var model in Nexus.Service.Peripherals.Nzxt.KrakenModel.All)
+        {
+            if (model.Lighting == Nexus.Service.Peripherals.Nzxt.KrakenLightingProtocol.None) continue;
+            Assert.True(KrakenDetectors.ContainsKey(model.ProductId), $"0x{model.ProductId:X4} is lit natively but has no row here");
+        }
+    }
+
     [Theory]
-    [InlineData(0x3012, "NZXT Kraken 2024 ELITE Series RGB")]
-    [InlineData(0x2007, "NZXT Kraken X3 Series")]
-    [InlineData(0x2014, "NZXT Kraken X3 Series RGB")]
-    public void Every_natively_lit_kraken_pid_with_an_openrgb_detector_is_claimed(int pid, string detector)
+    [MemberData(nameof(ClaimedKrakenDetectors))]
+    public void A_listed_kraken_detector_is_claimed(int pid, string detector)
     {
         Assert.NotEqual(Nexus.Service.Peripherals.Nzxt.KrakenLightingProtocol.None, Nexus.Service.Peripherals.Nzxt.KrakenModel.Find(pid)!.Lighting);
         var map = new Dictionary<string, string> { ["Unit"] = detector };
