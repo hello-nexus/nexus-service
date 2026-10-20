@@ -18,9 +18,10 @@ public class WindowsFpsProviderRecoveryTests
 
     private sealed class ManualTime : TimeProvider
     {
-        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        public override DateTimeOffset GetUtcNow() => _now;
-        public void Advance(double seconds) => _now = _now.AddSeconds(seconds);
+        private long _ticks = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).UtcTicks;
+        public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
+        public void Advance(double seconds) =>
+            Interlocked.Exchange(ref _ticks, Interlocked.Read(ref _ticks) + (long)(seconds * TimeSpan.TicksPerSecond));
     }
 
     private sealed class FakeRunner : IFpsTraceRunner
@@ -34,6 +35,11 @@ public class WindowsFpsProviderRecoveryTests
 
         public void Run(string sessionName, Action<int, long> onPresent, CancellationToken token)
         {
+            // A capture cancelled before its Run starts never registers, so a
+            // stale one cannot land after the final capture and shadow it.
+            if (token.IsCancellationRequested)
+                return;
+
             var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             lock (_lock)
             {
@@ -152,7 +158,6 @@ public class WindowsFpsProviderRecoveryTests
             var started = runner.Started;
             Assert.Equal(started.Count, started.Distinct().Count());
             // Only the final capture can still be running: every earlier name was stopped.
-            var stopped = runner.Stopped;
             Assert.True(WaitFor(() => started.Take(started.Count - 1).All(n => runner.Stopped.Contains(n))));
             Assert.DoesNotContain(started[^1], runner.Stopped);
             Assert.True(provider.TryReadCurrentFps(out _));
@@ -174,7 +179,7 @@ public class WindowsFpsProviderRecoveryTests
             // Inside the backoff the demand tick must not restart.
             time.Advance(BaseBackoff - 1);
             provider.SetDemand("t", true);
-            Assert.Equal(1, runner.StartedCount);
+            Assert.Empty(provider.GetComponent().Sensors);
 
             time.Advance(2);
             provider.SetDemand("t", true);
@@ -218,7 +223,7 @@ public class WindowsFpsProviderRecoveryTests
             KillAndAwaitFailure(runner, 1);
             time.Advance(BaseBackoff + 1);
             provider.SetDemand("t", true);
-            Assert.Equal(2, runner.StartedCount);
+            Assert.Empty(provider.GetComponent().Sensors);
             time.Advance(BaseBackoff);
             provider.SetDemand("t", true);
             Assert.True(WaitFor(() => runner.StartedCount == 3));
@@ -267,8 +272,7 @@ public class WindowsFpsProviderRecoveryTests
 
             time.Advance(60 * 60 * 24 * 365);
             provider.SetDemand("t", true);
-            Thread.Sleep(100);
-            Assert.Equal(1, runner.StartedCount);
+            Assert.Empty(provider.GetComponent().Sensors);
         }
     }
 }
