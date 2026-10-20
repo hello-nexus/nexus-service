@@ -184,14 +184,16 @@ public sealed class DeckImageStore
     /// Extracts a first-frame PNG next to a stored MP4/WebM so a physical key
     /// (which shows a still) has something to draw. Best effort and never
     /// throws except OperationCanceledException from the caller's own token: no
-    /// ffmpeg or a failed decode leaves no poster (a failed one is remembered so
-    /// a re-post does not respawn ffmpeg) and the key shows its default icon.
+    /// ffmpeg or a failed decode leaves no poster and the key shows its default
+    /// icon. An id ffmpeg rejected is remembered for this process only, so a
+    /// re-post does not respawn ffmpeg but a restart tries once more; a timeout
+    /// or spawn failure is never remembered. PosterReady fires on publish.
     /// Concurrent calls for one id share a single extraction, and the work is
     /// not cancelled by one caller leaving.
     /// </summary>
     public Task EnsurePosterAsync(string id, CancellationToken ct = default)
     {
-        if (!IsValidId(id) || File.Exists(PosterPath(id)) || File.Exists(PosterFailedPath(id)) || !FfmpegAvailable)
+        if (!IsPosterPending(id))
         {
             return Task.CompletedTask;
         }
@@ -254,6 +256,7 @@ public sealed class DeckImageStore
             if (File.Exists(tmp))
             {
                 File.Move(tmp, PosterPath(id), overwrite: true);
+                RaisePosterReady(id);
             }
             else
             {
@@ -275,26 +278,44 @@ public sealed class DeckImageStore
         }
     }
 
-    /// <summary>True while a stored video still lacks its poster and extraction can yet succeed, so a renderer should not cache its fallback face.</summary>
-    public bool IsPosterPending(string id) =>
-        IsValidId(id)
-        && FfmpegAvailable
-        && !File.Exists(PosterPath(id))
-        && !File.Exists(PosterFailedPath(id))
-        && Extensions.Where(IsVideoExtension).Any(e => File.Exists(Path.Combine(_rootDir, id + e)));
+    /// <summary>Raised on a pool thread once a video's poster frame is published, so a surface showing the fallback face can repaint.</summary>
+    public event Action<string>? PosterReady;
 
-    private bool FfmpegAvailable => _runFfmpeg is not null || FfmpegResolver.Path is not null;
-
-    private string PosterFailedPath(string id) => Path.Combine(_rootDir, id + ".poster.none");
-
-    private void MarkPosterFailed(string id)
+    private void RaisePosterReady(string id)
     {
         try
         {
-            File.WriteAllBytes(PosterFailedPath(id), []);
+            PosterReady?.Invoke(id);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
+            ServiceLog.Warn($"[deck] poster-ready handler for {id} failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>True while a stored video still lacks its poster and extraction can yet succeed in this process, so a renderer should not cache its fallback face.</summary>
+    public bool IsPosterPending(string id) =>
+        IsValidId(id)
+        && !File.Exists(PosterPath(id))
+        && Extensions.Where(IsVideoExtension).Any(e => File.Exists(Path.Combine(_rootDir, id + e)))
+        && !IsPosterFailed(id)
+        && FfmpegAvailable;
+
+    private bool FfmpegAvailable => _runFfmpeg is not null || FfmpegResolver.Path is not null;
+
+    private bool IsPosterFailed(string id)
+    {
+        lock (_posterLock)
+        {
+            return _posterFailed.Contains(id);
+        }
+    }
+
+    private void MarkPosterFailed(string id)
+    {
+        lock (_posterLock)
+        {
+            _posterFailed.Add(id);
         }
     }
 
@@ -314,6 +335,11 @@ public sealed class DeckImageStore
     {
         try
         {
+            // Earlier builds persisted a failure marker; failure memory is in-process now.
+            foreach (var marker in Directory.EnumerateFiles(_rootDir, "*.poster.none"))
+            {
+                TryDelete(marker);
+            }
             var cutoff = DateTime.UtcNow - StaleTempAge;
             foreach (var path in Directory.EnumerateFiles(_rootDir, "*.tmp").Concat(Directory.EnumerateFiles(_rootDir, "*.tmp.png")))
             {
@@ -334,6 +360,7 @@ public sealed class DeckImageStore
     private static readonly SemaphoreSlim PosterGate = new(2);
     private readonly Func<int, CancellationToken, string[], Task<string>>? _runFfmpeg;
     private readonly object _posterLock = new();
+    private readonly HashSet<string> _posterFailed = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Task> _posterInFlight = new(StringComparer.Ordinal);
 
     public static int MaxBytesFor(string ext) => ext is ".png" or ".jpg" ? MaxBytes : MaxAnimatedBytes;

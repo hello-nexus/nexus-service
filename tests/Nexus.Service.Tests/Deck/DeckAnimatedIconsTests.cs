@@ -328,16 +328,7 @@ public sealed class DeckAnimatedIconsTests : IDisposable
     public async Task EnsurePoster_ExtractsAFirstFrameFromARealMp4()
     {
         var path = Path.Combine(_dir, "real.mp4");
-        byte[]? mp4;
-        try
-        {
-            mp4 = await MakeRealMp4(path);
-        }
-        catch (InvalidOperationException)
-        {
-            // This ffmpeg build cannot encode h264 here; nothing to assert against.
-            return;
-        }
+        var mp4 = await MakeRealMp4(path);
         var id = _images.Store(mp4!)!;
 
         await _images.EnsurePosterAsync(id);
@@ -353,36 +344,19 @@ public sealed class DeckAnimatedIconsTests : IDisposable
     public async Task EnsurePoster_ConcurrentCallsShareOneExtraction()
     {
         var path = Path.Combine(_dir, "real2.mp4");
-        byte[]? mp4;
-        try
-        {
-            mp4 = await MakeRealMp4(path);
-        }
-        catch (InvalidOperationException)
-        {
-            return;
-        }
+        var mp4 = await MakeRealMp4(path);
         var id = _images.Store(mp4!)!;
 
         await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => _images.EnsurePosterAsync(id)));
 
         Assert.NotNull(_images.TryLoadStill(id));
-        Assert.False(File.Exists(Path.Combine(_images.RootDir, id + ".poster.none")));
     }
 
     [FfmpegFact]
     public async Task PresetImport_ProducesAPosterForAVideoAsset()
     {
         var path = Path.Combine(_dir, "real3.mp4");
-        byte[]? mp4;
-        try
-        {
-            mp4 = await MakeRealMp4(path);
-        }
-        catch (InvalidOperationException)
-        {
-            return;
-        }
+        var mp4 = await MakeRealMp4(path);
         var id = _images.Store(mp4!)!;
         var preset = new DeckPreset
         {
@@ -407,15 +381,7 @@ public sealed class DeckAnimatedIconsTests : IDisposable
     [FfmpegFact]
     public async Task EnsurePoster_BoundsALargeSourceToTheMaxEdge()
     {
-        byte[]? mp4;
-        try
-        {
-            mp4 = await MakeRealMp4(Path.Combine(_dir, "wide.mp4"), "640x360");
-        }
-        catch (InvalidOperationException)
-        {
-            return;
-        }
+        var mp4 = await MakeRealMp4(Path.Combine(_dir, "wide.mp4"), "640x360");
         var id = _images.Store(mp4!)!;
 
         await _images.EnsurePosterAsync(id);
@@ -444,9 +410,9 @@ public sealed class DeckAnimatedIconsTests : IDisposable
         await store.EnsurePosterAsync(id);
         await store.EnsurePosterAsync(id);
 
-        Assert.True(File.Exists(Path.Combine(store.RootDir, id + ".poster.none")));
         Assert.Equal(1, calls());
         Assert.False(store.IsPosterPending(id));
+        Assert.Empty(Directory.GetFiles(store.RootDir, "*.poster.none"));
     }
 
     [Fact]
@@ -456,7 +422,7 @@ public sealed class DeckAnimatedIconsTests : IDisposable
 
         await store.EnsurePosterAsync(id);
 
-        Assert.True(File.Exists(Path.Combine(store.RootDir, id + ".poster.none")));
+        Assert.False(store.IsPosterPending(id));
     }
 
     [Fact]
@@ -471,7 +437,6 @@ public sealed class DeckAnimatedIconsTests : IDisposable
         spawn = true;
         await store.EnsurePosterAsync(id);
 
-        Assert.False(File.Exists(Path.Combine(store.RootDir, id + ".poster.none")));
         Assert.Equal(2, calls());
         Assert.True(store.IsPosterPending(id));
     }
@@ -491,26 +456,101 @@ public sealed class DeckAnimatedIconsTests : IDisposable
         Assert.False(store.IsPosterPending(id));
     }
 
+    private static byte[] GreenPng()
+    {
+        using var bmp = new SkiaSharp.SKBitmap(8, 8);
+        bmp.Erase(SkiaSharp.SKColors.Lime);
+        using var data = bmp.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+        return data.ToArray();
+    }
+
     [Fact]
-    public async Task Renderer_DoesNotCacheTheFallbackFaceWhileAPosterIsPending()
+    public async Task Renderer_TriggersExtractionAndDoesNotCacheTheFallbackWhilePending()
     {
         var model = StreamDeckModels.ByProductId(0x0080)!;
-        var (store, id, _) = FakeRunnerStore(args =>
+        var release = new TaskCompletionSource();
+        var ready = new TaskCompletionSource<string>();
+        var (store, id, calls) = FakeRunnerStore(async args =>
         {
-            using var bmp = new SkiaSharp.SKBitmap(8, 8);
-            bmp.Erase(SkiaSharp.SKColors.Lime);
-            using var data = bmp.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
-            File.WriteAllBytes(args[^1], data.ToArray());
-            return Task.FromResult("");
+            await release.Task;
+            File.WriteAllBytes(args[^1], GreenPng());
+            return "";
         });
         var renderer = new DeckKeyRenderer(store, new NullShortcutsProvider(), new NullProcessIconProvider());
+        renderer.PosterReady += readyId => ready.TrySetResult(readyId);
         var slot = new DeckSlot { Icon = new DeckIcon { Kind = "image", Value = id } };
 
         var before = renderer.Render(slot, false, model, 0);
-        await store.EnsurePosterAsync(id);
+        var duringExtraction = renderer.Render(slot, false, model, 0);
+        release.SetResult();
+        Assert.Equal(id, await ready.Task.WaitAsync(TimeSpan.FromSeconds(10)));
         var after = renderer.Render(slot, false, model, 0);
 
+        Assert.Equal(1, calls());
+        Assert.Equal(before, duringExtraction);
         Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public async Task EnsurePoster_ARestartRetriesWhatFfmpegRejectedBefore()
+    {
+        var root = Path.Combine(_dir, "restart");
+        var first = new DeckImageStore(root, (_, _, _) => throw new FfmpegExitException("ffmpeg exit 1: bad"));
+        var id = first.Store(Mp4())!;
+        await first.EnsurePosterAsync(id);
+        Assert.False(first.IsPosterPending(id));
+
+        var second = new DeckImageStore(root, (_, _, args) =>
+        {
+            File.WriteAllBytes(args[^1], GreenPng());
+            return Task.FromResult("");
+        });
+        Assert.True(second.IsPosterPending(id));
+        await second.EnsurePosterAsync(id);
+
+        Assert.NotNull(second.TryLoadStill(id));
+    }
+
+    [Fact]
+    public void Constructor_SweepsLeftoverFailureMarkers()
+    {
+        var root = Path.Combine(_dir, "markers");
+        Directory.CreateDirectory(root);
+        var marker = Path.Combine(root, new string('a', 64) + ".poster.none");
+        File.WriteAllBytes(marker, []);
+
+        _ = new DeckImageStore(root);
+
+        Assert.False(File.Exists(marker));
+    }
+
+    [Fact]
+    public void FfmpegPathCache_DoesNotReprobeAMissWithinTheWindow()
+    {
+        var probes = 0;
+        long now = 0;
+        var cache = new FfmpegPathCache(() => { probes++; return null; }, () => now);
+
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.Null(cache.Path);
+        }
+        Assert.Equal(1, probes);
+
+        now += 6 * 60 * 1000;
+        Assert.Null(cache.Path);
+        Assert.Equal(2, probes);
+    }
+
+    [Fact]
+    public void FfmpegPathCache_KeepsAFoundPath()
+    {
+        var probes = 0;
+        var cache = new FfmpegPathCache(() => { probes++; return "/x/ffmpeg"; }, () => 0);
+
+        Assert.Equal("/x/ffmpeg", cache.Path);
+        Assert.Equal("/x/ffmpeg", cache.Path);
+        Assert.Equal(1, probes);
     }
 
     private static readonly byte[] OnePxPng = Convert.FromBase64String(

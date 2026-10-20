@@ -14,20 +14,9 @@ namespace Nexus.Service.Platform;
 /// </summary>
 public static class FfmpegResolver
 {
-    private static string? _cachedPath;
+    private static readonly FfmpegPathCache Cache = new(Locate, () => Environment.TickCount64);
 
-    public static string? Path
-    {
-        get
-        {
-            if (_cachedPath is not null)
-            {
-                return _cachedPath;
-            }
-            _cachedPath = Locate();
-            return _cachedPath;
-        }
-    }
+    public static string? Path => Cache.Path;
 
     private static string? Locate()
     {
@@ -80,6 +69,36 @@ public static class FfmpegResolver
         catch
         {
             return false;
+        }
+    }
+}
+
+/// <summary>Remembers a found path for the process lifetime and a miss for a few minutes, so a missing ffmpeg never costs a process-spawning probe per call.</summary>
+internal sealed class FfmpegPathCache(Func<string?> locate, Func<long> tickMs)
+{
+    private const long MissCacheMs = 5 * 60 * 1000;
+    private string? _path;
+    private long _missUntil;
+
+    public string? Path
+    {
+        get
+        {
+            if (_path is not null)
+            {
+                return _path;
+            }
+            var now = tickMs();
+            if (now < _missUntil)
+            {
+                return null;
+            }
+            _path = locate();
+            if (_path is null)
+            {
+                _missUntil = now + MissCacheMs;
+            }
+            return _path;
         }
     }
 }

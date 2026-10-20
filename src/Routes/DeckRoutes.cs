@@ -405,12 +405,18 @@ public static class DeckRoutes
             }
 
             // Cheap pre-check so a rejected import writes no assets; the Update below re-checks atomically.
-            var existing = store.Load().StreamDeck.Presets;
-            if (existing.Count >= PresetCap)
+            var precheckCapped = false;
+            var precheckNameTaken = false;
+            store.Read(s =>
+            {
+                precheckCapped = s.StreamDeck.Presets.Count >= PresetCap;
+                precheckNameTaken = s.StreamDeck.Presets.Any(p => string.Equals(p.Name, trimmedName, System.StringComparison.OrdinalIgnoreCase));
+            });
+            if (precheckCapped)
             {
                 return Results.Json(ApiResponse.Fail("Deck preset cap of 50 reached"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
-            if (existing.Any(p => string.Equals(p.Name, trimmedName, System.StringComparison.OrdinalIgnoreCase)))
+            if (precheckNameTaken)
             {
                 return Results.Json(ApiResponse.Fail("preset_name_taken"), AppJsonContext.Default.ApiResponse, statusCode: 409);
             }
@@ -465,7 +471,7 @@ public static class DeckRoutes
 
             BroadcastPresetsChanged(hub, store);
 
-            // Posters are best effort and finish after the response: the renderer shows its fallback face (uncached) until each lands.
+            // Posters are best effort and finish after the response: the renderer shows its fallback face (uncached) and extracts on demand until each lands.
             var videoIds = read.Assets.Where(a => DeckImageStore.IsVideoExtension(a.Value.Ext)).Select(a => a.Key).ToList();
             if (videoIds.Count > 0)
             {

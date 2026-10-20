@@ -53,7 +53,11 @@ public sealed class DeckKeyRenderer
         _imageStore = imageStore;
         _shortcuts = shortcuts;
         _processIcons = processIcons;
+        _imageStore.PosterReady += id => PosterReady?.Invoke(id);
     }
+
+    /// <summary>A video icon's poster frame was published; keys that showed the fallback face for it can repaint.</summary>
+    public event Action<string>? PosterReady;
 
     private static readonly DeckSlot BackKeySlot = new() { Icon = new DeckIcon { Kind = "lucide", Value = "Undo2" }, Color = "#23262e" };
 
@@ -231,6 +235,13 @@ public sealed class DeckKeyRenderer
         SKBitmap? customImage = null;
         SKBitmap? appIcon = null;
         var iconPending = false;
+        // Checked before the still is read so a poster published in between is picked up, never cached over.
+        var posterPending = shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.IsPosterPending(display.Icon.Value);
+        if (posterPending)
+        {
+            // Fire and forget: deduped per id and gated, so the render never waits on ffmpeg.
+            _ = _imageStore.EnsurePosterAsync(display.Icon!.Value);
+        }
         if (shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.TryLoadStill(display.Icon.Value) is { } still)
         {
             customImage = DecodeStored(display.Icon.Value, still);
@@ -239,9 +250,9 @@ public sealed class DeckKeyRenderer
         {
             appIcon = LoadAppIcon(display, ref transient, out iconPending);
         }
-        if (customImage is null && shouldPaintIcon && display.Icon is { Kind: "image" } && _imageStore.IsPosterPending(display.Icon.Value))
+        if (customImage is null && posterPending)
         {
-            // The video's poster frame is still being extracted: the fallback face must not be cached over it.
+            // The poster is still being extracted: the fallback face must not be cached over it.
             transient = true;
         }
         var iconOnBlack = (customImage is not null || appIcon is not null) && !display.ExplicitColor;
