@@ -95,7 +95,7 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
             ServiceLog.Warn("[asus-slc4-lcd] start sequence write rejected; dropping the handle");
             return false;
         }
-        if (conn is not null && !AsRockLcdProtocol.ParseBootFinished(AsRockLcdProtocol.Decode(conn)))
+        if (conn is not null && !AsRockLcdProtocol.ParseBootFinished(DecodeFramed(conn)))
         {
             ServiceLog.Info("[asus-slc4-lcd] connect reply does not report a finished boot");
         }
@@ -269,7 +269,7 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
     /// </summary>
     private string? Dispatch(byte[] reply)
     {
-        var decoded = AsRockLcdProtocol.Decode(reply);
+        var decoded = DecodeFramed(reply);
         string text = decoded.Length > 0 ? Encoding.ASCII.GetString(decoded) : Printable(reply);
         string? command = null;
         int key = -1;
@@ -321,12 +321,21 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
         return end > start && int.TryParse(text.AsSpan(start, end - start), NumberStyles.None, CultureInfo.InvariantCulture, out sequence);
     }
 
+    /// <summary>
+    /// The decoded message of a framed reply (report id, then the frame marker), or empty for
+    /// anything else, so unframed text is never half-decoded into a false status.
+    /// </summary>
+    private static byte[] DecodeFramed(byte[] reply) =>
+        reply.Length >= 6 && reply[1] == AsRockLcdProtocol.FrameMarker
+            ? AsRockLcdProtocol.Decode(reply)
+            : Array.Empty<byte>();
+
     private static bool IsOk(byte[] reply)
     {
-        var decoded = AsRockLcdProtocol.Decode(reply);
+        var decoded = DecodeFramed(reply);
         if (decoded.Length > 0)
         {
-            // A decoded reply answers for itself; one with no status is not an OK.
+            // A framed reply answers for itself; one with no status is not an OK.
             return AsRockLcdProtocol.ParseStatus(decoded) == "200";
         }
         // Nothing decoded and the reply layout was never captured; fall back to the status text itself.

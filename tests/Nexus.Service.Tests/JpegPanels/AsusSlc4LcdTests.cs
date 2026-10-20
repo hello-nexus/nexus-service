@@ -130,7 +130,7 @@ public class AsusSlc4LcdTests
         using var transport = new Nexus.Service.Panel.Streams.JpegPanelStreamTransport(hub, "SLC4");
         transport.Open();
 
-        // Incompressible content: at the default quality this is far past 255 chunks.
+        // Incompressible content: at the default quality this overflows the chunk counter.
         var frame = new byte[720 * 720 * 4];
         new Random(7).NextBytes(frame);
         device.Writes.Clear();
@@ -149,6 +149,32 @@ public class AsusSlc4LcdTests
         Assert.InRange(device.Writes.Count, 1, 255);
         Assert.True(device.Writes.Count < defaultChunks);
         Assert.Equal(device.Writes.Count, device.Writes[0][6]);
+    }
+
+    [Fact]
+    public void Quality_stays_stepped_down_and_steps_back_up_after_a_run_of_frames_that_fit()
+    {
+        var model = JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() };
+        using var hub = new JpegPanelHub(model);
+        Assert.True(hub.Attach(new RecordingHidDevice { Responder = AllOk }));
+        using var transport = new Nexus.Service.Panel.Streams.JpegPanelStreamTransport(hub, "SLC4");
+        transport.Open();
+
+        var noise = new byte[720 * 720 * 4];
+        new Random(7).NextBytes(noise);
+        transport.Write(noise);
+        int stepped = transport.QualityLevel;
+        Assert.True(stepped > 0);
+
+        // A flat frame fits at any level: the level holds, then drops one step after a run.
+        var flat = new byte[720 * 720 * 4];
+        for (int i = 0; i < 29; i++)
+        {
+            transport.Write(flat);
+        }
+        Assert.Equal(stepped, transport.QualityLevel);
+        transport.Write(flat);
+        Assert.Equal(stepped - 1, transport.QualityLevel);
     }
 
     [Fact]
@@ -265,6 +291,24 @@ public class AsusSlc4LcdTests
         device.Writes.Clear();
 
         device.Replies.Enqueue(Framed("HTTP/1.1 200 OK\r\nrealtimeDisplay\r\n\r\n"));
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64);
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 60_000);
+
+        Assert.Empty(device.Writes);
+    }
+
+    [Fact]
+    public void An_unframed_zero_padded_text_reply_uses_the_text_fallback()
+    {
+        var handshake = new AsusSlc4LcdHandshake();
+        var device = new RecordingHidDevice { Responder = (c, n) => c == "realtimeDisplay" ? null : Reply(200, n) };
+        Assert.True(handshake.OnAttach(device, 1025));
+        device.Responder = null;
+        device.Writes.Clear();
+
+        var raw = new byte[1024];
+        Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nSeqNumber=4\r\nrealtimeDisplay\r\n").CopyTo(raw, 0);
+        device.Replies.Enqueue(raw);
         handshake.BeforeFrame(device, 1025, Environment.TickCount64);
         handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 60_000);
 
