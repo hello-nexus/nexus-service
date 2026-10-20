@@ -26,7 +26,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
     // HID handle, so it no longer serializes against the LED stream the way the
     // hub's read did - the stall that showed as flicker on a held Static frame.
     // NEXUS_KEEB_KNOB_POLL_TICKS overrides it; 0 disables the follow entirely.
-    private static readonly int KnobReadEveryTicks = ResolveKnobPollTicks();
+    internal int KnobReadEveryTicks { get; set; } = ResolveKnobPollTicks();
 
     private static int ResolveKnobPollTicks()
     {

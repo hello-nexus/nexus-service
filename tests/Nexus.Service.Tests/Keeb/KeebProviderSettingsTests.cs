@@ -96,7 +96,7 @@ public class KeebProviderSettingsTests
         var applier = new Nexus.Service.Peripherals.Hyte.Keeb.KeebSettingsApplier(hub, store, new Nexus.Service.Sockets.MultiplexHub());
         using var engine = new Nexus.Service.Lighting.Engine.LightingEngine();
         if (effectRunning) engine.SetEffect(new Nexus.Service.Lighting.Engine.Effects.BlackEffect());
-        var provider = new RealKeebProvider(store, hub, applier, engine);
+        var provider = new RealKeebProvider(store, hub, applier);
 
         provider.SetFirmwareLighting(new SetFirmwareLightingBody
         {

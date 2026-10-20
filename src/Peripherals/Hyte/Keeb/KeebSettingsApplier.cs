@@ -31,9 +31,9 @@ public sealed class KeebSettingsApplier
     private readonly KeebHub _hub;
     private readonly IConfigStore _store;
     private readonly MultiplexHub _panel;
-    // The knob is only observable by reading the settings page: this keyboard
-    // handles the rotary internally and reports no input event for it (its
-    // FF02 collection has never logged one). KeebHub's read would serialize
+    // The knob can always be observed by reading the settings page, and may also
+    // report each detent as an input event; both are handled (see
+    // HandleEncoderScroll and PollKnobToGlobal). KeebHub's read would serialize
     // against the 30 Hz LED stream on one IO lock - a request/response pair
     // with a 250 ms timeout, so one slow answer stalls frames and the board
     // repaints the gap. This is a SECOND handle to the same collection, used
@@ -53,7 +53,13 @@ public sealed class KeebSettingsApplier
     // Streaming knob position (device byte as a percent) last accounted for, under
     // _gate; -1 until the first read of a stream, which only records it.
     private int _lastKnobPct = -1;
-    // Set while a software effect streams. Any settings write that lands during
+    // Bumped under _gate by every detent and every re-baseline. A byte read happens
+    // outside the lock, so a poll that saw the generation change while reading holds a
+    // result from before that event and must discard it.
+    private int _knobGen;
+    // Set while the frame writer streams (a software effect, or key reactions alone).
+    // It is the one signal for "the firmware animation is suppressed and the knob drives
+    // global": the provider, the knob handlers and SyncFromDevice all gate on it. Any settings write that lands during
     // a stream must not put an animated mode back on the device: the firmware
     // would repaint between our frames and fight the stream (camera-verified:
     // our yellow alternating with the firmware's animation).
@@ -116,6 +122,9 @@ public sealed class KeebSettingsApplier
         _knobReader = null;
     }
 
+    /// <summary>True while the frame writer is streaming; see <c>_streaming</c>.</summary>
+    public bool IsStreaming => _streaming;
+
     /// <summary>Build the page from current settings and write it. No-op (false) when disconnected.</summary>
     public bool Apply()
     {
@@ -125,7 +134,11 @@ public sealed class KeebSettingsApplier
         {
             var page = KeebSettingsCodec.BuildSettingsPage(_store.Load().Keeb);
             if (_streaming) page[3] = KeebSettingsCodec.AnimationModeByte("static");
-            return _hub.WriteSettings(page);
+            var ok = _hub.WriteSettings(page);
+            // The write puts the level back in the device byte; during a stream the poll
+            // must not count that as a knob turn.
+            if (_streaming) ResetKnobBaseline();
+            return ok;
         }
         catch (Exception ex)
         {
@@ -179,9 +192,11 @@ public sealed class KeebSettingsApplier
     /// <summary>
     /// Apply a knob detent to the global master brightness, host-side.
     ///
-    /// The rotary reports its detents as interrupt-IN events on the input worker's
-    /// OWN handle, so following it costs the LED stream nothing (reading the
-    /// settings page shares KeebHub's IO lock and stalled frames).
+    /// The rotary can report its detents as interrupt-IN events on the input worker's
+    /// OWN handle, which costs the LED stream nothing (reading the settings page shares
+    /// KeebHub's IO lock and stalled frames). Whether or not the firmware also moves its
+    /// byte per detent, the detent steps global once: it re-baselines the byte poll, so
+    /// the poll only records the byte afterwards and never counts the same turn again.
     ///
     /// Only while a software effect streams: the knob then steps the global master
     /// every device follows and leaves the keeb's own level alone, so the stream is
@@ -207,8 +222,7 @@ public sealed class KeebSettingsApplier
                 s.Lighting.GlobalBrightness = Math.Clamp(now + step, 0, 100) / 100f;
                 Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
             });
-            // The device byte moves with the same detent; keep the poll from counting it twice.
-            if (_lastKnobPct >= 0) _lastKnobPct = Math.Clamp(_lastKnobPct + step, 0, 100);
+            ResetKnobBaselineLocked();
         }
         PanelTopics.BroadcastLighting(_panel);
         return true;
@@ -227,7 +241,13 @@ public sealed class KeebSettingsApplier
     /// </summary>
     public void ResetKnobBaseline()
     {
-        lock (_gate) { _lastKnobPct = -1; }
+        lock (_gate) { ResetKnobBaselineLocked(); }
+    }
+
+    private void ResetKnobBaselineLocked()
+    {
+        _lastKnobPct = -1;
+        _knobGen++;
     }
 
     /// <summary>
@@ -263,9 +283,18 @@ public sealed class KeebSettingsApplier
     {
         if (!readByte || !_hub.IsConnected) return;
         var changed = false;
+        int generation;
+        lock (_gate) { generation = _knobGen; }
         var raw = ReadSettingsOffStream();
         lock (_gate)
         {
+            // A detent or a re-baseline landed while the read was in flight: the byte may
+            // predate it, so drop this result and let the next read record the baseline.
+            if (generation != _knobGen)
+            {
+                _lastKnobPct = -1;
+                return;
+            }
             var brightIndex = (OperatingSystem.IsWindows() ? 3 : 2) + 1;
             if (raw is null || raw.Length <= brightIndex) return;
             var pct = KeebSettingsCodec.BrightnessPercentFromByte(raw[brightIndex]);
@@ -302,17 +331,20 @@ public sealed class KeebSettingsApplier
 
     /// <summary>
     /// Read the device's current firmware effect and brightness and mirror a
-    /// device-initiated change into persisted state, so the panel follows the hardware. In firmware rotary mode the middle button cycles
-    /// the effect and the knob moves the brightness byte with NO host callback, so
-    /// the connection worker calls this each poll tick. Adopts the byte into the
-    /// keeb level (FirmwareLighting.Brightness) only - never the global master or the
-    /// per-zone software prefs, which stay the user's LED-map values. The equality check makes our own
-    /// writes a no-op, so only a hardware-side change broadcasts. Gated against
+    /// device-initiated change into persisted state, so the panel follows the
+    /// hardware. In firmware rotary mode the middle button cycles the effect and the
+    /// knob moves the brightness byte with no host callback, so the connection worker
+    /// calls this each poll tick. Adopts the byte into the keeb level
+    /// (FirmwareLighting.Brightness) only - never the global master or the per-zone
+    /// software prefs, which stay the user's LED-map values. Does nothing while the
+    /// frame writer streams: the knob then drives global instead (see
+    /// <see cref="PollKnobToGlobal"/>). The equality check makes our own writes a
+    /// no-op, so only a hardware-side change broadcasts. Gated against
     /// <see cref="ApplyGated"/> so it can't clobber an in-flight host write.
     /// </summary>
     public bool SyncFromDevice()
     {
-        if (!_hub.IsConnected) return false;
+        if (_streaming || !_hub.IsConnected) return false;
         string? effect = null;
         var brightness = 0;
         var changed = false;

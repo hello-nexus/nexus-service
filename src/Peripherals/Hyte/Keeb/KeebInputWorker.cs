@@ -25,17 +25,15 @@ public sealed class KeebInputWorker : BackgroundService
     private readonly KeebHub _hub;
     private readonly KeebSettingsApplier _applier;
     private readonly Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay _keyReactive;
-    private readonly Nexus.Service.Lighting.Engine.LightingEngine _engine;
     private IHidDevice? _reader;
     private string? _sourceId;
 
-    public KeebInputWorker(IHidEnumerator hid, KeebHub hub, KeebSettingsApplier applier, Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay keyReactive, Nexus.Service.Lighting.Engine.LightingEngine engine)
+    public KeebInputWorker(IHidEnumerator hid, KeebHub hub, KeebSettingsApplier applier, Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay keyReactive)
     {
         _hid = hid;
         _hub = hub;
         _applier = applier;
         _keyReactive = keyReactive;
-        _engine = engine;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -110,11 +108,10 @@ public sealed class KeebInputWorker : BackgroundService
             case KeebProtocol.KeebInputKind.ScrollMiddle:
                 // The middle button cycles the firmware effect on the device.
                 // Re-read immediately so the panel's Effect selector follows
-                // without waiting on the connection-worker poll. While a
-                // software effect streams the frame writer is the sole
-                // settings reader (see KeebSettingsApplier) - skip then.
+                // without waiting on the connection-worker poll. SyncFromDevice
+                // does nothing while the frame writer streams.
                 ServiceLog.Info("[keeb-input] rotary middle click");
-                if (_engine.CurrentEffectName == "none") _applier.SyncFromDevice();
+                _applier.SyncFromDevice();
                 break;
             case KeebProtocol.KeebInputKind.SoftwareKey:
                 ServiceLog.Info($"[keeb-input] software key ap={ev.ApCode} pressed={ev.Pressed}");

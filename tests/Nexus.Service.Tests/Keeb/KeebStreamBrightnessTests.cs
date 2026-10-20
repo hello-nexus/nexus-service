@@ -4,8 +4,10 @@ using System.Linq;
 using System.Threading;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
+using Nexus.Service.Lighting.KeyReactive;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.Hyte.Keeb;
+using Nexus.Service.Persistence;
 using Xunit;
 
 namespace Nexus.Service.Tests.Keeb;
@@ -27,6 +29,11 @@ public class KeebStreamBrightnessTests
 
         /// <summary>The brightness byte the "device" holds; the knob and settings writes both set it.</summary>
         public volatile int BrightByte = 255;
+
+        /// <summary>When set, the next settings read parks inside Read until <see cref="ReleaseRead"/>.</summary>
+        public volatile bool HoldNextSettingsRead;
+        public readonly ManualResetEventSlim ReadEntered = new(false);
+        public readonly ManualResetEventSlim ReleaseRead = new(false);
 
         public int VendorId => KeebProtocol.VendorId;
         public int ProductId => KeebProtocol.ProductId;
@@ -77,6 +84,15 @@ public class KeebStreamBrightnessTests
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
+            // Park only the real response read (a reply is queued), not the drain that precedes the request.
+            bool replyQueued;
+            lock (_sync) { replyQueued = _input.Count > 0; }
+            if (HoldNextSettingsRead && replyQueued)
+            {
+                HoldNextSettingsRead = false;
+                ReadEntered.Set();
+                ReleaseRead.Wait(5000);
+            }
             lock (_sync)
             {
                 if (_input.Count == 0) return 0;
@@ -122,6 +138,10 @@ public class KeebStreamBrightnessTests
         public readonly KeebSettingsApplier Applier;
         public readonly LightingEngine Engine = new() { FrameIntervalMs = 10 };
         public readonly KeebLightingFrameWriter Writer;
+        public readonly KeyReactiveOverlay Overlay = new();
+        public readonly string KeysId;
+        private readonly object _frameSync = new();
+        private int _frames;
 
         public Rig(int level, float global)
         {
@@ -135,13 +155,25 @@ public class KeebStreamBrightnessTests
             Hub = new KeebHub(Hid);
             Assert.True(Hub.EnsureConnected());
             Applier = new KeebSettingsApplier(Hub, Store, new Nexus.Service.Sockets.MultiplexHub(), Hid);
-            var frame = new DeviceFrame(0, Hub.DeviceId + KeebLightingDeviceProvider.KeysSuffix, Hub.KeyMap.LedCount)
+            var leds = Hub.KeyMap.LedCount;
+            KeysId = Hub.DeviceId + KeebLightingDeviceProvider.KeysSuffix;
+            var frame = new DeviceFrame(0, KeysId, leds)
             {
-                LedU = Enumerable.Repeat(0.5f, Hub.KeyMap.LedCount).ToArray(),
-                LedV = Enumerable.Repeat(0.5f, Hub.KeyMap.LedCount).ToArray(),
+                Archetype = "keyboard",
+                DeviceId = Hub.DeviceId,
+                LedU = Enumerable.Range(0, leds).Select(i => i / (float)(leds - 1)).ToArray(),
+                LedV = Enumerable.Repeat(0.5f, leds).ToArray(),
             };
             Engine.UpdateDevices(new[] { frame });
-            Writer = new KeebLightingFrameWriter(Engine, Hub, Store, new Np50IdentifyTracker(), Applier, new Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay());
+            Engine.OnFrame += _ =>
+            {
+                lock (_frameSync)
+                {
+                    _frames++;
+                    Monitor.PulseAll(_frameSync);
+                }
+            };
+            Writer = new KeebLightingFrameWriter(Engine, Hub, Store, new Np50IdentifyTracker(), Applier, Overlay) { KnobReadEveryTicks = 2 };
         }
 
         public float Global => Store.Load().Lighting.GlobalBrightness;
@@ -149,14 +181,36 @@ public class KeebStreamBrightnessTests
 
         public void StartStream() => Engine.SetEffect(new White());
 
-        /// <summary>Ticks until the writer has streamed a frame from the live engine canvas.</summary>
-        public void Pump(int ticks)
+        /// <summary>Streams with key reactions only: no engine effect, just an enabled reaction on the keeb's card.</summary>
+        public void StartReactionsOnlyStream()
         {
+            Overlay.Set(Hub.DeviceId, KeyReactionCatalog.Sanitize(new KeyReaction
+            {
+                Enabled = true, Effect = KeyReactionCatalog.Fade, Color = "#ffffff", Background = KeyReactionCatalog.BackgroundDark,
+            }));
+        }
+
+        /// <summary>Waits for the next engine frame, or a short timeout when the engine is stopped.</summary>
+        private void WaitForFrame()
+        {
+            lock (_frameSync)
+            {
+                var seen = _frames;
+                var end = Environment.TickCount64 + 100;
+                while (_frames == seen && Environment.TickCount64 < end) Monitor.Wait(_frameSync, 20);
+            }
+        }
+
+        /// <summary>Runs writer ticks, each paced by an engine frame (or a short wait when the engine is idle).</summary>
+        public void Pump(int ticks, bool press = false)
+        {
+            // MaxKeyByte then covers every tick of this call: a reaction fades between presses.
+            Hid.Device.ResetStream();
             for (var i = 0; i < ticks; i++)
             {
-                Hid.Device.ResetStream();
+                WaitForFrame();
+                if (press) Overlay.PressOn(KeysId, key: null, led: 10);
                 Writer.Tick();
-                Thread.Sleep(15);
             }
         }
 
@@ -271,5 +325,171 @@ public class KeebStreamBrightnessTests
         rig.StartStream();
         Assert.False(rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true));
         Assert.Equal(0.8f, rig.Global, 3);
+    }
+
+    private static void MoveDeviceByte(Rig rig, double points) =>
+        rig.Hid.Device.BrightByte = Math.Clamp(rig.Hid.Device.BrightByte + (int)Math.Round(points / 100.0 * 255), 0, 255);
+
+    [Fact]
+    public void A_knob_turned_in_one_stream_is_not_counted_again_after_stop_and_restart()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);                                  // baseline recorded
+        MoveDeviceByte(rig, +10);                     // a turn during stream 1, seen by the poll
+        rig.Pump(6);
+        var afterTurn = rig.Global;
+        Assert.Equal(0.9f, afterTurn, 2);
+
+        rig.Engine.Stop();
+        rig.Pump(4);                                  // stop: Apply writes the level back into the device byte
+        rig.StartStream();
+        rig.Pump(10);
+
+        Assert.Equal(afterTurn, rig.Global, 3);
+        Assert.Equal(50, rig.Level);
+    }
+
+    [Fact]
+    public void A_settings_rewrite_during_a_stream_is_not_read_as_a_knob_turn()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);                                  // baseline recorded at the level
+        MoveDeviceByte(rig, +10);                     // the user turns the knob; the poll counts it
+        rig.Pump(6);
+        Assert.Equal(0.9f, rig.Global, 2);
+
+        rig.Applier.Apply();                          // SetRotary, SetGameMode, a reconnect: puts the level back in the byte
+        rig.Pump(8);
+
+        Assert.Equal(0.9f, rig.Global, 2);
+        Assert.Equal(50, rig.Level);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_detent_steps_global_once_whether_or_not_the_firmware_moves_its_byte(bool firmwareMovesByte)
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);
+
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        if (firmwareMovesByte) MoveDeviceByte(rig, +5);
+        rig.Pump(10);
+
+        Assert.Equal(0.85f, rig.Global, 2);
+        Assert.Equal(50, rig.Level);
+    }
+
+    [Fact]
+    public void Repeated_detents_at_the_limit_do_not_ratchet_global()
+    {
+        using var rig = new Rig(level: 50, global: 1.0f);
+        rig.StartStream();
+        rig.Pump(6);
+
+        for (var i = 0; i < 4; i++)
+        {
+            rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);   // the byte does not move
+            rig.Pump(4);
+        }
+        Assert.Equal(1.0f, rig.Global, 3);
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: false);
+        rig.Pump(6);
+        Assert.Equal(0.95f, rig.Global, 2);
+    }
+
+    [Fact]
+    public async Task A_poll_whose_read_straddles_a_detent_discards_its_stale_byte()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.Applier.SuppressFirmwareAnimation();
+        rig.Applier.ResetKnobBaseline();
+        rig.Applier.PollKnobToGlobal(true);           // baseline recorded at 50
+
+        rig.Hid.Device.HoldNextSettingsRead = true;
+        var poll = Task.Run(() => rig.Applier.PollKnobToGlobal(true));
+        Assert.True(rig.Hid.Device.ReadEntered.Wait(5000));
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);   // +5 global, re-baselines
+        MoveDeviceByte(rig, +5);                      // the firmware moved its byte with the detent
+        rig.Hid.Device.ReleaseRead.Set();             // the parked read returns the pre-detent byte
+        await poll.WaitAsync(TimeSpan.FromSeconds(5));
+
+        rig.Applier.PollKnobToGlobal(true);           // records the post-detent byte as the baseline
+        rig.Applier.PollKnobToGlobal(true);           // unchanged
+
+        Assert.Equal(0.85f, rig.Global, 2);
+    }
+
+    [Fact]
+    public void In_firmware_mode_the_device_byte_is_adopted_as_the_level_and_global_is_untouched()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        Assert.False(rig.Applier.IsStreaming);
+
+        rig.Hid.Device.BrightByte = (int)Math.Round(0.70 * 255);
+        Assert.True(rig.Applier.SyncFromDevice());
+
+        Assert.Equal(70, rig.Level);
+        Assert.Equal(0.8f, rig.Global, 3);
+    }
+
+    [Fact]
+    public void While_streaming_the_device_byte_is_not_adopted_as_the_level()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(4);
+        Assert.True(rig.Applier.IsStreaming);
+
+        rig.Hid.Device.BrightByte = (int)Math.Round(0.90 * 255);
+        Assert.False(rig.Applier.SyncFromDevice());
+
+        Assert.Equal(50, rig.Level);
+    }
+
+    [Fact]
+    public void A_key_reactions_only_stream_scales_by_the_level_and_the_slider_never_moves_global()
+    {
+        using var rig = new Rig(level: 100, global: 0.8f);
+        rig.StartReactionsOnlyStream();
+        Assert.Equal("none", rig.Engine.CurrentEffectName);
+        rig.Pump(6, press: true);
+        Assert.True(rig.Applier.IsStreaming);
+
+        var provider = new Nexus.Service.Peripherals.Keeb.RealKeebProvider(rig.Store, rig.Hub, rig.Applier);
+        var deviceByteBefore = rig.Hid.Device.BrightByte;
+        provider.SetFirmwareLighting(new Nexus.Service.Models.Peripherals.Keeb.SetFirmwareLightingBody
+        {
+            AnimationMode = "Static", Speed = "Standard", Direction = "LeftToRight", Brightness = 30,
+        });
+        rig.Pump(12, press: true);
+
+        Assert.Equal(30, rig.Level);
+        Assert.Equal(0.8f, rig.Global, 3);
+        // Streaming: the slider does not write the device byte, so the poll has nothing to import.
+        Assert.Equal(deviceByteBefore, rig.Hid.Device.BrightByte);
+        Assert.InRange(rig.Hid.Device.MaxKeyByte, Expected(0.8f, 30) - 3, Expected(0.8f, 30) + 3);
+    }
+
+    [Fact]
+    public void A_key_reactions_only_stream_follows_the_knob_through_global_without_squaring()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartReactionsOnlyStream();
+        rig.Pump(6, press: true);
+
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        MoveDeviceByte(rig, +5);
+        // The connection worker and the input worker both call this on their own cadence.
+        Assert.False(rig.Applier.SyncFromDevice());
+        rig.Pump(12, press: true);
+
+        Assert.Equal(0.85f, rig.Global, 2);
+        Assert.Equal(50, rig.Level);
+        Assert.InRange(rig.Hid.Device.MaxKeyByte, Expected(0.85f, 50) - 3, Expected(0.85f, 50) + 3);
     }
 }

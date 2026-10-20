@@ -31,19 +31,17 @@ public sealed class RealKeebProvider : IKeebProvider
     private readonly IConfigStore _store;
     private readonly KeebHub _hub;
     private readonly KeebSettingsApplier _applier;
-    private readonly LightingEngine _engine;
     // Serializes layer/macro store+device transactions so two concurrent saves
     // can't leave the device holding one write and the store another. It is the
     // hub's onboard lock, so the knob poll also stays out of a write + verify.
     private readonly object _writeLock;
 
-    public RealKeebProvider(IConfigStore store, KeebHub hub, KeebSettingsApplier applier, LightingEngine engine)
+    public RealKeebProvider(IConfigStore store, KeebHub hub, KeebSettingsApplier applier)
     {
         _store = store;
         _hub = hub;
         _writeLock = hub.OnboardLock;
         _applier = applier;
-        _engine = engine;
     }
 
     private string CurrentLayout()
@@ -360,13 +358,13 @@ public sealed class RealKeebProvider : IKeebProvider
     public void SetFirmwareLighting(SetFirmwareLightingBody body)
     {
         var brightness = Math.Clamp(body.Brightness, 0, 100);
-        // While a software effect streams, the firmware animation is suppressed and
-        // the frame writer scales the keeb stream by this level, so writing the
+        // While the frame writer streams (a software effect, or key reactions alone), the
+        // firmware animation is suppressed and the writer scales the keeb stream by this level, so writing the
         // 0x06 page now would only flash the firmware animation through the live
         // stream (and a brightness drag flashes repeatedly). Store it and let the
         // writer apply it; the page is written when streaming stops. With no
         // effect, write it so the firmware animation reflects the change at once.
-        var streaming = _engine.CurrentEffectName != "none";
+        var streaming = _applier.IsStreaming;
         _applier.ApplyGated(s =>
         {
             s.Keeb.FirmwareLighting.AnimationMode = body.AnimationMode;
