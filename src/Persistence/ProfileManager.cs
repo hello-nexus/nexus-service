@@ -1039,8 +1039,13 @@ public sealed partial class ProfileManager : IDisposable
             {
                 if (s.PanelDevices.TryGetValue(recordId, out var record) && PanelProfileData.IsDefaultLook(record))
                 {
-                    // Saved entries that belong to other live records are not candidates.
-                    foreach (var other in file.PanelDevices.Keys.Where(k => k != recordId && s.PanelDevices.ContainsKey(k)).ToList())
+                    // Saved entries that belong to other live records are not candidates, except
+                    // the same monitor's entry under a stale record that has not relinked yet.
+                    var key = record.FingerprintKey ?? PanelProfileData.FingerprintKey(record.DisplayFingerprint);
+                    foreach (var other in file.PanelDevices
+                        .Where(kv => kv.Key != recordId && s.PanelDevices.ContainsKey(kv.Key)
+                            && (key is null || kv.Value.FingerprintKey != key))
+                        .Select(kv => kv.Key).ToList())
                     {
                         file.PanelDevices.Remove(other);
                     }

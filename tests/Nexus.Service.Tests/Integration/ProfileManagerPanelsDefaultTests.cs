@@ -193,6 +193,28 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
     }
 
     [Fact]
+    public void Renumbered_monitor_adopts_its_look_while_the_old_record_is_still_live()
+    {
+        var (store, pm) = Boot();
+        try
+        {
+            var registry = new PanelDeviceRegistry(store);
+            var fp = new Nexus.Service.Models.Displays.DisplayFingerprint { Manufacturer = "ACR", Product = "0A1B", Serial = 1, SerialText = "SER1" };
+            var caps = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor };
+            var old = registry.AllocateForDisplay("d1", "Mon", caps, fp).Record;
+            store.Update(s => s.PanelDevices[old.Id].AccentColor = "#abcdef");
+            pm.FlushNow();
+
+            var renumbered = registry.AllocateForDisplay("d2", "Mon", caps, fp).Record;
+            pm.AdoptSavedLook(renumbered.Id);
+
+            Assert.NotEqual(old.Id, renumbered.Id);
+            Assert.Equal("#abcdef", store.Load().PanelDevices[renumbered.Id].AccentColor);
+        }
+        finally { pm.Dispose(); store.Dispose(); }
+    }
+
+    [Fact]
     public void A_second_panel_on_a_single_instance_surface_does_not_clone_the_first_ones_look()
     {
         var (store, pm) = Boot();
