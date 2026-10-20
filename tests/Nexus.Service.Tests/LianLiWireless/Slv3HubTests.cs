@@ -198,6 +198,132 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void A_fan_connected_by_USB_is_listed_flagged_and_never_bound_or_commanded()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        hub.WiredOwned = mac => string.Equals(mac, Convert.ToHexString(FanMac), StringComparison.OrdinalIgnoreCase);
+        for (var i = 0; i < 6; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+        var fan = hub.State.Fans[0];
+        Assert.True(fan.WiredOwned);
+        Assert.True(fan.UsbConnected);
+        Assert.False(fan.BoundToUs);
+        Assert.False(ManualBind(hub, Convert.ToHexString(FanMac), out var error));
+        Assert.Equal(Slv3Hub.WiredOwnedError, error);
+        var mac = Convert.ToHexString(FanMac);
+        Assert.False(hub.SetPortDuty(mac, 0, 50));
+        Assert.False(hub.Identify(mac));
+        Assert.False(hub.ResetChain(mac));
+        Assert.False(hub.SendRgbFrame(mac, new RgbColor[26], 100, 30, out _));
+        Assert.False(hub.Unbind(mac, out _));
+    }
+
+    [Fact]
+    public void A_wired_fan_that_is_bound_to_the_radio_can_be_released_but_not_driven()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans[0].BoundToUs);
+
+        var mac = Convert.ToHexString(FanMac);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        Assert.False(hub.SetPortDuty(mac, 0, 50));
+        Assert.False(ManualBind(hub, mac, out _));
+        hub.SetLockBoundDevices(false);
+        Assert.True(hub.Unbind(mac, out var error), error);
+        for (var i = 0; i < 4; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+        Assert.False(hub.State.Fans[0].BoundToUs);
+        Assert.True(hub.State.Fans[0].WiredOwned);
+    }
+
+    [Fact]
+    public void A_release_of_a_wired_fan_whose_first_frame_was_lost_is_repeated_on_the_next_polls()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        var fan = new SimulatedFan { Mac = FanMac };
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans[0].BoundToUs);
+
+        var mac = Convert.ToHexString(FanMac);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        hub.SetLockBoundDevices(false);
+        net.Fans.Clear();
+        Assert.True(hub.Unbind(mac, out var error), error);
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans[0].BoundToUs);
+
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.False(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
+    public void A_release_of_a_wired_fan_that_never_lets_go_is_given_up_after_a_bounded_number_of_polls()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        var fan = new SimulatedFan { Mac = FanMac };
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
+        Assert.True(hub.DriveTick());
+
+        var mac = Convert.ToHexString(FanMac);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        hub.SetLockBoundDevices(false);
+        net.Fans.Clear();
+        Assert.True(hub.Unbind(mac, out _));
+        for (var i = 0; i < Slv3Hub.WiredReleaseMaxSends + 5; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Theory]
+    [InlineData(Slv3Hub.WiredReleaseMaxSends - 2, false)]
+    [InlineData(Slv3Hub.WiredReleaseMaxSends - 1, true)]
+    public void A_wired_release_sends_exactly_the_cap_of_frames_the_first_one_included(int ticksAway, bool stillBound)
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        var fan = new SimulatedFan { Mac = FanMac };
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        hub.SetLockBoundDevices(false);
+        net.Fans.Clear();
+        Assert.True(hub.Unbind(mac, out _));
+        for (var i = 0; i < ticksAway; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.Equal(stillBound, hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
     public void Bind_converges_on_the_first_tick_via_the_immediate_frame()
     {
         var (hub, net, _, _) = CreateConnectedHub();

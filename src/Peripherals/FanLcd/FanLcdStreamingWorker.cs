@@ -175,6 +175,8 @@ public sealed class FanLcdStreamingWorker : BackgroundService
                     {
                         _screens.SetRotation(serial, settings.Rotation);
                         appliedRotation = settings.Rotation;
+                        // The screen turns a frame as it arrives, so a still picture is sent again to follow the new rotation.
+                        pushedStatic = false;
                     }
 
                     if (settings.MediaId != loadedMediaId)

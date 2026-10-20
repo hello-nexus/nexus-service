@@ -740,6 +740,7 @@ app.MapTryxEndpoints();
 app.MapSlv3Endpoints();
 app.MapSlv3LcdEndpoints();
 app.MapTlLcdEndpoints();
+app.MapLianLiFlexEndpoints();
 app.MapUpdateEndpoints();
 app.MapCloudEndpoints();
 app.MapAiEndpoints();

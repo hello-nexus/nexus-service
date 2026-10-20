@@ -296,8 +296,8 @@ public static class MediaLibraryRoutes
                     // The Session-0 service can't show Explorer; the user-session
                     // helper opens the folder and brings it over the app window.
                     var registry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
-                    if (registry is null ||
-                        !await Nexus.Service.Helper.Domains.FileDialogCommands.OpenFolderAsync(registry, dir))
+                    var outcome = await Nexus.Service.Helper.Domains.FileDialogCommands.TryOpenFolderAsync(registry, dir);
+                    if (Nexus.Service.Helper.OpenFolderOutcomes.IsFailure(outcome))
                     {
                         return Results.Problem("no interactive user session", statusCode: StatusCodes.Status503ServiceUnavailable);
                     }

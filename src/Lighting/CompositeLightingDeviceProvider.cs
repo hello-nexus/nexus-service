@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting.Engine;
@@ -28,6 +29,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     private readonly IbpPeripheralLightingDeviceProvider _ibp;
     private readonly LianLiLightingDeviceProvider _lianLi;
     private readonly Slv3LightingDeviceProvider _lianLiWireless;
+    private readonly FlexLightingDeviceProvider _flex;
     private readonly CorsairLinkLightingDeviceProvider _corsair;
     private readonly StrimerLightingDeviceProvider _strimer;
     private readonly Galahad2LightingDeviceProvider _galahad2;
@@ -54,6 +56,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         IbpPeripheralLightingDeviceProvider ibp,
         LianLiLightingDeviceProvider lianLi,
         Slv3LightingDeviceProvider lianLiWireless,
+        FlexLightingDeviceProvider flex,
         CorsairLinkLightingDeviceProvider corsair,
         StrimerLightingDeviceProvider strimer,
         Galahad2LightingDeviceProvider galahad2,
@@ -79,6 +82,8 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         _ibp      = ibp;
         _lianLi   = lianLi;
         _lianLiWireless = lianLiWireless;
+        _flex = flex;
+        _flex.DefaultRects = FlexDefaultRects;
         _corsair  = corsair;
         _strimer  = strimer;
         _galahad2 = galahad2;
@@ -150,9 +155,11 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         };
     }
 
-    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _hydroShiftLcd.IsConnected || _umbra.IsConnected || _smart.IsConnected;
+    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _flex.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _hydroShiftLcd.IsConnected || _umbra.IsConnected || _smart.IsConnected;
 
-    public GetLightingDevicesResponse GetAll()
+    public GetLightingDevicesResponse GetAll() => Listing(mirrorIntoEngine: true);
+
+    private GetLightingDevicesResponse Listing(bool mirrorIntoEngine)
     {
         var rgb = _openRgb.GetAll();
 
@@ -313,6 +320,13 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             TagControlHandler(lianLiWireless.Devices, "lianli-wireless");
             rgb.Devices.AddRange(lianLiWireless.Devices);
         }
+        var flex = _flex.GetAll();
+        if (flex.Devices.Count > 0)
+        {
+            rgb.IsInit = rgb.IsInit || flex.IsInit;
+            TagControlHandler(flex.Devices, "lianli-flex");
+            rgb.Devices.AddRange(flex.Devices);
+        }
         var corsair = _corsair.GetAll();
         if (corsair.Devices.Count > 0)
         {
@@ -412,14 +426,17 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
 
         // Mirror into engine frames so running effects sample from the same rectangles. Without this, RgbBridge's
         // existing-frame-wins rule would pin pre-grid coordinates in memory. O(N²), trivial for typical N (<30).
-        foreach (var frame in _engine.Devices)
+        if (mirrorIntoEngine)
         {
-            for (var i = 0; i < rgb.Devices.Count; i++)
+            foreach (var frame in _engine.Devices)
             {
-                var dev = rgb.Devices[i];
-                if (dev.Id != frame.Id) continue;
-                frame.X = dev.CanvasX; frame.Y = dev.CanvasY; frame.W = dev.CanvasW; frame.H = dev.CanvasH;
-                break;
+                for (var i = 0; i < rgb.Devices.Count; i++)
+                {
+                    var dev = rgb.Devices[i];
+                    if (dev.Id != frame.Id) continue;
+                    frame.X = dev.CanvasX; frame.Y = dev.CanvasY; frame.W = dev.CanvasW; frame.H = dev.CanvasH;
+                    break;
+                }
             }
         }
         return rgb;
@@ -434,14 +451,63 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     internal static void ApplyDefaultLayouts(List<LightingDevice> devices, NexusSettings settings)
     {
         var layouts = settings.Lighting.DeviceLayouts;
-        var total = devices.Count;
-        for (var i = 0; i < total; i++)
+        // One slot per device, except that all zones of one Flex fan share the fan's slot (the fan lands
+        // on the canvas as one block, its LEDs sit in it by position). With no Flex device this is the
+        // plain one-slot-per-device grid.
+        var slotOf = new int[devices.Count];
+        var flexSlots = new Dictionary<string, int>(StringComparer.Ordinal);
+        var total = 0;
+        for (var i = 0; i < devices.Count; i++)
+        {
+            var fan = FlexFanKey(devices[i].Id);
+            if (fan is not null && flexSlots.TryGetValue(fan, out var shared))
+            {
+                slotOf[i] = shared;
+                continue;
+            }
+            slotOf[i] = total;
+            if (fan is not null)
+            {
+                flexSlots[fan] = total;
+            }
+            total++;
+        }
+        for (var i = 0; i < devices.Count; i++)
         {
             var dev = devices[i];
             if (layouts.ContainsKey(dev.Id)) continue;
-            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(i, total);
+            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(slotOf[i], total);
             dev.CanvasX = x; dev.CanvasY = y; dev.CanvasW = w; dev.CanvasH = h;
         }
+    }
+
+    /// <summary>"lianli-flex:{MAC}" for a Flex zone id (the zones of one fan share it), else null.</summary>
+    internal static string? FlexFanKey(string id)
+    {
+        if (!IsFlexId(id))
+        {
+            return null;
+        }
+        var second = id.IndexOf(':', "lianli-flex:".Length);
+        return second < 0 ? id : id[..second];
+    }
+
+    /// <summary>
+    /// The grid rect of every Flex zone without a saved layout, from one listing that does not touch the
+    /// engine's frames (the Flex provider asks while it builds them).
+    /// </summary>
+    private IReadOnlyDictionary<string, (float x, float y, float w, float h)> FlexDefaultRects()
+    {
+        var saved = _store.Load().Lighting.DeviceLayouts;
+        var rects = new Dictionary<string, (float, float, float, float)>(StringComparer.Ordinal);
+        foreach (var device in Listing(mirrorIntoEngine: false).Devices)
+        {
+            if (IsFlexId(device.Id) && !saved.ContainsKey(device.Id))
+            {
+                rects[device.Id] = (device.CanvasX, device.CanvasY, device.CanvasW, device.CanvasH);
+            }
+        }
+        return rects;
     }
 
     public void SetDisabled(IReadOnlyList<string> ids)
@@ -458,6 +524,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         var ibpIds        = new List<string>(ids.Count);
         var lianLiIds     = new List<string>(ids.Count);
         var lianLiWirelessIds = new List<string>(ids.Count);
+        var flexIds = new List<string>(ids.Count);
         var corsairIds    = new List<string>(ids.Count);
         var strimerIds    = new List<string>(ids.Count);
         var galahad2Ids   = new List<string>(ids.Count);
@@ -479,6 +546,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             else if (IsIbpId(id))       ibpIds.Add(id);
             else if (IsLianLiId(id))    lianLiIds.Add(id);
             else if (IsLianLiWirelessId(id)) lianLiWirelessIds.Add(id);
+            else if (IsFlexId(id))      flexIds.Add(id);
             else if (IsCorsairId(id))   corsairIds.Add(id);
             else if (IsStrimerId(id))   strimerIds.Add(id);
             else if (IsGalahad2Id(id))  galahad2Ids.Add(id);
@@ -501,6 +569,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         if (ibpIds.Count > 0)        _ibp.SetDisabled(ibpIds);
         if (lianLiIds.Count > 0)     _lianLi.SetDisabled(lianLiIds);
         if (lianLiWirelessIds.Count > 0) _lianLiWireless.SetDisabled(lianLiWirelessIds);
+        if (flexIds.Count > 0)       _flex.SetDisabled(flexIds);
         if (corsairIds.Count > 0)    _corsair.SetDisabled(corsairIds);
         if (strimerIds.Count > 0)    _strimer.SetDisabled(strimerIds);
         if (galahad2Ids.Count > 0)   _galahad2.SetDisabled(galahad2Ids);
@@ -530,6 +599,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         : IsIbpId(id)        ? _ibp
         : IsLianLiId(id)     ? _lianLi
         : IsLianLiWirelessId(id) ? _lianLiWireless
+        : IsFlexId(id)       ? _flex
         : IsCorsairId(id)    ? _corsair
         : IsStrimerId(id)    ? _strimer
         : IsGalahad2Id(id)   ? _galahad2
@@ -572,6 +642,9 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
 
     private static bool IsLianLiWirelessId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith("lianli-wireless:", StringComparison.Ordinal);
+
+    internal static bool IsFlexId(string id) =>
+        !string.IsNullOrEmpty(id) && id.StartsWith("lianli-flex:", StringComparison.Ordinal);
 
     private static bool IsCorsairId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith("corsair:", StringComparison.Ordinal);
