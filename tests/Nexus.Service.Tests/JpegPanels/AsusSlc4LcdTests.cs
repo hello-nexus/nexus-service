@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.JpegPanels;
@@ -118,6 +119,19 @@ public class AsusSlc4LcdTests
         JpegPanelProtocol.FillChunk(report, JpegPanelHeaderStyle.AsRockFramed, 0x5C, new byte[100], 0, 0, frameStamp: 9);
 
         Assert.Equal(0, report[4]);
+    }
+
+    [Fact]
+    public void The_slc4_panel_never_shares_a_record_with_another_cooler_screen()
+    {
+        var model = JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() };
+        using var hub = new JpegPanelHub(model);
+        Assert.True(hub.Attach(new RecordingHidDevice { Responder = AllOk }));
+
+        var info = Assert.Single(new Nexus.Service.Panel.Streams.JpegPanelDiscovery(hub).Discover());
+
+        Assert.True(info.Profile.MultiInstance);
+        Assert.DoesNotContain(JpegPanelModel.All, m => m.HandlerId != "asus-slc4-lcd" && m.MultiInstance);
     }
 
     [Fact]

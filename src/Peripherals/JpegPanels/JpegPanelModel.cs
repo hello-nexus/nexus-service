@@ -34,6 +34,9 @@ public sealed record JpegPanelModel(
     /// </summary>
     public IJpegPanelHandshake? Handshake { get; init; }
 
+    /// <summary>The panel never shares a Nexus Panel record with another device's screen: cooler LCDs share surfaces, and a shared record would carry another model's layout.</summary>
+    public bool MultiInstance { get; init; }
+
     /// <summary>The panel's backlight is host-settable, so its record carries a brightness.</summary>
     public bool SupportsBrightness => Handshake is IJpegPanelBrightness;
 
@@ -192,7 +195,7 @@ public sealed record JpegPanelModel(
         HeaderStyle: JpegPanelHeaderStyle.AsusFramed,
         Selector: 0x5C,
         Surface: Models.Panel.PanelSurfaces.LcdSquare)
-    { Fps = 22, Handshake = new AsusSlc4LcdHandshake() };
+    { Fps = 22, Handshake = new AsusSlc4LcdHandshake(), MultiInstance = true };
 
     /// <summary>
     /// Wired UNI FAN TL LCD: one HID device per fan screen, so it stays out of <see cref="All"/>
