@@ -155,7 +155,7 @@ public sealed partial class ProfileManager : IDisposable
                 }
                 if (liveLost && ReadProfileFile(_manifest.ActiveProfileId) is { HasPanelsData: true } saved)
                 {
-                    _store.Update(s => PanelProfileData.ApplyToLive(s, saved));
+                    _store.Update(s => PanelProfileData.ApplyToLive(s, saved, restoreScreens: true));
                 }
                 _store.Update(s =>
                 {
@@ -770,6 +770,12 @@ public sealed partial class ProfileManager : IDisposable
         }
     }
 
+    internal void FlushNow()
+    {
+        lock (_lock)
+        { TryFlushActiveProfile(); }
+    }
+
     public void Dispose()
     {
         _flushTimer?.Dispose();
@@ -1018,6 +1024,10 @@ public sealed partial class ProfileManager : IDisposable
     {
         // Read and apply under the lock a switch holds, so the file read is the active profile's when it lands.
         var adopted = false;
+        if (!_store.Load().PanelDevices.TryGetValue(recordId, out var created) || PanelProfileData.IsPhone(created))
+        {
+            return false;
+        }
         lock (_lock)
         {
             var file = ReadProfileFile(_manifest.ActiveProfileId);
@@ -1029,6 +1039,11 @@ public sealed partial class ProfileManager : IDisposable
             {
                 if (s.PanelDevices.TryGetValue(recordId, out var record) && PanelProfileData.IsDefaultLook(record))
                 {
+                    // Saved entries that belong to other live records are not candidates.
+                    foreach (var other in file.PanelDevices.Keys.Where(k => k != recordId && s.PanelDevices.ContainsKey(k)).ToList())
+                    {
+                        file.PanelDevices.Remove(other);
+                    }
                     var only = new NexusSettings { PanelDevices = { [recordId] = record } };
                     PanelProfileData.ApplyToLive(only, file);
                     adopted = !PanelProfileData.IsDefaultLook(record);

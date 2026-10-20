@@ -39,6 +39,8 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
         File.WriteAllText(Path.Combine(_dir, "profile-p2.json"), "{}");
     }
 
+    private static readonly PanelDeviceCapabilities Y70Caps = new() { Surface = PanelSurfaces.Y70, Orientation = "landscape" };
+
     private (JsonConfigStore Store, ProfileManager Pm) Boot()
     {
         var store = new JsonConfigStore(_settingsPath);
@@ -96,7 +98,23 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
         src.PanelDevices["y70-a"] = Y70();
         src.PanelDevices["y70-a"].AccentColor = accent;
         src.Tryx.OverlayColor = overlay;
+        src.Devices.Corsair.LcdSelectedMediaId = "media-" + accent;
+        src.Devices.TlLcdScreens["tl-1"] = new LianLiWirelessScreenSettings { ContentType = "clock", ClockFace = "face-" + accent };
+        src.Devices.LianLiWireless.Screens["ll-1"] = new LianLiWirelessScreenSettings { ContentType = "image", MediaId = "m-" + accent };
+        src.Devices.LianLiWireless.AioScreens["aio-1"] = new LianLiAioScreenSettings { LabelColor = accent };
         return JsonSerializer.Serialize(ProfileSharing.ExtractShareable(src), PersistenceJsonContext.Default.NexusSettings);
+    }
+
+    private NexusSettings ReadFile(string id) =>
+        JsonSerializer.Deserialize(File.ReadAllText(Path.Combine(_dir, $"profile-{id}.json")), PersistenceJsonContext.Default.NexusSettings)!;
+
+    private static void AssertCoolerContent(NexusSettings s, string accent, string overlay)
+    {
+        Assert.Equal(overlay, s.Tryx.OverlayColor);
+        Assert.Equal("media-" + accent, s.Devices.Corsair.LcdSelectedMediaId);
+        Assert.Equal("face-" + accent, s.Devices.TlLcdScreens["tl-1"].ClockFace);
+        Assert.Equal("m-" + accent, s.Devices.LianLiWireless.Screens["ll-1"].MediaId);
+        Assert.Equal(accent, s.Devices.LianLiWireless.AioScreens["aio-1"].LabelColor);
     }
 
     [Fact]
@@ -128,33 +146,29 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
     }
 
     [Fact]
-    public void Lost_settings_json_keeps_profile_files_and_restores_the_active_profiles_cooler_content()
+    public void Lost_settings_json_restores_cooler_content_and_a_flush_keeps_it_in_every_file()
     {
         WriteTwoProfiles();
-        var p1 = FileWithLook("#111111", "#010101");
-        var p2 = FileWithLook("#222222", "#020202");
-        File.WriteAllText(Path.Combine(_dir, "profile-p1.json"), p1);
-        File.WriteAllText(Path.Combine(_dir, "profile-p2.json"), p2);
+        File.WriteAllText(Path.Combine(_dir, "profile-p1.json"), FileWithLook("#111111", "#010101"));
+        File.WriteAllText(Path.Combine(_dir, "profile-p2.json"), FileWithLook("#222222", "#020202"));
         File.WriteAllText(_settingsPath, "{ not json");
 
         var (store, pm) = Boot();
         try
         {
-            var after1 = File.ReadAllText(Path.Combine(_dir, "profile-p1.json"));
-            var after2 = File.ReadAllText(Path.Combine(_dir, "profile-p2.json"));
-            Assert.Contains("#111111", after1);
-            Assert.Contains("#010101", after1);
-            Assert.Contains("#222222", after2);
-            Assert.Contains("#020202", after2);
-            Assert.Equal("#010101", store.Load().Tryx.OverlayColor);
+            AssertCoolerContent(store.Load(), "#111111", "#010101");
+
+            pm.FlushNow();
+
+            AssertCoolerContent(store.Load(), "#111111", "#010101");
+            AssertCoolerContent(ReadFile("p1"), "#111111", "#010101");
+            AssertCoolerContent(ReadFile("p2"), "#111111", "#010101");
         }
         finally { pm.Dispose(); store.Dispose(); }
     }
 
-    private static readonly PanelDeviceCapabilities Y70Caps = new() { Surface = PanelSurfaces.Y70, Orientation = "landscape" };
-
     [Fact]
-    public void Y70_created_after_lost_settings_adopts_the_saved_look_and_a_shared_flush_keeps_it()
+    public void Y70_created_after_lost_settings_adopts_the_saved_look_even_when_a_flush_runs_first()
     {
         WriteTwoProfiles();
         File.WriteAllText(Path.Combine(_dir, "profile-p1.json"), FileWithLook("#111111", "#010101"));
@@ -165,18 +179,36 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
         try
         {
             var registry = new PanelDeviceRegistry(store);
-            registry.RecordCreated += r => pm.AdoptSavedLook(r.Id);
-
             var record = registry.Allocate("Y70", Y70Caps);
-            Assert.Equal("#111111", store.Load().PanelDevices[record.Id].AccentColor);
+            pm.FlushNow();
+            pm.AdoptSavedLook(record.Id);
+            pm.FlushNow();
 
-            pm.SwitchProfile("p2");
-            pm.SwitchProfile("p1");
-
-            Assert.Contains("#111111", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
-            Assert.Contains("#111111", File.ReadAllText(Path.Combine(_dir, "profile-p2.json")));
             Assert.Equal("#111111", store.Load().PanelDevices[record.Id].AccentColor);
+            Assert.Equal("#111111", ReadFile("p1").PanelDevices[record.Id].AccentColor);
+            Assert.Equal("#111111", ReadFile("p2").PanelDevices[record.Id].AccentColor);
             Assert.Single(store.Load().PanelDevices);
+        }
+        finally { pm.Dispose(); store.Dispose(); }
+    }
+
+    [Fact]
+    public void A_second_panel_on_a_single_instance_surface_does_not_clone_the_first_ones_look()
+    {
+        var (store, pm) = Boot();
+        try
+        {
+            var registry = new PanelDeviceRegistry(store);
+            registry.RecordCreated += r => pm.AdoptSavedLook(r.Id);
+            var first = registry.Allocate("Y70", Y70Caps);
+            store.Update(s => s.PanelDevices[first.Id].AccentColor = "#abcdef");
+            pm.FlushNow();
+
+            var second = registry.Allocate("Y70 b", Y70Caps, _ => false);
+
+            Assert.NotEqual(first.Id, second.Id);
+            Assert.True(PanelProfileData.IsDefaultLook(store.Load().PanelDevices[second.Id]));
+            Assert.Equal("#abcdef", store.Load().PanelDevices[first.Id].AccentColor);
         }
         finally { pm.Dispose(); store.Dispose(); }
     }

@@ -96,10 +96,10 @@ public static class PanelProfileData
 
     /// <summary>
     /// Copies panel data from a profile file onto the matching live records. Never creates or removes a record
-    /// or screen, and leaves unmatched panels as they are. A file without the marker (written before the
+    /// or screen (unless <paramref name="restoreScreens"/>, for live settings that lost them), and leaves unmatched panels as they are. A file without the marker (written before the
     /// category existed) changes nothing.
     /// </summary>
-    public static void ApplyToLive(NexusSettings live, NexusSettings file)
+    public static void ApplyToLive(NexusSettings live, NexusSettings file, bool restoreScreens = false)
     {
         if (!file.HasPanelsData)
         {
@@ -113,7 +113,7 @@ public static class PanelProfileData
             // A layout left unset on a streamed strip reseeds the way a personalization reset does.
             dst.Layout ??= PanelLayoutDefaults.StripSeedFor(dst);
         }
-        CopyCoolerContent(file, live, creating: false);
+        CopyCoolerContent(file, live, creating: restoreScreens);
     }
 
     /// <summary>Personalization reset for every live record plus default cooler content; the profile-wide counterpart of <see cref="PanelDeviceRegistry.ResetToDefaults"/>.</summary>
@@ -186,7 +186,7 @@ public static class PanelProfileData
         return JsonSerializer.Serialize(PanelLayoutDefaults.WithStableIds(clone, ""), PersistenceJsonContext.Default.PanelLayoutDto);
     }
 
-    private static bool IsPhone(PanelDeviceRecord r) =>
+    internal static bool IsPhone(PanelDeviceRecord r) =>
         string.Equals(r.Capabilities?.Surface, PanelSurfaces.Phone, StringComparison.Ordinal);
 
     /// <summary>
