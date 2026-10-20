@@ -86,8 +86,8 @@ public sealed partial class ProfileManager : IDisposable
             }
 
             // PrimaryProfileId defaults to the active profile so the
-            // day-one default-Shared category (device, per the
-            // NexusSettings.SharedCategories field initializer) resolves to a
+            // day-one default-Shared categories (device and
+            // panels, per the NexusSettings.SharedCategories field initializer) resolve to a
             // valid source. Repaired on every boot in case the Primary was
             // deleted while the service was off.
             _store.Update(s =>
@@ -127,30 +127,58 @@ public sealed partial class ProfileManager : IDisposable
             // Same one-time seed for the Panels category: profile files written
             // before it existed hold no panel looks, so root's live looks go into
             // each of them and the first switch after upgrade changes nothing.
-            if (!root.PanelsCategorySeeded)
+            // With no live panel records, a file that already carries panel data
+            // (HasPanelsData) is the only copy of the looks (settings.json was lost):
+            // it is never overwritten, and the active profile's saved looks go back
+            // onto the live panels instead.
+            var seededAtBoot = root.PanelsCategorySeeded;
+            var panelsWasShared = root.SharedCategories.Contains(ProfileSharing.Panels);
+            var panelsDefaultApplied = root.PanelsSharedByDefaultApplied;
+            if (!seededAtBoot)
             {
-                // Presets saved before WidgetSize joined them take the record's, so loading one
-                // keeps the size its layout was built for.
+                var liveLost = root.PanelDevices.Count == 0;
                 _store.Update(s => PanelProfileData.BackfillPresetWidgetSize(s));
                 foreach (var p in _manifest.Profiles)
                 {
+                    if (liveLost && ReadProfileFile(p.Id) is { HasPanelsData: true })
+                    {
+                        continue;
+                    }
                     UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, root);
                     if (ReadProfileFile(p.Id) is { } file)
                     {
+                        // Presets saved before WidgetSize joined them take the record's, so loading one
+                        // keeps the size its layout was built for.
                         PanelProfileData.BackfillPresetWidgetSize(file);
                         WriteAtomic(ProfileFilePath(p.Id), JsonSerializer.Serialize(file, PersistenceJsonContext.Default.NexusSettings));
                     }
                 }
-                _store.Update(s => s.PanelsCategorySeeded = true);
+                if (liveLost && ReadProfileFile(_manifest.ActiveProfileId) is { HasPanelsData: true } saved)
+                {
+                    _store.Update(s => PanelProfileData.ApplyToLive(s, saved));
+                }
+                _store.Update(s =>
+                {
+                    PanelProfileData.BackfillPresetWidgetSize(s);
+                    s.PanelsCategorySeeded = true;
+                });
             }
 
             // Panels defaults to Shared like Device. Installs that predate the
             // default (or ran an earlier build of the category) get it added
             // exactly once; the marker keeps a later opt-out from being undone.
-            // Profile files get the live looks so every file holds the shared value.
-            if (!root.PanelsSharedByDefaultApplied)
+            // Files are written before the marker so a crash in between re-runs
+            // the step. When the seed above just ran it already wrote the files.
+            if (!panelsDefaultApplied)
             {
-                var wasShared = root.SharedCategories.Contains(ProfileSharing.Panels);
+                if (seededAtBoot && !panelsWasShared)
+                {
+                    var live = _store.Load();
+                    foreach (var p in _manifest.Profiles)
+                    {
+                        UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, live);
+                    }
+                }
                 _store.Update(s =>
                 {
                     if (!s.SharedCategories.Contains(ProfileSharing.Panels))
@@ -159,14 +187,6 @@ public sealed partial class ProfileManager : IDisposable
                     }
                     s.PanelsSharedByDefaultApplied = true;
                 });
-                if (!wasShared)
-                {
-                    var live = _store.Load();
-                    foreach (var p in _manifest.Profiles)
-                    {
-                        UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, live);
-                    }
-                }
             }
 
             // Every settings mutation marks the active profile dirty so the

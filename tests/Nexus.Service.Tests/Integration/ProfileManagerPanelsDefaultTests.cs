@@ -1,5 +1,7 @@
 using Nexus.Service.Models.Panel;
+using System.Text.Json;
 using Nexus.Service.Persistence;
+using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Tests.Integration;
 
@@ -83,6 +85,67 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
             Assert.True(s.PanelsSharedByDefaultApplied);
             Assert.Contains("#123456", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
             Assert.Contains("#123456", File.ReadAllText(Path.Combine(_dir, "profile-p2.json")));
+        }
+        finally { pm.Dispose(); store.Dispose(); }
+    }
+
+    private static string FileWithLook(string accent, string overlay)
+    {
+        var src = new NexusSettings();
+        src.PanelDevices["y70-a"] = Y70();
+        src.PanelDevices["y70-a"].AccentColor = accent;
+        src.Tryx.OverlayColor = overlay;
+        return JsonSerializer.Serialize(ProfileSharing.ExtractShareable(src), PersistenceJsonContext.Default.NexusSettings);
+    }
+
+    [Fact]
+    public void Upgrade_with_divergent_looks_makes_the_active_profiles_look_win_everywhere()
+    {
+        WriteTwoProfiles();
+        File.WriteAllText(Path.Combine(_dir, "profile-p1.json"), FileWithLook("#111111", "#010101"));
+        File.WriteAllText(Path.Combine(_dir, "profile-p2.json"), FileWithLook("#222222", "#020202"));
+        File.WriteAllText(_settingsPath, $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "sharedCategories": ["device"],
+          "deviceCategorySeeded": true,
+          "panelsCategorySeeded": true,
+          "panelDevices": { "y70-a": { "id": "y70-a", "displayName": "Y70", "accentColor": "#111111", "capabilities": { "surface": "y70", "orientation": "landscape" } } }
+        }
+        """);
+
+        var (store, pm) = Boot();
+        try
+        {
+            Assert.Contains("#111111", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
+            var p2 = File.ReadAllText(Path.Combine(_dir, "profile-p2.json"));
+            Assert.Contains("#111111", p2);
+            Assert.DoesNotContain("#222222", p2);
+            Assert.Equal("#111111", store.Load().PanelDevices["y70-a"].AccentColor);
+        }
+        finally { pm.Dispose(); store.Dispose(); }
+    }
+
+    [Fact]
+    public void Lost_settings_json_keeps_profile_files_and_restores_the_active_profiles_cooler_content()
+    {
+        WriteTwoProfiles();
+        var p1 = FileWithLook("#111111", "#010101");
+        var p2 = FileWithLook("#222222", "#020202");
+        File.WriteAllText(Path.Combine(_dir, "profile-p1.json"), p1);
+        File.WriteAllText(Path.Combine(_dir, "profile-p2.json"), p2);
+        File.WriteAllText(_settingsPath, "{ not json");
+
+        var (store, pm) = Boot();
+        try
+        {
+            var after1 = File.ReadAllText(Path.Combine(_dir, "profile-p1.json"));
+            var after2 = File.ReadAllText(Path.Combine(_dir, "profile-p2.json"));
+            Assert.Contains("#111111", after1);
+            Assert.Contains("#010101", after1);
+            Assert.Contains("#222222", after2);
+            Assert.Contains("#020202", after2);
+            Assert.Equal("#010101", store.Load().Tryx.OverlayColor);
         }
         finally { pm.Dispose(); store.Dispose(); }
     }
