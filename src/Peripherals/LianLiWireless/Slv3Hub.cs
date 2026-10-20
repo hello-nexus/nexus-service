@@ -79,7 +79,23 @@ public sealed class Slv3Hub : IDisposable
     internal const string WiredOwnedError = "connected by USB";
 
     /// <summary>A wired fan that is being released from the radio: the only thing reconcile does for it.</summary>
-    private bool IsReleasingLocked(string key) => _intents.TryGetValue(key, out var intent) && intent.Unbinding;
+    private bool IsReleasingLocked(string key)
+    {
+        if (!_intents.TryGetValue(key, out var intent) || !intent.Unbinding)
+        {
+            return false;
+        }
+        if (intent.Sends >= WiredReleaseMaxSends)
+        {
+            // A wired fan that never lets go is left alone; a later Unbind starts a fresh attempt.
+            _intents.Remove(key);
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>Polls a release of a wired fan is repeated before it is given up.</summary>
+    internal const int WiredReleaseMaxSends = 20;
 
     private bool IsWiredOwned(string macHex) => !string.IsNullOrEmpty(macHex) && WiredOwned?.Invoke(macHex) == true;
 

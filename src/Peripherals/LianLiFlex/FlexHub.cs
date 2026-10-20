@@ -170,6 +170,10 @@ public sealed class FlexHub : IDisposable
             {
                 if (link?.Info is { } info && !_links.ContainsKey(info.Mac))
                 {
+                    if (_wantedDuty.TryGetValue(info.Mac.ToUpperInvariant(), out var wanted))
+                    {
+                        link.DesiredDuty = wanted;
+                    }
                     _links[info.Mac] = link;
                     changed = true;
                 }
@@ -433,6 +437,8 @@ public sealed class FlexHub : IDisposable
         Volatile.Write(ref _units, units.ToArray());
     }
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _wantedDuty = new(StringComparer.Ordinal);
+
     private FlexUnitLink? LinkOf(string mac)
     {
         lock (_linksLock)
@@ -444,9 +450,12 @@ public sealed class FlexHub : IDisposable
     /// <summary>Wanted duty percent, or null to follow the motherboard header; written when it changes.</summary>
     public void SetDuty(string mac, int? percent)
     {
+        var wanted = percent ?? -1;
+        // Kept per receiver, not per connection, so a replug or a reopen brings the fan back to it.
+        _wantedDuty[mac.ToUpperInvariant()] = wanted;
         if (LinkOf(mac) is { } link)
         {
-            link.DesiredDuty = percent ?? -1;
+            link.DesiredDuty = wanted;
         }
     }
 

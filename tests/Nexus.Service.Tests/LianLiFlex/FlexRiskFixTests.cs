@@ -181,4 +181,38 @@ public class FlexRiskFixTests
         hub.Refresh();
         Assert.Single(hub.Units);
     }
+
+    [Fact]
+    public void A_wanted_duty_survives_a_replug_and_one_set_while_the_receiver_is_away_is_kept()
+    {
+        var (hub, tx, clock, discovery) = Hub();
+        hub.SetDuty(Mac, 40);
+        hub.Tick();
+        Assert.Single(tx.Of(FlexProtocol.CmdSetPwm));
+
+        discovery.Ports.Clear();
+        hub.Refresh();
+        Assert.Empty(hub.Units);
+        hub.SetDuty(Mac, 60);
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        hub.Refresh();
+        hub.Tick();
+
+        var last = tx.Of(FlexProtocol.CmdSetPwm).Last();
+        Assert.Equal(FlexProtocol.BuildSetPwm(FlexProtocol.EncodeDuty(FlexFamily.TlFlex, 60)), last);
+    }
+
+    [Fact]
+    public void A_duty_set_before_the_receiver_first_appears_is_applied_when_it_does()
+    {
+        var discovery = new FakeFlexDiscovery();
+        var tx = new FakeFlexTransport(Mac);
+        var hub = new FlexHub(discovery, _ => tx, new FlexClock().Func, () => new DateTime(2026, 10, 19, 12, 0, 0), _ => { });
+        hub.Refresh();
+        hub.SetDuty(Mac, 55);
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        hub.Refresh();
+        hub.Tick();
+        Assert.Equal(FlexProtocol.BuildSetPwm(FlexProtocol.EncodeDuty(FlexFamily.TlFlex, 55)), tx.Of(FlexProtocol.CmdSetPwm).Single());
+    }
 }

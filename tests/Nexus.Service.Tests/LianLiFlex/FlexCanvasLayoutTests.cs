@@ -1,4 +1,7 @@
 using System.Linq;
+using Microsoft.Extensions.DependencyInjection;
+using Nexus.Service.DependencyInjection;
+using Nexus.Service.Devices;
 using Nexus.Service.Lighting;
 using Nexus.Service.Models.Devices;
 using Nexus.Service.Peripherals.LianLiFlex;
@@ -69,28 +72,51 @@ public class FlexCanvasLayoutTests
     }
 
     [Fact]
-    public void The_canvas_grid_gives_every_zone_of_one_fan_the_fans_slot_and_leaves_saved_layouts_alone()
+    public void The_canvas_grid_leaves_the_Flex_zones_to_their_provider_and_places_the_rest_without_them()
     {
         var devices = new System.Collections.Generic.List<LightingDevice>
         {
             new() { Id = "openrgb-l-a" },
-            new() { Id = "lianli-flex:" + Tl + ":up" },
-            new() { Id = "lianli-flex:" + Tl + ":down" },
-            new() { Id = "lianli-flex:" + Inf + ":center" },
-            new() { Id = "lianli-flex:" + Inf + ":inner" },
-            new() { Id = "lianli-flex:" + Inf + ":outer" },
+            new() { Id = "lianli-flex:" + Tl + ":up", CanvasX = 11, CanvasY = 22, CanvasW = 33, CanvasH = 44 },
+            new() { Id = "openrgb-l-b" },
         };
+        var alone = new System.Collections.Generic.List<LightingDevice> { new() { Id = "openrgb-l-a" }, new() { Id = "openrgb-l-b" } };
         var settings = new NexusSettings();
-        settings.Lighting.DeviceLayouts["lianli-flex:" + Inf + ":outer"] = new DeviceLayout { X = 5, Y = 6, W = 7, H = 8 };
-        var before = devices[4].CanvasX;
 
         CompositeLightingDeviceProvider.ApplyDefaultLayouts(devices, settings);
+        CompositeLightingDeviceProvider.ApplyDefaultLayouts(alone, settings);
 
-        Rect(devices[1]).Should_Equal(Rect(devices[2]));
-        Rect(devices[3]).Should_Equal(Rect(devices[4]));
-        Assert.NotEqual(Rect(devices[1]), Rect(devices[3]));
-        Assert.NotEqual(Rect(devices[0]), Rect(devices[1]));
-        Assert.Equal(before, devices[5].CanvasX);
+        Assert.Equal((11f, 22f, 33f, 44f), Rect(devices[1]));
+        Assert.Equal(Rect(alone[0]), Rect(devices[0]));
+        Assert.Equal(Rect(alone[1]), Rect(devices[2]));
+    }
+
+    [Fact]
+    public void The_composite_cards_and_the_Flex_frames_always_have_the_same_rects()
+    {
+        var discovery = new FakeFlexDiscovery();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        var hub = new FlexHub(discovery, _ => new FakeFlexTransport(Tl), new FlexClock().Func, null, _ => { });
+        hub.Refresh();
+        var services = new ServiceCollection();
+        services.AddNexusCore().AddNexusSensors().AddNexusCooling().AddNexusBenchmarks().AddNexusLighting().AddNexusDevices()
+            .AddNexusPeripherals().AddNexusActivity().AddNexusNetwork().AddNexusLifecycle().AddNexusWeather()
+            .AddNexusPanel(servicePort: 9400).AddNexusLinuxDBus().AddNexusHelper();
+        services.AddLogging();
+        services.AddHttpClient();
+        services.AddSingleton(hub);
+        var sp = services.BuildServiceProvider();
+
+        var composite = sp.GetRequiredService<ILightingDeviceProvider>();
+        var provider = sp.GetRequiredService<FlexLightingDeviceProvider>();
+        var cards = composite.GetAll().Devices.Where(c => c.Id.StartsWith("lianli-flex:", System.StringComparison.Ordinal)).ToList();
+        var frames = provider.BuildFrames(0);
+        Assert.NotEmpty(cards);
+        foreach (var card in cards)
+        {
+            var frame = frames.Single(f => f.Id == card.Id);
+            Assert.Equal((card.CanvasX, card.CanvasY, card.CanvasW, card.CanvasH), (frame.X, frame.Y, frame.W, frame.H));
+        }
     }
 
     private static (float, float, float, float) Rect(LightingDevice d) => (d.CanvasX, d.CanvasY, d.CanvasW, d.CanvasH);

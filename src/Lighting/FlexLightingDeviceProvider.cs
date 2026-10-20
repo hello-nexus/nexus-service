@@ -410,7 +410,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     }
 
     private const float BlockX = 40f;
-    private const float BlockY = 370f;
+    private const float BlockY = 460f;
     private const float FanSize = 110f;
     private const float BlockGap = 30f;
 
@@ -426,6 +426,14 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
             .ThenBy(u => u.Mac, StringComparer.Ordinal)
             .ToList();
         var blocks = new Dictionary<string, (float, float, float, float)>(StringComparer.OrdinalIgnoreCase);
+        if (settings.MaximizedCanvasDefaults)
+        {
+            foreach (var unit in order)
+            {
+                blocks[unit.Mac] = (0f, 0f, 1000f, 600f);
+            }
+            return blocks;
+        }
         var x = BlockX;
         foreach (var unit in order)
         {
