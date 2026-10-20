@@ -2218,7 +2218,7 @@ public sealed partial class LightingEngine : IDisposable
                 && Pins.TryGet(dev.Id, out var assignment)
                 && assignment.Kind == Nexus.Service.Persistence.DevicePinKinds.Static)
             {
-                // A palette pick is a colour, not an effect: nothing to render,
+                // A palette pick is a color, not an effect: nothing to render,
                 // nothing to sample, no canvas. Paint it and move on.
                 if (Nexus.Service.Lighting.StaticColorHex.TryParse(assignment.Color, out var cr, out var cg, out var cb))
                 {

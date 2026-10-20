@@ -588,8 +588,11 @@ public class KeyReactiveTests
 
         Assert.Same(pendingDone.Task, await Task.WhenAny(pendingDone.Task, Task.Delay(3000)));
         // Pending: the canvas shows through, with the reaction on top.
-        Assert.All(wSeen.Select((p, i) => (p, i)), t => Assert.True(t.p == new Px(0, 255, 0), $"frame {t.i} W was {t.p}"));
-        Assert.All(wSeen, p => Assert.Equal(new Px(0, 255, 0), p));
+        Px[] pending;
+        int pendingRed;
+        lock (gate) { pending = wSeen.ToArray(); pendingRed = qMaxRed; }
+        Assert.InRange(pendingRed, 200, 255);
+        Assert.All(pending, p => Assert.Equal(new Px(0, 255, 0), p));
 
         landed.Set();
         Assert.Same(landedDone.Task, await Task.WhenAny(landedDone.Task, Task.Delay(3000)));
