@@ -42,14 +42,13 @@ internal static class CanvasGridLayout
         }
     }
 
-    /// <param name="reserveBottom">Height kept free along the bottom edge for a band the grid must not touch.</param>
-    public static (float x, float y, float w, float h) Slot(int index, int totalCount, float reserveBottom = 0f)
+    public static (float x, float y, float w, float h) Slot(int index, int totalCount)
     {
         if (totalCount <= 0 || index < 0) return (Pad, Pad, MaxCardW, MaxCardH);
 
         var n = Math.Max(1, totalCount);
         var availW = CanvasW - 2f * Pad;
-        var availH = CanvasH - 2f * Pad - reserveBottom;
+        var availH = CanvasH - 2f * Pad;
         // cols ≈ sqrt(n * aspect) so the grid mirrors the canvas shape.
         var aspect = availW / availH;
         var cols = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(n * aspect)));
@@ -91,7 +90,7 @@ internal static class CanvasGridLayout
         // other way, so `x + cardW > limit` can read false while x still
         // exceeds `limit - cardW` by an ulp.
         if (x > CanvasW - Pad - cardW) x = CanvasW - Pad - cardW;
-        if (y > CanvasH - reserveBottom - Pad - cardH) y = CanvasH - reserveBottom - Pad - cardH;
+        if (y > CanvasH - Pad - cardH) y = CanvasH - Pad - cardH;
         if (x < Pad) x = Pad;
         if (y < Pad) y = Pad;
 

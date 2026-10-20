@@ -83,6 +83,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         _lianLi   = lianLi;
         _lianLiWireless = lianLiWireless;
         _flex = flex;
+        _flex.DefaultRectOf = FlexDefaultRect;
         _corsair  = corsair;
         _strimer  = strimer;
         _galahad2 = galahad2;
@@ -419,7 +420,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         }
 
         // Must run AFTER the CNVS / NP50 / MiniHub merges so newly-added hub devices also pick up a default slot.
-        ApplyDefaultLayouts(rgb.Devices, settings, _flex.BandHeight(settings));
+        ApplyDefaultLayouts(rgb.Devices, settings);
 
         // Mirror into engine frames so running effects sample from the same rectangles. Without this, RgbBridge's
         // existing-frame-wins rule would pin pre-grid coordinates in memory. O(N²), trivial for typical N (<30).
@@ -442,22 +443,61 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     /// persisted devices too so the slot for any one device is stable across calls (resetting one card doesn't
     /// shuffle the others).
     /// </summary>
-    internal static void ApplyDefaultLayouts(List<LightingDevice> devices, NexusSettings settings, float reserveBottom = 0f)
+    internal static void ApplyDefaultLayouts(List<LightingDevice> devices, NexusSettings settings)
     {
         var layouts = settings.Lighting.DeviceLayouts;
-        // The Flex provider places its own fans (one block per fan, in light-sequence order) for both its
-        // cards and its frames, so they never disagree; the grid is for everything else.
-        var total = devices.Count(d => !IsFlexId(d.Id));
-        var slot = 0;
+        // One slot per device, except that all zones of one Flex fan share the fan's slot (the fan lands
+        // on the canvas as one block, its LEDs sit in it by position). With no Flex device this is the
+        // plain one-slot-per-device grid.
+        var slotOf = new int[devices.Count];
+        var flexSlots = new Dictionary<string, int>(StringComparer.Ordinal);
+        var total = 0;
+        for (var i = 0; i < devices.Count; i++)
+        {
+            var fan = FlexFanKey(devices[i].Id);
+            if (fan is not null && flexSlots.TryGetValue(fan, out var shared))
+            {
+                slotOf[i] = shared;
+                continue;
+            }
+            slotOf[i] = total;
+            if (fan is not null)
+            {
+                flexSlots[fan] = total;
+            }
+            total++;
+        }
         for (var i = 0; i < devices.Count; i++)
         {
             var dev = devices[i];
-            if (IsFlexId(dev.Id)) continue;
-            var index = slot++;
             if (layouts.ContainsKey(dev.Id)) continue;
-            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(index, total, reserveBottom);
+            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(slotOf[i], total);
             dev.CanvasX = x; dev.CanvasY = y; dev.CanvasW = w; dev.CanvasH = h;
         }
+    }
+
+    /// <summary>"lianli-flex:{MAC}" for a Flex zone id (the zones of one fan share it), else null.</summary>
+    internal static string? FlexFanKey(string id)
+    {
+        if (!IsFlexId(id))
+        {
+            return null;
+        }
+        var second = id.IndexOf(':', "lianli-flex:".Length);
+        return second < 0 ? id : id[..second];
+    }
+
+    /// <summary>The default rect of a Flex zone without a saved layout, as the grid places it; null for a saved or unknown zone.</summary>
+    private (float x, float y, float w, float h)? FlexDefaultRect(string id)
+    {
+        var devices = GetAll().Devices;
+        var settings = _store.Load();
+        if (settings.Lighting.DeviceLayouts.ContainsKey(id))
+        {
+            return null;
+        }
+        var card = devices.FirstOrDefault(d => d.Id == id);
+        return card is null ? null : (card.CanvasX, card.CanvasY, card.CanvasW, card.CanvasH);
     }
 
     public void SetDisabled(IReadOnlyList<string> ids)

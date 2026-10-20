@@ -162,7 +162,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
             return resp;
         }
         var settings = _store.Load();
-        var blocks = UnitBlocks(settings);
+        var slot = 0;
         // Units playing the motherboard input come last as cards the engine never drives.
         foreach (var playsArgb in new[] { false, true })
         {
@@ -171,7 +171,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
             {
                 foreach (var zone in ZoneResolution.Resolve(structure, settings))
                 {
-                    resp.Devices.Add(BuildCard(structure, zone, BlockOf(blocks, structure), settings, reason));
+                    resp.Devices.Add(BuildCard(structure, zone, DefaultLayout(slot++), settings, reason));
                 }
             }
         }
@@ -294,12 +294,12 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         var layouts = settings.Lighting.DeviceLayouts;
         var frames = new List<DeviceFrame>();
         var idx = startingIndex;
-        var blocks = UnitBlocks(settings);
+        var slot = 0;
         foreach (var structure in BuildStructures())
         {
             foreach (var zone in ZoneResolution.Resolve(structure, settings))
             {
-                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, BlockOf(blocks, structure), layouts, ref idx));
+                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, DefaultRectOf?.Invoke(zone.Id) ?? DefaultLayout(slot++), layouts, ref idx));
             }
         }
         if (_frameCache.Count > frames.Count)
@@ -409,68 +409,24 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         return structure;
     }
 
-    private const float BlockX = 40f;
-    private const float FanSize = 110f;
-    private const float BlockGap = 30f;
-    private const float RowGap = 10f;
-    private const float CanvasWidth = 1000f;
-    private const float CanvasHeight = 600f;
-
     /// <summary>
-    /// Where a unit's zones sit on the canvas when the user has not moved them: every zone of a unit
-    /// shares one block (the fan face, one square per fan), and the blocks follow each other left to
-    /// right in light-sequence order, wrapping to a new row at the canvas edge. The zones' own LED
-    /// positions place them inside the block.
+    /// The composite provider's default rect for a zone that has no saved layout, so the frames this
+    /// provider contributes sit where its cards are placed; set by the composite.
     /// </summary>
-    internal Dictionary<string, (float x, float y, float w, float h)> UnitBlocks(NexusSettings settings) => Layout(settings).Blocks;
+    internal Func<string, (float x, float y, float w, float h)?>? DefaultRectOf { get; set; }
 
-    /// <summary>Height of the band along the bottom of the canvas the Flex fans take; the default grid keeps out of it.</summary>
-    internal float BandHeight(NexusSettings settings) => Layout(settings).Band;
-
-    private (Dictionary<string, (float x, float y, float w, float h)> Blocks, float Band) Layout(NexusSettings settings)
+    /// <summary>4-col, 2-row placeholder grid, like the other first-party providers; the composite provider places the zones for real.</summary>
+    internal static (float x, float y, float w, float h) DefaultLayout(int slot)
     {
-        var order = _hub.Units.Where(u => u.Controllable)
-            .OrderBy(u => settings.Devices.FlexUnits.TryGetValue(u.Mac, out var look) ? look.SortIndex : 0)
-            .ThenBy(u => u.Mac, StringComparer.Ordinal)
-            .ToList();
-        var blocks = new Dictionary<string, (float, float, float, float)>(StringComparer.OrdinalIgnoreCase);
-        if (settings.MaximizedCanvasDefaults)
-        {
-            foreach (var unit in order)
-            {
-                blocks[unit.Mac] = (0f, 0f, CanvasWidth, CanvasHeight);
-            }
-            return (blocks, 0f);
-        }
-        var usable = CanvasWidth - (2f * BlockX);
-        var placed = new List<(string Mac, float X, int Row, float W)>();
-        var x = BlockX;
-        var row = 0;
-        foreach (var unit in order)
-        {
-            var width = Math.Min(FanSize * Math.Max(1, unit.Fans), usable);
-            if (x > BlockX && x + width > BlockX + usable)
-            {
-                x = BlockX;
-                row++;
-            }
-            placed.Add((unit.Mac, x, row, width));
-            x += width + BlockGap;
-        }
-        if (placed.Count == 0)
-        {
-            return (blocks, 0f);
-        }
-        var band = ((row + 1) * (FanSize + RowGap)) + RowGap;
-        var top = CanvasHeight - band;
-        foreach (var (mac, bx, brow, bw) in placed)
-        {
-            blocks[mac] = (bx, top + RowGap + (brow * (FanSize + RowGap)), bw, FanSize);
-        }
-        return (blocks, band);
+        const float BaseX = 40f;
+        const float Y = 370f;
+        const float W = 120f;
+        const float H = 105f;
+        const float Gap = 140f;
+        const int Cols = 4;
+        const int Rows = 2;
+        const float RowGap = 105f;
+        var s = ((slot % (Cols * Rows)) + (Cols * Rows)) % (Cols * Rows);
+        return (BaseX + ((s % Cols) * Gap), Y + ((s / Cols) * RowGap), W, H);
     }
-
-    private static (float x, float y, float w, float h) BlockOf(
-        Dictionary<string, (float x, float y, float w, float h)> blocks, DeviceStructure structure) =>
-        blocks.TryGetValue(MacFromDeviceId(structure.DeviceId), out var block) ? block : (BlockX, CanvasHeight - FanSize - RowGap, FanSize, FanSize);
 }
