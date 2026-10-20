@@ -1546,7 +1546,7 @@ public sealed class RgbBridge : IDisposable
             _contributorLayouts.Prune(liveIds);
             _engine.UpdateDevices(frames);
 
-            // The LED bit counts: /devices/lighting-devices/all hides a 0-LED device until its LEDs arrive.
+            // The LED bit counts: a 0-LED device shows as an unavailable card until its LEDs arrive.
             var setKeys = new string[frames.Length];
             for (var i = 0; i < frames.Length; i++)
             {
