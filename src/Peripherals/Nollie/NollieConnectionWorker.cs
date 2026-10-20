@@ -125,9 +125,9 @@ public sealed class NollieConnectionWorker : BackgroundService
         if (!_gate.IsEnabled(HandlerId))
         {
             _settledBus = null;
-            if (_hub.IsConnected)
+            if (_hub.Controllers.Any(c => !IsSimulated(c)))
             {
-                ReleaseAll();
+                ReleaseAll(keepSimulated: true);
                 ServiceLog.Info("[nollie] released (Nexus Control off)");
                 _lighting.OnHubStateUpdated();
             }
@@ -180,11 +180,12 @@ public sealed class NollieConnectionWorker : BackgroundService
     /// detached one has no handle, so a frame-writer tick landing in between
     /// cannot take a board back.
     /// </summary>
-    internal void ReleaseAll()
+    internal void ReleaseAll(bool keepSimulated = false)
     {
         var settings = _store.Load();
         foreach (var controller in _hub.Controllers)
         {
+            if (keepSimulated && IsSimulated(controller)) continue;
             bool driven;
             lock (_drivenLock) driven = _driven.Contains(controller.DeviceId);
             if (driven && NollieStandalone.Release(controller, settings))
@@ -192,7 +193,15 @@ public sealed class NollieConnectionWorker : BackgroundService
                 ServiceLog.Info($"[nollie] {controller.Spec.Name} id={controller.DeviceId} handed to firmware");
             }
         }
-        _hub.DetachAll();
+        if (!keepSimulated)
+        {
+            _hub.DetachAll();
+            return;
+        }
+        foreach (var controller in _hub.Controllers)
+        {
+            if (!IsSimulated(controller)) _hub.Detach(controller.DeviceId);
+        }
     }
 
     private void MarkDriven()
@@ -306,19 +315,16 @@ public sealed class NollieConnectionWorker : BackgroundService
         ServiceLog.Info($"[nollie] attached {spec.Name} ({spec.Channels}ch, max {spec.MaxLedsPerChannel} LEDs/ch) sn={(string.IsNullOrEmpty(controller.Serial) ? "-" : controller.Serial)} id={controller.DeviceId}");
     }
 
-    /// <summary>True while the Nexus Control switch for Nollie is on; a simulated board is refused otherwise, like a real one.</summary>
-    public bool ControlEnabled => _gate.IsEnabled(HandlerId);
-
     /// <summary>
     /// Dev tools: attaches a board with nothing behind it, so the cards, the
     /// device page and the standalone settings can be exercised without
     /// hardware. One per model; attaching the same model again is a no-op.
-    /// False for an unknown model or while Nexus Control is off.
+    /// False for an unknown model. Works whatever the Nexus Control gate says.
     /// </summary>
     public bool AttachSimulated(int vendorId, int productId)
     {
         var spec = NollieProtocol.Lookup(vendorId, productId);
-        if (spec is null || !ControlEnabled) return false;
+        if (spec is null) return false;
         var device = new SimulatedNollieDevice(spec);
         if (_hub.HasPath(device.Path)) return true;
         Attach(new NollieController(device, spec));

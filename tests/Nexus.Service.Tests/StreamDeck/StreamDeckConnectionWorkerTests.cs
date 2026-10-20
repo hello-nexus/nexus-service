@@ -423,6 +423,51 @@ public class StreamDeckConnectionWorkerTests
     }
 
     [Fact]
+    public void Tick_GateOff_ReleasesRealDecksButKeepsTheSimulatedOne_AndGateOnDoesNotDuplicate()
+    {
+        var f = NewFixtures(devicePresent: true);
+        AddMiniDevice(f.Hid, "path-1", "SERIAL-1");
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+        var real = worker.FindBySerial("SERIAL-1")!;
+        Assert.Equal(2, worker.Surfaces.Count);
+
+        f.Gate.SetEnabled("streamdeck", false);
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Null(worker.FindBySerial("SERIAL-1"));
+        Assert.False(real.IsConnected);
+        Assert.True(simulated.IsConnected);
+        Assert.Same(simulated, worker.FindBySerial("sim-0001"));
+        Assert.Single(worker.Surfaces);
+
+        f.Gate.SetEnabled("streamdeck", true);
+        worker.Tick();
+
+        Assert.Equal(2, worker.Surfaces.Count);
+        Assert.Single(worker.Surfaces, kv => kv.Value.Serial == "sim-0001");
+    }
+
+    [Fact]
+    public void SetSimulatedModel_WhileGateIsOff_SurvivesTicksAndClearStillRemovesIt()
+    {
+        var f = NewFixtures(devicePresent: false);
+        f.Gate.SetEnabled("streamdeck", false);
+        using var worker = NewWorker(f);
+
+        Assert.True(worker.SetSimulatedModel(0x0063));
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Single(worker.Surfaces);
+
+        worker.ClearSimulatedModel();
+        Assert.Empty(worker.Surfaces);
+    }
+
+    [Fact]
     public async Task SimulatedPress_OnRootActionSlot_DispatchesToTheExecutor()
     {
         var f = NewFixtures(devicePresent: false);

@@ -624,7 +624,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         {
             if (!_gate.IsEnabled("streamdeck"))
             {
-                DisconnectAll();
+                DisconnectAll(keepSimulated: true);
                 wantFps = false;
             }
             else
@@ -3221,43 +3221,82 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
             Data = Convert.ToBase64String(jpeg),
         });
 
-    private void DisconnectAll()
+    private void DisconnectAll(bool keepSimulated = false)
     {
         lock (_lock)
         {
-            var hadSurfaces = _surfaces.Count > 0;
+            var realSerials = new List<string>();
             foreach (var (key, surface) in _surfaces)
             {
                 if (key == SimulatedKey)
                 {
                     continue;
                 }
+                realSerials.Add(surface.Serial);
                 RestoreBrightnessAndResetBeforeDisconnect(surface);
                 StopInputReader(key);
                 surface.Dispose();
             }
-            _surfaces.Clear();
-            _lastKeyStates.Clear();
-            _folderPathsBySerial.Clear();
-            _lastInputAt.Clear();
-            _asleep.Clear();
-            _sleptForLock.Clear();
-            _brightnessRamps.Clear();
-            _anyRampActive = false;
-            _currentPageBySerial.Clear();
-            _heldKeysBySerial.Clear();
-            ClearDialStatesLocked();
-            _activeHolds.Clear();
-            _anyHoldActive = false;
-            _monitoringHistory.Clear();
-            _monitoringLastHash.Clear();
-            _monitoringLastPushedBytes.Clear();
-            _tileBroadcastHash.Clear();
+            var hadSurfaces = keepSimulated ? realSerials.Count > 0 : _surfaces.Count > 0;
+            if (keepSimulated)
+            {
+                // A kept simulated deck keeps its surface and serial-keyed state; only real decks leave.
+                foreach (var key in _surfaces.Keys.Where(k => k != SimulatedKey).ToList())
+                {
+                    _surfaces.Remove(key);
+                    _lastKeyStates.Remove(key);
+                }
+                foreach (var serial in realSerials)
+                {
+                    ForgetSerialLocked(serial);
+                }
+            }
+            else
+            {
+                _surfaces.Clear();
+                _lastKeyStates.Clear();
+                _folderPathsBySerial.Clear();
+                _lastInputAt.Clear();
+                _asleep.Clear();
+                _sleptForLock.Clear();
+                _brightnessRamps.Clear();
+                _anyRampActive = false;
+                _currentPageBySerial.Clear();
+                _heldKeysBySerial.Clear();
+                ClearDialStatesLocked();
+                _activeHolds.Clear();
+                _anyHoldActive = false;
+                _monitoringHistory.Clear();
+                _monitoringLastHash.Clear();
+                _monitoringLastPushedBytes.Clear();
+                _tileBroadcastHash.Clear();
+            }
             if (hadSurfaces)
             {
                 BroadcastDecksChanged(null);
             }
         }
+    }
+
+    /// <summary>Drops one deck's serial-keyed state, including the "{serial}:" prefixed monitoring and tile caches. Caller holds _lock.</summary>
+    private void ForgetSerialLocked(string serial)
+    {
+        _folderPathsBySerial.Remove(serial);
+        _lastInputAt.Remove(serial);
+        _asleep.Remove(serial);
+        _sleptForLock.Remove(serial);
+        _brightnessRamps.Remove(serial);
+        _anyRampActive = _brightnessRamps.Count > 0;
+        _currentPageBySerial.Remove(serial);
+        _heldKeysBySerial.Remove(serial);
+        RemoveDialStateForSerial(serial);
+        _activeHolds.Remove(serial);
+        _anyHoldActive = _activeHolds.Count > 0;
+        var prefix = serial + ":";
+        foreach (var k in _monitoringHistory.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList()) { _monitoringHistory.Remove(k); }
+        foreach (var k in _monitoringLastHash.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList()) { _monitoringLastHash.Remove(k); }
+        foreach (var k in _monitoringLastPushedBytes.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList()) { _monitoringLastPushedBytes.Remove(k); }
+        foreach (var k in _tileBroadcastHash.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList()) { _tileBroadcastHash.Remove(k); }
     }
 
     /// <summary>Never a literal 0% - the deck may be blanked at runtime brightness 0 by ApplySleepAfterIdle even though its persisted setting is not.</summary>
