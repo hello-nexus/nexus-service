@@ -636,26 +636,75 @@ public class KeebStreamBrightnessTests
     }
 
     [Fact]
-    public void The_slider_reaches_the_device_once_the_stream_has_ended()
+    public async Task The_slider_and_the_end_of_a_stream_racing_always_leave_the_new_level_on_the_device()
     {
         using var rig = new Rig(level: 100, global: 0.8f);
+        var provider = new Nexus.Service.Peripherals.Keeb.RealKeebProvider(rig.Store, rig.Hub, rig.Applier);
+        for (var i = 0; i < 25; i++)
+        {
+            var level = 20 + i;
+            rig.Applier.SuppressFirmwareAnimation();
+            var slider = Task.Run(() => provider.SetFirmwareLighting(new Nexus.Service.Models.Peripherals.Keeb.SetFirmwareLightingBody
+            {
+                AnimationMode = "Static", Speed = "Standard", Direction = "LeftToRight", Brightness = level,
+            }));
+            var end = Task.Run(() => rig.Applier.EndStream());
+            await Task.WhenAll(slider, end).WaitAsync(TimeSpan.FromSeconds(10));
+
+            // Either order must end with the stored level in the device byte: before the end the
+            // slider only stores it and the end writes it; after the end the slider writes it.
+            Assert.Equal(level, rig.Level);
+            Assert.Equal((int)Math.Round(level / 100.0 * 255), rig.Hid.Device.BrightByte);
+        }
+    }
+
+    [Theory]
+    [InlineData(6, 1, 0.86f, 0.91f)]    // a non-multiple poll delta leaves too little credit for a second event
+    [InlineData(8, 2, 0.88f, 0.93f)]    // credit for two events, the third steps
+    public void A_poll_delta_that_is_not_a_multiple_of_a_detent_credits_the_nearest_whole_events(int pollPoints, int credited, float afterPoll, float afterExtra)
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
         rig.StartStream();
         rig.Pump(6);
-        rig.Applier.EndStream();
+        MoveDeviceByte(rig, pollPoints);
+        rig.Pump(6);
+        Assert.Equal(afterPoll, rig.Global, 2);
 
-        var provider = new Nexus.Service.Peripherals.Keeb.RealKeebProvider(rig.Store, rig.Hub, rig.Applier);
-        provider.SetFirmwareLighting(new Nexus.Service.Models.Peripherals.Keeb.SetFirmwareLightingBody
-        {
-            AnimationMode = "Static", Speed = "Standard", Direction = "LeftToRight", Brightness = 30,
-        });
+        for (var i = 0; i < credited; i++) rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        Assert.Equal(afterPoll, rig.Global, 2);
 
-        Assert.Equal((int)Math.Round(0.30 * 255), rig.Hid.Device.BrightByte);
-        Assert.Equal(0.8f, rig.Global, 3);
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        Assert.Equal(afterExtra, rig.Global, 2);
     }
 
     [Fact]
-    public void The_migration_target_is_the_install_default()
+    public void An_event_in_the_opposite_direction_does_not_claim_the_credit()
     {
-        Assert.Equal(KeebBrightnessMigration.NewDefault, Nexus.Service.Defaults.InstallDefaults.Keeb.FirmwareLighting.Brightness);
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);
+        MoveDeviceByte(rig, +5);
+        rig.Pump(6);
+        Assert.Equal(0.85f, rig.Global, 2);
+
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: false);
+        Assert.Equal(0.80f, rig.Global, 2);
+    }
+
+    [Fact]
+    public void Credit_expires_so_a_late_event_is_a_new_detent()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        long now = 1_000_000;
+        rig.Applier.Clock = () => now;
+        rig.StartStream();
+        rig.Pump(6);
+        MoveDeviceByte(rig, +5);
+        rig.Pump(6);
+        Assert.Equal(0.85f, rig.Global, 2);
+
+        now += 1500;
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        Assert.Equal(0.90f, rig.Global, 2);
     }
 }

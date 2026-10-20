@@ -359,7 +359,7 @@ public sealed class RealKeebProvider : IKeebProvider
         var brightness = Math.Clamp(body.Brightness, 0, 100);
         // While the frame writer streams (a software effect, or key reactions alone), the
         // firmware animation is suppressed and the writer scales the keeb stream by this
-        // level, so writing the 0x06 page now would only flash the firmware animation
+        // level, so writing the settings page now would only flash the firmware animation
         // through the live stream (and a brightness drag flashes repeatedly). ApplyGated
         // stores it and writes the page only when no stream is running; otherwise the
         // writer writes it when streaming stops.

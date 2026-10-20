@@ -126,12 +126,11 @@ public sealed partial class ProfileManager : IDisposable
             // settings, so the old default would come back after the settings migration.
             // Same marker shape as the seed above; files that arrive later (cloud restore,
             // import) cannot be told apart from a level the user chose and are left alone.
+            // One shot and best effort: a file that cannot be written (a sharing violation,
+            // say) is logged and keeps its old value, and the marker is set regardless, so a
+            // later boot never touches a level the user chose afterwards.
             if (!root.KeebBrightnessProfilesMigrated)
             {
-                // A file that cannot be written (a sharing violation, say) must not abort
-                // Initialize: the marker stays unset so the next boot retries, and files
-                // already moved are no-ops then.
-                var allMigrated = true;
                 foreach (var p in _manifest.Profiles)
                 {
                     try
@@ -140,14 +139,10 @@ public sealed partial class ProfileManager : IDisposable
                     }
                     catch (Exception ex)
                     {
-                        allMigrated = false;
                         Nexus.Service.Platform.ServiceLog.Error($"[profiles] keeb brightness migration failed for {p.Id}: {ex.GetType().Name}: {ex.Message}");
                     }
                 }
-                if (allMigrated)
-                {
-                    _store.Update(s => s.KeebBrightnessProfilesMigrated = true);
-                }
+                _store.Update(s => s.KeebBrightnessProfilesMigrated = true);
             }
 
             // Every settings mutation marks the active profile dirty so the

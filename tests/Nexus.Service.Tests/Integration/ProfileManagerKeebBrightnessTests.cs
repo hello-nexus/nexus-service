@@ -121,13 +121,14 @@ public class ProfileManagerKeebBrightnessTests : IDisposable
     }
 
     [Fact]
-    public void A_profile_file_that_cannot_be_written_does_not_abort_Initialize_and_leaves_the_marker_unset()
+    public void A_profile_file_that_cannot_be_written_is_skipped_and_the_migration_is_still_one_shot()
     {
         WriteProfiles(80, 80);
         File.WriteAllText(_settingsPath,
             """{ "schemaVersion": 25, "deviceCategorySeeded": true }""");
         // A directory where the atomic write's temp file goes makes p2's write throw.
-        Directory.CreateDirectory(Path.Combine(_dir, "profile-p2.json.tmp"));
+        var obstacle = Path.Combine(_dir, "profile-p2.json.tmp");
+        Directory.CreateDirectory(obstacle);
 
         var store = new JsonConfigStore(_settingsPath);
         var pm = new ProfileManager(store);
@@ -137,17 +138,24 @@ public class ProfileManagerKeebBrightnessTests : IDisposable
 
             Assert.Equal(100, BrightnessIn(Path.Combine(_dir, "profile-p1.json")));
             Assert.Equal(80, BrightnessIn(Path.Combine(_dir, "profile-p2.json")));
-            Assert.False(store.Load().KeebBrightnessProfilesMigrated);
-
-            // The next boot retries: p1 is already done, p2 now writes.
-            Directory.Delete(Path.Combine(_dir, "profile-p2.json.tmp"));
-            pm.Initialize();
-            Assert.Equal(100, BrightnessIn(Path.Combine(_dir, "profile-p2.json")));
             Assert.True(store.Load().KeebBrightnessProfilesMigrated);
         }
         finally
         {
             pm.Dispose();
+        }
+
+        // A later boot touches nothing: p2 keeps its value even once it could be written.
+        Directory.Delete(obstacle);
+        var second = new ProfileManager(store);
+        try
+        {
+            second.Initialize();
+            Assert.Equal(80, BrightnessIn(Path.Combine(_dir, "profile-p2.json")));
+        }
+        finally
+        {
+            second.Dispose();
             store.Dispose();
         }
     }

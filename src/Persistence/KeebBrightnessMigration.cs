@@ -2,7 +2,7 @@ namespace Nexus.Service.Persistence;
 
 /// <summary>
 /// The keeb firmware brightness default changed and the old one was always persisted, so a stored
-/// old-default level moves to the new default once: in settings.json (schema v25) and in each local
+/// old-default level moves to the new default once: in settings.json and in each local
 /// profile file (<see cref="ProfileManager"/>). A level chosen afterwards is never touched.
 /// </summary>
 public static class KeebBrightnessMigration

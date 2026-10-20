@@ -22,7 +22,8 @@ namespace Nexus.Service.Peripherals.Hyte.Keeb;
 /// FirmwareLighting.Brightness is the keeb's own level. With the firmware
 /// animation showing, the knob moves it on the device and
 /// <see cref="SyncFromDevice"/> adopts the byte. While the frame writer streams, it
-/// scales the keeb stream by that level on top of the global master, and the knob changes the global master only (<see cref="HandleEncoderScroll"/>,
+/// scales the keeb stream by that level on top of the global master, and the knob
+/// changes the global master only (<see cref="HandleEncoderScroll"/>,
 /// <see cref="PollKnobToGlobal"/>): the level never flows into global.
 /// </summary>
 public sealed class KeebSettingsApplier
@@ -64,6 +65,7 @@ public sealed class KeebSettingsApplier
     private int _pollCredit;
     private long _pollCreditAtMs;
     private const long PollCreditWindowMs = 1000;
+    internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
     // Set while the frame writer streams (a software effect, or key reactions alone).
     // It is the one signal for "the firmware animation is suppressed and the knob
     // drives global": the provider, the knob handlers and SyncFromDevice all gate on it.
@@ -234,11 +236,11 @@ public sealed class KeebSettingsApplier
             // The firmware reports detents, so from here the byte poll stands down.
             _detentsSeen = true;
             if (!_streaming) return true;
-            // The poll may have read the moved byte just before this first event arrived;
+            // The poll may have read the moved byte just before this event arrived; a poll
+            // that saw several detents leaves credit for the same number of events, and
             // those detents are already in global.
-            // A poll that saw several detents leaves credit for the same number of events.
             var claimed = _pollCredit * step > 0 && Math.Abs(_pollCredit) * 2 >= KnobStepPercent
-                && Environment.TickCount64 - _pollCreditAtMs < PollCreditWindowMs;
+                && Clock() - _pollCreditAtMs < PollCreditWindowMs;
             if (claimed)
             {
                 _pollCredit -= step;
@@ -357,27 +359,26 @@ public sealed class KeebSettingsApplier
                 Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
             });
             _pollCredit = delta;
-            _pollCreditAtMs = Environment.TickCount64;
+            _pollCreditAtMs = Clock();
             changed = true;
         }
         if (changed) PanelTopics.BroadcastLighting(_panel);
     }
 
     /// <summary>
-    /// Mutate the persisted keeb state and (when <paramref name="writeDevice"/>)
-    /// write the full page to the device, as one gated step so the read-back poll
-    /// can't interleave between the store mutate and the byte write. The write is skipped
-    /// while the frame writer streams, decided inside the gate so a stream ending in
-    /// between cannot lose it: the 0x06 page write would flash the firmware animation
-    /// through the live stream, and the frame writer re-writes the page when streaming
-    /// stops anyway.
+    /// Mutate the persisted keeb state and write the full settings page to the device,
+    /// as one gated step so the read-back poll can't interleave between the store mutate
+    /// and the byte write. The write is skipped while the frame writer streams, decided
+    /// inside the gate so a stream ending in between cannot lose it: the page write would
+    /// flash the firmware animation through the live stream, and the frame writer
+    /// re-writes the page when streaming stops anyway.
     /// </summary>
-    public bool ApplyGated(Action<NexusSettings> mutate, bool writeDevice = true)
+    public bool ApplyGated(Action<NexusSettings> mutate)
     {
         lock (_gate)
         {
             _store.Update(mutate);
-            return writeDevice && !_streaming && Apply();
+            return !_streaming && Apply();
         }
     }
 
