@@ -106,7 +106,7 @@ public sealed class DeckImageTranscoderTests : IDisposable
         Assert.Equal("Result too large", error);
     }
 
-    [Fact]
+    [FfmpegFact]
     public async Task UnreadableInputReturnsAnErrorInsteadOfThrowing()
     {
         var src = Path.Combine(_dir, "junk.gif");
@@ -116,6 +116,64 @@ public sealed class DeckImageTranscoderTests : IDisposable
 
         Assert.Null(bytes);
         Assert.NotNull(error);
+    }
+
+    [FfmpegFact]
+    public async Task Gif_KeepsItsTransparency()
+    {
+        var src = Path.Combine(_dir, "alpha.gif");
+        await MediaImporter.RunFfmpeg("-y", "-f", "lavfi", "-i", "color=c=black@0:s=64x64:d=1:r=5,format=rgba,split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=alpha_threshold=128", src);
+
+        var (bytes, error) = await DeckImageTranscoder.RunAsync(src, DeckImageTranscoder.Kind.Gif, null, CancellationToken.None);
+
+        Assert.Null(error);
+        var transparent = false;
+        for (var i = 0; i + 3 < bytes!.Length; i++)
+        {
+            // Graphic Control Extension: the low bit of the packed flags marks a transparent color index.
+            transparent |= bytes[i] == 0x21 && bytes[i + 1] == 0xF9 && bytes[i + 2] == 0x04 && (bytes[i + 3] & 1) == 1;
+        }
+        Assert.True(transparent);
+    }
+
+    [FfmpegFact]
+    public async Task Cancellation_MidTranscodeThrowsReleasesTheSlotAndLeavesNoTempFile()
+    {
+        var noise = Path.Combine(_dir, "noise.mp4");
+        await MediaImporter.RunFfmpeg("-y", "-f", "lavfi", "-i", "nullsrc=s=640x480:d=10:r=30,geq=random(1)*255:128:128", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", noise);
+        var tempDir = Path.Combine(_dir, "tmp");
+        Directory.CreateDirectory(tempDir);
+        using var gate = new SemaphoreSlim(1);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            DeckImageTranscoder.RunAsync(noise, DeckImageTranscoder.Kind.Gif, null, cts.Token, gate: gate, tempDir: tempDir));
+
+        Assert.Equal(1, gate.CurrentCount);
+        Assert.Empty(Directory.GetFiles(tempDir));
+    }
+
+    [Fact]
+    public async Task NoFreeSlotWithinTheWaitReportsBusy()
+    {
+        using var gate = new SemaphoreSlim(0);
+
+        var (bytes, error) = await DeckImageTranscoder.RunAsync(
+            Path.Combine(_dir, "unused.gif"), DeckImageTranscoder.Kind.Gif, null, CancellationToken.None,
+            gate: gate, gateWait: TimeSpan.FromMilliseconds(50));
+
+        Assert.Null(bytes);
+        Assert.Equal(DeckImageTranscoder.BusyMessage, error);
+    }
+
+    [Fact]
+    public void BuildArgs_CapsGifFrameRateOnlyWhenAskedTo()
+    {
+        var capped = string.Join(' ', DeckImageTranscoder.BuildArgs("in.gif", DeckImageTranscoder.Kind.Gif, "0,0,1,1", "out.gif", gifFps: 12));
+        var plain = string.Join(' ', DeckImageTranscoder.BuildArgs("in.gif", DeckImageTranscoder.Kind.Gif, "0,0,1,1", "out.gif"));
+
+        Assert.Contains("fps=12,scale=", capped);
+        Assert.DoesNotContain("fps=", plain);
     }
 
     [Theory]

@@ -37,33 +37,60 @@ public static class DeckImageTranscoder
         _ => null,
     };
 
+    /// <summary>Error text when no transcode slot frees up within the wait; routes answer it as a 503.</summary>
+    public const string BusyMessage = "Busy, try again";
+
+    /// <summary>Bounds concurrent crop transcodes, process-wide; separate from the poster gate.</summary>
+    public static readonly SemaphoreSlim Gate = new(2);
+
+    private static readonly TimeSpan GateWait = TimeSpan.FromSeconds(10);
+
+    /// <summary>GIF frame rates tried in order: a source's own rate can blow the size cap, so one lower-rate retry follows.</summary>
+    private static readonly int[] GifFps = [20, 12];
+
     /// <summary>
-    /// Runs the transcode off any caller lock, behind the shared ffmpeg gate and with a timeout.
-    /// Returns the output bytes, or an error message (including an output over the animated cap).
+    /// Runs the transcode off any caller lock, behind the transcode gate and with a timeout.
+    /// Returns the output bytes, or an error message (including an output over the cap or BusyMessage).
+    /// gate, tempDir and gateWait exist so tests can drive busy and cancellation deterministically.
     /// </summary>
-    public static async Task<(byte[]? Bytes, string? Error)> RunAsync(string sourcePath, Kind kind, string? cropRaw, CancellationToken ct, long maxOutputBytes = DeckImageStore.MaxAnimatedBytes)
+    public static async Task<(byte[]? Bytes, string? Error)> RunAsync(
+        string sourcePath, Kind kind, string? cropRaw, CancellationToken ct,
+        long maxOutputBytes = DeckImageStore.MaxAnimatedBytes,
+        SemaphoreSlim? gate = null, string? tempDir = null, TimeSpan? gateWait = null)
     {
-        var output = Path.Combine(Path.GetTempPath(), $"nexus-deck-icon-{Guid.NewGuid():N}{ExtensionFor(kind)}");
+        var output = Path.Combine(tempDir ?? Path.GetTempPath(), $"nexus-deck-icon-{Guid.NewGuid():N}{ExtensionFor(kind)}");
+        gate ??= Gate;
         try
         {
-            await DeckImageStore.FfmpegGate.WaitAsync(ct);
+            if (!await gate.WaitAsync(gateWait ?? GateWait, ct))
+            {
+                return (null, BusyMessage);
+            }
             try
             {
-                await MediaImporter.RunFfmpeg(TimeoutSeconds, ct, BuildArgs(sourcePath, kind, cropRaw, output));
+                var rates = kind == Kind.Gif ? GifFps : [0];
+                var tooLarge = false;
+                foreach (var fps in rates)
+                {
+                    try { File.Delete(output); }
+                    catch { }
+                    await MediaImporter.RunFfmpeg(TimeoutSeconds, ct, BuildArgs(sourcePath, kind, cropRaw, output, fps));
+                    if (!File.Exists(output) || new FileInfo(output).Length == 0)
+                    {
+                        return (null, "Unsupported or unreadable media");
+                    }
+                    tooLarge = new FileInfo(output).Length > maxOutputBytes;
+                    if (!tooLarge)
+                    {
+                        return (await File.ReadAllBytesAsync(output, ct), null);
+                    }
+                }
+                return (null, tooLarge ? "Result too large" : "Unsupported or unreadable media");
             }
             finally
             {
-                DeckImageStore.FfmpegGate.Release();
+                gate.Release();
             }
-            if (!File.Exists(output) || new FileInfo(output).Length == 0)
-            {
-                return (null, "Unsupported or unreadable media");
-            }
-            if (new FileInfo(output).Length > maxOutputBytes)
-            {
-                return (null, "Result too large");
-            }
-            return (await File.ReadAllBytesAsync(output, ct), null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -77,7 +104,7 @@ public static class DeckImageTranscoder
         }
     }
 
-    internal static string[] BuildArgs(string sourcePath, Kind kind, string? cropRaw, string outputPath)
+    internal static string[] BuildArgs(string sourcePath, Kind kind, string? cropRaw, string outputPath, int gifFps = 0)
     {
         var crop = CropRect.TryParse(cropRaw, out var rect) ? rect.ToFfmpegCrop() + "," : "";
         var fit = $"scale='min({MaxEdge},iw)':'min({MaxEdge},ih)':force_original_aspect_ratio=decrease:flags=lanczos";
@@ -85,7 +112,7 @@ public static class DeckImageTranscoder
         switch (kind)
         {
             case Kind.Gif:
-                args.AddRange(["-vf", $"{crop}{fit},split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse=alpha_threshold=128", "-loop", "0", "-t", MaxSeconds.ToString()]);
+                args.AddRange(["-vf", $"{crop}{(gifFps > 0 ? $"fps={gifFps}," : "")}{fit},split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse=alpha_threshold=128", "-loop", "0", "-t", MaxSeconds.ToString()]);
                 break;
             case Kind.Video:
                 args.AddRange(["-vf", $"{crop}{fit},scale=trunc(iw/2)*2:trunc(ih/2)*2", "-r", "30",

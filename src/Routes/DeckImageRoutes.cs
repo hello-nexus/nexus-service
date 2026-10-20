@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using System.Security.Cryptography;
 using System.Linq;
 using Microsoft.Net.Http.Headers;
@@ -56,6 +57,10 @@ public static class DeckImageRoutes
 
             // A crop reshapes an animated or video upload; stills arrive already cropped by the client.
             var cropRaw = form["crop"].ToString();
+            if (cropRaw.Length > 0 && !CropRect.TryParse(cropRaw, out _))
+            {
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "invalid crop" });
+            }
             var sniffed = DeckImageStore.SniffExtension(bytes);
             if (CropRect.TryParse(cropRaw, out _) && sniffed is ".gif" or ".mp4" or ".webm")
             {
@@ -63,12 +68,12 @@ public static class DeckImageRoutes
                 var cropped = await TranscodeBytesAsync(bytes, sniffed!, kind, cropRaw, ct);
                 if (cropped.Bytes is null)
                 {
-                    return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = cropped.Error ?? "Unsupported image format" });
+                    return TranscodeFailure(cropped.Error);
                 }
                 bytes = cropped.Bytes;
             }
 
-            return await StoreResultAsync(store, bytes, ct);
+            return (await StoreResultAsync(store, bytes, ct)).Result;
         }).AllowPanel().DisableAntiforgery();
 
         // A Klipy pick is staged by POST /media/klipy/stage; this crops and transcodes the staged file into a deck icon.
@@ -79,14 +84,35 @@ public static class DeckImageRoutes
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "invalid stage id" });
             }
 
-            string? cropRaw = null;
-            if (req.HasFormContentType)
+            // The body only carries a crop string: refuse anything bigger before it is buffered.
+            if (req.ContentLength is > StageBodyLimit)
             {
-                cropRaw = (await req.ReadFormAsync(ct))["crop"].ToString();
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Request too large" });
             }
-            else if (req.HasJsonContentType())
+            if (req.HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
             {
-                cropRaw = (await req.ReadFromJsonAsync(AppJsonContext.Default.DeckImageStageRequest, ct))?.Crop;
+                limit.MaxRequestBodySize = StageBodyLimit;
+            }
+
+            string? cropRaw = null;
+            try
+            {
+                if (req.HasFormContentType)
+                {
+                    cropRaw = (await req.ReadFormAsync(ct))["crop"].ToString();
+                }
+                else if (req.HasJsonContentType())
+                {
+                    cropRaw = (await req.ReadFromJsonAsync(AppJsonContext.Default.DeckImageStageRequest, ct))?.Crop;
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidDataException or Microsoft.AspNetCore.Http.BadHttpRequestException)
+            {
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Invalid request body" });
+            }
+            if (!string.IsNullOrEmpty(cropRaw) && !CropRect.TryParse(cropRaw, out _))
+            {
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "invalid crop" });
             }
 
             var stagedPath = lib.FindStagedRaw(stageId);
@@ -102,12 +128,15 @@ public static class DeckImageRoutes
             var result = await DeckImageTranscoder.RunAsync(stagedPath, kind, cropRaw, ct);
             if (result.Bytes is null)
             {
-                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = result.Error ?? "Unsupported image format" });
+                return TranscodeFailure(result.Error);
             }
 
             var stored = await StoreResultAsync(store, result.Bytes, ct);
-            lib.DeleteStage(stageId);
-            return stored;
+            if (stored.Ok)
+            {
+                lib.DeleteStage(stageId);
+            }
+            return stored.Result;
         }).AllowPanel().DisableAntiforgery();
 
         app.MapGet("/deck/images/{id}", (string id, HttpContext ctx, DeckImageStore store) =>
@@ -174,12 +203,18 @@ public static class DeckImageRoutes
         }
     }
 
-    private static async Task<IResult> StoreResultAsync(DeckImageStore store, byte[] bytes, CancellationToken ct)
+    private const long StageBodyLimit = 16 * 1024;
+
+    private static IResult TranscodeFailure(string? error) => error == DeckImageTranscoder.BusyMessage
+        ? Results.Json(new DeckImageUploadResponse { Error = true, Msg = DeckImageTranscoder.BusyMessage }, AppJsonContext.Default.DeckImageUploadResponse, statusCode: StatusCodes.Status503ServiceUnavailable)
+        : Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = error ?? "Unsupported image format" });
+
+    private static async Task<(IResult Result, bool Ok)> StoreResultAsync(DeckImageStore store, byte[] bytes, CancellationToken ct)
     {
         var id = store.Store(bytes);
         if (id is null)
         {
-            return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Unsupported image format" });
+            return (Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Unsupported image format" }), false);
         }
 
         if (DeckImageStore.IsVideoExtension(DeckImageStore.SniffExtension(bytes)!))
@@ -187,6 +222,6 @@ public static class DeckImageRoutes
             await store.EnsurePosterAsync(id, ct);
         }
 
-        return Results.Json(new DeckImageUploadResponse { Id = id }, AppJsonContext.Default.DeckImageUploadResponse);
+        return (Results.Json(new DeckImageUploadResponse { Id = id }, AppJsonContext.Default.DeckImageUploadResponse), true);
     }
 }

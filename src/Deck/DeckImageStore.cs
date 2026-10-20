@@ -213,14 +213,14 @@ public sealed class DeckImageStore
     {
         try
         {
-            await FfmpegGate.WaitAsync();
+            await PosterGate.WaitAsync();
             try
             {
                 await ExtractPosterCoreAsync(id);
             }
             finally
             {
-                FfmpegGate.Release();
+                PosterGate.Release();
             }
         }
         catch (Exception ex)
@@ -352,8 +352,8 @@ public sealed class DeckImageStore
     private const int PosterTimeoutSeconds = 15;
     private const int PosterMaxEdge = 256;
     private static readonly TimeSpan StaleTempAge = TimeSpan.FromHours(1);
-    /// <summary>Bounds concurrent ffmpeg work for deck images (poster frames and crop transcodes), process-wide.</summary>
-    internal static readonly SemaphoreSlim FfmpegGate = new(2);
+    /// <summary>Poster frames get their own slot so a long crop transcode (DeckImageTranscoder.Gate) can never starve them.</summary>
+    private static readonly SemaphoreSlim PosterGate = new(1);
     private readonly Func<int, CancellationToken, string[], Task<string>>? _runFfmpeg;
     private readonly object _posterLock = new();
     private readonly HashSet<string> _posterFailed = new(StringComparer.Ordinal);
