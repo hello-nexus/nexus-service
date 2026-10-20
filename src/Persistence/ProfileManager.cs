@@ -144,6 +144,31 @@ public sealed partial class ProfileManager : IDisposable
                 _store.Update(s => s.PanelsCategorySeeded = true);
             }
 
+            // Panels defaults to Shared like Device. Installs that predate the
+            // default (or ran an earlier build of the category) get it added
+            // exactly once; the marker keeps a later opt-out from being undone.
+            // Profile files get the live looks so every file holds the shared value.
+            if (!root.PanelsSharedByDefaultApplied)
+            {
+                var wasShared = root.SharedCategories.Contains(ProfileSharing.Panels);
+                _store.Update(s =>
+                {
+                    if (!s.SharedCategories.Contains(ProfileSharing.Panels))
+                    {
+                        s.SharedCategories.Add(ProfileSharing.Panels);
+                    }
+                    s.PanelsSharedByDefaultApplied = true;
+                });
+                if (!wasShared)
+                {
+                    var live = _store.Load();
+                    foreach (var p in _manifest.Profiles)
+                    {
+                        UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, live);
+                    }
+                }
+            }
+
             // Every settings mutation marks the active profile dirty so the
             // background flush picks it up. Without this, lighting/cooling/
             // panel/etc. routes that call _store.Update never propagate to the

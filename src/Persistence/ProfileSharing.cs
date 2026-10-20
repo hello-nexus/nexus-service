@@ -17,7 +17,8 @@ namespace Nexus.Service.Persistence;
 /// overrides, rotary, game mode, firmware lighting, layers) profile-scoped
 /// instead of workstation-global. Panels carries each panel's look and the
 /// cooler display content (see <see cref="PanelProfileData"/>); a profile file
-/// holds it as stripped records that apply onto the matching live panels.
+/// holds it as stripped records that apply onto the matching live panels. Device
+/// and Panels default to Shared (see <see cref="NexusSettings.SharedCategories"/>).
 /// Panel cosmetics + AutoLaunch at the NexusSettings root under
 /// <see cref="PanelSettings"/> are workstation-level and are NEVER copied via sharing.
 /// </summary>

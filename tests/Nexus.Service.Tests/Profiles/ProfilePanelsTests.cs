@@ -50,13 +50,19 @@ public class ProfilePanelsTests : IDisposable
         DisplayFingerprint = new DisplayFingerprint { Manufacturer = "ACR", Product = "0A1B", Serial = 1, SerialText = serial },
     };
 
+    private void InitializePerProfile()
+    {
+        _pm.Initialize();
+        _pm.SetCategoryShared(ProfileSharing.Panels, false);
+    }
+
     private PanelDeviceRecord Live(string id) => _store.Load().PanelDevices[id];
 
     [Fact]
     public void Switch_swaps_looks_and_leaves_identity_and_hardware_alone()
     {
         _store.Update(s => s.PanelDevices["y70-a"] = Y70());
-        _pm.Initialize();
+        InitializePerProfile();
         _store.Update(s => s.PanelDevices["y70-a"].AccentColor = "#111111");
         var a = _pm.GetActiveEntry()!.Id;
         var b = _pm.CreateProfile("B").Id;
@@ -90,7 +96,7 @@ public class ProfilePanelsTests : IDisposable
     public void Panel_without_a_match_keeps_its_look()
     {
         _store.Update(s => s.PanelDevices["y70-a"] = Y70());
-        _pm.Initialize();
+        InitializePerProfile();
         var a = _pm.GetActiveEntry()!.Id;
         _pm.CreateProfile("B");
         _store.Update(s =>
@@ -505,7 +511,7 @@ public class ProfilePanelsTests : IDisposable
     [Fact]
     public void Resetting_panels_raises_only_the_panels_event_not_the_switch_event()
     {
-        _pm.Initialize();
+        InitializePerProfile();
         var switched = 0;
         var panels = 0;
         _pm.OnProfileSwitched += () => switched++;
@@ -633,7 +639,7 @@ public class ProfilePanelsTests : IDisposable
     private (PanelDeviceRegistry Registry, string A, string B) PromoteAndCustomize()
     {
         var registry = new PanelDeviceRegistry(_store);
-        _pm.Initialize();
+        InitializePerProfile();
         registry.DisplayRecordReady += record => _pm.AdoptSavedLook(record.Id);
         var a = _pm.GetActiveEntry()!.Id;
         var caps = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor };
