@@ -148,7 +148,7 @@ public sealed class CloudProfileLibraryService
         {
             try
             {
-                var restored = _profiles.ImportProfileWithId(request.ProfileId, sourceName, settings);
+                var restored = _profiles.ImportProfileWithId(request.ProfileId, sourceName, settings, absorbPanelLooks: true);
                 _appData.ReplaceApps(restored.Id, appData);
                 LastImportReplacedActive = restored.Id == _profiles.ActiveProfileId;
                 return CloudActionResult.Ok();

@@ -110,6 +110,84 @@ public class ProfilePanelsTests : IDisposable
         Assert.Equal("analogClassic", _store.Load().Devices.FlexLcdScreens["flex-1"].ClockFace);
     }
 
+    private static NexusSettings ImportedFriend(string accent = "#aaaaaa")
+    {
+        var src = new NexusSettings();
+        src.PanelDevices["y70-x"] = Y70("y70-x");
+        src.PanelDevices["y70-x"].AccentColor = accent;
+        src.PanelDevices["y70-x"].Presets = new() { new PanelPreset { Id = "t", Name = "Theirs", AccentColor = "#bbbbbb" } };
+        return ProfileSharing.ExtractShareable(src);
+    }
+
+    [Fact]
+    public void Import_with_panels_shared_adds_the_imported_look_and_presets_without_touching_the_live_look()
+    {
+        _store.Update(s => s.PanelDevices["y70-a"] = Y70());
+        _pm.Initialize();
+        _store.Update(s => s.PanelDevices["y70-a"].AccentColor = "#111111");
+        var changed = 0;
+        _pm.PanelsChanged += () => changed++;
+
+        _pm.ImportProfile("Friend", ImportedFriend());
+
+        var live = Live("y70-a");
+        Assert.Equal("#111111", live.AccentColor);
+        Assert.Null(live.ActivePresetId);
+        Assert.Equal(new[] { "Friend", "Theirs" }, live.Presets!.Select(p => p.Name).ToArray());
+        Assert.Equal("#aaaaaa", live.Presets![0].AccentColor);
+        Assert.Equal("#bbbbbb", live.Presets![1].AccentColor);
+        Assert.Equal(1, changed);
+
+        _pm.ImportProfile("Friend again", ImportedFriend());
+        Assert.Equal(2, Live("y70-a").Presets!.Count);
+        Assert.Equal(1, changed);
+    }
+
+    [Fact]
+    public void Import_with_panels_per_profile_leaves_presets_alone()
+    {
+        _store.Update(s => s.PanelDevices["y70-a"] = Y70());
+        InitializePerProfile();
+
+        _pm.ImportProfile("Friend", ImportedFriend());
+
+        Assert.Null(Live("y70-a").Presets);
+    }
+
+    [Fact]
+    public void Import_with_no_matching_panel_adds_nothing()
+    {
+        _pm.Initialize();
+        var changed = 0;
+        _pm.PanelsChanged += () => changed++;
+
+        _pm.ImportProfile("Friend", ImportedFriend());
+
+        Assert.Empty(_store.Load().PanelDevices);
+        Assert.Equal(0, changed);
+    }
+
+    [Fact]
+    public void Merged_presets_get_unique_names_and_stop_at_the_cap()
+    {
+        var live = new NexusSettings();
+        live.PanelDevices["y70-a"] = Y70();
+        live.PanelDevices["y70-a"].Presets = new() { new PanelPreset { Id = "e", Name = "Friend", AccentColor = "#cccccc" } };
+        var imported = ImportedFriend();
+
+        Assert.True(PanelProfileData.MergeImportedLooks(live, imported, "Friend", out var skipped));
+        Assert.Equal(0, skipped);
+        Assert.Equal(new[] { "Friend", "Friend 2", "Theirs" }, live.PanelDevices["y70-a"].Presets!.Select(p => p.Name).ToArray());
+
+        var full = new NexusSettings();
+        full.PanelDevices["y70-a"] = Y70();
+        full.PanelDevices["y70-a"].Presets = Enumerable.Range(0, PanelPresets.Cap - 1)
+            .Select(i => new PanelPreset { Id = "p" + i, Name = "P" + i, AccentColor = "#00000" + i }).ToList();
+        Assert.True(PanelProfileData.MergeImportedLooks(full, ImportedFriend(), "Friend", out skipped));
+        Assert.Equal(1, skipped);
+        Assert.Equal(PanelPresets.Cap, full.PanelDevices["y70-a"].Presets!.Count);
+    }
+
     [Fact]
     public void Panel_without_a_match_keeps_its_look()
     {
@@ -190,6 +268,7 @@ public class ProfilePanelsTests : IDisposable
                 };
             });
             pm2.Initialize();
+            pm2.SetCategoryShared(ProfileSharing.Panels, false);
             var imported = pm2.ImportProfileJson(json, replaceExisting: true);
             pm2.SwitchProfile(imported.Id);
 

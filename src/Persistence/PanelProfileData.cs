@@ -116,6 +116,72 @@ public static class PanelProfileData
         CopyCoolerContent(file, live, creating: restoreScreens);
     }
 
+    /// <summary>
+    /// Adds an imported profile's looks to the matching live panels as presets: the imported record's own look
+    /// under <paramref name="profileName"/>, then its presets. A look equal to the live look or to an existing
+    /// preset is skipped, and so is anything beyond <see cref="PanelPresets.Cap"/>. The live look and the loaded
+    /// preset never change. Returns whether any preset was added; <paramref name="skippedForCap"/> counts the rest.
+    /// </summary>
+    public static bool MergeImportedLooks(NexusSettings live, NexusSettings imported, string profileName, out int skippedForCap)
+    {
+        skippedForCap = 0;
+        if (!imported.HasPanelsData)
+        {
+            return false;
+        }
+        BackfillPresetWidgetSize(imported);
+        var changed = false;
+        var saved = imported.PanelDevices.Values.ToList();
+        var targets = live.PanelDevices.Values.Where(r => !IsPhone(r)).ToList();
+        foreach (var (src, dst) in Pair(saved, targets))
+        {
+            dst.Presets ??= new List<PanelPreset>();
+            var known = new HashSet<string>(dst.Presets.Select(LookKey));
+            known.Add(LookKey(dst));
+            var candidates = new List<(string Name, IPanelPersonalization Look)> { (profileName, src) };
+            candidates.AddRange((src.Presets ?? new()).Select(p => (p.Name, (IPanelPersonalization)p)));
+            foreach (var (name, look) in candidates)
+            {
+                if (!known.Add(LookKey(look)))
+                {
+                    continue;
+                }
+                if (dst.Presets.Count >= PanelPresets.Cap)
+                {
+                    skippedForCap++;
+                    continue;
+                }
+                var preset = new PanelPreset { Id = Guid.NewGuid().ToString("n"), Name = UniquePresetName(dst.Presets, name) };
+                PanelPresets.Copy(look, preset);
+                dst.Presets.Add(preset);
+                changed = true;
+            }
+            if (dst.Presets.Count == 0)
+            {
+                dst.Presets = null;
+            }
+        }
+        return changed;
+    }
+
+    private static string LookKey(IPanelPersonalization look)
+    {
+        var copy = new PanelPreset();
+        PanelPresets.Copy(look, copy);
+        return Json(copy);
+    }
+
+    private static string UniquePresetName(List<PanelPreset> existing, string name)
+    {
+        var baseName = string.IsNullOrWhiteSpace(name) ? "Imported" : name.Trim();
+        var candidate = baseName;
+        for (var n = 2; existing.Any(p => string.Equals(p.Name, candidate, StringComparison.OrdinalIgnoreCase)); n++)
+        {
+            candidate = $"{baseName} {n}";
+        }
+        return candidate;
+    }
+
     /// <summary>Personalization reset for every live record plus default cooler content; the profile-wide counterpart of <see cref="PanelDeviceRegistry.ResetToDefaults"/>.</summary>
     public static void Reset(NexusSettings target)
     {
