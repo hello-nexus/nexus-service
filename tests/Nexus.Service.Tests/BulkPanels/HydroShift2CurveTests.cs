@@ -18,20 +18,25 @@ public class HydroShift2CurveTests
     // ── protocol, pinned to bytes L-Connect sent the Y70's unit (USBPcap 2026-10-08) ──
 
     [Theory]
-    [InlineData(true, "07EA0A14082A2101")]
-    [InlineData(false, "07EA0A14082A2100")]
-    public void Offline_mode_is_the_captured_set_clock_with_mode_1_or_0(bool on, string expected)
+    [InlineData(true, 88953417u, "07EA0A14082A2101")]
+    [InlineData(false, 88975321u, "07EA0A14082A3700")]
+    public void Offline_mode_matches_the_captured_l_connect_set_clock(bool on, uint ts, string expected)
     {
+        // Captured 2026-10-20: ON at local 08:42:33, OFF at 08:42:55.
+        var second = on ? 33 : 55;
         var packet = HydroShift2Protocol.EncodeSetClock(
-            new DateTime(2026, 10, 20, 8, 42, 33), 1, on ? HydroShift2Protocol.ClockOfflineOn : HydroShift2Protocol.ClockOfflineOff);
-        Assert.Equal(expected, Convert.ToHexString(PlainParams(packet)));
+            new DateTime(2026, 10, 20, 8, 42, second), ts, on ? HydroShift2Protocol.ClockOfflineOn : HydroShift2Protocol.ClockOfflineOff);
+        var plain = Plain(packet);
+        Assert.Equal(HydroShift2Protocol.CommandSetClock, plain[0]);
+        Assert.Equal(ts, BitConverter.ToUInt32(plain, 4));
+        Assert.Equal(expected, Convert.ToHexString(plain[8..16]));
     }
 
     [Fact]
     public void The_apply_sequence_keeps_the_sync_only_mode()
     {
         var packet = HydroShift2Protocol.EncodeSetClock(new DateTime(2026, 10, 20, 8, 42, 33), 1);
-        Assert.Equal("07EA0A14082A2102", Convert.ToHexString(PlainParams(packet)));
+        Assert.Equal("07EA0A14082A2102", Convert.ToHexString(Plain(packet)[8..16]));
     }
 
     [Fact]
@@ -58,15 +63,17 @@ public class HydroShift2CurveTests
     }
 
     [Fact]
-    public void Toggling_offline_mode_sends_one_set_clock()
+    public void Toggling_offline_mode_sends_the_mode_then_sync_only_and_stop_clock()
     {
         var pipe = new GlassPipe { Answers = true };
         var driver = new HydroShift2CurveLcdDriver();
-        Assert.True(driver.SetOfflineMode(pipe, true));
-        Assert.Equal(new[] { HydroShift2Protocol.CommandSetClock }, pipe.Commands);
+        Assert.True(driver.ApplyOfflineMode(pipe, true));
+        Assert.Equal(
+            new[] { HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.CommandStopClock },
+            pipe.Commands);
     }
 
-    private static byte[] PlainParams(byte[] packet)
+    private static byte[] Plain(byte[] packet)
     {
 #pragma warning disable CA5351 // The glass's own framing.
         using var des = System.Security.Cryptography.DES.Create();
@@ -75,8 +82,7 @@ public class HydroShift2CurveTests
         des.Mode = System.Security.Cryptography.CipherMode.CBC;
         des.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
         using var decryptor = des.CreateDecryptor();
-        var plain = decryptor.TransformFinalBlock(packet, 0, 504);
-        return plain[8..16];
+        return decryptor.TransformFinalBlock(packet, 0, 504);
     }
 
     [Fact]

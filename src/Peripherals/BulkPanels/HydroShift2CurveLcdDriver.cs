@@ -120,8 +120,8 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty);
         Command(pipe, HydroShift2CurveProtocol.CommandWarnSwitch, stackalloc byte[] { 0 });
         Command(pipe, HydroShift2CurveProtocol.CommandHideShow, new byte[32]);
-        // L-Connect re-sends its Offline Mode on connect. Nexus does so only for a mode the user set here,
-        // and the sync-only SetClock below leaves the firmware flag alone.
+        // L-Connect re-sends its current Offline Mode on connect (its first SetClock carried mode 0 before any
+        // toggle). Nexus does so only for a mode the user set here, and the sync-only SetClock below leaves the flag alone.
         if (OfflineModeSource?.Invoke() is { } offline)
         {
             SetOfflineMode(pipe, offline);
@@ -180,6 +180,18 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     public bool SetOfflineMode(IBulkUsbPipe pipe, bool on) =>
         Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(
             DateTime.Now, NextTimestamp(), on ? HydroShift2Protocol.ClockOfflineOn : HydroShift2Protocol.ClockOfflineOff)) is not null;
+
+    /// <summary>
+    /// A live toggle: the mode, then the sync-only SetClock and StopClock the connect sequence ends with,
+    /// so the firmware clock face can never come up over Nexus's output.
+    /// </summary>
+    public bool ApplyOfflineMode(IBulkUsbPipe pipe, bool on)
+    {
+        bool sent = SetOfflineMode(pipe, on);
+        Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
+        Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
+        return sent;
+    }
 
     /// <summary>Readies the decoder for a video and returns the chunk size the glass takes, 0 when it did not answer.</summary>
     public int BeginVideo(IBulkUsbPipe pipe, int frameRate)

@@ -80,7 +80,13 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     }
 
     /// <summary>Sends the Offline Mode now; a glass that is not attached gets it at its next connect.</summary>
-    public void ApplyOfflineMode(bool on) => _hub.Exchange(pipe => _driver.SetOfflineMode(pipe, on), false);
+    public void ApplyOfflineMode(bool on)
+    {
+        if (!_hub.Exchange(pipe => _driver.ApplyOfflineMode(pipe, on), false))
+        {
+            ServiceLog.Warn($"[{HydroShift2CurveLcdDriver.Id}] offline mode {(on ? "on" : "off")} not applied now; sent at the next connect");
+        }
+    }
 
     /// <summary>Settings changed: act now rather than on the next tick.</summary>
     public void Wake()
