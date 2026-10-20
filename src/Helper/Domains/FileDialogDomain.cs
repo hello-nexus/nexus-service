@@ -60,7 +60,7 @@ public static class FileDialogCommands
             timeoutMs: 5000,
             ct: ct).ConfigureAwait(false);
         var outcome = OpenFolderOutcomes.FromResult(result.Ok, result.Error);
-        if (outcome == OpenFolderOutcome.TimedOut && !ct.IsCancellationRequested)
+        if (outcome == OpenFolderOutcome.TimedOut)
         {
             ServiceLog.Warn("[helper] dialog.openFolder not acked in time");
         }

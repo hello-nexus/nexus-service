@@ -7,8 +7,7 @@ public class OpenFolderOutcomeTests
 {
     [Theory]
     [InlineData(true, null, OpenFolderOutcome.Opened)]
-    [InlineData(false, HelperErrors.Timeout, OpenFolderOutcome.TimedOut)]
-    [InlineData(false, HelperErrors.Canceled, OpenFolderOutcome.Canceled)]
+    [InlineData(false, "timeout", OpenFolderOutcome.TimedOut)]
     [InlineData(false, "boom", OpenFolderOutcome.Failed)]
     [InlineData(false, null, OpenFolderOutcome.Failed)]
     public void FromResult_MapsAckAndTimeout(bool ok, string? error, OpenFolderOutcome expected)
@@ -21,7 +20,6 @@ public class OpenFolderOutcomeTests
     [InlineData(OpenFolderOutcome.TimedOut, false)]
     [InlineData(OpenFolderOutcome.NoHelper, true)]
     [InlineData(OpenFolderOutcome.Failed, true)]
-    [InlineData(OpenFolderOutcome.Canceled, false)]
     public void IsFailure_ReportsOnlyDefiniteFailures(OpenFolderOutcome outcome, bool expected)
     {
         Assert.Equal(expected, OpenFolderOutcomes.IsFailure(outcome));

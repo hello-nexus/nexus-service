@@ -21,25 +21,18 @@ internal static class Framing
     /// headroom and bounds the receive-side memory footprint.</summary>
     public const int MaxFrameBytes = 8 * 1024 * 1024;
 
-    /// <summary>
-    /// Writes one frame. <paramref name="ct"/> is honored only before the first
-    /// byte goes out: a cancel between the header and the body would leave a
-    /// header with no body and mis-frame the pipe until the peer reconnects.
-    /// </summary>
     public static async Task WriteFrameAsync(Stream pipe, ReadOnlyMemory<byte> bytes, CancellationToken ct)
     {
         if (bytes.Length > MaxFrameBytes)
             throw new InvalidOperationException($"helper frame exceeds {MaxFrameBytes} bytes ({bytes.Length})");
 
-        ct.ThrowIfCancellationRequested();
-
         var header = ArrayPool<byte>.Shared.Rent(4);
         try
         {
             BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0, 4), (uint)bytes.Length);
-            await pipe.WriteAsync(header.AsMemory(0, 4), CancellationToken.None).ConfigureAwait(false);
-            await pipe.WriteAsync(bytes, CancellationToken.None).ConfigureAwait(false);
-            await pipe.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+            await pipe.WriteAsync(header.AsMemory(0, 4), ct).ConfigureAwait(false);
+            await pipe.WriteAsync(bytes, ct).ConfigureAwait(false);
+            await pipe.FlushAsync(ct).ConfigureAwait(false);
         }
         finally
         {

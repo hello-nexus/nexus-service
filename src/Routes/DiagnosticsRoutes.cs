@@ -32,7 +32,7 @@ internal static class DiagnosticsRoutes
 
     public static void MapDiagnosticsEndpoints(this WebApplication app)
     {
-        app.MapPost("/diagnostics/open-logs", async (IServiceProvider sp, CancellationToken ct) =>
+        app.MapPost("/diagnostics/open-logs", async (IServiceProvider sp) =>
         {
             try
             {
@@ -44,7 +44,7 @@ internal static class DiagnosticsRoutes
                 // silent 200. A late ack is not reported as a failure.
                 var registry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
                 var outcome = await Nexus.Service.Helper.Domains.FileDialogCommands.TryOpenFolderAsync(
-                    registry, Nexus.Service.Persistence.NexusDataPaths.NexusRoot(), ct);
+                    registry, Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
                 if (Nexus.Service.Helper.OpenFolderOutcomes.IsFailure(outcome))
                 {
                     return Results.Problem("no interactive user session", statusCode: StatusCodes.Status503ServiceUnavailable);
@@ -56,10 +56,6 @@ internal static class DiagnosticsRoutes
                 Nexus.Service.Diagnostics.LogsFolder.Open();
 #endif
                 return Results.Ok(ApiResponse.Ok());
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                return Results.Empty;
             }
             catch (Exception ex)
             {
