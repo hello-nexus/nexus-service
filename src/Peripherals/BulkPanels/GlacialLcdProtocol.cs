@@ -42,12 +42,21 @@ public static class GlacialLcdProtocol
     public const byte ModeAnimatedAsset = 0x14;
     public const byte ModeHardwareMonitor = 0x21;
 
+    /// <summary>Predefined static picture ids the vendor app was seen selecting.</summary>
+    public static readonly int[] StaticAssets = { 3, 4 };
+
+    /// <summary>Predefined animation ids the vendor app was seen selecting.</summary>
+    public static readonly int[] AnimatedAssets = { 0, 1 };
+
     /// <summary>Most widgets the hardware monitor shows at once.</summary>
     public const int MaxMonitorSlots = 3;
 
     /// <summary>Label field of a slot report, from the byte after the slot index up to <see cref="SlotValueOffset"/>.</summary>
     public const int SlotLabelBytes = 18;
     public const int SlotValueOffset = 21;
+
+    /// <summary>Value of the 0x5C display field while the LCD is on.</summary>
+    public const byte DisplayOnFlag = 0x14;
 
     /// <summary>Value of the 0x5C sleep field when the LCD stays lit while the system sleeps.</summary>
     public const byte SleepKeepOn = 0x14;
@@ -67,30 +76,50 @@ public static class GlacialLcdProtocol
     public static byte[] EncodeQuery() => Report(0xDC);
 
     /// <summary>
-    /// Settings write. Brightness (percent) appears three times, the panel mode once and the
-    /// sleep behavior once; the app echoes every field from the last 0x5C reply and changes one.
+    /// Settings write. Brightness (percent) appears three times, then a display flag (on or
+    /// off, not the picture mode: the state reply still held the on value while a static
+    /// picture was selected) and the sleep behavior. The app echoes every field from the last
+    /// 0x5C reply and changes one.
     /// </summary>
-    public static byte[] EncodeSettings(int brightnessPercent, byte mode, bool keepOnWhileAsleep)
+    public static byte[] EncodeSettings(int brightnessPercent, bool displayOn, bool keepOnWhileAsleep)
     {
-        byte percent = (byte)Math.Clamp(brightnessPercent, 0, 100);
         var report = Report(0x5C);
         report[2] = 0x01;
-        report[5] = percent;
-        report[9] = percent;
-        report[10] = mode;
-        report[15] = percent;
-        report[16] = keepOnWhileAsleep ? SleepKeepOn : (byte)0;
+        PatchSettings(report, brightnessPercent, displayOn, keepOnWhileAsleep);
         return report;
     }
 
+    /// <summary>
+    /// The read-modify-write form: the fresh state reply with the settings fields changed and
+    /// the write flag set, so any byte the captures never showed set is carried through.
+    /// </summary>
+    public static byte[] EncodeSettingsFrom(ReadOnlySpan<byte> stateReply, int brightnessPercent, bool displayOn, bool keepOnWhileAsleep)
+    {
+        var report = new byte[ReportBytes];
+        stateReply[..Math.Min(stateReply.Length, ReportBytes)].CopyTo(report);
+        report[2] = 0x01;
+        PatchSettings(report, brightnessPercent, displayOn, keepOnWhileAsleep);
+        return report;
+    }
+
+    private static void PatchSettings(byte[] report, int brightnessPercent, bool displayOn, bool keepOnWhileAsleep)
+    {
+        byte percent = (byte)Math.Clamp(brightnessPercent, 0, 100);
+        report[5] = percent;
+        report[9] = percent;
+        report[10] = displayOn ? DisplayOnFlag : (byte)0;
+        report[15] = percent;
+        report[16] = keepOnWhileAsleep ? SleepKeepOn : (byte)0;
+    }
+
     /// <summary>Reads the fields back out of a 0x5C state reply, or null when it is some other report.</summary>
-    public static (int BrightnessPercent, byte Mode, bool KeepOnWhileAsleep)? ParseState(ReadOnlySpan<byte> reply)
+    public static (int BrightnessPercent, bool DisplayOn, bool KeepOnWhileAsleep)? ParseState(ReadOnlySpan<byte> reply)
     {
         if (reply.Length < 17 || reply[0] != ReportId || reply[1] != 0x5C)
         {
             return null;
         }
-        return (reply[5], reply[10], reply[16] == SleepKeepOn);
+        return (reply[5], reply[10] != 0, reply[16] == SleepKeepOn);
     }
 
     /// <summary>Mode select. <paramref name="asset"/> is the predefined picture or animation index.</summary>

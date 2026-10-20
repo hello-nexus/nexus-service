@@ -1372,7 +1372,6 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver(),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver(),
-            new Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver(),
         })
         {
             var bulkPanelHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(bulkPanelDriver);
@@ -1383,11 +1382,6 @@ public static class NexusServiceCollectionExtensions
                 if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver screen88)
                 {
                     BindScreen88Portrait(sp, screen88);
-                }
-                if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver glacial)
-                {
-                    glacial.BindMemory(new Nexus.Service.Peripherals.BulkPanels.ConfigStoreLcdUploadMemory(
-                        sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
                 }
                 return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
                     sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
@@ -1423,6 +1417,13 @@ public static class NexusServiceCollectionExtensions
                 AddHydroShift2Curve(services, bulkPanelHub, curve);
             }
         }
+
+        // ROG Crosshair X870E Glacial LCD: native modes over HID only. Its picture upload
+        // (GlacialLcdPanelDriver) is not registered, so Nexus renders nothing to this panel.
+        services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>());
+        services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(
+            sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>()));
 
         // Corsair iCUE LINK System Hub: HID connection worker + lighting + cooling.
         // Auto-detects the daisy chain; no composition (each device is one fixed zone).

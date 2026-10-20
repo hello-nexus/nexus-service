@@ -52,6 +52,10 @@ public sealed class ConfigStoreLcdUploadMemory : ILcdUploadMemory
 /// newest rendered frame as JPEG and uploads it once the content has settled, after a long
 /// cooldown, and only when the panel does not already hold that exact picture. Live content
 /// belongs to the panel's own hardware-monitor mode, not to this path.
+///
+/// Switched off: nothing registers this driver, because no reference upload has ever worked
+/// (MB Manager itself never completes one), so Nexus renders nothing to the panel. The code
+/// stays for when a working capture exists.
 /// </summary>
 public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 {
@@ -635,7 +639,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 }
                 if (read > 0 && GlacialLcdProtocol.ParseState(buffer.AsSpan(0, read)) is { } state)
                 {
-                    if (hid.Write(GlacialLcdProtocol.EncodeSettings(percent, state.Mode, state.KeepOnWhileAsleep)))
+                    if (hid.Write(GlacialLcdProtocol.EncodeSettings(percent, state.DisplayOn, state.KeepOnWhileAsleep)))
                     {
                         return true;
                     }

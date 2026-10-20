@@ -1522,6 +1522,8 @@ public sealed class DevicesSettings
     public bool FlexSyncEnabled { get; set; }
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
+    /// <summary>What the ROG Crosshair X870E Glacial LCD shows. Service-side so it survives a restart and is re-applied on connect.</summary>
+    public GlacialLcdSettings GlacialLcd { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
@@ -2133,6 +2135,55 @@ public sealed class HydroShift2CurveSettings
     /// <summary>When Nexus is not driving the pump: true follows the motherboard header, false runs the
     /// power-on speed, null leaves the board as found.</summary>
     public bool? PumpFollowsMotherboard { get; set; }
+}
+
+/// <summary>One hardware-monitor widget: the sensor it shows and the label sent to the panel.</summary>
+public sealed class GlacialLcdSlot
+{
+    /// <summary>Monitoring category ("cpu", "gpu", "motherboard"); empty falls back to the slot's default sensor.</summary>
+    public string Category { get; set; } = "";
+
+    /// <summary>Sensor id within <see cref="Category"/>.</summary>
+    public string Sensor { get; set; } = "";
+
+    /// <summary>Label text. Empty uses the sensor's own name.</summary>
+    public string Label { get; set; } = "";
+
+    public GlacialLcdSlot Copy() => new() { Category = Category, Sensor = Sensor, Label = Label };
+}
+
+/// <summary>
+/// The Glacial LCD's native modes. Defaults are the first run of the vendor app: three
+/// widgets (CPU, CPU Package, GPU), the animated asset it starts on, half brightness.
+/// </summary>
+public sealed class GlacialLcdSettings
+{
+    public const string ModeStatic = "static";
+    public const string ModeAnimated = "animated";
+    public const string ModeMonitor = "monitor";
+
+    public bool DisplayOn { get; set; } = true;
+    public string Mode { get; set; } = ModeAnimated;
+    public int StaticAsset { get; set; } = 3;
+    public int AnimatedAsset { get; set; } = 1;
+    public int SlotCount { get; set; } = 3;
+    public List<GlacialLcdSlot> Slots { get; set; } = DefaultSlots();
+    public int Brightness { get; set; } = 50;
+    public bool StayOnWhileAsleep { get; set; }
+
+    public static List<GlacialLcdSlot> DefaultSlots() => new()
+    {
+        new() { Category = "cpu", Label = "CPU" },
+        new() { Category = "cpu", Label = "CPU Package" },
+        new() { Category = "gpu", Label = "GPU" },
+    };
+
+    public GlacialLcdSettings Copy()
+    {
+        var copy = (GlacialLcdSettings)MemberwiseClone();
+        copy.Slots = Slots.ConvertAll(slot => slot.Copy());
+        return copy;
+    }
 }
 
 public sealed class Galahad2LightingSettings

@@ -9,6 +9,7 @@ using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.Hid;
+using Nexus.Service.Persistence;
 using Xunit;
 
 namespace Nexus.Service.Tests.BulkPanels;
@@ -72,6 +73,42 @@ public class BulkPanelConnectionWorkerTests
 
         Assert.True(opened.First(o => o.Path == "asus-glacial-lcd").ForInput);
         Assert.False(opened.First(o => o.Path == "asus-ryujin-lcd").ForInput);
+    }
+
+    [Fact]
+    public async Task The_glacial_worker_reapplies_the_saved_state_on_connect_and_applies_changes_at_once()
+    {
+        var usb = new SwitchableUsb { Present = true, Vendor = 0x0B05, Product = GlacialLcdProtocol.ProductId };
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Devices.NexusControlEnabled.Add(GlacialLcdWorker.HandlerId));
+        store.Update(s => s.Devices.GlacialLcd.Brightness = 30);
+        var hid = new RecordingDevice();
+        var worker = new GlacialLcdWorker(
+            new SingleHid(hid), new DeviceControlGate(store), new HardwarePresence(usb), store,
+            new Nexus.Service.Tests.StreamDeck.FakeSensorProvider(), connectPollMs: 50);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.True(await Eventually(() => worker.IsConnected));
+            var first = hid.Snapshot();
+            Assert.Equal(GlacialLcdProtocol.EncodeHello(), first[0]);
+            Assert.Equal(GlacialLcdProtocol.EncodeQuery(), first[1]);
+            Assert.Contains(first, w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(30, true, false)));
+            Assert.Contains(first, w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeMode(GlacialLcdProtocol.ModeAnimatedAsset, 1)));
+
+            store.Update(s =>
+            {
+                s.Devices.GlacialLcd.Mode = GlacialLcdSettings.ModeStatic;
+                s.Devices.GlacialLcd.StaticAsset = 4;
+            });
+            worker.RequestApply();
+            Assert.True(await Eventually(() => hid.Snapshot().Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeMode(GlacialLcdProtocol.ModeStaticAsset, 4)))));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]
@@ -268,6 +305,53 @@ public class BulkPanelConnectionWorkerTests
             _opened.Add((path, forInput));
             return null;
         }
+    }
+
+    private sealed class SingleHid : IHidEnumerator
+    {
+        private readonly RecordingDevice _device;
+
+        public SingleHid(RecordingDevice device)
+        {
+            _device = device;
+        }
+
+        public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) =>
+            new[] { new HidDeviceInfo { VendorId = vendorId, ProductId = productId, Path = "glacial", OutputReportByteLength = 65 } };
+
+        public IReadOnlyList<HidDeviceInfo> FindAll() => Array.Empty<HidDeviceInfo>();
+        public IHidDevice? Open(string path, bool forInput = false) => _device;
+    }
+
+    private sealed class RecordingDevice : IHidDevice
+    {
+        private readonly object _lock = new();
+        private readonly List<byte[]> _writes = new();
+
+        public List<byte[]> Snapshot()
+        {
+            lock (_lock) { return new List<byte[]>(_writes); }
+        }
+
+        public int VendorId => 0x0B05;
+        public int ProductId => GlacialLcdProtocol.ProductId;
+        public string Path => "glacial";
+        public string? Serial => null;
+        public int UsagePage => 0;
+        public int Usage => 0;
+
+        public bool Write(ReadOnlySpan<byte> report)
+        {
+            lock (_lock) { _writes.Add(report.ToArray()); }
+            return true;
+        }
+
+        public bool SetFeature(ReadOnlySpan<byte> report) => true;
+        public bool GetFeature(Span<byte> buffer) => false;
+        public bool GetInputReport(Span<byte> buffer) => false;
+        public bool SetOutputReport(ReadOnlySpan<byte> report) => false;
+        public int Read(Span<byte> buffer, int timeoutMs) => 0;
+        public void Dispose() { }
     }
 
     private sealed class NoHid : IHidEnumerator

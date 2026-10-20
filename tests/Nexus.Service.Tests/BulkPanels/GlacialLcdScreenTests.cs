@@ -1,0 +1,414 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Nexus.Service.Models.Sensors;
+using Nexus.Service.Peripherals.BulkPanels;
+using Nexus.Service.Peripherals.Hid;
+using Nexus.Service.Persistence;
+using Nexus.Service.Serialization;
+using Nexus.Service.Tests.StreamDeck;
+using Xunit;
+
+namespace Nexus.Service.Tests.BulkPanels;
+
+/// <summary>Report orders are the MB Manager sequences in the customer's captures.</summary>
+public class GlacialLcdScreenTests
+{
+    private const string StateReply = "EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32";
+
+    private static byte[] Report(string hex)
+    {
+        var bytes = Convert.FromHexString(hex.Replace(" ", string.Empty));
+        var report = new byte[GlacialLcdProtocol.ReportBytes];
+        bytes.CopyTo(report, 0);
+        return report;
+    }
+
+    private sealed class Clock
+    {
+        public long Now = 1_000_000;
+    }
+
+    private sealed class Rig
+    {
+        public GlacialLcdSettings Settings { get; set; } = new();
+        public Clock Clock { get; } = new();
+        public FakeScreenHid Hid { get; } = new();
+        public int Reads;
+        public GlacialLcdScreen Screen { get; }
+
+        public Rig(byte[]? stateReply)
+        {
+            Hid.StateReply = stateReply;
+            Screen = new GlacialLcdScreen(
+                Hid,
+                () => Settings,
+                (slot, index) =>
+                {
+                    Reads++;
+                    return index switch
+                    {
+                        0 => ("CPU", "43.0℃"),
+                        1 => ("CPU Package", "57.0℃"),
+                        _ => ("GPU", "30.7℃"),
+                    };
+                },
+                () => Clock.Now,
+                _ => { });
+        }
+
+        public List<byte[]> Take()
+        {
+            var writes = Hid.Writes.ToList();
+            Hid.Writes.Clear();
+            return writes;
+        }
+    }
+
+    private static Rig NewRig(bool answering = true) => new(answering ? Report(StateReply) : null);
+
+    private static void AssertSequence(IEnumerable<byte[]> actual, params string[] expected) =>
+        Assert.Equal(expected.Select(Report), actual);
+
+    [Fact]
+    public void Open_sends_the_app_start_pair_then_the_saved_animated_state()
+    {
+        var rig = NewRig();
+
+        Assert.True(rig.Screen.Open());
+
+        AssertSequence(rig.Take(), "EC 82", "EC DC", "EC DC", "EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32", "EC DC", "EC 51 14 00 01");
+    }
+
+    [Fact]
+    public void Open_reapplies_a_saved_hardware_monitor_the_way_the_app_applies_it()
+    {
+        var rig = NewRig();
+        rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
+
+        Assert.True(rig.Screen.Open());
+
+        var writes = rig.Take();
+        AssertSequence(
+            writes.Skip(5),
+            "EC 53 00 43 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 34 33 2E 30 E2 84 83",
+            "EC 53 01 43 50 55 20 50 61 63 6B 61 67 65 00 00 00 00 00 00 00 35 37 2E 30 E2 84 83",
+            "EC 53 02 47 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33 30 2E 37 E2 84 83",
+            "EC 52 00 02",
+            "EC 51 21",
+            "EC 53 00 43 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 34 33 2E 30 E2 84 83",
+            "EC 53 01 43 50 55 20 50 61 63 6B 61 67 65 00 00 00 00 00 00 00 35 37 2E 30 E2 84 83",
+            "EC 53 02 47 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33 30 2E 37 E2 84 83");
+    }
+
+    [Theory]
+    [InlineData(1, "EC 52")]
+    [InlineData(2, "EC 52 00 01")]
+    public void The_widget_count_is_announced_before_the_monitor_mode(int count, string announce)
+    {
+        var rig = NewRig();
+        rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
+        rig.Settings.SlotCount = count;
+
+        rig.Screen.Open();
+
+        var writes = rig.Take().Select(w => Convert.ToHexString(w)).ToList();
+        int announceAt = writes.IndexOf(Convert.ToHexString(Report(announce)));
+        Assert.True(announceAt > 0);
+        Assert.Equal(Convert.ToHexString(Report("EC 51 21")), writes[announceAt + 1]);
+        Assert.Equal(count, writes.Take(announceAt).Count(w => w.StartsWith("EC53", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void Monitor_widgets_are_resent_on_the_vendor_cadence_with_fresh_readings()
+    {
+        var rig = NewRig();
+        rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
+        rig.Screen.Open();
+        rig.Take();
+        int readsAfterOpen = rig.Reads;
+
+        rig.Clock.Now += GlacialLcdScreen.SlotResendMs - 1;
+        Assert.True(rig.Screen.Tick());
+        Assert.Empty(rig.Take());
+
+        rig.Clock.Now += 1;
+        Assert.True(rig.Screen.Tick());
+        var writes = rig.Take();
+        Assert.Equal(3, writes.Count);
+        Assert.All(writes, w => Assert.Equal(0x53, w[1]));
+        Assert.Equal(readsAfterOpen + 3, rig.Reads);
+    }
+
+    [Fact]
+    public void Nothing_is_resent_outside_monitor_mode_or_while_the_display_is_off()
+    {
+        var rig = NewRig();
+        rig.Screen.Open();
+        rig.Take();
+        rig.Clock.Now += 60_000;
+        Assert.True(rig.Screen.Tick());
+        Assert.Empty(rig.Take());
+
+        rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
+        rig.Settings.DisplayOn = false;
+        rig.Screen.Reconcile();
+        rig.Take();
+        rig.Clock.Now += 60_000;
+        Assert.True(rig.Screen.Tick());
+        Assert.Empty(rig.Take());
+    }
+
+    [Fact]
+    public void A_brightness_change_is_the_captured_settings_write_and_two_mode_repeats()
+    {
+        var rig = NewRig();
+        rig.Screen.Open();
+        rig.Take();
+        rig.Settings.Brightness = 70;
+
+        Assert.True(rig.Screen.Reconcile());
+
+        AssertSequence(
+            rig.Take(), "EC DC", "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46", "EC DC", "EC 51 14 00 01", "EC DC", "EC 51 14 00 01");
+    }
+
+    [Fact]
+    public void The_sleep_toggle_sets_the_sleep_field_and_repeats_the_mode()
+    {
+        var rig = NewRig();
+        rig.Screen.Open();
+        rig.Take();
+        rig.Settings.StayOnWhileAsleep = true;
+
+        rig.Screen.Reconcile();
+
+        var writes = rig.Take();
+        Assert.Equal(Report("EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32 14"), writes[1]);
+        Assert.Equal(Report("EC 51 14 00 01"), writes[3]);
+    }
+
+    [Fact]
+    public void Display_off_is_the_settings_write_then_a_bare_mode_off_and_on_restores_the_mode()
+    {
+        var rig = NewRig();
+        rig.Screen.Open();
+        rig.Take();
+
+        rig.Settings.DisplayOn = false;
+        rig.Screen.Reconcile();
+        AssertSequence(rig.Take(), "EC DC", "EC 5C 01 00 00 32 00 00 00 32 00 00 00 00 00 32", "EC 51");
+
+        rig.Settings.DisplayOn = true;
+        rig.Screen.Reconcile();
+        AssertSequence(rig.Take(), "EC DC", "EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32", "EC DC", "EC 51 14 00 01");
+    }
+
+    [Theory]
+    [InlineData(GlacialLcdSettings.ModeStatic, 4, "EC 51 11 00 04")]
+    [InlineData(GlacialLcdSettings.ModeStatic, 3, "EC 51 11 00 03")]
+    [InlineData(GlacialLcdSettings.ModeAnimated, 0, "EC 51 14")]
+    public void A_preset_pick_is_a_query_and_the_captured_mode_select(string mode, int asset, string expected)
+    {
+        var rig = NewRig();
+        rig.Settings.AnimatedAsset = 1;
+        rig.Screen.Open();
+        rig.Take();
+        rig.Settings.Mode = mode;
+        rig.Settings.StaticAsset = mode == GlacialLcdSettings.ModeStatic ? asset : 3;
+        rig.Settings.AnimatedAsset = mode == GlacialLcdSettings.ModeAnimated ? asset : 1;
+
+        rig.Screen.Reconcile();
+
+        AssertSequence(rig.Take(), "EC DC", expected);
+    }
+
+    [Fact]
+    public void A_mode_picked_while_the_display_is_off_is_held_until_it_comes_on()
+    {
+        var rig = NewRig();
+        rig.Settings.DisplayOn = false;
+        rig.Screen.Open();
+        rig.Take();
+
+        rig.Settings.Mode = GlacialLcdSettings.ModeStatic;
+        rig.Settings.StaticAsset = 4;
+        Assert.True(rig.Screen.Reconcile());
+        Assert.Empty(rig.Take());
+
+        rig.Settings.DisplayOn = true;
+        rig.Screen.Reconcile();
+        Assert.Contains(Report("EC 51 11 00 04"), rig.Take());
+    }
+
+    [Fact]
+    public void A_panel_that_stays_silent_still_gets_the_saved_state_written_in_full()
+    {
+        var rig = NewRig(answering: false);
+        rig.Settings.Brightness = 30;
+
+        Assert.True(rig.Screen.Open());
+
+        Assert.Contains(Report("EC 5C 01 00 00 1E 00 00 00 1E 14 00 00 00 00 1E"), rig.Take());
+        Assert.All(rig.Hid.ReadTimeouts, t => Assert.True(t >= 0));
+    }
+
+    [Fact]
+    public void The_settings_write_carries_unknown_reply_bytes_through()
+    {
+        var rig = new Rig(Report("EC 5C 00 00 00 32 00 00 00 32 14 AA BB 00 00 32"));
+        rig.Screen.Open();
+
+        var settings = rig.Take().First(w => w[1] == 0x5C);
+        Assert.Equal(0xAA, settings[11]);
+        Assert.Equal(0xBB, settings[12]);
+    }
+
+    [Fact]
+    public void A_refused_report_fails_the_pass_so_the_worker_reopens()
+    {
+        var rig = NewRig();
+        rig.Screen.Open();
+        rig.Hid.FailWrites = true;
+        rig.Settings.Brightness = 10;
+
+        Assert.False(rig.Screen.Reconcile());
+    }
+
+    [Fact]
+    public void Saved_state_round_trips_through_the_settings_file()
+    {
+        var settings = new NexusSettings();
+        var g = settings.Devices.GlacialLcd;
+        g.DisplayOn = false;
+        g.Mode = GlacialLcdSettings.ModeMonitor;
+        g.StaticAsset = 4;
+        g.AnimatedAsset = 0;
+        g.SlotCount = 2;
+        g.Slots[1] = new GlacialLcdSlot { Category = "motherboard", Sensor = "mobo/voltage/vddio", Label = "VDDIO" };
+        g.Brightness = 30;
+        g.StayOnWhileAsleep = true;
+
+        var json = System.Text.Json.JsonSerializer.Serialize(settings, PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings)!.Devices.GlacialLcd;
+
+        Assert.False(back.DisplayOn);
+        Assert.Equal(GlacialLcdSettings.ModeMonitor, back.Mode);
+        Assert.Equal((4, 0, 2, 30, true), (back.StaticAsset, back.AnimatedAsset, back.SlotCount, back.Brightness, back.StayOnWhileAsleep));
+        Assert.Equal("mobo/voltage/vddio", back.Slots[1].Sensor);
+        Assert.Equal("VDDIO", back.Slots[1].Label);
+        Assert.Equal(3, back.Slots.Count);
+    }
+
+    [Fact]
+    public void Defaults_are_the_vendor_first_run_widgets()
+    {
+        var g = new GlacialLcdSettings();
+        Assert.Equal(new[] { "CPU", "CPU Package", "GPU" }, g.Slots.Select(s => s.Label));
+        Assert.Equal(3, g.SlotCount);
+        Assert.Equal(50, g.Brightness);
+    }
+
+    [Fact]
+    public void Values_use_the_vendor_formats()
+    {
+        Assert.Equal("43.0℃", GlacialLcdScreen.FormatValue("Temperature", 43f));
+        Assert.Equal("1.447↊", GlacialLcdScreen.FormatValue("Voltage", 1.4473f));
+        Assert.Equal("--", GlacialLcdScreen.FormatValue("Temperature", float.NaN));
+        Assert.Equal("--", GlacialLcdScreen.FormatValue("Load", 40f));
+    }
+
+    private static HardwareSensor Sensor(string id, string name, string type, float value) =>
+        new() { Id = id, Name = name, Type = type, Value = value };
+
+    [Fact]
+    public void Unpicked_widgets_default_to_cpu_temperature_package_and_gpu_temperature()
+    {
+        var sensors = new FakeSensorProvider
+        {
+            CpuSensors = new[]
+            {
+                Sensor("cpu/load", "CPU Total", "Load", 10f),
+                Sensor("cpu/core", "Core Max", "Temperature", 43f),
+                Sensor("cpu/pkg", "CPU Package", "Temperature", 57f),
+            },
+        };
+        var defaults = GlacialLcdSettings.DefaultSlots();
+
+        Assert.Equal(("CPU", "43.0℃"), GlacialLcdSensors.Read(sensors, defaults[0], 0));
+        Assert.Equal(("CPU Package", "57.0℃"), GlacialLcdSensors.Read(sensors, defaults[1], 1));
+        Assert.Equal(("GPU", GlacialLcdScreen.NoReading), GlacialLcdSensors.Read(sensors, defaults[2], 2));
+    }
+
+    [Fact]
+    public void A_picked_sensor_uses_its_own_name_unless_a_label_is_set()
+    {
+        var sensors = new FakeSensorProvider
+        {
+            MotherboardSensors = new[] { Sensor("mobo/vddio", "CPU VDDIO / MC", "Voltage", 1.447f) },
+        };
+        var slot = new GlacialLcdSlot { Category = "motherboard", Sensor = "mobo/vddio" };
+
+        Assert.Equal(("CPU VDDIO / MC", "1.447↊"), GlacialLcdSensors.Read(sensors, slot, 2));
+        slot.Label = "VDDIO";
+        Assert.Equal("VDDIO", GlacialLcdSensors.Read(sensors, slot, 2).Label);
+    }
+
+    private sealed class FakeScreenHid : IHidDevice
+    {
+        private readonly object _lock = new();
+        private readonly Queue<byte[]> _input = new();
+        private readonly List<byte[]> _writes = new();
+
+        public List<byte[]> Writes => _writes;
+        public List<int> ReadTimeouts { get; } = new();
+        public byte[]? StateReply { get; set; }
+        public bool FailWrites { get; set; }
+
+        public int VendorId => 0x0B05;
+        public int ProductId => GlacialLcdProtocol.ProductId;
+        public string Path => "/dev/fake-glacial";
+        public string? Serial => "FAKE";
+        public int UsagePage => 0xFF72;
+        public int Usage => 1;
+
+        public bool Write(ReadOnlySpan<byte> report)
+        {
+            if (FailWrites)
+            {
+                return false;
+            }
+            lock (_lock)
+            {
+                _writes.Add(report.ToArray());
+                if (report[1] == 0xDC && StateReply is { } reply)
+                {
+                    _input.Enqueue(reply);
+                }
+            }
+            return true;
+        }
+
+        public bool SetFeature(ReadOnlySpan<byte> report) => true;
+        public bool GetFeature(Span<byte> buffer) => false;
+        public bool GetInputReport(Span<byte> buffer) => false;
+        public bool SetOutputReport(ReadOnlySpan<byte> report) => false;
+
+        public int Read(Span<byte> buffer, int timeoutMs)
+        {
+            lock (_lock)
+            {
+                ReadTimeouts.Add(timeoutMs);
+                if (_input.Count == 0)
+                {
+                    return 0;
+                }
+                var reply = _input.Dequeue();
+                reply.CopyTo(buffer);
+                return reply.Length;
+            }
+        }
+
+        public void Dispose() { }
+    }
+}

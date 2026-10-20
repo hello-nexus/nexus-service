@@ -27,21 +27,21 @@ public class GlacialLcdTests
     }
 
     [Theory]
-    [InlineData(50, 0x00, false, "EC 5C 01 00 00 32 00 00 00 32 00 00 00 00 00 32")]
-    [InlineData(50, 0x14, false, "EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32")]
-    [InlineData(30, 0x14, false, "EC 5C 01 00 00 1E 00 00 00 1E 14 00 00 00 00 1E")]
-    [InlineData(70, 0x14, false, "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46")]
-    [InlineData(70, 0x14, true, "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46 14")]
-    public void Settings_write_matches_the_captured_brightness_mode_and_sleep_fields(int percent, byte mode, bool keepOn, string expected)
+    [InlineData(50, false, false, "EC 5C 01 00 00 32 00 00 00 32 00 00 00 00 00 32")]
+    [InlineData(50, true, false, "EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32")]
+    [InlineData(30, true, false, "EC 5C 01 00 00 1E 00 00 00 1E 14 00 00 00 00 1E")]
+    [InlineData(70, true, false, "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46")]
+    [InlineData(70, true, true, "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46 14")]
+    public void Settings_write_matches_the_captured_brightness_display_and_sleep_fields(int percent, bool displayOn, bool keepOn, string expected)
     {
-        Assert.Equal(Report(expected), GlacialLcdProtocol.EncodeSettings(percent, mode, keepOn));
+        Assert.Equal(Report(expected), GlacialLcdProtocol.EncodeSettings(percent, displayOn, keepOn));
     }
 
     [Fact]
     public void Settings_brightness_is_clamped_to_a_percent()
     {
-        Assert.Equal(100, GlacialLcdProtocol.EncodeSettings(250, 0, false)[5]);
-        Assert.Equal(0, GlacialLcdProtocol.EncodeSettings(-5, 0, false)[5]);
+        Assert.Equal(100, GlacialLcdProtocol.EncodeSettings(250, false, false)[5]);
+        Assert.Equal(0, GlacialLcdProtocol.EncodeSettings(-5, false, false)[5]);
     }
 
     [Fact]
@@ -49,7 +49,7 @@ public class GlacialLcdTests
     {
         var reply = Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32");
         var state = GlacialLcdProtocol.ParseState(reply);
-        Assert.Equal((50, (byte)0x14, false), state);
+        Assert.Equal((50, true, false), state);
         Assert.Null(GlacialLcdProtocol.ParseState(Report("EC 51")));
     }
 
@@ -393,7 +393,7 @@ public class GlacialLcdTests
         Assert.Equal(before, hid.Writes.Count);
 
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
-        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(70, 0x14, true)))));
+        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(70, true, true)))));
         driver.Disconnect(pipe, hid);
     }
 
@@ -416,7 +416,7 @@ public class GlacialLcdTests
 
         hid.StateReply = Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32");
         clock.Advance(10_000);
-        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, 0x14, false)))));
+        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, true, false)))));
         driver.Disconnect(pipe, hid);
     }
 
@@ -438,7 +438,7 @@ public class GlacialLcdTests
         driver.Connect(pipe, answering);
         clock.Advance(10_000);
 
-        Assert.True(WaitUntil(() => answering.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, 0x14, false))), 5000));
+        Assert.True(WaitUntil(() => answering.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, true, false))), 5000));
         driver.Disconnect(pipe, answering);
     }
 
@@ -476,7 +476,7 @@ public class GlacialLcdTests
         Assert.True(driver.SetBrightness(pipe, hid, 0));
 
         Assert.True(WaitUntil(() => !driver.IsUploading, 2000));
-        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, 0x14, false))), 2000));
+        Assert.True(WaitUntil(() => hid.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, true, false))), 2000));
         Assert.Equal(0, driver.UploadsCompleted);
         driver.Disconnect(pipe, hid);
     }
@@ -492,7 +492,7 @@ public class GlacialLcdTests
         Assert.True(driver.SetBrightness(new FakePipe(), hid, 70));
 
         Assert.Equal(
-            new[] { GlacialLcdProtocol.EncodeQuery(), GlacialLcdProtocol.EncodeSettings(70, 0x14, true) },
+            new[] { GlacialLcdProtocol.EncodeQuery(), GlacialLcdProtocol.EncodeSettings(70, true, true) },
             hid.Writes);
     }
 
