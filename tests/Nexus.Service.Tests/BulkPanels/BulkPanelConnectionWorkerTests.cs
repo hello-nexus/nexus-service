@@ -47,41 +47,11 @@ public class BulkPanelConnectionWorkerTests
     }
 
     [Fact]
-    public async Task A_driver_that_reads_hid_gets_an_overlapped_handle_and_others_do_not()
-    {
-        var usb = new SwitchableUsb { Present = true };
-        var store = new InMemoryConfigStore();
-        var opened = new ConcurrentBag<(string Path, bool ForInput)>();
-        foreach (IBulkPanelDriver driver in new IBulkPanelDriver[] { new GlacialLcdPanelDriver(), new RyujinPanelDriver() })
-        {
-            store.Update(s => s.Devices.NexusControlEnabled.Add(driver.HandlerId));
-            usb.Vendor = driver.VendorId;
-            usb.Product = driver.ProductIds[0];
-            var worker = new BulkPanelConnectionWorker(
-                new RecordingHid(driver.VendorId, driver.ProductIds[0], opened), new PipeFactory(), new BulkPanelHub(driver),
-                new DeviceControlGate(store), new HardwarePresence(usb), connectPollMs: 50, presencePollMs: 50);
-            await worker.StartAsync(CancellationToken.None);
-            try
-            {
-                Assert.True(await Eventually(() => opened.Any(o => o.Path == driver.HandlerId)));
-            }
-            finally
-            {
-                await worker.StopAsync(CancellationToken.None);
-            }
-        }
-
-        Assert.True(opened.First(o => o.Path == "asus-glacial-lcd").ForInput);
-        Assert.False(opened.First(o => o.Path == "asus-ryujin-lcd").ForInput);
-    }
-
-    [Fact]
-    public async Task The_glacial_worker_reapplies_the_saved_state_on_connect_and_applies_changes_at_once()
+    public async Task The_glacial_worker_only_reads_until_the_user_changes_something_then_applies_at_once()
     {
         var usb = new SwitchableUsb { Present = true, Vendor = 0x0B05, Product = GlacialLcdProtocol.ProductId };
         var store = new InMemoryConfigStore();
         store.Update(s => s.Devices.NexusControlEnabled.Add(GlacialLcdWorker.HandlerId));
-        store.Update(s => s.Devices.GlacialLcd.Brightness = 30);
         var hid = new RecordingDevice();
         var worker = new GlacialLcdWorker(
             new SingleHid(hid), new DeviceControlGate(store), new HardwarePresence(usb), store,
@@ -92,13 +62,12 @@ public class BulkPanelConnectionWorkerTests
         {
             Assert.True(await Eventually(() => worker.IsConnected));
             var first = hid.Snapshot();
-            Assert.Equal(GlacialLcdProtocol.EncodeHello(), first[0]);
-            Assert.Equal(GlacialLcdProtocol.EncodeQuery(), first[1]);
-            Assert.Contains(first, w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(30, true, false)));
-            Assert.Contains(first, w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeMode(GlacialLcdProtocol.ModeAnimatedAsset, 1)));
+            Assert.Equal(new[] { GlacialLcdProtocol.EncodeHello(), GlacialLcdProtocol.EncodeQuery() }, first);
 
             store.Update(s =>
             {
+                s.Devices.GlacialLcd.UserEdited = true;
+                s.Devices.GlacialLcd.ModeChosen = true;
                 s.Devices.GlacialLcd.Mode = GlacialLcdSettings.ModeStatic;
                 s.Devices.GlacialLcd.StaticAsset = 4;
             });
@@ -277,34 +246,6 @@ public class BulkPanelConnectionWorkerTests
         public bool Write(byte pipeId, ReadOnlySpan<byte> data) => true;
         public int Read(Span<byte> buffer, int timeoutMs) => 0;
         public void Dispose() { }
-    }
-
-    private sealed class RecordingHid : IHidEnumerator
-    {
-        private readonly int _vendor;
-        private readonly int _product;
-        private readonly ConcurrentBag<(string Path, bool ForInput)> _opened;
-
-        public RecordingHid(int vendor, int product, ConcurrentBag<(string Path, bool ForInput)> opened)
-        {
-            _vendor = vendor;
-            _product = product;
-            _opened = opened;
-        }
-
-        // The handler id stands in for the path so a test can tell the drivers apart.
-        public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) =>
-            vendorId == _vendor && productId == _product
-                ? new[] { new HidDeviceInfo { VendorId = vendorId, ProductId = productId, Path = _product == GlacialLcdProtocol.ProductId ? "asus-glacial-lcd" : "asus-ryujin-lcd", OutputReportByteLength = 65 } }
-                : Array.Empty<HidDeviceInfo>();
-
-        public IReadOnlyList<HidDeviceInfo> FindAll() => Array.Empty<HidDeviceInfo>();
-
-        public IHidDevice? Open(string path, bool forInput = false)
-        {
-            _opened.Add((path, forInput));
-            return null;
-        }
     }
 
     private sealed class SingleHid : IHidEnumerator

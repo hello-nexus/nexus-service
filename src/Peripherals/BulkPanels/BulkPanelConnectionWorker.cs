@@ -139,7 +139,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             {
                 // The commit report rides HID, so a panel that needs it is unusable
                 // without both channels; open HID first and skip the bulk probe if absent.
-                hid = OpenHid(driver.VendorId, pid, driver.HidOpensForInput);
+                hid = OpenHid(driver.VendorId, pid);
                 if (hid is null)
                 {
                     continue;
@@ -159,7 +159,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
         return false;
     }
 
-    private IHidDevice? OpenHid(int vendorId, int productId, bool forInput)
+    private IHidDevice? OpenHid(int vendorId, int productId)
     {
         HidDeviceInfo? best = null;
         foreach (var info in _hid.Find(vendorId, productId))
@@ -169,6 +169,6 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                 best = info;
             }
         }
-        return best == null ? null : _hid.Open(best.Path, forInput);
+        return best == null ? null : _hid.Open(best.Path);
     }
 }

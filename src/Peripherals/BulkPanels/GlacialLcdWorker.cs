@@ -12,10 +12,11 @@ using Nexus.Service.Sensors;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
-/// Opens the Glacial LCD's HID channel while the panel is present and Nexus Control is on,
-/// re-applies the saved state the way MB Manager does at start, then applies each change
-/// at once and keeps the hardware-monitor widgets fresh. HID only: the bulk interface is
-/// for picture uploads, which this build does not do.
+/// Opens the Glacial LCD's HID channel while the panel is present and Nexus Control is on.
+/// On connect it does what MB Manager does at start (hello, one state query) and seeds the
+/// saved brightness, display and sleep state from the reply; it writes to the panel only
+/// after the user has changed something in Nexus, then applies each change at once and keeps
+/// a hardware monitor's widgets fresh. HID only: the bulk interface is not used.
 /// </summary>
 public sealed class GlacialLcdWorker : BackgroundService
 {
@@ -24,6 +25,9 @@ public sealed class GlacialLcdWorker : BackgroundService
     private const int MissesToDetach = 2;
     private const int PresencePollMs = 2000;
     private const int LoopMs = 250;
+    private const int MaxBackoffMs = 5 * 60 * 1000;
+    private const int StableSessionMs = 30_000;
+    private const int LogEveryMs = 60_000;
 
     private readonly IHidEnumerator _hid;
     private readonly DeviceControlGate _gate;
@@ -33,6 +37,7 @@ public sealed class GlacialLcdWorker : BackgroundService
     private readonly int _connectPollMs;
     private readonly SemaphoreSlim _wake = new(0, 1);
     private volatile bool _connected;
+    private long _lastLogMs = long.MinValue;
 
     public GlacialLcdWorker(
         IHidEnumerator hid, DeviceControlGate gate, HardwarePresence presence, IConfigStore store, ISensorProvider sensors,
@@ -57,41 +62,27 @@ public sealed class GlacialLcdWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        int failures = 0;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 if (!_gate.IsEnabled(HandlerId) || !_presence.UsbPresent(0x0B05, GlacialLcdProtocol.ProductId))
                 {
+                    failures = 0;
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
-                using var hid = OpenHid();
-                if (hid is null)
+                long startedMs = Environment.TickCount64;
+                bool stable = await TrySession(stoppingToken).ConfigureAwait(false);
+                if (stable || Environment.TickCount64 - startedMs >= StableSessionMs)
                 {
-                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
-                    continue;
+                    failures = 0;
                 }
-                var screen = new GlacialLcdScreen(
-                    hid,
-                    () => _store.Load().Devices.GlacialLcd,
-                    (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index));
-                if (!screen.Open())
+                else
                 {
-                    ServiceLog.Warn($"[{HandlerId}] the panel did not take the opening reports; retrying");
-                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
-                    continue;
-                }
-                ServiceLog.Info($"[{HandlerId}] connected");
-                _connected = true;
-                try
-                {
-                    await RunSession(screen, stoppingToken).ConfigureAwait(false);
-                }
-                finally
-                {
-                    _connected = false;
-                    ServiceLog.Info($"[{HandlerId}] disconnected");
+                    failures++;
+                    await Task.Delay(Backoff(failures), stoppingToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException)
@@ -100,13 +91,95 @@ public sealed class GlacialLcdWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                ServiceLog.Error($"[{HandlerId}] worker error: {ex.Message}");
-                await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
+                failures++;
+                Log($"worker error: {ex.Message}", error: true);
+                await Task.Delay(Backoff(failures), stoppingToken).ConfigureAwait(false);
             }
         }
     }
 
-    private async Task RunSession(GlacialLcdScreen screen, CancellationToken stoppingToken)
+    /// <summary>Exponential from the connect poll, capped at a few minutes.</summary>
+    private int Backoff(int failures)
+    {
+        long delay = _connectPollMs;
+        for (int i = 1; i < failures && delay < MaxBackoffMs; i++)
+        {
+            delay *= 2;
+        }
+        return (int)Math.Min(delay, Math.Max(MaxBackoffMs, _connectPollMs));
+    }
+
+    /// <summary>One open-to-close session. True when it ended because the panel or the gate went away, false when the link failed.</summary>
+    private async Task<bool> TrySession(CancellationToken stoppingToken)
+    {
+        using var hid = OpenHid();
+        if (hid is null)
+        {
+            Log("no HID channel to open", error: false);
+            return false;
+        }
+        var screen = new GlacialLcdScreen(
+            hid,
+            ReadSettings,
+            (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index),
+            Seed,
+            message => Log(message, error: false));
+        if (!screen.Open())
+        {
+            Log("the panel did not take the opening reports", error: false);
+            return false;
+        }
+        ServiceLog.Info($"[{HandlerId}] connected");
+        _connected = true;
+        try
+        {
+            return await RunSession(screen, stoppingToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _connected = false;
+            ServiceLog.Info($"[{HandlerId}] disconnected");
+        }
+    }
+
+    private GlacialLcdSettings ReadSettings()
+    {
+        GlacialLcdSettings copy = new();
+        _store.Read(s => copy = s.Devices.GlacialLcd.Copy());
+        return copy;
+    }
+
+    /// <summary>Takes the panel's own brightness, display and sleep state as the saved one, until the user has changed anything.</summary>
+    private void Seed(int brightness, bool displayOn, bool keepOn) => _store.Update(s =>
+    {
+        var g = s.Devices.GlacialLcd;
+        if (!g.UserEdited)
+        {
+            g.Brightness = brightness;
+            g.DisplayOn = displayOn;
+            g.StayOnWhileAsleep = keepOn;
+        }
+    });
+
+    private void Log(string message, bool error)
+    {
+        long now = Environment.TickCount64;
+        if (_lastLogMs != long.MinValue && now - _lastLogMs < LogEveryMs)
+        {
+            return;
+        }
+        _lastLogMs = now;
+        if (error)
+        {
+            ServiceLog.Error($"[{HandlerId}] {message}");
+        }
+        else
+        {
+            ServiceLog.Warn($"[{HandlerId}] {message}");
+        }
+    }
+
+    private async Task<bool> RunSession(GlacialLcdScreen screen, CancellationToken stoppingToken)
     {
         int misses = 0;
         long nextPresenceMs = Environment.TickCount64 + PresencePollMs;
@@ -115,8 +188,8 @@ public sealed class GlacialLcdWorker : BackgroundService
             await _wake.WaitAsync(LoopMs, stoppingToken).ConfigureAwait(false);
             if (!screen.Reconcile() || !screen.Tick())
             {
-                ServiceLog.Warn($"[{HandlerId}] a report was refused; reopening");
-                return;
+                Log("a report was refused; reopening", error: false);
+                return false;
             }
             if (Environment.TickCount64 >= nextPresenceMs)
             {
@@ -124,10 +197,11 @@ public sealed class GlacialLcdWorker : BackgroundService
                 misses = _presence.UsbPresent(0x0B05, GlacialLcdProtocol.ProductId) ? 0 : misses + 1;
                 if (misses >= MissesToDetach)
                 {
-                    return;
+                    return true;
                 }
             }
         }
+        return true;
     }
 
     private IHidDevice? OpenHid()

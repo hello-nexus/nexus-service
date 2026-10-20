@@ -12,18 +12,23 @@ public static class GlacialLcdSensors
     public static (string Label, string Value) Read(ISensorProvider sensors, GlacialLcdSlot slot, int index)
     {
         var sensor = Find(sensors, slot, index);
-        string label = slot.Label.Length > 0 ? slot.Label : sensor?.Name ?? "";
+        string label = !string.IsNullOrEmpty(slot.Label) ? slot.Label : sensor?.Name ?? "";
         return (label, sensor is null ? GlacialLcdScreen.NoReading : GlacialLcdScreen.FormatValue(sensor.Type, sensor.Value));
     }
 
-    private static HardwareSensor? Find(ISensorProvider sensors, GlacialLcdSlot slot, int index)
+    /// <summary>The category an unpicked widget reads from.</summary>
+    public static string DefaultCategory(GlacialLcdSlot slot, int index) =>
+        !string.IsNullOrEmpty(slot.Category) ? slot.Category : index == 2 ? "gpu" : "cpu";
+
+    /// <summary>The sensor a widget reads: the picked one, or the slot's default when none is picked.</summary>
+    public static HardwareSensor? Find(ISensorProvider sensors, GlacialLcdSlot slot, int index)
     {
-        if (slot.Sensor.Length > 0)
+        if (!string.IsNullOrEmpty(slot.Sensor))
         {
-            return SensorSnapshotResolver.Resolve(sensors, slot.Category, slot.Sensor);
+            return SensorSnapshotResolver.Resolve(sensors, slot.Category ?? "", slot.Sensor);
         }
         // Unpicked: the first temperature of the slot's category, the package reading for the second widget.
-        string category = slot.Category.Length > 0 ? slot.Category : index == 2 ? "gpu" : "cpu";
+        string category = DefaultCategory(slot, index);
         var list = SensorSnapshotResolver.GetCategorySensors(sensors, category);
         HardwareSensor? first = null;
         foreach (var candidate in list)

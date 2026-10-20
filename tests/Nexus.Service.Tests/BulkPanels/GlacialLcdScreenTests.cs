@@ -34,6 +34,8 @@ public class GlacialLcdScreenTests
         public GlacialLcdSettings Settings { get; set; } = new();
         public Clock Clock { get; } = new();
         public FakeScreenHid Hid { get; } = new();
+        public List<(int Brightness, bool DisplayOn, bool KeepOn)> Seeds { get; } = new();
+        public List<string> Warnings { get; } = new();
         public int Reads;
         public GlacialLcdScreen Screen { get; }
 
@@ -42,19 +44,29 @@ public class GlacialLcdScreenTests
             Hid.StateReply = stateReply;
             Screen = new GlacialLcdScreen(
                 Hid,
-                () => Settings,
+                () => Settings.Copy(),
                 (slot, index) =>
                 {
                     Reads++;
                     return index switch
                     {
-                        0 => ("CPU", "43.0℃"),
-                        1 => ("CPU Package", "57.0℃"),
-                        _ => ("GPU", "30.7℃"),
+                        0 => ("CPU", "43.0\u2103"),
+                        1 => ("CPU Package", "57.0\u2103"),
+                        _ => ("GPU", "30.7\u2103"),
                     };
                 },
+                (b, d, k) => Seeds.Add((b, d, k)),
+                Warnings.Add,
                 () => Clock.Now,
                 _ => { });
+        }
+
+        /// <summary>The user has changed something and chosen the mode, which is when Nexus starts writing.</summary>
+        public Rig Owned(bool modeChosen = true)
+        {
+            Settings.UserEdited = true;
+            Settings.ModeChosen = modeChosen;
+            return this;
         }
 
         public List<byte[]> Take()
@@ -70,35 +82,76 @@ public class GlacialLcdScreenTests
     private static void AssertSequence(IEnumerable<byte[]> actual, params string[] expected) =>
         Assert.Equal(expected.Select(Report), actual);
 
+    private const string Slot0 = "EC 53 00 43 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 34 33 2E 30 E2 84 83";
+    private const string Slot1 = "EC 53 01 43 50 55 20 50 61 63 6B 61 67 65 00 00 00 00 00 00 00 35 37 2E 30 E2 84 83";
+    private const string Slot2 = "EC 53 02 47 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33 30 2E 37 E2 84 83";
+
     [Fact]
-    public void Open_sends_the_app_start_pair_then_the_saved_animated_state()
+    public void Open_sends_only_the_app_start_pair_and_seeds_from_the_first_reply()
     {
-        var rig = NewRig();
+        var rig = new Rig(Report("EC 5C 00 00 00 28 00 00 00 28 14 00 00 00 00 28 14"));
 
         Assert.True(rig.Screen.Open());
 
-        AssertSequence(rig.Take(), "EC 82", "EC DC", "EC DC", "EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32", "EC DC", "EC 51 14 00 01");
+        AssertSequence(rig.Take(), "EC 82", "EC DC");
+        Assert.Equal((40, true, true), Assert.Single(rig.Seeds));
     }
 
     [Fact]
-    public void Open_reapplies_a_saved_hardware_monitor_the_way_the_app_applies_it()
+    public void A_panel_the_user_has_not_touched_is_never_written_to()
     {
         var rig = NewRig();
+        rig.Screen.Open();
+        rig.Take();
+
+        rig.Settings.Brightness = 70;
+        rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
+        Assert.True(rig.Screen.Reconcile());
+        rig.Clock.Now += 60_000;
+        Assert.True(rig.Screen.Tick());
+
+        Assert.Empty(rig.Take());
+    }
+
+    [Fact]
+    public void Without_a_first_reply_the_seed_is_retried_later_and_the_gap_is_reported()
+    {
+        var rig = NewRig(answering: false);
+
+        Assert.True(rig.Screen.Open());
+        Assert.Empty(rig.Seeds);
+
+        rig.Clock.Now += GlacialLcdScreen.NoReplyRetryMs;
+        rig.Screen.Tick();
+        Assert.Single(rig.Warnings);
+
+        rig.Hid.StateReply = Report(StateReply);
+        rig.Clock.Now += GlacialLcdScreen.NoReplyRetryMs;
+        rig.Screen.Tick();
+        Assert.Single(rig.Seeds);
+        Assert.All(rig.Hid.ReadTimeouts, t => Assert.True(t >= 0));
+    }
+
+    [Fact]
+    public void A_saved_monitor_the_user_chose_is_resumed_in_the_captured_order_on_connect()
+    {
+        var rig = NewRig().Owned();
         rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
 
         Assert.True(rig.Screen.Open());
 
-        var writes = rig.Take();
-        AssertSequence(
-            writes.Skip(5),
-            "EC 53 00 43 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 34 33 2E 30 E2 84 83",
-            "EC 53 01 43 50 55 20 50 61 63 6B 61 67 65 00 00 00 00 00 00 00 35 37 2E 30 E2 84 83",
-            "EC 53 02 47 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33 30 2E 37 E2 84 83",
-            "EC 52 00 02",
-            "EC 51 21",
-            "EC 53 00 43 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 34 33 2E 30 E2 84 83",
-            "EC 53 01 43 50 55 20 50 61 63 6B 61 67 65 00 00 00 00 00 00 00 35 37 2E 30 E2 84 83",
-            "EC 53 02 47 50 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 33 30 2E 37 E2 84 83");
+        AssertSequence(rig.Take(), "EC 82", "EC DC", "EC DC", Slot0, Slot1, Slot2, "EC 52 00 02", "EC 51 21", Slot0, Slot1, Slot2);
+    }
+
+    [Fact]
+    public void Other_saved_modes_are_left_to_the_panel_on_connect()
+    {
+        var rig = NewRig().Owned();
+        rig.Settings.Mode = GlacialLcdSettings.ModeStatic;
+
+        rig.Screen.Open();
+
+        AssertSequence(rig.Take(), "EC 82", "EC DC");
     }
 
     [Theory]
@@ -106,7 +159,7 @@ public class GlacialLcdScreenTests
     [InlineData(2, "EC 52 00 01")]
     public void The_widget_count_is_announced_before_the_monitor_mode(int count, string announce)
     {
-        var rig = NewRig();
+        var rig = NewRig().Owned();
         rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
         rig.Settings.SlotCount = count;
 
@@ -122,7 +175,7 @@ public class GlacialLcdScreenTests
     [Fact]
     public void Monitor_widgets_are_resent_on_the_vendor_cadence_with_fresh_readings()
     {
-        var rig = NewRig();
+        var rig = NewRig().Owned();
         rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
         rig.Screen.Open();
         rig.Take();
@@ -143,7 +196,7 @@ public class GlacialLcdScreenTests
     [Fact]
     public void Nothing_is_resent_outside_monitor_mode_or_while_the_display_is_off()
     {
-        var rig = NewRig();
+        var rig = NewRig().Owned();
         rig.Screen.Open();
         rig.Take();
         rig.Clock.Now += 60_000;
@@ -162,7 +215,7 @@ public class GlacialLcdScreenTests
     [Fact]
     public void A_brightness_change_is_the_captured_settings_write_and_two_mode_repeats()
     {
-        var rig = NewRig();
+        var rig = NewRig().Owned();
         rig.Screen.Open();
         rig.Take();
         rig.Settings.Brightness = 70;
@@ -174,9 +227,22 @@ public class GlacialLcdScreenTests
     }
 
     [Fact]
+    public void Before_a_mode_is_chosen_a_brightness_change_does_not_reselect_one()
+    {
+        var rig = NewRig().Owned(modeChosen: false);
+        rig.Screen.Open();
+        rig.Take();
+        rig.Settings.Brightness = 70;
+
+        rig.Screen.Reconcile();
+
+        AssertSequence(rig.Take(), "EC DC", "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46");
+    }
+
+    [Fact]
     public void The_sleep_toggle_sets_the_sleep_field_and_repeats_the_mode()
     {
-        var rig = NewRig();
+        var rig = NewRig().Owned();
         rig.Screen.Open();
         rig.Take();
         rig.Settings.StayOnWhileAsleep = true;
@@ -191,7 +257,7 @@ public class GlacialLcdScreenTests
     [Fact]
     public void Display_off_is_the_settings_write_then_a_bare_mode_off_and_on_restores_the_mode()
     {
-        var rig = NewRig();
+        var rig = NewRig().Owned();
         rig.Screen.Open();
         rig.Take();
 
@@ -210,10 +276,10 @@ public class GlacialLcdScreenTests
     [InlineData(GlacialLcdSettings.ModeAnimated, 0, "EC 51 14")]
     public void A_preset_pick_is_a_query_and_the_captured_mode_select(string mode, int asset, string expected)
     {
-        var rig = NewRig();
-        rig.Settings.AnimatedAsset = 1;
+        var rig = NewRig().Owned(modeChosen: false);
         rig.Screen.Open();
         rig.Take();
+        rig.Settings.ModeChosen = true;
         rig.Settings.Mode = mode;
         rig.Settings.StaticAsset = mode == GlacialLcdSettings.ModeStatic ? asset : 3;
         rig.Settings.AnimatedAsset = mode == GlacialLcdSettings.ModeAnimated ? asset : 1;
@@ -226,7 +292,7 @@ public class GlacialLcdScreenTests
     [Fact]
     public void A_mode_picked_while_the_display_is_off_is_held_until_it_comes_on()
     {
-        var rig = NewRig();
+        var rig = NewRig().Owned();
         rig.Settings.DisplayOn = false;
         rig.Screen.Open();
         rig.Take();
@@ -242,32 +308,68 @@ public class GlacialLcdScreenTests
     }
 
     [Fact]
-    public void A_panel_that_stays_silent_still_gets_the_saved_state_written_in_full()
+    public void A_brightness_and_a_monitor_switch_in_one_pass_send_the_widgets_before_the_monitor_mode()
     {
-        var rig = NewRig(answering: false);
+        var rig = NewRig().Owned();
+        rig.Screen.Open();
+        rig.Take();
+        rig.Settings.Brightness = 70;
+        rig.Settings.Mode = GlacialLcdSettings.ModeMonitor;
+
+        Assert.True(rig.Screen.Reconcile());
+
+        AssertSequence(
+            rig.Take(), "EC DC", "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46", "EC DC", Slot0, Slot1, Slot2, "EC 52 00 02", "EC 51 21", Slot0, Slot1, Slot2);
+    }
+
+    [Fact]
+    public void Without_a_fresh_state_reply_no_settings_are_written_and_the_write_is_retried_later()
+    {
+        var rig = NewRig(answering: false).Owned();
+        rig.Screen.Open();
+        rig.Take();
         rig.Settings.Brightness = 30;
 
-        Assert.True(rig.Screen.Open());
+        Assert.True(rig.Screen.Reconcile());
+        AssertSequence(rig.Take(), "EC DC");
+        Assert.Single(rig.Warnings);
 
+        // Inside the retry pause the panel is left alone.
+        Assert.True(rig.Screen.Reconcile());
+        Assert.Empty(rig.Take());
+
+        rig.Hid.StateReply = Report(StateReply);
+        rig.Clock.Now += GlacialLcdScreen.NoReplyRetryMs;
+        Assert.True(rig.Screen.Reconcile());
         Assert.Contains(Report("EC 5C 01 00 00 1E 00 00 00 1E 14 00 00 00 00 1E"), rig.Take());
         Assert.All(rig.Hid.ReadTimeouts, t => Assert.True(t >= 0));
     }
 
     [Fact]
-    public void The_settings_write_carries_unknown_reply_bytes_through()
+    public void Stale_echoes_and_old_state_replies_are_drained_before_the_query()
     {
-        var rig = new Rig(Report("EC 5C 00 00 00 32 00 00 00 32 14 AA BB 00 00 32"));
+        var rig = new Rig(Report("EC 5C 00 00 00 32 00 00 00 32 14 AA BB 00 00 32")).Owned();
         rig.Screen.Open();
+        rig.Take();
+        // The panel echoed every earlier report, and an old state reply is still queued.
+        rig.Hid.Input.Enqueue(Report("EC 51"));
+        rig.Hid.Input.Enqueue(Report("EC 5C 00 00 00 0A 00 00 00 0A 11 00 00 00 00 0A"));
+        rig.Hid.Input.Enqueue(Report("EC 53"));
+        rig.Settings.Brightness = 70;
+
+        rig.Screen.Reconcile();
 
         var settings = rig.Take().First(w => w[1] == 0x5C);
+        Assert.Equal(70, settings[5]);
         Assert.Equal(0xAA, settings[11]);
         Assert.Equal(0xBB, settings[12]);
+        Assert.Equal(0x14, settings[10]);
     }
 
     [Fact]
     public void A_refused_report_fails_the_pass_so_the_worker_reopens()
     {
-        var rig = NewRig();
+        var rig = NewRig().Owned();
         rig.Screen.Open();
         rig.Hid.FailWrites = true;
         rig.Settings.Brightness = 10;
@@ -280,6 +382,8 @@ public class GlacialLcdScreenTests
     {
         var settings = new NexusSettings();
         var g = settings.Devices.GlacialLcd;
+        g.UserEdited = true;
+        g.ModeChosen = true;
         g.DisplayOn = false;
         g.Mode = GlacialLcdSettings.ModeMonitor;
         g.StaticAsset = 4;
@@ -292,12 +396,27 @@ public class GlacialLcdScreenTests
         var json = System.Text.Json.JsonSerializer.Serialize(settings, PersistenceJsonContext.Default.NexusSettings);
         var back = System.Text.Json.JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings)!.Devices.GlacialLcd;
 
+        Assert.True(back.UserEdited);
+        Assert.True(back.ModeChosen);
         Assert.False(back.DisplayOn);
         Assert.Equal(GlacialLcdSettings.ModeMonitor, back.Mode);
         Assert.Equal((4, 0, 2, 30, true), (back.StaticAsset, back.AnimatedAsset, back.SlotCount, back.Brightness, back.StayOnWhileAsleep));
         Assert.Equal("mobo/voltage/vddio", back.Slots[1].Sensor);
         Assert.Equal("VDDIO", back.Slots[1].Label);
         Assert.Equal(3, back.Slots.Count);
+    }
+
+    [Fact]
+    public void Copy_replaces_persisted_nulls_and_fills_the_widget_list()
+    {
+        var g = new GlacialLcdSettings { Mode = null!, Slots = new List<GlacialLcdSlot> { null!, new() { Category = null!, Sensor = null!, Label = null! } } };
+
+        var copy = g.Copy();
+
+        Assert.Equal(GlacialLcdSettings.ModeAnimated, copy.Mode);
+        Assert.Equal(3, copy.Slots.Count);
+        Assert.All(copy.Slots, slot => Assert.True(slot.Category is not null && slot.Sensor is not null && slot.Label is not null));
+        Assert.Equal("CPU", copy.Slots[0].Label);
     }
 
     [Fact]
@@ -358,6 +477,8 @@ public class GlacialLcdScreenTests
     {
         private readonly object _lock = new();
         private readonly Queue<byte[]> _input = new();
+
+        public Queue<byte[]> Input => _input;
         private readonly List<byte[]> _writes = new();
 
         public List<byte[]> Writes => _writes;
@@ -381,9 +502,20 @@ public class GlacialLcdScreenTests
             lock (_lock)
             {
                 _writes.Add(report.ToArray());
-                if (report[1] == 0xDC && StateReply is { } reply)
+                if (report[1] == 0xDC)
                 {
-                    _input.Enqueue(reply);
+                    if (StateReply is { } reply)
+                    {
+                        _input.Enqueue(reply);
+                    }
+                }
+                else
+                {
+                    // The panel echoes every other report's opcode.
+                    var echo = new byte[GlacialLcdProtocol.ReportBytes];
+                    echo[0] = report[0];
+                    echo[1] = report[1];
+                    _input.Enqueue(echo);
                 }
             }
             return true;

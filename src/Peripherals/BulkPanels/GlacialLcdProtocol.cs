@@ -152,7 +152,8 @@ public static class GlacialLcdProtocol
     {
         var report = Report(0x53);
         report[2] = (byte)slot;
-        CopyField(label, report.AsSpan(3, SlotLabelBytes));
+        // One byte short of the field, so a NUL always separates the label from the value.
+        CopyField(label, report.AsSpan(3, SlotLabelBytes - 1));
         CopyField(value, report.AsSpan(SlotValueOffset));
         return report;
     }

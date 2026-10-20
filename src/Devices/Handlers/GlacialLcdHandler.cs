@@ -16,7 +16,7 @@ public sealed class GlacialLcdHandler : IDeviceHandler
 
     public string Id => GlacialLcdWorker.HandlerId;
     public string Name => "ROG Crosshair X870E Glacial LCD";
-    public string Category => "controller";
+    public string Category => "light";
 
     public IReadOnlyList<UsbId> Identifiers { get; } = new[] { new UsbId(0x0B05, GlacialLcdProtocol.ProductId) };
 

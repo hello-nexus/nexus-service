@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Nexus.Service.Models;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Persistence;
+using Nexus.Service.Sensors;
 using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Routes;
@@ -14,8 +15,8 @@ public static partial class DevicesRoutes
 
     private static void MapGlacialLcdEndpoints(WebApplication app)
     {
-        app.MapGet("/devices/asus-glacial-lcd/state", (IConfigStore store, GlacialLcdWorker worker) =>
-            Results.Json(BuildGlacialState(store.Load().Devices.GlacialLcd, worker.IsConnected), AppJsonContext.Default.GlacialLcdStateResponse));
+        app.MapGet("/devices/asus-glacial-lcd/state", (IConfigStore store, GlacialLcdWorker worker, ISensorProvider sensors) =>
+            Results.Json(BuildGlacialState(ReadGlacial(store), worker.IsConnected, sensors), AppJsonContext.Default.GlacialLcdStateResponse));
 
         app.MapPut("/devices/asus-glacial-lcd/settings", (GlacialLcdSettingsRequest body, IConfigStore store, GlacialLcdWorker worker) =>
         {
@@ -38,13 +39,20 @@ public static partial class DevicesRoutes
             }
             if (body.Slots is { } slots
                 && (slots.Length > GlacialLcdProtocol.MaxMonitorSlots
-                    || slots.Any(s => s.Category.Length > 0 && !GlacialSensorCategories.Contains(s.Category))))
+                    || slots.Any(s => s is null || s.Category is null || s.Sensor is null || s.Label is null
+                        || (s.Category.Length > 0 && !GlacialSensorCategories.Contains(s.Category)))))
             {
                 return Results.BadRequest(ApiResponse.Fail("invalid slots"));
             }
             store.Update(s =>
             {
                 var g = s.Devices.GlacialLcd;
+                // Any change hands the panel to Nexus; picking a mode or its content also makes the mode known.
+                g.UserEdited = true;
+                if (body.Mode is not null || body.StaticAsset.HasValue || body.AnimatedAsset.HasValue || body.SlotCount.HasValue || body.Slots is not null)
+                {
+                    g.ModeChosen = true;
+                }
                 if (body.DisplayOn.HasValue) { g.DisplayOn = body.DisplayOn.Value; }
                 if (body.Mode is not null) { g.Mode = body.Mode; }
                 if (body.StaticAsset.HasValue) { g.StaticAsset = body.StaticAsset.Value; }
@@ -54,6 +62,7 @@ public static partial class DevicesRoutes
                 if (body.StayOnWhileAsleep.HasValue) { g.StayOnWhileAsleep = body.StayOnWhileAsleep.Value; }
                 if (body.Slots is { } slots)
                 {
+                    g.Slots = g.Copy().Slots;
                     while (g.Slots.Count < GlacialLcdProtocol.MaxMonitorSlots)
                     {
                         g.Slots.Add(new GlacialLcdSlot());
@@ -69,7 +78,14 @@ public static partial class DevicesRoutes
         });
     }
 
-    private static GlacialLcdStateResponse BuildGlacialState(GlacialLcdSettings g, bool connected) => new()
+    private static GlacialLcdSettings ReadGlacial(IConfigStore store)
+    {
+        GlacialLcdSettings copy = new();
+        store.Read(s => copy = s.Devices.GlacialLcd.Copy());
+        return copy;
+    }
+
+    private static GlacialLcdStateResponse BuildGlacialState(GlacialLcdSettings g, bool connected, ISensorProvider sensors) => new()
     {
         IsConnected = connected,
         DisplayOn = g.DisplayOn,
@@ -78,8 +94,15 @@ public static partial class DevicesRoutes
         AnimatedAsset = g.AnimatedAsset,
         SlotCount = g.SlotCount,
         Slots = Enumerable.Range(0, GlacialLcdProtocol.MaxMonitorSlots)
-            .Select(i => i < g.Slots.Count ? g.Slots[i] : new GlacialLcdSlot())
-            .Select(s => new GlacialLcdSlotDto { Category = s.Category, Sensor = s.Sensor, Label = s.Label })
+            .Select(i => (Slot: i < g.Slots.Count ? g.Slots[i] : new GlacialLcdSlot(), Index: i))
+            .Select(x => new GlacialLcdSlotDto
+            {
+                Category = x.Slot.Category,
+                Sensor = x.Slot.Sensor,
+                Label = x.Slot.Label,
+                ResolvedCategory = x.Slot.Sensor.Length > 0 ? x.Slot.Category : GlacialLcdSensors.DefaultCategory(x.Slot, x.Index),
+                ResolvedSensor = GlacialLcdSensors.Find(sensors, x.Slot, x.Index)?.Id ?? "",
+            })
             .ToArray(),
         Brightness = g.Brightness,
         StayOnWhileAsleep = g.StayOnWhileAsleep,
@@ -93,6 +116,12 @@ public sealed class GlacialLcdSlotDto
     public string Category { get; set; } = "";
     public string Sensor { get; set; } = "";
     public string Label { get; set; } = "";
+
+    /// <summary>Response only: the category the widget reads, which for an unpicked widget is its default.</summary>
+    public string ResolvedCategory { get; set; } = "";
+
+    /// <summary>Response only: the sensor id the widget reads, empty when none resolves.</summary>
+    public string ResolvedSensor { get; set; } = "";
 }
 
 public sealed class GlacialLcdStateResponse

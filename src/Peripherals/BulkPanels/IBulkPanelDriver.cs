@@ -36,12 +36,6 @@ public interface IBulkPanelDriver
     bool NeedsHidChannel { get; }
 
     /// <summary>
-    /// True when the driver reads the HID channel, so the handle must be opened for overlapped
-    /// input: a plain handle ignores read timeouts on Windows and would block the caller.
-    /// </summary>
-    bool HidOpensForInput => false;
-
-    /// <summary>
     /// Runs the opening handshake and reports the panel geometry to drive. Null means the
     /// panel is not usable, which the worker treats as "try again later" rather than a
     /// hard failure. A panel that reports its own resolution returns what it reported, not

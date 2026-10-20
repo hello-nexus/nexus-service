@@ -7,71 +7,92 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
-/// Drives the Glacial LCD's native modes the way MB Manager does: every change is a state
-/// query (0xDC) followed by the reports the capture showed for it, and the hardware monitor
-/// resends its widgets on a fixed cadence. Owned by one worker thread; nothing here locks.
+/// Drives the Glacial LCD's native modes the way MB Manager does: a state query (0xDC)
+/// ahead of every change, then the reports the capture showed for it, with the hardware
+/// monitor resending its widgets on a fixed cadence. Until the user changes something in
+/// Nexus the panel is only read. Owned by one worker thread; nothing here locks.
 /// </summary>
 public sealed class GlacialLcdScreen
 {
     /// <summary>Gap between two widget resends in the captures.</summary>
     public const int SlotResendMs = 5100;
 
-    /// <summary>Gap between the reports of one burst in the captures.</summary>
+    /// <summary>Wait before trying again when the panel gave no state reply.</summary>
+    public const int NoReplyRetryMs = 10_000;
+
+    /// <summary>Shown when a widget has no reading.</summary>
+    public const string NoReading = "--";
+
     private const int BurstGapMs = 15;
-
-    /// <summary>Delay before the app's second mode repeat after a settings write.</summary>
     private const int RepeatGapMs = 80;
-
     private const int StateReplyAttempts = 3;
     private const int StateReplyWaitMs = 200;
     private const int DrainLimit = 64;
 
-    /// <summary>Shown when a widget has no reading; the vendor app never showed this case.</summary>
-    public const string NoReading = "--";
+    private enum Step
+    {
+        Ok,
+        NoReply,
+        Failed,
+    }
 
     private readonly IHidDevice _hid;
     private readonly Func<GlacialLcdSettings> _settings;
     private readonly Func<GlacialLcdSlot, int, (string Label, string Value)> _reader;
+    private readonly Action<int, bool, bool> _seed;
+    private readonly Action<string> _warn;
     private readonly Func<long> _clock;
     private readonly Action<int> _pause;
 
     private GlacialLcdSettings? _applied;
     private long _lastSlotsMs;
+    private long _retryAtMs;
+    private bool _seeded;
 
     public GlacialLcdScreen(
         IHidDevice hid,
         Func<GlacialLcdSettings> settings,
         Func<GlacialLcdSlot, int, (string Label, string Value)> reader,
+        Action<int, bool, bool>? seed = null,
+        Action<string>? warn = null,
         Func<long>? clock = null,
         Action<int>? pause = null)
     {
         _hid = hid;
         _settings = settings;
         _reader = reader;
+        _seed = seed ?? ((_, _, _) => { });
+        _warn = warn ?? (_ => { });
         _clock = clock ?? (() => Environment.TickCount64);
         _pause = pause ?? (ms => System.Threading.Thread.Sleep(ms));
     }
 
     /// <summary>
-    /// The app-start sequence (hello, then a state query), followed by the whole saved state.
-    /// False when the panel did not take a report.
+    /// The app-start pair (hello, one state query), then the first reply seeds the saved
+    /// brightness, display and sleep state. Only a monitor the user already chose is resumed;
+    /// everything else the panel keeps on its own. False when the panel did not take a report.
     /// </summary>
     public bool Open()
     {
+        Drain();
         if (!_hid.Write(GlacialLcdProtocol.EncodeHello()) || !_hid.Write(GlacialLcdProtocol.EncodeQuery()))
         {
             return false;
         }
-        var wanted = _settings().Copy();
-        _applied = null;
-        bool ok = wanted.DisplayOn
-            ? WriteSettings(wanted, repeats: 0) && SelectMode(wanted)
-            : WriteOff(wanted);
-        if (ok)
+        var reply = AwaitState();
+        if (reply is null)
         {
-            _applied = wanted;
+            return false;
         }
-        return ok;
+        TrySeed(reply);
+
+        var wanted = _settings().Copy();
+        _applied = wanted;
+        if (wanted.UserEdited && wanted.ModeChosen && wanted.DisplayOn && wanted.Mode == GlacialLcdSettings.ModeMonitor)
+        {
+            return SelectMode(wanted) != Step.Failed;
+        }
+        return true;
     }
 
     /// <summary>Sends whatever differs between the saved state and what the panel was last given.</summary>
@@ -83,44 +104,81 @@ public sealed class GlacialLcdScreen
         {
             return false;
         }
+        if (!wanted.UserEdited)
+        {
+            _applied = wanted;
+            return true;
+        }
+        if (_clock() < _retryAtMs)
+        {
+            return true;
+        }
         bool flagsChanged = wanted.Brightness != applied.Brightness
             || wanted.StayOnWhileAsleep != applied.StayOnWhileAsleep
             || wanted.DisplayOn != applied.DisplayOn;
-        bool modeChanged = ModeKey(wanted) != ModeKey(applied);
+        bool modeChanged = wanted.ModeChosen && (!applied.ModeChosen || ModeKey(wanted) != ModeKey(applied));
         if (!flagsChanged && (!modeChanged || !wanted.DisplayOn))
         {
-            // A mode picked while the display is off is only remembered; it is sent when the display comes on.
+            // A mode picked while the display is off is sent when it comes on.
             _applied = wanted;
             return true;
         }
 
-        bool ok;
-        if (flagsChanged)
+        Step step;
+        if (!flagsChanged)
         {
-            // Off is the 5C write and a bare mode off; on repeats the whole selection; a
-            // brightness or sleep change writes 5C and repeats the current mode select twice.
-            ok = !wanted.DisplayOn
-                ? WriteOff(wanted)
-                : wanted.DisplayOn != applied.DisplayOn
-                    ? WriteSettings(wanted, repeats: 0) && SelectMode(wanted)
-                    : WriteSettings(wanted, repeats: 2) && (!modeChanged || SelectMode(wanted));
+            step = SelectMode(wanted);
+        }
+        else if (!wanted.DisplayOn)
+        {
+            step = WriteOff(wanted);
         }
         else
         {
-            ok = SelectMode(wanted);
+            // Brightness or sleep alone repeats the current mode select; a display turn-on or a
+            // mode change selects the mode once, after the settings, so a monitor's widgets
+            // always go out before its mode select.
+            bool reselect = wanted.ModeChosen && (modeChanged || wanted.DisplayOn != applied.DisplayOn);
+            step = WriteSettings(wanted, repeats: wanted.ModeChosen && !reselect ? 2 : 0);
+            if (step == Step.Ok && reselect)
+            {
+                step = SelectMode(wanted);
+            }
         }
-        if (ok)
+        if (step == Step.Failed)
         {
-            _applied = wanted;
+            return false;
         }
-        return ok;
+        if (step == Step.NoReply)
+        {
+            Deferred();
+            return true;
+        }
+        _applied = wanted;
+        return true;
     }
 
-    /// <summary>Resends the monitor widgets when their interval has run out.</summary>
+    /// <summary>Resends the monitor widgets when their interval has run out, and seeds from the panel if it has not answered yet.</summary>
     public bool Tick()
     {
         var applied = _applied;
-        if (applied is null || !applied.DisplayOn || applied.Mode != GlacialLcdSettings.ModeMonitor)
+        if (applied is null)
+        {
+            return true;
+        }
+        if (!_seeded && !applied.UserEdited && _clock() >= _retryAtMs)
+        {
+            var reply = ReadState();
+            if (reply is { Length: > 0 })
+            {
+                TrySeed(reply);
+            }
+            else
+            {
+                Deferred();
+            }
+        }
+        if (!applied.UserEdited || !applied.ModeChosen || !applied.DisplayOn || applied.Mode != GlacialLcdSettings.ModeMonitor)
         {
             return true;
         }
@@ -128,11 +186,25 @@ public sealed class GlacialLcdScreen
         {
             return true;
         }
-        // Readings come from the saved slots so a sensor pick shows at once, but the count
-        // and mode are the ones last announced.
+        // Readings follow the saved slots so a sensor pick shows at once; the count is the one last announced.
         var current = _settings().Copy();
         current.SlotCount = applied.SlotCount;
         return SendSlots(current);
+    }
+
+    private void Deferred()
+    {
+        _retryAtMs = _clock() + NoReplyRetryMs;
+        _warn("no state reply from the panel; will retry");
+    }
+
+    private void TrySeed(byte[] reply)
+    {
+        if (GlacialLcdProtocol.ParseState(reply) is { } state)
+        {
+            _seeded = true;
+            _seed(state.BrightnessPercent, state.DisplayOn, state.KeepOnWhileAsleep);
+        }
     }
 
     private static string ModeKey(GlacialLcdSettings s) => s.Mode switch
@@ -152,19 +224,18 @@ public sealed class GlacialLcdScreen
         return string.Join("|", parts);
     }
 
-    private bool Query() => _hid.Write(GlacialLcdProtocol.EncodeQuery());
-
-    /// <summary>Drains stale input, queries, and returns the fresh 5C reply or null.</summary>
-    private byte[]? ReadState()
+    private void Drain()
     {
         var buffer = new byte[GlacialLcdProtocol.ReportBytes];
         for (int i = 0; i < DrainLimit && _hid.Read(buffer, 0) > 0; i++)
         {
         }
-        if (!Query())
-        {
-            return null;
-        }
+    }
+
+    /// <summary>Waits for the 5C reply to a query already written; null when the link failed, empty when none came.</summary>
+    private byte[]? AwaitState()
+    {
+        var buffer = new byte[GlacialLcdProtocol.ReportBytes];
         for (int attempt = 0; attempt < StateReplyAttempts; attempt++)
         {
             int read = _hid.Read(buffer, StateReplyWaitMs);
@@ -180,46 +251,59 @@ public sealed class GlacialLcdScreen
         return Array.Empty<byte>();
     }
 
-    private bool WriteSettingsReport(GlacialLcdSettings s)
+    /// <summary>Drains stale input, queries, and returns the fresh 5C reply; null when the link failed, empty when none came.</summary>
+    private byte[]? ReadState()
+    {
+        Drain();
+        return _hid.Write(GlacialLcdProtocol.EncodeQuery()) ? AwaitState() : null;
+    }
+
+    private bool Query() => _hid.Write(GlacialLcdProtocol.EncodeQuery());
+
+    /// <summary>The 5C write is read-modify-write, so it is skipped when no fresh reply arrived.</summary>
+    private Step WriteSettingsReport(GlacialLcdSettings s)
     {
         var reply = ReadState();
         if (reply is null)
         {
-            return false;
+            return Step.Failed;
         }
-        // Read-modify-write from the panel's own reply; with no reply the saved state is complete enough.
-        var report = reply.Length > 0
-            ? GlacialLcdProtocol.EncodeSettingsFrom(reply, s.Brightness, s.DisplayOn, s.StayOnWhileAsleep)
-            : GlacialLcdProtocol.EncodeSettings(s.Brightness, s.DisplayOn, s.StayOnWhileAsleep);
-        return _hid.Write(report);
+        if (reply.Length == 0)
+        {
+            return Step.NoReply;
+        }
+        var report = GlacialLcdProtocol.EncodeSettingsFrom(reply, s.Brightness, s.DisplayOn, s.StayOnWhileAsleep);
+        return _hid.Write(report) ? Step.Ok : Step.Failed;
     }
 
     /// <summary>The 5C write, then the app's repeats of the mode select (query, select) after it.</summary>
-    private bool WriteSettings(GlacialLcdSettings s, int repeats)
+    private Step WriteSettings(GlacialLcdSettings s, int repeats)
     {
-        if (!WriteSettingsReport(s))
+        var step = WriteSettingsReport(s);
+        if (step != Step.Ok)
         {
-            return false;
+            return step;
         }
         for (int i = 0; i < repeats; i++)
         {
             _pause(i == 0 ? BurstGapMs : RepeatGapMs);
             if (!Query() || !_hid.Write(ModeSelectReport(s)))
             {
-                return false;
+                return Step.Failed;
             }
         }
-        return true;
+        return Step.Ok;
     }
 
-    private bool WriteOff(GlacialLcdSettings s)
+    private Step WriteOff(GlacialLcdSettings s)
     {
-        if (!WriteSettingsReport(s))
+        var step = WriteSettingsReport(s);
+        if (step != Step.Ok)
         {
-            return false;
+            return step;
         }
         _pause(BurstGapMs);
-        return _hid.Write(GlacialLcdProtocol.EncodeOff());
+        return _hid.Write(GlacialLcdProtocol.EncodeOff()) ? Step.Ok : Step.Failed;
     }
 
     private static byte[] ModeSelectReport(GlacialLcdSettings s) => s.Mode switch
@@ -230,32 +314,32 @@ public sealed class GlacialLcdScreen
     };
 
     /// <summary>The full selection: preset modes are one report, the monitor is widgets, count, mode, widgets again.</summary>
-    private bool SelectMode(GlacialLcdSettings s)
+    private Step SelectMode(GlacialLcdSettings s)
     {
         if (!Query())
         {
-            return false;
+            return Step.Failed;
         }
         if (s.Mode != GlacialLcdSettings.ModeMonitor)
         {
-            return _hid.Write(ModeSelectReport(s));
+            return _hid.Write(ModeSelectReport(s)) ? Step.Ok : Step.Failed;
         }
         if (!SendSlots(s))
         {
-            return false;
+            return Step.Failed;
         }
         _pause(BurstGapMs);
         if (!_hid.Write(GlacialLcdProtocol.EncodeSlotCount(s.SlotCount)))
         {
-            return false;
+            return Step.Failed;
         }
         _pause(BurstGapMs);
         if (!_hid.Write(GlacialLcdProtocol.EncodeHardwareMonitor()))
         {
-            return false;
+            return Step.Failed;
         }
         _pause(BurstGapMs);
-        return SendSlots(s);
+        return SendSlots(s) ? Step.Ok : Step.Failed;
     }
 
     private bool SendSlots(GlacialLcdSettings s)

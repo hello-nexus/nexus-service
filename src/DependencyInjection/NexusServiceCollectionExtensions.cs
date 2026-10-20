@@ -1418,8 +1418,7 @@ public static class NexusServiceCollectionExtensions
             }
         }
 
-        // ROG Crosshair X870E Glacial LCD: native modes over HID only. Its picture upload
-        // (GlacialLcdPanelDriver) is not registered, so Nexus renders nothing to this panel.
+        // ROG Crosshair X870E Glacial LCD: native modes over HID only; Nexus renders nothing to it.
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>());
         services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(
