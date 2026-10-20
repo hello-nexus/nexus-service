@@ -21,6 +21,23 @@ public static partial class DevicesRoutes
     /// </summary>
     private static void MapOpenRgbManualDeviceEndpoints(WebApplication app)
     {
+        app.MapGet("/devices/openrgb/zones", (OpenRgbLightingDeviceProvider provider) =>
+        {
+            var response = new OpenRgbZonesResponse { Devices = provider.GetSizableZones() };
+            return Results.Json(response, AppJsonContext.Default.OpenRgbZonesResponse);
+        });
+
+        app.MapPost("/devices/openrgb/zones/size", (SetOpenRgbZoneSizeBody body, OpenRgbLightingDeviceProvider provider, Nexus.Service.Sockets.MultiplexHub hub) =>
+        {
+            var error = provider.TrySetOpenRgbZoneSize(body.DeviceId, body.ZoneIndex, body.LedCount);
+            if (error is not null)
+            {
+                return Results.BadRequest(ApiResponse.Fail(error));
+            }
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        });
+
         app.MapGet("/devices/openrgb/manual-devices", (IConfigStore store) =>
         {
             var devices = store.Load().Devices.OpenRgbManualDevices;

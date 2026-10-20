@@ -17,7 +17,7 @@ namespace Nexus.Service.Lighting;
 /// <see cref="Np50LightingDeviceProvider"/>; the keeb owns its vendor HID
 /// interface, so OpenRGB doesn't drive it.
 /// </summary>
-public sealed class KeebLightingDeviceProvider : ILightingDeviceProvider, ILightingFrameContributor, Nexus.Service.Lighting.Zones.IDeviceStructureSource
+public sealed class KeebLightingDeviceProvider : ILightingDeviceProvider, ILightingFrameContributor, Nexus.Service.Lighting.Zones.IDeviceStructureSource, IOpenRgbDeviceOwner
 {
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Nexus.Service.Peripherals.Hyte.Keeb.KeebKeyMap, string?[]> KeyNamesCache = new();
 
@@ -38,6 +38,9 @@ public sealed class KeebLightingDeviceProvider : ILightingDeviceProvider, ILight
     }
 
     public bool IsConnected => _hub.IsConnected;
+
+    public bool OwnsOpenRgbDevice(Rgb.RgbDevice device) =>
+        _hub.IsConnected && Rgb.NativeDetectorClaims.Owns(Rgb.NativeDetectorClaims.Keeb, device);
 
     public event Action? DevicesChanged;
 

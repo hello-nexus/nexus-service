@@ -47,6 +47,9 @@ public static class Slv3LcdProtocol
         SetFrameRate = 15,
         UpdateFireWare = 40,
         PushJpg = 101,
+        PushPng = 102,
+        PushLayer3 = 103,
+        CheckNewLcd = 128,
         GetPosIndex = 201,
     }
 
@@ -81,6 +84,61 @@ public static class Slv3LcdProtocol
         WriteUInt32LittleEndian(header, 4, timestampMs);
         header[8] = argByte;
         return header;
+    }
+
+    /// <summary>Plain header size of the Flex screens: 500 bytes, which PKCS7 pads to 504 cipher bytes.</summary>
+    public const int FlexHeaderPlainSize = 500;
+
+    /// <summary>
+    /// 512-byte header of a Flex screen: the 500-byte plain header encrypted (504 bytes), six zero
+    /// bytes, then 0xA1 0x1A. <paramref name="arg"/> is the single-byte argument, or
+    /// <paramref name="length"/> (big-endian at [8..11]) for a payload push; a layer push adds
+    /// its origin at [12..15].
+    /// </summary>
+    public static byte[] BuildFlexHeader(CmdType cmd, uint timestampMs, byte arg = 0, int? length = null, int x = 0, int y = 0)
+    {
+        var plain = new byte[FlexHeaderPlainSize];
+        plain[0] = (byte)cmd;
+        plain[2] = 0x1A;
+        plain[3] = 0x6D;
+        WriteUInt32LittleEndian(plain, 4, timestampMs);
+        if (length is { } len)
+        {
+            WriteUInt32BigEndian(plain, 8, (uint)len);
+            plain[12] = (byte)(x >> 8);
+            plain[13] = (byte)x;
+            plain[14] = (byte)(y >> 8);
+            plain[15] = (byte)y;
+        }
+        else
+        {
+            plain[8] = arg;
+        }
+        using var des = DES.Create();
+        des.Key = DesKeyIv;
+        des.IV = DesKeyIv;
+        des.Mode = CipherMode.CBC;
+        des.Padding = PaddingMode.PKCS7;
+        using var encryptor = des.CreateEncryptor();
+        var cipher = encryptor.TransformFinalBlock(plain, 0, plain.Length);
+        var header = new byte[HeaderCipherSize];
+        cipher.CopyTo(header, 0);
+        header[HeaderCipherSize - 2] = 0xA1;
+        header[HeaderCipherSize - 1] = 0x1A;
+        return header;
+    }
+
+    /// <summary>The encrypted header followed by the payload, with no padding.</summary>
+    public static byte[] BuildUnpaddedBuffer(ReadOnlySpan<byte> encryptedHeader, ReadOnlySpan<byte> payload)
+    {
+        if (encryptedHeader.Length != HeaderCipherSize)
+        {
+            throw new ArgumentException($"Encrypted header must be {HeaderCipherSize} bytes.", nameof(encryptedHeader));
+        }
+        var buffer = new byte[HeaderCipherSize + payload.Length];
+        encryptedHeader.CopyTo(buffer);
+        payload.CopyTo(buffer.AsSpan(HeaderCipherSize));
+        return buffer;
     }
 
     /// <summary>

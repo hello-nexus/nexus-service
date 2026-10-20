@@ -20,7 +20,7 @@ namespace Nexus.Service.Lighting;
 /// commonly share a machine.
 /// </summary>
 public sealed class NollieLightingDeviceProvider :
-    ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource
+    ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource, IOpenRgbDeviceOwner
 {
     private readonly NollieHub _hub;
     private readonly IConfigStore _store;
@@ -35,6 +35,9 @@ public sealed class NollieLightingDeviceProvider :
     }
 
     public bool IsConnected => _hub.IsConnected;
+
+    public bool OwnsOpenRgbDevice(Rgb.RgbDevice device) =>
+        _hub.IsConnected && Rgb.NativeDetectorClaims.Owns(Rgb.NativeDetectorClaims.Nollie, device);
 
     public event Action? DevicesChanged;
 

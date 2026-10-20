@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
+using System.Threading;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Lighting.Rgb;
@@ -15,6 +16,8 @@ namespace Nexus.Service.Lighting.Rgb;
 /// </summary>
 public static class OpenRgbDetectorMap
 {
+    private static readonly Dictionary<string, string> EmptyMap = new(StringComparer.Ordinal);
+
     /// <summary>Loads the map, or an empty one when the file is absent or
     /// unreadable; a daemon predating the map never writes it.</summary>
     public static IReadOnlyDictionary<string, string> Load(string configDir)
@@ -37,6 +40,120 @@ public static class OpenRgbDetectorMap
                 ServiceLog.Warn($"[openrgb] detector map read failed: {ex.Message}");
             }
             return EmptyMap;
+        }
+    }
+
+    private static IReadOnlyDictionary<string, string>? _override;
+
+    /// <summary>Test seam: replaces the on-disk map for the process until set back to null.</summary>
+    internal static IReadOnlyDictionary<string, string>? OverrideForTests
+    {
+        set => Volatile.Write(ref _override, value);
+    }
+
+    private static readonly object CacheLock = new();
+    private static IReadOnlyDictionary<string, string> _cached = EmptyMap;
+    private static long _loadedAtMs = long.MinValue;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> LastKnown = new(StringComparer.Ordinal);
+
+    /// <summary>Longest a loaded map is reused before the file is read again.</summary>
+    private const long ReloadAfterMs = 2000;
+
+    /// <summary>Drops the cached map so the next read sees what the daemon just wrote.</summary>
+    public static void Invalidate()
+    {
+        lock (CacheLock)
+        { _loadedAtMs = long.MinValue; }
+    }
+
+    /// <summary>The map for the service config dir, re-read at most every <see cref="ReloadAfterMs"/> and on <see cref="Invalidate"/>.</summary>
+    public static IReadOnlyDictionary<string, string> Current
+    {
+        get
+        {
+            if (Volatile.Read(ref _override) is { } forced)
+            {
+                return forced;
+            }
+            lock (CacheLock)
+            {
+                var now = Environment.TickCount64;
+                if (_loadedAtMs == long.MinValue || now - _loadedAtMs >= ReloadAfterMs)
+                {
+                    _cached = Load(OpenRgbProcessManager.ResolveConfigDir());
+                    _loadedAtMs = now;
+                    Remember(_cached);
+                }
+                return _cached;
+            }
+        }
+    }
+
+    internal static void Remember(IReadOnlyDictionary<string, string> map)
+    {
+        foreach (var kv in map)
+        {
+            LastKnown[kv.Key] = kv.Value;
+        }
+    }
+
+    /// <summary>
+    /// The detector for a device name: the current map, else the last map that named it. The daemon
+    /// rewrites the map when a rescan empties its list while the service holds the old list.
+    /// </summary>
+    public static string? DetectorFor(string deviceName)
+    {
+        if (Current.TryGetValue(deviceName, out var detector))
+        {
+            return detector;
+        }
+        return Volatile.Read(ref _override) is null && Volatile.Read(ref _holdActive) != 0 && LastKnown.TryGetValue(deviceName, out var remembered) ? remembered : null;
+    }
+
+    private static int _holdActive;
+
+    /// <summary>True while a detection pass holds the service's list, the only time a name the map no longer carries is still claimed.</summary>
+    internal static bool HoldActive => Volatile.Read(ref _holdActive) != 0;
+
+    /// <summary>Marks a detection pass starting; the rescan empties the daemon's map while the service still shows the old list.</summary>
+    internal static int BeginHold()
+    {
+        lock (CacheLock)
+        {
+            _holdGeneration++;
+            _holdActive = 1;
+            return _holdGeneration;
+        }
+    }
+
+    private static int _holdGeneration;
+
+    /// <summary>The generation of the latest hold; read it before the activity state a later <see cref="EndHold(int)"/> is decided from.</summary>
+    internal static int HoldGeneration
+    {
+        get { lock (CacheLock) { return _holdGeneration; } }
+    }
+
+    /// <summary>Ends the hold only if no newer one began since <paramref name="observed"/> was read.</summary>
+    internal static void EndHold(int observed)
+    {
+        lock (CacheLock)
+        {
+            if (_holdGeneration == observed)
+            {
+                EndHold();
+            }
+        }
+    }
+
+    /// <summary>Ends the hold: the fresh map is read next and the remembered names are dropped.</summary>
+    internal static void EndHold()
+    {
+        lock (CacheLock)
+        {
+            Volatile.Write(ref _holdActive, 0);
+            _loadedAtMs = long.MinValue;
+            LastKnown.Clear();
         }
     }
 
@@ -68,6 +185,5 @@ public static class OpenRgbDetectorMap
     public static string Resolve(IReadOnlyDictionary<string, string>? map, string deviceName)
         => map is not null && map.TryGetValue(deviceName, out var detector) ? detector : deviceName;
 
-    private static readonly Dictionary<string, string> EmptyMap = new(StringComparer.Ordinal);
     private static bool _readFailureLogged;
 }

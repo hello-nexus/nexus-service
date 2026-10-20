@@ -374,6 +374,7 @@ internal static class AppBootstrap
         if (app.Services.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>() is { } rgbBridge)
         {
             rgbBridge.DeviceSetChanged += () => PanelTopics.BroadcastLighting(muxHub);
+            rgbBridge.ZoneResizeApplied += () => PanelTopics.BroadcastLighting(muxHub);
         }
 
         // The recovery poll loop can sign in after its dialog closed, so account changes are pushed.
