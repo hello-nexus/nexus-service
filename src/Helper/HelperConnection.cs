@@ -179,7 +179,12 @@ public sealed class HelperConnection : IAsyncDisposable
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(timeoutMs);
             using var reg = timeout.Token.Register(() =>
-                tcs.TrySetResult(new HelperResult { Id = id, Ok = false, Error = "timeout" }));
+                tcs.TrySetResult(new HelperResult
+                {
+                    Id = id,
+                    Ok = false,
+                    Error = ct.IsCancellationRequested ? HelperErrors.Canceled : HelperErrors.Timeout,
+                }));
             return await tcs.Task.ConfigureAwait(false);
         }
         finally
