@@ -173,7 +173,7 @@ public static class TryxRoutes
         ("default_03", "Exo-Ecologie"),
         ("default_04", "Cyber Bunker"),
         ("default_05", "Edge of Dream"),
-        ("default_06", "Thermal Energy·Prohibited"),
+        ("default_06", "Thermal Energy - Prohibited"),
     };
 
     public static void MapTryxEndpoints(this WebApplication app)

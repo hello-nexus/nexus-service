@@ -125,7 +125,7 @@ public class ProfileManagerKeebBrightnessTests : IDisposable
     {
         WriteProfiles(80, 80);
         File.WriteAllText(_settingsPath,
-            """{ "schemaVersion": 25, "deviceCategorySeeded": true }""");
+            """{ "schemaVersion": 25, "deviceCategorySeeded": true, "panelsCategorySeeded": true, "panelsSharedByDefaultApplied": true }""");
         // A directory where the atomic write's temp file goes makes p2's write throw.
         var obstacle = Path.Combine(_dir, "profile-p2.json.tmp");
         Directory.CreateDirectory(obstacle);

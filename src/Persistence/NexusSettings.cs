@@ -79,11 +79,17 @@ public sealed class NexusSettings
     /// <summary>Profile id designated as the source for any category currently in <c>SharedCategories</c>. When a category is shared, switching profiles still loads its values from this profile, and edits to that category save back here. NOT profile-scoped: this routing decision is workstation-level and survives profile switches. Null means no Primary; shared categories then fall back to the active profile.</summary>
     public string? PrimaryProfileId { get; set; }
 
-    /// <summary>Category ids currently set to Shared. Allowed values: "lighting", "cooling", "theme", "dashboard", "device". Categories not in this list are per-profile (the default); "device" defaults to Shared on a fresh install so Stream Deck bindings and keyboard personalization start out workstation-global. NOT profile-scoped: workstation-level. Hardware-bound state (Y70, Devices, panel defaults) always lives at workstation root and is never per-profile, so it never appears here.</summary>
-    public List<string> SharedCategories { get; set; } = new() { ProfileSharing.Device };
+    /// <summary>Category ids currently set to Shared. Allowed values: "lighting", "cooling", "theme", "dashboard", "device", "panels". Categories not in this list are per-profile (the default); "device" and "panels" default to Shared so Stream Deck bindings, keyboard personalization and panel looks start out workstation-global. NOT profile-scoped: workstation-level. Hardware-bound state (Y70, the rest of Devices, panel identity and hardware settings) always lives at workstation root and is never per-profile, so it never appears here.</summary>
+    public List<string> SharedCategories { get; set; } = new() { ProfileSharing.Device, ProfileSharing.Panels };
 
     /// <summary>One-time flag: the device sharing category's initial seed of StreamDeck+Keeb into every profile file has run. Workstation-level, not profile-scoped.</summary>
     public bool DeviceCategorySeeded { get; set; }
+    /// <summary>Set once Panels was added to <see cref="SharedCategories"/> by default on this install; it is never re-added afterwards, so a later opt-out sticks.</summary>
+    public bool PanelsSharedByDefaultApplied { get; set; }
+    /// <summary>Set once the live panel looks were copied into every existing profile file, so the first switch after the Panels category appeared changes nothing.</summary>
+    public bool PanelsCategorySeeded { get; set; }
+    /// <summary>Profile files and exports only: the file carries Panels data (see <see cref="PanelProfileData"/>). Files written before the category lack it and leave live panels alone.</summary>
+    public bool HasPanelsData { get; set; }
 
     /// <summary>One-time flag: profile files written before the keeb brightness default changed have had their stored old-default level moved to the new default. Workstation-level, not profile-scoped.</summary>
     public bool KeebBrightnessProfilesMigrated { get; set; }

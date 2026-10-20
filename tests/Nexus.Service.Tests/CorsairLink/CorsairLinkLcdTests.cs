@@ -225,6 +225,20 @@ public class CorsairLinkLcdTests
     }
 
     [Fact]
+    public void A_hand_back_without_resuming_leaves_host_mode_off_and_asks_for_no_repaint()
+    {
+        var (lcd, device) = AttachLcd();
+        var owner = new object();
+        lcd.ClaimStream(owner);
+        lcd.SendFrame(new byte[] { 0xFF, 0xD8, 0xFF });
+
+        Assert.True(lcd.SelectHandBackScreen(storedImage: false, resumePainting: false));
+
+        Assert.Equal("031d0001", Convert.ToHexString(device.Features[^1]).ToLowerInvariant());
+        Assert.False(lcd.TakeRepaintRequest(owner));
+    }
+
+    [Fact]
     public void A_screen_select_asks_the_owning_stream_to_repaint_once()
     {
         var (lcd, _) = AttachLcd();

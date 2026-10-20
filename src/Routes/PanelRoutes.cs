@@ -355,12 +355,9 @@ public static class PanelRoutes
             var updated = registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
-            // PanelDevices is hardware-scoped (top-level on NexusSettings),
-            // not part of any profile snapshot. Registry mutations already go
-            // through _store.Update -> OnChanged -> ProfileManager.MarkDirty
-            // for the active-profile flush of OTHER fields; we don't need the
-            // explicit dirty pulse here, and keeping it implied PanelDevices
-            // was profile-scoped, which is the bug this change fixes.
+            // Registry mutations go through _store.Update -> OnChanged ->
+            // ProfileManager.MarkDirty, so a look edit reaches the active
+            // profile's Panels data on the next flush with no explicit pulse.
             if (body.LcdBrightness.HasValue)
                 streams.ApplyBrightness(updated.Id);
             if (body.SecondaryMonitor.HasValue)
