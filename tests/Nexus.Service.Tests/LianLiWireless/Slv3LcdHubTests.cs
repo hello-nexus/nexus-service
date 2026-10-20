@@ -48,6 +48,19 @@ public class Slv3LcdHubTests
     }
 
     [Fact]
+    public void PushImageToSerial_hands_a_jpeg_without_a_jfif_header_to_the_wireless_screen_unchanged()
+    {
+        var (hub, factory, discovery) = CreateHub();
+        discovery.Ports.Add(new Slv3LcdPortInfo { PortName = "path-1", Serial = "SER1" });
+        var jpeg = new byte[] { 0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x04, 0x41, 0x42, 0xFF, 0xD9 };
+
+        Assert.True(hub.PushImageToSerial("SER1", jpeg));
+
+        var transport = Assert.Single(factory.Opened.Values);
+        Assert.Equal(jpeg, Assert.Single(transport.PushedImages));
+    }
+
+    [Fact]
     public void PushImageToSerial_reuses_the_cached_transport()
     {
         var (hub, factory, discovery) = CreateHub();

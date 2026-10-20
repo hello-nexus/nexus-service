@@ -200,7 +200,7 @@ public sealed class FlexScreens : IFanLcdScreens
     internal static byte HardwareRotationFor(FlexFamily family, int fanNum, byte rotation) =>
         family == FlexFamily.SlInfFlex && fanNum >= 10 ? (byte)((rotation + 2) % 4) : rotation;
 
-    public bool PushImage(string serial, byte[] jpeg) => !Restarting(serial) && _lcd.Hub.PushImageToSerial(serial, jpeg);
+    public bool PushImage(string serial, byte[] jpeg) => !Restarting(serial) && _lcd.Hub.PushImageToSerial(serial, FlexJpeg.WithJfif(jpeg));
 
     public void Release(string serial)
     {
