@@ -971,25 +971,25 @@ public sealed partial class ProfileManager : IDisposable
     /// </summary>
     public bool AdoptSavedLook(string recordId)
     {
-        NexusSettings? file;
+        // Read and apply under the lock a switch holds, so the file read is the active profile's when it lands.
+        var adopted = false;
         lock (_lock)
         {
-            file = ReadProfileFile(_manifest.ActiveProfileId);
-        }
-        if (file is null || !file.HasPanelsData)
-        {
-            return false;
-        }
-        var adopted = false;
-        _store.Update(s =>
-        {
-            if (s.PanelDevices.TryGetValue(recordId, out var record) && PanelProfileData.IsDefaultLook(record))
+            var file = ReadProfileFile(_manifest.ActiveProfileId);
+            if (file is null || !file.HasPanelsData)
             {
-                var only = new NexusSettings { PanelDevices = { [recordId] = record } };
-                PanelProfileData.ApplyToLive(only, file);
-                adopted = !PanelProfileData.IsDefaultLook(record);
+                return false;
             }
-        });
+            _store.Update(s =>
+            {
+                if (s.PanelDevices.TryGetValue(recordId, out var record) && PanelProfileData.IsDefaultLook(record))
+                {
+                    var only = new NexusSettings { PanelDevices = { [recordId] = record } };
+                    PanelProfileData.ApplyToLive(only, file);
+                    adopted = !PanelProfileData.IsDefaultLook(record);
+                }
+            });
+        }
         return adopted;
     }
 

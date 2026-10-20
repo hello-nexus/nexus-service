@@ -69,8 +69,7 @@ public static class PanelProfileData
         foreach (var record in live)
         {
             var stripped = Strip(record);
-            // A record recreated under a new id (a re-promoted monitor) starts at the default look; the
-            // predecessor entry for the same panel keeps the user's.
+            // A record recreated under a new id (a re-promoted monitor) starts at the default look.
             var older = file.PanelDevices.Values
                 .Where(saved => saved.Id != record.Id
                     && ((matched.TryGetValue(saved, out var m) && ReferenceEquals(m, record))
@@ -79,7 +78,11 @@ public static class PanelProfileData
                 .FirstOrDefault();
             if (older is not null && IsDefaultLook(record))
             {
-                CopyLook(older, stripped);
+                // The live record is the truth and must not disagree with the file, so the file keeps the
+                // predecessor's entry and omits the default one; the look reaches the record on adoption or
+                // switch, and the next write after that replaces the predecessor.
+                records[older.Id] = older;
+                continue;
             }
             records[record.Id] = stripped;
         }
