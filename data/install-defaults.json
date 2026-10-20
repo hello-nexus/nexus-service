@@ -242,7 +242,7 @@
       "animationMode": "Static",
       "speed": "Standard",
       "direction": "Forward",
-      "brightness": 80,
+      "brightness": 100,
       "keyReactive": false,
       "keyReactiveMask": false,
       "keyReactiveMode": "SingleKey"

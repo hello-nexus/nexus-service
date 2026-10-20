@@ -452,8 +452,8 @@ public static class ConflictAppCatalog
             DisplayName = "Lian Li L-Connect",
             Category = "lighting",
             AlsoCategory = "cooling",
-            AlsoHandlers = new[] { "lianli", "lianli2", "lianli3", "lianli4", "lianli-tl", "lianli-wireless", "lianli-aio", "lianli-hydroshift2", "lianli-hydroshift2-curve" },
-            DisplayHandlers = new[] { "lianli-hydroshift-lcd", "lianli-galahad2-lcd", "lianli-screen88", "lianli-hydroshift2", "lianli-hydroshift2-curve", "lianli-tl-lcd", "lianli-wireless" },
+            AlsoHandlers = new[] { "lianli", "lianli2", "lianli3", "lianli4", "lianli-tl", "lianli-wireless", "lianli-flex", "lianli-aio", "lianli-hydroshift2", "lianli-hydroshift2-curve" },
+            DisplayHandlers = new[] { "lianli-hydroshift-lcd", "lianli-galahad2-lcd", "lianli-screen88", "lianli-hydroshift2", "lianli-hydroshift2-curve", "lianli-tl-lcd", "lianli-wireless", "lianli-flex" },
             ProcessNames = new[] { "L-Connect 3", "L-Connect", "LConnect3", "LConnect" },
             // Watcher first so it cannot restart the main service.
             WindowsServiceNames = new[] { "LConnectServiceWatcher", "LConnectService" },

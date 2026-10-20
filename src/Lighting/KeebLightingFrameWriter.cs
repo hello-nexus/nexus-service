@@ -26,7 +26,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
     // HID handle, so it no longer serializes against the LED stream the way the
     // hub's read did - the stall that showed as flicker on a held Static frame.
     // NEXUS_KEEB_KNOB_POLL_TICKS overrides it; 0 disables the follow entirely.
-    private static readonly int KnobReadEveryTicks = ResolveKnobPollTicks();
+    internal int KnobReadEveryTicks { get; set; } = ResolveKnobPollTicks();
 
     private static int ResolveKnobPollTicks()
     {
@@ -106,9 +106,19 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void Tick()
+    internal void Tick()
     {
-        if (!_gates.Lighting) return;
+        if (!_gates.Lighting)
+        {
+            // Lighting turned off mid-stream: hand the firmware back, or the knob keeps
+            // stepping global and the sync stays off while Nexus controls nothing.
+            if (_wasStreaming)
+            {
+                _wasStreaming = false;
+                _applier.EndStream();
+            }
+            return;
+        }
         if (!_hub.IsConnected) return;
 
         var settings = _store.Load();
@@ -129,9 +139,8 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
             if (_wasStreaming)
             {
                 _wasStreaming = false;
-                // Release first: Apply must write the user's own animation back.
-                _applier.ReleaseFirmwareAnimation();
-                _applier.Apply();
+                // Apply must write the user's own animation back, so streaming ends first.
+                _applier.EndStream();
             }
             return;
         }
@@ -145,7 +154,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
             _applier.SuppressFirmwareAnimation();
         }
 
-        // Read the knob byte every Nth tick and set global = byte/100 on a change.
+        // Read the knob byte every Nth tick and move global by its change.
         var readByte = KnobReadEveryTicks > 0 && ++_knobPollTicks >= KnobReadEveryTicks;
         if (readByte) _knobPollTicks = 0;
         _applier.PollKnobToGlobal(readByte);
@@ -195,16 +204,19 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         return frames;
     }
 
+    internal static double KeebStreamLevel(NexusSettings settings) =>
+        Math.Clamp(settings.Keeb.FirmwareLighting.Brightness, 0, 100) / 100.0;
+
     private void TickFrames(NexusSettings settings, KeebKeyMap keys, DeviceFrame[] devices)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
-        // The keeb software stream brightness is min(global, per-zone). The
-        // firmware-brightness level (keeb Settings slider) dims the firmware animation,
-        // not the software stream; the knob drives global brightness while streaming
-        // (see SyncFromDevice), so it never multiplies into this stream (masterMul 1).
+        // The keeb software stream brightness is min(global, per-zone) scaled by the
+        // keeb's own firmware level (the Settings slider). The level never feeds
+        // global, and the knob moves global only, so the two never compound.
+        var keebLevel = KeebStreamLevel(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         if (devices.Length == 0) return;
@@ -216,7 +228,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         var zones = Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(structure, settings);
         Nexus.Service.Lighting.Zones.SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
         var touched = Nexus.Service.Lighting.Zones.SegmentFrameComposer.Compose(
-            structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+            structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, keebLevel, nowTicks, _identify, _segmentBuffers);
 
         // Keys and underglow stream over separate HID reports, so each segment
         // can be handed back to firmware independently: a fully uncontrolled

@@ -138,6 +138,17 @@ public sealed class Slv3LcdHub : IDisposable
         }
     }
 
+    /// <summary>Runs <paramref name="use"/> on the screen's open connection; default when it has none (never opens one).</summary>
+    internal T? WithOpenTransport<T>(string serial, Func<ISlv3LcdTransport, T?> use)
+    {
+        ISlv3LcdTransport? transport;
+        lock (_lock)
+        {
+            _open.TryGetValue(serial, out transport);
+        }
+        return transport is null ? default : use(transport);
+    }
+
     /// <summary>Closes a screen's connection so its next use opens a fresh one.</summary>
     internal void Forget(string serial, string reason)
     {

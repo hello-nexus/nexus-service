@@ -33,7 +33,7 @@ public sealed class StrimerLightingDeviceProvider :
     // Prevents RgbBridge from seeding OpenRGB frames for these LEDs when the device
     // appears in OpenRGB alongside the native HID path.
     public bool OwnsOpenRgbDevice(RgbDevice device) =>
-        IsConnected && device.Name.Contains("Lian Li Strimer", StringComparison.OrdinalIgnoreCase);
+        IsConnected && Rgb.NativeDetectorClaims.Owns(Rgb.NativeDetectorClaims.Strimer, device);
 
     public event Action? DevicesChanged;
 
