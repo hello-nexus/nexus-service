@@ -255,6 +255,38 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
     }
 
     [Fact]
+    public void Upgrade_with_one_unwritable_profile_file_still_seeds_the_rest_and_keeps_persistence_wired()
+    {
+        WriteTwoProfiles();
+        File.WriteAllText(_settingsPath, $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "sharedCategories": ["device"],
+          "deviceCategorySeeded": true,
+          "keebBrightnessProfilesMigrated": true,
+          "panelDevices": { "y70-a": { "id": "y70-a", "displayName": "Y70", "accentColor": "#123456", "capabilities": { "surface": "y70", "orientation": "landscape" } } }
+        }
+        """);
+        Directory.CreateDirectory(Path.Combine(_dir, "profile-p2.json.tmp"));
+
+        var (store, pm) = Boot();
+        try
+        {
+            var s = store.Load();
+            Assert.True(s.PanelsCategorySeeded);
+            Assert.True(s.PanelsSharedByDefaultApplied);
+            Assert.Contains(ProfileSharing.Panels, s.SharedCategories);
+            Assert.Contains("#123456", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
+
+            store.Update(x => x.PanelDevices["y70-a"].AccentColor = "#654321");
+            pm.FlushNow();
+
+            Assert.Contains("#654321", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
+        }
+        finally { pm.Dispose(); store.Dispose(); }
+    }
+
+    [Fact]
     public void Opt_out_survives_restart_and_is_not_re_added()
     {
         var (store, pm) = Boot();
