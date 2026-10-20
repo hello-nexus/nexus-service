@@ -36,24 +36,24 @@ public sealed class ConfigStoreLcdUploadMemory : ILcdUploadMemory
     public string? Load(string key)
     {
         string? hash = null;
-        _store.Read(s => s.LcdUploadHashes.TryGetValue(key, out hash));
+        _store.Read(s => s.GlacialLcdPictureHashes.TryGetValue(key, out hash));
         return hash;
     }
 
-    public void Save(string key, string hash) => _store.Update(s => s.LcdUploadHashes[key] = hash);
+    public void Save(string key, string hash) => _store.Update(s => s.GlacialLcdPictureHashes[key] = hash);
 
     public void ClearOthers(string keep) => _store.Update(s =>
     {
-        foreach (var other in s.LcdUploadHashes.Keys.Where(k => k != keep).ToList())
+        foreach (var other in s.GlacialLcdPictureHashes.Keys.Where(k => k != keep).ToList())
         {
-            s.LcdUploadHashes.Remove(other);
+            s.GlacialLcdPictureHashes.Remove(other);
         }
     });
 
     /// <summary>Flushed at once: a crash after the announce must not leave the old hash on disk for a half-written panel.</summary>
     public void Clear(string key)
     {
-        _store.Update(s => s.LcdUploadHashes.Remove(key));
+        _store.Update(s => s.GlacialLcdPictureHashes.Remove(key));
         _store.FlushNow();
     }
 }

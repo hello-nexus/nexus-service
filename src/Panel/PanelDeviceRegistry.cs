@@ -1085,6 +1085,25 @@ public sealed class PanelDeviceRegistry
     }
 
     // The response clone: DisplayFingerprint and SiblingDisplayIds stay in the store, off the wire.
+    /// <summary>
+    /// True when the record holds anything beyond what a freshly minted one with the same
+    /// identity and capabilities does: a layout, a theme, a background, a flag the user set.
+    /// Compared as stored JSON, so a field added to the record later is covered without a list.
+    /// </summary>
+    public static bool IsCustomized(PanelDeviceRecord r)
+    {
+        var fresh = new PanelDeviceRecord
+        {
+            Id = r.Id,
+            DisplayName = r.DisplayName,
+            FirstSeenAt = r.FirstSeenAt,
+            LastSeenAt = r.LastSeenAt,
+            Capabilities = r.Capabilities,
+        };
+        return System.Text.Json.JsonSerializer.Serialize(r, Serialization.AppJsonContext.Default.PanelDeviceRecord)
+            != System.Text.Json.JsonSerializer.Serialize(fresh, Serialization.AppJsonContext.Default.PanelDeviceRecord);
+    }
+
     private static PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord

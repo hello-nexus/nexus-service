@@ -455,6 +455,58 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Equal(new[] { "fixed-key" }, _store.Load().Keys);
     }
 
+    private void Touch(string id) => _config.Update(s => s.PanelDevices[id].Flip180 = false);
+
+    [Fact]
+    public void The_customers_two_record_shape_keeps_the_record_with_a_stored_setting()
+    {
+        // Seen in the alpha.2 bundle: the older record carries an explicit setting and the later-seen one is bare.
+        var touched = FamilyRecord("touched", 2_000);
+        Touch(touched.Id);
+        var bare = FamilyRecord("bare", 1_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["365233833333"] = new() { PanelDeviceId = touched.Id },
+            ["AsusTek Computer Inc."] = new() { PanelDeviceId = bare.Id },
+        });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        Coordinator().TickOnce();
+
+        Assert.Equal(touched.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(bare.Id));
+    }
+
+    [Fact]
+    public void A_customized_record_outranks_a_bare_one_that_was_streamed_to_last()
+    {
+        var customized = FamilyRecord("customized", 1_000);
+        _config.Update(s => s.PanelDevices[customized.Id].ThemeMode = "dark");
+        var bareLater = FamilyRecord("bare", 9_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["a"] = new() { PanelDeviceId = customized.Id },
+            ["b"] = new() { PanelDeviceId = bareLater.Id },
+        });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        Coordinator().TickOnce();
+
+        Assert.Equal(customized.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(bareLater.Id));
+    }
+
+    [Fact]
+    public void A_fresh_record_is_not_customized_and_each_stored_field_makes_it_so()
+    {
+        var record = FamilyRecord("fresh", 1_000);
+        Assert.False(PanelDeviceRegistry.IsCustomized(_registry.Get(record.Id)!));
+
+        _config.Update(s => s.PanelDevices[record.Id].AccentColor = "#ff0000");
+
+        Assert.True(PanelDeviceRegistry.IsCustomized(_registry.Get(record.Id)!));
+    }
+
     [Fact]
     public void Adoption_runs_every_time_so_a_mix_of_fixed_and_serial_keys_is_merged()
     {

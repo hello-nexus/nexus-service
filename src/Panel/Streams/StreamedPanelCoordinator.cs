@@ -829,8 +829,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     }
 
     /// <summary>
-    /// Leaves one panel record for the device's family, under the fixed key: the one seen most
-    /// recently, whatever serial or key it was stored under, with the others removed through the
+    /// Leaves one panel record for the device's family, under the fixed key: a customized one if
+    /// any (the most recently seen of them), else the most recently seen, whatever serial or key it was stored under, with the others removed through the
     /// same cleanup a delete does. Idempotent, so it also tidies a mix left by an earlier build.
     /// </summary>
     private void AdoptFamilyRecords(Dictionary<string, StreamedPanelRecord> records, StreamedPanelDeviceInfo info)
@@ -845,17 +845,20 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             return;
         }
-        var keep = members[0];
+        // The user's layout and theme outrank "streamed most recently": a boot that minted an
+        // empty record and streamed to it last must not cost the record they customized.
+        var keep = members.FirstOrDefault(m => PanelDeviceRegistry.IsCustomized(m.Panel!));
+        if (keep.Panel is null)
+        {
+            keep = members[0];
+        }
         foreach (var m in members)
         {
             records.Remove(m.Serial);
         }
-        foreach (var m in members.Skip(1))
+        foreach (var m in members.Where(m => m.Record.PanelDeviceId != keep.Record.PanelDeviceId))
         {
-            if (m.Record.PanelDeviceId != keep.Record.PanelDeviceId)
-            {
-                _removePanel(m.Panel!.Id);
-            }
+            _removePanel(m.Panel!.Id);
         }
         records[info.Serial] = keep.Record;
         _store.Save(records);
