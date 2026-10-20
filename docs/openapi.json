@@ -26137,6 +26137,12 @@
               "boolean"
             ]
           },
+          "scope": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "laneSettings": {
             "type": [
               "null",
