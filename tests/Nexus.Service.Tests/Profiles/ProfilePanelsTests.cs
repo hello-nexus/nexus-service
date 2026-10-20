@@ -568,4 +568,24 @@ public class ProfilePanelsTests : IDisposable
         PanelProfileData.BackfillPresetWidgetSize(_store.Load());
         Assert.Equal(PanelWidgetSizes.Large, Live("y70-a").Presets![0].WidgetSize);
     }
+
+    [Fact]
+    public void Sync_hash_is_stable_across_ticks_while_live_timestamps_move_within_a_day()
+    {
+        var day = new DateTimeOffset(2026, 3, 1, 10, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds();
+        _store.Update(s =>
+        {
+            s.PanelDevices["y70-a"] = Y70();
+            s.PanelDevices["y70-a"].AccentColor = "#123456";
+            s.PanelDevices["y70-a"].LastSeenAt = day;
+        });
+        _pm.Initialize();
+        var id = _pm.GetActiveEntry()!.Id;
+
+        var first = Nexus.Service.Cloud.CloudProfileSyncService.HashPayload(_pm.ExportProfileForSync(id)!);
+        _store.Update(s => s.PanelDevices["y70-a"].LastSeenAt = day + 5 * 60_000);
+        var second = Nexus.Service.Cloud.CloudProfileSyncService.HashPayload(_pm.ExportProfileForSync(id)!);
+
+        Assert.Equal(first, second);
+    }
 }

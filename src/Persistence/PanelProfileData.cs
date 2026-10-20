@@ -33,6 +33,8 @@ public static class PanelProfileData
     /// <summary>Serialized size the kept absent records may total; the api caps a profile at 512 KB.</summary>
     internal const int MaxAbsentBytes = 128 * 1024;
 
+    private const long DayMs = 86_400_000;
+
     internal static Func<DateTimeOffset> Clock { get; set; } = () => DateTimeOffset.UtcNow;
 
     /// <summary>
@@ -60,10 +62,9 @@ public static class PanelProfileData
             }
             records[saved.Id] = saved;
         }
-        var stamp = now.ToUnixTimeMilliseconds();
         foreach (var record in live)
         {
-            records[record.Id] = Strip(record, stamp);
+            records[record.Id] = Strip(record);
         }
         file.PanelDevices = records;
         file.HasPanelsData = true;
@@ -180,13 +181,14 @@ public static class PanelProfileData
         }
     }
 
-    // LastSeenAt on a stripped record is when it was saved, which ages out records for panels absent from this PC.
-    private static PanelDeviceRecord Strip(PanelDeviceRecord live, long savedAt)
+    // LastSeenAt on a stripped record is the live one cut to the UTC day, so it ages out records for panels absent from this PC yet stays
+    // stable across sync ticks (the payload hash must not move when nothing changed).
+    private static PanelDeviceRecord Strip(PanelDeviceRecord live)
     {
         var stripped = new PanelDeviceRecord
         {
             Id = live.Id,
-            LastSeenAt = savedAt,
+            LastSeenAt = live.LastSeenAt - live.LastSeenAt % DayMs,
             Capabilities = new PanelDeviceCapabilities { Surface = live.Capabilities?.Surface },
             FingerprintKey = live.FingerprintKey ?? FingerprintKey(live.DisplayFingerprint),
         };
