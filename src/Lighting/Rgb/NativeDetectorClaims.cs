@@ -49,7 +49,7 @@ public static class NativeDetectorClaims
                 "Nollie 32_OS2_1", "Nollie 16_OS2_1", "Nollie 8_OS2_1", "Prism8 8_OS2_1", "Nollie 1_OS2_1",
             },
             new[] { "nollie" }),
-        new(Kraken, new[] { "NZXT Kraken 2024 ELITE Series RGB" }, new[] { "nzxt-kraken" }),
+        new(Kraken, new[] { "NZXT Kraken 2024 ELITE Series RGB", "NZXT Kraken X3 Series", "NZXT Kraken X3 Series RGB" }, new[] { "nzxt-kraken" }),
         new(StreamDeck, new[] { "Elgato Stream Deck MK.2" }, new[] { "streamdeck" }),
         // One detector covers the THICC Q60 and the NP50; macOS has no native discovery for either.
         new(HyteNexus, new[] { "HYTE Nexus" }, new[] { "np50", "qseries" }, NotOnMac: true),

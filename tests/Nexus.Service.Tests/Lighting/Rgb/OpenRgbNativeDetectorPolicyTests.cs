@@ -232,6 +232,19 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
         Assert.False(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("NZXT Kraken X3"), map));
     }
 
+    // OpenRGB detectors that share a PID with a natively driven Kraken (NZXTHue2ControllerDetect.cpp).
+    [Theory]
+    [InlineData(0x3012, "NZXT Kraken 2024 ELITE Series RGB")]
+    [InlineData(0x2007, "NZXT Kraken X3 Series")]
+    [InlineData(0x2014, "NZXT Kraken X3 Series RGB")]
+    public void Every_natively_lit_kraken_pid_with_an_openrgb_detector_is_claimed(int pid, string detector)
+    {
+        Assert.NotEqual(Nexus.Service.Peripherals.Nzxt.KrakenLightingProtocol.None, Nexus.Service.Peripherals.Nzxt.KrakenModel.Find(pid)!.Lighting);
+        var map = new Dictionary<string, string> { ["Unit"] = detector };
+        Assert.True(NativeDetectorClaims.Owns(NativeDetectorClaims.Kraken, Row("Unit"), map));
+        Assert.Contains(detector, Resolve(_ => true));
+    }
+
     [Fact]
     public void Detection_holds_through_a_long_silent_detector_only_after_a_seen_start()
     {
