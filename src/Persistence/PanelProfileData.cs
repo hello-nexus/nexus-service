@@ -26,6 +26,15 @@ namespace Nexus.Service.Persistence;
 /// </summary>
 public static class PanelProfileData
 {
+    /// <summary>Saved records for panels absent from this PC are dropped after this long unseen.</summary>
+    internal static readonly TimeSpan KeepAbsentFor = TimeSpan.FromDays(90);
+    /// <summary>At most this many such records are kept, newest first.</summary>
+    internal const int MaxAbsentRecords = 8;
+    /// <summary>Serialized size the kept absent records may total; the api caps a profile at 512 KB.</summary>
+    internal const int MaxAbsentBytes = 128 * 1024;
+
+    internal static Func<DateTimeOffset> Clock { get; set; } = () => DateTimeOffset.UtcNow;
+
     /// <summary>
     /// Writes a profile-file or export copy of <paramref name="source"/>'s panel data onto <paramref name="file"/>.
     /// Records the file already holds that match no source record are kept, so looks for panels that
@@ -36,16 +45,25 @@ public static class PanelProfileData
         var live = source.PanelDevices.Values.Where(r => !IsPhone(r)).ToList();
         var matched = Pair(file.PanelDevices.Values.ToList(), live);
         var records = new Dictionary<string, PanelDeviceRecord>(StringComparer.Ordinal);
-        foreach (var saved in file.PanelDevices.Values)
+        var now = Clock();
+        var oldest = now - KeepAbsentFor;
+        var bytes = 0;
+        var absent = file.PanelDevices.Values
+            .Where(saved => !matched.ContainsKey(saved) && DateTimeOffset.FromUnixTimeMilliseconds(saved.LastSeenAt) >= oldest)
+            .OrderByDescending(saved => saved.LastSeenAt);
+        foreach (var saved in absent)
         {
-            if (!matched.ContainsKey(saved))
+            bytes += JsonSerializer.SerializeToUtf8Bytes(saved, PersistenceJsonContext.Default.PanelDeviceRecord).Length;
+            if (records.Count >= MaxAbsentRecords || bytes > MaxAbsentBytes)
             {
-                records[saved.Id] = saved;
+                break;
             }
+            records[saved.Id] = saved;
         }
+        var stamp = now.ToUnixTimeMilliseconds();
         foreach (var record in live)
         {
-            records[record.Id] = Strip(record);
+            records[record.Id] = Strip(record, stamp);
         }
         file.PanelDevices = records;
         file.HasPanelsData = true;
@@ -150,11 +168,25 @@ public static class PanelProfileData
     private static bool IsPhone(PanelDeviceRecord r) =>
         string.Equals(r.Capabilities?.Surface, PanelSurfaces.Phone, StringComparison.Ordinal);
 
-    private static PanelDeviceRecord Strip(PanelDeviceRecord live)
+    /// <summary>One-time fix for presets saved before WidgetSize joined them: they take their record's size.</summary>
+    public static void BackfillPresetWidgetSize(NexusSettings settings)
+    {
+        foreach (var record in settings.PanelDevices.Values)
+        {
+            foreach (var preset in record.Presets ?? [])
+            {
+                preset.WidgetSize ??= record.WidgetSize;
+            }
+        }
+    }
+
+    // LastSeenAt on a stripped record is when it was saved, which ages out records for panels absent from this PC.
+    private static PanelDeviceRecord Strip(PanelDeviceRecord live, long savedAt)
     {
         var stripped = new PanelDeviceRecord
         {
             Id = live.Id,
+            LastSeenAt = savedAt,
             Capabilities = new PanelDeviceCapabilities { Surface = live.Capabilities?.Surface },
             FingerprintKey = live.FingerprintKey ?? FingerprintKey(live.DisplayFingerprint),
         };

@@ -98,7 +98,7 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
                     {
                         _loadedMediaId = null;
                         _loadedImage = null;
-                        _lcd.SelectHandBackScreen(s.LcdDeviceMediaId is not null);
+                        _lcd.SelectHandBackScreen(s.LcdDeviceMediaId is not null, resumePainting: false);
                     }
                     await Task.Delay(1000, ct).ConfigureAwait(false);
                     continue;

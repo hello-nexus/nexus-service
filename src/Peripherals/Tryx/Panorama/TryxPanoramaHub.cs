@@ -97,12 +97,17 @@ public sealed class TryxPanoramaHub : IDisposable
         lock (_txGate)
         {
             LoadContent(saved, ListCustomMedia());
-            if (!IsConnected)
+            if (!IsConnected || _importInProgress)
             {
                 return;
             }
-            var held = !State.CurrentMediaIsCustom || AvailableCustomMediaFilenames.Contains(State.CurrentMedia);
-            if (!string.IsNullOrEmpty(State.CurrentMedia) && held)
+            // A custom clip the panel does not hold cannot be selected; the preset-only fallback is no media.
+            if (State.CurrentMediaIsCustom && !AvailableCustomMediaFilenames.Contains(State.CurrentMedia))
+            {
+                State.CurrentMedia = "";
+                State.CurrentMediaIsCustom = false;
+            }
+            if (!string.IsNullOrEmpty(State.CurrentMedia))
             {
                 SendReliable(TryxRkProtocol.BuildPreset(State.CurrentMedia, Wire(State.ScreenEnabled), State.Brightness));
             }

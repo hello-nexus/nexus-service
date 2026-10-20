@@ -402,7 +402,7 @@ public static class ProfileRoutes
                 // Re-engage engines from the freshly-defaulted settings when
                 // the live state changed (active profile, or shared category
                 // that writes through to active).
-                if (isActive || categoryIsShared)
+                if ((isActive || categoryIsShared) && normalized != ProfileSharing.Panels)
                 {
                     if (normalized == ProfileSharing.Cooling)
                     {

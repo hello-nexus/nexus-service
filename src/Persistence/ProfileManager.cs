@@ -34,6 +34,9 @@ public sealed partial class ProfileManager : IDisposable
 
     public event Action? OnProfileSwitched;
 
+    /// <summary>Fires outside the lock after a reset changed the live panel looks without a profile switch; the reset routes already re-engage fans and lighting themselves.</summary>
+    public event Action? PanelsChanged;
+
     /// <summary>Fires (profileId) after a profile is deleted, outside the lock.</summary>
     public event Action<string>? ProfileDeleted;
 
@@ -126,9 +129,17 @@ public sealed partial class ProfileManager : IDisposable
             // each of them and the first switch after upgrade changes nothing.
             if (!root.PanelsCategorySeeded)
             {
+                // Presets saved before WidgetSize joined them take the record's, so loading one
+                // keeps the size its layout was built for.
+                _store.Update(s => PanelProfileData.BackfillPresetWidgetSize(s));
                 foreach (var p in _manifest.Profiles)
                 {
                     UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, root);
+                    if (ReadProfileFile(p.Id) is { } file)
+                    {
+                        PanelProfileData.BackfillPresetWidgetSize(file);
+                        WriteAtomic(ProfileFilePath(p.Id), JsonSerializer.Serialize(file, PersistenceJsonContext.Default.NexusSettings));
+                    }
                 }
                 _store.Update(s => s.PanelsCategorySeeded = true);
             }
@@ -1186,10 +1197,9 @@ public sealed partial class ProfileManager : IDisposable
             panelsReset = normalized == ProfileSharing.Panels && (isShared || profileId == _manifest.ActiveProfileId);
         }
 
-        // Live panel looks changed: the same reapply a switch runs re-renders panels and re-pushes cooler content.
         if (panelsReset)
         {
-            OnProfileSwitched?.Invoke();
+            PanelsChanged?.Invoke();
         }
     }
 
@@ -1240,7 +1250,7 @@ public sealed partial class ProfileManager : IDisposable
 
         if (panelsReset)
         {
-            OnProfileSwitched?.Invoke();
+            PanelsChanged?.Invoke();
         }
     }
 }

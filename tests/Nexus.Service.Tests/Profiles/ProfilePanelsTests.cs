@@ -420,7 +420,9 @@ public class ProfilePanelsTests : IDisposable
     [Fact]
     public void WriteTo_keeps_saved_records_for_panels_absent_here()
     {
-        var file = FileWith(Lcd("elsewhere", "#eee"));
+        var elsewhere = Lcd("elsewhere", "#eee");
+        elsewhere.LastSeenAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var file = FileWith(elsewhere);
         var source = new NexusSettings();
         source.PanelDevices["y70-a"] = Y70();
         source.PanelDevices["y70-a"].AccentColor = "#here";
@@ -501,15 +503,69 @@ public class ProfilePanelsTests : IDisposable
     }
 
     [Fact]
-    public void Resetting_panels_on_the_active_profile_raises_the_reapply_event()
+    public void Resetting_panels_raises_only_the_panels_event_not_the_switch_event()
     {
         _pm.Initialize();
-        var raised = 0;
-        _pm.OnProfileSwitched += () => raised++;
+        var switched = 0;
+        var panels = 0;
+        _pm.OnProfileSwitched += () => switched++;
+        _pm.PanelsChanged += () => panels++;
 
         _pm.ResetCategory(_pm.GetActiveEntry()!.Id, ProfileSharing.Panels);
         _pm.ResetCategory(_pm.GetActiveEntry()!.Id, ProfileSharing.Theme);
+        _pm.ResetProfile(_pm.GetActiveEntry()!.Id);
 
-        Assert.Equal(1, raised);
+        Assert.Equal(0, switched);
+        Assert.Equal(2, panels);
+    }
+
+    [Fact]
+    public void Absent_records_age_out_and_are_capped_newest_first()
+    {
+        var now = DateTimeOffset.UtcNow;
+        PanelDeviceRecord Saved(string id, TimeSpan age) => new()
+        {
+            Id = id,
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound },
+            LastSeenAt = (now - age).ToUnixTimeMilliseconds(),
+        };
+
+        var file = FileWith(Saved("stale", TimeSpan.FromDays(120)));
+        for (var i = 0; i < PanelProfileData.MaxAbsentRecords + 4; i++)
+        {
+            file.PanelDevices["a" + i] = Saved("a" + i, TimeSpan.FromDays(i + 1));
+        }
+
+        ProfileSharing.WriteCategory(file, new NexusSettings(), ProfileSharing.Panels);
+
+        Assert.False(file.PanelDevices.ContainsKey("stale"));
+        Assert.Equal(PanelProfileData.MaxAbsentRecords, file.PanelDevices.Count);
+        Assert.True(file.PanelDevices.ContainsKey("a0"));
+        Assert.False(file.PanelDevices.ContainsKey("a" + PanelProfileData.MaxAbsentRecords));
+    }
+
+    [Fact]
+    public void Preset_widget_size_backfill_covers_live_and_file_and_is_idempotent()
+    {
+        File.WriteAllText(Path.Combine(_dir, "profiles.json"),
+            """{ "activeProfileId": "p1", "profiles": [ { "id": "p1", "name": "p1" } ] }""");
+        File.WriteAllText(Path.Combine(_dir, "profile-p1.json"),
+            """{ "hasPanelsData": true, "panelDevices": { "y70-a": { "id": "y70-a", "widgetSize": "small", "capabilities": { "surface": "y70" }, "presets": [ { "id": "p", "name": "p" } ] } } }""");
+        _store.Update(s =>
+        {
+            var r = Y70();
+            r.WidgetSize = PanelWidgetSizes.Large;
+            r.Presets = new() { new PanelPreset { Id = "p" }, new PanelPreset { Id = "q", WidgetSize = PanelWidgetSizes.Small } };
+            s.PanelDevices["y70-a"] = r;
+        });
+
+        _pm.Initialize();
+
+        Assert.Equal(PanelWidgetSizes.Large, Live("y70-a").Presets![0].WidgetSize);
+        Assert.Equal(PanelWidgetSizes.Small, Live("y70-a").Presets![1].WidgetSize);
+        Assert.Contains("\"widgetSize\": \"large\"", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
+
+        PanelProfileData.BackfillPresetWidgetSize(_store.Load());
+        Assert.Equal(PanelWidgetSizes.Large, Live("y70-a").Presets![0].WidgetSize);
     }
 }
