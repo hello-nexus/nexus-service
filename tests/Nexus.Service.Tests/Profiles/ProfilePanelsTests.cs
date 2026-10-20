@@ -260,6 +260,24 @@ public class ProfilePanelsTests : IDisposable
     }
 
     [Fact]
+    public void Replace_active_import_does_not_apply_a_second_same_surface_record_over_a_default_live_look()
+    {
+        _store.Update(s => s.PanelDevices["y70-a"] = Y70());
+        _pm.Initialize();
+        var active = _pm.GetActiveEntry()!;
+        var src = new NexusSettings();
+        src.PanelDevices["y70-a"] = Y70("y70-a");
+        src.PanelDevices["y70-old"] = Y70("y70-old");
+        src.PanelDevices["y70-old"].AccentColor = "#0ldold";
+        src.PanelDevices["y70-old"].LastSeenAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        _pm.ImportProfile(active.Name, ProfileSharing.ExtractShareable(src), replaceExisting: true);
+
+        Assert.Null(Live("y70-a").AccentColor);
+        Assert.Single(_store.Load().PanelDevices);
+    }
+
+    [Fact]
     public void An_imported_loaded_preset_is_named_after_itself_and_its_stale_copy_is_skipped()
     {
         _store.Update(s => s.PanelDevices["y70-a"] = Y70());

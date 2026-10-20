@@ -54,7 +54,7 @@ public static class PanelProfileData
         // that record's predecessor, so it is replaced below and never retained next to it.
         var liveKeys = live.Select(r => r.FingerprintKey ?? FingerprintKey(r.DisplayFingerprint)).Where(k => k is not null).ToHashSet();
         var absent = file.PanelDevices.Values
-            .Where(saved => !matched.ContainsKey(saved) && !(saved.FingerprintKey is { } k && liveKeys.Contains(k))
+            .Where(saved => !MatchesLive(saved, matched, liveKeys)
                 && DateTimeOffset.FromUnixTimeMilliseconds(saved.LastSeenAt) >= oldest)
             .OrderByDescending(saved => saved.LastSeenAt);
         foreach (var saved in absent)
@@ -166,19 +166,26 @@ public static class PanelProfileData
         return changed;
     }
 
-    /// <summary>Removes the file's records that pair with a live record or share a live fingerprint key, so a following <see cref="WriteTo"/> keeps only the rest as absent-panel records.</summary>
+    private static bool MatchesLive(PanelDeviceRecord saved, Dictionary<PanelDeviceRecord, PanelDeviceRecord> matched, HashSet<string?> liveKeys) =>
+        matched.ContainsKey(saved) || (saved.FingerprintKey is { } k && liveKeys.Contains(k));
+
+    /// <summary>Removes the file's records that pair with a live record or share a live fingerprint key, so a following <see cref="WriteTo"/> keeps only the rest as absent-panel records. Repeats until stable: dropping a record frees its live partner to pair with the next one.</summary>
     public static void DropMatched(NexusSettings file, NexusSettings live)
     {
         var liveRecords = live.PanelDevices.Values.Where(r => !IsPhone(r)).ToList();
-        var matched = Pair(file.PanelDevices.Values.ToList(), liveRecords);
         var liveKeys = liveRecords.Select(r => r.FingerprintKey ?? FingerprintKey(r.DisplayFingerprint)).Where(k => k is not null).ToHashSet();
-        foreach (var (id, saved) in file.PanelDevices.ToList())
+        bool removed;
+        do
         {
-            if (matched.ContainsKey(saved) || (saved.FingerprintKey is { } k && liveKeys.Contains(k)))
+            var matched = Pair(file.PanelDevices.Values.ToList(), liveRecords);
+            var drop = file.PanelDevices.Where(kv => MatchesLive(kv.Value, matched, liveKeys)).Select(kv => kv.Key).ToList();
+            foreach (var id in drop)
             {
                 file.PanelDevices.Remove(id);
             }
+            removed = drop.Count > 0;
         }
+        while (removed);
     }
 
     private static string LookKey(IPanelPersonalization look)
