@@ -27,6 +27,9 @@ public sealed class JpegPanelHub : IDisposable
     private const long FailureLogIntervalMs = 10_000;
 
     private IHidDevice? _device;
+    private byte[]? _lastJpeg;
+    private int _lastJpegLength;
+    private long _lastFrameMs;
     private long _frameFailures;
     private long _lastFailureLogMs = long.MinValue / 2;
     private volatile bool _attached;
@@ -52,13 +55,20 @@ public sealed class JpegPanelHub : IDisposable
     public int SettleMs => _model.Handshake is IJpegPanelSession session ? session.SettleMs : 0;
 
     /// <summary>Period of <see cref="Tick"/>; 0 when the model has no session traffic.</summary>
-    public int TickIntervalMs => _model.Handshake is IJpegPanelSession session ? session.TickIntervalMs : 0;
+    public int TickIntervalMs => _model.Handshake is IJpegPanelSession session
+        ? session.TickIntervalMs
+        : _model.MinFrameIntervalMs > 0 ? Math.Max(1, _model.MinFrameIntervalMs / 2) : 0;
 
     /// <summary>Runs the model's periodic session exchange (keepalive, availability check) on the attached handle.</summary>
     public void Tick()
     {
         lock (_lock)
         {
+            if (_model.Handshake is not IJpegPanelSession)
+            {
+                ResendIfIdleLocked();
+                return;
+            }
             if (_device != null && _attached && _model.Handshake is IJpegPanelSession session
                 && !session.Tick(_device, _model.ReportLength, Clock()))
             {
@@ -66,6 +76,17 @@ public sealed class JpegPanelHub : IDisposable
                 _attached = false;
             }
         }
+    }
+
+    // Re-sends the last frame once the stream has been quiet for the model's minimum interval.
+    private void ResendIfIdleLocked()
+    {
+        if (_model.MinFrameIntervalMs <= 0 || _device == null || !_attached || _lastJpeg == null
+            || Clock() - _lastFrameMs < _model.MinFrameIntervalMs)
+        {
+            return;
+        }
+        SendFrame(_lastJpeg.AsSpan(0, _lastJpegLength));
     }
 
     /// <summary>USB product id of the attached panel, or 0 while nothing is attached; one model row spans several products.</summary>
@@ -164,6 +185,7 @@ public sealed class JpegPanelHub : IDisposable
                 handshake.OnDetach(_device, _model.ReportLength);
             }
             _attached = false;
+            _lastJpeg = null;
             _device?.Dispose();
             _device = null;
         }
@@ -236,6 +258,16 @@ public sealed class JpegPanelHub : IDisposable
                 }
                 offset += written;
                 chunkIndex++;
+            }
+            if (_model.MinFrameIntervalMs > 0)
+            {
+                if (_lastJpeg == null || _lastJpeg.Length < jpeg.Length)
+                {
+                    _lastJpeg = new byte[jpeg.Length];
+                }
+                jpeg.CopyTo(_lastJpeg);
+                _lastJpegLength = jpeg.Length;
+                _lastFrameMs = Clock();
             }
             return true;
         }

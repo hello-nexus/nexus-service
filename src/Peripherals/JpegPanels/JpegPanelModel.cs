@@ -37,6 +37,12 @@ public sealed record JpegPanelModel(
     /// <summary>The panel's backlight is host-settable, so its record carries a brightness.</summary>
     public bool SupportsBrightness => Handshake is IJpegPanelBrightness;
 
+    /// <summary>
+    /// When above zero, the hub re-sends the last frame once the stream has been idle this
+    /// long. For a panel whose firmware resets itself when frames stop.
+    /// </summary>
+    public int MinFrameIntervalMs { get; init; }
+
     /// <summary>Documented frame rate for the model; the profile's ceiling.</summary>
     public int Fps { get; init; } = 30;
 
@@ -127,7 +133,7 @@ public sealed record JpegPanelModel(
 
     /// <summary>
     /// ID-Cooling FX-LCD. Its init pair turns the panel on ("DIS") and sets the backlight
-    /// to 0x19 ("LIG"); shutdown clears it ("CLE") and hands the panel back to the
+    /// to a bright level ("LIG"; the vendor range is undocumented); shutdown clears it ("CLE") and hands the panel back to the
     /// firmware ("HAN"). Without the init the panel takes frames and shows nothing.
     /// </summary>
     public static readonly JpegPanelModel IdCoolingFx = new(
@@ -145,14 +151,14 @@ public sealed record JpegPanelModel(
         InitReports: new[]
         {
             new byte[] { 0x00, 0x43, 0x52, 0x54, 0x00, 0x00, 0x44, 0x49, 0x53 },
-            new byte[] { 0x00, 0x43, 0x52, 0x54, 0x00, 0x00, 0x4C, 0x49, 0x47, 0x00, 0x00, 0x19 },
+            new byte[] { 0x00, 0x43, 0x52, 0x54, 0x00, 0x00, 0x4C, 0x49, 0x47, 0x00, 0x00, 0x64 },
         },
         ShutdownReports: new[]
         {
             new byte[] { 0x00, 0x43, 0x52, 0x54, 0x00, 0x00, 0x43, 0x4C, 0x45, 0x00, 0x00, 0x44, 0x43 },
             new byte[] { 0x00, 0x43, 0x52, 0x54, 0x00, 0x00, 0x48, 0x41, 0x4E },
         })
-    { Fps = 40 };
+    { Fps = 40, MinFrameIntervalMs = 1000 };
 
     /// <summary>
     /// ASRock's AIO LCDs. Its image frames are plain chunked reports like the rest of the

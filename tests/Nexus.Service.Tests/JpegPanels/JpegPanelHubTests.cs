@@ -21,10 +21,55 @@ public class JpegPanelHubTests
 
         Assert.Equal(2, device.Writes.Count);
         Assert.All(device.Writes, w => Assert.Equal(model.ReportLength, w.Length));
-        // "CRT" + "DIS" turns the panel on; "LIG" sets the backlight to 0x19.
+        // "CRT" + "DIS" turns the panel on; "LIG" sets the backlight.
         Assert.Equal(new byte[] { 0x00, 0x43, 0x52, 0x54, 0x00, 0x00, 0x44, 0x49, 0x53 }, device.Writes[0][..9]);
-        Assert.Equal(0x19, device.Writes[1][11]);
+        Assert.Equal(0x64, device.Writes[1][11]);
         Assert.True(hub.IsConnected);
+    }
+
+    [Fact]
+    public void An_idle_stream_is_refreshed_with_the_last_frame_at_the_models_minimum_interval()
+    {
+        var model = JpegPanelModel.IdCoolingFx;
+        using var hub = new JpegPanelHub(model);
+        long now = 10_000;
+        hub.Clock = () => now;
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+        var jpeg = Enumerable.Range(0, 300).Select(i => (byte)(i % 251)).ToArray();
+        Assert.True(hub.SendFrame(jpeg));
+        device.Writes.Clear();
+
+        now += model.MinFrameIntervalMs - 1;
+        hub.Tick();
+        Assert.Empty(device.Writes);
+
+        now += 1;
+        hub.Tick();
+        Assert.NotEmpty(device.Writes);
+        int perFrame = device.Writes.Count;
+
+        hub.Tick();
+        Assert.Equal(perFrame, device.Writes.Count);
+        Assert.True(hub.TickIntervalMs is > 0 and <= 1000);
+    }
+
+    [Fact]
+    public void Models_without_a_minimum_interval_never_resend()
+    {
+        using var hub = new JpegPanelHub(JpegPanelModel.CorsairXc7);
+        long now = 0;
+        hub.Clock = () => now;
+        var device = new RecordingHidDevice();
+        hub.Attach(device);
+        hub.SendFrame(new byte[] { 1, 2, 3 });
+        device.Writes.Clear();
+
+        now += 60_000;
+        hub.Tick();
+
+        Assert.Empty(device.Writes);
+        Assert.Equal(0, hub.TickIntervalMs);
     }
 
     [Fact]
