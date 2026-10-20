@@ -133,8 +133,7 @@ public sealed class GlacialLcdWorker : BackgroundService
             ChooseDefaultMode,
             ModeLanded,
             () => _link.Streaming,
-            () => _link.ShowPending = true,
-            () => _link.BrightnessOverride);
+            () => _link.ShowPending = true);
         bool opened = false;
         // An upload holds the panel for its whole length; wait for it without blocking shutdown.
         while (!stoppingToken.IsCancellationRequested)
@@ -154,7 +153,10 @@ public sealed class GlacialLcdWorker : BackgroundService
         }
         if (!opened)
         {
-            Log("the panel did not take the opening reports", error: false);
+            if (!stoppingToken.IsCancellationRequested)
+            {
+                Log("the panel did not take the opening reports", error: false);
+            }
             return false;
         }
         ServiceLog.Info($"[{HandlerId}] connected");
@@ -181,8 +183,7 @@ public sealed class GlacialLcdWorker : BackgroundService
     private void Seed(int brightness, bool displayOn, bool keepOn) => _store.Update(s =>
     {
         var g = s.Devices.GlacialLcd;
-        // A lock dim in force is not the panel's own level, so it is not taken as the saved one.
-        if (!g.BrightnessEdited && _link.BrightnessOverride is null) { g.Brightness = brightness; }
+        if (!g.BrightnessEdited) { g.Brightness = brightness; }
         if (!g.DisplayEdited) { g.DisplayOn = displayOn; }
         if (!g.SleepEdited) { g.StayOnWhileAsleep = keepOn; }
     });
@@ -250,17 +251,10 @@ public sealed class GlacialLcdWorker : BackgroundService
     {
         int misses = 0;
         long nextPresenceMs = Environment.TickCount64 + PresencePollMs;
-        int lastSavedBrightness = ReadSettings().Brightness;
         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(HandlerId))
         {
             await _wake.WaitAsync(LoopMs, stoppingToken).ConfigureAwait(false);
             var saved = ReadSettings();
-            if (saved.Brightness != lastSavedBrightness)
-            {
-                // The user moved the slider, which ends any lock dim.
-                lastSavedBrightness = saved.Brightness;
-                _link.ClearBrightnessOverride();
-            }
             PublishToUpload(screen, saved);
             // One owner of the panel at a time: an upload in progress holds this for its whole length.
             if (Monitor.TryEnter(_link.Sync))
@@ -300,8 +294,9 @@ public sealed class GlacialLcdWorker : BackgroundService
     /// <summary>Tells the upload whether the display is dark, whether a native edit is waiting, and cancels a running upload for the edits that must not wait.</summary>
     private void PublishToUpload(GlacialLcdScreen screen, GlacialLcdSettings saved)
     {
-        int level = _link.BrightnessOverride ?? saved.Brightness;
+        int level = saved.Brightness;
         _link.Dark = !saved.DisplayOn || level == 0;
+        _link.StreamWanted = GlacialLcdSettings.StreamChosen(saved);
         if (!_link.Streaming)
         {
             _link.NativePending = false;

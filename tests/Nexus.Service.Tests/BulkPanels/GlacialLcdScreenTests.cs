@@ -41,7 +41,6 @@ public class GlacialLcdScreenTests
         public int DefaultModeChosen;
         public bool Streaming;
         public int Disturbed;
-        public int? Override;
         public GlacialLcdScreen Screen { get; private set; }
 
         public Rig(byte[]? stateReply)
@@ -71,7 +70,6 @@ public class GlacialLcdScreenTests
                 Landed.Add,
                 () => Streaming,
                 () => Disturbed++,
-                () => Override,
                 () => Clock.Now,
                 _ => { });
 
@@ -699,26 +697,6 @@ public class GlacialLcdScreenTests
     }
 
     [Fact]
-    public void A_coordinator_dim_goes_through_the_settings_write_and_the_saved_level_returns_after_it()
-    {
-        var rig = new Rig(Report("EC 5C 00 00 00 28 00 00 00 28 14 00 00 00 00 28"));
-        rig.Settings.Brightness = 40;
-        rig.Screen.Open();
-        rig.Take();
-
-        rig.Override = 0;
-        Assert.True(rig.Screen.Reconcile());
-        Assert.Contains(Report("EC 5C 01 00 00 00 00 00 00 00 14 00 00 00 00 00"), rig.Take());
-
-        rig.Override = null;
-        Assert.True(rig.Screen.Reconcile());
-        Assert.Contains(Report("EC 5C 01 00 00 28 00 00 00 28 14 00 00 00 00 28"), rig.Take());
-
-        Assert.True(rig.Screen.Reconcile());
-        Assert.Empty(rig.Take());
-    }
-
-    [Fact]
     public void The_stream_owns_the_display_only_when_the_user_picked_the_nexus_panel_mode()
     {
         var g = new GlacialLcdSettings();
@@ -726,6 +704,8 @@ public class GlacialLcdScreenTests
 
         Nexus.Service.Routes.DevicesRoutes.ApplyGlacialRequest(g, new Nexus.Service.Routes.GlacialLcdSettingsRequest { Mode = GlacialLcdSettings.ModePanel });
         Assert.True(GlacialLcdSettings.StreamChosen(g));
+        // The upload owns this mode, so nothing is left pending for the native side.
+        Assert.False(g.ModePending);
 
         Nexus.Service.Routes.DevicesRoutes.ApplyGlacialRequest(g, new Nexus.Service.Routes.GlacialLcdSettingsRequest { Mode = GlacialLcdSettings.ModeStatic });
         Assert.False(GlacialLcdSettings.StreamChosen(g));

@@ -330,6 +330,58 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
+    public void A_cancel_between_the_flush_and_the_first_transfer_still_forgets_the_remembered_picture()
+    {
+        var link = new GlacialLcdLink();
+        var memory = new FakeMemory();
+        memory.Hashes["FAKE"] = "ABC";
+        var driver = Fast(link);
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
+        var hid = new FakeHid { OnWrite = w => { if (w[1] == 0xF1) { link.RequestCancel(); } } };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
+
+        Assert.Empty(memory.Hashes);
+        Assert.Empty(pipe.Writes);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_user_who_left_the_nexus_panel_mode_stops_the_upload_before_the_session_closes()
+    {
+        var link = new GlacialLcdLink();
+        var driver = Fast(link);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        link.StreamWanted = false;
+        driver.SendFrame(pipe, hid, Frame());
+        int looks = driver.Ticks + 2;
+        Assert.True(WaitUntil(() => driver.Ticks >= looks));
+
+        Assert.Equal(0, driver.UploadAttempts);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Closing_a_stream_cancels_a_running_upload_and_opening_one_clears_the_cancel()
+    {
+        var link = new GlacialLcdLink();
+        var stream = new object();
+        link.StreamOpened(stream);
+
+        link.StreamClosed(stream);
+        Assert.True(link.CancelRequested);
+
+        link.StreamOpened(new object());
+        Assert.False(link.CancelRequested);
+    }
+
+    [Fact]
     public void A_stale_transports_close_cannot_end_a_newer_stream()
     {
         var link = new GlacialLcdLink();
@@ -343,18 +395,6 @@ public class GlacialLcdDriverTests
 
         link.StreamClosed(current);
         Assert.False(link.Streaming);
-    }
-
-    [Fact]
-    public void A_coordinator_dim_becomes_a_brightness_override_for_the_native_worker()
-    {
-        var link = new GlacialLcdLink();
-        var driver = Fast(link);
-
-        Assert.True(driver.SetBrightness(new FakePipe(), new FakeHid(), 20));
-
-        Assert.Equal(20, link.BrightnessOverride);
-        Assert.True(driver.MultiInstance);
     }
 
     [Fact]
@@ -385,7 +425,8 @@ public class GlacialLcdDriverTests
         Assert.Equal(0x82, driver.ReadPipeId);
         Assert.True(driver.NeedsHidChannel);
         Assert.True(driver.HidOpensForInput);
-        Assert.True(((IBulkPanelDriver)driver).SupportsBrightness);
+        Assert.False(((IBulkPanelDriver)driver).SupportsBrightness);
+        Assert.True(driver.MultiInstance);
         Assert.Equal("lcd-square", driver.Surface);
     }
 
@@ -440,6 +481,9 @@ public class GlacialLcdDriverTests
             get { lock (_lock) { return new List<byte[]>(_writes); } }
         }
 
+        /// <summary>Runs after each report is recorded, so a test can act at an exact point of the sequence.</summary>
+        public Action<byte[]>? OnWrite { get; set; }
+
         public int VendorId => 0x0B05;
         public int ProductId => GlacialLcdProtocol.ProductId;
         public string Path => "/dev/fake-glacial";
@@ -449,10 +493,12 @@ public class GlacialLcdDriverTests
 
         public bool Write(ReadOnlySpan<byte> report)
         {
+            var copy = report.ToArray();
             lock (_lock)
             {
-                _writes.Add(report.ToArray());
+                _writes.Add(copy);
             }
+            OnWrite?.Invoke(copy);
             return true;
         }
 

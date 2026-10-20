@@ -57,7 +57,6 @@ public sealed class GlacialLcdLink
     private object? _streamOwner;
     private volatile bool _streaming;
     private volatile bool _cancelUpload;
-    private int _brightnessOverride = -1;
 
     /// <summary>Held for each pass of the native worker and for the whole of an upload.</summary>
     public object Sync { get; } = new();
@@ -77,17 +76,10 @@ public sealed class GlacialLcdLink
     /// <summary>Asks a running upload to stop, so a dark display or a sleep edit does not wait out the transfer.</summary>
     public bool CancelRequested => _cancelUpload;
 
-    /// <summary>A brightness the coordinator asked for, such as a lock dim, which is not the user's saved one; null when none.</summary>
-    public int? BrightnessOverride
-    {
-        get
-        {
-            int value = Volatile.Read(ref _brightnessOverride);
-            return value < 0 ? null : value;
-        }
-    }
+    /// <summary>The user's choice still is the Nexus Panel mode; cleared the moment they pick a native one, so an upload stops before the session closes.</summary>
+    public volatile bool StreamWanted = true;
 
-    /// <summary>Raised when the streaming flag flips or a brightness override changes, so the native worker looks again at once.</summary>
+    /// <summary>Raised when the streaming flag flips, so the native worker looks again at once.</summary>
     public event Action? Changed;
 
     /// <summary>Raised when a cancel is requested, so the upload's pacing wait ends.</summary>
@@ -100,6 +92,7 @@ public sealed class GlacialLcdLink
             _streamOwner = stream;
             _streaming = true;
         }
+        ClearCancel();
         ShowPending = true;
         Changed?.Invoke();
     }
@@ -116,6 +109,7 @@ public sealed class GlacialLcdLink
             _streamOwner = null;
             _streaming = false;
         }
+        RequestCancel();
         Changed?.Invoke();
     }
 
@@ -126,14 +120,6 @@ public sealed class GlacialLcdLink
     }
 
     public void ClearCancel() => _cancelUpload = false;
-
-    public void SetBrightnessOverride(int percent)
-    {
-        Volatile.Write(ref _brightnessOverride, Math.Clamp(percent, 0, 100));
-        Changed?.Invoke();
-    }
-
-    public void ClearBrightnessOverride() => Volatile.Write(ref _brightnessOverride, -1);
 }
 
 /// <summary>
@@ -257,15 +243,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     /// <summary>A second LCD on the same surface must not share this panel's layout record.</summary>
     public bool MultiInstance => true;
-
-    /// <summary>A dim from the coordinator, such as on PC lock, goes through the native brightness write.</summary>
-    public bool SupportsBrightness => true;
-
-    public bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent)
-    {
-        _link.SetBrightnessOverride(percent);
-        return true;
-    }
 
     public void StreamOpened(object stream) => _link.StreamOpened(stream);
 
@@ -402,8 +379,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
     }
 
-    /// <summary>True when an upload may start: streaming, the display lit, no native edit waiting, and past any backoff.</summary>
-    private bool CanUpload() => _link.Streaming && !_link.Dark && !_link.NativePending;
+    /// <summary>True when an upload may start or go on: a stream the user wants, the display lit, and no native edit waiting.</summary>
+    private bool CanUpload() => _link.Streaming && _link.StreamWanted && !_link.Dark && !_link.NativePending;
 
     private bool Ready()
     {
@@ -533,7 +510,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             // A cancel that arrived before the reset is still set; honor it instead of losing it.
             FinishUploading(state);
-            MarkPending();
+            if (!state.Stop)
+            {
+                MarkPending();
+            }
             return;
         }
         Interlocked.Increment(ref _uploadAttempts);
@@ -545,7 +525,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             // One owner of the panel at a time: the native worker waits out the whole upload.
             lock (_link.Sync)
             {
-                outcome = UploadJpeg(state, pipe, hid, jpeg);
+                // Waiting for the lock may have outlasted a native edit or a mode change.
+                outcome = ShouldStop(state) ? UploadOutcome.Cancelled : UploadJpeg(state, pipe, hid, jpeg);
+                if (outcome == UploadOutcome.Done)
+                {
+                    _link.ShowPending = false;
+                }
             }
         }
         catch (Exception ex)
@@ -570,7 +555,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 _failures = 0;
                 _nextAllowedMs = 0;
             }
-            _link.ShowPending = false;
             Interlocked.Increment(ref _uploadsCompleted);
             ServiceLog.Info($"[{HandlerId}] picture uploaded, {jpeg.Length} bytes in {watch.ElapsedMilliseconds} ms");
         }
@@ -678,7 +662,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         return ms > 0 && _abort.Wait(ms);
     }
 
-    private bool ShouldStop(WorkerState state) => state.Stop || _link.CancelRequested;
+    private bool ShouldStop(WorkerState state) => state.Stop || _link.CancelRequested || !CanUpload();
 
     private UploadOutcome UploadJpeg(WorkerState state, IBulkUsbPipe pipe, IHidDevice hid, byte[] jpeg)
     {
@@ -697,6 +681,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             if (Pause(gapMs) || ShouldStop(state))
             {
                 return UploadOutcome.Cancelled;
+            }
+            if (report[1] == 0xF1)
+            {
+                // The flush may erase the stored picture, so from here the panel holds nothing known.
+                ForgetPicture();
             }
             lock (_hidLock)
             {
@@ -717,11 +706,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             if (ShouldStop(state))
             {
                 return UploadOutcome.Cancelled;
-            }
-            if (offset == 0)
-            {
-                // From the first transfer on, the panel holds a partial picture, so it holds nothing known.
-                ForgetPicture();
             }
             // The last transfer is a full chunk, zero padded past the picture's end.
             Array.Clear(chunk);

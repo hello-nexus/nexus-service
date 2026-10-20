@@ -65,7 +65,6 @@ public sealed class GlacialLcdScreen
     private readonly Action<string> _modeLanded;
     private readonly Func<bool> _streaming;
     private readonly Action _panelDisturbed;
-    private readonly Func<int?> _brightnessOverride;
     private readonly Func<long> _clock;
     private readonly Action<int> _pause;
 
@@ -74,7 +73,6 @@ public sealed class GlacialLcdScreen
     private long _settingsRetryAtMs;
     private int _announcedCount;
     private bool _seeded;
-    private bool _dimmed;
 
     public GlacialLcdScreen(
         IHidDevice hid,
@@ -87,7 +85,6 @@ public sealed class GlacialLcdScreen
         Action<string>? modeLanded = null,
         Func<bool>? streaming = null,
         Action? panelDisturbed = null,
-        Func<int?>? brightnessOverride = null,
         Func<long>? clock = null,
         Action<int>? pause = null)
     {
@@ -101,7 +98,6 @@ public sealed class GlacialLcdScreen
         _modeLanded = modeLanded ?? (_ => { });
         _streaming = streaming ?? (() => false);
         _panelDisturbed = panelDisturbed ?? (() => { });
-        _brightnessOverride = brightnessOverride ?? (() => null);
         _clock = clock ?? (() => Environment.TickCount64);
         _pause = pause ?? (ms => System.Threading.Thread.Sleep(ms));
     }
@@ -115,37 +111,10 @@ public sealed class GlacialLcdScreen
         _ => "animated:" + s.AnimatedAsset,
     };
 
-    /// <summary>The saved state with a coordinator-requested brightness, such as a lock dim, in place of the saved one.</summary>
-    private GlacialLcdSettings Wanted()
-    {
-        var wanted = _settings().Copy();
-        if (_brightnessOverride() is int level)
-        {
-            wanted.Brightness = level;
-            wanted.BrightnessEdited = true;
-            wanted.UserEdited = true;
-            _dimmed = true;
-        }
-        else if (_dimmed)
-        {
-            // The dim ended: the saved level goes back to the panel even if the user never set one.
-            if (_confirmed.Brightness == wanted.Brightness)
-            {
-                _dimmed = false;
-            }
-            else
-            {
-                wanted.BrightnessEdited = true;
-                wanted.UserEdited = true;
-            }
-        }
-        return wanted;
-    }
-
     /// <summary>Which settings edits still differ from the panel, so the worker can hold off an upload and cancel one that should not finish first.</summary>
     public (bool Brightness, bool Display, bool Sleep) PendingFlagEdits()
     {
-        var wanted = Wanted();
+        var wanted = _settings().Copy();
         if (!wanted.UserEdited)
         {
             return (false, false, false);
@@ -196,7 +165,7 @@ public sealed class GlacialLcdScreen
     /// <summary>Sends what the user changed and the panel does not hold yet.</summary>
     public bool Reconcile()
     {
-        var wanted = Wanted();
+        var wanted = _settings().Copy();
         bool streaming = _streaming();
         if (_confirmed.WasStreaming && !streaming)
         {
@@ -318,7 +287,7 @@ public sealed class GlacialLcdScreen
         }
         RecordReply(reply);
         // The seed may have moved fields the user never edited; edits are judged against the reply.
-        wanted = Wanted();
+        wanted = _settings().Copy();
         var c = _confirmed;
         int? brightness = FlagEditPending(wanted.BrightnessEdited, wanted.Brightness, c.Brightness) ? wanted.Brightness : null;
         bool? display = FlagEditPending(wanted.DisplayEdited, wanted.DisplayOn, c.DisplayOn) ? wanted.DisplayOn : null;

@@ -18,7 +18,7 @@ public static partial class DevicesRoutes
         app.MapGet("/devices/asus-glacial-lcd/state", (IConfigStore store, GlacialLcdWorker worker, ISensorProvider sensors) =>
             Results.Json(BuildGlacialState(ReadGlacial(store), worker.IsConnected, sensors), AppJsonContext.Default.GlacialLcdStateResponse));
 
-        app.MapPut("/devices/asus-glacial-lcd/settings", (GlacialLcdSettingsRequest body, IConfigStore store, GlacialLcdWorker worker) =>
+        app.MapPut("/devices/asus-glacial-lcd/settings", (GlacialLcdSettingsRequest body, IConfigStore store, GlacialLcdWorker worker, GlacialLcdLink link, IServiceProvider services) =>
         {
             if (body.Mode is not null
                 && body.Mode is not (GlacialLcdSettings.ModeStatic or GlacialLcdSettings.ModeAnimated or GlacialLcdSettings.ModeMonitor or GlacialLcdSettings.ModePanel))
@@ -46,6 +46,17 @@ public static partial class DevicesRoutes
                 return Results.BadRequest(ApiResponse.Fail("invalid slots"));
             }
             store.Update(s => ApplyGlacialRequest(s.Devices.GlacialLcd, body));
+            if (body.Mode is not null)
+            {
+                // Leaving the Nexus Panel mode stops a running upload now and closes the session on
+                // this pass instead of the coordinator's next poll; choosing it lets the stream start.
+                link.StreamWanted = body.Mode == GlacialLcdSettings.ModePanel;
+                if (!link.StreamWanted)
+                {
+                    link.RequestCancel();
+                }
+                services.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.Wake();
+            }
             worker.RequestApply();
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
@@ -90,7 +101,12 @@ public static partial class DevicesRoutes
         }
         // Pending only when the panel is not already known to hold this content: a mode
         // newly chosen, or a changed key. An unchanged key leaves the flag as it was.
-        if (g.ModeChosen && (!wasChosen || GlacialLcdScreen.ModeKeyOf(g.Copy()) != keyBefore))
+        if (g.ModeChosen && g.Mode == GlacialLcdSettings.ModePanel)
+        {
+            // The upload owns this mode; there is nothing for the native side to select.
+            g.ModePending = false;
+        }
+        else if (g.ModeChosen && (!wasChosen || GlacialLcdScreen.ModeKeyOf(g.Copy()) != keyBefore))
         {
             g.ModePending = true;
         }

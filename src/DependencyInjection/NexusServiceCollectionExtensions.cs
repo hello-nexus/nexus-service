@@ -1449,7 +1449,8 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
                         s => chosen = Nexus.Service.Persistence.GlacialLcdSettings.StreamChosen(s.Devices.GlacialLcd));
                     return !chosen;
-                }));
+                },
+                listedWhileWithheld: true));
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>());
         services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(
