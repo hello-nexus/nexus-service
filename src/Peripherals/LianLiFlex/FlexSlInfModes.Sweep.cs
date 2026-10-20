@@ -1137,16 +1137,16 @@ internal sealed partial class FlexSlInfModes
                             int maskRow = pass * (halfLeds + fans + fans - 1) + head;
                             int maskValue = ((attach != 0) ? (fans switch
                             {
-                                3 => currentMask3RightAttach[maskRow, led], 
-                                2 => currentMask2RightAttach[maskRow, led], 
-                                1 => currentMask1[maskRow, led], 
-                                _ => currentMask4RightAttach[maskRow, led], 
+                                3 => currentMask3RightAttach[maskRow, led],
+                                2 => currentMask2RightAttach[maskRow, led],
+                                1 => currentMask1[maskRow, led],
+                                _ => currentMask4RightAttach[maskRow, led],
                             }) : (fans switch
                             {
-                                3 => currentMask3[maskRow, led], 
-                                2 => currentMask2[maskRow, led], 
-                                1 => currentMask1[maskRow, led], 
-                                _ => currentMask4[maskRow, led], 
+                                3 => currentMask3[maskRow, led],
+                                2 => currentMask2[maskRow, led],
+                                1 => currentMask1[maskRow, led],
+                                _ => currentMask4[maskRow, led],
                             }));
                             int green;
                             int blue;

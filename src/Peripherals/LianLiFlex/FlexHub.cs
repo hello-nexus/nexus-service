@@ -33,7 +33,6 @@ internal sealed class FlexUnitLink : IDisposable
     public readonly object Io = new();
     public volatile FlexReceiverInfo? Info;
     public int FirmwareVersion;
-    public long LastInfoMs;
     public int Missed;
     public long LastPollMs;
     public long LastClockMs;
@@ -121,8 +120,6 @@ public sealed class FlexHub : IDisposable
         }
     }
 
-    public string? LastDiscoveryError { get; private set; }
-
     public FlexUnit? Find(string mac) => Units.FirstOrDefault(u => string.Equals(u.Mac, mac, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Opens new receivers, drops departed ones, and publishes the unit list.</summary>
@@ -133,9 +130,8 @@ public sealed class FlexHub : IDisposable
         {
             ports = _discovery.Discover();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            LastDiscoveryError = ex.Message;
             ports = Array.Empty<FlexUnitPort>();
         }
         var present = new HashSet<string>(ports.Select(p => p.ReceiverPath), StringComparer.OrdinalIgnoreCase);
@@ -299,7 +295,6 @@ public sealed class FlexHub : IDisposable
         }
         link.Missed = 0;
         link.Info = info;
-        link.LastInfoMs = link.LastPollMs;
     }
 
     /// <summary>One worker pass: poll, clock sync, duty, flash save, and a republish when anything changed.</summary>
@@ -364,12 +359,21 @@ public sealed class FlexHub : IDisposable
         var frame = want == -1
             ? FlexProtocol.BuildFollowMotherboard()
             : FlexProtocol.BuildSetPwm(FlexProtocol.EncodeDuty(family, want));
-        lock (link.Io)
+        // An upload holds the receiver; the wanted duty stays set and goes out on the next pass.
+        if (!Monitor.TryEnter(link.Io))
+        {
+            return;
+        }
+        try
         {
             if (Send(link, frame))
             {
                 link.AppliedDuty = want;
             }
+        }
+        finally
+        {
+            Monitor.Exit(link.Io);
         }
     }
 
@@ -379,7 +383,11 @@ public sealed class FlexHub : IDisposable
         {
             return;
         }
-        lock (link.Io)
+        if (!Monitor.TryEnter(link.Io))
+        {
+            return;
+        }
+        try
         {
             // Checked again under the lock: another pass may have saved, or an upload may have restarted the wait.
             if (!link.SaveDirty || _nowMs() - link.LastUploadMs < SaveSettleMs)
@@ -388,6 +396,10 @@ public sealed class FlexHub : IDisposable
             }
             link.SaveDirty = false;
             Send(link, FlexProtocol.BuildSave());
+        }
+        finally
+        {
+            Monitor.Exit(link.Io);
         }
     }
 
@@ -437,9 +449,6 @@ public sealed class FlexHub : IDisposable
             link.DesiredDuty = percent ?? -1;
         }
     }
-
-    public int? DesiredDuty(string mac) =>
-        LinkOf(mac) is { } l && l.DesiredDuty >= 0 ? l.DesiredDuty : null;
 
     /// <summary>Hands the receiver's lighting to the motherboard ARGB input (true) or back to USB. Never sent to an RF-bound receiver.</summary>
     public bool SetMotherboardArgb(string mac, bool on)
@@ -517,7 +526,7 @@ public sealed class FlexHub : IDisposable
             }
             link.SentEffectIndex = Convert.ToHexString(index);
             link.LastUploadMs = _nowMs();
-            link.SaveDirty = saveToFlash;
+            link.SaveDirty |= saveToFlash;
             link.LiveSinceUpload = false;
         }
         return true;

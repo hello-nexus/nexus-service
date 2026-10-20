@@ -68,7 +68,7 @@ public class FlexSettingsAndPolicyTests : IDisposable
     }
 
     [Fact]
-    public void The_flex_handler_is_experimental_and_tied_to_the_vendor_app()
+    public void The_flex_handler_is_experimental_and_tied_to_its_conflict_app()
     {
         Assert.True(DeviceControlPolicy.IsExperimental("lianli-flex"));
         Assert.Equal("lian-li-l-connect", DeviceControlPolicy.ConflictAppFor("lianli-flex"));

@@ -35,8 +35,8 @@ public class FlexTlExtendedEffectsTests
 
     public static IEnumerable<object[]> SeededKeyRows() => SeededKeys.Select(k => new object[] { k });
 
-    public static IEnumerable<object[]> ReferenceCases() =>
-        Vectors.Value.RootElement.GetProperty("reference").EnumerateArray().Select((_, i) => new object[] { i });
+    public static IEnumerable<object[]> SettingCases() =>
+        Vectors.Value.RootElement.GetProperty("settingCases").EnumerateArray().Select((_, i) => new object[] { i });
 
     private static JsonElement Expected(string key) =>
         Vectors.Value.RootElement.GetProperty("expected").EnumerateArray()
@@ -143,10 +143,10 @@ public class FlexTlExtendedEffectsTests
     }
 
     [Theory]
-    [MemberData(nameof(ReferenceCases))]
-    public void Non_default_settings_match_the_reference_vectors(int index)
+    [MemberData(nameof(SettingCases))]
+    public void Non_default_settings_match_the_stored_vectors(int index)
     {
-        var row = Vectors.Value.RootElement.GetProperty("reference")[index];
+        var row = Vectors.Value.RootElement.GetProperty("settingCases")[index];
         var colors = row.GetProperty("colors").EnumerateArray()
             .Select(c => new RgbColor(c[0].GetByte(), c[1].GetByte(), c[2].GetByte())).ToArray();
         var scope = Enum.Parse<FlexScope>(row.GetProperty("scope").GetString()!);

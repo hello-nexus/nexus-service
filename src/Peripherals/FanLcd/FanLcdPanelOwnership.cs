@@ -56,7 +56,7 @@ public sealed class FanLcdPanelOwnership
 
     /// <summary>
     /// Sends the last panel frame again. The screen turns a frame as it arrives, so a rotation change
-    /// leaves the picture on the glass as it was until the next frame; a panel whose layout is still
+    /// leaves the picture on the display as it was until the next frame; a panel whose layout is still
     /// sends none.
     /// </summary>
     public bool Repush(string serial, Func<byte[], bool> push)

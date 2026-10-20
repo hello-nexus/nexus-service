@@ -560,9 +560,9 @@ internal sealed partial class FlexSlInfModes
                 {
                     int levelMax = band switch
                     {
-                        0 => zoneLeds, 
-                        1 => zoneLeds * 2 / 3, 
-                        _ => zoneLeds / 3, 
+                        0 => zoneLeds,
+                        1 => zoneLeds * 2 / 3,
+                        _ => zoneLeds / 3,
                     };
                     for (int level = 0; level < levelMax; level++)
                     {

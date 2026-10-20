@@ -148,8 +148,7 @@ public static class FlexStoredLook
             }
             return sb.ToString();
         }
-        sb.Append(unit.Family).Append('|').Append(unit.Fans).Append(unit.Info.FanNum >= 10 ? "|ra" : "").Append('|').Append(look.UpDownSwap).Append('|').Append(look.Merge)
-            .Append('|').Append(look.SortIndex);
+        sb.Append(unit.Family).Append('|').Append(unit.Fans).Append(unit.Info.FanNum >= 10 ? "|ra" : "").Append('|').Append(look.UpDownSwap);
         foreach (var (zone, z) in ZoneLooks(unit.Family, look))
         {
             sb.Append('|').Append(zone).Append(':').Append(z.Key).Append(':').Append(z.Speed).Append(':').Append(z.Direction)

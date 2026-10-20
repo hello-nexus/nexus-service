@@ -188,7 +188,7 @@ public sealed class FlexLcdTransport : ISlv3LcdTransport, IFlexScreenVersion
         _drain.Join();
         lock (_io)
         {
-            
+
             Slv3WinUsbInterop.WinUsb_Free(_usb);
             _file.Dispose();
             if (_writeEvent != IntPtr.Zero)

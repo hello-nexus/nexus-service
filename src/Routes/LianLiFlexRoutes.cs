@@ -211,12 +211,7 @@ public static partial class LianLiFlexRoutes
                 s.Devices.FlexUnits.TryGetValue(key, out var old);
                 var next = new Dictionary<string, LianLiFlexUnitSettings>(s.Devices.FlexUnits, StringComparer.Ordinal)
                 {
-                    [key] = new LianLiFlexUnitSettings
-                    {
-                        Mode = DefaultEffect,
-                        EffectMode = DefaultEffect,
-                        SortIndex = old?.SortIndex ?? 0,
-                    },
+                    [key] = ResetLook(old),
                 };
                 s.Devices.FlexUnits = next;
             });
@@ -224,8 +219,16 @@ public static partial class LianLiFlexRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapPost("/devices/lianli-flex/restart-lcd", (Slv3MacRequest body, FlexScreens screens) =>
+        app.MapPost("/devices/lianli-flex/restart-lcd", (Slv3MacRequest body, FlexScreens screens, FlexHub hub) =>
         {
+            if (hub.Find(body.Mac) is not { } target)
+            {
+                return Results.NotFound(ApiResponse.Fail("fan not found"));
+            }
+            if (!target.Controllable)
+            {
+                return Results.Json(ApiResponse.Fail("fan is bound to a wireless controller"), AppJsonContext.Default.ApiResponse, statusCode: 409);
+            }
             if (!screens.Restart(body.Mac))
             {
                 return Results.Json(ApiResponse.Fail("no screen to restart"), AppJsonContext.Default.ApiResponse, statusCode: 409);
@@ -233,7 +236,7 @@ public static partial class LianLiFlexRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapPost("/devices/lianli-flex/identify", (Slv3MacRequest body, Nexus.Service.Lighting.FlexLightingFrameWriter writer, FlexHub hub) =>
+        app.MapPost("/devices/lianli-flex/identify", (Slv3MacRequest body, Nexus.Service.Lighting.FlexLightingFrameWriter writer, FlexHub hub, IConfigStore store) =>
         {
             if (hub.Find(body.Mac) is not { } unit)
             {
@@ -242,6 +245,10 @@ public static partial class LianLiFlexRoutes
             if (!unit.Controllable)
             {
                 return Results.Json(ApiResponse.Fail("fan is bound to a wireless controller"), AppJsonContext.Default.ApiResponse, statusCode: 409);
+            }
+            if (Nexus.Service.Lighting.FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, store.Load().Devices.FlexUnits))
+            {
+                return Results.Json(ApiResponse.Fail("fan follows the motherboard ARGB input"), AppJsonContext.Default.ApiResponse, statusCode: 409);
             }
             writer.Identify(unit.Mac);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
@@ -289,11 +296,15 @@ public static partial class LianLiFlexRoutes
             return Results.Json(response, AppJsonContext.Default.Slv3LcdScreensResponse);
         });
 
-        app.MapPost("/devices/lianli-flex/screen/settings", (Slv3LcdSettingsRequest body, FlexLcdHub lcd, FlexScreens flexScreens, IConfigStore store) =>
+        app.MapPost("/devices/lianli-flex/screen/settings", (Slv3LcdSettingsRequest body, FlexLcdHub lcd, FlexScreens flexScreens, FlexHub hub, IConfigStore store) =>
         {
             if (string.IsNullOrWhiteSpace(body.Serial))
             {
                 return Results.Json(ApiResponse.Fail("missing serial"), AppJsonContext.Default.ApiResponse);
+            }
+            if (!IsKnownScreen(hub, body.Serial))
+            {
+                return Results.Json(ApiResponse.Fail("unknown screen"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
             if (body.Brightness is > 100)
             {
@@ -335,12 +346,16 @@ public static partial class LianLiFlexRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapPost("/devices/lianli-flex/screens/order", (Slv3LcdOrderRequest body, IConfigStore store) =>
+        app.MapPost("/devices/lianli-flex/screens/order", (Slv3LcdOrderRequest body, FlexHub hub, IConfigStore store) =>
         {
             var serials = body.Serials ?? new List<string>();
             if (Slv3LcdRoutes.ValidateOrder(serials) is { } orderError)
             {
                 return Results.Json(ApiResponse.Fail(orderError), AppJsonContext.Default.ApiResponse);
+            }
+            if (serials.Any(x => !IsKnownScreen(hub, x)))
+            {
+                return Results.Json(ApiResponse.Fail("unknown screen"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
             store.Update(s =>
             {
@@ -352,16 +367,33 @@ public static partial class LianLiFlexRoutes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapPost("/devices/lianli-flex/screen/content", (Slv3LcdContentRequest body, IConfigStore store) =>
+        app.MapPost("/devices/lianli-flex/screen/content", (Slv3LcdContentRequest body, FlexHub hub, IConfigStore store) =>
         {
             if (Slv3LcdRoutes.ValidateContent(body) is { } contentError)
             {
                 return Results.Json(ApiResponse.Fail(contentError), AppJsonContext.Default.ApiResponse);
             }
+            if (!IsKnownScreen(hub, body.Serial))
+            {
+                return Results.Json(ApiResponse.Fail("unknown screen"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+            }
             store.Update(s => Slv3LcdRoutes.ApplyContent(ScreenOf(s.Devices, body.Serial), body));
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
     }
+
+    /// <summary>The look after Reset lighting: the default effect, the list position kept, and a unit on the board input handed back to USB so the reset look shows.</summary>
+    internal static LianLiFlexUnitSettings ResetLook(LianLiFlexUnitSettings? old) => new()
+    {
+        Mode = DefaultEffect,
+        EffectMode = DefaultEffect,
+        SortIndex = old?.SortIndex ?? 0,
+        MotherboardArgb = false,
+    };
+
+    /// <summary>A serial of a screen that belongs to a unit the hub has seen; settings are only created for those.</summary>
+    private static bool IsKnownScreen(FlexHub hub, string serial) =>
+        hub.Units.Any(u => string.Equals(u.ScreenSerial, serial, StringComparison.OrdinalIgnoreCase));
 
     private static LianLiWirelessScreenSettings ScreenOf(DevicesSettings devices, string serial)
     {

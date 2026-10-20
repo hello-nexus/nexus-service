@@ -193,6 +193,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         if (!_gates.Lighting || !_hub.IsConnected)
         {
             _state.Clear();
+            _argbRequests.Clear();
             return;
         }
         var settings = _store.Load();
@@ -211,19 +212,19 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
                 st = new UnitState();
                 _state[unit.Mac] = st;
             }
-            if (TickIdentify(unit, st, now))
-            {
-                continue;
-            }
             settings.Devices.FlexUnits.TryGetValue(unit.Mac, out var look);
             look ??= new LianLiFlexUnitSettings();
             ReconcileMotherboardArgb(unit, look, now);
             if (FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, settings.Devices.FlexUnits))
             {
-                // The unit shows its ARGB input: it takes no stored uploads and no live frames.
+                // The unit shows its ARGB input: it takes no stored uploads, no live frames and no identify flash.
                 st.PendingSignature = "";
                 st.UploadedSignature = "";
                 st.Streaming = false;
+                continue;
+            }
+            if (TickIdentify(unit, st, now))
+            {
                 continue;
             }
             if (look.Mode == LianLiWirelessChainLighting.ModeCustom)
@@ -236,6 +237,10 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
                 st.Streaming = false;
                 TickStored(unit, st, look, now, group);
             }
+        }
+        foreach (var gone in _argbRequests.Keys.Where(k => !live.Contains(k)).ToList())
+        {
+            _argbRequests.Remove(gone);
         }
         if (_state.Count > live.Count)
         {

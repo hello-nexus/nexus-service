@@ -163,7 +163,7 @@ public class FlexProtocolTests
     }
 
     [Fact]
-    public void ZoneWireIndexes_follow_the_vendor_zone_layout()
+    public void ZoneWireIndexes_follow_the_zone_layout()
     {
         Assert.Equal(13, FlexProtocol.ZoneWireIndexes(FlexFamily.TlFlex, "up").Count);
         Assert.Equal(13, FlexProtocol.ZoneWireIndexes(FlexFamily.TlFlex, "down")[0]);

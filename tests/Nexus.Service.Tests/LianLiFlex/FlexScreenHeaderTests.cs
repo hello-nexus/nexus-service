@@ -28,7 +28,7 @@ public class FlexScreenHeaderTests
     }
 
     [Fact]
-    public void Layer_and_check_commands_use_the_vendor_command_numbers()
+    public void Layer_and_check_commands_use_their_own_command_numbers()
     {
         Assert.Equal(0x66, (int)Slv3LcdProtocol.CmdType.PushPng);
         Assert.Equal(0x67, (int)Slv3LcdProtocol.CmdType.PushLayer3);

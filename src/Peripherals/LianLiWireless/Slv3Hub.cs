@@ -78,6 +78,9 @@ public sealed class Slv3Hub : IDisposable
 
     internal const string WiredOwnedError = "connected by USB";
 
+    /// <summary>A wired fan that is being released from the radio: the only thing reconcile does for it.</summary>
+    private bool IsReleasingLocked(string key) => _intents.TryGetValue(key, out var intent) && intent.Unbinding;
+
     private bool IsWiredOwned(string macHex) => !string.IsNullOrEmpty(macHex) && WiredOwned?.Invoke(macHex) == true;
 
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
@@ -997,7 +1000,7 @@ public sealed class Slv3Hub : IDisposable
         var merged = new Dictionary<string, Slv3DeviceRecord>(StringComparer.Ordinal);
         foreach (var record in _lastFanRecords)
         {
-            if (!IsWiredOwned(Convert.ToHexString(record.Mac)))
+            if (!IsWiredOwned(Convert.ToHexString(record.Mac)) || IsReleasingLocked(Convert.ToHexString(record.Mac)))
             {
                 merged[Convert.ToHexString(record.Mac)] = record;
             }
@@ -1005,7 +1008,7 @@ public sealed class Slv3Hub : IDisposable
         foreach (var record in _pollRecords)
         {
             var key = Convert.ToHexString(record.Mac);
-            if (!IsWiredOwned(key) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
+            if ((!IsWiredOwned(key) || IsReleasingLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
             {
                 merged[key] = record;
             }
@@ -2394,11 +2397,6 @@ public sealed class Slv3Hub : IDisposable
     public bool Unbind(string macHex, out string error)
     {
         error = "";
-        if (IsWiredOwned(macHex))
-        {
-            error = WiredOwnedError;
-            return false;
-        }
         if (_lockBound)
         {
             error = LockedError;
@@ -2422,6 +2420,12 @@ public sealed class Slv3Hub : IDisposable
                 return false;
             }
             var key = Convert.ToHexString(mac);
+            // A fan the USB path drives is only ever released here, so the USB path can take it over.
+            if (IsWiredOwned(macHex) && !IsBoundToUsLocked(existing))
+            {
+                error = WiredOwnedError;
+                return false;
+            }
             if (!IsBoundToUsLocked(existing) && IsLiveMasterLocked(existing.MasterMac))
             {
                 error = "held by a live master";
