@@ -38,6 +38,8 @@ public sealed class DeckImageRoutesTests : IDisposable
             {
                 s.RemoveAll<DeckImageStore>();
                 s.AddSingleton(new DeckImageStore(_root));
+                s.RemoveAll<Nexus.Service.Media.MediaLibrary>();
+                s.AddSingleton(new Nexus.Service.Media.MediaLibrary(Path.Combine(_root, "media-lib")));
             }));
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
@@ -190,6 +192,119 @@ public sealed class DeckImageRoutesTests : IDisposable
         {
             var res = await client.GetAsync("/deck/images/not-a-valid-id");
             Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+        }
+    }
+
+    private static async Task<string> MakeClip(string dir, string name, string size)
+    {
+        var path = Path.Combine(dir, name);
+        Directory.CreateDirectory(dir);
+        await Nexus.Service.Media.MediaImporter.RunFfmpeg("-y", "-f", "lavfi", "-i", $"testsrc=s={size}:d=1:r=10", path);
+        return path;
+    }
+
+    private static MultipartFormDataContent FileUploadWithCrop(byte[] bytes, string fileName, string crop)
+    {
+        var content = FileUpload(bytes, fileName);
+        content.Add(new StringContent(crop), "crop");
+        return content;
+    }
+
+    [FfmpegFact]
+    public async Task Upload_WithACropTurnsAGifIntoASquareAnimatedGif()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        using (client)
+        {
+            var gif = await MakeClip(Path.Combine(_root, "src"), "in.gif", "320x180");
+
+            var res = await client.PostAsync("/deck/images", FileUploadWithCrop(await File.ReadAllBytesAsync(gif), "in.gif", "0,0,0.5625,1"));
+
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var id = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+            var get = await client.GetAsync($"/deck/images/{id}");
+            Assert.Equal("image/gif", get.Content.Headers.ContentType!.MediaType);
+            var gifBytes = await get.Content.ReadAsByteArrayAsync();
+            using var codec = SkiaSharp.SKCodec.Create(SkiaSharp.SKData.CreateCopy(gifBytes));
+            Assert.Equal((180, 180), (codec.Info.Width, codec.Info.Height));
+            Assert.True(Nexus.Service.Tests.Deck.DeckImageTranscoderTests.GifFrames(gifBytes) > 1);
+        }
+    }
+
+    [FfmpegFact]
+    public async Task Upload_WithACropTurnsAVideoIntoAnH264Mp4WithAPoster()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        using (client)
+        {
+            var mp4 = await MakeClip(Path.Combine(_root, "src"), "in.mp4", "640x360");
+
+            var res = await client.PostAsync("/deck/images", FileUploadWithCrop(await File.ReadAllBytesAsync(mp4), "in.mp4", "0,0,0.5625,1"));
+
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var id = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+            var get = await client.GetAsync($"/deck/images/{id}");
+            Assert.Equal("video/mp4", get.Content.Headers.ContentType!.MediaType);
+            // The poster is extracted from the transcoded output, so a decode here proves the mp4 plays and is square.
+            var still = factory.Services.GetRequiredService<DeckImageStore>().TryLoadStill(id!);
+            Assert.NotNull(still);
+            using var bitmap = SkiaSharp.SKBitmap.Decode(still!);
+            Assert.Equal((256, 256), (bitmap.Width, bitmap.Height));
+        }
+    }
+
+    [FfmpegFact]
+    public async Task Upload_WithoutACropKeepsTheBytesUntouched()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        using (client)
+        {
+            var gif = await File.ReadAllBytesAsync(await MakeClip(Path.Combine(_root, "src"), "in.gif", "320x180"));
+
+            var res = await client.PostAsync("/deck/images", FileUpload(gif, "in.gif"));
+
+            var id = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+            Assert.Equal(gif, await (await client.GetAsync($"/deck/images/{id}")).Content.ReadAsByteArrayAsync());
+        }
+    }
+
+    [FfmpegFact]
+    public async Task StageCommit_CropsTheStagedKlipyFileStoresItAndDeletesTheStage()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        using (client)
+        {
+            var lib = factory.Services.GetRequiredService<Nexus.Service.Media.MediaLibrary>();
+            Directory.CreateDirectory(lib.GetStagingDir());
+            var stageId = "abc123-klipy";
+            File.Copy(await MakeClip(Path.Combine(_root, "src"), "k.gif", "320x180"), Path.Combine(lib.GetStagingDir(), stageId + ".gif"));
+
+            var res = await client.PostAsync($"/deck/images/stage/{stageId}", new StringContent("{\"crop\":\"0,0,0.5625,1\"}", System.Text.Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var id = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+            using var codec = SkiaSharp.SKCodec.Create(SkiaSharp.SKData.CreateCopy(await (await client.GetAsync($"/deck/images/{id}")).Content.ReadAsByteArrayAsync()));
+            Assert.Equal((180, 180), (codec.Info.Width, codec.Info.Height));
+            Assert.Null(lib.FindStagedRaw(stageId));
+        }
+    }
+
+    [Fact]
+    public async Task StageCommit_RejectsABadStageIdAndReportsAnUnknownOne()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        using (client)
+        {
+            var bad = await client.PostAsync("/deck/images/stage/bad%20id%21", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+            var missing = await client.PostAsync("/deck/images/stage/abc123", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         }
     }
 }
