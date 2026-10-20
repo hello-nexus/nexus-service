@@ -133,7 +133,7 @@ public sealed partial class ProfileManager : IDisposable
         }
     }
 
-    /// <summary>One-time boot seeds and migrations over the profile files. Best effort per file: a failed write is logged, the markers are still set, and the next shared flush fills the file.</summary>
+    /// <summary>One-time boot seeds and migrations over the profile files. Best effort per step and per file: a failed write is logged, the markers are still set, and the next shared flush fills the file.</summary>
     private void RunBootSeeds()
     {
         // Pre-device profile files carry default StreamDeck+Keeb blocks
@@ -142,14 +142,17 @@ public sealed partial class ProfileManager : IDisposable
         // upgrade does not wipe them. The marker gates only this initial
         // seed - blocks added to the device category later are not covered.
         var root = _store.Load();
-        if (!root.DeviceCategorySeeded)
+        RunSeedStep("device seed", () =>
         {
-            foreach (var p in _manifest.Profiles)
+            if (!root.DeviceCategorySeeded)
             {
-                TryWriteProfile(p.Id, "device seed", () => UpdateProfileFile(p.Id, new[] { ProfileSharing.Device }, root));
+                foreach (var p in _manifest.Profiles)
+                {
+                    TryWriteProfile(p.Id, "device seed", () => UpdateProfileFile(p.Id, new[] { ProfileSharing.Device }, root));
+                }
+                _store.Update(s => s.DeviceCategorySeeded = true);
             }
-            _store.Update(s => s.DeviceCategorySeeded = true);
-        }
+        });
 
         // Same one-time seed for the Panels category: profile files written
         // before it existed hold no panel looks, so root's live looks go into
@@ -161,63 +164,69 @@ public sealed partial class ProfileManager : IDisposable
         var seededAtBoot = root.PanelsCategorySeeded;
         var panelsWasShared = root.SharedCategories.Contains(ProfileSharing.Panels);
         var panelsDefaultApplied = root.PanelsSharedByDefaultApplied;
-        if (!seededAtBoot)
+        RunSeedStep("panels seed", () =>
         {
-            var liveLost = root.PanelDevices.Count == 0;
-            _store.Update(s => PanelProfileData.BackfillPresetWidgetSize(s));
-            foreach (var p in _manifest.Profiles)
+            if (!seededAtBoot)
             {
-                if (liveLost && ReadProfileFile(p.Id) is { HasPanelsData: true })
+                var liveLost = root.PanelDevices.Count == 0;
+                _store.Update(s => PanelProfileData.BackfillPresetWidgetSize(s));
+                foreach (var p in _manifest.Profiles)
                 {
-                    continue;
-                }
-                TryWriteProfile(p.Id, "panels seed", () =>
-                {
-                    UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, root);
-                    if (ReadProfileFile(p.Id) is { } file)
+                    if (liveLost && ReadProfileFile(p.Id) is { HasPanelsData: true })
                     {
-                        // Presets saved before WidgetSize joined them take the record's, so loading one
-                        // keeps the size its layout was built for.
-                        PanelProfileData.BackfillPresetWidgetSize(file);
-                        WriteAtomic(ProfileFilePath(p.Id), JsonSerializer.Serialize(file, PersistenceJsonContext.Default.NexusSettings));
+                        continue;
                     }
+                    TryWriteProfile(p.Id, "panels seed", () =>
+                    {
+                        UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, root);
+                        if (ReadProfileFile(p.Id) is { } file)
+                        {
+                            // Presets saved before WidgetSize joined them take the record's, so loading one
+                            // keeps the size its layout was built for.
+                            PanelProfileData.BackfillPresetWidgetSize(file);
+                            WriteAtomic(ProfileFilePath(p.Id), JsonSerializer.Serialize(file, PersistenceJsonContext.Default.NexusSettings));
+                        }
+                    });
+                }
+                if (liveLost && ReadProfileFile(_manifest.ActiveProfileId) is { HasPanelsData: true } saved)
+                {
+                    _store.Update(s => PanelProfileData.ApplyToLive(s, saved, restoreScreens: true));
+                }
+                _store.Update(s =>
+                {
+                    PanelProfileData.BackfillPresetWidgetSize(s);
+                    s.PanelsCategorySeeded = true;
                 });
             }
-            if (liveLost && ReadProfileFile(_manifest.ActiveProfileId) is { HasPanelsData: true } saved)
-            {
-                _store.Update(s => PanelProfileData.ApplyToLive(s, saved, restoreScreens: true));
-            }
-            _store.Update(s =>
-            {
-                PanelProfileData.BackfillPresetWidgetSize(s);
-                s.PanelsCategorySeeded = true;
-            });
-        }
+        });
 
         // Panels defaults to Shared like Device. Installs that predate the
         // default (or ran an earlier build of the category) get it added
         // exactly once; the marker keeps a later opt-out from being undone.
         // Files are written before the marker so a crash in between re-runs
         // the step. When the seed above just ran it already wrote the files.
-        if (!panelsDefaultApplied)
+        RunSeedStep("panels share default", () =>
         {
-            if (seededAtBoot && !panelsWasShared)
+            if (!panelsDefaultApplied)
             {
-                var live = _store.Load();
-                foreach (var p in _manifest.Profiles)
+                if (seededAtBoot && !panelsWasShared)
                 {
-                    TryWriteProfile(p.Id, "panels share default", () => UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, live));
+                    var live = _store.Load();
+                    foreach (var p in _manifest.Profiles)
+                    {
+                        TryWriteProfile(p.Id, "panels share default", () => UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, live));
+                    }
                 }
+                _store.Update(s =>
+                {
+                    if (!s.SharedCategories.Contains(ProfileSharing.Panels))
+                    {
+                        s.SharedCategories.Add(ProfileSharing.Panels);
+                    }
+                    s.PanelsSharedByDefaultApplied = true;
+                });
             }
-            _store.Update(s =>
-            {
-                if (!s.SharedCategories.Contains(ProfileSharing.Panels))
-                {
-                    s.SharedCategories.Add(ProfileSharing.Panels);
-                }
-                s.PanelsSharedByDefaultApplied = true;
-            });
-        }
+        });
 
         // Profile files were seeded with the old keeb brightness default, and a profile
         // switch copies the Device category from the primary file over the workstation
@@ -227,20 +236,28 @@ public sealed partial class ProfileManager : IDisposable
         // One shot and best effort: a file that cannot be written (a sharing violation,
         // say) is logged and keeps its old value, and the marker is set regardless, so a
         // later boot never touches a level the user chose afterwards.
-        if (!root.KeebBrightnessProfilesMigrated)
+        RunSeedStep("keeb brightness migration", () =>
         {
-            foreach (var p in _manifest.Profiles)
+            if (!root.KeebBrightnessProfilesMigrated)
             {
-                try
+                foreach (var p in _manifest.Profiles)
                 {
-                    MigrateProfileKeebBrightness(p.Id);
+                    TryWriteProfile(p.Id, "keeb brightness migration", () => MigrateProfileKeebBrightness(p.Id));
                 }
-                catch (Exception ex)
-                {
-                    Nexus.Service.Platform.ServiceLog.Error($"[profiles] keeb brightness migration failed for {p.Id}: {ex.GetType().Name}: {ex.Message}");
-                }
+                _store.Update(s => s.KeebBrightnessProfilesMigrated = true);
             }
-            _store.Update(s => s.KeebBrightnessProfilesMigrated = true);
+        });
+    }
+
+    private static void RunSeedStep(string what, Action step)
+    {
+        try
+        {
+            step();
+        }
+        catch (Exception ex)
+        {
+            Nexus.Service.Platform.ServiceLog.Error($"[profiles] {what} failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -931,7 +948,7 @@ public sealed partial class ProfileManager : IDisposable
         _dirty = false;
     }
 
-    private void FlushIfDirty()
+    internal void FlushIfDirty()
     {
         if (!_dirty)
         {

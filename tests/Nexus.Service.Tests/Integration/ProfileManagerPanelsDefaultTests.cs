@@ -279,7 +279,7 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
             Assert.Contains("#123456", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
 
             store.Update(x => x.PanelDevices["y70-a"].AccentColor = "#654321");
-            pm.FlushNow();
+            pm.FlushIfDirty();
 
             Assert.Contains("#654321", File.ReadAllText(Path.Combine(_dir, "profile-p1.json")));
         }
