@@ -236,6 +236,40 @@ public class SelfSavingControllerTests : IDisposable
     }
 
     [Fact]
+    public void Mode_reapply_pushes_the_identical_frame_once_then_suppresses_it_again()
+    {
+        using var bridge = NewBridge();
+        var dev = Polychrome();
+        var buf = new RgbColor[dev.LedCount];
+
+        bridge.SyncPhysicalBuffers(new[] { dev });
+        Assert.True(bridge.ShouldPush(dev.Address, buf, 15, 1000, persistsEveryWrite: true));
+
+        bridge.ResetPushState(dev.Address);
+        bridge.SyncPhysicalBuffers(new[] { Polychrome() });
+        Assert.True(bridge.ShouldPush(dev.Address, buf, 15, 4000, persistsEveryWrite: true));
+        Assert.False(bridge.ShouldPush(dev.Address, buf, 15, 7000, persistsEveryWrite: true));
+    }
+
+    [Fact]
+    public void Reactivation_pushes_the_identical_frame_once_then_suppresses_it_again()
+    {
+        using var bridge = NewBridge();
+        var dev = Polychrome();
+        var buf = new RgbColor[dev.LedCount];
+
+        bridge.Activate();
+        bridge.SyncPhysicalBuffers(new[] { dev });
+        Assert.True(bridge.ShouldPush(dev.Address, buf, 15, 1000, persistsEveryWrite: true));
+
+        bridge.Deactivate();
+        bridge.Activate();
+        bridge.SyncPhysicalBuffers(new[] { Polychrome() });
+        Assert.True(bridge.ShouldPush(dev.Address, buf, 15, 4000, persistsEveryWrite: true));
+        Assert.False(bridge.ShouldPush(dev.Address, buf, 15, 7000, persistsEveryWrite: true));
+    }
+
+    [Fact]
     public void Refreshes_still_reset_the_baseline_of_a_normal_device()
     {
         using var bridge = NewBridge();

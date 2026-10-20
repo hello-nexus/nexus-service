@@ -73,7 +73,7 @@ public sealed class ConflictAppInstallProbe : IConflictAppInstallProbe
         {
             if (HasInstallPath(def, Environment.ExpandEnvironmentVariables, File.Exists))
             {
-                _cache[def.Id] = true;
+                _cache.GetOrAdd(def.Id, true);
                 installed.Add(def.Id);
                 continue;
             }

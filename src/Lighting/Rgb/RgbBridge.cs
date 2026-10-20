@@ -216,8 +216,7 @@ public sealed class RgbBridge : IDisposable
     // every device is re-pushed at least every HeartbeatMs regardless, so a
     // device that silently lost state - direct-mode timeout, USB
     // re-enumeration, another OpenRGB client writing over us - still self-heals
-    // the way the unconditional 30fps push did, just a second later instead of
-    // 33ms. A controller that persists every write (RgbDevice.PersistsEveryWrite)
+    // the way the unconditional per-frame push did, just a second later. A controller that persists every write (RgbDevice.PersistsEveryWrite)
     // has no heartbeat. Cleared in SyncPhysicalBuffers on every refresh, except
     // for a persisting controller whose id and LED layout are unchanged, and
     // wholesale after BlackoutAsync, so a stale entry can never suppress a real write.
@@ -508,6 +507,10 @@ public sealed class RgbBridge : IDisposable
             // Views counted the emptied list on the restart broadcast; the first refresh after Activate must re-announce even an unchanged set.
             _frameIdSignature = "";
             _directModeApplied = new();
+            _lastPushed.Clear();
+            _lastPushTicks.Clear();
+            _pushLimiter.Reset();
+            _physSelfSavingLayout = new();
             _loggedDeviceSignatures.Clear();
             _loggedResizeOutcomes.Clear();
         }
@@ -1348,6 +1351,8 @@ public sealed class RgbBridge : IDisposable
                 try
                 {
                     await _controller.SetDirectModeAsync(dev).ConfigureAwait(false);
+                    // A mode write can reset what the controller shows, so the next frame must reach it once.
+                    ResetPushState(dev.Address);
                     lock (_lock)
                     {
                         _directModeApplied.Add(dev.Address);
@@ -1946,6 +1951,14 @@ public sealed class RgbBridge : IDisposable
                 caps[f.PhysicalIndex] = RgbDevice.SelfSavingDefaultCapHz;
             }
         }
+    }
+
+    /// <summary>Forgets one controller's dedup baseline and rate schedule so its next frame is pushed.</summary>
+    internal void ResetPushState(int physIdx)
+    {
+        _lastPushed.TryRemove(physIdx, out _);
+        _lastPushTicks.TryRemove(physIdx, out _);
+        _pushLimiter.Retain(k => k != physIdx);
     }
 
     private static string SelfSavingLayout(RgbDevice d)
