@@ -399,6 +399,8 @@ public sealed class KeebSettingsApplier
         var changed = false;
         lock (_gate)
         {
+            // A stream may have started while this waited for the gate.
+            if (_streaming) return false;
             var raw = _hub.ReadSettings();
             if (raw is null) return false;
             // Read layout (verified on the bench): Linux hidraw returns the 64-byte
