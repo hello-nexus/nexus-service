@@ -38,7 +38,12 @@ public sealed class ConfigStoreLcdUploadMemory : ILcdUploadMemory
 
     public void Save(string key, string hash) => _store.Update(s => s.LcdUploadHashes[key] = hash);
 
-    public void Clear(string key) => _store.Update(s => s.LcdUploadHashes.Remove(key));
+    /// <summary>Flushed at once: a crash after the announce must not leave the old hash on disk for a half-written panel.</summary>
+    public void Clear(string key)
+    {
+        _store.Update(s => s.LcdUploadHashes.Remove(key));
+        _store.FlushNow();
+    }
 }
 
 /// <summary>
@@ -87,15 +92,17 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private readonly object _hidLock = new();
     private readonly object _frameLock = new();
-    private readonly object _warnLock = new();
+    private readonly object _stateLock = new();
+    private readonly WarnLimiter _uploadWarn = new();
+    private readonly WarnLimiter _brightnessWarn = new();
     private readonly ManualResetEventSlim _wake = new(false);
     // Cuts a chunk wait short, so a cancel or a disconnect never sits out the pacing.
     private readonly ManualResetEventSlim _abort = new(false);
 
     private ILcdUploadMemory? _memory;
 
-    // Guarded by _hidLock.
-    private WorkerState? _current;
+    // Guarded by _hidLock. The current worker is also read without it, hence volatile.
+    private volatile WorkerState? _current;
     private IBulkUsbPipe? _pipe;
     private IHidDevice? _hid;
     private bool _uploading;
@@ -109,15 +116,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private long _lastChangeMs;
     private long _firstPendingMs;
 
-    // Guarded by _warnLock.
-    private long _lastWarnMs = long.MinValue;
-
-    // Written by the worker, so they carry over a reconnect with the driver.
+    // Driver-level upload bookkeeping, guarded by _stateLock. It outlives a worker so the
+    // cooldown and the remembered picture carry over a reconnect.
     private string? _lastHash;
-    private string _memoryKey = "";
     private long _nextAllowedMs;
     private int _failures;
     private bool _firstSpent;
+
+    private string _memoryKey = "";
     private int _uploadsCompleted;
     private int _uploadAttempts;
     private int _ticks;
@@ -171,7 +177,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     public int UploadAttempts => Volatile.Read(ref _uploadAttempts);
 
     /// <summary>Worker loop passes so far; lets a test wait until the worker has looked again.</summary>
-    public int Ticks => Volatile.Read(ref _ticks);
+    internal int Ticks => Volatile.Read(ref _ticks);
 
     /// <summary>True while a picture is on its way to the panel.</summary>
     public bool IsUploading
@@ -208,11 +214,15 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         if (start is not null)
         {
             _memoryKey = hid.Serial is { Length: > 0 } serial ? serial : HandlerId;
-            if (_memory?.Load(_memoryKey) is { } remembered)
+            var remembered = _memory?.Load(_memoryKey);
+            lock (_stateLock)
             {
-                _lastHash = remembered;
+                if (remembered is not null)
+                {
+                    _lastHash = remembered;
+                }
+                _firstSpent = false;
             }
-            _firstSpent = false;
             start.Thread = new Thread(() => Run(start)) { IsBackground = true, Name = "glacial-lcd" };
             start.Thread.Start();
         }
@@ -226,12 +236,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             return false;
         }
-        lock (_hidLock)
+        if (_current is null)
         {
-            if (_current is null)
-            {
-                return false;
-            }
+            return false;
         }
         long now = _clock();
         bool changed;
@@ -288,7 +295,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 }
                 catch (Exception ex)
                 {
-                    Failed($"worker error: {ex.GetType().Name}: {ex.Message}");
+                    Failed(_uploadWarn, $"worker error: {ex.GetType().Name}: {ex.Message}");
                 }
                 Interlocked.Increment(ref _ticks);
             }
@@ -302,9 +309,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private bool Ready()
     {
         long now = _clock();
-        if (now < _nextAllowedMs)
+        bool firstSpent;
+        lock (_stateLock)
         {
-            return false;
+            if (now < _nextAllowedMs)
+            {
+                return false;
+            }
+            firstSpent = _firstSpent;
         }
         lock (_frameLock)
         {
@@ -313,7 +325,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 return false;
             }
             // Only the first upload after a connect may go out unsettled, so something shows.
-            return now - _lastChangeMs >= _settleMs || (!_firstSpent && now - _firstPendingMs >= _maxSettleMs);
+            return now - _lastChangeMs >= _settleMs || (!firstSpent && now - _firstPendingMs >= _maxSettleMs);
         }
     }
 
@@ -335,10 +347,13 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         encoder ??= new BgraJpegEncoder(GlacialLcdProtocol.Width, GlacialLcdProtocol.Height, GlacialLcdProtocol.JpegQuality);
         byte[] jpeg = encoder.Encode(snapshot).ToArray();
         string hash = Convert.ToHexString(SHA256.HashData(jpeg));
-        if (hash == _lastHash)
+        lock (_stateLock)
         {
-            _firstSpent = true;
-            return;
+            if (hash == _lastHash)
+            {
+                _firstSpent = true;
+                return;
+            }
         }
 
         IBulkUsbPipe? pipe;
@@ -347,7 +362,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             pipe = _pipe;
             hid = _hid;
-            if (state.Stop || pipe is null || hid is null)
+            if (state.Stop)
+            {
+                // A stopped worker leaves all shared state alone.
+                return;
+            }
+            if (pipe is null || hid is null)
             {
                 MarkPending();
                 return;
@@ -358,7 +378,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         _abort.Reset();
         Interlocked.Increment(ref _uploadAttempts);
         // From the announce on, the panel may hold a partial picture, so it holds nothing known.
-        _lastHash = null;
+        lock (_stateLock)
+        {
+            _lastHash = null;
+        }
         _memory?.Clear(_memoryKey);
 
         var outcome = UploadOutcome.Failed;
@@ -368,7 +391,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         catch (Exception ex)
         {
-            Failed($"upload failed: {ex.GetType().Name}: {ex.Message}");
+            // A write that failed because the link was torn down is a cancel, not a fault.
+            outcome = state.Stop ? UploadOutcome.Cancelled : UploadOutcome.Failed;
+            if (!state.Stop)
+            {
+                Failed(_uploadWarn, $"upload failed: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         lock (_hidLock)
@@ -380,28 +408,44 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
         }
         long now = _clock();
-        switch (outcome)
+        if (outcome == UploadOutcome.Done)
         {
-            case UploadOutcome.Done:
+            lock (_stateLock)
+            {
                 _lastHash = hash;
-                _memory?.Save(_memoryKey, hash);
                 _failures = 0;
                 _firstSpent = true;
                 _nextAllowedMs = now + _refreshIntervalMs;
-                Interlocked.Increment(ref _uploadsCompleted);
-                ServiceLog.Info($"[{HandlerId}] picture uploaded, {jpeg.Length} bytes");
-                break;
-            case UploadOutcome.Cancelled:
-                // Not a fault: brightness zero or a disconnect cut it short. The picture goes up later.
-                MarkPending();
+            }
+            _memory?.Save(_memoryKey, hash);
+            Interlocked.Increment(ref _uploadsCompleted);
+            ServiceLog.Info($"[{HandlerId}] picture uploaded, {jpeg.Length} bytes");
+        }
+        else if (state.Stop)
+        {
+            // Torn down mid-upload: no delay, no backoff, and the frame state belongs to the next worker.
+            return;
+        }
+        else if (outcome == UploadOutcome.Cancelled)
+        {
+            // Not a fault: brightness zero cut it short. The picture goes up later.
+            MarkPending();
+            lock (_stateLock)
+            {
                 _nextAllowedMs = now + _cancelRetryMs;
-                break;
-            default:
-                MarkPending();
+            }
+        }
+        else
+        {
+            MarkPending();
+            int delay;
+            lock (_stateLock)
+            {
                 _failures++;
-                _nextAllowedMs = now + Backoff(_failures);
-                Failed($"upload failed; retrying in {Backoff(_failures) / 1000} s");
-                break;
+                delay = Backoff(_failures);
+                _nextAllowedMs = now + delay;
+            }
+            Failed(_uploadWarn, $"upload failed; retrying in {delay / 1000} s");
         }
         RetryBrightness(state);
     }
@@ -430,18 +474,31 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         return (int)Math.Min(delay, _refreshIntervalMs);
     }
 
-    private void Failed(string message)
+    private void Failed(WarnLimiter limiter, string message)
     {
-        long now = _clock();
-        lock (_warnLock)
+        if (limiter.Allow(_clock()))
         {
-            if (_lastWarnMs != long.MinValue && now - _lastWarnMs < WarnEveryMs)
-            {
-                return;
-            }
-            _lastWarnMs = now;
+            ServiceLog.Warn($"[{HandlerId}] {message}");
         }
-        ServiceLog.Warn($"[{HandlerId}] {message}");
+    }
+
+    /// <summary>One warning per window; separate instances keep one fault from muting another.</summary>
+    private sealed class WarnLimiter
+    {
+        private long _last = long.MinValue;
+
+        public bool Allow(long now)
+        {
+            lock (this)
+            {
+                if (_last != long.MinValue && now - _last < WarnEveryMs)
+                {
+                    return false;
+                }
+                _last = now;
+                return true;
+            }
+        }
     }
 
     private enum UploadOutcome
@@ -458,18 +515,18 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             // The app sends nothing else on HID while the bulk transfers run.
             if (!hid.Write(GlacialLcdProtocol.EncodeQuery()))
             {
-                return UploadOutcome.Failed;
+                return state.Stop ? UploadOutcome.Cancelled : UploadOutcome.Failed;
             }
             foreach (var report in GlacialLcdProtocol.EncodeCustomImagePrelude())
             {
                 if (!hid.Write(report))
                 {
-                    return UploadOutcome.Failed;
+                    return state.Stop ? UploadOutcome.Cancelled : UploadOutcome.Failed;
                 }
             }
             if (!hid.Write(GlacialLcdProtocol.EncodeJpegAnnounce(jpeg.Length)))
             {
-                return UploadOutcome.Failed;
+                return state.Stop ? UploadOutcome.Cancelled : UploadOutcome.Failed;
             }
         }
         for (int offset = 0; offset < jpeg.Length; offset += GlacialLcdProtocol.ChunkBytes)
@@ -481,7 +538,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             int length = Math.Min(GlacialLcdProtocol.ChunkBytes, jpeg.Length - offset);
             if (!pipe.Write(jpeg.AsSpan(offset, length)))
             {
-                return UploadOutcome.Failed;
+                return state.Stop ? UploadOutcome.Cancelled : UploadOutcome.Failed;
             }
             if (offset + length < jpeg.Length && _chunkIntervalMs > 0 && _abort.Wait(_chunkIntervalMs))
             {
@@ -587,7 +644,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
         }
         _brightnessRetryAtMs = now + BrightnessRetryMs;
-        Failed("brightness not written; will retry");
+        Failed(_brightnessWarn, "brightness not written; will retry");
         return false;
     }
 
@@ -600,7 +657,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _current = null;
             _pipe = null;
             _hid = null;
-            _wantBrightness = -1;
+            // _wantBrightness stays: a deferred level, lock-to-dark above all, is applied by the next worker.
             _cancelUpload = true;
             _uploading = false;
         }

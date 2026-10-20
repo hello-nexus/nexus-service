@@ -421,6 +421,49 @@ public class GlacialLcdTests
     }
 
     [Fact]
+    public void A_pending_brightness_survives_a_disconnect_and_is_applied_by_the_next_worker()
+    {
+        var clock = new FakeClock();
+        var driver = Fast(clock, chunkMs: 600_000);
+        var pipe = new FakePipe();
+        var silent = new FakeHid();
+        driver.Connect(pipe, silent);
+        driver.SendFrame(pipe, silent, Frame(noiseRows: 100));
+        Assert.True(WaitUntil(() => pipe.Writes.Count >= 1));
+        Assert.True(driver.SetBrightness(pipe, silent, 0));
+        Assert.True(WaitUntil(() => !driver.IsUploading, 2000));
+        driver.Disconnect(pipe, silent);
+
+        var answering = new FakeHid { StateReply = Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32") };
+        driver.Connect(pipe, answering);
+        clock.Advance(10_000);
+
+        Assert.True(WaitUntil(() => answering.Writes.Any(w => w.AsSpan().SequenceEqual(GlacialLcdProtocol.EncodeSettings(0, 0x14, false))), 5000));
+        driver.Disconnect(pipe, answering);
+    }
+
+    [Fact]
+    public void A_disconnect_that_cancels_an_upload_adds_neither_cooldown_nor_backoff()
+    {
+        var clock = new FakeClock();
+        var driver = Fast(clock, chunkMs: 600_000, backoffMs: 600_000, cancelRetryMs: 600_000);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
+        Assert.True(WaitUntil(() => pipe.Writes.Count >= 1));
+        driver.Disconnect(pipe, hid);
+
+        var pipe2 = new FakePipe();
+        driver.Connect(pipe2, hid);
+        driver.SendFrame(pipe2, hid, Frame(noiseRows: 100));
+
+        // No clock advance: the next upload starts at once on the fresh worker.
+        Assert.True(WaitUntil(() => pipe2.Writes.Count >= 1, 5000));
+        driver.Disconnect(pipe2, hid);
+    }
+
+    [Fact]
     public void Brightness_zero_cancels_the_upload_and_applies_at_once()
     {
         var driver = Fast(chunkMs: 600_000);
