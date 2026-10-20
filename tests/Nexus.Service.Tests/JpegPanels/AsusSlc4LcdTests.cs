@@ -136,7 +136,7 @@ public class AsusSlc4LcdTests
     public void Attach_replays_the_vendor_start_sequence_in_order()
     {
         using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
-        var device = new RecordingHidDevice { AutoReply = "HTTP 200 OK" };
+        var device = new RecordingHidDevice { Responder = AllOk };
 
         Assert.True(hub.Attach(device));
 
@@ -158,7 +158,7 @@ public class AsusSlc4LcdTests
     public void An_acknowledged_enable_is_not_resent_while_streaming()
     {
         var handshake = new AsusSlc4LcdHandshake();
-        var device = new RecordingHidDevice { AutoReply = "HTTP 200 OK" };
+        var device = new RecordingHidDevice { Responder = AllOk };
         Assert.True(handshake.OnAttach(device, 1025));
         device.Writes.Clear();
 
@@ -167,36 +167,116 @@ public class AsusSlc4LcdTests
         Assert.Empty(device.Writes);
     }
 
+    private static string Reply(int status, int sequence) =>
+        $"HTTP/1.1 {status} OK\r\nSeqNumber={sequence}\r\n\r\n";
+
+    private static string? AllOk(string command, int sequence) => Reply(200, sequence);
+
+    private static string? AllFail(string command, int sequence) => Reply(500, sequence);
+
+    private static byte[] Framed(string text) => AsRockLcdProtocol.Encode(Encoding.ASCII.GetBytes(text));
+
     [Fact]
-    public void An_unacknowledged_enable_is_resent_at_a_low_rate_until_ok()
+    public void An_unacknowledged_enable_is_resent_at_a_low_rate_and_then_given_up()
     {
         var handshake = new AsusSlc4LcdHandshake();
-        var device = new RecordingHidDevice { AutoReply = "HTTP 500 ERR" };
+        var device = new RecordingHidDevice { Responder = AllFail };
         Assert.True(handshake.OnAttach(device, 1025));
-        device.AutoReply = null;
+        device.Responder = null;
         device.Writes.Clear();
         long now = Environment.TickCount64;
 
         handshake.BeforeFrame(device, 1025, now + 1_000);
         Assert.Empty(device.Writes);
 
+        for (int i = 1; i <= 3; i++)
+        {
+            handshake.BeforeFrame(device, 1025, now + 6_000 * i);
+            Assert.Equal(i, device.Writes.Count);
+            Assert.Equal("POST realtimeDisplay 1", Requests(device.Writes)[^1]);
+        }
+
+        handshake.BeforeFrame(device, 1025, now + 60_000);
+        handshake.BeforeFrame(device, 1025, now + 120_000);
+        Assert.Equal(3, device.Writes.Count);
+    }
+
+    [Fact]
+    public void A_late_reply_to_another_command_does_not_confirm_the_enable()
+    {
+        var handshake = new AsusSlc4LcdHandshake();
+        // The enable (sequence 4) goes unanswered; everything before it is answered.
+        var device = new RecordingHidDevice { Responder = (c, n) => c == "realtimeDisplay" ? null : Reply(200, n) };
+        Assert.True(handshake.OnAttach(device, 1025));
+        device.Responder = null;
+        device.Writes.Clear();
+        long now = Environment.TickCount64;
+
+        // A stray OK for devStateGet (sequence 3), already answered, is unmatched.
+        device.Replies.Enqueue(Framed(Reply(200, 3)));
         handshake.BeforeFrame(device, 1025, now + 6_000);
-        Assert.Equal(new[] { "POST realtimeDisplay 1" }, Requests(device.Writes));
-        handshake.BeforeFrame(device, 1025, now + 7_000);
         Assert.Single(device.Writes);
 
-        // The panel finally answers OK: the next frame drains it and the retries stop.
-        device.Replies.Enqueue(Encoding.ASCII.GetBytes("HTTP 200 OK"));
-        handshake.BeforeFrame(device, 1025, now + 7_100);
-        handshake.BeforeFrame(device, 1025, now + 20_000);
+        // The real answer, matched by sequence, confirms it and stops the retries.
+        device.Replies.Enqueue(Framed(Reply(200, 4)));
+        handshake.BeforeFrame(device, 1025, now + 7_000);
+        handshake.BeforeFrame(device, 1025, now + 60_000);
         Assert.Single(device.Writes);
+    }
+
+    [Fact]
+    public void A_reply_without_a_sequence_is_matched_by_command_name()
+    {
+        var handshake = new AsusSlc4LcdHandshake();
+        var device = new RecordingHidDevice { Responder = (c, n) => c == "realtimeDisplay" ? null : Reply(200, n) };
+        Assert.True(handshake.OnAttach(device, 1025));
+        device.Responder = null;
+        device.Writes.Clear();
+
+        device.Replies.Enqueue(Framed("HTTP/1.1 200 OK\r\nrealtimeDisplay\r\n\r\n"));
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64);
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 60_000);
+
+        Assert.Empty(device.Writes);
+    }
+
+    [Fact]
+    public void A_definite_error_status_wins_over_a_stray_200_in_the_text()
+    {
+        var handshake = new AsusSlc4LcdHandshake();
+        var device = new RecordingHidDevice
+        {
+            Responder = (c, n) => c == "realtimeDisplay" ? "HTTP/1.1 500 ERR\r\nSeqNumber=" + n + "\r\nnote 200 \r\n\r\n" : Reply(200, n),
+        };
+        Assert.True(handshake.OnAttach(device, 1025));
+        device.Responder = null;
+        device.Writes.Clear();
+
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 6_000);
+
+        Assert.Single(device.Writes);
+    }
+
+    [Fact]
+    public void Attach_succeeds_after_waiting_out_every_missing_reply()
+    {
+        using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd with { Handshake = new AsusSlc4LcdHandshake() });
+        var device = new RecordingHidDevice();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        Assert.True(hub.Attach(device));
+
+        // Five messages, each waited for in full.
+        Assert.True(clock.ElapsedMilliseconds >= 5 * 1400, $"attach returned after {clock.ElapsedMilliseconds} ms");
+        Assert.Equal(5, device.Writes.Count);
+        Assert.True(hub.IsConnected);
     }
 
     [Fact]
     public void Brightness_change_does_not_wait_for_a_reply()
     {
         using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
-        var device = new RecordingHidDevice { AutoReply = "HTTP 200 OK" };
+        var device = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(device);
         device.Writes.Clear();
         device.ReadCalls = 0;
@@ -221,7 +301,7 @@ public class AsusSlc4LcdTests
     public void Brightness_sends_the_captured_value_message_and_is_reasserted_on_attach()
     {
         using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
-        var device = new RecordingHidDevice { AutoReply = "HTTP 200 OK" };
+        var device = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(device);
         device.Writes.Clear();
 
@@ -230,7 +310,7 @@ public class AsusSlc4LcdTests
         Assert.Equal(new[] { "POST brightness 1" }, Requests(device.Writes));
         Assert.Contains("{\"value\":50}", Text(device.Writes[0]));
 
-        var second = new RecordingHidDevice { AutoReply = "HTTP 200 OK" };
+        var second = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(second);
         Assert.Equal("POST brightness 1", Requests(second.Writes)[^1]);
     }
@@ -250,7 +330,7 @@ public class AsusSlc4LcdTests
     public void Detach_stops_the_realtime_display_without_a_disconnect()
     {
         using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
-        var device = new RecordingHidDevice { AutoReply = "HTTP 200 OK" };
+        var device = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(device);
         device.Writes.Clear();
 
@@ -264,7 +344,7 @@ public class AsusSlc4LcdTests
     public void SendFrame_writes_one_report_per_chunk_with_the_report_id_first()
     {
         using var hub = new JpegPanelHub(JpegPanelModel.AsusSlc4Lcd);
-        var device = new RecordingHidDevice { AutoReply = "HTTP 200 OK" };
+        var device = new RecordingHidDevice { Responder = AllOk };
         hub.Attach(device);
         device.Writes.Clear();
 
@@ -301,7 +381,7 @@ public class AsusSlc4LcdTests
     {
         public List<byte[]> Writes { get; } = new();
         public bool FailWrites { get; set; }
-        public string? AutoReply { get; set; }
+        public Func<string, int, string?>? Responder { get; set; }
         public Queue<byte[]> Replies { get; } = new();
         public int ReadCalls { get; set; }
         public bool Disposed { get; private set; }
@@ -316,9 +396,16 @@ public class AsusSlc4LcdTests
         public bool Write(ReadOnlySpan<byte> report)
         {
             Writes.Add(report.ToArray());
-            if (AutoReply is not null)
+            if (Responder is not null && report.Length > 1 && report[1] == 0x5A)
             {
-                Replies.Enqueue(Encoding.ASCII.GetBytes(AutoReply));
+                var sent = Text(report.ToArray());
+                var head = sent.Split("\r\n")[0].Split(' ');
+                int sequence = int.Parse(sent.Split("SeqNumber=")[1].Split("\r\n")[0]);
+                var answer = Responder(head[1], sequence);
+                if (answer is not null)
+                {
+                    Replies.Enqueue(Framed(answer));
+                }
             }
             return !FailWrites;
         }

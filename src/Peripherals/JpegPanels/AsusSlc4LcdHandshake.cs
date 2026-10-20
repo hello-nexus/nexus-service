@@ -20,27 +20,32 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 /// vendor's own spacing between messages, logs it, and carries on when none comes.
 ///
 /// The enable is the one message a frame stream depends on, so <see cref="BeforeFrame"/>
-/// re-sends it at a low rate until a reply says OK. Steady-state traffic never waits on a
-/// reply: they are drained without blocking on the frame path, and only the attach pauses,
-/// releasing the hub's lock between short reads.
+/// re-sends it a few times at a low rate until a reply says OK. Steady-state traffic never
+/// waits on a reply: replies are drained without blocking on the frame path, and only the
+/// attach waits, with the hub's lock released for the wait itself. Replies are matched to
+/// messages by SeqNumber, else by command name.
 /// </summary>
 public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBrightness, IJpegPanelSession
 {
     /// <summary>Covers the vendor app's own gap between a message and the next.</summary>
     private const int ReplyWaitMs = 1500;
 
-    /// <summary>One blocking read; the hub's lock is released between slices.</summary>
+    /// <summary>Wait between polls for a reply, with the hub's lock released.</summary>
     private const int ReadSliceMs = 50;
 
     private const long EnableRetryMs = 5_000;
+    private const int MaxEnableResends = 3;
     private const int ReplyLogChars = 240;
-    private const int MaxOutstanding = 8;
+    private const int MaxOutstanding = 16;
     private const int MaxDrainPerFrame = 4;
 
-    private readonly Queue<string> _outstanding = new();
+    /// <summary>Messages sent and not yet answered, by SeqNumber.</summary>
+    private readonly Dictionary<int, string> _outstanding = new();
+    private byte[] _drain = Array.Empty<byte>();
     private int _sequence;
     private int _brightness = -1;
     private bool _enableConfirmed;
+    private int _enableResends;
     private long _lastEnableMs;
     private object? _gate;
     private CancellationToken _cancel;
@@ -78,13 +83,14 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
     {
         _sequence = 0;
         _enableConfirmed = false;
+        _enableResends = 0;
         _outstanding.Clear();
 
         if (!Exchange(device, reportLength, "conn", null, out var conn)
             || !Exchange(device, reportLength, "power", "{\"event\":\"resume\"}", out _)
             || !Exchange(device, reportLength, "waterBlockScreen", "{\"enable\":true}", out _)
             || !Exchange(device, reportLength, "devStateGet", null, out _)
-            || !Exchange(device, reportLength, "realtimeDisplay", "{\"enable\":true}", out var enable))
+            || !Exchange(device, reportLength, "realtimeDisplay", "{\"enable\":true}", out _))
         {
             ServiceLog.Warn("[asus-slc4-lcd] start sequence write rejected; dropping the handle");
             return false;
@@ -93,11 +99,10 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
         {
             ServiceLog.Info("[asus-slc4-lcd] connect reply does not report a finished boot");
         }
-        _enableConfirmed = enable is not null && IsOk(enable);
         _lastEnableMs = Environment.TickCount64;
         if (!_enableConfirmed)
         {
-            ServiceLog.Warn("[asus-slc4-lcd] realtime display enable was not acknowledged; it is re-sent while frames stream");
+            ServiceLog.Warn("[asus-slc4-lcd] realtime display enable was not acknowledged; it is re-sent a few times while frames stream");
         }
         // The vendor app sends brightness only on a user change, so a panel that was never
         // told one keeps its own.
@@ -109,24 +114,37 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
     /// same way hands the display back to the panel. No disconnect message was captured, so none is sent.
     /// </summary>
     public void OnDetach(IHidDevice device, int reportLength) =>
-        SendOnly(device, reportLength, "realtimeDisplay", "{\"enable\":false}");
+        Write(device, reportLength, "realtimeDisplay", "{\"enable\":false}");
 
     public bool BeforeFrame(IHidDevice device, int reportLength, long nowMs)
     {
+        if (_drain.Length != reportLength)
+        {
+            _drain = new byte[reportLength];
+        }
         for (int i = 0; i < MaxDrainPerFrame; i++)
         {
-            var reply = new byte[reportLength];
-            int read = device.Read(reply, 0);
+            int read = device.Read(_drain, 0);
             if (read <= 0)
             {
                 break;
             }
-            Receive(reply.AsSpan(0, read).ToArray());
+            Dispatch(_drain.AsSpan(0, read).ToArray());
         }
         if (!_enableConfirmed && nowMs - _lastEnableMs >= EnableRetryMs)
         {
+            if (_enableResends >= MaxEnableResends)
+            {
+                if (_enableResends == MaxEnableResends)
+                {
+                    _enableResends++;
+                    ServiceLog.Info("[asus-slc4-lcd] realtime display enable never acknowledged; not re-sending again");
+                }
+                return true;
+            }
+            _enableResends++;
             _lastEnableMs = nowMs;
-            SendOnly(device, reportLength, "realtimeDisplay", "{\"enable\":true}");
+            Write(device, reportLength, "realtimeDisplay", "{\"enable\":true}");
         }
         return true;
     }
@@ -134,26 +152,13 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
     /// <summary>Write only: the reply is drained by <see cref="BeforeFrame"/>, never waited for here.</summary>
     public bool ApplyBrightness(IHidDevice device, int reportLength) =>
         _brightness >= 0
-        && SendOnly(device, reportLength, "brightness", "{\"value\":" + _brightness.ToString(CultureInfo.InvariantCulture) + "}");
-
-    private bool SendOnly(IHidDevice device, int reportLength, string command, string? jsonBody)
-    {
-        if (!Write(device, reportLength, command, jsonBody))
-        {
-            return false;
-        }
-        if (_outstanding.Count >= MaxOutstanding)
-        {
-            _outstanding.Dequeue();
-        }
-        _outstanding.Enqueue(command);
-        return true;
-    }
+        && Write(device, reportLength, "brightness", "{\"value\":" + _brightness.ToString(CultureInfo.InvariantCulture) + "}");
 
     private bool Write(IHidDevice device, int reportLength, string command, string? jsonBody)
     {
+        int sequence = _sequence++;
         var text = AsRockLcdProtocol.BuildMessage(
-            "POST", command, _sequence++, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), jsonBody);
+            "POST", command, sequence, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), jsonBody);
         var framed = AsRockLcdProtocol.Encode(Encoding.ASCII.GetBytes(text));
         var report = new byte[reportLength];
         if (framed.Length > report.Length)
@@ -162,12 +167,28 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
             return false;
         }
         framed.CopyTo(report, 0);
-        return device.Write(report);
+        if (!device.Write(report))
+        {
+            return false;
+        }
+        if (_outstanding.Count >= MaxOutstanding)
+        {
+            int oldest = int.MaxValue;
+            foreach (var key in _outstanding.Keys)
+            {
+                oldest = Math.Min(oldest, key);
+            }
+            _outstanding.Remove(oldest);
+        }
+        _outstanding[sequence] = command;
+        return true;
     }
 
     /// <summary>
-    /// Attach-time send and wait. Reads in short slices and lets go of the hub's lock between
-    /// them, so a frame or brightness call is never held behind a slow reply.
+    /// Attach-time send and wait. Each pass polls without blocking while holding the hub's
+    /// lock, then waits out a slice with the lock released, so a frame or brightness call is
+    /// never held behind a slow reply. Replies for other commands that arrive meanwhile are
+    /// dispatched, not mistaken for this one.
     /// </summary>
     private bool Exchange(IHidDevice device, int reportLength, string command, string? jsonBody, out byte[]? reply)
     {
@@ -178,13 +199,13 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
         }
         long deadline = Environment.TickCount64 + ReplyWaitMs;
         var buffer = new byte[reportLength];
-        while (Environment.TickCount64 < deadline)
+        while (true)
         {
             _cancel.ThrowIfCancellationRequested();
             int read;
             try
             {
-                read = device.Read(buffer, ReadSliceMs);
+                read = device.Read(buffer, 0);
             }
             catch (ObjectDisposedException)
             {
@@ -196,51 +217,110 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
             }
             if (read > 0)
             {
-                reply = buffer.AsSpan(0, read).ToArray();
-                LogReply(command, reply);
-                return true;
+                var copy = buffer.AsSpan(0, read).ToArray();
+                if (Dispatch(copy) == command)
+                {
+                    reply = copy;
+                    return true;
+                }
+                continue;
             }
-            YieldGate();
+            if (Environment.TickCount64 >= deadline)
+            {
+                break;
+            }
+            WaitSlice();
         }
         ServiceLog.Info($"[asus-slc4-lcd] {command}: no reply");
         return true;
     }
 
-    private void YieldGate()
+    private void WaitSlice()
     {
         var gate = _gate;
-        if (gate is null)
+        if (gate is not null)
         {
-            return;
+            Monitor.Exit(gate);
         }
-        Monitor.Exit(gate);
         try
         {
-            Thread.Yield();
+            _cancel.WaitHandle.WaitOne(ReadSliceMs);
         }
         finally
         {
-            Monitor.Enter(gate);
+            if (gate is not null)
+            {
+                Monitor.Enter(gate);
+            }
         }
     }
 
-    private void Receive(byte[] reply)
+    /// <summary>
+    /// Matches a reply to the message it answers by SeqNumber, else by command name, logs it and
+    /// returns the command; an unmatched reply is logged and returns null, and confirms nothing.
+    /// </summary>
+    private string? Dispatch(byte[] reply)
     {
-        string command = _outstanding.Count > 0 ? _outstanding.Dequeue() : "unsolicited";
+        var decoded = AsRockLcdProtocol.Decode(reply);
+        string text = decoded.Length > 0 ? Encoding.ASCII.GetString(decoded) : Printable(reply);
+        string? command = null;
+        int key = -1;
+        if (TryParseSequence(text, out int sequence) && _outstanding.TryGetValue(sequence, out var bySeq))
+        {
+            command = bySeq;
+            key = sequence;
+        }
+        else if (!TryParseSequence(text, out _))
+        {
+            foreach (var pair in _outstanding)
+            {
+                if (text.Contains(pair.Value, StringComparison.Ordinal) && (key < 0 || pair.Key < key))
+                {
+                    command = pair.Value;
+                    key = pair.Key;
+                }
+            }
+        }
+        if (command is null)
+        {
+            ServiceLog.Info($"[asus-slc4-lcd] unmatched reply: {Printable(reply)}");
+            return null;
+        }
+        _outstanding.Remove(key);
         LogReply(command, reply);
         if (command == "realtimeDisplay" && IsOk(reply))
         {
             _enableConfirmed = true;
         }
+        return command;
+    }
+
+    private static bool TryParseSequence(string text, out int sequence)
+    {
+        sequence = 0;
+        const string tag = "SeqNumber=";
+        int at = text.IndexOf(tag, StringComparison.Ordinal);
+        if (at < 0)
+        {
+            return false;
+        }
+        int end = at + tag.Length;
+        int start = end;
+        while (end < text.Length && char.IsAsciiDigit(text[end]))
+        {
+            end++;
+        }
+        return end > start && int.TryParse(text.AsSpan(start, end - start), NumberStyles.None, CultureInfo.InvariantCulture, out sequence);
     }
 
     private static bool IsOk(byte[] reply)
     {
-        if (AsRockLcdProtocol.ParseStatus(AsRockLcdProtocol.Decode(reply)) == "200")
+        var status = AsRockLcdProtocol.ParseStatus(AsRockLcdProtocol.Decode(reply));
+        if (status is not null)
         {
-            return true;
+            return status == "200";
         }
-        // The reply layout was never captured; fall back to the status text itself.
+        // Nothing decoded and the reply layout was never captured; fall back to the status text itself.
         return Printable(reply).Contains(" 200", StringComparison.Ordinal);
     }
 
