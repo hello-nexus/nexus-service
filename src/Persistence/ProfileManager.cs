@@ -715,9 +715,9 @@ public sealed partial class ProfileManager : IDisposable
         {
             return null;
         }
-        var imported = new NexusSettings { PanelDevices = data.PanelDevices, HasPanelsData = data.HasPanelsData };
-        // Left in place, the imported entries would read as predecessors of the live records.
-        data.PanelDevices = new Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>();
+        var imported = new NexusSettings { PanelDevices = new Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>(data.PanelDevices), HasPanelsData = data.HasPanelsData };
+        // Entries for live panels would read as predecessors of the live records; the rest stay as absent-panel records.
+        PanelProfileData.DropMatched(data, live);
         ProfileSharing.WriteCategory(data, live, ProfileSharing.Panels);
         return imported;
     }

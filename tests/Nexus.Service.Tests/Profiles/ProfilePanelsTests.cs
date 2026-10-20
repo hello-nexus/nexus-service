@@ -215,6 +215,51 @@ public class ProfilePanelsTests : IDisposable
     }
 
     [Fact]
+    public void Import_with_panels_shared_keeps_looks_for_panels_not_on_this_pc_and_a_later_adopt_applies_them()
+    {
+        _store.Update(s => s.PanelDevices["y70-a"] = Y70());
+        _pm.Initialize();
+        var src = new NexusSettings();
+        src.PanelDevices["y70-x"] = Y70("y70-x");
+        src.PanelDevices["mon-gone"] = Monitor("mon-gone", "d9", "GONE");
+        src.PanelDevices["mon-gone"].AccentColor = "#cafe01";
+        src.PanelDevices["mon-gone"].LastSeenAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var imported = _pm.ImportProfile("Friend", ProfileSharing.ExtractShareable(src));
+
+        var file = JsonSerializer.Deserialize(File.ReadAllText(Path.Combine(_dir, $"profile-{imported.Id}.json")), PersistenceJsonContext.Default.NexusSettings)!;
+        Assert.Contains(file.PanelDevices.Values, r => r.AccentColor == "#cafe01");
+
+        _pm.SwitchProfile(imported.Id);
+        var registry = new PanelDeviceRegistry(_store);
+        var fp = new DisplayFingerprint { Manufacturer = "ACR", Product = "0A1B", Serial = 1, SerialText = "GONE" };
+        var record = registry.AllocateForDisplay("d1", "Mon", new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor }, fp).Record;
+        Assert.True(_pm.AdoptSavedLook(record.Id));
+        Assert.Equal("#cafe01", Live(record.Id).AccentColor);
+    }
+
+    [Fact]
+    public void ImportProfileWithId_replacing_the_active_profile_merges_flushes_and_redraws_once()
+    {
+        _store.Update(s => s.PanelDevices["y70-a"] = Y70());
+        _pm.Initialize();
+        var first = _pm.GetActiveEntry()!;
+        var other = _pm.CreateProfile("Other").Id;
+        _pm.SwitchProfile(first.Id);
+        var switched = 0;
+        var panels = 0;
+        _pm.OnProfileSwitched += () => switched++;
+        _pm.PanelsChanged += () => panels++;
+
+        _pm.ImportProfileWithId(first.Id, first.Name, ImportedFriend(), absorbPanelLooks: true);
+
+        Assert.Equal(new[] { "Default", "Theirs" }, Live("y70-a").Presets!.Select(p => p.Name).ToArray());
+        var file = JsonSerializer.Deserialize(File.ReadAllText(Path.Combine(_dir, $"profile-{other}.json")), PersistenceJsonContext.Default.NexusSettings)!;
+        Assert.Contains(file.PanelDevices.Values.SelectMany(r => r.Presets ?? new()), p => p.AccentColor == "#aaaaaa");
+        Assert.Equal(1, switched);
+        Assert.Equal(0, panels);
+    }
+
+    [Fact]
     public void An_imported_loaded_preset_is_named_after_itself_and_its_stale_copy_is_skipped()
     {
         _store.Update(s => s.PanelDevices["y70-a"] = Y70());

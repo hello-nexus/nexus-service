@@ -166,7 +166,21 @@ public static class PanelProfileData
         return changed;
     }
 
-    // Seeded layouts carry fresh ids, so layouts compare by shape.
+    /// <summary>Removes the file's records that pair with a live record or share a live fingerprint key, so a following <see cref="WriteTo"/> keeps only the rest as absent-panel records.</summary>
+    public static void DropMatched(NexusSettings file, NexusSettings live)
+    {
+        var liveRecords = live.PanelDevices.Values.Where(r => !IsPhone(r)).ToList();
+        var matched = Pair(file.PanelDevices.Values.ToList(), liveRecords);
+        var liveKeys = liveRecords.Select(r => r.FingerprintKey ?? FingerprintKey(r.DisplayFingerprint)).Where(k => k is not null).ToHashSet();
+        foreach (var (id, saved) in file.PanelDevices.ToList())
+        {
+            if (matched.ContainsKey(saved) || (saved.FingerprintKey is { } k && liveKeys.Contains(k)))
+            {
+                file.PanelDevices.Remove(id);
+            }
+        }
+    }
+
     private static string LookKey(IPanelPersonalization look)
     {
         var copy = new PanelPreset();
