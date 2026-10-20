@@ -291,6 +291,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// v20: ConflictWhitelistMigration.KeepThirdPartyDevicesOn.
     /// v23: the removed Game Sync mode becomes static; an upgrade sets GameSyncRemovedNotice.
     /// v24: Lighting.RenderBackend "wgl" (the old default, always persisted) becomes "angle".
+    /// v25: Keeb.FirmwareLighting.Brightness 80 (the old default, always persisted) becomes 100.
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -396,6 +397,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             && string.Equals(lighting.RenderBackend, "wgl", StringComparison.OrdinalIgnoreCase))
         {
             lighting.RenderBackend = "angle";
+        }
+        if (doc.SchemaVersion < 25 && doc.Keeb?.FirmwareLighting is { Brightness: 80 } firmware)
+        {
+            firmware.Brightness = 100;
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

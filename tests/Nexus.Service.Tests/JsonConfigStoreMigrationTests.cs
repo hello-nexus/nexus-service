@@ -898,6 +898,59 @@ public class JsonConfigStoreMigrationTests : IDisposable
         }
     }
 
+    /// <summary>v25: 80 was the old keeb firmware brightness default and was always persisted, so it moves to 100; any other stored level is the user's.</summary>
+    [Theory]
+    [InlineData(24, 80, 100)]
+    [InlineData(24, 60, 60)]
+    [InlineData(24, 100, 100)]
+    [InlineData(25, 80, 80)]
+    public void Load_KeebFirmwareBrightness_MovesOldDefaultOnce(int schemaVersion, int stored, int expected)
+    {
+        File.WriteAllText(_settingsPath,
+            $$"""{ "schemaVersion": {{schemaVersion}}, "keeb": { "firmwareLighting": { "brightness": {{stored}} } } }""");
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            Assert.Equal(expected, store.Load().Keeb.FirmwareLighting.Brightness);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    /// <summary>The move runs once: an 80 the user picks afterwards survives the next load.</summary>
+    [Fact]
+    public void Load_KeebFirmwareBrightness_AnEightyChosenAfterTheMigrationSurvivesARestart()
+    {
+        File.WriteAllText(_settingsPath,
+            """{ "schemaVersion": 24, "keeb": { "firmwareLighting": { "brightness": 80 } } }""");
+
+        var first = new JsonConfigStore(_settingsPath);
+        try
+        {
+            Assert.Equal(100, first.Load().Keeb.FirmwareLighting.Brightness);
+            first.Update(s => s.Keeb.FirmwareLighting.Brightness = 80);
+        }
+        finally
+        {
+            first.Dispose();
+        }
+
+        var second = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var s = second.Load();
+            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
+            Assert.Equal(80, s.Keeb.FirmwareLighting.Brightness);
+        }
+        finally
+        {
+            second.Dispose();
+        }
+    }
+
     /// <summary>A v22 file runs both the Game Sync removal (v23) and the render backend move (v24).</summary>
     [Fact]
     public void Load_V22File_RunsBothMigrations()
