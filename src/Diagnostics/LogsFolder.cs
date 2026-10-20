@@ -7,12 +7,9 @@ namespace Nexus.Service.Diagnostics;
 
 /// <summary>
 /// Opens the Nexus data folder (<see cref="NexusDataPaths.NexusRoot"/>: settings.json,
-/// logs/, updates/, db/ on Windows) in the OS file manager. Must run in a
-/// context that owns a desktop: on Windows
-/// the LocalSystem service is in Session 0 and cannot show a window, so it
-/// delegates here over the helper pipe (<c>diagnostics.openLogs</c>) and the
-/// user-session helper runs Open(). macOS/Linux run in the user session already,
-/// so the route calls Open() directly.
+/// logs/, updates/, db/ on Windows) in the OS file manager from macOS/Linux, where
+/// the service already runs in the user session. Windows opens it through the
+/// user-session helper (<c>dialog.openFolder</c>) instead.
 /// </summary>
 internal static class LogsFolder
 {

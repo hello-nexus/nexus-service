@@ -267,6 +267,9 @@ public sealed partial class LightingEngine : IDisposable
     // Reused per-frame scratch: which devices ApplyTestOverlays painted. Valid
     // for the rest of the tick after SampleDevicesFromCanvas returns.
     private bool[] _overlaid = Array.Empty<bool>();
+    // The subset of _overlaid that key reactions must not paint over. A static pin
+    // owns its device's colors yet is the base a reaction composes onto.
+    private bool[] _reactionBlocked = Array.Empty<bool>();
 
     /// <summary>
     /// Freezes or resumes the render loop for the current effect; a no-op with
@@ -865,7 +868,7 @@ public sealed partial class LightingEngine : IDisposable
                         TrackPinAhead(effect);
                         SampleDevicesFromCanvas(devices);
                         ApplyLedColorLocks(devices);
-                        if (KeyReactive?.Apply(devices, _overlaid, Environment.TickCount64) == true)
+                        if (KeyReactive?.Apply(devices, _reactionBlocked, Environment.TickCount64) == true)
                         {
                             ApplyLedColorLocks(devices);
                         }
@@ -2160,6 +2163,15 @@ public sealed partial class LightingEngine : IDisposable
         if (_overlaid.Length < devices.Length) _overlaid = new bool[devices.Length];
         var owned = _overlaid;
         Array.Clear(owned, 0, devices.Length);
+        if (_reactionBlocked.Length < devices.Length) _reactionBlocked = new bool[devices.Length];
+        var blocked = _reactionBlocked;
+        Array.Clear(blocked, 0, devices.Length);
+        // The one place a device is claimed, so the two arrays cannot drift apart.
+        void Claim(int index, bool blocksReactions)
+        {
+            owned[index] = true;
+            blocked[index] = blocksReactions;
+        }
         PruneAssignments(devices);
         var studio = _studioOverlay;
         if (studio is not null)
@@ -2188,7 +2200,7 @@ public sealed partial class LightingEngine : IDisposable
                         dev.SetLed(i, 0, 0, 0);
                     }
                 }
-                owned[di] = true;
+                Claim(di, blocksReactions: true);
                 continue;
             }
 
@@ -2196,7 +2208,7 @@ public sealed partial class LightingEngine : IDisposable
             if (studio is not null && dev.TestPattern is null && _studioCanvas is not null)
             {
                 PaintStudioOverlay(dev, previewCount, _studioCanvas);
-                owned[di] = true;
+                Claim(di, blocksReactions: true);
                 continue;
             }
 
@@ -2206,19 +2218,19 @@ public sealed partial class LightingEngine : IDisposable
                 && Pins.TryGet(dev.Id, out var assignment)
                 && assignment.Kind == Nexus.Service.Persistence.DevicePinKinds.Static)
             {
-                // A palette pick is a colour, not an effect: nothing to render,
+                // A palette pick is a color, not an effect: nothing to render,
                 // nothing to sample, no canvas. Paint it and move on.
                 if (Nexus.Service.Lighting.StaticColorHex.TryParse(assignment.Color, out var cr, out var cg, out var cb))
                 {
                     for (int i = 0; i < previewCount; i++) dev.SetLed(i, cr, cg, cb);
-                    owned[di] = true;
+                    Claim(di, blocksReactions: false);
                     continue;
                 }
                 var render = RenderAssignment(dev.Id, assignment);
                 if (render is not null)
                 {
                     PaintFromAssignment(dev, previewCount, render);
-                    owned[di] = true;
+                    Claim(di, blocksReactions: false);
                     continue;
                 }
             }
@@ -2229,7 +2241,7 @@ public sealed partial class LightingEngine : IDisposable
                 if (pattern == "none")
                 {
                     dev.Fill(0, 0, 0);
-                    owned[di] = true;
+                    Claim(di, blocksReactions: true);
                 }
                 else
                 {
@@ -2276,7 +2288,7 @@ public sealed partial class LightingEngine : IDisposable
                         }
                         // Short UV arrays would leave a tail the canvas still
                         // has to fill, so only a full sweep claims the device.
-                        owned[di] = covered >= previewCount;
+                        if (covered >= previewCount) Claim(di, blocksReactions: true);
                     }
                     // No UVs: nothing was painted, so the canvas sample stands.
                 }
