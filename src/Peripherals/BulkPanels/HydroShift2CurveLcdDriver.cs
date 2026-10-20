@@ -240,7 +240,12 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         }
         pipe.Write(HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty, NextTimestamp()));
-        if (_sessionUp)
+        if (_sessionUp && OfflineModeSource?.Invoke() == true)
+        {
+            // L-Connect's exit sends StopPlay alone (captured), and a reboot resets the glass's clock to its default.
+            pipe.Write(HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp(), HydroShift2Protocol.ClockOfflineOn));
+        }
+        else if (_sessionUp)
         {
             pipe.Write(HydroShift2Protocol.EncodeCommand(
                 HydroShift2CurveProtocol.CommandReboot, ReadOnlySpan<byte>.Empty, NextTimestamp()));
