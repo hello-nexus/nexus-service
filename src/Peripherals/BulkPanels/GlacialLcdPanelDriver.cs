@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using Nexus.Service.Peripherals.Hid;
@@ -15,6 +16,9 @@ public interface ILcdUploadMemory
     string? Load(string key);
 
     void Clear(string key);
+
+    /// <summary>Drops every entry except <paramref name="keep"/>, such as ones stored under an earlier build's keys.</summary>
+    void ClearOthers(string keep);
 
     void Save(string key, string hash);
 }
@@ -37,6 +41,14 @@ public sealed class ConfigStoreLcdUploadMemory : ILcdUploadMemory
     }
 
     public void Save(string key, string hash) => _store.Update(s => s.LcdUploadHashes[key] = hash);
+
+    public void ClearOthers(string keep) => _store.Update(s =>
+    {
+        foreach (var other in s.LcdUploadHashes.Keys.Where(k => k != keep).ToList())
+        {
+            s.LcdUploadHashes.Remove(other);
+        }
+    });
 
     /// <summary>Flushed at once: a crash after the announce must not leave the old hash on disk for a half-written panel.</summary>
     public void Clear(string key)
@@ -142,6 +154,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// <summary>First retry delay after a failed upload; doubles each time, capped at the cap below.</summary>
     public const int DefaultBackoffBaseMs = 10_000;
 
+    /// <summary>An upload may be dropped for a newer frame this many times in a row before the next one is let through to finish.</summary>
+    private const int MaxSupersedes = 2;
+
     /// <summary>Longest wait between retries of a failing upload.</summary>
     public const int BackoffCapMs = 5 * 60 * 1000;
 
@@ -193,6 +208,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private long _nextAllowedMs;
     private long _nextShowMs;
     private int _failures;
+
+    // Serializes the write of the remembered picture against forgetting it, so a stale hash is never written back.
+    private readonly object _persistLock = new();
+    private int _supersedes;
 
     private string _memoryKey = "";
     private int _uploadsCompleted;
@@ -289,6 +308,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         if (start is not null)
         {
             _memoryKey = HandlerId;
+            _memory?.ClearOthers(_memoryKey);
             var remembered = _memory?.Load(_memoryKey);
             lock (_stateLock)
             {
@@ -450,17 +470,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private void PersistIfStable()
     {
-        string? hash;
         lock (_stateLock)
         {
             if (_lastHash is null || _lastHash == _persistedHash || _clock() - _hashSetMs < PersistAfterMs)
             {
                 return;
             }
-            hash = _lastHash;
-            _persistedHash = hash;
         }
-        _memory?.Save(_memoryKey, hash);
+        PersistNow();
     }
 
     private void UploadPending(WorkerState state, ref BgraJpegEncoder? encoder, ref byte[]? snapshot)
@@ -558,6 +575,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 _failures = 0;
                 _nextAllowedMs = 0;
             }
+            _supersedes = 0;
             Interlocked.Increment(ref _uploadsCompleted);
             ServiceLog.Info($"[{HandlerId}] picture uploaded, {jpeg.Length} bytes in {watch.ElapsedMilliseconds} ms");
         }
@@ -703,6 +721,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             if (report[1] == 0xF1)
             {
+                // The last point an upload can be dropped for a newer frame: past the flush the
+                // panel is erased, so the picture is always finished. A cap keeps a stream of
+                // changing frames from dropping every upload before it starts.
+                if (_supersedes < MaxSupersedes && NewerFrameWaiting())
+                {
+                    _supersedes++;
+                    return UploadOutcome.Superseded;
+                }
                 // The flush may erase the stored picture, so from here the panel holds nothing known.
                 ForgetPicture();
             }
@@ -726,11 +752,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 return UploadOutcome.Cancelled;
             }
-            if (NewerFrameWaiting())
-            {
-                // Between transfers and before the end report, so the panel is never left with a half-finished show.
-                return UploadOutcome.Superseded;
-            }
             // The last transfer is a full chunk, zero padded past the picture's end.
             Array.Clear(chunk);
             jpeg.AsSpan(offset, Math.Min(GlacialLcdProtocol.ChunkBytes, jpeg.Length - offset)).CopyTo(chunk);
@@ -750,10 +771,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         if (ShouldStop(state))
         {
             return UploadOutcome.Cancelled;
-        }
-        if (NewerFrameWaiting())
-        {
-            return UploadOutcome.Superseded;
         }
         lock (_hidLock)
         {
@@ -779,16 +796,19 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private void ForgetPicture()
     {
-        bool stored;
-        lock (_stateLock)
+        lock (_persistLock)
         {
-            _lastHash = null;
-            stored = _persistedHash is not null;
-            _persistedHash = null;
-        }
-        if (stored)
-        {
-            _memory?.Clear(_memoryKey);
+            bool stored;
+            lock (_stateLock)
+            {
+                _lastHash = null;
+                stored = _persistedHash is not null;
+                _persistedHash = null;
+            }
+            if (stored)
+            {
+                _memory?.Clear(_memoryKey);
+            }
         }
     }
 
@@ -828,18 +848,23 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// </summary>
     public void PersistNow()
     {
-        string? hash;
-        lock (_stateLock)
+        lock (_persistLock)
         {
-            hash = _lastHash is not null && _lastHash != _persistedHash ? _lastHash : null;
+            string? hash;
+            lock (_stateLock)
+            {
+                hash = _lastHash is not null && _lastHash != _persistedHash ? _lastHash : null;
+                if (hash is not null)
+                {
+                    _persistedHash = hash;
+                }
+            }
             if (hash is not null)
             {
-                _persistedHash = hash;
+                _memory?.Save(_memoryKey, hash);
             }
         }
-        if (hash is not null)
-        {
-            _memory?.Save(_memoryKey, hash);
-        }
     }
+
+    public void PersistState() => PersistNow();
 }

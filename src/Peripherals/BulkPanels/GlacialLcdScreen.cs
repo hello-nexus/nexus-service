@@ -465,8 +465,8 @@ public sealed class GlacialLcdScreen
         int count = Math.Clamp(s.SlotCount, 1, GlacialLcdProtocol.MaxMonitorSlots);
         for (int wire = 0; wire < count; wire++)
         {
-            // With three widgets the panel shows the first two the other way round (reported
-            // on the customer's panel, one or two are fine), so they are written swapped.
+            // With three widgets the panel's firmware shows the first two the other way round,
+            // so they are written swapped; one or two are not affected.
             int i = count == GlacialLcdProtocol.MaxMonitorSlots && wire < 2 ? 1 - wire : wire;
             var slot = i < s.Slots.Count ? s.Slots[i] : new GlacialLcdSlot();
             var (label, value) = _reader(slot, i);

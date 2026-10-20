@@ -385,14 +385,39 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_newer_settled_frame_ends_a_running_upload_between_transfers_before_the_end_report()
+    public void A_newer_frame_drops_an_upload_only_before_the_flush()
     {
-        var link = new GlacialLcdLink();
-        var driver = Fast(link);
+        var driver = Fast();
+        var pipe = new FakePipe();
+        int queries = 0;
+        var hid = new FakeHid();
+        hid.OnWrite = w =>
+        {
+            // The first upload's opening query is when the newer frame arrives.
+            if (w[1] == 0xDC && ++queries == 1)
+            {
+                driver.SendFrame(pipe, hid, Frame(noiseRows: 100, seed: 9));
+            }
+        };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+
+        Assert.Equal(2, driver.UploadAttempts);
+        // The dropped attempt sent no flush; the one that ran sent one flush and finished.
+        Assert.Equal(1, hid.Writes.Count(w => w[1] == 0xF1));
+        Assert.Equal(1, hid.Writes.Count(w => w[1] == 0x73 && w[2] == 0xFF));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Once_the_flush_is_sent_a_newer_frame_never_cuts_the_upload_short()
+    {
+        var driver = Fast();
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
-        // The first transfer is the moment the newer frame arrives.
         pipe.OnWrite = () =>
         {
             if (pipe.Writes.Count == 1)
@@ -402,13 +427,69 @@ public class GlacialLcdDriverTests
         };
 
         driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
-        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
 
-        Assert.Equal(2, driver.UploadAttempts);
-        // The first upload stopped after one transfer and never sent its end report; the second finished.
-        Assert.Equal(1, hid.Writes.Count(w => w[1] == 0x73 && w[2] == 0xFF));
-        Assert.Equal(1, hid.Writes.Count(w => w[1] == 0x51));
+        // The first upload's end report comes before the second upload's flush.
+        var kinds = hid.Writes.Select(w => w[1] == 0xF1 ? "F1" : w[1] == 0x73 && w[2] == 0xFF ? "end" : "").Where(k => k.Length > 0).ToList();
+        Assert.Equal(new[] { "F1", "end", "F1", "end" }, kinds);
         driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Pictures_keep_landing_while_the_content_changes_all_the_time()
+    {
+        var driver = Fast();
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        using var stop = new CancellationTokenSource();
+        var feeder = new Thread(() =>
+        {
+            int seed = 0;
+            while (!stop.IsCancellationRequested)
+            {
+                driver.SendFrame(pipe, hid, Frame(noiseRows: 20, seed: ++seed));
+                Thread.Sleep(2);
+            }
+        });
+        feeder.Start();
+
+        bool landed = WaitUntil(() => driver.UploadsCompleted >= 3);
+        stop.Cancel();
+        feeder.Join();
+
+        Assert.True(landed);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_one_per_pc_panel_is_stored_under_its_handler_id_whatever_its_usb_serial_says()
+    {
+        var driver = Fast();
+        var hub = new BulkPanelHub(driver);
+        var discovery = new Nexus.Service.Panel.Streams.BulkPanelDiscovery(hub, withheld: () => true);
+        var pipe = new FakePipe();
+        var hid = new FakeHid { SerialOverride = "AsusTek Computer Inc." };
+        Assert.True(hub.Attach(pipe, hid));
+
+        Assert.Equal("asus-glacial-lcd", discovery.WithheldSerial);
+        Assert.Empty(discovery.Discover());
+        hub.Detach();
+    }
+
+    [Fact]
+    public void Entries_stored_under_earlier_serial_keys_are_dropped_on_connect()
+    {
+        var memory = new FakeMemory();
+        memory.Hashes["365233833333"] = "OLD";
+        memory.Hashes["asus-glacial-lcd"] = "KEEP";
+        var driver = Fast();
+        driver.BindMemory(memory);
+
+        driver.Connect(new FakePipe(), new FakeHid());
+
+        Assert.Equal(new[] { "asus-glacial-lcd" }, memory.Hashes.Keys);
+        driver.Disconnect(new FakePipe(), new FakeHid());
     }
 
     [Fact]
@@ -489,6 +570,14 @@ public class GlacialLcdDriverTests
         public void Save(string key, string hash) => Hashes[key] = hash;
 
         public void Clear(string key) => Hashes.Remove(key);
+
+        public void ClearOthers(string keep)
+        {
+            foreach (var other in Hashes.Keys.Where(k => k != keep).ToList())
+            {
+                Hashes.Remove(other);
+            }
+        }
     }
 
     private sealed class FakePipe : IBulkUsbPipe
@@ -541,7 +630,8 @@ public class GlacialLcdDriverTests
         public int VendorId => 0x0B05;
         public int ProductId => GlacialLcdProtocol.ProductId;
         public string Path => "/dev/fake-glacial";
-        public string? Serial => "FAKE";
+        public string? SerialOverride { get; set; }
+        public string? Serial => SerialOverride ?? "FAKE";
         public int UsagePage => 0xFF72;
         public int Usage => 1;
 

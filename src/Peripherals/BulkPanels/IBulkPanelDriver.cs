@@ -54,6 +54,11 @@ public interface IBulkPanelDriver
     /// <summary>The panel never shares a Nexus Panel record with another device's screen.</summary>
     bool MultiInstance => false;
 
+    /// <summary>Writes any state the driver keeps in memory to settings; called on service shutdown, which skips the hub's disconnect.</summary>
+    void PersistState()
+    {
+    }
+
     /// <summary>
     /// One such panel per PC, whose USB serial is not reliable early in boot: the stream is keyed
     /// on the handler id instead, and a record an earlier build stored under a serial is adopted.

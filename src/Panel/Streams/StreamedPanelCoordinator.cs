@@ -49,6 +49,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly IReadOnlyList<IStreamedPanelDiscovery> _discoveries;
     private readonly StreamedPanelStore _store;
     private readonly PanelDeviceRegistry _registry;
+    private readonly Func<string, bool> _removePanel;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
@@ -73,8 +74,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Action? notifyOverlay = null,
         Func<long>? nowMs = null,
         Action<string>? notifyPanelChanged = null,
-        LcdLockState? lockState = null)
+        LcdLockState? lockState = null,
+        Func<string, bool>? removePanel = null)
     {
+        _removePanel = removePanel ?? registry.Remove;
         _discoveries = discoveries.ToList();
         _store = store;
         _registry = registry;
@@ -778,7 +781,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private string ResolvePanelDeviceId(StreamedPanelDeviceInfo info)
     {
         var records = _store.Load();
-        if (info.AdoptsFamilyRecords && !records.ContainsKey(info.Serial))
+        if (info.AdoptsFamilyRecords)
         {
             AdoptFamilyRecords(records, info);
         }
@@ -826,32 +829,32 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     }
 
     /// <summary>
-    /// Moves the oldest panel record of the device's family, stored under an earlier build's
-    /// serial, to the fixed key and removes the rest, so a serial that changed between boots
-    /// leaves one record with the user's layout instead of several.
+    /// Leaves one panel record for the device's family, under the fixed key: the one seen most
+    /// recently, whatever serial or key it was stored under, with the others removed through the
+    /// same cleanup a delete does. Idempotent, so it also tidies a mix left by an earlier build.
     /// </summary>
     private void AdoptFamilyRecords(Dictionary<string, StreamedPanelRecord> records, StreamedPanelDeviceInfo info)
     {
         var family = info.Profile.Family;
-        var matches = records
+        var members = records
             .Select(pair => (Serial: pair.Key, Record: pair.Value, Panel: string.IsNullOrEmpty(pair.Value.PanelDeviceId) ? null : _registry.Get(pair.Value.PanelDeviceId)))
             .Where(m => m.Panel is not null && string.Equals(m.Panel.Capabilities?.Family, family, StringComparison.Ordinal))
-            .OrderBy(m => m.Panel!.FirstSeenAt)
+            .OrderByDescending(m => m.Panel!.LastSeenAt)
             .ToList();
-        if (matches.Count == 0)
+        if (members.Count == 0 || (members.Count == 1 && members[0].Serial == info.Serial))
         {
             return;
         }
-        var keep = matches[0];
-        foreach (var m in matches)
+        var keep = members[0];
+        foreach (var m in members)
         {
             records.Remove(m.Serial);
         }
-        foreach (var m in matches.Skip(1))
+        foreach (var m in members.Skip(1))
         {
             if (m.Record.PanelDeviceId != keep.Record.PanelDeviceId)
             {
-                _registry.Remove(m.Panel!.Id);
+                _removePanel(m.Panel!.Id);
             }
         }
         records[info.Serial] = keep.Record;
@@ -1030,7 +1033,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         var scale = _registry.Get(panelDeviceId)?.HighResolution == true ? 1.0 : profile.PerformanceRenderScale;
         return scale.Equals(profile.RenderScale)
             ? info
-            : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale } };
+            : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
     }
 
     internal static bool ProfilesEqual(StreamedPanelProfile a, StreamedPanelProfile b)

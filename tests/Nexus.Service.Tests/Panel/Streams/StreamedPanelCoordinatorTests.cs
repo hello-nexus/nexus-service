@@ -418,28 +418,59 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Contains(panelId, _panelChanges);
     }
 
-    [Fact]
-    public void A_single_unit_panel_adopts_the_oldest_family_record_and_drops_the_duplicates()
+    private static StreamedPanelDeviceInfo SingleUnit(string serial) => new()
     {
-        var older = _registry.Allocate("older", new PanelDeviceCapabilities { Surface = "monitor", Family = "fake-fs" });
-        Thread.Sleep(5);
-        var newer = _registry.Allocate("newer", new PanelDeviceCapabilities { Surface = "monitor", Family = "fake-fs" });
+        Serial = serial,
+        AdoptsFamilyRecords = true,
+        Profile = new StreamedPanelProfile { Kind = "fake-fs", Family = "fake-fs", DisplayName = "Fake Panel", Surface = "monitor", CssWidth = 640, CssHeight = 480, Fps = 30 },
+    };
+
+    private PanelDeviceRecord FamilyRecord(string name, long lastSeenAt)
+    {
+        var record = _registry.Allocate(name, new PanelDeviceCapabilities { Surface = "monitor", Family = "fake-fs" });
+        _config.Update(s => s.PanelDevices[record.Id].LastSeenAt = lastSeenAt);
+        return record;
+    }
+
+    [Fact]
+    public void A_single_unit_panel_keeps_the_most_recently_seen_family_record_and_removes_the_rest_through_the_shared_cleanup()
+    {
+        var older = FamilyRecord("older", 1_000);
+        var newer = FamilyRecord("newer", 2_000);
         _store.Save(new Dictionary<string, StreamedPanelRecord>
         {
             ["365233833333"] = new() { PanelDeviceId = older.Id },
             ["AsusTek Computer Inc."] = new() { PanelDeviceId = newer.Id },
         });
-        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        var removed = new List<string>();
+        _coordinator = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate, notifyOverlay: null, nowMs: () => _nowMs,
+            notifyPanelChanged: _panelChanges.Add, removePanel: id => { removed.Add(id); return _registry.Remove(id); });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        _coordinator.TickOnce();
+
+        Assert.Equal(newer.Id, Assert.Single(_coordinator.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Equal(new[] { older.Id }, removed);
+        Assert.Equal(new[] { "fixed-key" }, _store.Load().Keys);
+    }
+
+    [Fact]
+    public void Adoption_runs_every_time_so_a_mix_of_fixed_and_serial_keys_is_merged()
+    {
+        var onFixedKey = FamilyRecord("fixed", 1_000);
+        var onSerial = FamilyRecord("serial", 3_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
         {
-            Serial = "fixed-key",
-            AdoptsFamilyRecords = true,
-            Profile = new StreamedPanelProfile { Kind = "fake-fs", Family = "fake-fs", DisplayName = "Fake Panel", Surface = "monitor", CssWidth = 640, CssHeight = 480, Fps = 30 },
+            ["fixed-key"] = new() { PanelDeviceId = onFixedKey.Id },
+            ["365233833333"] = new() { PanelDeviceId = onSerial.Id },
         });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
 
         Coordinator().TickOnce();
 
-        Assert.Equal(older.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
-        Assert.Null(_registry.Get(newer.Id));
+        Assert.Equal(onSerial.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(onFixedKey.Id));
         Assert.Equal(new[] { "fixed-key" }, _store.Load().Keys);
     }
 

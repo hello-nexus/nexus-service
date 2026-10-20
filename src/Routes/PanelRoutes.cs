@@ -628,17 +628,12 @@ public static class PanelRoutes
                 : Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         });
 
-        app.MapDelete("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRegistry registry, PanelBgLibrary bgLibrary, MultiplexHub hub, TokenService tokens) =>
+        app.MapDelete("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRemover remover, TokenService tokens) =>
         {
             if (!HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
-            if (!registry.Remove(id))
+            if (!remover.Remove(id))
                 return Results.NotFound(ApiResponse.Fail("device not found"));
-            // Single-instance surfaces mint a fresh id on the next allocate,
-            // so a removed device's media dir would be orphaned forever.
-            if (!bgLibrary.DeleteDeviceMedia(id))
-                ServiceLog.Warn($"[panel] remove: media dir for '{id}' could not be fully removed");
-            BroadcastDeviceChanged(hub, id);
             return Results.Ok(ApiResponse.Ok("removed"));
         });
     }

@@ -972,7 +972,7 @@ static void FastServiceShutdown(WebApplication app)
             {
                 foreach (var hub in sp.GetServices<Nexus.Service.Peripherals.BulkPanels.BulkPanelHub>())
                 {
-                    (hub.Driver as Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver)?.PersistNow();
+                    hub.Driver.PersistState();
                 }
             }
             catch { }

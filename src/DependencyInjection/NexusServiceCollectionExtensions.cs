@@ -2300,6 +2300,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<ProfileManager>();
         services.AddSingleton<Nexus.Service.Media.MediaLibrary>();
         services.AddSingleton<Nexus.Service.Panel.PanelBgLibrary>();
+        services.AddSingleton<Nexus.Service.Panel.PanelDeviceRemover>();
         services.AddSingleton<Nexus.Service.Deck.DeckImageStore>();
         services.AddSingleton<Nexus.Service.Deck.ISiteIconResolver, Nexus.Service.Deck.SiteIconResolver>();
         services.AddSingleton<Nexus.Service.Rendering.DeckKeyRenderer>();
@@ -2528,7 +2529,8 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
                 notifyOverlay,
                 notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id),
-                lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>());
+                lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
+                removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove);
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());
