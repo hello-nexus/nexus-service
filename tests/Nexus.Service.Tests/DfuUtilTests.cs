@@ -34,4 +34,17 @@ public class DfuUtilTests
     {
         Assert.Equal(expected, DfuUtil.CountDfuDevices(output));
     }
+
+    [Fact]
+    public void ResolveDefaultPath_prefers_the_bundled_binary_and_falls_back_to_path()
+    {
+        var path = DfuUtil.ResolveDefaultPath();
+        var bundledName = OperatingSystem.IsWindows() ? "dfu-util.exe" : "dfu-util";
+        var bundled = Path.Combine(AppContext.BaseDirectory, "tools", "dfu-util", bundledName);
+
+        if (OperatingSystem.IsWindows() || File.Exists(bundled))
+            Assert.Equal(bundled, path);
+        else
+            Assert.Equal("dfu-util", path);
+    }
 }

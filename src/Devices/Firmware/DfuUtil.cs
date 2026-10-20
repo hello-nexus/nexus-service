@@ -40,12 +40,18 @@ public sealed class DfuUtil
         _exePath = exePath ?? throw new ArgumentNullException(nameof(exePath));
     }
 
-    /// <summary>Resolve the bundled dfu-util next to the service binary (Windows), else rely on PATH.</summary>
+    /// <summary>Resolve the bundled dfu-util next to the service binary (Windows, Linux), else rely on PATH.</summary>
     public static string ResolveDefaultPath()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return Path.Combine(AppContext.BaseDirectory, "tools", "dfu-util", "dfu-util.exe");
-        // Linux/macOS: packaged or on PATH.
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            var bundled = Path.Combine(AppContext.BaseDirectory, "tools", "dfu-util", "dfu-util");
+            if (File.Exists(bundled))
+                return bundled;
+        }
+
         return "dfu-util";
     }
 

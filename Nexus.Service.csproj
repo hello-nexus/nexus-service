@@ -699,6 +699,17 @@
     </Content>
   </ItemGroup>
 
+  <!-- Linux dfu-util: static musl build, committed like the Windows one.
+       Copied to {output}/tools/dfu-util/ on `dotnet publish -r linux-x64`;
+       provenance in Bundled/linux-x64/dfu-util/README.md. -->
+  <ItemGroup Condition="($([MSBuild]::IsOSPlatform('Linux')) OR $(RuntimeIdentifier.StartsWith('linux'))) AND Exists('Bundled/linux-x64/dfu-util')">
+    <Content Include="Bundled/linux-x64/dfu-util/**/*.*">
+      <Link>tools/dfu-util/%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
   <!-- WinUSB driver (signed .inf + .cat + coinstallers) bound to the DFU
        bootloader (VID 3402/PID 0A00) via pnputil before flashing. Committed.
        Ships in release alongside dfu-util - the WinUSB install is part of the
