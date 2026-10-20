@@ -74,9 +74,9 @@ public sealed record KrakenModel(
     {
         // Bench unit. Firmware 1.2.0; 512-byte HID reports.
         new(0x3012, "NZXT Kraken Elite V2", 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.ChannelReport),
-        // Kraken Plus V2. 240x240, no ARGB, and no bucket store: the firmware NAKs bucket
-        // commands. Frames go straight to the panel as RGB565, high byte first, on any
-        // firmware, and the vendor protocol refreshes the panel once a second when idle.
+        // Kraken Plus V2. No ARGB and no bucket store: the firmware NAKs bucket commands.
+        // Frames go straight to the panel as RGB565, high byte first, on any firmware, and
+        // the host resends the held frame on a fixed interval while idle.
         new(0x3014, "NZXT Kraken Plus V2", 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None,
             StreamFps: 20, Rgb565DirectStream: true, TelemetryInterval: 0x0B),
 

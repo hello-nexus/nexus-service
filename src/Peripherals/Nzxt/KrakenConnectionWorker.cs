@@ -40,8 +40,32 @@ public sealed class KrakenConnectionWorker : BackgroundService
         _presence = presence;
     }
 
+    /// <summary>
+    /// Wakes on the hub's own deadline so the held frame is resent on the vendor's cadence,
+    /// independent of the status poll.
+    /// </summary>
+    private async Task RunIdleRefreshAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await Task.Delay(_hub.IdleRefreshDelayMs(), stoppingToken).ConfigureAwait(false);
+                _hub.RefreshIdleFrame();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Error($"[nzxt-kraken] idle refresh stopped: {ex.Message}");
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _ = RunIdleRefreshAsync(stoppingToken);
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -94,7 +118,6 @@ public sealed class KrakenConnectionWorker : BackgroundService
                                     break;
                                 }
                             }
-                            _hub.RefreshIdleFrame();
                             _lighting.OnHubStateUpdated();
                             await Task.Delay(StatusPollMs, stoppingToken).ConfigureAwait(false);
                         }

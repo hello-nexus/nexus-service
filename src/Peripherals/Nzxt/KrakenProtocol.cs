@@ -138,9 +138,9 @@ internal static class KrakenProtocol
 
     public static byte[] EncodeLightingInfoRequest() => NewReport(ReportLightingInfoRequest, 0x03);
 
-    // Telemetry-stream setup, sent once per connection. 0xB8 with an interval index of 1
-    // is the half-second cadence liquidctl uses; the cooler will not report its accessory
-    // table until reporting has been started.
+    // Telemetry-stream setup, sent once per connection. Byte 4 is the interval index, which
+    // varies by model; the cooler will not report its accessory table until reporting has
+    // been started.
     public static byte[] EncodeSetUpdateInterval(byte interval = 0x01)
     {
         var report = NewReport(ReportInit, 0x02);
