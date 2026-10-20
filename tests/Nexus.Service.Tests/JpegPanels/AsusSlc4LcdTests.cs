@@ -135,9 +135,19 @@ public class AsusSlc4LcdTests
         new Random(7).NextBytes(frame);
         device.Writes.Clear();
 
+        // Precondition: the transport's default-quality encode of this frame does not fit.
+        int defaultChunks;
+        using (var encoder = new BgraJpegEncoder(720, 720))
+        {
+            defaultChunks = JpegPanelProtocol.ChunkCount(model.HeaderStyle, model.ReportLength, encoder.Encode(frame).Length);
+        }
+        Assert.True(defaultChunks > 255, $"default encode was only {defaultChunks} chunks");
+
         transport.Write(frame);
 
+        // What went out is the re-encoded, smaller frame.
         Assert.InRange(device.Writes.Count, 1, 255);
+        Assert.True(device.Writes.Count < defaultChunks);
         Assert.Equal(device.Writes.Count, device.Writes[0][6]);
     }
 
