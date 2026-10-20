@@ -16,9 +16,9 @@ internal interface IFpsTraceRunner
     /// <summary>Stops the named logger. Idempotent; never throws.</summary>
     void Stop(string sessionName);
 
-    /// <summary>Stops leaked loggers under the Nexus-Fps- prefix, except any whose
-    /// name starts with <paramref name="keepPrefix"/> (this process's own).</summary>
-    void SweepStale(string keepPrefix);
+    /// <summary>Stops leaked loggers under the Nexus-Fps- prefix, except this
+    /// process's own at or above the current capture's sequence number.</summary>
+    void SweepStale(string currentSessionName);
 }
 
 internal sealed class EtwFpsTraceRunner : IFpsTraceRunner
@@ -27,25 +27,38 @@ internal sealed class EtwFpsTraceRunner : IFpsTraceRunner
     private static readonly Guid DxgKrnlProviderGuid = new("802EC45A-1E99-4B83-9920-87C98277BA9D");
     private static readonly TraceEventID PresentInfoEventId = (TraceEventID)0x00b8;
     // Present_Info's keyword per the DxgKrnl manifest (PresentMon's
-    // Microsoft_Windows_DxgKrnl.h: Present = 0x8000000).
+    // Microsoft_Windows_DxgKrnl.h).
     private const ulong DxgKrnlPresentKeyword = 0x8000000;
 
     public void Run(string sessionName, Action<int, long> onPresent, CancellationToken token)
     {
         TraceEventSession? session = null;
+        ETWTraceEventSource? source = null;
         Action<TraceEvent>? onEvent = null;
         try
         {
             session = new TraceEventSession(sessionName);
             session.StopOnDispose = true;
-            using var stopRegistration = token.Register(static state => StopSession((TraceEventSession?)state), session);
+            // Read once: after Dispose the Source getter and EnableProvider
+            // would start a fresh logger (EnsureStarted never checks the stop
+            // state), and Process would then block on it forever.
+            source = session.Source;
+            var liveSession = session;
+            var liveSource = source;
+            using var stopRegistration = token.Register(() => StopSession(liveSession, liveSource));
+            if (token.IsCancellationRequested)
+                return;
+
             onEvent = data =>
             {
                 if (data.ProviderGuid != DxgKrnlProviderGuid || data.ID != PresentInfoEventId)
                     return;
                 onPresent(data.ProcessID, data.TimeStamp.Ticks);
             };
-            session.Source.Dynamic.All += onEvent;
+            source.Dynamic.All += onEvent;
+            if (token.IsCancellationRequested)
+                return;
+
             // A bare EnableProvider means every keyword at Verbose - the full
             // DxgKrnl stream (scheduler, VidMm, HAGS logging), all marshalled
             // into managed code while the handler keeps only Present_Info.
@@ -58,21 +71,26 @@ internal sealed class EtwFpsTraceRunner : IFpsTraceRunner
                 {
                     EventIDsToEnable = new[] { (int)PresentInfoEventId },
                 });
-            session.Source.Process();
+            if (token.IsCancellationRequested)
+                return;
+
+            source.Process();
         }
         finally
         {
             if (session is not null)
             {
-                // Source re-throws the start failure (access denied when not elevated).
+                // Source re-throws the start failure (access denied when not
+                // elevated), which would fault this task after FailCapture
+                // dropped it.
                 try
                 {
-                    if (onEvent is not null)
-                        session.Source.Dynamic.All -= onEvent;
+                    if (onEvent is not null && source is not null)
+                        source.Dynamic.All -= onEvent;
                 }
                 catch { }
 
-                StopSession(session);
+                StopSession(session, source);
                 StopByName(sessionName);
             }
         }
@@ -84,7 +102,7 @@ internal sealed class EtwFpsTraceRunner : IFpsTraceRunner
     // so a hard kill or a crash strands one under the dead pid's name. Windows
     // caps loggers at 64 and a full table fails session creation with a bare
     // COM HRESULT, so the whole prefix is swept, not just one name.
-    public void SweepStale(string keepPrefix)
+    public void SweepStale(string currentSessionName)
     {
         IEnumerable<string> names;
         try { names = TraceEventSession.GetActiveSessionNames(); }
@@ -92,11 +110,8 @@ internal sealed class EtwFpsTraceRunner : IFpsTraceRunner
 
         foreach (var name in names)
         {
-            if (!name.StartsWith(SessionPrefix, StringComparison.Ordinal)
-                || name.StartsWith(keepPrefix, StringComparison.Ordinal))
-            {
+            if (!ShouldSweep(name, currentSessionName))
                 continue;
-            }
 
             try { TraceEventSession.GetActiveSession(name)?.Stop(); }
             catch { }
@@ -104,12 +119,37 @@ internal sealed class EtwFpsTraceRunner : IFpsTraceRunner
         }
     }
 
-    private static void StopSession(TraceEventSession? session)
+    /// <summary>True for a Nexus-Fps- logger that is not this process's current or
+    /// newer capture: other pids, legacy names without a sequence, and this
+    /// pid's older sequence numbers (their owner task is gone or ending).</summary>
+    internal static bool ShouldSweep(string name, string currentSessionName)
+    {
+        if (!name.StartsWith(SessionPrefix, StringComparison.Ordinal))
+            return false;
+
+        if (!TryParse(name, out var pid, out var seq) || !TryParse(currentSessionName, out var curPid, out var curSeq))
+            return true;
+
+        return pid != curPid || seq < curSeq;
+    }
+
+    private static bool TryParse(string name, out int pid, out int seq)
+    {
+        pid = 0;
+        seq = 0;
+        var rest = name.StartsWith(SessionPrefix, StringComparison.Ordinal) ? name[SessionPrefix.Length..] : "";
+        var dash = rest.IndexOf('-');
+        return dash > 0
+            && int.TryParse(rest[..dash], out pid)
+            && int.TryParse(rest[(dash + 1)..], out seq);
+    }
+
+    private static void StopSession(TraceEventSession? session, ETWTraceEventSource? source)
     {
         if (session is null)
             return;
 
-        try { session.Source.StopProcessing(); } catch { }
+        try { source?.StopProcessing(); } catch { }
         try { session.Stop(); } catch { }
         try { session.Dispose(); } catch { }
     }

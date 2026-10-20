@@ -7,6 +7,8 @@ namespace Nexus.Service.Tests.Fps;
 
 public class WindowsFpsProviderRecoveryTests
 {
+    private const double BaseBackoff = 10;
+
     private sealed class FakeScreenTime : IScreenTimeProvider
     {
         public event Action? FocusChanged { add { } remove { } }
@@ -14,23 +16,35 @@ public class WindowsFpsProviderRecoveryTests
         public IReadOnlyList<AppUsage> GetTodayUsage() => Array.Empty<AppUsage>();
     }
 
+    private sealed class ManualTime : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(double seconds) => _now = _now.AddSeconds(seconds);
+    }
+
     private sealed class FakeRunner : IFpsTraceRunner
     {
         private readonly object _lock = new();
         private readonly Dictionary<string, TaskCompletionSource> _live = new();
-        public readonly List<string> Started = new();
-        public readonly List<string> Stopped = new();
-        public Action<int, long>? OnPresent;
+        private readonly List<string> _started = new();
+        private readonly List<string> _stopped = new();
+        private Action<int, long>? _onPresent;
+        public Exception? ThrowOnRun;
 
         public void Run(string sessionName, Action<int, long> onPresent, CancellationToken token)
         {
             var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             lock (_lock)
             {
-                Started.Add(sessionName);
+                _started.Add(sessionName);
                 _live[sessionName] = done;
-                OnPresent = onPresent;
+                _onPresent = onPresent;
             }
+
+            if (ThrowOnRun is not null)
+                throw ThrowOnRun;
+
             using var reg = token.Register(() => done.TrySetResult());
             done.Task.Wait();
         }
@@ -39,12 +53,12 @@ public class WindowsFpsProviderRecoveryTests
         {
             lock (_lock)
             {
-                Stopped.Add(sessionName);
+                _stopped.Add(sessionName);
                 if (_live.TryGetValue(sessionName, out var d)) d.TrySetResult();
             }
         }
 
-        public void SweepStale(string keepPrefix) { }
+        public void SweepStale(string currentSessionName) { }
 
         // Simulates `logman stop`: the logger ends and Run returns without a cancel.
         public void KillExternally(string sessionName)
@@ -52,7 +66,10 @@ public class WindowsFpsProviderRecoveryTests
             lock (_lock) { _live[sessionName].TrySetResult(); }
         }
 
-        public int StartedCount { get { lock (_lock) return Started.Count; } }
+        public List<string> Started { get { lock (_lock) return new List<string>(_started); } }
+        public List<string> Stopped { get { lock (_lock) return new List<string>(_stopped); } }
+        public int StartedCount { get { lock (_lock) return _started.Count; } }
+        public Action<int, long>? OnPresent { get { lock (_lock) return _onPresent; } }
     }
 
     private static bool WaitFor(Func<bool> cond, int ms = 5000)
@@ -66,6 +83,34 @@ public class WindowsFpsProviderRecoveryTests
         return cond();
     }
 
+    // The focus loop publishes the target pid asynchronously, so keep feeding
+    // presents through the latest callback until the provider counts them.
+    private static bool FeedUntilCounted(FakeRunner runner, WindowsFpsProvider provider)
+    {
+        long ticks = 1;
+        return WaitFor(() =>
+        {
+            runner.OnPresent?.Invoke(1234, ticks);
+            ticks += TimeSpan.TicksPerSecond / 60;
+            return provider.TryReadCurrentFps(out _);
+        });
+    }
+
+    private static (FakeRunner Runner, ManualTime Time, WindowsFpsProvider Provider) Create()
+    {
+        var runner = new FakeRunner();
+        var time = new ManualTime();
+        return (runner, time, new WindowsFpsProvider(new FakeScreenTime(), runner, BaseBackoff, time));
+    }
+
+    // Kills the logger and waits until the provider has registered the failure.
+    private static void KillAndAwaitFailure(FakeRunner runner, int index)
+    {
+        var name = runner.Started[index];
+        runner.KillExternally(name);
+        Assert.True(WaitFor(() => runner.Stopped.Contains(name)));
+    }
+
     [Fact]
     public void NextSessionName_IsUniqueAndKeepsPrefix()
     {
@@ -74,102 +119,157 @@ public class WindowsFpsProviderRecoveryTests
         Assert.All(names, n => Assert.StartsWith("Nexus-Fps-" + Environment.ProcessId + "-", n));
     }
 
-    [Fact]
-    public void RapidToggle_EachCaptureGetsItsOwnSessionAndLastOneSurvives()
+    [Theory]
+    [InlineData("Nexus-Fps-100-3", "Nexus-Fps-100-5", true)]
+    [InlineData("Nexus-Fps-100-5", "Nexus-Fps-100-5", false)]
+    [InlineData("Nexus-Fps-100-6", "Nexus-Fps-100-5", false)]
+    [InlineData("Nexus-Fps-200-9", "Nexus-Fps-100-5", true)]
+    [InlineData("Nexus-Fps-200", "Nexus-Fps-100-5", true)]
+    [InlineData("Other-Logger-1", "Nexus-Fps-100-5", false)]
+    public void ShouldSweep_KeepsOnlyThisProcessCurrentAndNewerCaptures(string name, string current, bool expected)
     {
-        var runner = new FakeRunner();
-        using var provider = new WindowsFpsProvider(new FakeScreenTime(), runner, 0.3);
+        Assert.Equal(expected, EtwFpsTraceRunner.ShouldSweep(name, current));
+    }
 
-        for (var i = 0; i < 20; i++)
+    [Fact]
+    public void RapidToggle_EachCaptureGetsItsOwnSessionAndTheLastOneIsLive()
+    {
+        var (runner, _, provider) = Create();
+        using (provider)
         {
+            for (var i = 0; i < 20; i++)
+            {
+                provider.SetDemand("t", true);
+                provider.SetDemand("t", false);
+            }
             provider.SetDemand("t", true);
-            provider.SetDemand("t", false);
-        }
-        provider.SetDemand("t", true);
 
-        Assert.True(WaitFor(() => runner.StartedCount >= 1));
-        var last = runner.Started[^1];
-        Thread.Sleep(100);
-        // The live capture's name was never stopped by a stale task.
-        Assert.DoesNotContain(last, runner.Stopped);
-        Assert.Equal(runner.Started.Count, runner.Started.Distinct().Count());
+            // The final capture's Run is the latest registered callback; wait
+            // until it is up and the stale ones have been stopped.
+            Assert.True(WaitFor(() => runner.StartedCount >= 1));
+            Assert.True(FeedUntilCounted(runner, provider));
+
+            var started = runner.Started;
+            Assert.Equal(started.Count, started.Distinct().Count());
+            // Only the final capture can still be running: every earlier name was stopped.
+            var stopped = runner.Stopped;
+            Assert.True(WaitFor(() => started.Take(started.Count - 1).All(n => runner.Stopped.Contains(n))));
+            Assert.DoesNotContain(started[^1], runner.Stopped);
+            Assert.True(provider.TryReadCurrentFps(out _));
+        }
     }
 
     [Fact]
     public void CleanExitOfTheLogger_IsTreatedAsFailureAndRestartsAfterBackoff()
     {
-        var runner = new FakeRunner();
-        using var provider = new WindowsFpsProvider(new FakeScreenTime(), runner, 0.3);
+        var (runner, time, provider) = Create();
+        using (provider)
+        {
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 1));
+            var first = runner.Started[0];
 
-        provider.SetDemand("t", true);
-        Assert.True(WaitFor(() => runner.StartedCount == 1));
-        var first = runner.Started[0];
+            KillAndAwaitFailure(runner, 0);
 
-        runner.KillExternally(first);
-        Assert.True(WaitFor(() => runner.Stopped.Contains(first)));
+            // Inside the backoff the demand tick must not restart.
+            time.Advance(BaseBackoff - 1);
+            provider.SetDemand("t", true);
+            Assert.Equal(1, runner.StartedCount);
 
-        // Inside the backoff the demand tick must not restart yet.
-        provider.SetDemand("t", true);
-        Assert.Equal(1, runner.StartedCount);
-
-        Thread.Sleep(450);
-        provider.SetDemand("t", true);
-        Assert.True(WaitFor(() => runner.StartedCount == 2));
-        Assert.NotEqual(first, runner.Started[1]);
+            time.Advance(2);
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 2));
+            Assert.NotEqual(first, runner.Started[1]);
+        }
     }
 
     [Fact]
     public void StaleTaskStop_DoesNotTearDownTheNewerCapture()
     {
-        var runner = new FakeRunner();
-        using var provider = new WindowsFpsProvider(new FakeScreenTime(), runner, 0.3);
+        var (runner, _, provider) = Create();
+        using (provider)
+        {
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 1));
+            provider.SetDemand("t", false);
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 2));
 
-        provider.SetDemand("t", true);
-        Assert.True(WaitFor(() => runner.StartedCount == 1));
-        provider.SetDemand("t", false);
-        provider.SetDemand("t", true);
-        Assert.True(WaitFor(() => runner.StartedCount == 2));
-        Thread.Sleep(200);
-
-        // Capture 2 must still be live: presents for the target pid register.
-        runner.OnPresent!(1234, 1);
-        runner.OnPresent!(1234, 1 + TimeSpan.TicksPerSecond / 60);
-        Thread.Sleep(300);
-        Assert.DoesNotContain(runner.Started[1], runner.Stopped);
+            Assert.True(FeedUntilCounted(runner, provider));
+            Assert.True(provider.TryReadCurrentFps(out _));
+            Assert.DoesNotContain(runner.Started[1], runner.Stopped);
+        }
     }
 
     [Fact]
     public void ConsecutiveCleanExits_DoubleTheBackoff_AndAPresentResetsIt()
     {
-        var runner = new FakeRunner();
-        using var provider = new WindowsFpsProvider(new FakeScreenTime(), runner, 0.3);
+        var (runner, time, provider) = Create();
+        using (provider)
+        {
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 1));
+            KillAndAwaitFailure(runner, 0);
+            time.Advance(BaseBackoff + 1);
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 2));
 
-        provider.SetDemand("t", true);
-        Assert.True(WaitFor(() => runner.StartedCount == 1));
-        runner.KillExternally(runner.Started[0]);
-        Assert.True(WaitFor(() => runner.Stopped.Contains(runner.Started[0])));
-        Thread.Sleep(450);
-        provider.SetDemand("t", true);
-        Assert.True(WaitFor(() => runner.StartedCount == 2));
+            // Second exit with no present delivered: the backoff doubles the base.
+            KillAndAwaitFailure(runner, 1);
+            time.Advance(BaseBackoff + 1);
+            provider.SetDemand("t", true);
+            Assert.Equal(2, runner.StartedCount);
+            time.Advance(BaseBackoff);
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 3));
 
-        // Second exit with no present delivered: backoff doubles to 0.6 s.
-        runner.KillExternally(runner.Started[1]);
-        Assert.True(WaitFor(() => runner.Stopped.Contains(runner.Started[1])));
-        Thread.Sleep(400);
-        provider.SetDemand("t", true);
-        Assert.Equal(2, runner.StartedCount);
-        Thread.Sleep(350);
-        provider.SetDemand("t", true);
-        Assert.True(WaitFor(() => runner.StartedCount == 3));
+            // A delivered present resets the streak: the next backoff is the base again.
+            Assert.True(FeedUntilCounted(runner, provider));
+            KillAndAwaitFailure(runner, 2);
+            time.Advance(BaseBackoff + 1);
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 4));
+        }
+    }
 
-        // A delivered present resets the streak: next backoff is the base again.
-        Thread.Sleep(500);
-        runner.OnPresent!(1234, 1);
-        runner.KillExternally(runner.Started[2]);
-        Assert.True(WaitFor(() => runner.Stopped.Contains(runner.Started[2])));
-        Thread.Sleep(450);
-        provider.SetDemand("t", true);
-        Assert.True(WaitFor(() => runner.StartedCount == 4));
+    [Fact]
+    public void ARunLongerThanTheHealthyWindow_ResetsTheBackoffEvenWithoutPresents()
+    {
+        var (runner, time, provider) = Create();
+        using (provider)
+        {
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 1));
+            KillAndAwaitFailure(runner, 0);
+            time.Advance(BaseBackoff + 1);
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 2));
+
+            // Streak is 1 here; a long healthy run must bring the backoff back to the base.
+            time.Advance(120);
+            KillAndAwaitFailure(runner, 1);
+            time.Advance(BaseBackoff + 1);
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 3));
+        }
+    }
+
+    [Fact]
+    public void AccessDenied_BacksOffPermanently()
+    {
+        var (runner, time, provider) = Create();
+        runner.ThrowOnRun = new UnauthorizedAccessException("denied");
+        using (provider)
+        {
+            provider.SetDemand("t", true);
+            Assert.True(WaitFor(() => runner.StartedCount == 1));
+            Assert.True(WaitFor(() => runner.Stopped.Count >= 1));
+
+            time.Advance(60 * 60 * 24 * 365);
+            provider.SetDemand("t", true);
+            Thread.Sleep(100);
+            Assert.Equal(1, runner.StartedCount);
+        }
     }
 }
 #endif

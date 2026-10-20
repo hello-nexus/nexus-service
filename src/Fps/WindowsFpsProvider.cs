@@ -31,6 +31,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
     // so we read the target PID from there.
     private readonly IScreenTimeProvider _screenTime;
     private readonly IFpsTraceRunner _runner;
+    private readonly TimeProvider _time;
     private readonly object _gate = new();
     private readonly object _transitionGate = new();
     private readonly FpsCalculator _calculator = new();
@@ -54,20 +55,26 @@ public sealed class WindowsFpsProvider : IFpsProvider
     private int _cleanExitStreak;
 
     public WindowsFpsProvider(IScreenTimeProvider screenTime)
-        : this(screenTime, new EtwFpsTraceRunner(), CleanExitBackoffSeconds)
+        : this(screenTime, new EtwFpsTraceRunner(), CleanExitBackoffSeconds, TimeProvider.System)
     {
     }
 
-    internal WindowsFpsProvider(IScreenTimeProvider screenTime, IFpsTraceRunner runner, double cleanExitBaseSeconds)
+    internal WindowsFpsProvider(
+        IScreenTimeProvider screenTime,
+        IFpsTraceRunner runner,
+        double cleanExitBaseSeconds,
+        TimeProvider time)
     {
         _screenTime = screenTime;
         _runner = runner;
         _cleanExitBaseSeconds = cleanExitBaseSeconds;
+        _time = time;
     }
+
+    private DateTime Now() => _time.GetUtcNow().UtcDateTime;
 
     internal static string NextSessionName() =>
         EtwFpsTraceRunner.SessionPrefix + Environment.ProcessId + "-" + Interlocked.Increment(ref s_sessionSeq);
-
 
     /// <summary>Adds or removes <paramref name="source"/> from the demand set and starts
     /// or stops capture to match. Call every tick with a fixed source id (idempotent
@@ -111,14 +118,14 @@ public sealed class WindowsFpsProvider : IFpsProvider
         string sessionName;
         lock (_gate)
         {
-            if (_cts is not null || DateTime.UtcNow < _nextStartAllowedUtc)
+            if (_cts is not null || Now() < _nextStartAllowedUtc)
                 return;
 
             cts = new CancellationTokenSource();
             _cts = cts;
             sessionName = NextSessionName();
             _sessionName = sessionName;
-            _captureStartedUtc = DateTime.UtcNow;
+            _captureStartedUtc = Now();
             ResetTargetLocked();
         }
 
@@ -200,7 +207,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
                 ? SensorName
                 : $"{SensorName} ({_targetName})";
             var isFresh = _hasValue
-                && (DateTime.UtcNow - _lastPresentUtc).TotalMilliseconds <= StaleFrameMs;
+                && (Now() - _lastPresentUtc).TotalMilliseconds <= StaleFrameMs;
             var fpsValue = isFresh ? (float)Math.Max(0, _fps) : 0f;
             var fpsFormatted = isFresh ? $"{fpsValue:F0}" : "-";
             var frameMs = isFresh && fpsValue > 0 ? 1000f / fpsValue : 0f;
@@ -301,7 +308,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
             if (token.IsCancellationRequested)
                 return;
 
-            _runner.SweepStale(EtwFpsTraceRunner.SessionPrefix + Environment.ProcessId + "-");
+            _runner.SweepStale(sessionName);
 
             _runner.Run(sessionName, (pid, ticks) => OnPresent(cts, pid, ticks), token);
 
@@ -313,7 +320,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
         }
         catch (Exception ex) when (!token.IsCancellationRequested)
         {
-            FailCapture(cts, ex.Message, cleanExit: false, ex is UnauthorizedAccessException ? double.MaxValue : FailureBackoffSeconds);
+            FailCapture(cts, ex.Message, cleanExit: false, permanent: ex is UnauthorizedAccessException);
         }
         finally
         {
@@ -342,7 +349,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
             _cleanExitStreak = 0;
             _fps = _calculator.AddFrameTicks(ticks);
             _hasValue = _calculator.Count >= 2;
-            _lastPresentUtc = DateTime.UtcNow;
+            _lastPresentUtc = Now();
         }
     }
 
@@ -353,7 +360,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
         lock (_gate)
         {
             var isFresh = _cts is not null && _hasValue
-                && (DateTime.UtcNow - _lastPresentUtc).TotalMilliseconds <= StaleFrameMs;
+                && (Now() - _lastPresentUtc).TotalMilliseconds <= StaleFrameMs;
             if (isFresh)
             {
                 fps = _fps;
@@ -366,10 +373,10 @@ public sealed class WindowsFpsProvider : IFpsProvider
 
     // Only the capture that is still current may fail it: a stale task's late
     // error must not tear down a newer capture. Access denied backs off
-    // permanently (double.MaxValue); a clean exit doubles its backoff per
+    // permanently; a clean exit doubles its backoff per
     // consecutive occurrence up to a cap, so a logger that keeps ending
     // immediately is not recreated every few seconds forever.
-    private void FailCapture(CancellationTokenSource cts, string reason, bool cleanExit, double backoffSeconds = 0)
+    private void FailCapture(CancellationTokenSource cts, string reason, bool cleanExit, bool permanent = false)
     {
         string? sessionName;
         lock (_gate)
@@ -382,9 +389,10 @@ public sealed class WindowsFpsProvider : IFpsProvider
             _traceTask = null;
             sessionName = _sessionName;
             _sessionName = null;
+            double backoffSeconds = FailureBackoffSeconds;
             if (cleanExit)
             {
-                if ((DateTime.UtcNow - _captureStartedUtc).TotalSeconds >= HealthyRunSeconds)
+                if ((Now() - _captureStartedUtc).TotalSeconds >= HealthyRunSeconds)
                 {
                     _cleanExitStreak = 0;
                 }
@@ -395,9 +403,9 @@ public sealed class WindowsFpsProvider : IFpsProvider
                 _cleanExitStreak++;
             }
 
-            _nextStartAllowedUtc = backoffSeconds == double.MaxValue
+            _nextStartAllowedUtc = permanent
                 ? DateTime.MaxValue
-                : DateTime.UtcNow.AddSeconds(backoffSeconds);
+                : Now().AddSeconds(backoffSeconds);
             ResetTargetLocked();
         }
 
@@ -414,7 +422,7 @@ public sealed class WindowsFpsProvider : IFpsProvider
     {
         lock (_gate)
         {
-            var now = DateTime.UtcNow;
+            var now = Now();
             if ((now - _lastErrorLoggedUtc).TotalSeconds < LogIntervalSeconds)
                 return;
 
