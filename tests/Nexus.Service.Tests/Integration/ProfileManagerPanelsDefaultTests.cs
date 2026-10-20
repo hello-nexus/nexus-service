@@ -101,6 +101,7 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
         src.Devices.Corsair.LcdSelectedMediaId = "media-" + accent;
         src.Devices.TlLcdScreens["tl-1"] = new LianLiWirelessScreenSettings { ContentType = "clock", ClockFace = "face-" + accent };
         src.Devices.LianLiWireless.Screens["ll-1"] = new LianLiWirelessScreenSettings { ContentType = "image", MediaId = "m-" + accent };
+        src.Devices.FlexLcdScreens["flex-1"] = new LianLiWirelessScreenSettings { ContentType = "image", MediaId = "f-" + accent };
         src.Devices.LianLiWireless.AioScreens["aio-1"] = new LianLiAioScreenSettings { LabelColor = accent };
         return JsonSerializer.Serialize(ProfileSharing.ExtractShareable(src), PersistenceJsonContext.Default.NexusSettings);
     }
@@ -114,6 +115,7 @@ public class ProfileManagerPanelsDefaultTests : IDisposable
         Assert.Equal("media-" + accent, s.Devices.Corsair.LcdSelectedMediaId);
         Assert.Equal("face-" + accent, s.Devices.TlLcdScreens["tl-1"].ClockFace);
         Assert.Equal("m-" + accent, s.Devices.LianLiWireless.Screens["ll-1"].MediaId);
+        Assert.Equal("f-" + accent, s.Devices.FlexLcdScreens["flex-1"].MediaId);
         Assert.Equal(accent, s.Devices.LianLiWireless.AioScreens["aio-1"].LabelColor);
     }
 

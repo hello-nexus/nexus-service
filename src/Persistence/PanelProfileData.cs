@@ -129,7 +129,7 @@ public static class PanelProfileData
         }
 
         CopyCoolerContent(new NexusSettings(), target, creating: false);
-        foreach (var screen in target.Devices.TlLcdScreens.Values.Concat(target.Devices.LianLiWireless.Screens.Values))
+        foreach (var screen in target.Devices.TlLcdScreens.Values.Concat(target.Devices.LianLiWireless.Screens.Values).Concat(target.Devices.FlexLcdScreens.Values))
         {
             CopyScreenContent(new LianLiWirelessScreenSettings(), screen);
         }
@@ -303,7 +303,7 @@ public static class PanelProfileData
     }
 
     /// <summary>
-    /// Cooler display content: Corsair LCD media, the Lian Li fan and AIO screens and the Tryx overlay and
+    /// Cooler display content: Corsair LCD media, the Lian Li fan, Flex and AIO screens and the Tryx overlay and
     /// media. Brightness, rotation, lock sleep, order and device-held media stay hardware-side. With
     /// <paramref name="creating"/> false only screens the destination already has are touched.
     /// </summary>
@@ -313,6 +313,7 @@ public static class PanelProfileData
 
         CopyEntries(from.Devices.TlLcdScreens, to.Devices.TlLcdScreens, creating, CopyScreenContent);
         CopyEntries(from.Devices.LianLiWireless.Screens, to.Devices.LianLiWireless.Screens, creating, CopyScreenContent);
+        CopyEntries(from.Devices.FlexLcdScreens, to.Devices.FlexLcdScreens, creating, CopyScreenContent);
         CopyEntries(from.Devices.LianLiWireless.AioScreens, to.Devices.LianLiWireless.AioScreens, creating, CopyAioContent);
 
         var f = from.Tryx;

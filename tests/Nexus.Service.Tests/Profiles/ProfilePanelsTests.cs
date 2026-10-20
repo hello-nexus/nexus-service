@@ -93,6 +93,24 @@ public class ProfilePanelsTests : IDisposable
     }
 
     [Fact]
+    public void Flex_screen_content_follows_the_profile_across_a_switch()
+    {
+        InitializePerProfile();
+        var a = _pm.GetActiveEntry()!.Id;
+        var b = _pm.CreateProfile("B").Id;
+        _store.Update(s => s.Devices.FlexLcdScreens["flex-1"] = new LianLiWirelessScreenSettings { ContentType = "clock", ClockFace = "digital", Brightness = 30 });
+        _pm.SwitchProfile(a);
+        _store.Update(s => s.Devices.FlexLcdScreens["flex-1"] = new LianLiWirelessScreenSettings { ContentType = "clock", ClockFace = "analogClassic", Brightness = 77 });
+
+        _pm.SwitchProfile(b);
+        Assert.Equal("digital", _store.Load().Devices.FlexLcdScreens["flex-1"].ClockFace);
+        Assert.Equal(77, _store.Load().Devices.FlexLcdScreens["flex-1"].Brightness);
+
+        _pm.SwitchProfile(a);
+        Assert.Equal("analogClassic", _store.Load().Devices.FlexLcdScreens["flex-1"].ClockFace);
+    }
+
+    [Fact]
     public void Panel_without_a_match_keeps_its_look()
     {
         _store.Update(s => s.PanelDevices["y70-a"] = Y70());
@@ -251,6 +269,7 @@ public class ProfilePanelsTests : IDisposable
         source.Devices.Corsair.LcdBrightness = 12;
         source.Devices.TlLcdScreens["tl-1"] = new LianLiWirelessScreenSettings { ContentType = "clock", ClockFace = "digital", Brightness = 33 };
         source.Devices.TlLcdScreens["tl-2"] = new LianLiWirelessScreenSettings { ContentType = "image", MediaId = "m" };
+        source.Devices.FlexLcdScreens["flex-1"] = new LianLiWirelessScreenSettings { ContentType = "clock", ClockFace = "analogClassic", Brightness = 21 };
         source.PanelDevices["y70-a"] = Y70();
 
         var file = ProfileSharing.ExtractShareable(source);
@@ -262,6 +281,7 @@ public class ProfilePanelsTests : IDisposable
         live.Tryx.Brightness = 90;
         live.Devices.Corsair.LcdBrightness = 80;
         live.Devices.TlLcdScreens["tl-1"] = new LianLiWirelessScreenSettings { Brightness = 55 };
+        live.Devices.FlexLcdScreens["flex-1"] = new LianLiWirelessScreenSettings { Brightness = 66 };
         ProfileSharing.ApplyCategory(live, loaded, ProfileSharing.Panels);
 
         Assert.Equal("#010203", live.Tryx.OverlayColor);
@@ -272,6 +292,8 @@ public class ProfilePanelsTests : IDisposable
         Assert.Equal("digital", live.Devices.TlLcdScreens["tl-1"].ClockFace);
         Assert.Equal(55, live.Devices.TlLcdScreens["tl-1"].Brightness);
         Assert.False(live.Devices.TlLcdScreens.ContainsKey("tl-2"));
+        Assert.Equal("analogClassic", live.Devices.FlexLcdScreens["flex-1"].ClockFace);
+        Assert.Equal(66, live.Devices.FlexLcdScreens["flex-1"].Brightness);
     }
 
     [Fact]
@@ -282,8 +304,12 @@ public class ProfilePanelsTests : IDisposable
         s.PanelDevices["y70-a"].AccentColor = "#fff";
         s.PanelDevices["y70-a"].Presets = new() { new PanelPreset { Id = "p" } };
         s.Tryx.OverlayColor = "#123";
+        s.Devices.FlexLcdScreens["flex-1"] = new LianLiWirelessScreenSettings { ContentType = "clock", ClockFace = "digital", Brightness = 9 };
 
         ProfileSharing.ResetCategory(s, ProfileSharing.Panels);
+        Assert.Equal(new LianLiWirelessScreenSettings().ContentType, s.Devices.FlexLcdScreens["flex-1"].ContentType);
+        Assert.Null(s.Devices.FlexLcdScreens["flex-1"].ClockFace);
+        Assert.Equal(9, s.Devices.FlexLcdScreens["flex-1"].Brightness);
 
         var r = s.PanelDevices["y70-a"];
         Assert.Null(r.AccentColor);
