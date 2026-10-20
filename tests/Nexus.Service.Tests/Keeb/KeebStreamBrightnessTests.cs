@@ -655,6 +655,7 @@ public class KeebStreamBrightnessTests
             // slider only stores it and the end writes it; after the end the slider writes it.
             Assert.Equal(level, rig.Level);
             Assert.Equal((int)Math.Round(level / 100.0 * 255), rig.Hid.Device.BrightByte);
+            Assert.Equal(0.8f, rig.Global, 3);
         }
     }
 
