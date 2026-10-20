@@ -37,6 +37,36 @@ public interface IBulkUsbPipe : IDisposable
 public interface IBulkUsbPipeFactory
 {
     IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId);
+
+    /// <summary>
+    /// Same as <see cref="Open(int, int, byte, byte)"/>, and reports whether a null result
+    /// came from the OS refusing access to a present device.
+    /// </summary>
+    IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId, out bool accessDenied)
+    {
+        accessDenied = false;
+        return Open(vendorId, productId, writePipeId, readPipeId);
+    }
+}
+
+/// <summary>A bulk pipe open that failed at the OS layer, keeping the Win32 error.</summary>
+public sealed class BulkPipeOpenException : IOException
+{
+    private const int ErrorAccessDenied = 5;
+    private const int ErrorSharingViolation = 32;
+
+    public BulkPipeOpenException(string message, int errorCode)
+        : base(message)
+    {
+        ErrorCode = errorCode;
+    }
+
+    public int ErrorCode { get; }
+
+    public bool IsAccessDenied => IsAccessDeniedCode(ErrorCode);
+
+    public static bool IsAccessDeniedCode(int errorCode) =>
+        errorCode is ErrorAccessDenied or ErrorSharingViolation;
 }
 
 /// <summary>Stands in on Linux, which has no bulk-pipe transport, so the rest of the graph still resolves.</summary>

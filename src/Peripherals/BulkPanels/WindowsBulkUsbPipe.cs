@@ -60,7 +60,7 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
         {
             var err = Marshal.GetLastWin32Error();
             _fileHandle.Dispose();
-            throw new IOException($"CreateFileW failed for {devicePath}: {err}");
+            throw new BulkPipeOpenException($"CreateFileW failed for {devicePath}: {err}", err);
         }
 
         if (!Slv3WinUsbInterop.WinUsb_Initialize(_fileHandle, out _winUsbHandle))
@@ -206,8 +206,13 @@ public sealed class WindowsBulkUsbPipeFactory : IBulkUsbPipeFactory
     /// <summary>GUID_DEVINTERFACE_USB_DEVICE - every USB device exposes it.</summary>
     private static readonly Guid UsbDeviceInterface = new("A5DCBF10-6530-11D2-901F-00C04FB951ED");
 
-    public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId)
+    public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId) =>
+        Open(vendorId, productId, writePipeId, readPipeId, out _);
+
+    public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId, out bool accessDenied)
     {
+        accessDenied = false;
+        var denied = false;
         var failures = new List<string>();
         foreach (var path in FindDevicePaths(vendorId, productId))
         {
@@ -217,10 +222,17 @@ public sealed class WindowsBulkUsbPipeFactory : IBulkUsbPipeFactory
             }
             catch (IOException ex)
             {
+                denied |= ex is BulkPipeOpenException { IsAccessDenied: true };
                 failures.Add(ex.Message);
             }
         }
-        if (failures.Count > 0)
+        accessDenied = denied;
+        if (denied)
+        {
+            ServiceLog.Info(
+                $"[bulk-panel] {vendorId:X4}:{productId:X4} is present but Windows denied access (another process may have it open): {string.Join("; ", failures)}");
+        }
+        else if (failures.Count > 0)
         {
             // Overwhelmingly the normal case for a cooler still owned by its vendor driver:
             // it enumerates, and WinUSB is not bound, so it can never be opened here.

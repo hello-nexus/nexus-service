@@ -32,20 +32,27 @@ internal static class DiagnosticsRoutes
 
     public static void MapDiagnosticsEndpoints(this WebApplication app)
     {
-        app.MapPost("/diagnostics/open-logs", (IServiceProvider sp) =>
+        app.MapPost("/diagnostics/open-logs", async (IServiceProvider sp) =>
         {
             try
             {
 #if WINDOWS
                 // The service is LocalSystem in Session 0; an explorer.exe it
                 // spawns lands in the non-interactive session and never shows.
-                // Hand off to the user-session helper over the pipe - it opens
-                // the folder on the user's desktop.
-                var registry = sp.GetRequiredService<Nexus.Service.Helper.HelperRegistry>();
-                Nexus.Service.Helper.Domains.DiagnosticsCommands.OpenLogsAsync(registry).ObserveFaults();
+                // The user-session helper opens the folder on the user's desktop
+                // and acks, so a missing helper surfaces as 503 instead of a
+                // silent 200. A late ack is not reported as a failure.
+                var registry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
+                var outcome = await Nexus.Service.Helper.Domains.FileDialogCommands.TryOpenFolderAsync(
+                    registry, Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
+                if (Nexus.Service.Helper.OpenFolderOutcomes.IsFailure(outcome))
+                {
+                    return Results.Problem("no interactive user session", statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
 #else
                 // macOS (LaunchAgent) / Linux run in the user session already,
                 // so opening directly reaches the user's file manager.
+                await Task.CompletedTask;
                 Nexus.Service.Diagnostics.LogsFolder.Open();
 #endif
                 return Results.Ok(ApiResponse.Ok());

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Models.Common;
 using Nexus.Service.Models.Peripherals.Keeb;
 using Nexus.Service.Peripherals.Hyte.Keeb;
@@ -31,19 +30,17 @@ public sealed class RealKeebProvider : IKeebProvider
     private readonly IConfigStore _store;
     private readonly KeebHub _hub;
     private readonly KeebSettingsApplier _applier;
-    private readonly LightingEngine _engine;
     // Serializes layer/macro store+device transactions so two concurrent saves
     // can't leave the device holding one write and the store another. It is the
     // hub's onboard lock, so the knob poll also stays out of a write + verify.
     private readonly object _writeLock;
 
-    public RealKeebProvider(IConfigStore store, KeebHub hub, KeebSettingsApplier applier, LightingEngine engine)
+    public RealKeebProvider(IConfigStore store, KeebHub hub, KeebSettingsApplier applier)
     {
         _store = store;
         _hub = hub;
         _writeLock = hub.OnboardLock;
         _applier = applier;
-        _engine = engine;
     }
 
     private string CurrentLayout()
@@ -360,26 +357,19 @@ public sealed class RealKeebProvider : IKeebProvider
     public void SetFirmwareLighting(SetFirmwareLightingBody body)
     {
         var brightness = Math.Clamp(body.Brightness, 0, 100);
-        // While a software effect streams, the firmware animation is suppressed and
-        // the frame writer caps the stream by the master brightness, so writing the
-        // 0x06 page now would only flash the firmware animation through the live
-        // stream (and a brightness drag flashes repeatedly). Update the master and
-        // let the composer apply it; the frame writer writes the page when streaming
-        // stops. With no effect, write it so the firmware animation reflects the
-        // change immediately.
-        var streaming = _engine.CurrentEffectName != "none";
+        // While the frame writer streams (a software effect, or key reactions alone), the
+        // firmware animation is suppressed and the writer scales the keeb stream by this
+        // level, so writing the settings page now would only flash the firmware animation
+        // through the live stream (and a brightness drag flashes repeatedly). ApplyGated
+        // stores it and writes the page only when no stream is running; otherwise the
+        // writer writes it when streaming stops.
         _applier.ApplyGated(s =>
         {
             s.Keeb.FirmwareLighting.AnimationMode = body.AnimationMode;
             s.Keeb.FirmwareLighting.Speed = body.Speed;
             s.Keeb.FirmwareLighting.Direction = body.Direction;
             s.Keeb.FirmwareLighting.Brightness = brightness;
-            // The stream is capped by master brightness, so the slider has to
-            // move that too or it does nothing while an effect is running. This
-            // used to arrive indirectly, via a poll that read the byte back off
-            // the device; that poll stalled LED frames and is gone.
-            if (streaming) s.Lighting.GlobalBrightness = brightness / 100f;
-        }, writeDevice: !streaming);
+        });
     }
 
     public void SetGameMode(SetGameModeBody body)

@@ -36,22 +36,11 @@ public sealed class OpenDeviceManagerPayload { }
 
 /// <summary>
 /// Service-side outbound facade. Service code calls this to ask the
-/// user-session helper to reveal the logs folder or open Event Viewer.
+/// user-session helper to open Event Viewer or Device Manager.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public static class DiagnosticsCommands
 {
-    public static Task OpenLogsAsync(HelperRegistry registry, CancellationToken ct = default)
-    {
-        var conn = registry.GetAny();
-        if (conn is null) return Task.CompletedTask;
-        return conn.SendAsync(
-            type: "diagnostics.openLogs",
-            payload: new OpenLogsPayload(),
-            payloadType: AppJsonContext.Default.OpenLogsPayload,
-            ct: ct);
-    }
-
     public static Task OpenEventViewerAsync(HelperRegistry registry, CancellationToken ct = default)
     {
         var conn = registry.GetAny();
@@ -96,6 +85,8 @@ public sealed class DiagnosticsHandler
 
     public void Register(HelperHandlerRegistry registry)
     {
+        // Kept for version skew: a service older than the dialog.openFolder
+        // route still sends diagnostics.openLogs.
         registry.Register("diagnostics.openLogs", (env, _) =>
         {
             try { _onOpenLogs(); } catch { }

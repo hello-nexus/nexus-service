@@ -46,6 +46,12 @@ public sealed class BulkPanelHandler : IDeviceHandler
     /// where Windows has bound WinUSB, and a cooler still owned by its vendor driver
     /// enumerates without ever opening here.
     /// </summary>
-    public string? GetWarning(IReadOnlyList<UsbDeviceEntry> detectedDevices) =>
-        !_hub.IsConnected && IsConnected(detectedDevices) ? "bulk-pipe-unavailable" : null;
+    public string? GetWarning(IReadOnlyList<UsbDeviceEntry> detectedDevices)
+    {
+        if (_hub.IsConnected || !IsConnected(detectedDevices))
+        {
+            return null;
+        }
+        return _hub.OpenAccessDenied ? "access-denied" : "bulk-pipe-unavailable";
+    }
 }

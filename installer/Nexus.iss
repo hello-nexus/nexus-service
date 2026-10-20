@@ -177,6 +177,95 @@ function AllowSetForegroundWindow(dwProcessId: DWORD): Boolean;
 function SetWindowPos(hWnd, hWndInsertAfter, X, Y, cx, cy: Integer; uFlags: Cardinal): Boolean;
   external 'SetWindowPos@user32.dll stdcall';
 
+// Process lookups for StopServiceIfRunning and the Authenticode check for the
+// WebView2 download, native so the installer spawns no scripting host. Every
+// declaration assumes Setup is a 32-bit process; InitializeSetup enforces it.
+type
+  TTrustGuid = record
+    D1, D2, D3, D4: Cardinal;
+  end;
+  TTrustFileInfo = record
+    Size, FilePath, FileHandle, KnownSubject: Cardinal;
+  end;
+  TTrustData = record
+    Size, PolicyData, SipData, UIChoice, Revocation, UnionChoice, FileInfo,
+    StateAction, StateData, UrlRef, ProvFlags, UIContext, SigSettings: Cardinal;
+  end;
+
+function NxSnapshot(Flags, Pid: Cardinal): Cardinal;
+  external 'CreateToolhelp32Snapshot@kernel32.dll stdcall';
+function NxProcessFirst(Snap: Cardinal; Entry: Cardinal): Boolean;
+  external 'Process32FirstW@kernel32.dll stdcall';
+function NxProcessNext(Snap: Cardinal; Entry: Cardinal): Boolean;
+  external 'Process32NextW@kernel32.dll stdcall';
+function NxOpenProcess(Access: Cardinal; Inherit: Integer; Pid: Cardinal): Cardinal;
+  external 'OpenProcess@kernel32.dll stdcall';
+function NxCloseHandle(Handle: Cardinal): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+function NxLastError(): Cardinal;
+  external 'GetLastError@kernel32.dll stdcall';
+function NxCurrentProcess(): Cardinal;
+  external 'GetCurrentProcess@kernel32.dll stdcall';
+function NxIsWow64(Process: Cardinal; var Wow64: Cardinal): Boolean;
+  external 'IsWow64Process@kernel32.dll stdcall';
+function NxImageName(Process, Flags: Cardinal; Buf: Cardinal; var Size: Cardinal): Boolean;
+  external 'QueryFullProcessImageNameW@kernel32.dll stdcall';
+function NxQueryProcess(Process, InfoClass: Cardinal; Buf, Len: Cardinal; var Returned: Cardinal): Cardinal;
+  external 'NtQueryInformationProcess@ntdll.dll stdcall delayload';
+function NxWaitObject(Handle, Milliseconds: Cardinal): Cardinal;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function NxTickCount(): Cardinal;
+  external 'GetTickCount@kernel32.dll stdcall';
+procedure NxCopyMemory(var Dest: Cardinal; Src, Len: Cardinal);
+  external 'RtlMoveMemory@kernel32.dll stdcall';
+procedure NxPutDword(Dest: Cardinal; var Src: Cardinal; Len: Cardinal);
+  external 'RtlMoveMemory@kernel32.dll stdcall';
+function NxNextChar(const S: String): Cardinal;
+  external 'CharNextW@user32.dll stdcall';
+function NxRecordNext(var R: TTrustFileInfo): Cardinal;
+  external 'CharNextW@user32.dll stdcall';
+function NxVerifyTrust(Wnd: Cardinal; var Action: TTrustGuid; var Data: TTrustData): Integer;
+  external 'WinVerifyTrust@wintrust.dll stdcall delayload';
+function NxProvData(State: Cardinal): Cardinal;
+  external 'WTHelperProvDataFromStateData@wintrust.dll stdcall delayload';
+function NxProvSigner(Prov, Index, Counter, CounterIndex: Cardinal): Cardinal;
+  external 'WTHelperGetProvSignerFromChain@wintrust.dll stdcall delayload';
+function NxProvCert(Signer, Index: Cardinal): Cardinal;
+  external 'WTHelperGetProvCertFromChain@wintrust.dll stdcall delayload';
+function NxCertName(Cert, NameType, Flags: Cardinal; var TypePara: Cardinal; Name, Chars: Cardinal): Cardinal;
+  external 'CertGetNameStringW@crypt32.dll stdcall delayload';
+
+const
+  TH32CS_SNAPPROCESS = 2;
+  PROCESS_QUERY_LIMITED_INFORMATION = $1000;
+  SYNCHRONIZE_ACCESS = $100000;
+  ProcessCommandLineInformation = 60;
+  ERROR_ACCESS_DENIED = 5;
+  STATUS_INFO_LENGTH_MISMATCH = $C0000004;
+  WTD_UI_NONE = 2;
+  WTD_CHOICE_FILE = 1;
+  WTD_STATEACTION_VERIFY = 1;
+  WTD_STATEACTION_CLOSE = 2;
+  CERT_NAME_RDN_TYPE = 2;
+  CERT_X500_NAME_STR = 3;
+
+// A writable buffer for a DLL to fill. Pascal Script passes a var String as a
+// pointer to the interpreter's string variable, not to its characters, so the
+// buffer is handed over as an address: CharNextW returns its input advanced by
+// one character, which needs a non-null first character.
+function NewBuffer(Chars: Integer): String;
+var
+  I: Integer;
+begin
+  SetLength(Result, Chars);
+  for I := 1 to Chars do Result[I] := ' ';
+end;
+
+function BufferAddress(const Buf: String): Cardinal;
+begin
+  Result := NxNextChar(Buf) - 2;
+end;
+
 procedure ForceWindowToFront(Wnd: Integer);
 begin
   if Wnd = 0 then exit;
@@ -237,13 +326,60 @@ end;
 // valid Authenticode chain with Microsoft as the signer.
 function WebView2InstallerTrusted(const Path: String): Boolean;
 var
-  ResultCode: Integer;
+  Action: TTrustGuid;
+  Data: TTrustData;
+  FileInfo: TTrustFileInfo;
+  Prov, Signer, CertCtx, CertPtr, TypePara: Cardinal;
+  Subject: String;
+  Chars: Cardinal;
 begin
-  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
-    '$s = Get-AuthenticodeSignature -LiteralPath ''' + Path + '''; ' +
-    'if ($s.Status -eq ''Valid'' -and $s.SignerCertificate.Subject -like ''*O=Microsoft Corporation*'') { exit 0 } else { exit 1 }"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  Result := False;
+  Action.D1 := $00AAC56B;
+  Action.D2 := $11D0CD44;
+  Action.D3 := $C000C28C;
+  Action.D4 := $EE95C24F;
+  FileInfo.Size := 16;
+  FileInfo.FilePath := BufferAddress(Path);
+  FileInfo.FileHandle := 0;
+  FileInfo.KnownSubject := 0;
+  Data.Size := 52;
+  Data.PolicyData := 0;
+  Data.SipData := 0;
+  Data.UIChoice := WTD_UI_NONE;
+  Data.Revocation := 0;
+  Data.UnionChoice := WTD_CHOICE_FILE;
+  Data.StateAction := WTD_STATEACTION_VERIFY;
+  Data.StateData := 0;
+  Data.UrlRef := 0;
+  Data.ProvFlags := 0;
+  Data.UIContext := 0;
+  Data.SigSettings := 0;
+  // The union member is a pointer to the file info; Pascal Script cannot take
+  // an address, so both pointers come from CharNextW, which returns the input
+  // pointer advanced by one character.
+  Data.FileInfo := 0;
+  try
+    Data.FileInfo := NxRecordNext(FileInfo) - 2;
+    if NxVerifyTrust($FFFFFFFF, Action, Data) = 0 then
+    begin
+      Prov := NxProvData(Data.StateData);
+      Signer := 0;
+      if Prov <> 0 then Signer := NxProvSigner(Prov, 0, 0, 0);
+      if Signer <> 0 then CertPtr := NxProvCert(Signer, 0) else CertPtr := 0;
+      if CertPtr <> 0 then
+      begin
+        NxCopyMemory(CertCtx, CertPtr + 4, 4);
+        TypePara := CERT_X500_NAME_STR;
+        Subject := NewBuffer(512);
+        Chars := NxCertName(CertCtx, CERT_NAME_RDN_TYPE, 0, TypePara, BufferAddress(Subject), 512);
+        if Chars > 1 then
+          Result := Pos(AnsiLowercase('O=Microsoft Corporation'), AnsiLowercase(Copy(Subject, 1, Chars - 1))) > 0;
+      end;
+    end;
+  finally
+    Data.StateAction := WTD_STATEACTION_CLOSE;
+    NxVerifyTrust($FFFFFFFF, Action, Data);
+  end;
   Log('[nexus] WebView2 installer signature trusted=' + IntToStr(Integer(Result)));
 end;
 
@@ -341,17 +477,15 @@ begin
   end;
 end;
 
-// PowerShell array literal of our Nexus.exe paths: {app} plus the exe
-// NexusService is registered to run, which differs when an upgrade picks a new
-// folder. Apostrophes are doubled for the single-quoted literals.
-function OwnNexusExes(): String;
+// Our Nexus.exe paths: {app} plus the exe NexusService is registered to run,
+// which differs when an upgrade picks a new folder.
+function OwnNexusExes(): TArrayOfString;
 var
-  Exe, ImagePath: String;
+  ImagePath: String;
   Q: Integer;
 begin
-  Exe := ExpandConstant('{app}\{#MyAppExeName}');
-  StringChangeEx(Exe, '''', '''''', True);
-  Result := '''' + Exe + '''';
+  SetArrayLength(Result, 1);
+  Result[0] := ExpandConstant('{app}\{#MyAppExeName}');
   if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Services\NexusService', 'ImagePath', ImagePath) then
   begin
     ImagePath := Trim(ImagePath);
@@ -368,8 +502,213 @@ begin
     end;
     if ImagePath <> '' then
     begin
-      StringChangeEx(ImagePath, '''', '''''', True);
-      Result := Result + ',''' + ImagePath + '''';
+      SetArrayLength(Result, 2);
+      Result[1] := ImagePath;
+    end;
+  end;
+end;
+
+function SameName(const A, B: String): Boolean;
+begin
+  Result := AnsiLowercase(A) = AnsiLowercase(B);
+end;
+
+// Process ids whose image name is Name, from a ToolHelp snapshot. The entry is
+// a PROCESSENTRY32W held in a string buffer (Pascal Script records cannot hold
+// the inline name array); the size, pid and name are read at their fixed
+// offsets in that layout.
+function ProcessIdsByName(const Name: String): array of Cardinal;
+var
+  Snap, Size: Cardinal;
+  Entry, Exe: String;
+  I, N: Integer;
+  More: Boolean;
+begin
+  SetArrayLength(Result, 0);
+  Snap := NxSnapshot(TH32CS_SNAPPROCESS, 0);
+  if Snap = $FFFFFFFF then exit;
+  try
+    Entry := NewBuffer(278);
+    Size := 556;
+    NxPutDword(BufferAddress(Entry), Size, 4);
+    More := NxProcessFirst(Snap, BufferAddress(Entry));
+    while More do
+    begin
+      Exe := '';
+      for I := 19 to 278 do
+      begin
+        if Entry[I] = #0 then break;
+        Exe := Exe + Entry[I];
+      end;
+      if SameName(Exe, Name) then
+      begin
+        N := GetArrayLength(Result);
+        SetArrayLength(Result, N + 1);
+        Result[N] := Ord(Entry[5]) + Ord(Entry[6]) * 65536;
+      end;
+      More := NxProcessNext(Snap, BufferAddress(Entry));
+    end;
+  finally
+    NxCloseHandle(Snap);
+  end;
+end;
+
+// A query handle keeps the pid from being recycled while a kill is pending, so
+// callers hold it until taskkill returns. Err is the open failure, 0 on success.
+function OpenQuery(Pid: Cardinal; var Err: Cardinal): Cardinal;
+begin
+  Result := NxOpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, Pid);
+  Err := 0;
+  if Result = 0 then Err := NxLastError();
+end;
+
+// Empty when the path cannot be read.
+function HandleImagePath(H: Cardinal): String;
+var
+  Len: Cardinal;
+  Buf: String;
+begin
+  Result := '';
+  Buf := NewBuffer(1024);
+  Len := 1024;
+  if NxImageName(H, 0, BufferAddress(Buf), Len) then Result := Copy(Buf, 1, Len);
+end;
+
+// The buffer holds a UNICODE_STRING header (two lengths and a pointer, sized for
+// this 32-bit process) followed by the text. A command line too long for the
+// first buffer reports the size it needs, and is retried once at that size.
+function HandleCommandLine(H: Cardinal): String;
+var
+  Returned, Status: Cardinal;
+  Buf: String;
+  Chars, Bytes: Integer;
+begin
+  Result := '';
+  Chars := 4096;
+  Buf := NewBuffer(Chars);
+  Status := NxQueryProcess(H, ProcessCommandLineInformation, BufferAddress(Buf), Chars * 2, Returned);
+  if Status = STATUS_INFO_LENGTH_MISMATCH then
+  begin
+    Chars := Returned div 2 + 8;
+    Buf := NewBuffer(Chars);
+    Status := NxQueryProcess(H, ProcessCommandLineInformation, BufferAddress(Buf), Chars * 2, Returned);
+  end;
+  if Status = 0 then
+  begin
+    Bytes := Ord(Buf[1]);
+    if Bytes > 0 then Result := Copy(Buf, 5, Bytes div 2);
+  end;
+end;
+
+// Selected by path (our exes, or a folder holding our overlay, which covers a
+// junction/subst/8.3 spelling) because other products ship a Nexus.exe too. A
+// process that cannot be opened for access reasons counts as ours; one that
+// already exited does not. H stays open for the caller to release after the kill.
+function IsOwnNexus(Pid: Cardinal; const Own: TArrayOfString; var H: Cardinal): Boolean;
+var
+  Path: String;
+  Err: Cardinal;
+  I: Integer;
+begin
+  Result := False;
+  H := OpenQuery(Pid, Err);
+  if H = 0 then
+  begin
+    Result := Err = ERROR_ACCESS_DENIED;
+    exit;
+  end;
+  Path := HandleImagePath(H);
+  if Path = '' then exit;
+  for I := 0 to GetArrayLength(Own) - 1 do
+    if SameName(Own[I], Path) then
+    begin
+      Result := True;
+      exit;
+    end;
+  Result := FileExists(ExtractFilePath(Path) + 'overlay\nexus-overlay.exe');
+end;
+
+// Image is the name the pid is expected to still have, so a recycled pid that
+// now belongs to another program is not killed.
+procedure KillPid(Pid: Cardinal; Tree: Boolean; const Image: String);
+var
+  ResultCode: Integer;
+  Args: String;
+begin
+  Args := '/F ';
+  if Tree then Args := Args + '/T ';
+  if Image <> '' then Args := Args + '/FI "IMAGENAME eq ' + Image + '" ';
+  Exec(ExpandConstant('{sys}\taskkill.exe'), Args + '/PID ' + IntToStr(Pid), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// Kills our own Nexus.exe processes, no /T (it descends into the matched tree,
+// which could catch Inno's own helper), and returns the pids still to wait on.
+function KillOwnNexus(): array of Cardinal;
+var
+  All: array of Cardinal;
+  Own: TArrayOfString;
+  H: Cardinal;
+  I, N: Integer;
+begin
+  SetArrayLength(Result, 0);
+  Own := OwnNexusExes();
+  All := ProcessIdsByName('{#MyAppExeName}');
+  for I := 0 to GetArrayLength(All) - 1 do
+  begin
+    if IsOwnNexus(All[I], Own, H) then
+    begin
+      KillPid(All[I], False, '{#MyAppExeName}');
+      N := GetArrayLength(Result);
+      SetArrayLength(Result, N + 1);
+      Result[N] := All[I];
+    end;
+    if H <> 0 then NxCloseHandle(H);
+  end;
+end;
+
+// Kills processes named Name selected by image path when Path is set, else by a
+// command line fragment. A process that cannot be opened is skipped.
+procedure KillMatching(const Name, Path, CmdPart: String; Tree: Boolean);
+var
+  Pids: array of Cardinal;
+  H, Err: Cardinal;
+  I: Integer;
+  Hit: Boolean;
+begin
+  Pids := ProcessIdsByName(Name);
+  for I := 0 to GetArrayLength(Pids) - 1 do
+  begin
+    H := OpenQuery(Pids[I], Err);
+    if H = 0 then continue;
+    if Path <> '' then
+      Hit := SameName(HandleImagePath(H), Path)
+    else
+      Hit := Pos(AnsiLowercase(CmdPart), AnsiLowercase(HandleCommandLine(H))) > 0;
+    if Hit then KillPid(Pids[I], Tree, '');
+    NxCloseHandle(H);
+  end;
+end;
+
+// Waits for each pid to exit, sharing one budget across all of them.
+procedure WaitForPids(const Pids: array of Cardinal; BudgetMs: Integer);
+var
+  Start: Cardinal;
+  Left: Int64;
+  H: Cardinal;
+  I: Integer;
+begin
+  Start := NxTickCount();
+  for I := 0 to GetArrayLength(Pids) - 1 do
+  begin
+    Left := Int64(NxTickCount()) - Int64(Start);
+    if Left < 0 then Left := Left + 4294967296;
+    Left := BudgetMs - Left;
+    if Left <= 0 then exit;
+    H := NxOpenProcess(SYNCHRONIZE_ACCESS, 0, Pids[I]);
+    if H <> 0 then
+    begin
+      NxWaitObject(H, Cardinal(Left));
+      NxCloseHandle(H);
     end;
   end;
 end;
@@ -378,8 +717,8 @@ procedure StopServiceIfRunning();
 var
   ResultCode: Integer;
   AdbExe: String;
-  TaskKill: String;
-  OwnNexus: String;
+  Pids, Waits, Extra: array of Cardinal;
+  I, N: Integer;
 begin
   // Every process holding a payload file open must be gone before [Files], or
   // Inno reboot-renames the locked file and that pending entry then blocks every
@@ -389,11 +728,8 @@ begin
   //      restart races us, and its job-owned OpenRGB / overlay are already gone.
   //   2. Nexus.exe: the user-session helper shares this image and keeps
   //      Nexus.exe locked even after the service stops. Selected by path
-  //      (OwnNexusExes, or a folder holding our overlay, which covers a
-  //      junction/subst/8.3 spelling; an unreadable path counts as ours)
-  //      because other products ship a Nexus.exe too, then killed by pid. No
-  //      /T (it descends into the matched tree, which could catch Inno's own
-  //      helper).
+  //      (IsOwnNexus), then killed by pid. No /T (it descends into the matched
+  //      tree, which could catch Inno's own helper).
   //   3. Sidecar taskkills are a belt in case a kill-job hadn't reaped them yet.
   //   4. adb.exe: the phone/Q-series watchers spawn `adb start-server`, which
   //      DETACHES its own daemon - net stop does not reap it. That daemon (and
@@ -402,41 +738,27 @@ begin
   //      AdbWinUsbApi - and a CWD lock, since the service pins
   //      WorkingDirectory there), so [Files] fails to replace adb.exe with
   //      "DeleteFile ... Access is denied". Kill ONLY the adb whose image is our
-  //      bundled copy (matched by exact ExecutablePath, -ieq since Windows paths
-  //      are case-folded), so a user's own Android SDK adb is left alone.
-  //      taskkill can't filter by path, so PowerShell resolves the PIDs - but the
-  //      kill goes through taskkill /F, NOT Stop-Process: the daemon inherited the
+  //      bundled copy (matched by exact image path, case-insensitively since
+  //      Windows paths are case-folded), so a user's own Android SDK adb is left
+  //      alone. The kill goes through taskkill /F: the daemon inherited the
   //      service's LocalSystem token, and taskkill self-enables SeDebugPrivilege
   //      to terminate a SYSTEM process (the same reach that reaps the processes
-  //      above); a plain Stop-Process from a normal-admin elevation can be denied.
-  //      {app} is user-chosen, so any apostrophe in it is doubled first, else it
-  //      would close the single-quoted PowerShell literal and skip the kill.
+  //      above); a plain TerminateProcess from a normal-admin elevation can be
+  //      denied.
   Exec(ExpandConstant('{sys}\net.exe'), 'stop NexusService', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  TaskKill := ExpandConstant('{sys}\taskkill.exe');
-  StringChangeEx(TaskKill, '''', '''''', True);
-  // Public Sigma rules read "join" followed by "split" in these command lines
-  // as CrackMapExec obfuscation, and a high count of '{' as command-line
-  // obfuscation. Keep both out.
-  OwnNexus := '$own = @(' + OwnNexusExes() + '); ' +
-    '$mine = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ' +
-    'Where-Object { $_.Name -ieq ''Nexus.exe'' -and (-not $_.ExecutablePath -or $own -icontains $_.ExecutablePath -or ' +
-    '(Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($_.ExecutablePath) + ''\overlay\nexus-overlay.exe''))) }; ';
-  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -NonInteractive -Command "' + OwnNexus +
-    'foreach ($m in $mine) { & ''' + TaskKill + ''' /F /PID $m.ProcessId }"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Pids := KillOwnNexus();
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM OpenRGB-headless.exe /F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM nexus-overlay.exe /F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   AdbExe := ExpandConstant('{app}\tools\adb\adb.exe');
-  StringChangeEx(AdbExe, '''', '''''', True);
+  KillMatching('adb.exe', AdbExe, '', True);
   //   5. msedgewebview2.exe: the dashboard/overlay/kiosk WebView2 children
   //      outlive their host and keep {app}\wwwroot files open, which used to
   //      be Restart Manager's job to clear (CloseApplications=no now). Match
   //      only our own by the --user-data-dir the overlay passes
   //      (%ProgramData%\Nexus\DesktopWebView2), so another app's WebView2 is
   //      left alone; the runtime image lives outside {app}, so a path match
-  //      cannot distinguish them. Folded into the same powershell hop as the
-  //      adb sweep to keep this to one process spawn.
+  //      cannot distinguish them.
+  KillMatching('msedgewebview2.exe', '', '\Nexus\DesktopWebView2', False);
   //   6. Then wait for the images to unmap. taskkill and Kill both return once
   //      termination is REQUESTED, not once the process is gone, so [Files]
   //      could otherwise start while a dying process still held a payload file.
@@ -448,19 +770,21 @@ begin
   //      optimisation - a clean delete beats a rename-aside - since
   //      UnlockTarget handles whatever is still locked; correctness never rests
   //      on the wait being long enough, which is why it can be this short.
-  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -NonInteractive -Command "Get-Process -Name adb -ErrorAction SilentlyContinue | ' +
-    'Where-Object { $_.Path -ieq ''' + AdbExe + ''' } | ' +
-    'ForEach-Object { & ''' + TaskKill + ''' /F /T /PID $_.Id }; ' +
-    'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ' +
-    'Where-Object { $_.Name -ieq ''msedgewebview2.exe'' -and ' +
-    '$_.CommandLine -like ''*\Nexus\DesktopWebView2*'' } | ' +
-    'ForEach-Object { & ''' + TaskKill + ''' /F /PID $_.ProcessId }; ' +
-    OwnNexus +
-    '$waits = @(Get-Process -Name OpenRGB-headless,nexus-overlay -ErrorAction SilentlyContinue); ' +
-    'foreach ($m in $mine) { $waits += Get-Process -Id $m.ProcessId -ErrorAction SilentlyContinue }; ' +
-    '$waits | Wait-Process -Timeout 2 -ErrorAction SilentlyContinue"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Waits := ProcessIdsByName('OpenRGB-headless.exe');
+  Extra := ProcessIdsByName('nexus-overlay.exe');
+  for I := 0 to GetArrayLength(Extra) - 1 do
+  begin
+    N := GetArrayLength(Waits);
+    SetArrayLength(Waits, N + 1);
+    Waits[N] := Extra[I];
+  end;
+  for I := 0 to GetArrayLength(Pids) - 1 do
+  begin
+    N := GetArrayLength(Waits);
+    SetArrayLength(Waits, N + 1);
+    Waits[N] := Pids[I];
+  end;
+  WaitForPids(Waits, 2000);
 end;
 
 // Reaps the aside-renames UnlockTarget left behind on a previous install. By the
@@ -619,6 +943,15 @@ begin
   Result := '';
 end;
 
+function HasSwitch(const Name: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if SameName(ParamStr(I), Name) then Result := True;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
@@ -646,23 +979,48 @@ begin
     // "Keep my data" is the first/default button so Enter never wipes data;
     // "Remove all data" (the No button) adds --purge, clearing %ProgramData%\Nexus\.
     UninstArgs := '--uninstall';
-    SetArrayLength(Btns, 2);
-    Btns[0] := 'Keep my data';     // Yes -> keep (default)
-    Btns[1] := 'Remove all data';  // No  -> purge
-    if TaskDialogMsgBox('Keep your Nexus data?',
-        'Removing it permanently erases:' + #13#10 +
-        '     - All settings and profiles' + #13#10 +
-        '     - Installed apps and widget layouts' + #13#10 +
-        '     - Paired devices and remote sessions' + #13#10 +
-        '     - Screen-time history and imported media' + #13#10 +
-        '     - Logs, downloads and caches' + #13#10 + #13#10 +
-        'This can''t be undone.',
-        mbConfirmation, MB_YESNO, Btns, 0) = IDNO then
-      UninstArgs := UninstArgs + ' --purge';
+    // A silent uninstall has nobody to answer the dialog, and an unanswered
+    // dialog hangs it: keep the data unless /DELETEDATA asks for the purge.
+    if UninstallSilent() then
+    begin
+      if HasSwitch('/DELETEDATA') then UninstArgs := UninstArgs + ' --purge';
+    end
+    else
+    begin
+      SetArrayLength(Btns, 2);
+      Btns[0] := 'Keep my data';     // Yes -> keep (default)
+      Btns[1] := 'Remove all data';  // No  -> purge
+      if TaskDialogMsgBox('Keep your Nexus data?',
+          'Removing it permanently erases:' + #13#10 +
+          '     - All settings and profiles' + #13#10 +
+          '     - Installed apps and widget layouts' + #13#10 +
+          '     - Paired devices and remote sessions' + #13#10 +
+          '     - Screen-time history and imported media' + #13#10 +
+          '     - Logs, downloads and caches' + #13#10 + #13#10 +
+          'This can''t be undone.',
+          mbConfirmation, MB_YESNO, Btns, 0) = IDNO then
+        UninstArgs := UninstArgs + ' --purge';
+    end;
     TmpExe := ExpandConstant('{tmp}\nexus-uninst.exe');
     if FileCopy(ExpandConstant('{app}\{#MyAppExeName}'), TmpExe, False) then
       Exec(TmpExe, UninstArgs, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)
     else
       Exec(ExpandConstant('{app}\{#MyAppExeName}'), UninstArgs, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+// The process-level imports above are laid out for a 32-bit Setup. Inno's
+// compiler emits only 32-bit Setup programs; this stops a future 64-bit Setup
+// from running them with the wrong structure sizes.
+function InitializeSetup(): Boolean;
+var
+  Wow64: Cardinal;
+begin
+  Result := True;
+  if IsWin64 and NxIsWow64(NxCurrentProcess(), Wow64) and (Wow64 = 0) then
+  begin
+    Log('[nexus] Setup is a 64-bit process; the native process helpers need a 32-bit one');
+    SuppressibleMsgBox('This installer was built as a 64-bit Setup, which its process helpers do not support.', mbError, MB_OK, IDOK);
+    Result := False;
   end;
 end;

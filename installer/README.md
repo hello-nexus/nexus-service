@@ -9,7 +9,8 @@ driver, registers and starts the `NexusService` Windows service (LocalSystem,
 automatic start), drops a searchable Start Menu shortcut (and, if the
 directory-page checkbox is left ticked, a desktop shortcut), and opens the
 dashboard. Uninstall offers to keep or remove the per-machine data under
-`%ProgramData%\Nexus\`.
+`%ProgramData%\Nexus\`. A silent uninstall (`/SILENT` or `/VERYSILENT`) skips
+the prompt and keeps the data; add `/DELETEDATA` to remove it.
 
 This is **not part of the regular AOT publish cycle**. The dev loop stays:
 
