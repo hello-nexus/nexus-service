@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using Nexus.Service.Deck;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Migration;
 
@@ -303,6 +304,15 @@ internal static class Nexus2Y70Translator
             .ToList();
         var slots = items.Select(item => DockItemToSlot(item, fileExists)).ToList();
         var mapped = slots.Count(s => s.Action is not null);
+        // Recorded, not imported: the apply route copies the files only once it is past its overwrite confirmation.
+        var tileImages = new List<(DeckSlot Slot, string Path)>();
+        for (var i = 0; i < slots.Count; i++)
+        {
+            if (slots[i].Action is not null && TileImagePath(items[i]) is { } imagePath)
+            {
+                tileImages.Add((slots[i], imagePath));
+            }
+        }
         if (mapped == 0)
         {
             return null;
@@ -315,7 +325,7 @@ internal static class Nexus2Y70Translator
             slots.Add(new DeckSlot());
         }
         var config = new DeckConfig { Pages = { new DeckPage { Slots = slots } } };
-        return new Nexus2DockDeck { Config = config, Rows = rows, Items = items.Count, MappedItems = mapped };
+        return new Nexus2DockDeck { Config = config, Rows = rows, Items = items.Count, MappedItems = mapped, TileImages = tileImages };
     }
 
     /// <summary>One dock item as a deck key: a macros item whose macro has a Nexus 3 key action keeps it (and its title);
@@ -331,6 +341,50 @@ internal static class Nexus2Y70Translator
         }
         var title = Nexus2Json.GetObject(item, "title") is { } t ? Nexus2Json.GetString(t, "value") : null;
         return new DeckSlot { Action = action, Label = string.IsNullOrWhiteSpace(title) ? null : title };
+    }
+
+    /// <summary>The custom image or video path of a tile whose face is type "image" (front.path), or null. Only a local
+    /// absolute path counts: a UNC, device or relative path is never opened.</summary>
+    private static string? TileImagePath(JsonElement item) =>
+        Nexus2Json.GetObject(item, "front") is { } front
+        && Nexus2Json.GetString(front, "type") == "image"
+        && Nexus2Json.GetString(front, "path") is { Length: > 0 } path
+        && IsLocalAbsolutePath(path)
+            ? path
+            : null;
+
+    private static bool IsLocalAbsolutePath(string path) =>
+        (path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] is '\\' or '/')
+        || (path.Length >= 2 && path[0] == '/' && path[1] != '/');
+
+    /// <summary>Copies a Nexus 2 tile's custom image or video into the deck image store. Null (with a log line) when the file is missing, unsupported or over the store's cap.</summary>
+    internal static string? ImportTileImage(DeckImageStore images, string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists)
+            {
+                ServiceLog.Warn($"[nexus2-import] dock tile image not found: {path}");
+                return null;
+            }
+            if (info.Length > DeckImageStore.MaxAnimatedBytes)
+            {
+                ServiceLog.Warn($"[nexus2-import] dock tile image over the size cap, skipped: {path}");
+                return null;
+            }
+            var id = images.Store(File.ReadAllBytes(path));
+            if (id is null)
+            {
+                ServiceLog.Warn($"[nexus2-import] dock tile image is unsupported or over its type cap, skipped: {path}");
+            }
+            return id;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            ServiceLog.Warn($"[nexus2-import] dock tile image unreadable, skipped: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>A Windows path on a local drive ("C:\\..."); judged by text so it reads the same on any host.</summary>
