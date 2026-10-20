@@ -128,11 +128,26 @@ public sealed partial class ProfileManager : IDisposable
             // import) cannot be told apart from a level the user chose and are left alone.
             if (!root.KeebBrightnessProfilesMigrated)
             {
+                // A file that cannot be written (a sharing violation, say) must not abort
+                // Initialize: the marker stays unset so the next boot retries, and files
+                // already moved are no-ops then.
+                var allMigrated = true;
                 foreach (var p in _manifest.Profiles)
                 {
-                    MigrateProfileKeebBrightness(p.Id);
+                    try
+                    {
+                        MigrateProfileKeebBrightness(p.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        allMigrated = false;
+                        Nexus.Service.Platform.ServiceLog.Error($"[profiles] keeb brightness migration failed for {p.Id}: {ex.GetType().Name}: {ex.Message}");
+                    }
                 }
-                _store.Update(s => s.KeebBrightnessProfilesMigrated = true);
+                if (allMigrated)
+                {
+                    _store.Update(s => s.KeebBrightnessProfilesMigrated = true);
+                }
             }
 
             // Every settings mutation marks the active profile dirty so the
@@ -950,15 +965,12 @@ public sealed partial class ProfileManager : IDisposable
     private void MigrateProfileKeebBrightness(string profileId)
     {
         var data = ReadProfileFile(profileId);
-        if (data?.Keeb?.FirmwareLighting is not { Brightness: KeebBrightnessOldDefault } firmware)
+        if (data is null || !KeebBrightnessMigration.Apply(data.Keeb?.FirmwareLighting))
         {
             return;
         }
-        firmware.Brightness = Nexus.Service.Defaults.InstallDefaults.Keeb.FirmwareLighting.Brightness;
         WriteAtomic(ProfileFilePath(profileId), JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings));
     }
-
-    private const int KeebBrightnessOldDefault = 80;
 
     /// <summary>Reads the on-disk profile file, applies the named categories from <paramref name="source"/> via <see cref="ProfileSharing.ApplyCategory"/>, and writes it back atomically. Used to mirror shared-category writes to the Primary, and to propagate values when sharing is turned off.</summary>
     private void UpdateProfileFile(string profileId, IEnumerable<string> categories, NexusSettings source)

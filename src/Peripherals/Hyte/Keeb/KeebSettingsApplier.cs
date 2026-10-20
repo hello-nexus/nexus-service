@@ -21,8 +21,8 @@ namespace Nexus.Service.Peripherals.Hyte.Keeb;
 /// host callback - which <see cref="SyncFromDevice"/> reads back.
 /// FirmwareLighting.Brightness is the keeb's own level. With the firmware
 /// animation showing, the knob moves it on the device and
-/// <see cref="SyncFromDevice"/> adopts the byte. While the frame writer streams, it scales the keeb stream by that level on top of the global master,
-/// and the knob changes the global master only (<see cref="HandleEncoderScroll"/>,
+/// <see cref="SyncFromDevice"/> adopts the byte. While the frame writer streams, it
+/// scales the keeb stream by that level on top of the global master, and the knob changes the global master only (<see cref="HandleEncoderScroll"/>,
 /// <see cref="PollKnobToGlobal"/>): the level never flows into global.
 /// </summary>
 public sealed class KeebSettingsApplier
@@ -68,9 +68,8 @@ public sealed class KeebSettingsApplier
     // It is the one signal for "the firmware animation is suppressed and the knob
     // drives global": the provider, the knob handlers and SyncFromDevice all gate on it.
     // Any settings write that lands during a stream must not put an animated mode on
-    // the device: the firmware
-    // would repaint between our frames and fight the stream (camera-verified:
-    // our yellow alternating with the firmware's animation).
+    // the device: the firmware would repaint between our frames and fight the stream
+    // (camera-verified: our yellow alternating with the firmware's animation).
     private volatile bool _streaming;
 
     private readonly FeatureGates _gates;
@@ -233,18 +232,20 @@ public sealed class KeebSettingsApplier
         lock (_gate)
         {
             // The firmware reports detents, so from here the byte poll stands down.
-            var firstEvent = !_detentsSeen;
             _detentsSeen = true;
             if (!_streaming) return true;
             // The poll may have read the moved byte just before this first event arrived;
-            // that detent is already in global.
-            var claimed = firstEvent && _pollCredit * step > 0 && Environment.TickCount64 - _pollCreditAtMs < PollCreditWindowMs;
-            _pollCredit = 0;
+            // those detents are already in global.
+            // A poll that saw several detents leaves credit for the same number of events.
+            var claimed = _pollCredit * step > 0 && Math.Abs(_pollCredit) * 2 >= KnobStepPercent
+                && Environment.TickCount64 - _pollCreditAtMs < PollCreditWindowMs;
             if (claimed)
             {
+                _pollCredit -= step;
                 ResetKnobBaselineLocked();
                 return true;
             }
+            _pollCredit = 0;
             _store.Update(s =>
             {
                 var now = (int)Math.Round(s.Lighting.GlobalBrightness * 100);
@@ -275,7 +276,8 @@ public sealed class KeebSettingsApplier
 
     /// <summary>
     /// Forget the knob position so the next read only records the byte as the baseline,
-    /// whatever its value. The frame writer calls this when it starts streaming, so the keeb level never reads as a knob turn.
+    /// whatever its value. The frame writer calls this when it starts streaming, so the
+    /// keeb level never reads as a knob turn.
     /// </summary>
     public void ResetKnobBaseline()
     {
@@ -364,17 +366,18 @@ public sealed class KeebSettingsApplier
     /// <summary>
     /// Mutate the persisted keeb state and (when <paramref name="writeDevice"/>)
     /// write the full page to the device, as one gated step so the read-back poll
-    /// can't interleave between the store mutate and the byte write. Callers pass
-    /// writeDevice=false while the frame writer streams: the 0x06 page write would
-    /// flash the firmware animation through the live stream, and the frame writer
-    /// re-writes the page when streaming stops anyway.
+    /// can't interleave between the store mutate and the byte write. The write is skipped
+    /// while the frame writer streams, decided inside the gate so a stream ending in
+    /// between cannot lose it: the 0x06 page write would flash the firmware animation
+    /// through the live stream, and the frame writer re-writes the page when streaming
+    /// stops anyway.
     /// </summary>
     public bool ApplyGated(Action<NexusSettings> mutate, bool writeDevice = true)
     {
         lock (_gate)
         {
             _store.Update(mutate);
-            return writeDevice && Apply();
+            return writeDevice && !_streaming && Apply();
         }
     }
 

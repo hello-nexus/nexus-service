@@ -108,7 +108,17 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
 
     internal void Tick()
     {
-        if (!_gates.Lighting) return;
+        if (!_gates.Lighting)
+        {
+            // Lighting turned off mid-stream: hand the firmware back, or the knob keeps
+            // stepping global and the sync stays off while Nexus controls nothing.
+            if (_wasStreaming)
+            {
+                _wasStreaming = false;
+                _applier.EndStream();
+            }
+            return;
+        }
         if (!_hub.IsConnected) return;
 
         var settings = _store.Load();

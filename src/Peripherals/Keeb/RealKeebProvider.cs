@@ -358,19 +358,18 @@ public sealed class RealKeebProvider : IKeebProvider
     {
         var brightness = Math.Clamp(body.Brightness, 0, 100);
         // While the frame writer streams (a software effect, or key reactions alone), the
-        // firmware animation is suppressed and the writer scales the keeb stream by this level, so writing the
-        // 0x06 page now would only flash the firmware animation through the live
-        // stream (and a brightness drag flashes repeatedly). Store it and let the
-        // writer apply it; the page is written when streaming stops. With no
-        // effect, write it so the firmware animation reflects the change at once.
-        var streaming = _applier.IsStreaming;
+        // firmware animation is suppressed and the writer scales the keeb stream by this
+        // level, so writing the 0x06 page now would only flash the firmware animation
+        // through the live stream (and a brightness drag flashes repeatedly). ApplyGated
+        // stores it and writes the page only when no stream is running; otherwise the
+        // writer writes it when streaming stops.
         _applier.ApplyGated(s =>
         {
             s.Keeb.FirmwareLighting.AnimationMode = body.AnimationMode;
             s.Keeb.FirmwareLighting.Speed = body.Speed;
             s.Keeb.FirmwareLighting.Direction = body.Direction;
             s.Keeb.FirmwareLighting.Brightness = brightness;
-        }, writeDevice: !streaming);
+        });
     }
 
     public void SetGameMode(SetGameModeBody body)

@@ -398,9 +398,9 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         {
             lighting.RenderBackend = "angle";
         }
-        if (doc.SchemaVersion < 25 && doc.Keeb?.FirmwareLighting is { Brightness: 80 } firmware)
+        if (doc.SchemaVersion < 25)
         {
-            firmware.Brightness = 100;
+            KeebBrightnessMigration.Apply(doc.Keeb?.FirmwareLighting);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

@@ -139,6 +139,7 @@ public class KeebStreamBrightnessTests
         public readonly LightingEngine Engine = new() { FrameIntervalMs = 10 };
         public readonly KeebLightingFrameWriter Writer;
         public readonly KeyReactiveOverlay Overlay = new();
+        public readonly Nexus.Service.Lifecycle.FeatureGates Gates;
         public readonly string KeysId;
         private readonly object _frameSync = new();
         private int _frames;
@@ -154,7 +155,13 @@ public class KeebStreamBrightnessTests
             Hid.Device.BrightByte = (int)Math.Round(level / 100.0 * 255);
             Hub = new KeebHub(Hid);
             Assert.True(Hub.EnsureConnected());
-            Applier = new KeebSettingsApplier(Hub, Store, new Nexus.Service.Sockets.MultiplexHub(), Hid);
+            Store.Update(s =>
+            {
+                s.FeaturesOnboardingCompleted = true;
+                s.Features.Lighting = true;
+            });
+            Gates = new Nexus.Service.Lifecycle.FeatureGates(Store);
+            Applier = new KeebSettingsApplier(Hub, Store, new Nexus.Service.Sockets.MultiplexHub(), Hid, Gates);
             var leds = Hub.KeyMap.LedCount;
             KeysId = Hub.DeviceId + KeebLightingDeviceProvider.KeysSuffix;
             var frame = new DeviceFrame(0, KeysId, leds)
@@ -173,7 +180,7 @@ public class KeebStreamBrightnessTests
                     Monitor.PulseAll(_frameSync);
                 }
             };
-            Writer = new KeebLightingFrameWriter(Engine, Hub, Store, new Np50IdentifyTracker(), Applier, Overlay) { KnobReadEveryTicks = 2 };
+            Writer = new KeebLightingFrameWriter(Engine, Hub, Store, new Np50IdentifyTracker(), Applier, Overlay, Gates) { KnobReadEveryTicks = 2 };
         }
 
         public float Global => Store.Load().Lighting.GlobalBrightness;
@@ -587,5 +594,68 @@ public class KeebStreamBrightnessTests
         Assert.Equal(0.85f, rig.Global, 2);
         Assert.Equal(50, rig.Level);
         Assert.InRange(rig.Hid.Device.MaxKeyByte, Expected(0.85f, 50) - 3, Expected(0.85f, 50) + 3);
+    }
+
+    [Fact]
+    public void A_poll_that_saw_two_detents_credits_two_events_and_no_more()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);
+
+        MoveDeviceByte(rig, +10);                     // two detents between polls
+        rig.Pump(6);
+        Assert.Equal(0.9f, rig.Global, 2);
+
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        Assert.Equal(0.9f, rig.Global, 2);
+
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);   // a third, new detent
+        Assert.Equal(0.95f, rig.Global, 2);
+    }
+
+    [Fact]
+    public void Turning_lighting_off_mid_stream_hands_the_firmware_back()
+    {
+        using var rig = new Rig(level: 50, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);
+        Assert.True(rig.Applier.IsStreaming);
+
+        rig.Store.Update(s => s.Features.Lighting = false);
+        rig.Pump(2);
+
+        Assert.False(rig.Applier.IsStreaming);
+        // The sync adopts a firmware-side change again, and the knob no longer steps global.
+        rig.Hid.Device.BrightByte = (int)Math.Round(0.70 * 255);
+        Assert.True(rig.Applier.SyncFromDevice());
+        Assert.Equal(70, rig.Level);
+        rig.Applier.HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
+        Assert.Equal(0.8f, rig.Global, 3);
+    }
+
+    [Fact]
+    public void The_slider_reaches_the_device_once_the_stream_has_ended()
+    {
+        using var rig = new Rig(level: 100, global: 0.8f);
+        rig.StartStream();
+        rig.Pump(6);
+        rig.Applier.EndStream();
+
+        var provider = new Nexus.Service.Peripherals.Keeb.RealKeebProvider(rig.Store, rig.Hub, rig.Applier);
+        provider.SetFirmwareLighting(new Nexus.Service.Models.Peripherals.Keeb.SetFirmwareLightingBody
+        {
+            AnimationMode = "Static", Speed = "Standard", Direction = "LeftToRight", Brightness = 30,
+        });
+
+        Assert.Equal((int)Math.Round(0.30 * 255), rig.Hid.Device.BrightByte);
+        Assert.Equal(0.8f, rig.Global, 3);
+    }
+
+    [Fact]
+    public void The_migration_target_is_the_install_default()
+    {
+        Assert.Equal(KeebBrightnessMigration.NewDefault, Nexus.Service.Defaults.InstallDefaults.Keeb.FirmwareLighting.Brightness);
     }
 }
