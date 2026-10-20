@@ -121,6 +121,18 @@ public sealed partial class ProfileManager : IDisposable
                 _store.Update(s => s.DeviceCategorySeeded = true);
             }
 
+            // Same one-time seed for the Panels category: profile files written
+            // before it existed hold no panel looks, so root's live looks go into
+            // each of them and the first switch after upgrade changes nothing.
+            if (!root.PanelsCategorySeeded)
+            {
+                foreach (var p in _manifest.Profiles)
+                {
+                    UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, root);
+                }
+                _store.Update(s => s.PanelsCategorySeeded = true);
+            }
+
             // Every settings mutation marks the active profile dirty so the
             // background flush picks it up. Without this, lighting/cooling/
             // panel/etc. routes that call _store.Update never propagate to the
@@ -898,8 +910,10 @@ public sealed partial class ProfileManager : IDisposable
             // config.deck. Idempotent - a no-op on an already-migrated profile.
             Nexus.Service.Deck.DeckModesMigration.Apply(s);
 
-            // PanelDevices is hardware-scoped, not profile-scoped: do NOT
-            // entries that the loaded profile JSON happens to carry into
+            // Panels copies looks onto the matching LIVE panel records only: it
+            // never adds or removes a record, so the profile file's stripped
+            // entries cannot replace identity or hardware settings.
+            ProfileSharing.ApplyCategory(s, data, ProfileSharing.Panels);
         });
     }
 
@@ -957,7 +971,7 @@ public sealed partial class ProfileManager : IDisposable
 
         foreach (var cat in categories)
         {
-            ProfileSharing.ApplyCategory(target, source, cat);
+            ProfileSharing.WriteCategory(target, source, cat);
         }
 
         // Per-profile JSONs do not carry top-level non-profile fields.
@@ -966,7 +980,6 @@ public sealed partial class ProfileManager : IDisposable
         target.PrimaryProfileId = null;
         target.SharedCategories = new List<string>();
         target.AiIntegration = new AiIntegrationSettings();
-        target.PanelDevices = new();
 
         var json = JsonSerializer.Serialize(target, PersistenceJsonContext.Default.NexusSettings);
         WriteAtomic(path, json);

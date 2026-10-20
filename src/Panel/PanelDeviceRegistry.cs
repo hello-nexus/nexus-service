@@ -10,14 +10,14 @@ namespace Nexus.Service.Panel;
 
 /// <summary>
 /// Owns the per-device panel records persisted under
-/// <c>NexusSettings.PanelDevices</c> (top-level, NOT profile-scoped).
+/// <c>NexusSettings.PanelDevices</c>. The records themselves (identity, display
+/// binding, hardware settings) are global; the Panels profile category carries
+/// only their looks (see <see cref="Nexus.Service.Persistence.PanelProfileData"/>).
 /// Allocation, lookup, patching, removal all flow through here. Phone
 /// pairing keeps its own auth-token registry; this is the identity +
 /// layout surface that any panel device (Y70, kiosk, phone) maps onto via
-/// the URL <c>/panel/{deviceId}</c>. Storage is global because device
-/// identity describes physical hardware, not user preferences - profile
-/// switches preserve the registry so the connected panel never loses its
-/// own record mid-session.
+/// the URL <c>/panel/{deviceId}</c>. Profile switches never add or
+/// remove a record, so the connected panel never loses its own mid-session.
 /// </summary>
 public sealed class PanelDeviceRegistry
 {
