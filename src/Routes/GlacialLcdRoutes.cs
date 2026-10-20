@@ -48,19 +48,19 @@ public static partial class DevicesRoutes
             store.Update(s =>
             {
                 var g = s.Devices.GlacialLcd;
-                // Any change hands the panel to Nexus; picking a mode or its content also makes the mode known.
+                // Any change hands the panel to Nexus; each field the user sets is from then on written.
                 g.UserEdited = true;
-                if (body.Mode is not null || body.StaticAsset.HasValue || body.AnimatedAsset.HasValue || body.SlotCount.HasValue || body.Slots is not null)
+                if (body.Mode is not null || body.StaticAsset.HasValue || body.AnimatedAsset.HasValue)
                 {
                     g.ModeChosen = true;
                 }
-                if (body.DisplayOn.HasValue) { g.DisplayOn = body.DisplayOn.Value; }
+                if (body.DisplayOn.HasValue) { g.DisplayOn = body.DisplayOn.Value; g.DisplayEdited = true; }
                 if (body.Mode is not null) { g.Mode = body.Mode; }
                 if (body.StaticAsset.HasValue) { g.StaticAsset = body.StaticAsset.Value; }
                 if (body.AnimatedAsset.HasValue) { g.AnimatedAsset = body.AnimatedAsset.Value; }
                 if (body.SlotCount.HasValue) { g.SlotCount = body.SlotCount.Value; }
-                if (body.Brightness.HasValue) { g.Brightness = Math.Clamp(body.Brightness.Value, 0, 100); }
-                if (body.StayOnWhileAsleep.HasValue) { g.StayOnWhileAsleep = body.StayOnWhileAsleep.Value; }
+                if (body.Brightness.HasValue) { g.Brightness = Math.Clamp(body.Brightness.Value, 0, 100); g.BrightnessEdited = true; }
+                if (body.StayOnWhileAsleep.HasValue) { g.StayOnWhileAsleep = body.StayOnWhileAsleep.Value; g.SleepEdited = true; }
                 if (body.Slots is { } slots)
                 {
                     g.Slots = g.Copy().Slots;
@@ -72,6 +72,12 @@ public static partial class DevicesRoutes
                     {
                         g.Slots[i] = new GlacialLcdSlot { Category = slots[i].Category, Sensor = slots[i].Sensor, Label = slots[i].Label };
                     }
+                }
+                // Content changes only count once a mode is chosen; until then they are stored placeholders.
+                if (g.ModeChosen
+                    && (body.Mode is not null || body.StaticAsset.HasValue || body.AnimatedAsset.HasValue || body.SlotCount.HasValue || body.Slots is not null))
+                {
+                    g.ModePending = true;
                 }
             });
             worker.RequestApply();

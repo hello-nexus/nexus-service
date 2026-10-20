@@ -2160,16 +2160,27 @@ public sealed class GlacialLcdSettings
     public const string ModeAnimated = "animated";
     public const string ModeMonitor = "monitor";
 
+    /// <summary>The animation the vendor app starts on.</summary>
+    public const int FirstRunAnimation = 1;
+
     /// <summary>Set the first time the user changes any control; from then on Nexus writes to the panel.</summary>
     public bool UserEdited { get; set; }
 
     /// <summary>Set once the user has picked a mode or asset, so the panel's mode is known and may be reselected.</summary>
     public bool ModeChosen { get; set; }
 
+    /// <summary>The saved mode, asset or widgets changed and the change has not reached the panel yet; survives a restart.</summary>
+    public bool ModePending { get; set; }
+
+    /// <summary>Per field: the user set it, so Nexus writes it. A field the user never set follows the panel instead.</summary>
+    public bool BrightnessEdited { get; set; }
+    public bool DisplayEdited { get; set; }
+    public bool SleepEdited { get; set; }
+
     public bool DisplayOn { get; set; } = true;
     public string Mode { get; set; } = ModeAnimated;
     public int StaticAsset { get; set; } = 3;
-    public int AnimatedAsset { get; set; } = 1;
+    public int AnimatedAsset { get; set; } = FirstRunAnimation;
     public int SlotCount { get; set; } = 3;
     public List<GlacialLcdSlot> Slots { get; set; } = DefaultSlots();
     public int Brightness { get; set; } = 50;

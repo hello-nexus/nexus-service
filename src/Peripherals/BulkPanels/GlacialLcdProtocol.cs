@@ -9,8 +9,8 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// led by <see cref="ReportId"/>. The picture upload over the vendor bulk interface is not
 /// implemented.
 ///
-/// Device replies are HID input reports that echo the opcode; the 0x5C state reply is the
-/// only one with a payload and has the same layout as the 0x5C write.
+/// Device replies are HID input reports that echo the opcode; the state reply is the only
+/// one with a payload and has the same layout as the settings write.
 /// </summary>
 public static class GlacialLcdProtocol
 {
@@ -18,7 +18,7 @@ public static class GlacialLcdProtocol
     public const int ReportBytes = 65;
     public const byte ReportId = 0xEC;
 
-    /// <summary>Mode byte of a 0x51 report.</summary>
+    /// <summary>Mode bytes of the mode-select report.</summary>
     public const byte ModeOff = 0x00;
     public const byte ModeStaticAsset = 0x11;
     public const byte ModeAnimatedAsset = 0x14;
@@ -37,10 +37,10 @@ public static class GlacialLcdProtocol
     public const int SlotLabelBytes = 18;
     public const int SlotValueOffset = 21;
 
-    /// <summary>Value of the 0x5C display field while the LCD is on.</summary>
+    /// <summary>Value of the settings report's display field while the LCD is on.</summary>
     public const byte DisplayOnFlag = 0x14;
 
-    /// <summary>Value of the 0x5C sleep field when the LCD stays lit while the system sleeps.</summary>
+    /// <summary>Value of the settings report's sleep field when the LCD stays lit while the system sleeps.</summary>
     public const byte SleepKeepOn = 0x14;
 
     private static byte[] Report(byte opcode)
@@ -58,23 +58,11 @@ public static class GlacialLcdProtocol
     public static byte[] EncodeQuery() => Report(0xDC);
 
     /// <summary>
-    /// Settings write. Brightness (percent) appears three times, then a display flag (on or
-    /// off, not the picture mode: the state reply still held the on value while a static
-    /// picture was selected) and the sleep behavior. The app echoes every field from the last
-    /// 0x5C reply and changes one.
-    /// </summary>
-    public static byte[] EncodeSettings(int brightnessPercent, bool displayOn, bool keepOnWhileAsleep)
-    {
-        var report = Report(0x5C);
-        report[2] = 0x01;
-        PatchSettings(report, brightnessPercent, displayOn, keepOnWhileAsleep);
-        return report;
-    }
-
-    /// <summary>
-    /// The read-modify-write form: the fresh state reply with only the given fields changed
-    /// and the write flag set, so every other byte, set or not in the captures, is carried
-    /// through unchanged.
+    /// The settings write, read-modify-write: the fresh state reply with only the given fields
+    /// changed and the write flag set, so every other byte is carried through unchanged.
+    /// Brightness appears three times in the report, then a display flag (on or off, not the
+    /// picture mode: the state reply still held the on value while a static picture was
+    /// selected) and the sleep behavior.
     /// </summary>
     public static byte[] EncodeSettingsEdit(ReadOnlySpan<byte> stateReply, int? brightnessPercent, bool? displayOn, bool? keepOnWhileAsleep)
     {
@@ -99,20 +87,10 @@ public static class GlacialLcdProtocol
         return report;
     }
 
-    private static void PatchSettings(byte[] report, int brightnessPercent, bool displayOn, bool keepOnWhileAsleep)
-    {
-        byte percent = (byte)Math.Clamp(brightnessPercent, 0, 100);
-        report[5] = percent;
-        report[9] = percent;
-        report[10] = displayOn ? DisplayOnFlag : (byte)0;
-        report[15] = percent;
-        report[16] = keepOnWhileAsleep ? SleepKeepOn : (byte)0;
-    }
-
-    /// <summary>Reads the fields back out of a 0x5C state reply, or null when it is some other report.</summary>
+    /// <summary>Reads the fields back out of a state reply, or null when it is some other report.</summary>
     public static (int BrightnessPercent, bool DisplayOn, bool KeepOnWhileAsleep)? ParseState(ReadOnlySpan<byte> reply)
     {
-        if (reply.Length < 17 || reply[0] != ReportId || reply[1] != 0x5C)
+        if (reply.Length < 17 || reply[0] != ReportId || reply[1] != 0x5C || reply[2] != 0)
         {
             return null;
         }

@@ -24,22 +24,37 @@ public class GlacialLcdTests
         Assert.Equal(Report("EC 82"), GlacialLcdProtocol.EncodeHello());
     }
 
+    private const string BaseReply = "EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32";
+
     [Theory]
-    [InlineData(50, false, false, "EC 5C 01 00 00 32 00 00 00 32 00 00 00 00 00 32")]
-    [InlineData(50, true, false, "EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32")]
-    [InlineData(30, true, false, "EC 5C 01 00 00 1E 00 00 00 1E 14 00 00 00 00 1E")]
-    [InlineData(70, true, false, "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46")]
-    [InlineData(70, true, true, "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46 14")]
-    public void Settings_write_matches_the_captured_brightness_display_and_sleep_fields(int percent, bool displayOn, bool keepOn, string expected)
+    [InlineData(null, false, null, "EC 5C 01 00 00 32 00 00 00 32 00 00 00 00 00 32")]
+    [InlineData(30, null, null, "EC 5C 01 00 00 1E 00 00 00 1E 14 00 00 00 00 1E")]
+    [InlineData(70, null, null, "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46")]
+    [InlineData(70, null, true, "EC 5C 01 00 00 46 00 00 00 46 14 00 00 00 00 46 14")]
+    [InlineData(null, null, null, "EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32")]
+    public void Settings_edit_matches_the_captured_brightness_display_and_sleep_fields(int? percent, bool? displayOn, bool? keepOn, string expected)
     {
-        Assert.Equal(Report(expected), GlacialLcdProtocol.EncodeSettings(percent, displayOn, keepOn));
+        Assert.Equal(Report(expected), GlacialLcdProtocol.EncodeSettingsEdit(Report(BaseReply), percent, displayOn, keepOn));
+    }
+
+    [Fact]
+    public void Settings_edit_leaves_every_other_byte_of_the_reply_alone()
+    {
+        var edited = GlacialLcdProtocol.EncodeSettingsEdit(Report("EC 5C 00 00 00 28 00 00 00 29 14 AA BB 00 00 2A 14"), null, false, null);
+        Assert.Equal(Report("EC 5C 01 00 00 28 00 00 00 29 00 AA BB 00 00 2A 14"), edited);
     }
 
     [Fact]
     public void Settings_brightness_is_clamped_to_a_percent()
     {
-        Assert.Equal(100, GlacialLcdProtocol.EncodeSettings(250, false, false)[5]);
-        Assert.Equal(0, GlacialLcdProtocol.EncodeSettings(-5, false, false)[5]);
+        Assert.Equal(100, GlacialLcdProtocol.EncodeSettingsEdit(Report(BaseReply), 250, null, null)[5]);
+        Assert.Equal(0, GlacialLcdProtocol.EncodeSettingsEdit(Report(BaseReply), -5, null, null)[5]);
+    }
+
+    [Fact]
+    public void A_state_write_is_not_mistaken_for_a_state_reply()
+    {
+        Assert.Null(GlacialLcdProtocol.ParseState(Report("EC 5C 01 00 00 32 00 00 00 32 14 00 00 00 00 32")));
     }
 
     [Fact]

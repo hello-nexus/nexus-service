@@ -54,8 +54,10 @@ public class GlacialLcdWorkerTests
         {
             Assert.True(await Eventually(() => rig.Worker.IsConnected));
             Assert.True(await Eventually(() => rig.Device.Snapshot().Count >= 2));
-            Assert.Equal(new[] { GlacialLcdProtocol.EncodeHello(), GlacialLcdProtocol.EncodeQuery() }, rig.Device.Snapshot().Take(2));
-            Assert.Equal(2, rig.Device.Snapshot().Count);
+            // Whatever else has gone out so far, none of it is a settings or mode write.
+            var first = rig.Device.Snapshot();
+            Assert.Equal(new[] { GlacialLcdProtocol.EncodeHello(), GlacialLcdProtocol.EncodeQuery() }, first.Take(2));
+            Assert.All(first, w => Assert.Contains(w[1], new byte[] { 0x82, 0xDC }));
 
             rig.Store.Update(s =>
             {

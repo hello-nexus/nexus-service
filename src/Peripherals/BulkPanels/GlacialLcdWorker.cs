@@ -72,7 +72,7 @@ public sealed class GlacialLcdWorker : BackgroundService
                 if (!_gate.IsEnabled(HandlerId) || !_presence.UsbPresent(0x0B05, GlacialLcdProtocol.ProductId))
                 {
                     failures = 0;
-                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
+                    await BackoffAsync(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
                 long startedMs = Environment.TickCount64;
@@ -127,7 +127,8 @@ public sealed class GlacialLcdWorker : BackgroundService
             _confirmed,
             Seed,
             message => Log(message, error: false),
-            ChooseDefaultMode);
+            ChooseDefaultMode,
+            ModeLanded);
         if (!screen.Open())
         {
             Log("the panel did not take the opening reports", error: false);
@@ -153,16 +154,13 @@ public sealed class GlacialLcdWorker : BackgroundService
         return copy;
     }
 
-    /// <summary>Takes the panel's own brightness, display and sleep state as the saved one, until the user has changed anything.</summary>
+    /// <summary>Takes the panel's own brightness, display and sleep state as the saved one, for each field the user has not set.</summary>
     private void Seed(int brightness, bool displayOn, bool keepOn) => _store.Update(s =>
     {
         var g = s.Devices.GlacialLcd;
-        if (!g.UserEdited)
-        {
-            g.Brightness = brightness;
-            g.DisplayOn = displayOn;
-            g.StayOnWhileAsleep = keepOn;
-        }
+        if (!g.BrightnessEdited) { g.Brightness = brightness; }
+        if (!g.DisplayEdited) { g.DisplayOn = displayOn; }
+        if (!g.SleepEdited) { g.StayOnWhileAsleep = keepOn; }
     });
 
     /// <summary>Records the first-run animation the screen just selected, so the saved state matches the panel.</summary>
@@ -173,7 +171,18 @@ public sealed class GlacialLcdWorker : BackgroundService
         {
             g.ModeChosen = true;
             g.Mode = GlacialLcdSettings.ModeAnimated;
-            g.AnimatedAsset = 1;
+            g.AnimatedAsset = GlacialLcdSettings.FirstRunAnimation;
+            g.ModePending = false;
+        }
+    });
+
+    /// <summary>Clears the pending flag once the mode that reached the panel is still the saved one.</summary>
+    private void ModeLanded(string key) => _store.Update(s =>
+    {
+        var g = s.Devices.GlacialLcd;
+        if (GlacialLcdScreen.ModeKeyOf(g.Copy()) == key)
+        {
+            g.ModePending = false;
         }
     });
 
