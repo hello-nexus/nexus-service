@@ -41,15 +41,16 @@ public static class FileDialogCommands
 
     /// <summary>
     /// Open a folder in Explorer inside the user session, brought in front
-    /// of the app window. Fire-and-forget semantics; returns false when no
-    /// helper session is connected.
+    /// of the app window. Waits for the helper's ack, bounded by a short
+    /// timeout; a missing ack is reported as <see cref="OpenFolderOutcome.TimedOut"/>
+    /// because Explorer may still appear.
     /// </summary>
-    public static async Task<bool> OpenFolderAsync(HelperRegistry r, string path, CancellationToken ct = default)
+    public static async Task<OpenFolderOutcome> TryOpenFolderAsync(HelperRegistry? r, string path, CancellationToken ct = default)
     {
-        var conn = r.GetAny();
+        var conn = r?.GetAny();
         if (conn is null)
         {
-            return false;
+            return OpenFolderOutcome.NoHelper;
         }
 
         var result = await conn.SendCommandAsync(
@@ -58,8 +59,18 @@ public static class FileDialogCommands
             AppJsonContext.Default.FileDialogRequest,
             timeoutMs: 5000,
             ct: ct).ConfigureAwait(false);
-        return result.Ok;
+        var outcome = OpenFolderOutcomes.FromResult(result.Ok, result.Error);
+        if (outcome == OpenFolderOutcome.TimedOut)
+        {
+            ServiceLog.Warn("[helper] dialog.openFolder not acked in time");
+        }
+
+        return outcome;
     }
+
+    /// <summary>Opened-only view of <see cref="TryOpenFolderAsync"/> for callers that treat a timeout as failure.</summary>
+    public static async Task<bool> OpenFolderAsync(HelperRegistry r, string path, CancellationToken ct = default) =>
+        await TryOpenFolderAsync(r, path, ct).ConfigureAwait(false) == OpenFolderOutcome.Opened;
 
     public static async Task<FileDialogResult> PickAsync(HelperRegistry r, FileDialogPickMode mode, CancellationToken ct = default)
     {

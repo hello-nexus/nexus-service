@@ -32,7 +32,7 @@ internal static class DiagnosticsRoutes
 
     public static void MapDiagnosticsEndpoints(this WebApplication app)
     {
-        app.MapPost("/diagnostics/open-logs", async (IServiceProvider sp) =>
+        app.MapPost("/diagnostics/open-logs", async (IServiceProvider sp, CancellationToken ct) =>
         {
             try
             {
@@ -41,11 +41,11 @@ internal static class DiagnosticsRoutes
                 // spawns lands in the non-interactive session and never shows.
                 // The user-session helper opens the folder on the user's desktop
                 // and acks, so a missing helper surfaces as 503 instead of a
-                // silent 200.
+                // silent 200. A late ack is not reported as a failure.
                 var registry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
-                if (registry is null ||
-                    !await Nexus.Service.Helper.Domains.FileDialogCommands.OpenFolderAsync(
-                        registry, Nexus.Service.Persistence.NexusDataPaths.NexusRoot()))
+                var outcome = await Nexus.Service.Helper.Domains.FileDialogCommands.TryOpenFolderAsync(
+                    registry, Nexus.Service.Persistence.NexusDataPaths.NexusRoot(), ct);
+                if (Nexus.Service.Helper.OpenFolderOutcomes.IsFailure(outcome))
                 {
                     return Results.Problem("no interactive user session", statusCode: StatusCodes.Status503ServiceUnavailable);
                 }
@@ -56,6 +56,10 @@ internal static class DiagnosticsRoutes
                 Nexus.Service.Diagnostics.LogsFolder.Open();
 #endif
                 return Results.Ok(ApiResponse.Ok());
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return Results.Empty;
             }
             catch (Exception ex)
             {

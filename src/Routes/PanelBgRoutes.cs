@@ -323,7 +323,7 @@ public static class PanelBgRoutes
             }).AllowPanel();
 
         app.MapPost("/panel/devices/{deviceId}/background-media/library/open",
-            async (string deviceId, PanelBgLibrary lib, IServiceProvider sp) =>
+            async (string deviceId, PanelBgLibrary lib, IServiceProvider sp, CancellationToken ct) =>
             {
                 if (!PanelBgLibrary.IsValidId(deviceId))
                 {
@@ -338,8 +338,8 @@ public static class PanelBgRoutes
                     if (OperatingSystem.IsWindows())
                     {
                         var registry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
-                        if (registry is null ||
-                            !await Nexus.Service.Helper.Domains.FileDialogCommands.OpenFolderAsync(registry, dir))
+                        var outcome = await Nexus.Service.Helper.Domains.FileDialogCommands.TryOpenFolderAsync(registry, dir, ct);
+                        if (Nexus.Service.Helper.OpenFolderOutcomes.IsFailure(outcome))
                         {
                             return Results.Problem("no interactive user session", statusCode: StatusCodes.Status503ServiceUnavailable);
                         }
@@ -371,6 +371,10 @@ public static class PanelBgRoutes
 
                     System.Diagnostics.Process.Start(psi);
                     return Results.Ok(new PanelBgResponse());
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return Results.Empty;
                 }
                 catch (Exception ex)
                 {
