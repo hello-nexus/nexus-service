@@ -64,13 +64,14 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
                 continue;
             }
             var unitName = FlexNames.UnitName(_hub.Units, unit, order);
+            var pending = _hub.PendingDuty(unit.Mac);
             result.Add(new FanChannel
             {
                 Id = ChannelId(unit.Mac),
                 Name = "Fan",
-                DutyPercent = Duty(unit),
+                DutyPercent = pending is { } p ? Math.Max(p, 0) : Duty(unit),
                 Rpm = Rpm(unit),
-                Mode = Follows(unit) ? FanModes.Auto : FanModes.Manual,
+                Mode = pending is { } wanted ? (wanted == -1 ? FanModes.Auto : FanModes.Manual) : (Follows(unit) ? FanModes.Auto : FanModes.Manual),
                 MinDuty = MinDuty(unit.Family),
                 DeviceId = DeviceId(unit.Mac),
                 DeviceName = unitName,
@@ -136,7 +137,7 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
                         Name = "Fan",
                         Type = "Fan",
                         Rpm = Rpm(unit),
-                        Pwm = Duty(unit),
+                        Pwm = _hub.PendingDuty(unit.Mac) is { } shown ? Math.Max(shown, 0) : Duty(unit),
                     },
                 },
             });

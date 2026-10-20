@@ -39,6 +39,7 @@ internal sealed class FlexUnitLink : IDisposable
     public long LastLiveMs;
     // -2 unset, -1 follow motherboard, else percent.
     public int DesiredDuty = -2;
+    public long DesiredDutyAtMs;
     public int AppliedDuty = -3;
     public string SentEffectIndex = "";
     // Live frames went out after the last stored upload, so the receiver shows them, not the stored look.
@@ -456,7 +457,31 @@ public sealed class FlexHub : IDisposable
         if (LinkOf(mac) is { } link)
         {
             link.DesiredDuty = wanted;
+            link.DesiredDutyAtMs = _nowMs();
         }
+    }
+
+    /// <summary>How long a requested duty is reported before the receiver's own echo is trusted again.</summary>
+    public const int PendingDutyMs = 3000;
+
+    /// <summary>
+    /// The duty (percent, or -1 for follow-motherboard) the caller asked for while the receiver's echo has not
+    /// caught up with it yet, so a control card does not flip back to the old state between the write and the
+    /// next poll; null once the echo matches or after <see cref="PendingDutyMs"/>.
+    /// </summary>
+    public int? PendingDuty(string mac)
+    {
+        if (LinkOf(mac) is not { } link || link.DesiredDuty == -2 || link.Info is not { } info)
+        {
+            return null;
+        }
+        if (_nowMs() - link.DesiredDutyAtMs >= PendingDutyMs)
+        {
+            return null;
+        }
+        var echo = info.Pwm.Length > 0 ? info.Pwm[0] : -1;
+        var expected = link.DesiredDuty == -1 ? FlexProtocol.PwmFollowMotherboard : FlexProtocol.EncodeDuty(link.Port.Family, link.DesiredDuty);
+        return echo == expected ? null : link.DesiredDuty;
     }
 
     /// <summary>Hands the receiver's lighting to the motherboard ARGB input (true) or back to USB. Never sent to an RF-bound receiver.</summary>

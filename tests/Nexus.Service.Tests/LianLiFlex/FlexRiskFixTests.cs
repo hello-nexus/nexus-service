@@ -79,7 +79,11 @@ public class FlexRiskFixTests
         r.Writer.Identify(Mac);
         r.Run(3000);
         Assert.Empty(r.Tx.Of(FlexProtocol.CmdLive));
-        Assert.True(FlexLightingDeviceProvider.PlaysMotherboardArgb(r.Hub.Find(Mac)!, r.Store.Load().Devices.FlexUnits));
+        var unit = r.Hub.Find(Mac)!;
+        Assert.True(FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, r.Store.Load().Devices.FlexUnits));
+        Assert.Equal((409, "fan follows the motherboard ARGB input"), LianLiFlexRoutes.IdentifyRefusal(unit, r.Store.Load().Devices.FlexUnits));
+        Assert.Equal((404, "fan not found"), LianLiFlexRoutes.IdentifyRefusal(null, r.Store.Load().Devices.FlexUnits));
+        Assert.Null(LianLiFlexRoutes.IdentifyRefusal(unit, new Dictionary<string, LianLiFlexUnitSettings> { [Mac] = new LianLiFlexUnitSettings { MotherboardArgb = false } }));
     }
 
     [Fact]
@@ -214,5 +218,50 @@ public class FlexRiskFixTests
         hub.Refresh();
         hub.Tick();
         Assert.Equal(FlexProtocol.BuildSetPwm(FlexProtocol.EncodeDuty(FlexFamily.TlFlex, 55)), tx.Of(FlexProtocol.CmdSetPwm).Single());
+    }
+
+    [Fact]
+    public void A_requested_mode_and_duty_are_reported_until_the_echo_catches_up()
+    {
+        var tx = new FakeFlexTransport(Mac, pwm: FlexProtocol.PwmFollowMotherboard) { EchoPwm = true };
+        var discovery = new FakeFlexDiscovery();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        var clock = new FlexClock();
+        var hub = new FlexHub(discovery, _ => tx, clock.Func, () => new DateTime(2026, 10, 19, 12, 0, 0), _ => { });
+        hub.Refresh();
+        var cooling = new Nexus.Service.Cooling.FlexCoolingProvider(hub);
+        Assert.Equal(Nexus.Service.Models.Cooling.FanModes.Auto, cooling.GetFanChannels().Single().Mode);
+
+        hub.SetDuty(Mac, 40);
+        var asked = cooling.GetFanChannels().Single();
+        Assert.Equal(Nexus.Service.Models.Cooling.FanModes.Manual, asked.Mode);
+        Assert.Equal(40, asked.DutyPercent);
+
+        clock.Now += FlexHub.PollPeriodMs + 10;
+        hub.Tick();
+        Assert.Equal(40, hub.PendingDuty(Mac));
+        clock.Now += FlexHub.PollPeriodMs + 10;
+        hub.Tick();
+        Assert.Null(hub.PendingDuty(Mac));
+        var settled = cooling.GetFanChannels().Single();
+        Assert.Equal(Nexus.Service.Models.Cooling.FanModes.Manual, settled.Mode);
+        Assert.Equal(FlexProtocol.DecodeDuty(FlexProtocol.EncodeDuty(FlexFamily.TlFlex, 40)), settled.DutyPercent);
+    }
+
+    [Fact]
+    public void A_request_the_receiver_never_confirms_is_reported_only_for_a_short_time()
+    {
+        var tx = new FakeFlexTransport(Mac, pwm: FlexProtocol.PwmFollowMotherboard);
+        var discovery = new FakeFlexDiscovery();
+        discovery.Ports.Add(FakeFlexDiscovery.Tl());
+        var clock = new FlexClock();
+        var hub = new FlexHub(discovery, _ => tx, clock.Func, () => new DateTime(2026, 10, 19, 12, 0, 0), _ => { });
+        hub.Refresh();
+        hub.SetDuty(Mac, 40);
+        Assert.Equal(40, hub.PendingDuty(Mac));
+        clock.Now += FlexHub.PendingDutyMs + 1;
+        Assert.Null(hub.PendingDuty(Mac));
+        hub.SetDuty(Mac, null);
+        Assert.Null(hub.PendingDuty(Mac));
     }
 }

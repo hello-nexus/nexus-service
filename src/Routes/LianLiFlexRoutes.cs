@@ -238,19 +238,15 @@ public static partial class LianLiFlexRoutes
 
         app.MapPost("/devices/lianli-flex/identify", (Slv3MacRequest body, Nexus.Service.Lighting.FlexLightingFrameWriter writer, FlexHub hub, IConfigStore store) =>
         {
-            if (hub.Find(body.Mac) is not { } unit)
+            var unit = hub.Find(body.Mac);
+            var refusal = IdentifyRefusal(unit, store.Load().Devices.FlexUnits);
+            if (refusal is { } refused)
             {
-                return Results.NotFound(ApiResponse.Fail("fan not found"));
+                return refused.Status == 404
+                    ? Results.NotFound(ApiResponse.Fail(refused.Error))
+                    : Results.Json(ApiResponse.Fail(refused.Error), AppJsonContext.Default.ApiResponse, statusCode: refused.Status);
             }
-            if (!unit.Controllable)
-            {
-                return Results.Json(ApiResponse.Fail("fan is bound to a wireless controller"), AppJsonContext.Default.ApiResponse, statusCode: 409);
-            }
-            if (Nexus.Service.Lighting.FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, store.Load().Devices.FlexUnits))
-            {
-                return Results.Json(ApiResponse.Fail("fan follows the motherboard ARGB input"), AppJsonContext.Default.ApiResponse, statusCode: 409);
-            }
-            writer.Identify(unit.Mac);
+            writer.Identify(unit!.Mac);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
@@ -380,6 +376,24 @@ public static partial class LianLiFlexRoutes
             store.Update(s => Slv3LcdRoutes.ApplyContent(ScreenOf(s.Devices, body.Serial), body));
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
+    }
+
+    /// <summary>Why Identify is refused for a unit (404 unknown, 409 not ours or on the board input), or null when it may flash.</summary>
+    internal static (int Status, string Error)? IdentifyRefusal(FlexUnit? unit, IReadOnlyDictionary<string, LianLiFlexUnitSettings> stored)
+    {
+        if (unit is null)
+        {
+            return (404, "fan not found");
+        }
+        if (!unit.Controllable)
+        {
+            return (409, "fan is bound to a wireless controller");
+        }
+        if (Nexus.Service.Lighting.FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, stored))
+        {
+            return (409, "fan follows the motherboard ARGB input");
+        }
+        return null;
     }
 
     /// <summary>The look after Reset lighting: the default effect, the list position kept, and a unit on the board input handed back to USB so the reset look shows.</summary>
