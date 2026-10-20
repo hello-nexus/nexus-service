@@ -42,5 +42,8 @@ public interface IFanLcdScreens
 
     int PanelFps { get; }
 
+    /// <summary>The most frames a second the screen shows; a GIF or video clip faster than this skips frames to keep its time.</summary>
+    int MaxFps(string serial);
+
     string PanelName(string serial);
 }
