@@ -21,6 +21,13 @@ public sealed class PanelDeviceRemover
         _hub = hub;
     }
 
+    /// <summary>
+    /// A record is customized when it stores anything beyond a fresh one, or when its device
+    /// folder holds uploaded background media (the files live outside the record).
+    /// </summary>
+    public bool IsCustomized(Models.Panel.PanelDeviceRecord record) =>
+        PanelDeviceRegistry.IsCustomized(record) || _bgLibrary.ListItems(record.Id).Count > 0;
+
     /// <summary>False when the id is unknown.</summary>
     public bool Remove(string id)
     {

@@ -497,6 +497,38 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void A_record_whose_device_folder_holds_uploaded_media_counts_as_customized()
+    {
+        // Media files live outside the record, so the check is injected the way the service wires it.
+        var withMedia = FamilyRecord("media", 1_000);
+        var bareLater = FamilyRecord("bare", 9_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["a"] = new() { PanelDeviceId = withMedia.Id },
+            ["b"] = new() { PanelDeviceId = bareLater.Id },
+        });
+        _coordinator = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate, notifyOverlay: null, nowMs: () => _nowMs,
+            notifyPanelChanged: _panelChanges.Add,
+            isCustomized: r => r.Id == withMedia.Id || PanelDeviceRegistry.IsCustomized(r));
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        _coordinator.TickOnce();
+
+        Assert.Equal(withMedia.Id, Assert.Single(_coordinator.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(bareLater.Id));
+    }
+
+    [Fact]
+    public void A_stored_layout_makes_a_record_customized()
+    {
+        var record = FamilyRecord("calendar", 1_000);
+        _config.Update(s => s.PanelDevices[record.Id].Layout = new PanelLayoutDto { Surface = "lcd-square" });
+
+        Assert.True(PanelDeviceRegistry.IsCustomized(_registry.Get(record.Id)!));
+    }
+
+    [Fact]
     public void A_fresh_record_is_not_customized_and_each_stored_field_makes_it_so()
     {
         var record = FamilyRecord("fresh", 1_000);

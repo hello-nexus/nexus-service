@@ -50,6 +50,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly StreamedPanelStore _store;
     private readonly PanelDeviceRegistry _registry;
     private readonly Func<string, bool> _removePanel;
+    private readonly Func<PanelDeviceRecord, bool> _isCustomized;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
@@ -75,9 +76,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Func<long>? nowMs = null,
         Action<string>? notifyPanelChanged = null,
         LcdLockState? lockState = null,
-        Func<string, bool>? removePanel = null)
+        Func<string, bool>? removePanel = null,
+        Func<PanelDeviceRecord, bool>? isCustomized = null)
     {
         _removePanel = removePanel ?? registry.Remove;
+        _isCustomized = isCustomized ?? PanelDeviceRegistry.IsCustomized;
         _discoveries = discoveries.ToList();
         _store = store;
         _registry = registry;
@@ -847,7 +850,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
         // The user's layout and theme outrank "streamed most recently": a boot that minted an
         // empty record and streamed to it last must not cost the record they customized.
-        var keep = members.FirstOrDefault(m => PanelDeviceRegistry.IsCustomized(m.Panel!));
+        var keep = members.FirstOrDefault(m => _isCustomized(m.Panel!));
         if (keep.Panel is null)
         {
             keep = members[0];
