@@ -128,6 +128,27 @@ public class FlexCanvasLayoutTests
     }
 
     [Fact]
+    public void Building_the_Flex_frames_does_not_write_the_engine_frames()
+    {
+        var (sp, _, _) = Build();
+        var provider = sp.GetRequiredService<FlexLightingDeviceProvider>();
+        var composite = sp.GetRequiredService<ILightingDeviceProvider>();
+        var engine = sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>();
+        // the engine's own copies of the frames, apart from the ones the provider keeps
+        engine.UpdateDevices(provider.BuildFrames(0)
+            .Select(f => new Nexus.Service.Lighting.Engine.DeviceFrame(f.Index, f.Id, f.LedCount, -5f, -5f, 10f, 10f, 0))
+            .ToArray());
+
+        provider.BuildFrames(0);
+        Assert.NotEmpty(engine.Devices);
+        Assert.All(engine.Devices, f => Assert.Equal(-5f, f.X));
+
+        // a full listing is what writes them, so the check above can tell the two apart
+        composite.GetAll();
+        Assert.Contains(engine.Devices, f => f.X != -5f);
+    }
+
+    [Fact]
     public void The_composite_cards_and_the_Flex_frames_have_the_same_rects_also_after_a_hot_plug()
     {
         var (sp, hub, discovery) = Build();
