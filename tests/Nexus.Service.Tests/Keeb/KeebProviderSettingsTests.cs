@@ -137,4 +137,15 @@ public class KeebProviderSettingsTests
         var s = Parse("{\"keeb\":{\"firmwareLighting\":{\"brightness\":80}}}");
         Assert.Equal(80, s.Keeb.FirmwareLighting.Brightness);
     }
+
+    [Fact]
+    public void An_untouched_default_firmware_brightness_is_written_to_settings_json()
+    {
+        // WhenWritingNull only: an int is always persisted, so an install that ever saved
+        // settings holds its old default as a stored value and the new default never reaches it.
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new Nexus.Service.Persistence.NexusSettings(), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var block = json[json.IndexOf("\"firmwareLighting\"", StringComparison.Ordinal)..];
+        Assert.Contains("\"brightness\": 100", block[..block.IndexOf('}')]);
+    }
 }

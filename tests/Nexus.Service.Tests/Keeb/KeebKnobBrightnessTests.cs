@@ -5,16 +5,13 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Tests.Keeb;
 
 /// <summary>
-/// The brightness knob is followed through the input worker's own HID handle
-/// rather than by polling the settings page, because that poll shared the LED
-/// stream's IO lock and stalled frames (camera-measured flicker). These pin the
-/// replacement: the detent must move BOTH the stored firmware byte and master
-/// brightness, and must ignore an encoder assigned to something else.
+/// A brightness-knob detent steps the GLOBAL master while a software effect streams and never
+/// touches the keeb's own firmware level (the stream is global x level). Following the knob uses
+/// the input worker's own HID handle: reading the settings page shares KeebHub's IO lock with the
+/// LED stream and stalled frames. Stream-level behavior is in <see cref="KeebStreamBrightnessTests"/>.
 /// </summary>
 public class KeebKnobBrightnessTests
 {
-    // HandleEncoderScroll never touches the device - it is the whole point of
-    // the change - so an enumerator that finds nothing is enough.
     private sealed class NoDevices : IHidEnumerator
     {
         public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) => System.Array.Empty<HidDeviceInfo>();
@@ -22,57 +19,70 @@ public class KeebKnobBrightnessTests
         public IHidDevice? Open(string path, bool forInput = false) => null;
     }
 
-    private static KeebSettingsApplier Applier(IConfigStore store) =>
-        new(new KeebHub(new NoDevices()), store, new Nexus.Service.Sockets.MultiplexHub());
+    private static KeebSettingsApplier Applier(IConfigStore store, bool streaming)
+    {
+        var applier = new KeebSettingsApplier(new KeebHub(new NoDevices()), store, new Nexus.Service.Sockets.MultiplexHub());
+        if (streaming) applier.SuppressFirmwareAnimation();
+        return applier;
+    }
 
-    private static IConfigStore StoreWith(string left, string right, int brightness)
+    private static IConfigStore StoreWith(string left, string right, int level, float global)
     {
         var store = new Nexus.Service.Tests.InMemoryConfigStore();
         store.Update(s =>
         {
             s.Keeb.RotaryLeft = left;
             s.Keeb.RotaryRight = right;
-            s.Keeb.FirmwareLighting.Brightness = brightness;
-            s.Lighting.GlobalBrightness = brightness / 100f;
+            s.Keeb.FirmwareLighting.Brightness = level;
+            s.Lighting.GlobalBrightness = global;
         });
         return store;
     }
 
     [Fact]
-    public void A_detent_on_the_brightness_encoder_moves_master_and_the_stored_byte()
+    public void A_detent_while_streaming_steps_global_and_not_the_keeb_level()
     {
-        var store = StoreWith("VolumeAdjustment", "BrightnessAdjustment", 50);
-        var handled = Applier(store).HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true);
-        Assert.True(handled);
+        var store = StoreWith("VolumeAdjustment", "BrightnessAdjustment", 30, 0.5f);
+        Assert.True(Applier(store, streaming: true).HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true));
         var s = store.Load();
-        Assert.Equal(55, s.Keeb.FirmwareLighting.Brightness);
         Assert.Equal(0.55f, s.Lighting.GlobalBrightness, 3);
+        Assert.Equal(30, s.Keeb.FirmwareLighting.Brightness);
     }
 
     [Fact]
-    public void Scrolling_down_lowers_it()
+    public void Scrolling_down_lowers_global()
     {
-        var store = StoreWith("BrightnessAdjustment", "VolumeAdjustment", 50);
-        Applier(store).HandleEncoderScroll(KeebProtocol.KeebEncoder.Left, up: false);
-        Assert.Equal(45, store.Load().Keeb.FirmwareLighting.Brightness);
+        var store = StoreWith("BrightnessAdjustment", "VolumeAdjustment", 100, 0.5f);
+        Applier(store, streaming: true).HandleEncoderScroll(KeebProtocol.KeebEncoder.Left, up: false);
+        Assert.Equal(0.45f, store.Load().Lighting.GlobalBrightness, 3);
+    }
+
+    [Fact]
+    public void A_detent_while_not_streaming_is_left_to_the_firmware()
+    {
+        var store = StoreWith("VolumeAdjustment", "BrightnessAdjustment", 30, 0.5f);
+        Assert.True(Applier(store, streaming: false).HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up: true));
+        var s = store.Load();
+        Assert.Equal(0.5f, s.Lighting.GlobalBrightness, 3);
+        Assert.Equal(30, s.Keeb.FirmwareLighting.Brightness);
     }
 
     [Fact]
     public void An_encoder_assigned_to_volume_is_left_alone()
     {
-        var store = StoreWith("VolumeAdjustment", "BrightnessAdjustment", 50);
-        var handled = Applier(store).HandleEncoderScroll(KeebProtocol.KeebEncoder.Left, up: true);
+        var store = StoreWith("VolumeAdjustment", "BrightnessAdjustment", 50, 0.5f);
+        var handled = Applier(store, streaming: true).HandleEncoderScroll(KeebProtocol.KeebEncoder.Left, up: true);
         Assert.False(handled);
-        Assert.Equal(50, store.Load().Keeb.FirmwareLighting.Brightness);
+        Assert.Equal(0.5f, store.Load().Lighting.GlobalBrightness, 3);
     }
 
     [Theory]
-    [InlineData(98, true, 100)]
-    [InlineData(2, false, 0)]
-    public void It_clamps_at_the_ends(int start, bool up, int expected)
+    [InlineData(0.98f, true, 1.0f)]
+    [InlineData(0.02f, false, 0.0f)]
+    public void It_clamps_global_at_the_ends(float start, bool up, float expected)
     {
-        var store = StoreWith("VolumeAdjustment", "BrightnessAdjustment", start);
-        Applier(store).HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up);
-        Assert.Equal(expected, store.Load().Keeb.FirmwareLighting.Brightness);
+        var store = StoreWith("VolumeAdjustment", "BrightnessAdjustment", 50, start);
+        Applier(store, streaming: true).HandleEncoderScroll(KeebProtocol.KeebEncoder.Right, up);
+        Assert.Equal(expected, store.Load().Lighting.GlobalBrightness, 3);
     }
 }

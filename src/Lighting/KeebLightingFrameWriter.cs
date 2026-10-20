@@ -106,7 +106,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void Tick()
+    internal void Tick()
     {
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected) return;
@@ -145,7 +145,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
             _applier.SuppressFirmwareAnimation();
         }
 
-        // Read the knob byte every Nth tick and set global = byte/100 on a change.
+        // Read the knob byte every Nth tick and move global by its change.
         var readByte = KnobReadEveryTicks > 0 && ++_knobPollTicks >= KnobReadEveryTicks;
         if (readByte) _knobPollTicks = 0;
         _applier.PollKnobToGlobal(readByte);
@@ -205,8 +205,8 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         // The keeb software stream brightness is min(global, per-zone) scaled by the
-        // keeb's own firmware level (Settings slider and knob), which therefore
-        // never touches the global master the other devices follow.
+        // keeb's own firmware level (the Settings slider). The level never feeds
+        // global, and the knob moves global only, so the two never compound.
         var keebLevel = KeebStreamLevel(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
