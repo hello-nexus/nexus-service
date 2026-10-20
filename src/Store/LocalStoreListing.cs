@@ -78,6 +78,8 @@ public static class LocalStoreListing
         foreach (var s in m.Sizes) sizes.Add((JsonNode?)JsonValue.Create(s));
         var surfaces = new JsonArray();
         foreach (var s in m.Surfaces) surfaces.Add((JsonNode?)JsonValue.Create(s));
+        var gridSizes = new JsonArray();
+        foreach (var s in m.GridSizes ?? new List<string>()) gridSizes.Add((JsonNode?)JsonValue.Create(s));
 
         return new JsonObject
         {
@@ -102,6 +104,7 @@ public static class LocalStoreListing
                 ["requiresTouch"] = manifest["requires_touch"] is JsonValue t && t.TryGetValue<bool>(out var touch) && touch,
                 ["sizes"] = sizes,
                 ["surfaces"] = surfaces,
+                ["gridSizes"] = gridSizes,
                 ["releasedAt"] = releasedAt,
                 ["capabilities"] = manifest["capabilities"]?.DeepClone() ?? new JsonObject(),
                 ["notes"] = Notes(storeDir, locale),

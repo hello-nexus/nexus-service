@@ -20,7 +20,7 @@ public sealed class LocalStoreListingTests : IDisposable
           "schema": "nexus.app/1", "id": "com.test.listing", "name": "Listing App", "version": "1.2.0",
           "description": "Base description", "tagline": "A tagline that is far longer\nthan thirty characters",
           "min_nexus_version": "3.0.0", "runtime": "sdk", "surfaces": ["dashboard", "page"],
-          "sizes": ["2x2", "4x2"], "page": true, "requires_touch": true,
+          "sizes": ["2x2", "4x2"], "grid_sizes": ["4x2"], "page": true, "requires_touch": true,
           "capabilities": { "telemetry": true, "net.fetch": ["example.com"] },
           "locales": { "de": { "name": "Listen-App", "tagline": "Deutsch" }, "pt-BR": { "description": "Descricao" } }
         }
@@ -72,6 +72,7 @@ public sealed class LocalStoreListingTests : IDisposable
         Assert.True(latest["requiresTouch"]!.GetValue<bool>());
         Assert.Equal("3.0.0", latest["minNexusVersion"]!.GetValue<string>());
         Assert.Equal(new[] { "2x2", "4x2" }, latest["sizes"]!.AsArray().Select(n => n!.GetValue<string>()));
+        Assert.Equal(new[] { "4x2" }, latest["gridSizes"]!.AsArray().Select(n => n!.GetValue<string>()));
         Assert.True(latest["capabilities"]!["telemetry"]!.GetValue<bool>());
         Assert.Equal("Base notes", latest["notes"]!.GetValue<string>());
 
