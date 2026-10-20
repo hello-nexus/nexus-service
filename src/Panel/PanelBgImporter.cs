@@ -159,7 +159,7 @@ public static class PanelBgImporter
                 // transparent index; a plain pal8 conversion drops it. No -r: a
                 // forced rate duplicates frames and inflates the file.
                 var scale = fitWhole
-                    ? $"scale={targetW}:{targetH}:force_original_aspect_ratio=decrease:flags=lanczos,pad={targetW}:{targetH}:-1:-1:color=black@0"
+                    ? $"{FitScale(targetW, targetH)}:flags=lanczos,format=rgba,pad={targetW}:{targetH}:-1:-1:color=black@0"
                     : $"scale={targetW}:{targetH}:flags=lanczos";
                 var filter = $"{crop.ToFfmpegCrop()},{scale},"
                     + "split[s0][s1];[s0]palettegen=reserve_transparent=1[p];"
@@ -453,6 +453,14 @@ public static class PanelBgImporter
         return (Math.Max(1, (int)Math.Round(w * scale)), Math.Max(1, (int)Math.Round(h * scale)));
     }
 
+    /// <summary>
+    /// Scales to fit inside w x h keeping aspect, never below 1px per side.
+    /// force_original_aspect_ratio=decrease can round a side to zero for a tiny
+    /// or extreme-aspect target, which swscale rejects.
+    /// </summary>
+    internal static string FitScale(int w, int h) =>
+        $"scale=w='max(1,round(iw*min({w}/iw,{h}/ih)))':h='max(1,round(ih*min({w}/iw,{h}/ih)))'";
+
     /// <summary>Crop+scale that flattens alpha onto black; the matte runs after the scale so the canvas size is known without probing the source.</summary>
     private static string[] MatteArgs(CropRect crop, int w, int h, bool animated, bool fitWhole)
     {
@@ -473,10 +481,13 @@ public static class PanelBgImporter
     /// a plain scale lands on it. fitWhole keeps the whole frame instead, which
     /// needs decrease+pad - a plain scale would stretch it to the target. The
     /// bars are transparent when the output keeps alpha, opaque otherwise.
+    /// The pad runs in a packed RGB format: on a chroma-subsampled frame ffmpeg
+    /// rounds the pad canvas down to the subsampling multiple, which leaves it
+    /// smaller than the scaled frame for an odd target (error -22).
     /// </summary>
-    private static string ScaleFilter(CropRect crop, int w, int h, bool fitWhole, bool alpha) =>
+    internal static string ScaleFilter(CropRect crop, int w, int h, bool fitWhole, bool alpha) =>
         fitWhole
-            ? $"{crop.ToFfmpegCrop()},scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:-1:-1:color={(alpha ? "black@0" : "black")}"
+            ? $"{crop.ToFfmpegCrop()},{FitScale(w, h)},format={(alpha ? "rgba" : "rgb24")},pad={w}:{h}:-1:-1:color={(alpha ? "black@0" : "black")}"
             : $"{crop.ToFfmpegCrop()},scale={w}:{h}";
 
     private static string[] CropScaleArgs(CropRect crop, int w, int h, bool matte, bool animated, bool fitWhole, bool alpha = false) =>
