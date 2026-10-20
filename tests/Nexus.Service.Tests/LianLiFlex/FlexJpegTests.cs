@@ -34,4 +34,41 @@ public class FlexJpegTests
         var once = FlexJpeg.WithJfif(Bare);
         Assert.Same(once, FlexJpeg.WithJfif(once));
     }
+
+    private static byte[] Encode(SkiaSharp.SKJpegEncoderDownsample downsample)
+    {
+        using var bitmap = Nexus.Service.Rendering.RenderKit.NewImage(64, 64, SkiaSharp.SKColors.Red);
+        using var pixmap = bitmap.PeekPixels();
+        using var data = pixmap.Encode(new SkiaSharp.SKJpegEncoderOptions(90, downsample, SkiaSharp.SKJpegEncoderAlphaOption.Ignore));
+        return data!.ToArray();
+    }
+
+    private static byte Sampling(byte[] jpeg)
+    {
+        var i = 2;
+        while (i + 4 < jpeg.Length)
+        {
+            var marker = jpeg[i + 1];
+            if (marker is 0xC0 or 0xC1 or 0xC2)
+            {
+                return jpeg[i + 11];
+            }
+            i += 2 + ((jpeg[i + 2] << 8) | jpeg[i + 3]);
+        }
+        return 0;
+    }
+
+    [Fact]
+    public void A_non_420_still_is_re_encoded_as_420_and_a_420_one_is_left_alone()
+    {
+        var full = Encode(SkiaSharp.SKJpegEncoderDownsample.Downsample444);
+        Assert.NotEqual(0x22, Sampling(full));
+        var prepared = FlexJpeg.Prepare(full);
+        Assert.Equal(0x22, Sampling(prepared));
+        Assert.Equal(0xE0, prepared[3]);
+
+        var half = Encode(SkiaSharp.SKJpegEncoderDownsample.Downsample420);
+        Assert.Equal(0x22, Sampling(half));
+        Assert.Same(half, FlexJpeg.To420(half));
+    }
 }

@@ -1,8 +1,10 @@
+using Nexus.Service.Rendering;
+
 namespace Nexus.Service.Peripherals.LianLiFlex;
 
 /// <summary>
-/// The Flex screens turn only JPEGs that carry a JFIF header: one without it (an ffmpeg-encoded still)
-/// stays at the orientation it was drawn in, whatever the rotation setting says.
+/// What the Flex screens take: baseline 4:2:0 JPEGs (anything else is ignored and the screen keeps its
+/// old picture) that carry a JFIF header (one without it is not turned by the rotation setting).
 /// </summary>
 public static class FlexJpeg
 {
@@ -10,6 +12,44 @@ public static class FlexJpeg
     {
         0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
     };
+
+    /// <summary>The picture as the screens take it: re-encoded when it is not baseline 4:2:0, then given a JFIF header.</summary>
+    public static byte[] Prepare(byte[] jpeg) => WithJfif(To420(jpeg));
+
+    /// <summary>The input when it is baseline 4:2:0 or not a readable JPEG; otherwise a 4:2:0 re-encode of the same picture.</summary>
+    public static byte[] To420(byte[] jpeg)
+    {
+        if (IsBaseline420OrUnknown(jpeg))
+        {
+            return jpeg;
+        }
+        using var bitmap = RenderKit.Decode(jpeg);
+        return bitmap is null ? jpeg : RenderKit.EncodeJpeg(bitmap);
+    }
+
+    private static bool IsBaseline420OrUnknown(byte[] jpeg)
+    {
+        if (jpeg.Length < 4 || jpeg[0] != 0xFF || jpeg[1] != 0xD8)
+        {
+            return true;
+        }
+        var i = 2;
+        while (i + 4 <= jpeg.Length && jpeg[i] == 0xFF)
+        {
+            var marker = jpeg[i + 1];
+            var length = (jpeg[i + 2] << 8) | jpeg[i + 3];
+            if (marker is 0xC0 or 0xC1)
+            {
+                return i + 4 + 6 + 3 <= jpeg.Length && jpeg[i + 9] == 3 && jpeg[i + 11] == 0x22;
+            }
+            if (marker is 0xC2 or 0xDA)
+            {
+                return marker == 0xDA;
+            }
+            i += 2 + length;
+        }
+        return true;
+    }
 
     /// <summary>The same picture with a JFIF header; the input itself when it has one or is not a JPEG.</summary>
     public static byte[] WithJfif(byte[] jpeg)
