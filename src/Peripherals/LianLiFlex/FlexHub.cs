@@ -208,6 +208,7 @@ public sealed class FlexHub : IDisposable
         PollLocked(link);
         if (link.Info is null)
         {
+            ServiceLog.Warn($"[lianli-flex] receiver {port.ReceiverPath} opened but did not answer GetInfo");
             link.Dispose();
             return null;
         }

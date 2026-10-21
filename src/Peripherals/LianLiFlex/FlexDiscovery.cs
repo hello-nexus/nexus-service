@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace Nexus.Service.Peripherals.LianLiFlex;
 
@@ -99,6 +100,33 @@ public static class FlexDiscoveryParser
     /// Keeps only the Flex receivers and screens and pairs them: by the resolved parent hub when
     /// <paramref name="hubOf"/> knows it, else by family when exactly one of each is present.
     /// </summary>
+    /// <summary>One line naming every receiver and screen found with its parent hub, the pairing result and the screens no receiver claimed.</summary>
+    public static string Describe(IEnumerable<string> paths, Func<string, string> hubOf, FlexDiscoverySnapshot snapshot)
+    {
+        var receivers = new List<string>();
+        var screens = new List<string>();
+        foreach (var raw in paths)
+        {
+            if (!TryParse(raw, out var p))
+            {
+                continue;
+            }
+            var hub = hubOf(p.InstanceId);
+            var shown = hub.Length == 0 ? "?" : hub;
+            if (FlexProtocol.IsReceiverProduct(p.Vid, p.Pid))
+            {
+                receivers.Add($"{p.Pid:X4}:{p.Serial} hub={shown}");
+            }
+            else if (FlexProtocol.IsScreenProduct(p.Vid, p.Pid))
+            {
+                screens.Add($"{p.Pid:X4}:{p.Serial} hub={shown}");
+            }
+        }
+        var paired = snapshot.Units.Select(u => $"{u.ReceiverPid:X4}->{(u.ScreenSerial.Length == 0 ? "none" : u.ScreenSerial)}");
+        var alone = snapshot.ScreenOnly.Select(u => u.ScreenSerial);
+        return $"receivers=[{string.Join("; ", receivers)}] screens=[{string.Join("; ", screens)}] paired=[{string.Join("; ", paired)}] screenOnly=[{string.Join("; ", alone)}]";
+    }
+
     public static IReadOnlyList<FlexUnitPort> Pair(IEnumerable<string> paths, Func<string, string> hubOf)
     {
         var receivers = new List<FlexPath>();

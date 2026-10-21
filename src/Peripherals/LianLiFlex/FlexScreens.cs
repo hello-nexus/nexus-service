@@ -291,6 +291,7 @@ public sealed class FlexLcdConnectionWorker : BackgroundService
 {
     private const int PollMs = 2000;
 
+    private string _lastListed = "";
     private readonly FlexLcdHub _lcd;
     private readonly FlexScreens _screens;
     private readonly DeviceControlGate _gate;
@@ -350,6 +351,12 @@ public sealed class FlexLcdConnectionWorker : BackgroundService
             {
                 hub.Forget(serial, "left the bus");
             }
+        }
+        var listed = string.Join(", ", screens.Select(x => x.Serial).OrderBy(x => x, StringComparer.Ordinal));
+        if (!string.Equals(listed, _lastListed, StringComparison.Ordinal))
+        {
+            _lastListed = listed;
+            ServiceLog.Info($"[lianli-flex-lcd] screens listed: [{listed}]");
         }
         hub.UpdateScreens(screens);
         _screens.RefreshVersions();

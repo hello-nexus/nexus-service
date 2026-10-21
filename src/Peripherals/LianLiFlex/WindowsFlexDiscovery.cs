@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Nexus.Service.Peripherals.LianLiWireless;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.LianLiFlex;
 
@@ -16,7 +17,20 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
 
     public IReadOnlyList<FlexUnitPort> Discover() => Snapshot().Units;
 
-    public FlexDiscoverySnapshot Snapshot() => FlexDiscoveryParser.Snapshot(EnumeratePaths(), ParentHub);
+    private string _lastTopology = "";
+
+    public FlexDiscoverySnapshot Snapshot()
+    {
+        var paths = EnumeratePaths();
+        var snapshot = FlexDiscoveryParser.Snapshot(paths, ParentHub);
+        var topology = FlexDiscoveryParser.Describe(paths, ParentHub, snapshot);
+        if (!string.Equals(topology, _lastTopology, StringComparison.Ordinal))
+        {
+            _lastTopology = topology;
+            ServiceLog.Info($"[lianli-flex] discovery {topology}");
+        }
+        return snapshot;
+    }
 
     private static List<string> EnumeratePaths()
     {

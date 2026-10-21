@@ -145,4 +145,48 @@ public class FlexCustomerTopologyTests
         Assert.False(Slv3LightingFrameWriter.ScatterFlexZones(family, 1, buffers, new RgbColor[10]));
         Assert.False(Slv3LightingFrameWriter.ScatterFlexZones(family, 1, buffers.Take(2).ToArray(), new RgbColor[44]));
     }
+
+    [Fact]
+    public void Receivers_on_a_different_hub_than_the_screens_leave_every_screen_listed_screen_only()
+    {
+        string Hub(string instance) => instance.Contains("PID_0102") ? "HUB-RX-" + instance[^4..] : "HUB-SCREENS";
+        var paths = new[] { Rx1, Rx2 }.Concat(Screens).ToArray();
+        var snapshot = FlexDiscoveryParser.Snapshot(paths, Hub);
+        Assert.Equal(2, snapshot.Units.Count);
+        Assert.All(snapshot.Units, u => Assert.Equal("", u.ScreenSerial));
+        Assert.Equal(4, snapshot.ScreenOnly.Count);
+    }
+
+    [Fact]
+    public void The_topology_line_names_receivers_screens_hubs_pairing_and_screen_only_serials()
+    {
+        var paths = new[] { Rx1, Rx2 }.Concat(Screens).ToArray();
+        var snapshot = FlexDiscoveryParser.Snapshot(paths, ResolvedHub);
+        var line = FlexDiscoveryParser.Describe(paths, ResolvedHub, snapshot);
+        Assert.Contains("0102:9&aaaa&0&4 hub=HUB-A", line);
+        Assert.Contains("A018:2B324029848A0703 hub=HUB-A", line);
+        Assert.Contains("paired=[0102->2B324029848A0703; 0102->47449BCE76D28303]", line);
+        Assert.Contains("screenOnly=[331964888482C702; 5D30175F64A28700]", line);
+        Assert.Contains("hub=?", FlexDiscoveryParser.Describe(paths, _ => "", FlexDiscoveryParser.Snapshot(paths, _ => "")));
+    }
+
+    // Records the customer's dongle reported: right after an RF unbind (slot 0, master zero) and after a resume (slot 254).
+    [Theory]
+    [InlineData("210807F517E10000000000000800017E20D3")]
+    [InlineData("210807F517E1000000000000" + "08FE0000231500030000000034343400300000001000A00000000000001C")]
+    public void The_customers_unbound_records_read_as_unbound_at_once(string hex)
+    {
+        var bytes = Convert.FromHexString(hex).ToList();
+        while (bytes.Count < Slv3Protocol.RecordLength - 1) bytes.Add(0);
+        if (bytes.Count < Slv3Protocol.RecordLength) bytes.Add(Slv3Protocol.RecordValidator);
+        Assert.True(Slv3Protocol.TryParseRecord(bytes.ToArray(), 0, out var record));
+        Assert.True(Slv3Protocol.MacIsZero(record.MasterMac));
+        Assert.False(Slv3Protocol.IsBoundSlot(record.RxType));
+        var info = new byte[64];
+        info[0] = FlexProtocol.CmdGetInfo;
+        Convert.FromHexString("210807F517E1").CopyTo(info, 1);
+        info[13] = 8;
+        info[14] = record.RxType;
+        Assert.False(FlexProtocol.ParseInfo(info)!.RfBound);
+    }
 }
