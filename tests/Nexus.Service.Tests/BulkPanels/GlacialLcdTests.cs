@@ -122,7 +122,7 @@ public class GlacialLcdTests
     [Fact]
     public void The_custom_image_prelude_matches_the_complete_capture()
     {
-        var prelude = GlacialLcdProtocol.EncodeCustomImagePrelude(0x5A12);
+        var prelude = GlacialLcdProtocol.EncodeCustomImagePrelude(0x5A12, 2);
 
         Assert.Equal(
             new[] { Report("EC 71 01 01"), Report("EC F1"), Report("EC 72 01 01 02"), Report("EC 73 01"), Report("EC 7F 02 12 5A") },
@@ -130,17 +130,40 @@ public class GlacialLcdTests
         Assert.Equal(new[] { 291, 25, 67, 112, 516 }, prelude.Select(p => p.GapMs));
     }
 
+    [Theory]
+    [InlineData(0, "EC 72 01 01")]
+    [InlineData(1, "EC 72 01 01 01")]
+    [InlineData(2, "EC 72 01 01 02")]
+    public void The_target_slot_byte_matches_the_slots_the_vendor_apps_wrote(int slot, string expected)
+    {
+        Assert.Equal(Report(expected), GlacialLcdProtocol.EncodeCustomImagePrelude(0x1234, slot)[2].Report);
+    }
+
+    [Fact]
+    public void All_six_stock_pictures_are_listed_and_match_the_captured_selects()
+    {
+        Assert.Equal(new[] { 0, 1, 2, 3, 4, 5 }, GlacialLcdProtocol.StaticAssets);
+        var expected = new[] { "EC 51 11", "EC 51 11 00 01", "EC 51 11 00 02", "EC 51 11 00 03", "EC 51 11 00 04", "EC 51 11 00 05" };
+        for (int i = 0; i < 6; i++)
+        {
+            Assert.Equal(Report(expected[i]), GlacialLcdProtocol.EncodeMode(GlacialLcdProtocol.ModeStaticAsset, i));
+        }
+    }
+
     [Fact]
     public void The_finish_step_is_the_captured_end_report_and_the_custom_picture_select()
     {
         Assert.Equal(Report("EC 73 FF"), GlacialLcdProtocol.EncodeUploadEnd());
-        Assert.Equal(Report("EC 51 11 01 02"), GlacialLcdProtocol.EncodeCustomPicture());
+        Assert.Equal(Report("EC 51 11 01 02"), GlacialLcdProtocol.EncodeCustomPicture(2));
+        // Armoury Crate's two uploads: slot 0 leaves the slot byte out, slot 1 names it.
+        Assert.Equal(Report("EC 51 11 01"), GlacialLcdProtocol.EncodeCustomPicture(0));
+        Assert.Equal(Report("EC 51 11 01 01"), GlacialLcdProtocol.EncodeCustomPicture(1));
     }
 
     [Fact]
     public void An_upload_size_outside_24_bits_is_refused()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeCustomImagePrelude(0));
-        Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeCustomImagePrelude(0x1000000));
+        Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeCustomImagePrelude(0, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeCustomImagePrelude(0x1000000, 1));
     }
 }

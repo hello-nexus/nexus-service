@@ -84,11 +84,11 @@ public class GlacialLcdDriverTests
 
         var writes = hid.Writes;
         Assert.Equal(Report("EC DC"), writes[0]);
-        Assert.Equal(new[] { Report("EC 71 01 01"), Report("EC F1"), Report("EC 72 01 01 02"), Report("EC 73 01") }, writes.Skip(1).Take(4));
+        Assert.Equal(new[] { Report("EC 71 01 01"), Report("EC F1"), Report("EC 72 01 01 01"), Report("EC 73 01") }, writes.Skip(1).Take(4));
         var announce = writes[5];
         int size = announce[3] | (announce[4] << 8) | (announce[5] << 16);
         Assert.Equal(new byte[] { 0xEC, 0x7F, 0x02 }, announce.Take(3));
-        Assert.Equal(new[] { Report("EC 73 FF"), Report("EC DC"), Report("EC 51 11 01 02") }, writes.Skip(6));
+        Assert.Equal(new[] { Report("EC 73 FF"), Report("EC DC"), Report("EC 51 11 01 01") }, writes.Skip(6));
 
         var chunks = pipe.Writes;
         Assert.Equal((size + GlacialLcdProtocol.ChunkBytes - 1) / GlacialLcdProtocol.ChunkBytes, chunks.Count);
@@ -181,12 +181,12 @@ public class GlacialLcdDriverTests
         Assert.Equal(0, second.UploadAttempts);
         Assert.Empty(pipe2.Writes);
         // The panel is known to hold it, so only the show step goes out.
-        Assert.True(WaitUntil(() => hid2.Writes.Any(w => w.AsSpan().SequenceEqual(Report("EC 51 11 01 02")))));
+        Assert.True(WaitUntil(() => hid2.Writes.Any(w => w.AsSpan().SequenceEqual(Report("EC 51 11 01 01")))));
         second.Disconnect(pipe2, hid2);
     }
 
     [Fact]
-    public void A_failed_upload_forgets_the_remembered_picture_and_backs_off()
+    public void A_failed_upload_keeps_the_picture_on_display_remembered_and_backs_off()
     {
         var clock = new FakeClock();
         var memory = new FakeMemory();
@@ -202,8 +202,9 @@ public class GlacialLcdDriverTests
 
         pipe.FailWrites = true;
         driver.SendFrame(pipe, hid, Frame(noiseRows: 2));
-        Assert.True(WaitUntil(() => driver.UploadAttempts == 2));
-        Assert.True(WaitUntil(() => memory.Hashes.Count == 0));
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 2 && !driver.IsUploading));
+        // The failed upload wrote the other slot; the one on display, and its remembered hash, are untouched.
+        Assert.Single(memory.Hashes);
         driver.SendFrame(pipe, hid, Frame(noiseRows: 3));
         int looks = driver.Ticks + 2;
         Assert.True(WaitUntil(() => driver.Ticks >= looks));
@@ -334,7 +335,7 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_cancel_between_the_flush_and_the_first_transfer_still_forgets_the_remembered_picture()
+    public void A_cancel_after_the_flush_keeps_the_remembered_picture_because_the_slot_on_display_was_not_written()
     {
         var link = new GlacialLcdLink();
         var memory = new FakeMemory();
@@ -348,7 +349,7 @@ public class GlacialLcdDriverTests
         driver.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
 
-        Assert.Empty(memory.Hashes);
+        Assert.Equal("ABC", memory.Hashes["asus-glacial-lcd"]);
         Assert.Empty(pipe.Writes);
         driver.Disconnect(pipe, hid);
     }
@@ -730,7 +731,7 @@ public class GlacialLcdDriverTests
         var timeouts = hid.ReadTimeouts;
         Assert.All(timeouts, t => Assert.InRange(t, 0, 50));
         // The wait after the end report is a run of short slices, not one long read.
-        Assert.True(timeouts.Count(t => t == 50) >= GlacialLcdPanelDriver.FinishReplyWaitMs / 50 - 1);
+        Assert.True(timeouts.Count(t => t == 50) >= 4);
         // Transfers are polled, never waited on: one zero-timeout read per transfer, plus the drain at the start.
         Assert.Equal(pipe.Writes.Count + 1, timeouts.Count(t => t == 0));
     }
@@ -768,6 +769,58 @@ public class GlacialLcdDriverTests
 
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
         driver.Disconnect(pipe2, hid);
+    }
+
+    [Fact]
+    public void Uploads_alternate_between_two_slots_and_each_new_picture_is_shown_from_the_slot_it_was_written_to()
+    {
+        var driver = Fast();
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        for (int i = 1; i <= 3; i++)
+        {
+            driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: i));
+            Assert.True(WaitUntil(() => driver.UploadsCompleted == i));
+        }
+
+        var targets = hid.Writes.Where(w => w[1] == 0x72).Select(w => w[4]).ToArray();
+        var shows = hid.Writes.Where(w => w[1] == 0x51).Select(w => w[4]).ToArray();
+        // The first upload goes to the slot other than the default one on display.
+        Assert.Equal(new byte[] { 1, 2, 1 }, targets);
+        Assert.Equal(targets, shows);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void The_slot_on_display_is_remembered_with_the_hash_and_an_old_bare_hash_means_the_default_slot()
+    {
+        var memory = new FakeMemory();
+        var driver = Fast();
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.PersistNow();
+
+        Assert.StartsWith("1:", memory.Hashes["asus-glacial-lcd"], StringComparison.Ordinal);
+        driver.Disconnect(pipe, hid);
+
+        // A value from a build that always wrote slot 2: the next upload goes to the other slot.
+        var old = new FakeMemory();
+        old.Hashes["asus-glacial-lcd"] = "BARE";
+        var next = Fast();
+        next.BindMemory(old);
+        var pipe2 = new FakePipe();
+        var hid2 = new FakeHid();
+        next.Connect(pipe2, hid2);
+        next.SendFrame(pipe2, hid2, Frame(noiseRows: 5));
+        Assert.True(WaitUntil(() => next.UploadsCompleted == 1));
+        Assert.Equal(1, hid2.Writes.First(w => w[1] == 0x72)[4]);
+        next.Disconnect(pipe2, hid2);
     }
 
     [Fact]

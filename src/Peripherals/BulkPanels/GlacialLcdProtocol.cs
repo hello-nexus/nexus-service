@@ -41,8 +41,11 @@ public static class GlacialLcdProtocol
     /// <summary>Gap between the end-of-upload report and the report pair that shows the picture.</summary>
     public const int FinishSettleMs = 5898;
 
-    /// <summary>The slot the vendor app stored its pictures in.</summary>
-    public const int CustomSlot = 2;
+    /// <summary>
+    /// Custom picture slots seen in the vendor captures (the apps upload to 0, 1 and 2). The
+    /// stream alternates between these two, so the slot on display is never the one being written.
+    /// </summary>
+    public static readonly int[] CustomSlots = { 1, 2 };
 
     /// <summary>Mode bytes of the mode-select report.</summary>
     public const byte ModeOff = 0x00;
@@ -51,7 +54,7 @@ public static class GlacialLcdProtocol
     public const byte ModeHardwareMonitor = 0x21;
 
     /// <summary>Predefined static picture ids the vendor app was seen selecting.</summary>
-    public static readonly int[] StaticAssets = { 3, 4 };
+    public static readonly int[] StaticAssets = { 0, 1, 2, 3, 4, 5 };
 
     /// <summary>Predefined animation ids the vendor app was seen selecting.</summary>
     public static readonly int[] AnimatedAssets = { 0, 1 };
@@ -175,7 +178,7 @@ public static class GlacialLcdProtocol
     /// The reports MB Manager sends before the bulk transfers, each with the gap it left before
     /// it, in the order captured: begin, flush, target slot, stage, then the 24-bit size.
     /// </summary>
-    public static (byte[] Report, int GapMs)[] EncodeCustomImagePrelude(int jpegBytes)
+    public static (byte[] Report, int GapMs)[] EncodeCustomImagePrelude(int jpegBytes, int slotId)
     {
         if (jpegBytes <= 0 || jpegBytes > 0xFFFFFF)
         {
@@ -188,7 +191,7 @@ public static class GlacialLcdProtocol
         var slot = Report(0x72);
         slot[2] = 0x01;
         slot[3] = 0x01;
-        slot[4] = CustomSlot;
+        slot[4] = (byte)slotId;
         var stage = Report(0x73);
         stage[2] = 0x01;
         var announce = Report(0x7F);
@@ -208,7 +211,7 @@ public static class GlacialLcdProtocol
     }
 
     /// <summary>Shows the stored custom picture: the static mode with the custom source and its slot.</summary>
-    public static byte[] EncodeCustomPicture(int slot = CustomSlot)
+    public static byte[] EncodeCustomPicture(int slot)
     {
         var report = EncodeMode(ModeStaticAsset, slot);
         report[3] = 0x01;

@@ -166,6 +166,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private const int MaxPaceScalePercent = 1000;
 
+    /// <summary>The slot earlier builds always wrote, taken as the one on display when nothing is remembered.</summary>
+    private const int DefaultShownSlot = 2;
+
     /// <summary>First retry delay after a failed upload; doubles each time, capped at the cap below.</summary>
     public const int DefaultBackoffBaseMs = 10_000;
 
@@ -233,7 +236,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     // Guarded by _stateLock; outlives a worker so the remembered picture carries over a reconnect. The backoff does not: Connect resets it.
     private string? _lastHash;
-    private string? _persistedHash;
+    private int _shownSlot = DefaultShownSlot;
+    private string? _persistedValue;
     private long _hashSetMs;
     private long _nextAllowedMs;
     private long _nextShowMs;
@@ -360,10 +364,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             var remembered = _memory?.Load(_memoryKey);
             lock (_stateLock)
             {
-                _persistedHash = remembered;
+                _persistedValue = remembered;
                 if (remembered is not null)
                 {
-                    _lastHash = remembered;
+                    (_shownSlot, _lastHash) = DecodeRemembered(remembered);
                     _hashSetMs = _clock();
                 }
             }
@@ -485,6 +489,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             return;
         }
         long now = _clock();
+        int slot;
         lock (_stateLock)
         {
             if (_lastHash is null || now < _nextShowMs)
@@ -492,6 +497,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 return;
             }
             _nextShowMs = now + ShowRetryMs;
+            slot = _shownSlot;
         }
         lock (_link.Sync)
         {
@@ -500,7 +506,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 return;
             }
             _link.ShowPending = false;
-            if (!HidWrite(state, GlacialLcdProtocol.EncodeQuery()) || !HidWrite(state, GlacialLcdProtocol.EncodeCustomPicture()))
+            if (!HidWrite(state, GlacialLcdProtocol.EncodeQuery()) || !HidWrite(state, GlacialLcdProtocol.EncodeCustomPicture(slot)))
             {
                 _link.ShowPending = true;
             }
@@ -511,7 +517,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     {
         lock (_stateLock)
         {
-            if (_lastHash is null || _lastHash == _persistedHash || _clock() - _hashSetMs < PersistAfterMs)
+            if (_lastHash is null || RememberedValue() == _persistedValue || _clock() - _hashSetMs < PersistAfterMs)
             {
                 return;
             }
@@ -580,6 +586,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         Interlocked.Increment(ref _uploadAttempts);
 
+        int targetSlot;
+        lock (_stateLock)
+        {
+            // The slot on display is never written: the new picture goes to the other one and is shown when complete.
+            targetSlot = _shownSlot == GlacialLcdProtocol.CustomSlots[0] ? GlacialLcdProtocol.CustomSlots[1] : GlacialLcdProtocol.CustomSlots[0];
+        }
         var outcome = UploadOutcome.Failed;
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
@@ -588,7 +600,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             lock (_link.Sync)
             {
                 // Waiting for the lock may have outlasted a native edit or a mode change.
-                outcome = ShouldStop(state) ? UploadOutcome.Cancelled : UploadJpeg(state, jpeg);
+                outcome = ShouldStop(state) ? UploadOutcome.Cancelled : UploadJpeg(state, jpeg, targetSlot);
                 if (outcome == UploadOutcome.Done)
                 {
                     _link.ShowPending = false;
@@ -613,6 +625,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             lock (_stateLock)
             {
                 _lastHash = hash;
+                _shownSlot = targetSlot;
                 _hashSetMs = now;
                 _failures = 0;
                 _nextAllowedMs = 0;
@@ -850,7 +863,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private bool ShouldStop(WorkerState state) => state.Stop || _link.CancelRequested || !CanUpload();
 
-    private UploadOutcome UploadJpeg(WorkerState state, byte[] jpeg)
+    private UploadOutcome UploadJpeg(WorkerState state, byte[] jpeg, int targetSlot)
     {
         UploadOutcome Fail() => ShouldStop(state) ? UploadOutcome.Cancelled : UploadOutcome.Failed;
 
@@ -871,7 +884,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             return Fail();
         }
         Reply(state, ReplyWaitMs, "DC", "DC", sinceStart);
-        foreach (var (report, gapMs) in GlacialLcdProtocol.EncodeCustomImagePrelude(jpeg.Length))
+        foreach (var (report, gapMs) in GlacialLcdProtocol.EncodeCustomImagePrelude(jpeg.Length, targetSlot))
         {
             if (Pause(gapMs) || ShouldStop(state))
             {
@@ -887,8 +900,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                     _supersedes++;
                     return UploadOutcome.Superseded;
                 }
-                // The flush may erase the stored picture, so from here the panel holds nothing known.
-                ForgetPicture();
             }
             if (!HidWrite(state, report))
             {
@@ -960,30 +971,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             return Fail();
         }
         Reply(state, ReplyWaitMs, "DC before show", "DC before show", sinceStart);
-        if (!HidWrite(state, GlacialLcdProtocol.EncodeCustomPicture()))
+        if (!HidWrite(state, GlacialLcdProtocol.EncodeCustomPicture(targetSlot)))
         {
             return Fail();
         }
         Reply(state, ReplyWaitMs, "show 51", "show", sinceStart);
         return UploadOutcome.Done;
-    }
-
-    private void ForgetPicture()
-    {
-        lock (_persistLock)
-        {
-            bool stored;
-            lock (_stateLock)
-            {
-                _lastHash = null;
-                stored = _persistedHash is not null;
-                _persistedHash = null;
-            }
-            if (stored)
-            {
-                _memory?.Clear(_memoryKey);
-            }
-        }
     }
 
     /// <summary>The panel holds its picture, so there is nothing to resend.</summary>
@@ -1025,20 +1018,32 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     {
         lock (_persistLock)
         {
-            string? hash;
+            string? value;
             lock (_stateLock)
             {
-                hash = _lastHash is not null && _lastHash != _persistedHash ? _lastHash : null;
-                if (hash is not null)
+                value = _lastHash is not null ? RememberedValue() : null;
+                if (value is null || value == _persistedValue)
                 {
-                    _persistedHash = hash;
+                    return;
                 }
+                _persistedValue = value;
             }
-            if (hash is not null)
-            {
-                _memory?.Save(_memoryKey, hash);
-            }
+            _memory?.Save(_memoryKey, value);
         }
+    }
+
+    /// <summary>The picture on display as stored: its slot, a colon, its hash. Called with the state lock held.</summary>
+    private string RememberedValue() => _shownSlot.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + _lastHash;
+
+    /// <summary>Splits a stored value into slot and hash; a bare hash is from a build that always wrote the default slot.</summary>
+    private static (int Slot, string Hash) DecodeRemembered(string value)
+    {
+        int colon = value.IndexOf(':', StringComparison.Ordinal);
+        if (colon > 0 && int.TryParse(value.AsSpan(0, colon), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int slot))
+        {
+            return (slot, value[(colon + 1)..]);
+        }
+        return (DefaultShownSlot, value);
     }
 
     public void PersistState() => PersistNow();
