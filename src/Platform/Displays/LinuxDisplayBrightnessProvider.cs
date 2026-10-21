@@ -280,7 +280,17 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
             if (LinuxSysfs.ReadText(Path.Combine(dir, "status")) != "connected")
                 continue;
             // The kernel links the connector's DDC adapter as "ddc"; older layouts nest an i2c-N child.
-            var leaf = LinuxSysfs.ReadLinkLeaf(Path.Combine(dir, "ddc")) ?? ChildI2cLeaf(dir);
+            var ddcLink = Path.Combine(dir, "ddc");
+            var leaf = LinuxSysfs.ReadLinkLeaf(ddcLink);
+            var adapterDir = ddcLink;
+            if (leaf is null)
+            {
+                leaf = ChildI2cLeaf(dir);
+                adapterDir = leaf is null ? ddcLink : Path.Combine(dir, leaf);
+            }
+            // The amdgpu SMU adapter carries power-management table transfers; a DDC probe there wedges the SMU.
+            if (LinuxSysfs.ReadText(Path.Combine(adapterDir, "name"))?.StartsWith("AMDGPU SMU", StringComparison.Ordinal) == true)
+                continue;
             if (leaf is not null && leaf.StartsWith("i2c-", StringComparison.Ordinal)
                 && int.TryParse(leaf.AsSpan("i2c-".Length), NumberStyles.None, CultureInfo.InvariantCulture, out var bus))
             {

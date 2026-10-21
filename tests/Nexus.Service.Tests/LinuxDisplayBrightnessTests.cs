@@ -160,4 +160,18 @@ public class LinuxDisplayBrightnessTests
 
         Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm")));
     }
+
+    [Fact]
+    public void SelectDdcBuses_SkipsSmuAdapterEvenWhenLinkedFromAConnector()
+    {
+        using var t = new TempDir();
+        t.Write("devices/i2c-4/name", "AMDGPU SMU 4\n");
+        t.Write("devices/i2c-7/name", "AMDGPU DM i2c hw bus 1\n");
+        Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-4");
+        Connector(t, "card1-DP-2", "connected", ddcBus: "i2c-7");
+        t.Write("drm/card1-HDMI-A-1/i2c-9/name", "AMDGPU SMU 9\n");
+        Connector(t, "card1-HDMI-A-1", "connected", childBus: "i2c-9");
+
+        Assert.Equal(new[] { 7 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm")));
+    }
 }
