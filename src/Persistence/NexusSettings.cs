@@ -2334,6 +2334,18 @@ public sealed class DeepCoolMystiqueSettings
     public bool Gyroscope { get; set; } = true;
     public bool RgbSync { get; set; }
 
+    /// <summary>Sensor behind the CPU temperature readout; empty category picks the CPU package temperature.</summary>
+    public DeepCoolMystiqueSensorPick CpuTemperature { get; set; } = new();
+
+    /// <summary>Sensor behind the CPU frequency readout; empty category picks the highest core clock.</summary>
+    public DeepCoolMystiqueSensorPick CpuFrequency { get; set; } = new();
+
+    /// <summary>Sensor behind the CPU usage readout; empty category picks the total CPU load.</summary>
+    public DeepCoolMystiqueSensorPick CpuUsage { get; set; } = new();
+
+    /// <summary>Sensor behind the RAM usage readout; empty category picks the memory load.</summary>
+    public DeepCoolMystiqueSensorPick RamUsage { get; set; } = new();
+
     /// <summary>Sensor behind the CPU fan readout; empty category picks the motherboard CPU fan header.</summary>
     public DeepCoolMystiqueSensorPick CpuFan { get; set; } = new();
 
@@ -2346,6 +2358,10 @@ public sealed class DeepCoolMystiqueSettings
         var copy = (DeepCoolMystiqueSettings)MemberwiseClone();
         copy.Mode = Mode ?? ModeMonitor;
         copy.Readout = Readout ?? ReadoutTemperature;
+        copy.CpuTemperature = CpuTemperature?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.CpuFrequency = CpuFrequency?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.CpuUsage = CpuUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.RamUsage = RamUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuFan = CpuFan?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.Pump = Pump?.Copy() ?? new DeepCoolMystiqueSensorPick();
         return copy;
