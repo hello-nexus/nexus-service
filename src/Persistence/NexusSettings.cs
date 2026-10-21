@@ -79,11 +79,17 @@ public sealed class NexusSettings
     /// <summary>Profile id designated as the source for any category currently in <c>SharedCategories</c>. When a category is shared, switching profiles still loads its values from this profile, and edits to that category save back here. NOT profile-scoped: this routing decision is workstation-level and survives profile switches. Null means no Primary; shared categories then fall back to the active profile.</summary>
     public string? PrimaryProfileId { get; set; }
 
-    /// <summary>Category ids currently set to Shared. Allowed values: "lighting", "cooling", "theme", "dashboard", "device". Categories not in this list are per-profile (the default); "device" defaults to Shared on a fresh install so Stream Deck bindings and keyboard personalization start out workstation-global. NOT profile-scoped: workstation-level. Hardware-bound state (Y70, Devices, panel defaults) always lives at workstation root and is never per-profile, so it never appears here.</summary>
-    public List<string> SharedCategories { get; set; } = new() { ProfileSharing.Device };
+    /// <summary>Category ids currently set to Shared. Allowed values: "lighting", "cooling", "theme", "dashboard", "device", "panels". Categories not in this list are per-profile (the default); "device" and "panels" default to Shared so Stream Deck bindings, keyboard personalization and panel looks start out workstation-global. NOT profile-scoped: workstation-level. Hardware-bound state (Y70, the rest of Devices, panel identity and hardware settings) always lives at workstation root and is never per-profile, so it never appears here.</summary>
+    public List<string> SharedCategories { get; set; } = new() { ProfileSharing.Device, ProfileSharing.Panels };
 
     /// <summary>One-time flag: the device sharing category's initial seed of StreamDeck+Keeb into every profile file has run. Workstation-level, not profile-scoped.</summary>
     public bool DeviceCategorySeeded { get; set; }
+    /// <summary>Set once Panels was added to <see cref="SharedCategories"/> by default on this install; it is never re-added afterwards, so a later opt-out sticks.</summary>
+    public bool PanelsSharedByDefaultApplied { get; set; }
+    /// <summary>Set once the live panel looks were copied into every existing profile file, so the first switch after the Panels category appeared changes nothing.</summary>
+    public bool PanelsCategorySeeded { get; set; }
+    /// <summary>Profile files and exports only: the file carries Panels data (see <see cref="PanelProfileData"/>). Files written before the category lack it and leave live panels alone.</summary>
+    public bool HasPanelsData { get; set; }
 
     /// <summary>One-time flag: profile files written before the keeb brightness default changed have had their stored old-default level moved to the new default. Workstation-level, not profile-scoped.</summary>
     public bool KeebBrightnessProfilesMigrated { get; set; }
@@ -1428,6 +1434,10 @@ public sealed class KrakenFirmwareLighting
 public sealed class DevicesSettings
 {
     public List<string> DisabledLightingDevices { get; set; } = new();
+    /// <summary>Per-card sampling mode by card id ("nearest", "rows" or "columns"); only non-default entries are stored, a card absent here reads the plain spot ("led").</summary>
+    public Dictionary<string, string> SamplingModes { get; set; } = new();
+    /// <summary>Pre-modes list of area-sampled card ids. Read only so an older file or profile still loads; <see cref="Nexus.Service.Lighting.PinMigration"/> moves each to "nearest" and clears it.</summary>
+    public List<string>? AreaSamplingDevices { get; set; }
     /// <summary>Stable display ids the user turned brightness control off for. Nexus issues no DDC/CI transaction to a listed display - not even the capability probe - which is the escape hatch for a monitor whose firmware hangs on DDC. NOT profile-scoped: a panel's tolerance for DDC is a property of the hardware, not of a lighting/cooling persona.</summary>
     public List<string> DdcDisabledDisplays { get; set; } = new();
     /// <summary>Ids Nexus stops pushing frames to entirely, so firmware/vendor lighting can take over. Distinct from <see cref="DisabledLightingDevices"/>, which still streams black.</summary>
@@ -2130,6 +2140,8 @@ public sealed class HydroShift2CurveSettings
     /// <summary>When Nexus is not driving the pump: true follows the motherboard header, false runs the
     /// power-on speed, null leaves the board as found.</summary>
     public bool? PumpFollowsMotherboard { get; set; }
+    /// <summary>The glass's Offline Mode (date and time shown while the PC is off). Null until set in Nexus, so a flag set in L-Connect is left alone.</summary>
+    public bool? OfflineMode { get; set; }
 }
 
 public sealed class Galahad2LightingSettings

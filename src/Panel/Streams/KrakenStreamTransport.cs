@@ -100,5 +100,6 @@ public sealed class KrakenStreamTransport : IStreamedPanelTransport
     public void Dispose()
     {
         _disposed = true;
+        _hub.ReleaseStream();
     }
 }

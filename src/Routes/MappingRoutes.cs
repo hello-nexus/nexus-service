@@ -489,7 +489,7 @@ public static partial class DevicesRoutes
     }
 
     /// <summary>Per-slot state a moved chain link takes with it. Applied mappings are excluded: the route rewrites one per ordinal straight after.</summary>
-    private sealed class CarriedSlot
+    internal sealed class CarriedSlot
     {
         public required string ZoneId { get; init; }
         public string? Name { get; init; }
@@ -499,10 +499,11 @@ public static partial class DevicesRoutes
         public bool Disabled { get; init; }
         public bool Uncontrolled { get; init; }
         public bool AutoApplyDeclined { get; init; }
+        public string? Sampling { get; init; }
     }
 
     /// <summary>Reads each surviving link's state under the ordinal it held, keyed to the ordinal it is moving to. Must run before <see cref="Nexus.Service.Lighting.Zones.ZoneStateDrop"/> clears the old slots.</summary>
-    private static List<CarriedSlot> CarriedChainState(
+    internal static List<CarriedSlot> CarriedChainState(
         Nexus.Service.Persistence.NexusSettings settings, string deviceId, List<int?> origins)
     {
         var carried = new List<CarriedSlot>();
@@ -524,13 +525,14 @@ public static partial class DevicesRoutes
                 Disabled = settings.Devices.DisabledLightingDevices.Contains(fromId),
                 Uncontrolled = settings.Devices.UncontrolledLightingDevices.Contains(fromId),
                 AutoApplyDeclined = settings.Devices.MappingAutoApplyDeclined.Contains(fromId),
+                Sampling = settings.Devices.SamplingModes.GetValueOrDefault(fromId),
             });
         }
         return carried;
     }
 
     /// <summary>Writes the carried state back under each link's new ordinal.</summary>
-    private static void RestoreChainState(Nexus.Service.Persistence.NexusSettings settings, List<CarriedSlot> carried)
+    internal static void RestoreChainState(Nexus.Service.Persistence.NexusSettings settings, List<CarriedSlot> carried)
     {
         foreach (var slot in carried)
         {
@@ -546,6 +548,8 @@ public static partial class DevicesRoutes
                 settings.Devices.UncontrolledLightingDevices = [.. settings.Devices.UncontrolledLightingDevices, slot.ZoneId];
             if (slot.AutoApplyDeclined && !settings.Devices.MappingAutoApplyDeclined.Contains(slot.ZoneId))
                 settings.Devices.MappingAutoApplyDeclined.Add(slot.ZoneId);
+            if (slot.Sampling is { } sampling)
+                settings.Devices.SamplingModes = new Dictionary<string, string>(settings.Devices.SamplingModes) { [slot.ZoneId] = sampling };
         }
     }
 

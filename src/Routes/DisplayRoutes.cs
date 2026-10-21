@@ -232,7 +232,7 @@ public static class DisplayRoutes
                 display.Resolution.Width, display.Resolution.Height,
                 display.ScaleFactor, display.IsTouch, display.Orientation,
                 display.Dpi);
-            var (record, activated) = registry.AllocateForDisplay(id, body?.DisplayName ?? display.Name, capabilities);
+            var (record, activated) = registry.AllocateForDisplay(id, body?.DisplayName ?? display.Name, capabilities, display.Fingerprint);
             if (!activated)
                 return Results.Conflict(ApiResponse.Fail("display is already a panel"));
             PanelTopics.BroadcastPanelDevice(hub, record.Id);

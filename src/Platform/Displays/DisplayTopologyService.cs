@@ -110,6 +110,7 @@ public sealed class DisplayTopologyService : IDisposable
                 HostingSupported = HostingSupportedOnHost && !isY70,
                 AssignedPanelDeviceId = assigned?.Id,
                 AssignedPanelName = assigned?.DisplayName,
+                Fingerprint = info.Fingerprint,
             });
         }
         return response;

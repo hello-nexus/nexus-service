@@ -555,6 +555,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.LightingColorAdjustResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.SetLightingColorAdjustBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.SetLightingDeviceMaxRateBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Devices.SetLightingDeviceSamplingBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Devices.LedPreviewLayoutResponse))]
 [JsonSerializable(typeof(SetLightingDeviceColor))]
 [JsonSerializable(typeof(DevicePinsResponse))]
 [JsonSerializable(typeof(SetDevicePinsBody))]
@@ -713,6 +715,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(SetLightingDeviceSaturation))]
 [JsonSerializable(typeof(SetZoneLedCountBody))]
 [JsonSerializable(typeof(OpenRgbManualDevicesResponse))]
+[JsonSerializable(typeof(OpenRgbZonesResponse))]
+[JsonSerializable(typeof(SetOpenRgbZoneSizeBody))]
 [JsonSerializable(typeof(AddQmkDeviceBody))]
 [JsonSerializable(typeof(AddE131DeviceBody))]
 [JsonSerializable(typeof(RemoveManualDeviceBody))]
@@ -948,6 +952,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, string>))]
 
 [JsonSerializable(typeof(float[]))]
+[JsonSerializable(typeof(float[][]))]
 [JsonSerializable(typeof(List<string>))]
 
 // Helper IPC transport + per-domain payloads. Grouped by domain for
@@ -1444,6 +1449,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<Nexus.Service.Deck.DeckSequenceStep>))]
 // Deck key icon image store (POST/GET /deck/images)
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckImageUploadResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckImageStageRequest))]
 // Deck Modes: host-wide presets + instances (src/Routes/DeckRoutes.cs).
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckPresetSummary))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Deck.DeckPresetSummary>))]

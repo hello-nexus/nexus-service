@@ -6,6 +6,7 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Tests.LianLi;
 
+[Collection("DetectorMap")]
 public class LianLiLightingDeviceProviderTests
 {
     private readonly LianLiHubSet _hubs = new();
@@ -280,19 +281,37 @@ public class LianLiLightingDeviceProviderTests
     public void OwnsOpenRgbDevice_false_when_name_does_not_match()
     {
         Connect();
-        var device = new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "HYTE NP50" };
-        Assert.False(_provider.OwnsOpenRgbDevice(device));
+        Nexus.Service.Lighting.Rgb.OpenRgbDetectorMap.OverrideForTests = new Dictionary<string, string>();
+        try
+        {
+            var device = new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "HYTE NP50" };
+            Assert.False(_provider.OwnsOpenRgbDevice(device));
+        }
+        finally
+        {
+            Nexus.Service.Lighting.Rgb.OpenRgbDetectorMap.OverrideForTests = null;
+        }
     }
 
-    [Theory]
-    [InlineData("Lian Li Uni Hub")]
-    [InlineData("Lian Li Uni Hub SL-Infinity")]
-    [InlineData("lian li uni hub Controller")]
-    public void OwnsOpenRgbDevice_true_when_connected_and_name_matches(string name)
+    [Fact]
+    public void OwnsOpenRgbDevice_follows_the_detector_that_produced_the_row()
     {
         Connect();
-        var device = new Nexus.Service.Lighting.Rgb.RgbDevice { Name = name };
-        Assert.True(_provider.OwnsOpenRgbDevice(device));
+        Nexus.Service.Lighting.Rgb.OpenRgbDetectorMap.OverrideForTests = new Dictionary<string, string>
+        {
+            ["Lian Li Uni Hub SL-Infinity"] = "Lian Li Uni Hub - SL Infinity",
+            ["Lian Li Uni Hub"] = "Lian Li Uni Hub",
+        };
+        try
+        {
+            Assert.True(_provider.OwnsOpenRgbDevice(new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "Lian Li Uni Hub SL-Infinity" }));
+            Assert.False(_provider.OwnsOpenRgbDevice(new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "Lian Li Uni Hub" }));
+            Assert.False(_provider.OwnsOpenRgbDevice(new Nexus.Service.Lighting.Rgb.RgbDevice { Name = "Lian Li Uni Hub Unmapped" }));
+        }
+        finally
+        {
+            Nexus.Service.Lighting.Rgb.OpenRgbDetectorMap.OverrideForTests = null;
+        }
     }
 
     private static int ZoneLedCount(Nexus.Service.Lighting.Zones.DefaultZoneDef zone)

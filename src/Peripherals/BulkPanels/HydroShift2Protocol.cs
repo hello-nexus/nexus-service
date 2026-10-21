@@ -53,6 +53,12 @@ public static class HydroShift2Protocol
     /// <summary>SetClock mode that syncs the clock without showing the firmware clock face.</summary>
     private const byte ClockSyncOnly = 2;
 
+    /// <summary>SetClock mode L-Connect's Offline Mode toggle sends: the firmware shows the date and time while the PC is off.</summary>
+    public const byte ClockOfflineOn = 1;
+
+    /// <summary>SetClock mode that turns Offline Mode off.</summary>
+    public const byte ClockOfflineOff = 0;
+
     /// <summary>Builds one command; <paramref name="timestampMs"/> must strictly increase within a session.</summary>
     public static byte[] EncodeCommand(byte command, ReadOnlySpan<byte> parameters, uint timestampMs) =>
         UniversalScreen88Protocol.EncodeCommand(command, parameters, timestampMs);
@@ -69,10 +75,10 @@ public static class HydroShift2Protocol
         return packet;
     }
 
-    public static byte[] EncodeSetClock(DateTime now, uint timestampMs) => EncodeCommand(CommandSetClock, new byte[]
+    public static byte[] EncodeSetClock(DateTime now, uint timestampMs, byte mode = ClockSyncOnly) => EncodeCommand(CommandSetClock, new byte[]
     {
         (byte)(now.Year >> 8), (byte)now.Year, (byte)now.Month, (byte)now.Day,
-        (byte)now.Hour, (byte)now.Minute, (byte)now.Second, ClockSyncOnly,
+        (byte)now.Hour, (byte)now.Minute, (byte)now.Second, mode,
     }, timestampMs);
 
     /// <summary>

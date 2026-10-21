@@ -16,11 +16,12 @@ public static class Rgb565Encoder
 
     /// <summary>
     /// Returns the byte count written to <paramref name="dest"/>. Set
-    /// <paramref name="sourceIsBgra"/> for a capture-order frame.
+    /// <paramref name="sourceIsBgra"/> for a capture-order frame. <paramref name="highByteFirst"/>
+    /// emits each pixel's high byte before its low byte.
     /// </summary>
     public static int Encode(
         ReadOnlySpan<byte> rgba, int width, int height, int quarterTurns, Span<byte> dest,
-        bool sourceIsBgra = false)
+        bool sourceIsBgra = false, bool highByteFirst = false)
     {
         if (rgba.Length < width * height * 4)
         {
@@ -32,6 +33,8 @@ public static class Rgb565Encoder
         }
 
         int turns = ((quarterTurns % 4) + 4) % 4;
+        int lo = highByteFirst ? 1 : 0;
+        int hi = 1 - lo;
         int w = 0;
         for (int y = 0; y < height; y++)
         {
@@ -50,8 +53,9 @@ public static class Rgb565Encoder
                 int g = rgba[src + 1] >> 2;
                 int b = rgba[src + (sourceIsBgra ? 0 : 2)] >> 3;
                 int pixel = (r << 11) | (g << 5) | b;
-                dest[w++] = (byte)(pixel & 0xFF);
-                dest[w++] = (byte)((pixel >> 8) & 0xFF);
+                dest[w + lo] = (byte)(pixel & 0xFF);
+                dest[w + hi] = (byte)((pixel >> 8) & 0xFF);
+                w += 2;
             }
         }
         return w;

@@ -206,55 +206,6 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             {
                 rgb.Devices.RemoveAll(d => string.Equals(d.Id, qseriesZombieId, StringComparison.OrdinalIgnoreCase));
             }
-            if (_keeb.IsConnected)
-            {
-                // We disable the "HYTE Keeb TKL" detector in openrgb-headless so
-                // OpenRGB never claims the board, but strip by name too so a stale
-                // entry can never shadow our direct card.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("HYTE Keeb", StringComparison.OrdinalIgnoreCase) ||
-                    d.Name.Contains("Keeb TKL", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_lianLi.IsConnected)
-            {
-                // Every HID Uni Hub detector is disabled in openrgb-headless;
-                // strip by name too so a stale OpenRGB entry
-                // (the "detected but not drivable" zombie) can't shadow our cards.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Lian Li Uni Hub", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_corsair.IsConnected)
-            {
-                // The iCUE Link System Hub detector is disabled in openrgb-headless;
-                // strip by name too so a stale OpenRGB zombie can't shadow our cards.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("iCUE Link", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_strimer.IsConnected)
-            {
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Lian Li Strimer", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_galahad2.IsConnected)
-            {
-                // OpenRGB names this device "Lian Li GAII Trinity".
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("GAII", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_nollie.IsConnected)
-            {
-                // Nollie detectors are disabled in openrgb-headless; strip by
-                // name too so a stale entry can't shadow the native cards. The
-                // Prism8 shares the firmware and OpenRGB's naming.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Nollie", StringComparison.OrdinalIgnoreCase) ||
-                    d.Name.Contains("Prism8", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_kraken.IsConnected)
-            {
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Kraken", StringComparison.OrdinalIgnoreCase));
-            }
         }
 
         var hub = _np50.GetAll();
@@ -424,6 +375,8 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         // Must run AFTER the CNVS / NP50 / MiniHub merges so newly-added hub devices also pick up a default slot.
         ApplyDefaultLayouts(rgb.Devices, settings);
 
+        ApplyAreaSampling(_engine, rgb.Devices, settings);
+
         // Mirror into engine frames so running effects sample from the same rectangles. Without this, RgbBridge's
         // existing-frame-wins rule would pin pre-grid coordinates in memory. O(N²), trivial for typical N (<30).
         if (mirrorIntoEngine)
@@ -440,6 +393,34 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             }
         }
         return rgb;
+    }
+
+    /// <summary>Stamps each card with its sampling mode and, for a cell mode, the nearest-LED cells of the engine frame it is sampled from. Read only: the engine follows the same settings dictionary through its mode source.</summary>
+    internal static void ApplyAreaSampling(LightingEngine engine, List<LightingDevice> devices, NexusSettings settings)
+    {
+        var modes = settings.Devices.SamplingModes;
+        var frames = engine.Devices;
+        foreach (var dev in devices)
+        {
+            var mode = SamplingModes.Of(modes, dev.Id);
+            dev.Sampling = SamplingModes.Name(mode);
+            if (mode == SamplingMode.Led)
+            {
+                continue;
+            }
+            DeviceFrame? frame = null;
+            foreach (var f in frames)
+            {
+                if (f.Id == dev.Id)
+                {
+                    frame = f;
+                    break;
+                }
+            }
+            // Exactly what the engine samples for this card id (frames are created under their card's id). A card with no
+            // frame is never sampled, so its cells are all empty; the list always has LedCount entries.
+            dev.AreaCells = engine.AreaCellsForCard(frame, dev.LedCount, mode);
+        }
     }
 
     /// <summary>
