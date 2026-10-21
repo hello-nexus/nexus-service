@@ -1112,7 +1112,7 @@ public static class NexusServiceCollectionExtensions
             };
             var store = sp.GetRequiredService<IConfigStore>();
             hub.FlexLcd = () => Nexus.Service.Routes.Slv3FlexLcdRoutes.BuildFrame(
-                store.Load(),
+                store,
                 kind => Nexus.Service.Sensors.SummarySensors.Value(sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(), kind));
             hub.AioScreens = () =>
             {

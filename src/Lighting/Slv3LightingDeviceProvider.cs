@@ -100,7 +100,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         {
             foreach (var (mac, fans) in pending)
             {
-                if (Slv3FlexZoneMigration.Apply(s, mac, fans))
+                if (Slv3FlexZoneMigration.Apply(s, mac))
                 {
                     ServiceLog.Info($"[lianli-wireless] {mac}: saved zone data moved to Center/Inner/Outer");
                 }

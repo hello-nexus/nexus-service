@@ -60,6 +60,8 @@ internal static class Slv3TestHub
         public byte CmdSeq { get; set; }
         /// <summary>One bit per fan, set while its screen shows a built-in wireless theme (record byte 30, high nibble).</summary>
         public byte ThemeSwitch { get; set; }
+        /// <summary>The chain hears but never acknowledges sequenced commands.</summary>
+        public bool IgnoreCommands { get; set; }
     }
 
     public sealed class FakeSlv3Network
@@ -132,7 +134,7 @@ internal static class Slv3TestHub
                 var fanMac = copy.AsSpan(6, 6).ToArray();
                 foreach (var fan in _net.Fans)
                 {
-                    if (Slv3Protocol.MacEquals(fan.Mac, fanMac))
+                    if (Slv3Protocol.MacEquals(fan.Mac, fanMac) && !fan.IgnoreCommands)
                     {
                         fan.CmdSeq = copy[21];
                         if (copy[5] == Slv3Protocol.RfSwitchWirelessTheme)

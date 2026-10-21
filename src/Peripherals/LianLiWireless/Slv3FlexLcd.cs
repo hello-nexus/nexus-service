@@ -38,10 +38,10 @@ public static class Slv3FlexLcd
     public const int ColorBufferLength = MaxFans * ColorBytesPerFan;
     public const int ColorMarkerOffset = 18;
 
-    /// <summary>fans_type values of the fans that carry a screen: SL-INF Flex 43/44/47/48, TL Flex 51/52/55/56.</summary>
+    /// <summary>fans_type values of the SL-INF and TL Flex fans that carry a screen.</summary>
     public static bool IsLcdFanType(int fansType) => fansType is 43 or 44 or 47 or 48 or 51 or 52 or 55 or 56;
 
-    /// <summary>User-editable colors of a theme: 5 = two graph colors and three text colors, 4 = one graph color, 3 = text only, 0 = none.</summary>
+    /// <summary>How many colors a theme lets the user edit: graph colors first, then text colors, none for the themes drawn from a picture.</summary>
     public static int ColorCount(int theme) => theme switch
     {
         0 or 1 or 2 or 4 or 5 or 7 or 11 or 12 => 5,
@@ -51,7 +51,7 @@ public static class Slv3FlexLcd
         _ => 5,
     };
 
-    // L-Connect GetWiredlessThemeDefColors: 24-bit RGB, in the order of the array's length (4: graph, title, data, unit; 5: graph1, graph2, title, data, unit; 6: title, data, unit, then their shadows).
+    // L-Connect GetWiredlessThemeDefColors: RGB per theme, laid out by the array's length (graph then text colors; the longest layout is text colors then their shadows).
     private static readonly uint[][] Defaults =
     {
         new uint[] { 11088639, 16777215, 16777215, 16777215, 16777215 },
@@ -109,8 +109,8 @@ public static class Slv3FlexLcd
         theme >= 0 && theme < Defaults.Length && Defaults[theme].Length == 6 ? Defaults[theme][3 + index] : 0;
 
     /// <summary>
-    /// A fan's 19-byte color slot at its cache index inside the 76-byte SendColors buffer: six RGB triples in
-    /// L-Connect's order, then the change marker at byte 18.
+    /// A fan's color slot at its cache index inside the SendColors buffer: RGB triples in L-Connect's order,
+    /// then the change marker.
     /// </summary>
     public static byte[] BuildColorBuffer(int cacheIndex, int theme, uint[]? user, byte marker)
     {
@@ -145,7 +145,7 @@ public static class Slv3FlexLcd
         return buffer;
     }
 
-    /// <summary>L-Connect toWirelessFanDirection: the stored rotation 0..3 as the byte the table carries.</summary>
+    /// <summary>L-Connect toWirelessFanDirection: the stored quarter-turn rotation as the byte the table carries.</summary>
     public static byte Direction(int rotation) => (byte)(((4 - Math.Clamp(rotation, 0, 3)) % 4) + 1);
 
     /// <summary>
@@ -166,7 +166,7 @@ public static class Slv3FlexLcd
     /// <summary>One slot of the table: themes and sources by cache index, the direction byte and the brightness.</summary>
     public readonly record struct Row(int RxType, byte[] Themes, byte[] Sources, byte Direction, byte Brightness, int FanCount = MaxFans);
 
-    /// <summary>L-Connect GetFixedData: the 50-byte host reading block with the wall clock at [32..38].</summary>
+    /// <summary>L-Connect GetFixedData: the host reading block, with the wall clock inside it.</summary>
     public static byte[] BuildFixedBlock(Slv3FlexLcdSensors s, DateTime now)
     {
         var a = new byte[FixedBlockLength];
@@ -199,7 +199,7 @@ public static class Slv3FlexLcd
         return a;
     }
 
-    /// <summary>The 218 bytes the ClockSync body carries after the header: the fixed block, then the 14-slot table.</summary>
+    /// <summary>What the ClockSync body carries after the header: the reading block, then the per-slot table.</summary>
     public static byte[] BuildLcdBlock(IReadOnlyList<Row> rows, Slv3FlexLcdSensors sensors, DateTime now)
     {
         var block = new byte[LcdBlockLength];

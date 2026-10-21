@@ -249,6 +249,130 @@ public class Slv3FlexLcdTests
         Assert.Empty(Frames(tx, Slv3Protocol.RfSwitchWirelessTheme));
     }
 
+    private static Slv3FlexLcdFrame FrameFor(params (byte[] Mac, bool Enabled, int Theme)[] chains) => new(
+        chains.ToDictionary(
+            c => Convert.ToHexString(c.Mac),
+            c => new Slv3FlexLcdChain(Convert.ToHexString(c.Mac), c.Enabled, 60, 3, new[] { new Slv3FlexLcdFan(c.Theme, 0, null) })),
+        default);
+
+    [Fact]
+    public void The_frames_the_hub_sends_carry_l_connects_zero_based_ordinal_without_counting_strimers()
+    {
+        _clock = 1_000_000;
+        var (hub, net, tx) = Slv3TestHub.CreateConnected(() => _clock);
+        var strimer = Convert.FromHexString("64F271E566E1");
+        var sl = Convert.FromHexString("C5D212506CE1");
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = strimer, MasterMac = net.MasterMac, RxType = 1, DevType = 2, FanCount = 0 });
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = TlMac, MasterMac = net.MasterMac, RxType = 4, FanCount = 1, FansType = 51 });
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = sl, MasterMac = net.MasterMac, RxType = 5, FanCount = 1, FansType = 43 });
+        Ticks(hub, 1);
+        hub.FlexLcd = () => FrameFor((TlMac, true, 3), (sl, true, 9));
+        Ticks(hub, 12);
+        string Ordinal(byte[] mac, byte cmd) => Frames(tx, cmd).Where(f => f.AsSpan(2, 6).SequenceEqual(mac)).Select(f => f[16]).Distinct().Single().ToString();
+        Assert.Equal("0", Ordinal(TlMac, Slv3Protocol.RfSendColors));
+        Assert.Equal("1", Ordinal(sl, Slv3Protocol.RfSendColors));
+    }
+
+    [Fact]
+    public void A_failed_send_does_not_count_as_delivered_and_the_colors_go_out_when_the_link_returns()
+    {
+        var (hub, _, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        tx.FailSends = true;
+        Ticks(hub, 5);
+        tx.FailSends = false;
+        tx.SentFrames.Clear();
+        Ticks(hub, 12);
+        Assert.NotEmpty(Frames(tx, Slv3Protocol.RfSendColors));
+        Assert.Equal(1, fan.ThemeSwitch & 1);
+    }
+
+    [Fact]
+    public void Colors_overwritten_by_another_command_or_never_acknowledged_are_sent_again()
+    {
+        var (hub, _, tx, fan) = Rig();
+        fan.IgnoreCommands = true;
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 2);
+        Assert.NotEmpty(Frames(tx, Slv3Protocol.RfSendColors));
+        // Another command takes the chain's single pending slot before the colors were acknowledged.
+        Assert.True(hub.Identify(Convert.ToHexString(TlMac)));
+        tx.SentFrames.Clear();
+        fan.IgnoreCommands = false;
+        Ticks(hub, 20);
+        Assert.NotEmpty(Frames(tx, Slv3Protocol.RfSendColors));
+        var settled = Frames(tx, Slv3Protocol.RfSendColors).Count;
+        Ticks(hub, 10);
+        Assert.Equal(settled, Frames(tx, Slv3Protocol.RfSendColors).Count);
+    }
+
+    [Fact]
+    public void A_chain_that_never_answers_is_asked_a_bounded_number_of_times_for_colors_and_the_switch()
+    {
+        var (hub, _, tx, fan) = Rig();
+        fan.IgnoreCommands = true;
+        hub.FlexLcd = () => Frame(true, 3);
+        tx.SentFrames.Clear();
+        Ticks(hub, 400);
+        var colorSeqs = Frames(tx, Slv3Protocol.RfSendColors).Select(f => f[17]).Distinct().Count();
+        var switchSeqs = Frames(tx, Slv3Protocol.RfSwitchWirelessTheme).Select(f => f[17]).Distinct().Count();
+        Assert.InRange(colorSeqs, 1, Slv3Hub.FlexLcdSwitchAttempts);
+        Assert.InRange(switchSeqs, 1, Slv3Hub.FlexLcdSwitchAttempts);
+        int Sent() => tx.SentFrames.Count(f => f.Length > 5 && (f[5] == Slv3Protocol.RfSendColors || f[5] == Slv3Protocol.RfSwitchWirelessTheme));
+        var before = Sent();
+        Ticks(hub, 100);
+        Assert.Equal(before, Sent());
+        // A changed theme asks again.
+        hub.FlexLcd = () => Frame(true, 7);
+        Ticks(hub, 5);
+        Assert.True(Sent() > before);
+    }
+
+    [Fact]
+    public void A_pending_switch_is_not_queued_twice()
+    {
+        var (hub, _, tx, fan) = Rig();
+        fan.IgnoreCommands = true;
+        hub.FlexLcd = () => Frame(true, 3);
+        tx.SentFrames.Clear();
+        Ticks(hub, 3);
+        Assert.True(Frames(tx, Slv3Protocol.RfSwitchWirelessTheme).Select(f => f[17]).Distinct().Count() <= 1);
+    }
+
+    [Fact]
+    public void Unbinding_a_chain_with_themes_on_clears_the_switch_before_the_release_frame()
+    {
+        var (hub, _, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 20);
+        Assert.Equal(1, fan.ThemeSwitch & 1);
+        hub.SetLockBoundDevices(false);
+        tx.SentFrames.Clear();
+        Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out var error), error);
+        Ticks(hub, 3);
+        var firstSwitch = tx.SentFrames.FindIndex(f => f.Length > 24 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSwitchWirelessTheme);
+        var firstBind = tx.SentFrames.FindIndex(f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfBind);
+        Assert.True(firstSwitch >= 0, "no switch-off frame");
+        Assert.True(firstBind < 0 || firstSwitch < firstBind);
+        Assert.Equal(0, tx.SentFrames[firstSwitch][24]);
+    }
+
+    [Fact]
+    public void A_failed_settings_read_keeps_the_last_settings_and_releases_nothing()
+    {
+        var (hub, _, tx, fan) = Rig();
+        var fail = false;
+        hub.FlexLcd = () => fail ? throw new InvalidOperationException("collection was modified") : Frame(true, 3);
+        Ticks(hub, 20);
+        Assert.Equal(1, fan.ThemeSwitch & 1);
+        fail = true;
+        tx.SentFrames.Clear();
+        Ticks(hub, 10);
+        Assert.Equal(1, fan.ThemeSwitch & 1);
+        Assert.Empty(Frames(tx, Slv3Protocol.RfSwitchWirelessTheme));
+        Assert.Equal(3, Frames(tx, Slv3Protocol.RfClockSync).Last()[14 + 50]);
+    }
+
     // ---- settings and routes ----
 
     [Fact]
@@ -268,6 +392,8 @@ public class Slv3FlexLcdTests
     public void A_patch_validates_and_applies_and_a_theme_change_resets_the_colors()
     {
         var all = new Dictionary<string, LianLiFlexWirelessLcdSettings>();
+        Assert.Equal("brightness must be 1-100", Slv3FlexLcdRoutes.Validate(new Slv3FlexLcdRequest { Brightness = 0 }, 1));
+        Assert.Equal("wrong number of colors for the theme", Slv3FlexLcdRoutes.Validate(new Slv3FlexLcdRequest { Fans = new[] { new Slv3FlexLcdFanPatch { Index = 0, Theme = 20, Colors = new[] { "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF" } } } }, 1));
         Assert.Equal("fan index out of range", Slv3FlexLcdRoutes.Validate(new Slv3FlexLcdRequest { Fans = new[] { new Slv3FlexLcdFanPatch { Index = 1 } } }, 1));
         Assert.Equal("theme out of range", Slv3FlexLcdRoutes.Validate(new Slv3FlexLcdRequest { Fans = new[] { new Slv3FlexLcdFanPatch { Index = 0, Theme = 29 } } }, 1));
         Assert.Equal("colors must be #RRGGBB", Slv3FlexLcdRoutes.Validate(new Slv3FlexLcdRequest { Fans = new[] { new Slv3FlexLcdFanPatch { Index = 0, Colors = new[] { "red" } } } }, 1));
@@ -294,5 +420,22 @@ public class Slv3FlexLcdTests
         Assert.Equal(1, chain.FanCount);
         Assert.False(chain.Enabled);
         Assert.Equal(25, response.SourceCount);
+    }
+
+    [Fact]
+    public void The_store_read_builds_the_frame_and_the_new_settings_survive_a_round_trip()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(c => c.Devices.LianLiWireless.FlexLcd["6D1007F517E1"] = new LianLiFlexWirelessLcdSettings
+        {
+            Enabled = true,
+            Fans = { new LianLiFlexWirelessLcdFan { Theme = 3, Source = 4, Colors = new() { "#112233", "#445566", "#778899", "#AABBCC" } } },
+        });
+        Assert.NotNull(Slv3FlexLcdRoutes.BuildFrame(store, _ => 0f));
+        var json = System.Text.Json.JsonSerializer.Serialize(store.Load(), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+        var fan = back.Devices.LianLiWireless.FlexLcd["6D1007F517E1"].Fans[0];
+        Assert.Equal((3, 4), (fan.Theme, fan.Source));
+        Assert.Equal(new[] { "#112233", "#445566", "#778899", "#AABBCC" }, fan.Colors);
     }
 }

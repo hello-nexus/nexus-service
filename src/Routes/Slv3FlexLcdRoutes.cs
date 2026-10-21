@@ -79,9 +79,11 @@ public static class Slv3FlexLcdRoutes
             {
                 return Results.Json(ApiResponse.Fail("not an LCD Flex fan bound to this PC"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
-            if (Validate(body, chain.FanCount) is { } error)
+            LianLiFlexWirelessLcdSettings? current = null;
+            store.Read(s => s.Devices.LianLiWireless.FlexLcd.TryGetValue(chain.Mac.ToUpperInvariant(), out current));
+            if (Validate(body, chain.FanCount, current) is { } error)
             {
-                return Results.Json(ApiResponse.Fail(error), AppJsonContext.Default.ApiResponse);
+                return Results.Json(ApiResponse.Fail(error), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
             store.Update(s => Apply(s.Devices.LianLiWireless.FlexLcd, chain.Mac.ToUpperInvariant(), chain.FanCount, body));
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
@@ -128,11 +130,11 @@ public static class Slv3FlexLcdRoutes
         return new Slv3FlexLcdResponse { SourceCount = Slv3FlexLcd.DataSourceCount, Themes = themes, Chains = chains.ToArray() };
     }
 
-    internal static string? Validate(Slv3FlexLcdRequest body, int fanCount)
+    internal static string? Validate(Slv3FlexLcdRequest body, int fanCount, LianLiFlexWirelessLcdSettings? current = null)
     {
-        if (body.Brightness is < 0 or > 100)
+        if (body.Brightness is < 1 or > 100)
         {
-            return "brightness must be 0-100";
+            return "brightness must be 1-100";
         }
         if (body.Rotation is < 0 or > 3)
         {
@@ -152,9 +154,17 @@ public static class Slv3FlexLcdRoutes
             {
                 return "source out of range";
             }
-            if (f.Colors is { Length: > 0 } colors && colors.Any(c => !TryParseHex(c, out _)))
+            if (f.Colors is { Length: > 0 } colors)
             {
-                return "colors must be #RRGGBB";
+                if (colors.Any(c => !TryParseHex(c, out _)))
+                {
+                    return "colors must be #RRGGBB";
+                }
+                var theme = f.Theme ?? (current is not null && f.Index < current.Fans.Count ? current.Fans[f.Index].Theme : 0);
+                if (colors.Length != Slv3FlexLcd.ColorCount(theme))
+                {
+                    return "wrong number of colors for the theme";
+                }
             }
         }
         return null;
@@ -204,7 +214,21 @@ public static class Slv3FlexLcdRoutes
         }
     }
 
+    /// <summary>Reads the settings under the store's lock, so a concurrent save cannot tear the enumeration; null when no chain shows a theme.</summary>
+    internal static Slv3FlexLcdFrame? BuildFrame(IConfigStore store, Func<SummarySensorKind, float?> read)
+    {
+        Dictionary<string, Slv3FlexLcdChain>? chains = null;
+        store.Read(s => chains = ChainsOf(s));
+        return chains is null ? null : FrameOf(chains, read);
+    }
+
     internal static Slv3FlexLcdFrame? BuildFrame(NexusSettings settings, Func<SummarySensorKind, float?> read)
+    {
+        var chains = ChainsOf(settings);
+        return chains is null ? null : FrameOf(chains, read);
+    }
+
+    private static Dictionary<string, Slv3FlexLcdChain>? ChainsOf(NexusSettings settings)
     {
         var chains = new Dictionary<string, Slv3FlexLcdChain>(StringComparer.Ordinal);
         foreach (var (mac, s) in settings.Devices.LianLiWireless.FlexLcd)
@@ -212,11 +236,13 @@ public static class Slv3FlexLcdRoutes
             var fans = s.Fans.Select(f => new Slv3FlexLcdFan(f.Theme, f.Source, ColorsOf(f))).ToArray();
             chains[mac.ToUpperInvariant()] = new Slv3FlexLcdChain(mac.ToUpperInvariant(), s.Enabled, s.Brightness, s.Rotation, fans);
         }
-        if (!chains.Values.Any(c => c.Enabled))
-        {
-            return null;
-        }
-        var total = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1024.0 / 1024.0;
+        return chains.Values.Any(c => c.Enabled) ? chains : null;
+    }
+
+    private static Slv3FlexLcdFrame FrameOf(Dictionary<string, Slv3FlexLcdChain> chains, Func<SummarySensorKind, float?> read)
+    {
+        // The table field is a 16-bit megabyte count, so a larger machine reads as the most it can carry.
+        var total = Math.Min(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1024.0 / 1024.0, ushort.MaxValue);
         var memoryUsage = read(SummarySensorKind.MemoryUsage) ?? 0f;
         var sensors = new Slv3FlexLcdSensors(
             read(SummarySensorKind.CpuTemp) ?? 0f, read(SummarySensorKind.CpuUsage) ?? 0f,

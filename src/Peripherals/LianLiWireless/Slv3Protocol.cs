@@ -56,9 +56,9 @@ public static class Slv3Protocol
     public const byte RfRgbSync = 0x20;            // streamed RGB frame animation
     public const byte RfMbSyncSwitch = 0x24;
     public const byte RfLightSyncSwitch = 0x26;
-    public const byte RfSendColors = 0x28;         // Flex wireless theme: one fan's colors at [20..95], cmdSeq-acked
-    public const byte RfSwitchWirelessTheme = 0x29; // Flex wireless theme: [20] = fan bitmask of screens showing a built-in theme, cmdSeq-acked
     public const byte RfArgbSyncSwitch = 0x27;     // fan chain plays its motherboard ARGB input; [20] = 1 on, 0 off (cmdSeq-acked)
+    public const byte RfSendColors = 0x28;         // Flex wireless theme: one fan's colors from [20], cmdSeq-acked
+    public const byte RfSwitchWirelessTheme = 0x29; // Flex wireless theme: [20] = fan bitmask of screens showing a built-in theme, cmdSeq-acked
 
     /// <summary>Constant frame-type byte at RF payload[0] for every host->fan frame.</summary>
     public const byte RfFrameType = 0x12;

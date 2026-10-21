@@ -2296,7 +2296,9 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
         // lian-li-linux switch_to_wireless_theme carries the AIO's bind ordinal at [16].
-        var slot = rfCmd is Slv3Protocol.RfAioSwitchWireless or Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme ? BindOrdinalLocked(record.Mac) : (byte)0;
+        var slot = rfCmd == Slv3Protocol.RfAioSwitchWireless
+            ? BindOrdinalLocked(record.Mac)
+            : rfCmd is Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme ? FlexLcdOrdinalLocked(record) : (byte)0;
         var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg, data);
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
@@ -2464,6 +2466,10 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 error = "held by a live master";
                 return false;
+            }
+            if (IsBoundToUsLocked(existing))
+            {
+                ReleaseFlexLcdBeforeUnbindLocked(existing);
             }
             _userUnbound.Add(key);
             _unboundHere.Add(key);

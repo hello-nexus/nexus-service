@@ -16,7 +16,7 @@ internal static class Slv3FlexZoneMigration
     private const int OldInnerPerFan = 22;
 
     /// <summary>Runs once per chain MAC; false when it was already done.</summary>
-    public static bool Apply(NexusSettings settings, string mac, int fanCount)
+    public static bool Apply(NexusSettings settings, string mac)
     {
         var done = settings.Devices.LianLiWireless.FlexZonesMigrated;
         if (done.Contains(mac, StringComparer.OrdinalIgnoreCase))
@@ -36,7 +36,7 @@ internal static class Slv3FlexZoneMigration
             var moved = new List<SegmentLedOverride>(overrides.Count);
             foreach (var o in overrides)
             {
-                if (Remap(o, fanCount) is { } m)
+                if (Remap(o) is { } m)
                 {
                     moved.Add(m);
                 }
@@ -54,8 +54,8 @@ internal static class Slv3FlexZoneMigration
         return true;
     }
 
-    /// <summary>The override at its Center / Inner / Outer segment and local index, or null when it points past the chain.</summary>
-    internal static SegmentLedOverride? Remap(SegmentLedOverride old, int fanCount)
+    /// <summary>The override at its Center / Inner / Outer segment and local index by the per-fan formula, whatever the chain's fan count; null only for an override that never pointed at a fan LED.</summary>
+    internal static SegmentLedOverride? Remap(SegmentLedOverride old)
     {
         if (old.Segment is < 0 or > 1 || old.LedIndex < 0)
         {
@@ -63,10 +63,6 @@ internal static class Slv3FlexZoneMigration
         }
         var fan = old.LedIndex / OldInnerPerFan;
         var inFan = old.LedIndex % OldInnerPerFan;
-        if (fan >= fanCount)
-        {
-            return null;
-        }
         var wire = (old.Segment * OldInnerPerFan) + inFan;
         var zones = Slv3LightingDeviceProvider.FlexZonesOf(FlexFamily.SlInfFlex);
         for (var z = 0; z < zones.Length; z++)

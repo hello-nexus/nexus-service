@@ -27,7 +27,7 @@ public class Slv3FlexZoneMigrationTests
             new() { Segment = 0, LedIndex = 20, Disabled = true },                  // fan 0, wire 20: outer 2
             new() { Segment = 1, LedIndex = 4 },                                    // fan 0, wire 26: inner 10
             new() { Segment = 1, LedIndex = 22 + 14 },                              // fan 1, wire 36: outer 8 of fan 1
-            new() { Segment = 0, LedIndex = 44 },                                   // fan 2 does not exist
+            new() { Segment = 0, LedIndex = 44 },                                   // fan 2: kept, remapped by the per-fan formula
             new() { Segment = 2, LedIndex = 0 },                                    // no such segment
         };
         return s;
@@ -37,9 +37,10 @@ public class Slv3FlexZoneMigrationTests
     public void Overrides_land_on_the_same_physical_led_in_the_new_segments()
     {
         var s = Seeded();
-        Assert.True(Slv3FlexZoneMigration.Apply(s, Mac, 2));
+        Assert.True(Slv3FlexZoneMigration.Apply(s, Mac));
         var o = s.Devices.DeviceLedOverrides[DeviceId];
-        Assert.Equal(5, o.Count);
+        Assert.Equal(6, o.Count);
+        Assert.Contains(o, x => x.Segment == 0 && x.LedIndex == 16);
         Assert.Contains(o, x => x.Segment == 0 && x.LedIndex == 3 && x.U == 0.1f);
         Assert.Contains(o, x => x.Segment == 1 && x.LedIndex == 20 + 1 && x.V == 0.4f);
         Assert.Contains(o, x => x.Segment == 2 && x.LedIndex == 2 && x.Disabled);
@@ -51,7 +52,7 @@ public class Slv3FlexZoneMigrationTests
     public void Partitions_and_the_ring_groups_and_mappings_are_dropped_and_other_data_stays()
     {
         var s = Seeded();
-        Slv3FlexZoneMigration.Apply(s, Mac, 2);
+        Slv3FlexZoneMigration.Apply(s, Mac);
         Assert.False(s.Devices.ZonePartitions.ContainsKey(DeviceId));
         Assert.False(s.Devices.LedGroups.ContainsKey(DeviceId + ":inner"));
         Assert.False(s.Devices.AppliedMappings.ContainsKey(DeviceId + ":outer"));
@@ -62,20 +63,21 @@ public class Slv3FlexZoneMigrationTests
     public void It_runs_once_per_chain()
     {
         var s = Seeded();
-        Assert.True(Slv3FlexZoneMigration.Apply(s, Mac, 2));
+        Assert.True(Slv3FlexZoneMigration.Apply(s, Mac));
         var after = s.Devices.DeviceLedOverrides[DeviceId].Select(x => (x.Segment, x.LedIndex)).ToList();
-        Assert.False(Slv3FlexZoneMigration.Apply(s, Mac.ToLowerInvariant(), 2));
+        Assert.False(Slv3FlexZoneMigration.Apply(s, Mac.ToLowerInvariant()));
         Assert.Equal(after, s.Devices.DeviceLedOverrides[DeviceId].Select(x => (x.Segment, x.LedIndex)).ToList());
         Assert.Single(s.Devices.LianLiWireless.FlexZonesMigrated);
     }
 
     [Fact]
-    public void Overrides_that_all_fall_outside_the_chain_are_removed()
+    public void Overrides_for_fans_beyond_the_current_count_are_kept_for_when_the_fan_returns_and_unknown_segments_dropped()
     {
         var s = new NexusSettings();
-        s.Devices.DeviceLedOverrides[DeviceId] = new List<SegmentLedOverride> { new() { Segment = 0, LedIndex = 100 } };
-        Slv3FlexZoneMigration.Apply(s, Mac, 1);
-        Assert.False(s.Devices.DeviceLedOverrides.ContainsKey(DeviceId));
+        s.Devices.DeviceLedOverrides[DeviceId] = new List<SegmentLedOverride> { new() { Segment = 0, LedIndex = 100 }, new() { Segment = 3, LedIndex = 0 } };
+        Slv3FlexZoneMigration.Apply(s, Mac);
+        var kept = Assert.Single(s.Devices.DeviceLedOverrides[DeviceId]);
+        Assert.Equal(1, kept.Segment);
     }
 
     private static (Slv3LightingDeviceProvider Provider, InMemoryConfigStore Store) Rig(int fansType, string mac = Mac)
