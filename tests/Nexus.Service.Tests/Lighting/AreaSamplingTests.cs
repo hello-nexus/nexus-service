@@ -713,7 +713,7 @@ public class AreaSamplingTests
         }
         var plain = Run(false);
         var slotted = Run(true);
-        // slot 1 of 2 in a parallel stack is the bottom half: v -> 0.5 + 0.5 * v, u unchanged
+        // slot 1 of 2 in a parallel stack maps v into the bottom half and leaves u unchanged
         for (var i = 0; i < 3; i++)
         {
             Assert.Equal(plain[i].Length, slotted[i].Length);
@@ -747,7 +747,6 @@ public class AreaSamplingTests
             }
             return -1;
         }
-        // (60,30): to led0 dx 19.5 dy 9.5; to led1 dx 39.5 dy 1.5
         Assert.Equal(0, OwnerOfPixel(SamplingMode.Nearest, 60, 30));
         Assert.Equal(0, OwnerOfPixel(SamplingMode.Columns, 60, 30));
         Assert.Equal(1, OwnerOfPixel(SamplingMode.Rows, 60, 30));
