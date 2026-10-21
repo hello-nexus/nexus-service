@@ -662,20 +662,22 @@ public class GlacialLcdDriverTests
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
+        long endReportAt = 0;
         hid.OnWrite = w =>
         {
             if (w[1] == 0x73 && w[2] == 0xFF)
             {
+                Interlocked.Exchange(ref endReportAt, System.Diagnostics.Stopwatch.GetTimestamp());
                 link.RequestCancel();
             }
         };
 
-        var watch = System.Diagnostics.Stopwatch.StartNew();
         driver.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
-        watch.Stop();
+        var waited = System.Diagnostics.Stopwatch.GetElapsedTime(Interlocked.Read(ref endReportAt));
 
-        Assert.True(watch.ElapsedMilliseconds < GlacialLcdPanelDriver.FinishReplyWaitMs, watch.ElapsedMilliseconds.ToString());
+        // Measured from the end report: a full wait would be the whole reply window.
+        Assert.True(waited.TotalMilliseconds < GlacialLcdPanelDriver.FinishReplyWaitMs, waited.TotalMilliseconds.ToString());
         Assert.Equal(0, driver.UploadsCompleted);
         driver.Disconnect(pipe, hid);
     }
