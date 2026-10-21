@@ -58,14 +58,14 @@ public static class AppLifecycleTelemetry
     /// <summary>
     /// Emits app_placed / app_removed for the app widget instances that appeared in or left the layout. A save that
     /// keeps the same instances emits nothing. A null <paramref name="before"/> is a layout seen for the first time,
-    /// not a placement, so it emits nothing.
+    /// not a placement, so it emits nothing. <paramref name="surfaceOverride"/> names the surface when the layout is not a device's (the desktop dashboard).
     /// </summary>
-    public static void LayoutChanged(ITelemetry telemetry, PanelLayoutDto? before, PanelLayoutDto? after)
+    public static void LayoutChanged(ITelemetry telemetry, PanelLayoutDto? before, PanelLayoutDto? after, string? surfaceOverride = null)
     {
         if (before is null || after is null) return;
         var was = AppWidgets(before);
         var now = AppWidgets(after);
-        var surface = after.Surface;
+        var surface = surfaceOverride ?? after.Surface;
         foreach (var (instance, appId) in now)
         {
             if (!was.ContainsKey(instance))

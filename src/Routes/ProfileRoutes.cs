@@ -434,6 +434,8 @@ public static class ProfileRoutes
             // that seeded every pre-existing install to "advanced".
             (string From, string To)? lightingModeChange = null;
             (string From, string To)? coolingModeChange = null;
+            Nexus.Service.Models.Panel.PanelLayoutDto? dashboardBefore = null;
+            Nexus.Service.Models.Panel.PanelLayoutDto? dashboardAfter = null;
             // ApplyPatch runs the mutation and the Features before/after
             // transition under the reconciler's own lock, so a concurrent
             // PATCH /preferences cannot interleave its own before-snapshot
@@ -468,7 +470,12 @@ public static class ProfileRoutes
                     if (panel.PanelOpacity.HasValue)             s.Panel.PanelOpacity          = Math.Clamp(panel.PanelOpacity.Value, 0.0, 1.0);
                     if (panel.WidgetOpacity.HasValue)            s.Panel.WidgetOpacity         = panel.WidgetOpacity.Value;
                     if (panel.WidgetLabels.HasValue)             s.Panel.WidgetLabels          = panel.WidgetLabels.Value;
-                    if (panel.DashboardLayout is not null)       s.Panel.DashboardLayout       = panel.DashboardLayout;
+                    if (panel.DashboardLayout is not null)
+                    {
+                        dashboardBefore = s.Panel.DashboardLayout;
+                        dashboardAfter = panel.DashboardLayout;
+                        s.Panel.DashboardLayout = panel.DashboardLayout;
+                    }
                     if (panel.DashboardGaugeGradient is not null) s.Panel.DashboardGaugeGradient = panel.DashboardGaugeGradient;
                 }
                 if (body.Overlay is { } overlay)
@@ -656,6 +663,8 @@ public static class ProfileRoutes
                 telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.DashboardModeChanged,
                     ("surface", "cooling"), ("from", cm.From), ("to", cm.To));
             }
+            if (dashboardAfter is not null)
+                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, dashboardBefore, dashboardAfter, "desktop");
             pm.MarkDirty();
             PanelTopics.BroadcastPrefs(hub);
             return ApiResponse.Ok();

@@ -59,6 +59,17 @@ public sealed class AppLifecycleTelemetryTests : IDisposable
     }
 
     [Fact]
+    public void Surface_override_names_the_desktop_dashboard_and_first_seen_still_emits_nothing()
+    {
+        var t = new Recorder();
+        AppLifecycleTelemetry.LayoutChanged(t, Layout("y70"), Layout("y70", ("b", "app:com.x.app")), "desktop");
+        AppLifecycleTelemetry.LayoutChanged(t, null, Layout("y70", ("c", "app:com.y.app")), "desktop");
+
+        var e = Assert.Single(t.Events);
+        Assert.Equal("desktop", e.Props["surface"]);
+    }
+
+    [Fact]
     public void Removing_an_app_widget_emits_app_removed()
     {
         var t = new Recorder();
