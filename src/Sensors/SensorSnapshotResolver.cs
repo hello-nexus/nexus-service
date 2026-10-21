@@ -70,6 +70,23 @@ public static class SensorSnapshotResolver
     }
 
     /// <summary>
+    /// The picked sensor by id, then name, then fan header rename, and null when none matches: no
+    /// category default, so a missing sensor never shows another sensor's reading.
+    /// </summary>
+    public static HardwareSensor? ResolveExact(
+        ISensorProvider sensors,
+        string category,
+        string sensorId,
+        SensorSnapshotSources sources = default)
+    {
+        var list = GetCategorySensors(sensors, category, sources);
+        var match = FindById(list, sensorId)
+            ?? FindByName(list, sensorId)
+            ?? FindByFanHeaderName(list, sensorId, sources.FanHeaderNames);
+        return match is null ? null : Nexus.Service.Monitoring.FanSensorNames.WithRename(match, sources.FanHeaderNames);
+    }
+
+    /// <summary>
     /// Mirrors nexus-web's MonitoringWidget resolveSensor, so a tile renders
     /// the same reading on the deck as in the editor
     /// when the stored id is stale or was never concrete (an imported

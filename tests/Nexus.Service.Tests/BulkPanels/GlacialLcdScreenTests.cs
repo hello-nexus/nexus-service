@@ -832,9 +832,53 @@ public class GlacialLcdScreenTests
         }
         // Past the room, the cut falls on a character boundary.
         var report = GlacialLcdProtocol.EncodeSlot(0, "x", new string('㎓', 20));
-        // 14 whole characters fit in 44 bytes; the two bytes left over stay zero rather than holding half a character.
-        Assert.All(report.Skip(GlacialLcdProtocol.SlotValueOffset + 42), b => Assert.Equal(0, b));
-        Assert.Equal(0xE3, report[GlacialLcdProtocol.SlotValueOffset + 41 - 2]);
+        // Whole characters only: a trailing partial one is dropped, so what is left over stays zero.
+        int glyph = System.Text.Encoding.UTF8.GetByteCount("㎓");
+        int kept = room / glyph * glyph;
+        Assert.Equal(0xE3, report[GlacialLcdProtocol.SlotValueOffset + kept - glyph]);
+        Assert.All(report.Skip(GlacialLcdProtocol.SlotValueOffset + kept), b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void A_picked_sensor_that_is_missing_shows_no_reading_not_a_default_sensor()
+    {
+        var sensors = new FakeSensorProvider
+        {
+            CpuSensors = new[] { Sensor("cpu/load", "CPU Total", "Load", 12f), Sensor("cpu/pkg", "CPU Package", "Temperature", 57f) },
+        };
+        var gone = new GlacialLcdSlot { Category = "cpu", Sensor = "cpu/not-there", Label = "CPU Temp" };
+        var byName = new GlacialLcdSlot { Category = "cpu", Sensor = "CPU Package", Label = "CPU Temp" };
+
+        Assert.Equal(("CPU Temp", GlacialLcdScreen.NoReading), GlacialLcdSensors.Read(sensors, gone, 0));
+        Assert.Equal(("CPU Temp", "57.0℃"), GlacialLcdSensors.Read(sensors, byName, 0));
+    }
+
+    [Theory]
+    [InlineData("quick")]
+    [InlineData("cpu")]
+    [InlineData("gpu")]
+    [InlineData("memory")]
+    [InlineData("motherboard")]
+    [InlineData("storage")]
+    [InlineData("smart")]
+    [InlineData("memoryModule")]
+    [InlineData("battery")]
+    [InlineData("cooler")]
+    [InlineData("psu")]
+    [InlineData("embeddedController")]
+    [InlineData("network")]
+    [InlineData("fps")]
+    public void Every_supported_category_is_read_by_the_resolver(string category)
+    {
+        Assert.True(SensorSnapshotResolver.IsSupportedCategory(category));
+        Assert.NotNull(SensorSnapshotResolver.GetCategorySensors(new FakeSensorProvider(), category));
+    }
+
+    [Fact]
+    public void An_unknown_category_is_not_supported()
+    {
+        Assert.False(SensorSnapshotResolver.IsSupportedCategory("nonsense"));
+        Assert.Empty(SensorSnapshotResolver.GetCategorySensors(new FakeSensorProvider(), "nonsense"));
     }
 
     [Fact]
