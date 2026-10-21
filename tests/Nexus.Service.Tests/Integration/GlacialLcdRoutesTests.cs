@@ -35,4 +35,19 @@ public class GlacialLcdRoutesTests
             new StringContent("{\"mode\":\"panel\"}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.BadRequest, put.StatusCode);
     }
+
+    [Theory]
+    [InlineData("quick", "summary/cpu-usage", HttpStatusCode.OK)]
+    [InlineData("network", "Network Total", HttpStatusCode.OK)]
+    [InlineData("fps", "fps/app", HttpStatusCode.OK)]
+    [InlineData("nonsense", "x", HttpStatusCode.BadRequest)]
+    public async Task Any_picker_category_is_accepted_for_a_widget(string category, string sensor, HttpStatusCode expected)
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+
+        var put = await client.PutAsync("/devices/asus-glacial-lcd/settings",
+            new StringContent($"{{\"slots\":[{{\"category\":\"{category}\",\"sensor\":\"{sensor}\",\"label\":\"W\"}}]}}", Encoding.UTF8, "application/json"));
+        Assert.Equal(expected, put.StatusCode);
+    }
 }

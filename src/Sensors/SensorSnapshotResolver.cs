@@ -189,6 +189,11 @@ public static class SensorSnapshotResolver
         return null;
     }
 
+    /// <summary>Every category <see cref="GetCategorySensors"/> reads, so a caller can validate one without a second list.</summary>
+    public static bool IsSupportedCategory(string category) => category is
+        "quick" or "cpu" or "gpu" or "memory" or "motherboard" or "storage" or "smart"
+        or "memoryModule" or "battery" or "cooler" or "psu" or "embeddedController" or "network" or "fps";
+
     public static IReadOnlyList<HardwareSensor> GetCategorySensors(
         ISensorProvider sensors,
         string category,

@@ -11,8 +11,6 @@ namespace Nexus.Service.Routes;
 
 public static partial class DevicesRoutes
 {
-    private static readonly string[] GlacialSensorCategories = { "cpu", "gpu", "motherboard" };
-
     private static void MapGlacialLcdEndpoints(WebApplication app)
     {
         app.MapGet("/devices/asus-glacial-lcd/state", (IConfigStore store, GlacialLcdWorker worker, ISensorProvider sensors, GlacialLcdLink link) =>
@@ -44,7 +42,7 @@ public static partial class DevicesRoutes
             if (body.Slots is { } slots
                 && (slots.Length > GlacialLcdProtocol.MaxMonitorSlots
                     || slots.Any(s => s is null || s.Category is null || s.Sensor is null || s.Label is null
-                        || (s.Category.Length > 0 && !GlacialSensorCategories.Contains(s.Category))
+                        || (s.Category.Length > 0 && !SensorSnapshotResolver.IsSupportedCategory(s.Category))
                         || (s.Category.Length == 0 && s.Sensor.Length > 0))))
             {
                 return Results.BadRequest(ApiResponse.Fail("invalid slots"));

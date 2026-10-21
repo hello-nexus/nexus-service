@@ -855,9 +855,11 @@ public class GlacialLcdScreenTests
         var sensors = new FakeSensorProvider { Extras = new SensorExtras { Nics = { nic } } };
         var slot = new GlacialLcdSlot { Category = "network", Sensor = "network-in", Label = "Net" };
 
-        Assert.Equal(("Net", GlacialLcdScreen.NoReading), GlacialLcdSensors.Read(sensors, slot, 0));
         var sources = GlacialLcdSensors.Gather(sensors, "network", null, null);
         Assert.Equal(("Net", "2.0KB/s"), GlacialLcdSensors.Read(sensors, slot, 0, sources));
+
+        var byName = new GlacialLcdSlot { Category = "network", Sensor = "Network Total", Label = "Net" };
+        Assert.Equal(("Net", "2.0KB/s"), GlacialLcdSensors.Read(sensors, byName, 0, sources));
 
         var fps = new SensorSnapshotSources(FpsSensors: new[] { Sensor("fps/app", "Game", "Framerate", 90f) });
         var fpsSlot = new GlacialLcdSlot { Category = "fps", Sensor = "fps/app", Label = "FPS" };

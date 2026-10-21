@@ -25,7 +25,7 @@ public static class GlacialLcdSensors
     {
         if (!string.IsNullOrEmpty(slot.Sensor))
         {
-            return SensorSnapshotResolver.Resolve(sensors, slot.Category ?? "", slot.Sensor, sources);
+            return SensorSnapshotResolver.ResolveOrDefault(sensors, slot.Category ?? "", slot.Sensor, sources);
         }
         // Unpicked: the first temperature of the slot's category, the package reading for the second widget.
         string category = DefaultCategory(slot, index);
