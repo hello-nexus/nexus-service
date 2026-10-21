@@ -1431,13 +1431,12 @@ public sealed class KrakenFirmwareLighting
 public sealed class DevicesSettings
 {
     /// <summary>
-    /// Hidden. Pacing of the Glacial LCD picture upload as a percent of the gaps copied from the
-    /// vendor app's capture; 100 is the captured timing, 19 the pace that worked in the field
-    /// before. No UI. The key is new on purpose: values earlier builds stored under the old name
-    /// (0, 19) are ignored, so the default below reaches every install. A value of 0 or less
-    /// counts as unset (use 1 for effectively none).
+    /// Hidden, no UI. Pacing of the Glacial LCD picture upload as a percent of the gaps copied
+    /// from the vendor app's capture. 0 or less means unset, which is the default, so files store
+    /// 0 and a later change of the default reaches every install; see
+    /// <see cref="ResolveGlacialLcdUploadPace"/>.
     /// </summary>
-    public int GlacialLcdUploadPacePercent { get; set; } = DefaultGlacialLcdUploadPacePercent;
+    public int GlacialLcdUploadPacePercent { get; set; }
 
     public const int DefaultGlacialLcdUploadPacePercent = 4;
 

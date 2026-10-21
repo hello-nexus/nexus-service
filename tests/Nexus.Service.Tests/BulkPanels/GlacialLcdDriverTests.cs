@@ -611,10 +611,15 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void The_default_pace_is_four_percent_of_the_captured_timing()
+    public void The_default_pace_comes_from_the_resolver_and_is_stored_as_unset()
     {
         Assert.Equal(4, new GlacialLcdPanelDriver(new GlacialLcdLink()).ConfiguredPaceScalePercent);
-        Assert.Equal(4, new Nexus.Service.Persistence.DevicesSettings().GlacialLcdUploadPacePercent);
+        // Stored as unset, so a later change of the default is not held back by a value saved today.
+        var fresh = new Nexus.Service.Persistence.DevicesSettings();
+        Assert.Equal(0, fresh.GlacialLcdUploadPacePercent);
+        Assert.Equal(
+            Nexus.Service.Persistence.DevicesSettings.DefaultGlacialLcdUploadPacePercent,
+            Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(fresh.GlacialLcdUploadPacePercent));
     }
 
     [Theory]
@@ -636,7 +641,8 @@ public class GlacialLcdDriverTests
         var zero = System.Text.Json.JsonSerializer.Deserialize(
             "{\"devices\":{\"glacialLcdUploadPacePercent\":0}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
 
-        Assert.Equal(4, absent.Devices.GlacialLcdUploadPacePercent);
+        Assert.Equal(0, absent.Devices.GlacialLcdUploadPacePercent);
+        Assert.Equal(4, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(absent.Devices.GlacialLcdUploadPacePercent));
         Assert.Equal(4, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(zero.Devices.GlacialLcdUploadPacePercent));
     }
 
@@ -648,7 +654,8 @@ public class GlacialLcdDriverTests
         var restored = System.Text.Json.JsonSerializer.Deserialize(
             "{\"devices\":{\"glacialLcdUploadPacePercent\":19}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
 
-        Assert.Equal(4, old.Devices.GlacialLcdUploadPacePercent);
+        Assert.Equal(0, old.Devices.GlacialLcdUploadPacePercent);
+        Assert.Equal(4, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(old.Devices.GlacialLcdUploadPacePercent));
         Assert.Equal(19, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(restored.Devices.GlacialLcdUploadPacePercent));
         Assert.Equal(100, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(100));
     }
