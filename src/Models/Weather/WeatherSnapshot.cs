@@ -56,7 +56,21 @@ public sealed class WeatherSnapshot
     /// <summary>Daily forecast rows in local weather-provider dates.</summary>
     public List<WeatherDailyForecast> Daily { get; set; } = new();
 
+    /// <summary>Why the latest fetch failed: "timeout", "unreachable", "http" or
+    /// "invalid". Null when the snapshot came from a successful fetch or a fresh
+    /// cache hit. A stale snapshot served after a failure carries it too.</summary>
+    public string? Error { get; set; }
+
     public static WeatherSnapshot Empty => new();
+
+    /// <summary>Shallow copy carrying <paramref name="error"/>; the cached
+    /// original is never mutated.</summary>
+    internal WeatherSnapshot WithError(string? error)
+    {
+        var copy = (WeatherSnapshot)MemberwiseClone();
+        copy.Error = error;
+        return copy;
+    }
 }
 
 public sealed class WeatherHourlyForecast
