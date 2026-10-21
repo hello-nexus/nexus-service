@@ -59,8 +59,8 @@ public sealed class GlacialLcdNexusPanelMigrationTests : IDisposable
         var g = _store.Load().Devices.GlacialLcd;
         Assert.Equal(GlacialLcdSettings.ModeMonitor, g.Mode);
         Assert.True(g.ModePending);
-        Assert.True(g.BrightnessEdited);
-        Assert.True(g.DisplayEdited);
+        Assert.False(g.BrightnessEdited);
+        Assert.False(g.DisplayEdited);
     }
 
     [Fact]
@@ -95,5 +95,20 @@ public sealed class GlacialLcdNexusPanelMigrationTests : IDisposable
         _store.Update(s => s.Devices.GlacialLcd.ModePending = false);
         Assert.False(GlacialLcdNexusPanelMigration.Run(_store, _streams, _ => null, _ => true));
         Assert.False(_store.Load().Devices.GlacialLcd.ModePending);
+    }
+
+    [Fact]
+    public void A_failed_panel_removal_keeps_the_stream_entry_for_the_next_start_and_orphans_are_swept()
+    {
+        _streams.Save(new Dictionary<string, StreamedPanelRecord> { ["asus-glacial-lcd"] = new() { PanelDeviceId = "p1" } });
+        _store.Update(s => s.PanelDevices["p9"] = Panel("p9", "asus-glacial-lcd"));
+        var panels = new Dictionary<string, PanelDeviceRecord> { ["p1"] = Panel("p1", "asus-glacial-lcd") };
+        var tried = new List<string>();
+
+        GlacialLcdNexusPanelMigration.Run(_store, _streams, id => panels.GetValueOrDefault(id),
+            id => { tried.Add(id); return id == "p1" ? throw new InvalidOperationException("x") : true; });
+
+        Assert.Contains("p9", tried);
+        Assert.Equal(new[] { "asus-glacial-lcd" }, _streams.Load().Keys);
     }
 }

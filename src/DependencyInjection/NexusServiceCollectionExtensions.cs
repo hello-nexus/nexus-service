@@ -1426,7 +1426,13 @@ public static class NexusServiceCollectionExtensions
         // of them talks to the panel at a time. The device row is the native handler's; the stream
         // driver adds no handler of its own, so the Nexus Control switch is the same one.
         var glacialLink = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink();
-        services.AddSingleton(glacialLink);
+        services.AddSingleton(sp =>
+        {
+            bool nexusPanelOn = false;
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(s => nexusPanelOn = s.Devices.GlacialLcdNexusPanel);
+            glacialLink.NexusPanelEnabled = nexusPanelOn;
+            return glacialLink;
+        });
         var glacialStreamDriver = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver(glacialLink);
         var glacialStreamHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(glacialStreamDriver);
         services.AddSingleton(glacialStreamHub);
@@ -1435,9 +1441,8 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
         {
             var cfg = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
-            bool on = false;
-            cfg.Read(s => on = s.Devices.GlacialLcdNexusPanel);
-            glacialLink.NexusPanelEnabled = on;
+            sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink>();
+            bool on = glacialLink.NexusPanelEnabled;
             return new Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelMigrationService(() =>
             {
                 if (!on)

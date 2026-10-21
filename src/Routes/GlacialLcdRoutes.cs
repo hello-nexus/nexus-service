@@ -15,8 +15,8 @@ public static partial class DevicesRoutes
 
     private static void MapGlacialLcdEndpoints(WebApplication app)
     {
-        app.MapGet("/devices/asus-glacial-lcd/state", (IConfigStore store, GlacialLcdWorker worker, ISensorProvider sensors) =>
-            Results.Json(BuildGlacialState(ReadGlacial(store), worker.IsConnected, sensors, NexusPanelOn(store)), AppJsonContext.Default.GlacialLcdStateResponse));
+        app.MapGet("/devices/asus-glacial-lcd/state", (IConfigStore store, GlacialLcdWorker worker, ISensorProvider sensors, GlacialLcdLink link) =>
+            Results.Json(BuildGlacialState(ReadGlacial(store), worker.IsConnected, sensors, link.NexusPanelEnabled), AppJsonContext.Default.GlacialLcdStateResponse));
 
         app.MapPut("/devices/asus-glacial-lcd/settings", (GlacialLcdSettingsRequest body, IConfigStore store, GlacialLcdWorker worker, GlacialLcdLink link, IServiceProvider services) =>
         {
@@ -25,7 +25,7 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("unknown mode"));
             }
-            if (body.Mode == GlacialLcdSettings.ModePanel && !NexusPanelOn(store))
+            if (body.Mode == GlacialLcdSettings.ModePanel && !link.NexusPanelEnabled)
             {
                 return Results.BadRequest(ApiResponse.Fail("nexus panel mode is unavailable"));
             }
@@ -121,13 +121,6 @@ public static partial class DevicesRoutes
         GlacialLcdSettings copy = new();
         store.Read(s => copy = s.Devices.GlacialLcd.Copy());
         return copy;
-    }
-
-    private static bool NexusPanelOn(IConfigStore store)
-    {
-        bool on = false;
-        store.Read(s => on = s.Devices.GlacialLcdNexusPanel);
-        return on;
     }
 
     internal static GlacialLcdStateResponse BuildGlacialState(GlacialLcdSettings g, bool connected, ISensorProvider sensors, bool panelModeAvailable) => new()
