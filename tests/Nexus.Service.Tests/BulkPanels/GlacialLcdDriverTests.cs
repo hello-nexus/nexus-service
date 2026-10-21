@@ -405,7 +405,7 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_stopped_worker_forgets_a_flushed_picture_only_if_nothing_changed_the_remembered_picture_since()
+    public void A_stopped_worker_forgets_a_flushed_picture_when_nothing_was_stored_since()
     {
         var memory = new FakeMemory();
         memory.Hashes["asus-glacial-lcd"] = "1:KEEP";

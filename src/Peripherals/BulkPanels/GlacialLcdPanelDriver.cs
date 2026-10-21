@@ -625,15 +625,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         watch.Stop();
         FinishUploading(state);
-        if (outcome != UploadOutcome.Done && run.FlushSent
-            && (!state.Stop || Volatile.Read(ref _pictureGeneration) == generation))
+        if (outcome != UploadOutcome.Done && run.FlushSent)
         {
             // What the flush clears is not known to stop at the slot being written, so after a
             // failed or cut-short upload nothing is assumed to be on display: the next frame is
             // uploaded again instead of being taken for the stored one. A stopped worker does
-            // this only if nothing has changed the remembered picture since it started, so it
-            // can never wipe what a newer worker stored.
-            ForgetPicture();
+            // this only if no upload has stored or forgotten a picture since it started (the
+            // check is made under the state lock), so it cannot wipe what a newer worker stored.
+            ForgetPicture(state.Stop ? generation : null);
         }
 
         long now = _clock();
@@ -1079,13 +1078,18 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         return hash.Length == 0 || Array.IndexOf(GlacialLcdProtocol.CustomSlots, slot) < 0 ? null : (slot, hash);
     }
 
-    private void ForgetPicture()
+    /// <param name="onlyIfGeneration">When given, nothing is forgotten unless the remembered picture is still at that generation.</param>
+    private void ForgetPicture(int? onlyIfGeneration)
     {
         lock (_persistLock)
         {
             bool stored;
             lock (_stateLock)
             {
+                if (onlyIfGeneration is int expected && _pictureGeneration != expected)
+                {
+                    return;
+                }
                 _lastHash = null;
                 _pictureGeneration++;
                 stored = _persistedValue is not null;
