@@ -25,8 +25,8 @@ public sealed class GalleryLibrary
 {
     private const string SourcesFileName = "sources.json";
     // One cap across every source (folders and single files). The walk stops
-    // at the first countable item past it, so a request visits at most one
-    // more media file than the cap.
+    // at the first countable item past it; excluded files and duplicates of
+    // earlier sources are not countable.
     public const int MaxItems = 5000;
     public const int MaxPlaylists = 50;
     public const int MaxPlaylistNameLength = 48;

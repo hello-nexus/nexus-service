@@ -199,7 +199,7 @@ public sealed class GalleryLibraryTests : IDisposable
     }
 
     [Fact]
-    public void Cap_IsGlobalAcrossSources_AndSubfolderSourceDedupesAgainstParent()
+    public void Cap_IsGlobalAcrossSources_LaterSourcesSkippedWhenFull()
     {
         var big = MakeDir("big", GalleryLibrary.MaxItems - 10);
         var sub = Path.Combine(big, "sub");
@@ -217,8 +217,8 @@ public sealed class GalleryLibraryTests : IDisposable
 
         var result = lib.Enumerate();
 
-        // Parent holds 4990 + 20 = 5010 files, so it fills the cap and the
-        // later sources are never reached.
+        // The parent folder and its subfolder together exceed the cap, so
+        // the parent fills it and the later sources are never reached.
         Assert.Equal(GalleryLibrary.MaxItems, result.Items.Count);
         Assert.True(result.Truncated);
         Assert.DoesNotContain(result.Items, i => i.Name.StartsWith("o", StringComparison.Ordinal));
@@ -304,7 +304,7 @@ public sealed class GalleryLibraryTests : IDisposable
 
         var result = lib.Enumerate();
 
-        // 5001 files minus one excluded is exactly the cap: all shown, no flag.
+        // One file over the cap, minus the excluded one, is exactly the cap: all shown, no flag.
         Assert.Equal(GalleryLibrary.MaxItems, result.Items.Count);
         Assert.DoesNotContain(result.Items, i => i.Id == firstId);
         Assert.False(result.Truncated);
