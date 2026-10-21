@@ -10,14 +10,14 @@ namespace Nexus.Service.Panel;
 
 /// <summary>
 /// Owns the per-device panel records persisted under
-/// <c>NexusSettings.PanelDevices</c> (top-level, NOT profile-scoped).
+/// <c>NexusSettings.PanelDevices</c>. The records themselves (identity, display
+/// binding, hardware settings) are global; the Panels profile category carries
+/// only their looks (see <see cref="Nexus.Service.Persistence.PanelProfileData"/>).
 /// Allocation, lookup, patching, removal all flow through here. Phone
 /// pairing keeps its own auth-token registry; this is the identity +
 /// layout surface that any panel device (Y70, kiosk, phone) maps onto via
-/// the URL <c>/panel/{deviceId}</c>. Storage is global because device
-/// identity describes physical hardware, not user preferences - profile
-/// switches preserve the registry so the connected panel never loses its
-/// own record mid-session.
+/// the URL <c>/panel/{deviceId}</c>. Profile switches never add or
+/// remove a record, so the connected panel never loses its own mid-session.
 /// </summary>
 public sealed class PanelDeviceRegistry
 {
@@ -40,6 +40,12 @@ public sealed class PanelDeviceRegistry
     /// </summary>
     public event Action<PanelDeviceRecord>? DisplayRecordReady;
 
+    /// <summary>Raised after Allocate mints a new record (a reused single-instance record does not raise it), before the caller can customize it.</summary>
+    public event Action<PanelDeviceRecord>? RecordCreated;
+
+    /// <summary>Raised (record ids) after a record's display fingerprint was first recorded or changed, so profile files can pick up its match key.</summary>
+    public event Action<IReadOnlyList<string>>? FingerprintsChanged;
+
     /// <param name="canReuse">Narrows which record a single-instance surface may reuse; null allows any.</param>
     public PanelDeviceRecord Allocate(string? displayName, PanelDeviceCapabilities? capabilities, Func<PanelDeviceRecord, bool>? canReuse = null)
     {
@@ -47,6 +53,7 @@ public sealed class PanelDeviceRegistry
         var surface = capabilities?.Surface;
 
         PanelDeviceRecord? result = null;
+        var created = false;
         _store.Update(s =>
         {
             // Single-instance surfaces (Y70, Q-series) are one physical panel
@@ -89,8 +96,10 @@ public sealed class PanelDeviceRegistry
             };
             s.PanelDevices[record.Id] = record;
             result = Clone(record);
+            created = true;
         });
 
+        if (created) RecordCreated?.Invoke(result!);
         return result!;
     }
 
@@ -104,7 +113,7 @@ public sealed class PanelDeviceRegistry
     /// monitor and orphan a record on demote. Returns
     /// <c>Created == false</c> with the existing record when already bound.
     /// </summary>
-    public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities)
+    public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities, Nexus.Service.Models.Displays.DisplayFingerprint? fingerprint = null)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var record = new PanelDeviceRecord
@@ -115,6 +124,7 @@ public sealed class PanelDeviceRegistry
             LastSeenAt = now,
             Capabilities = capabilities,
             DisplayId = displayId,
+            DisplayFingerprint = fingerprint,
         };
 
         PanelDeviceRecord? result = null;
@@ -133,6 +143,7 @@ public sealed class PanelDeviceRegistry
                     candidate.Enabled = true;
                     candidate.Capabilities = capabilities ?? candidate.Capabilities;
                     candidate.LastSeenAt = now;
+                    candidate.DisplayFingerprint ??= fingerprint;
                     activated = true;
                 }
                 result = Clone(candidate);
@@ -211,12 +222,17 @@ public sealed class PanelDeviceRegistry
             return (Array.Empty<(string, string, string)>(), pending);
 
         var applied = new List<(string RecordId, string OldDisplayId, string NewDisplayId)>();
+        var fingerprinted = new List<string>();
         _store.Update(s =>
         {
             var plan = PanelDisplayRelink.Plan(Snapshot(s.PanelDevices.Values), attached);
             foreach (var (recordId, fingerprint) in plan.Backfills)
             {
-                if (s.PanelDevices.TryGetValue(recordId, out var record)) record.DisplayFingerprint = fingerprint;
+                if (s.PanelDevices.TryGetValue(recordId, out var record))
+                {
+                    record.DisplayFingerprint = fingerprint;
+                    fingerprinted.Add(recordId);
+                }
             }
             foreach (var (recordId, siblings) in plan.SiblingUpdates)
             {
@@ -228,12 +244,14 @@ public sealed class PanelDeviceRegistry
                 if (!s.PanelDevices.TryGetValue(move.RecordId, out var record)) continue;
                 record.DisplayId = move.NewDisplayId;
                 record.DisplayFingerprint = move.Fingerprint;
+                fingerprinted.Add(move.RecordId);
                 applied.Add((move.RecordId, move.OldDisplayId, move.NewDisplayId));
                 ServiceLog.Info($"[panel-relink] record {move.RecordId} display '{move.OldDisplayId}' -> '{move.NewDisplayId}' "
                     + $"(fingerprint {move.Fingerprint.Manufacturer}:{move.Fingerprint.Product} serial {move.Fingerprint.Serial})");
             }
         });
         if (applied.Count > 0) _store.FlushNow();
+        if (fingerprinted.Count > 0) FingerprintsChanged?.Invoke(fingerprinted);
         return (applied, pending);
     }
 
@@ -809,6 +827,7 @@ public sealed class PanelDeviceRegistry
             record.Font = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
+            record.WidgetSize = null;
             // Presets are personalization too, and they reference the media
             // the caller deletes.
             record.Presets = null;

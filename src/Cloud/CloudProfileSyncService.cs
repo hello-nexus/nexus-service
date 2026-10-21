@@ -770,8 +770,9 @@ public sealed class CloudProfileSyncService : BackgroundService
     /// a blank NexusSettings, or one with the Silent/Balanced/Turbo/Max curves
     /// seeded by the same FanProfiles.SeedDefaultPresetCurves call
     /// AutoRestoreOnStart makes ~4s after boot - login can race that delay.
-    /// Hardware-bound fields (Keeb, Y70, Devices, PanelDevices) are excluded
-    /// since those vary by machine even on a profile the user never touched.
+    /// Hardware-bound fields (Y70, Devices) are excluded since those vary by
+    /// machine even on a profile the user never touched; Panels counts only
+    /// records with a customized look, and never the cooler content.
     /// </summary>
     private bool IsPristineDefaultContent(NexusSettings settings)
     {
@@ -800,8 +801,17 @@ public sealed class CloudProfileSyncService : BackgroundService
         var projection = new NexusSettings();
         foreach (var category in ProfileSharing.All)
         {
-            ProfileSharing.ApplyCategory(projection, settings, category);
+            ProfileSharing.WriteCategory(projection, settings, category);
         }
+        // Auto-allocated records and cooler content present before the user customizes anything must not
+        // make a fresh profile look edited.
+        var defaultLooks = settings.PanelDevices.Values.Where(PanelProfileData.IsDefaultLook).Select(r => r.Id).ToHashSet();
+        projection.PanelDevices = projection.PanelDevices
+            .Where(kv => !defaultLooks.Contains(kv.Key))
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+        projection.HasPanelsData = false;
+        projection.Tryx = new TryxSettings();
+        projection.Devices = new DevicesSettings();
         return JsonSerializer.Serialize(projection, PersistenceJsonContext.Default.NexusSettings);
     }
 

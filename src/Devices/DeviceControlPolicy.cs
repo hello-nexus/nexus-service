@@ -55,7 +55,7 @@ public static class DeviceControlPolicy
     {
         "lianli-galahad2-lcd",
         "corsair-xc7-lcd", "corsair-capellix-lcd", "idcooling-fx-lcd",
-        "asrock-lcd", "corsair-link-lcd",
+        "asrock-lcd", "asus-slc4-lcd", "corsair-link-lcd",
         "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88", "asus-glacial-lcd",
     };
 

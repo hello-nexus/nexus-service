@@ -345,6 +345,7 @@ public static class LightingDevicesCatalog
         Native("Corsair",    "Elite Capellix LCD",  "aio",      "0x1B1C", "0x0C33", screen: true, rgb: false),
         Native("ID-Cooling", "FX-LCD",              "aio",      "0x2000", "0x3000", screen: true, rgb: false),
         Native("ASRock",     "AIO LCD",             "aio",      "0x26CE", "0x0A10", screen: true, rgb: false),
+        Native("ASUS",       "ROG Strix SLC IV LCD","aio",      "0x0B05", "0x1DE6", screen: true, rgb: false),
 
         // Bulk-pipe cooler LCDs - drivers in src/Peripherals/BulkPanels/. Reachable only
         // where Windows has bound WinUSB, and likewise untested.

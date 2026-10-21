@@ -32,11 +32,8 @@ public sealed class KrakenLightingDeviceProvider :
 
     public bool IsConnected => _hub.IsConnected;
 
-    // OpenRGB names this cooler "NZXT Kraken 2024 ELITE Series RGB" (NZXTHue2ControllerDetect.cpp).
     public bool OwnsOpenRgbDevice(Nexus.Service.Lighting.Rgb.RgbDevice device) =>
-        _hub.IsConnected
-        && device.Name is not null
-        && device.Name.Contains("Kraken", StringComparison.OrdinalIgnoreCase);
+        _hub.IsConnected && Nexus.Service.Lighting.Rgb.NativeDetectorClaims.Owns(Nexus.Service.Lighting.Rgb.NativeDetectorClaims.Kraken, device);
 
     public event Action? DevicesChanged;
 

@@ -44,7 +44,7 @@ public sealed class LianLiLightingDeviceProvider :
     /// it - otherwise OpenRGB's push overwrites our first-party black/brightness frames.
     /// </summary>
     public bool OwnsOpenRgbDevice(RgbDevice device) =>
-        IsConnected && device.Name.Contains("Lian Li Uni Hub", StringComparison.OrdinalIgnoreCase);
+        IsConnected && Rgb.NativeDetectorClaims.Owns(Rgb.NativeDetectorClaims.LianLi, device);
 
     public event Action? DevicesChanged;
 

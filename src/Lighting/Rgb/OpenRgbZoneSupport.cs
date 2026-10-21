@@ -270,7 +270,7 @@ public static class OpenRgbZoneSupport
     private static int? MaxRateFor(Dictionary<string, int> rates, string id) => rates.TryGetValue(id, out var hz) ? hz : null;
 
     /// <summary>Full GetAll card emission; static and bridge-free so tests cover it with fake controller data.</summary>
-    public static GetLightingDevicesResponse BuildCards(IReadOnlyList<RgbDevice> devices, NexusSettings settings, bool isInit, IReadOnlySet<string>? drivableIds = null)
+    public static GetLightingDevicesResponse BuildCards(IReadOnlyList<RgbDevice> devices, NexusSettings settings, bool isInit)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
@@ -307,15 +307,6 @@ public static class OpenRgbZoneSupport
 
             if (isDefault && !isSplitMotherboard)
             {
-                // OpenRGB false-positive detectors register a controller with no
-                // readable LED zones; nexus cannot drive it, so drop the whole-device
-                // card rather than surfacing a phantom the user never owned. Non-split
-                // whole devices are never resizable, so a zero count means nothing to drive.
-                // A device that ever settled drivable is latched (drivableIds) so a
-                // later transient 0-LED fetch mid-enumeration can't hide real hardware.
-                if (d.LedCount <= 0 && drivableIds?.Contains(d.StableId) != true)
-                    continue;
-
                 prefs.TryGetValue(baseId, out var pref);
                 layouts.TryGetValue(baseId, out var layout);
                 var (dx, dy, dw, dh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot, d);

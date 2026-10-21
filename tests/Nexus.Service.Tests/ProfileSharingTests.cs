@@ -5,10 +5,10 @@ namespace Nexus.Service.Tests;
 public class ProfileSharingTests
 {
     [Fact]
-    public void All_ListsFiveCategoriesInDocumentedOrder()
+    public void All_ListsSixCategoriesInDocumentedOrder()
     {
         Assert.Equal(
-            new[] { ProfileSharing.Lighting, ProfileSharing.Cooling, ProfileSharing.Theme, ProfileSharing.Dashboard, ProfileSharing.Device },
+            new[] { ProfileSharing.Lighting, ProfileSharing.Cooling, ProfileSharing.Theme, ProfileSharing.Dashboard, ProfileSharing.Device, ProfileSharing.Panels },
             ProfileSharing.All);
     }
 

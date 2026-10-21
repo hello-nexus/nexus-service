@@ -770,6 +770,31 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
+    public void ReloadFromSettings_rereads_content_and_repushes_to_the_connected_panel()
+    {
+        var store = new InMemoryConfigStore();
+        var recording = new RecordingTransport();
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, configStore: store);
+        hub.EnsureConnected();
+        hub.SetPreset(TryxRkProtocol.PresetMediaFile(2));
+        recording.Writes.Clear();
+
+        var next = TryxRkProtocol.PresetMediaFile(4);
+        store.Update(s =>
+        {
+            s.Tryx.CurrentMedia = next;
+            s.Tryx.CurrentMediaIsCustom = false;
+            s.Tryx.OverlayColor = "#00ff00";
+        });
+        hub.ReloadFromSettings();
+
+        Assert.Equal(next, hub.State.CurrentMedia);
+        Assert.Equal("#00ff00", hub.Overlay.Color);
+        Assert.Contains(recording.Writes, w => Encoding.UTF8.GetString(w).Contains(next));
+        Assert.Equal(2, recording.Writes.Count);
+    }
+
+    [Fact]
     public void Constructor_loads_slideshow_from_config_store()
     {
         var store = new InMemoryConfigStore();

@@ -8,6 +8,8 @@ public sealed partial class LightingEngine
 {
     /// <summary>One look-ahead window in every this-many is also rendered the canvas way and compared pixel for pixel.</summary>
     internal const int AheadSpotCheckEvery = 32;
+    /// <summary>Largest share of the canvas the Area sampling taps of one source may cover before the window falls back to full canvas renders.</summary>
+    internal const float AheadAreaMaxTapFraction = 0.5f;
 
     private enum FastWindow { NotUsed, Done, SpotCheck }
 
@@ -98,6 +100,8 @@ public sealed partial class LightingEngine
     {
         _aheadSpot = null;
         var fullFrameAtStart = FullFrameSampling;
+        RefreshSamplingModes();
+        var areaAtStart = _areaModes;
         if (!(LedSpaceGate.Enabled || AheadFastForTest) || fullFrameAtStart)
         {
             return FastWindow.NotUsed;
@@ -149,7 +153,7 @@ public sealed partial class LightingEngine
                     {
                         pinned[dev.Id] = null;
                     }
-                    if (req.NeedsGlobal && !baseTaps.AddDevice(dev, cw, ch))
+                    if (req.NeedsGlobal && !baseTaps.AddDevice(dev, cw, ch, AreaMapFor(dev, cw, ch)))
                     {
                         return FastWindow.NotUsed;
                     }
@@ -164,12 +168,28 @@ public sealed partial class LightingEngine
                         entry = (shader, new LedTapSet(cw, ch));
                         pinTaps[key] = entry;
                     }
-                    if (!entry.Taps.AddDevice(dev, cw, ch))
+                    if (!entry.Taps.AddDevice(dev, cw, ch, AreaMapFor(dev, cw, ch)))
                     {
                         return FastWindow.NotUsed;
                     }
                     pinned[dev.Id] = key;
                     break;
+            }
+        }
+
+        if (areaAtStart is not null)
+        {
+            var limit = cw * ch * AheadAreaMaxTapFraction;
+            if (baseTaps.Count > limit)
+            {
+                return FastWindow.NotUsed;
+            }
+            foreach (var kv in pinTaps)
+            {
+                if (kv.Value.Taps.Count > limit)
+                {
+                    return FastWindow.NotUsed;
+                }
             }
         }
 
@@ -248,7 +268,8 @@ public sealed partial class LightingEngine
             _sampleCanvas = _canvas;
         }
         // Sampling reads these live. Nothing is published yet, so a flip during the window sends it to the canvas path whole.
-        if (FullFrameSampling != fullFrameAtStart || !ReferenceEquals(_scene, scene) || !ReferenceEquals(_stackSlots, slots))
+        if (FullFrameSampling != fullFrameAtStart || !ReferenceEquals(_scene, scene) || !ReferenceEquals(_stackSlots, slots)
+            || !ReferenceEquals(_areaModes, areaAtStart))
         {
             return FastWindow.NotUsed;
         }

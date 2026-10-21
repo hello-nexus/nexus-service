@@ -70,6 +70,7 @@ public static partial class DevicesRoutes
                     ScreenSaverVideo = s.ScreenSaverVideo is { } sv && media.Exists(sv) ? sv : null,
                     ScreenSaverBrightness = s.ScreenSaverBrightness,
                     PumpFollowsMotherboard = board.FollowsMotherboardWhenIdle,
+                    OfflineMode = s.OfflineMode,
                 },
                 AppJsonContext.Default.HydroShift2CurveSettingsResponse);
         });
@@ -101,7 +102,12 @@ public static partial class DevicesRoutes
                 c.ScreenSaverVideo = body.ScreenSaverVideo is null ? c.ScreenSaverVideo : body.ScreenSaverVideo.Length > 0 ? body.ScreenSaverVideo : null;
                 c.ScreenSaverBrightness = body.ScreenSaverBrightness ?? c.ScreenSaverBrightness;
                 c.PumpFollowsMotherboard = body.PumpFollowsMotherboard ?? c.PumpFollowsMotherboard;
+                c.OfflineMode = body.OfflineMode ?? c.OfflineMode;
             });
+            if (body.OfflineMode is { } offline)
+            {
+                player.ApplyOfflineMode(offline);
+            }
             player.Wake();
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
@@ -286,6 +292,8 @@ public sealed class HydroShift2CurveSettingsResponse
     public string? ScreenSaverVideo { get; set; }
     public int ScreenSaverBrightness { get; set; }
     public bool PumpFollowsMotherboard { get; set; }
+    /// <summary>Null until set in Nexus; the glass's own flag is then left as found.</summary>
+    public bool? OfflineMode { get; set; }
 }
 
 public sealed class HydroShift2CurveSettingsRequest
@@ -298,6 +306,7 @@ public sealed class HydroShift2CurveSettingsRequest
     public string? ScreenSaverVideo { get; set; }
     public int? ScreenSaverBrightness { get; set; }
     public bool? PumpFollowsMotherboard { get; set; }
+    public bool? OfflineMode { get; set; }
 }
 
 public sealed class HydroShift2CurveMediaDto

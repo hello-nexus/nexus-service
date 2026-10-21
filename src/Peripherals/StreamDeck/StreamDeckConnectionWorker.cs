@@ -295,6 +295,25 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         _strip = new DeckStripRenderer(keyRenderer);
         _hub.OnTopicFirstSubscriber += OnStreamDeckTilesFirstSubscriber;
         _sessionLock?.LockChanged += OnSessionLockChanged;
+        _keyRenderer.PosterReady += OnPosterReady;
+    }
+
+    /// <summary>
+    /// A video icon's poster frame landed after its key was painted with the
+    /// fallback face. The pressed-variant cache was derived from that face, so
+    /// drop it, then repaint every deck (cached faces make that cheap).
+    /// </summary>
+    internal void OnPosterReady(string imageId)
+    {
+        lock (_lock)
+        {
+            _pressedImageCache.Clear();
+            _pressedImageLru.Clear();
+            foreach (var surface in _surfaces.Values.ToList())
+            {
+                PushCurrentView(surface, viewChanged: false);
+            }
+        }
     }
 
     /// <summary>
@@ -603,25 +622,26 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         bool wantFps;
         lock (_lock)
         {
-            if (!_gate.IsEnabled("streamdeck"))
+            var enabled = _gate.IsEnabled("streamdeck");
+            if (!enabled)
             {
-                DisconnectAll();
-                wantFps = false;
+                DisconnectAll(keepSimulated: true);
             }
-            else
+            _monitoringPaintedThisTick.Clear();
+            _monitoringFpsDemandThisTick = false;
+            RegisterSimulatedIfNeeded();
+            // With the gate off only the simulated deck remains, so the scan that opens real HID devices stays skipped.
+            if (enabled)
             {
-                _monitoringPaintedThisTick.Clear();
-                _monitoringFpsDemandThisTick = false;
-                RegisterSimulatedIfNeeded();
                 ReconcileHidSurfaces();
-                PumpSimulatedInput();
-                ApplyLockWakeExpiry();
-                ApplySleepAfterIdle();
-                RefreshMonitoringKeys();
-                RefreshWeatherKeys();
-                RefreshDialSegments();
-                wantFps = _monitoringFpsDemandThisTick;
             }
+            PumpSimulatedInput();
+            ApplyLockWakeExpiry();
+            ApplySleepAfterIdle();
+            RefreshMonitoringKeys();
+            RefreshWeatherKeys();
+            RefreshDialSegments();
+            wantFps = _monitoringFpsDemandThisTick;
         }
 
         // Outside the lock, like TryxPanoramaHub.Disconnect: releasing the last
@@ -3202,43 +3222,76 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
             Data = Convert.ToBase64String(jpeg),
         });
 
-    private void DisconnectAll()
+    private void DisconnectAll(bool keepSimulated = false)
     {
         lock (_lock)
         {
-            var hadSurfaces = _surfaces.Count > 0;
+            var realSerials = new List<string>();
             foreach (var (key, surface) in _surfaces)
             {
                 if (key == SimulatedKey)
                 {
                     continue;
                 }
+                realSerials.Add(surface.Serial);
                 RestoreBrightnessAndResetBeforeDisconnect(surface);
                 StopInputReader(key);
                 surface.Dispose();
             }
-            _surfaces.Clear();
-            _lastKeyStates.Clear();
-            _folderPathsBySerial.Clear();
-            _lastInputAt.Clear();
-            _asleep.Clear();
-            _sleptForLock.Clear();
-            _brightnessRamps.Clear();
-            _anyRampActive = false;
-            _currentPageBySerial.Clear();
-            _heldKeysBySerial.Clear();
-            ClearDialStatesLocked();
-            _activeHolds.Clear();
-            _anyHoldActive = false;
-            _monitoringHistory.Clear();
-            _monitoringLastHash.Clear();
-            _monitoringLastPushedBytes.Clear();
-            _tileBroadcastHash.Clear();
+            var hadSurfaces = keepSimulated ? realSerials.Count > 0 : _surfaces.Count > 0;
+            if (keepSimulated)
+            {
+                // A kept simulated deck keeps its surface and serial-keyed state; only real decks leave.
+                foreach (var key in _surfaces.Keys.Where(k => k != SimulatedKey).ToList())
+                {
+                    _surfaces.Remove(key);
+                    _lastKeyStates.Remove(key);
+                }
+                foreach (var serial in realSerials)
+                {
+                    ForgetSerialLocked(serial);
+                }
+            }
+            else
+            {
+                _surfaces.Clear();
+                _lastKeyStates.Clear();
+                _folderPathsBySerial.Clear();
+                _lastInputAt.Clear();
+                _asleep.Clear();
+                _sleptForLock.Clear();
+                _brightnessRamps.Clear();
+                _anyRampActive = false;
+                _currentPageBySerial.Clear();
+                _heldKeysBySerial.Clear();
+                ClearDialStatesLocked();
+                _activeHolds.Clear();
+                _anyHoldActive = false;
+                _monitoringHistory.Clear();
+                _monitoringLastHash.Clear();
+                _monitoringLastPushedBytes.Clear();
+                _tileBroadcastHash.Clear();
+            }
             if (hadSurfaces)
             {
                 BroadcastDecksChanged(null);
             }
         }
+    }
+
+    /// <summary>Drops one deck's serial-keyed state with the same helpers as the unplug path in ReconcileHidSurfaces. Caller holds _lock.</summary>
+    private void ForgetSerialLocked(string serial)
+    {
+        _folderPathsBySerial.Remove(serial);
+        _lastInputAt.Remove(serial);
+        _asleep.Remove(serial);
+        _sleptForLock.Remove(serial);
+        CancelBrightnessRampLocked(serial);
+        _currentPageBySerial.Remove(serial);
+        _heldKeysBySerial.Remove(serial);
+        RemoveDialStateForSerial(serial);
+        RemoveAllHoldsForSerial(serial);
+        RemoveMonitoringStateForSerial(serial);
     }
 
     /// <summary>Never a literal 0% - the deck may be blanked at runtime brightness 0 by ApplySleepAfterIdle even though its persisted setting is not.</summary>
@@ -3301,6 +3354,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     {
         _hub.OnTopicFirstSubscriber -= OnStreamDeckTilesFirstSubscriber;
         _sessionLock?.LockChanged -= OnSessionLockChanged;
+        _keyRenderer.PosterReady -= OnPosterReady;
         DisconnectAll();
         // A host stop that is not a process exit leaves IFpsProvider holding
         // this source otherwise, so ETW capture would keep running with no

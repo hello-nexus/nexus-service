@@ -223,7 +223,47 @@ internal static class AppBootstrap
         // dictionary lookup against the DI cache.
         var sp = app.Services;
         profileManager.OnProfileSwitched += () =>
+        {
             ReapplyAfterProfileSwitch(sp, curveEngine, lightingEngine, lightingProvider, configStore);
+            ReapplyPanelsAfterProfileSwitch(sp, configStore);
+        };
+        var panelRegistry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
+        panelRegistry.FingerprintsChanged += profileManager.StampFingerprintKeys;
+        // A record created after its look was saved (a re-promoted monitor, a Y70 or cooler after settings were lost) adopts the active profile's saved look.
+        void AdoptSavedLook(Nexus.Service.Models.Panel.PanelDeviceRecord record)
+        {
+            if (profileManager.AdoptSavedLook(record.Id) && sp.GetService<MultiplexHub>() is { } hub)
+            {
+                PanelTopics.BroadcastPanelDevice(hub, record.Id);
+            }
+        }
+        panelRegistry.DisplayRecordReady += AdoptSavedLook;
+        panelRegistry.RecordCreated += AdoptSavedLook;
+        profileManager.PanelsChanged += () => ReapplyPanelsAfterProfileSwitch(sp, configStore);
+    }
+
+    /// <summary>
+    /// The Panels category changed live panel looks and cooler content, whichever path raised the event
+    /// (HTTP, tray, MCP, delete, import, cloud pull, reset, sharing): connected panels re-render and the
+    /// Tryx display re-pushes. Corsair and the Lian Li screens read their content each worker pass.
+    /// </summary>
+    internal static void ReapplyPanelsAfterProfileSwitch(IServiceProvider sp, IConfigStore configStore)
+    {
+        try
+        {
+            if (sp.GetService<MultiplexHub>() is { } hub)
+            {
+                foreach (var panelId in configStore.Load().PanelDevices.Keys.ToList())
+                {
+                    PanelTopics.BroadcastPanelDevice(hub, panelId);
+                }
+            }
+            sp.GetService<Nexus.Service.Peripherals.Tryx.Panorama.TryxPanoramaHub>()?.ReloadFromSettings();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[profiles] panel reapply failed: {ex.Message}");
+        }
     }
 
     // Extracted from InitializeProfiles' OnProfileSwitched closure so it is
@@ -334,6 +374,7 @@ internal static class AppBootstrap
         if (app.Services.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>() is { } rgbBridge)
         {
             rgbBridge.DeviceSetChanged += () => PanelTopics.BroadcastLighting(muxHub);
+            rgbBridge.ZoneResizeApplied += () => PanelTopics.BroadcastLighting(muxHub);
         }
 
         // The recovery poll loop can sign in after its dialog closed, so account changes are pushed.

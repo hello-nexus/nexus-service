@@ -601,7 +601,10 @@ public static class NexusServiceCollectionExtensions
             engine.Pins = sp.GetRequiredService<Nexus.Service.Lighting.DevicePinTracker>();
             engine.LedColorLocks = sp.GetRequiredService<Nexus.Service.Lighting.LedColorLockTracker>();
             engine.KeyReactive = sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
-            engine.SetStackSlots(sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Lighting.DeviceStacks);
+            var areaSettings = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load();
+            engine.SetStackSlots(areaSettings.Lighting.DeviceStacks);
+            var modeStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            engine.SamplingModeSource = () => modeStore.Load().Devices.SamplingModes;
             return engine;
         });
         services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>();
@@ -1920,10 +1923,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveMedia>();
         services.AddSingleton(sp =>
         {
+            var store = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            driver.OfflineModeSource = () => store.Load().Devices.HydroShift2Curve.OfflineMode;
             var player = new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer(
                 hub, driver,
                 sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveMedia>(),
-                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                store,
                 sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
                 lockSleeping: id => sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.IsLockDark(id) == true);
             sp.GetService<Nexus.Service.Lighting.LcdLockState>()?.Changed += _ => player.Wake();

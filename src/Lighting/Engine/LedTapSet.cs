@@ -40,9 +40,23 @@ internal sealed class LedTapSet
         Count++;
     }
 
-    /// <summary>Adds every pixel the device's spot reads touch. False for a device whose layout the canvas sampler resolves through the editor preview, which this does not model.</summary>
-    public bool AddDevice(DeviceFrame dev, int canvasW, int canvasH) =>
-        LedTaps.VisitSpotRects(dev, canvasW, canvasH, (_, x0, y0, x1, y1) =>
+    /// <summary>Adds every pixel the device's reads touch: its spot reads, or with <paramref name="areaMap"/> every pixel an LED owns. False for a device whose layout the canvas sampler resolves through the editor preview, which this does not model.</summary>
+    public bool AddDevice(DeviceFrame dev, int canvasW, int canvasH, AreaOwnerMap? areaMap = null)
+    {
+        if (areaMap is not null)
+        {
+            if (dev.PreviewLedCount is not null || (dev.PreviewLayout is { Length: > 0 }))
+            {
+                return false;
+            }
+            foreach (var o in areaMap.Pix)
+            {
+                var p = o / 3;
+                Add(p % canvasW, p / canvasW);
+            }
+            return true;
+        }
+        return LedTaps.VisitSpotRects(dev, canvasW, canvasH, (_, x0, y0, x1, y1) =>
         {
             for (var y = y0; y <= y1; y++)
             {
@@ -52,6 +66,7 @@ internal sealed class LedTapSet
                 }
             }
         });
+    }
 }
 
 internal static class LedTaps

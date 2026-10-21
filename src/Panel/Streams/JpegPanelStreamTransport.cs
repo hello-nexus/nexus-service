@@ -177,7 +177,9 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
                 BgraQuarterTurn.RotateCcw(oriented, model.Width, model.Height, _turned);
                 oriented = _turned;
             }
-            jpeg = _encoder.Encode(oriented);
+            jpeg = model.HeaderStyle == JpegPanelHeaderStyle.AsusFramed
+                ? EncodeToFit(model, oriented)
+                : _encoder.Encode(oriented);
         }
         catch (Exception ex)
         {
@@ -220,6 +222,65 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         _statsWindowStartMs = nowMs;
     }
 
+    /// <summary>Lower qualities tried, in order, for a frame too busy to fit the panel's chunk counter.</summary>
+    private static readonly int[] StepDownQualities = { 70, 55, 40, 25 };
+
+    /// <summary>Consecutive frames that fit before one step back up in quality is tried.</summary>
+    private const int StepUpAfterFrames = 30;
+
+    private BgraJpegEncoder?[]? _stepDown;
+
+    // Level 0 is the default encoder, level n the nth entry of StepDownQualities. The level that
+    // last fit is where the next frame starts, so a busy stretch of frames does not re-encode
+    // every one from the top.
+    private int _level;
+
+    internal int QualityLevel => _level;
+    private int _fitRun;
+
+    /// <summary>
+    /// Encodes a frame for a panel whose chunk counter is a byte, stepping down in quality from
+    /// the last level that fit, the way the SLV3 image import does, and back up after a run of
+    /// frames that fit. If none fits the last attempt is returned and the hub refuses it.
+    /// </summary>
+    private ReadOnlySpan<byte> EncodeToFit(JpegPanelModel model, ReadOnlySpan<byte> bgra)
+    {
+        int start = _level;
+        int level = start;
+        ReadOnlySpan<byte> current;
+        while (true)
+        {
+            current = EncoderFor(model, level).Encode(bgra);
+            if (JpegPanelProtocol.FitsChunkCounter(model.HeaderStyle, model.ReportLength, current.Length)
+                || level >= StepDownQualities.Length)
+            {
+                break;
+            }
+            level++;
+        }
+        if (level > start)
+        {
+            _level = level;
+            _fitRun = 0;
+        }
+        else if (_level > 0 && ++_fitRun >= StepUpAfterFrames)
+        {
+            _level--;
+            _fitRun = 0;
+        }
+        return current;
+    }
+
+    private BgraJpegEncoder EncoderFor(JpegPanelModel model, int level)
+    {
+        if (level == 0)
+        {
+            return _encoder;
+        }
+        _stepDown ??= new BgraJpegEncoder?[StepDownQualities.Length];
+        return _stepDown[level - 1] ??= new BgraJpegEncoder(model.Width, model.Height, StepDownQualities[level - 1]);
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -228,5 +289,12 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         }
         _disposed = true;
         _encoder.Dispose();
+        if (_stepDown is not null)
+        {
+            foreach (var encoder in _stepDown)
+            {
+                encoder?.Dispose();
+            }
+        }
     }
 }

@@ -138,15 +138,15 @@ internal static class KrakenProtocol
 
     public static byte[] EncodeLightingInfoRequest() => NewReport(ReportLightingInfoRequest, 0x03);
 
-    // Telemetry-stream setup, sent once per connection. 0xB8 with an interval index of 1
-    // is the half-second cadence liquidctl uses; the cooler will not report its accessory
-    // table until reporting has been started.
-    public static byte[] EncodeSetUpdateInterval()
+    // Telemetry-stream setup, sent once per connection. Byte 4 is the interval index, which
+    // varies by model; the cooler will not report its accessory table until reporting has
+    // been started.
+    public static byte[] EncodeSetUpdateInterval(byte interval = 0x01)
     {
         var report = NewReport(ReportInit, 0x02);
         report[2] = 0x01;
         report[3] = 0xB8;
-        report[4] = 0x01;
+        report[4] = interval;
         return report;
     }
 
@@ -217,6 +217,9 @@ internal static class KrakenProtocol
         return report;
     }
 
+    /// <summary>Opens the live-frame session on the Plus V2: <c>36 04</c>.</summary>
+    public static byte[] EncodeBeginLiveSession() => NewReport(ReportTransferRequest, 0x04);
+
     public static byte[] EncodeEndTransfer() => NewReport(ReportTransferRequest, 0x02);
 
     /// <summary>Aborts any half-finished transfer.</summary>
@@ -226,11 +229,11 @@ internal static class KrakenProtocol
     /// Starts a live frame straight to the panel, no bucket: <c>36 01 00 01 09</c>, as
     /// captured from the 2023 Kraken Elite's live frames. Byte 4 is the bulk format.
     /// </summary>
-    public static byte[] EncodeStartDirectTransfer()
+    public static byte[] EncodeStartDirectTransfer(byte format = BulkFormatBgr888)
     {
         var report = NewReport(ReportTransferRequest, 0x01);
         report[3] = 0x01;
-        report[4] = BulkFormatBgr888;
+        report[4] = format;
         return report;
     }
 

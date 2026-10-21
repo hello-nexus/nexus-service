@@ -93,6 +93,13 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
 
                 if (s.LcdSelectedMediaId is null)
                 {
+                    // A profile with no selected image takes the glass back from the last still it streamed.
+                    if (_loadedMediaId is not null)
+                    {
+                        _loadedMediaId = null;
+                        _loadedImage = null;
+                        _lcd.SelectHandBackScreen(s.LcdDeviceMediaId is not null, resumePainting: false);
+                    }
                     await Task.Delay(1000, ct).ConfigureAwait(false);
                     continue;
                 }

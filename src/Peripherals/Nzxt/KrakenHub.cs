@@ -58,6 +58,7 @@ public sealed class KrakenHub : IDisposable
     private volatile KrakenSnapshot _snapshot = KrakenSnapshot.Empty;
     // Last image pushed, stored unrotated so a rotation change can re-render it.
     private byte[]? _lastLcdFrame;
+    private int _lastNakKey;
     // Last GIF pushed, panel-sized and unrotated; rotating it takes ffmpeg, so the caller does.
     private byte[]? _lastLcdGif;
 
@@ -193,6 +194,11 @@ public sealed class KrakenHub : IDisposable
             _lockDimmed = false;
             if (_isConnected && _device != null)
             {
+                if (_model.Rgb565DirectStream)
+                {
+                    // The panel may have dropped the live session while dark; frames re-enter first.
+                    _streamReady = false;
+                }
                 ApplyPendingWhileDarkLocked();
                 // Up from 0, or from the step a fade down was caught on.
                 var from = _fade is { Down: true } falling ? falling.LevelAt(Clock()) : 0;
@@ -336,6 +342,21 @@ public sealed class KrakenHub : IDisposable
         var mode = _lockPendingMode;
         _lockPendingReupload = false;
         _lockPendingMode = null;
+        if (_model.Rgb565DirectStream)
+        {
+            if (mode is { } held && held != KrakenDisplayMode.Bucket)
+            {
+                ClearPlusHold();
+                _streamReady = false;
+                WriteLocked(KrakenProtocol.EncodeSetDisplayMode(held, 0));
+                _snapshot = _snapshot.WithDisplayMode(held);
+            }
+            else if ((reupload || mode == KrakenDisplayMode.Bucket) && _lastLcdFrame != null)
+            {
+                MarkPlusStillDirty();
+            }
+            return;
+        }
         if (reupload && _lastLcdFrame != null)
         {
             UploadLcdFrameLocked(_lastLcdFrame, _snapshot.LcdOrientationQuarterTurns);
@@ -464,6 +485,7 @@ public sealed class KrakenHub : IDisposable
                 return false;
             }
 
+            _lastNakKey = 0;
             var fwReply = ExchangeLocked(KrakenProtocol.EncodeFirmwareRequest(), 0x11, 0x01, ConnectReadTimeoutMs);
             if (fwReply == null)
             {
@@ -478,7 +500,7 @@ public sealed class KrakenHub : IDisposable
 
             // Starts the cooler's telemetry stream. Without it the accessory table is not
             // populated yet and the lighting query answers with zero channels.
-            WriteLocked(KrakenProtocol.EncodeSetUpdateInterval());
+            WriteLocked(KrakenProtocol.EncodeSetUpdateInterval(_model.TelemetryInterval));
             WriteLocked(KrakenProtocol.EncodeStartReporting());
 
             var channels = _model.Lighting == KrakenLightingProtocol.None
@@ -778,11 +800,33 @@ public sealed class KrakenHub : IDisposable
 
     public bool SetDisplayMode(KrakenDisplayMode mode, int bucketIndex = 0)
     {
+        bool plus = _model.Rgb565DirectStream;
+        if (plus && mode != KrakenDisplayMode.Bucket)
+        {
+            // Whatever the device answers, the held image must stop being resent.
+            ClearPlusHold();
+        }
         lock (_lock)
         {
             if (_device == null)
             {
                 return false;
+            }
+            if (plus && mode == KrakenDisplayMode.Bucket)
+            {
+                // No bucket store on this firmware: the stored still goes out as a direct frame.
+                if (_lastLcdFrame == null)
+                {
+                    return false;
+                }
+                _lockPendingMode = _lockDimmed ? mode : null;
+                _lockPendingReupload = false;
+                _snapshot = _snapshot.WithDisplayMode(mode);
+                if (!_lockDimmed)
+                {
+                    MarkPlusStillDirty();
+                }
+                return true;
             }
             if (_lockDimmed)
             {
@@ -797,6 +841,10 @@ public sealed class KrakenHub : IDisposable
             _lockPendingReupload = false;
             var reply = ExchangeLocked(
                 KrakenProtocol.EncodeSetDisplayMode(mode, bucketIndex), 0x39, 0x01, CommandReadTimeoutMs);
+            if (plus)
+            {
+                _streamReady = false;
+            }
             if (!AcceptedLocked(reply))
             {
                 return false;
@@ -880,6 +928,10 @@ public sealed class KrakenHub : IDisposable
         }
 
         var source = rgba.ToArray();
+        if (_model.Rgb565DirectStream)
+        {
+            return UploadPlusImage(source);
+        }
         lock (_lcdTransferLock)
         lock (_lock)
         {
@@ -901,6 +953,34 @@ public sealed class KrakenHub : IDisposable
             _lockPendingReupload = false;
             _lockPendingMode = null;
             return UploadLcdFrameLocked(source, _snapshot.LcdOrientationQuarterTurns);
+        }
+    }
+
+    // Plus V2 still: stored, then encoded and sent outside the device lock.
+    private bool UploadPlusImage(byte[] source)
+    {
+        lock (_lcdTransferLock)
+        {
+            lock (_lock)
+            {
+                if (_device == null || _lcd == null)
+                {
+                    return false;
+                }
+                _lastLcdFrame = source;
+                _lastLcdGif = null;
+                _snapshot = _snapshot.WithDisplayMode(KrakenDisplayMode.Bucket);
+                _lockPendingMode = null;
+                if (_lockDimmed)
+                {
+                    // Stored now, shown on unlock.
+                    _lockPendingReupload = true;
+                    return true;
+                }
+                _lockPendingReupload = false;
+            }
+            MarkPlusStillDirty();
+            return PushPlusStillLocked(Clock());
         }
     }
 
@@ -951,6 +1031,11 @@ public sealed class KrakenHub : IDisposable
         if (_device == null || _lcd == null)
         {
             return false;
+        }
+        if (_model.Rgb565DirectStream)
+        {
+            MarkPlusStillDirty();
+            return true;
         }
         int encoded = EncodeLcdPayloadLocked(source, quarterTurns, sourceIsBgra: false, out var format);
         return UploadBucketLocked(_lcdScratch.AsSpan(0, encoded), format);
@@ -1079,6 +1164,10 @@ public sealed class KrakenHub : IDisposable
         {
             return false;
         }
+        if (_model.Rgb565DirectStream)
+        {
+            return PushPlusFrame(bgra);
+        }
         if (_directStream)
         {
             return PushDirectFrame(bgra);
@@ -1155,6 +1244,328 @@ public sealed class KrakenHub : IDisposable
                 return true;
             }
         }
+    }
+
+
+    // Plus V2 live stream (KrakenModel.Rgb565DirectStream). The wire buffer holds the last
+    // encoded frame, which is what the idle refresh resends; the source copy lets an
+    // unchanged frame skip the encode. Buffers are guarded by _lcdTransferLock.
+    //
+    // The hold (_plusActive) says the panel is being kept lit by resends. It is armed only
+    // by a send that began in the current generation and cleared by anything that ends the
+    // content, always under _plusHoldLock, which is never held across I/O.
+    private const long PlusIdleResendMs = 1000;
+    private const long PlusEndDelayMs = 880;
+    private const int PlusMinWaitMs = 20;
+    private const int PlusIdleWaitMs = 250;
+    private readonly object _plusHoldLock = new();
+    private byte[]? _plusWire;
+    private byte[]? _plusSource;
+    private byte[]? _plusHeader;
+    private int _plusTurns;
+    private long _plusSentAtMs;
+    private bool _plusActive;
+    private bool _plusHoldIsStill;
+    private bool _plusSendingStill;
+    private bool _plusEndPending;
+    private bool _plusStillDirty;
+    private int _plusGen;
+    private static readonly byte[] PlusBeginSession = KrakenProtocol.EncodeBeginLiveSession();
+    private static readonly byte[] PlusCancel = KrakenProtocol.EncodeCancelTransfers();
+    private static readonly byte[] PlusStart = KrakenProtocol.EncodeStartDirectTransfer(KrakenProtocol.BulkFormatRgb565);
+    private static readonly byte[] PlusEnd = KrakenProtocol.EncodeEndTransfer();
+    private static readonly byte[] PlusLiquid = KrakenProtocol.EncodeSetDisplayMode(KrakenDisplayMode.Liquid, 0);
+
+    // Ends the held content. endCommand asks the refresher to send the vendor's closing
+    // mode command a short while later, as the vendor does after its last frame.
+    private void ClearPlusHold(bool endCommand = false)
+    {
+        lock (_plusHoldLock)
+        {
+            _plusEndPending = endCommand && _plusActive;
+            _plusGen++;
+            _plusActive = false;
+            _plusStillDirty = false;
+        }
+    }
+
+    // Returns the generation the send belongs to and records which kind of content is in flight.
+    private int BeginPlusSend(bool still)
+    {
+        lock (_plusHoldLock)
+        {
+            _plusSendingStill = still;
+            return _plusGen;
+        }
+    }
+
+    // Arms the hold only if nothing cleared it since the send began.
+    private void ArmPlusHold(int gen, bool still, long now)
+    {
+        lock (_plusHoldLock)
+        {
+            if (gen != _plusGen)
+            {
+                return;
+            }
+            _plusActive = true;
+            _plusSendingStill = false;
+            _plusHoldIsStill = still;
+            _plusEndPending = false;
+            Volatile.Write(ref _plusSentAtMs, now);
+        }
+    }
+
+    private void MarkPlusStillDirty()
+    {
+        lock (_plusHoldLock)
+        {
+            _plusStillDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// One live frame on the Plus V2: <c>36 01 00 01 06</c>, a 20-byte header, RGB565 with
+    /// the high byte first, <c>36 02</c>. No bucket exists on this firmware. An unchanged
+    /// frame is not re-encoded and is held back until the idle refresh is due.
+    /// </summary>
+    private bool PushPlusFrame(ReadOnlySpan<byte> bgra)
+    {
+        lock (_lcdTransferLock)
+        {
+            if (LockDimmed)
+            {
+                return true;
+            }
+            int w = _lcdWidth, h = _lcdHeight;
+            int turns = _snapshot.LcdOrientationQuarterTurns;
+            var now = Clock();
+            bool changed = _plusSource == null || _plusSource.Length != bgra.Length
+                || _plusWire == null || turns != _plusTurns || _plusHoldIsStill
+                || !bgra.SequenceEqual(_plusSource);
+            if (!changed && _plusActive && now - Volatile.Read(ref _plusSentAtMs) < PlusIdleResendMs)
+            {
+                return true;
+            }
+            if (changed)
+            {
+                EnsurePlusWire(Rgb565Encoder.EncodedLength(w, h));
+                if (_plusSource == null || _plusSource.Length != bgra.Length)
+                {
+                    _plusSource = new byte[bgra.Length];
+                }
+                Rgb565Encoder.Encode(bgra, w, h, turns, _plusWire!, sourceIsBgra: true, highByteFirst: true);
+                bgra.CopyTo(_plusSource);
+                _plusTurns = turns;
+            }
+            return SendPlusWireLocked(now, still: false);
+        }
+    }
+
+    private void EnsurePlusWire(int len)
+    {
+        if (_plusWire == null || _plusWire.Length != len)
+        {
+            _plusWire = new byte[len];
+            _plusHeader = KrakenProtocol.EncodeBulkHeader(KrakenProtocol.BulkFormatRgb565, len);
+        }
+    }
+
+    /// <summary>
+    /// Milliseconds until <see cref="RefreshIdleFrame"/> has something to do, so a dedicated
+    /// timer can wake on the deadline instead of polling.
+    /// </summary>
+    public int IdleRefreshDelayMs()
+    {
+        if (!_model.Rgb565DirectStream)
+        {
+            return PlusIdleWaitMs;
+        }
+        long now = Clock();
+        lock (_plusHoldLock)
+        {
+            if (_plusStillDirty)
+            {
+                return PlusMinWaitMs;
+            }
+            long due;
+            if (_plusActive)
+            {
+                due = _plusSentAtMs + PlusIdleResendMs;
+            }
+            else if (_plusEndPending)
+            {
+                due = _plusSentAtMs + PlusEndDelayMs;
+            }
+            else
+            {
+                return PlusIdleWaitMs;
+            }
+            return (int)Math.Clamp(due - now, PlusMinWaitMs, PlusIdleResendMs);
+        }
+    }
+
+    /// <summary>
+    /// Re-encodes a changed still, resends the held frame when the idle interval is up, and
+    /// sends the closing mode command after a stream ends. No-op for every other model.
+    /// </summary>
+    public void RefreshIdleFrame()
+    {
+        if (!_model.Rgb565DirectStream || !Monitor.TryEnter(_lcdTransferLock))
+        {
+            return;
+        }
+        try
+        {
+            bool dirty, active, endPending;
+            long sentAt;
+            lock (_plusHoldLock)
+            {
+                dirty = _plusStillDirty;
+                active = _plusActive;
+                endPending = _plusEndPending;
+                sentAt = _plusSentAtMs;
+            }
+            var now = Clock();
+            if (dirty)
+            {
+                PushPlusStillLocked(now);
+            }
+            else if (active && now - sentAt >= PlusIdleResendMs && _plusWire != null && !LockDimmed)
+            {
+                SendPlusWireLocked(now, _plusHoldIsStill);
+            }
+            else if (endPending && !active && now - sentAt >= PlusEndDelayMs)
+            {
+                lock (_plusHoldLock)
+                {
+                    _plusEndPending = false;
+                }
+                lock (_lock)
+                {
+                    _streamReady = false;
+                    if (_device != null)
+                    {
+                        WriteLocked(PlusLiquid);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Monitor.Exit(_lcdTransferLock);
+        }
+    }
+
+    /// <summary>
+    /// Called when the panel stream ends. Stops the refresh and queues the vendor's closing
+    /// mode command; a held still image is left alone.
+    /// </summary>
+    public void ReleaseStream()
+    {
+        if (!_model.Rgb565DirectStream)
+        {
+            return;
+        }
+        lock (_plusHoldLock)
+        {
+            bool holdsStill = _plusSendingStill || (_plusActive && _plusHoldIsStill);
+            if (!holdsStill)
+            {
+                _plusEndPending = true;
+                _plusGen++;
+                _plusActive = false;
+            }
+        }
+    }
+
+    // Caller holds _lcdTransferLock. The device lock covers only the HID steps.
+    private bool SendPlusWireLocked(long now, bool still)
+    {
+        int gen = BeginPlusSend(still);
+        var wire = _plusWire;
+        var header = _plusHeader;
+        IKrakenLcdTransport lcd;
+        lock (_lock)
+        {
+            if (_device == null || _lcd == null || wire == null || header == null)
+            {
+                return false;
+            }
+            lcd = _lcd;
+            if (!_streamReady)
+            {
+                WriteLocked(PlusBeginSession);
+                WriteLocked(PlusCancel);
+                _streamReady = true;
+            }
+            var mode = still ? KrakenDisplayMode.Bucket : KrakenDisplayMode.Liquid;
+            if (_snapshot.DisplayMode != mode)
+            {
+                _snapshot = _snapshot.WithDisplayMode(mode);
+            }
+            if (!WriteLocked(PlusStart))
+            {
+                _streamReady = false;
+                return false;
+            }
+        }
+        // The header is its own bulk transfer, then the whole frame in one.
+        if (!lcd.Write(header) || !lcd.Write(wire))
+        {
+            lock (_lock) { _streamReady = false; }
+            return false;
+        }
+        lock (_lock)
+        {
+            if (_device == null || !WriteLocked(PlusEnd))
+            {
+                _streamReady = false;
+                return false;
+            }
+        }
+        ArmPlusHold(gen, still, now);
+        return true;
+    }
+
+    // Caller holds _lcdTransferLock. Encodes the stored still at the current orientation
+    // outside the device lock, then sends it.
+    private bool PushPlusStillLocked(long now)
+    {
+        byte[]? source;
+        int turns;
+        lock (_lock)
+        {
+            if (_lockDimmed)
+            {
+                // Dropped while dark so the refresher stops waking; unlock re-shows it.
+                lock (_plusHoldLock)
+                {
+                    _plusStillDirty = false;
+                }
+                _lockPendingReupload = true;
+                return true;
+            }
+            source = _lastLcdFrame;
+            turns = _snapshot.LcdOrientationQuarterTurns;
+        }
+        lock (_plusHoldLock)
+        {
+            if (!_plusStillDirty)
+            {
+                return true;
+            }
+            _plusStillDirty = false;
+        }
+        if (source == null)
+        {
+            return false;
+        }
+        EnsurePlusWire(Rgb565Encoder.EncodedLength(_lcdWidth, _lcdHeight));
+        Rgb565Encoder.Encode(source, _lcdWidth, _lcdHeight, turns, _plusWire!, sourceIsBgra: false, highByteFirst: true);
+        _plusSource = null;
+        _plusTurns = turns;
+        return SendPlusWireLocked(now, still: true);
     }
 
     /// <summary>
@@ -1430,13 +1841,20 @@ public sealed class KrakenHub : IDisposable
             {
                 if (span[14] == request[0] && span[15] == request[1])
                 {
-                    ServiceLog.Warn($"[nzxt-kraken] device rejected command {span[14]:X2} {span[15]:X2}");
+                    // Once per distinct command, so a device that rejects every frame logs once.
+                    int nakKey = (span[14] << 8) | span[15];
+                    if (_lastNakKey != nakKey)
+                    {
+                        _lastNakKey = nakKey;
+                        ServiceLog.Warn($"[nzxt-kraken] device rejected command {span[14]:X2} {span[15]:X2}");
+                    }
                     return null;
                 }
                 continue;
             }
             if (span.Length > 1 && span[0] == replyReportId && span[1] == replySubCommand)
             {
+                _lastNakKey = 0;
                 return buf[..n];
             }
         }
@@ -1482,6 +1900,8 @@ public sealed class KrakenHub : IDisposable
             _snapshot = KrakenSnapshot.Empty;
             // A re-attached cooler may hold buckets from before; the next stream re-enters.
             _streamReady = false;
+            ClearPlusHold();
+            _lastNakKey = 0;
             Volatile.Write(ref _streamRetryAtMs, 0);
             Volatile.Write(ref _streamFailures, 0);
             _lcd?.Dispose();
