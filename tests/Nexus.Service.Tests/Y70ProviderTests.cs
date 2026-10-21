@@ -179,6 +179,22 @@ public class Y70ProviderTests
     }
 
     [Fact]
+    public void Failed_write_drops_the_cached_display_so_the_next_call_rescans()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = "display-rtk0004", SetVcpResult = false };
+        var provider = BuildLimited(ddc);
+        Assert.True(provider.IsConnected());
+
+        provider.SetToggle(true);
+        ddc.DisplayId = "display-rtk0005";
+        ddc.SetVcpResult = true;
+        provider.SetToggle(true);
+
+        Assert.Equal(2, ddc.FindCalls);
+        Assert.Contains(ddc.Writes, w => w.Id == "display-rtk0005");
+    }
+
+    [Fact]
     public void Without_limit_every_check_scans()
     {
         var ddc = new CountingDdcProvider { DisplayId = null };
@@ -197,6 +213,7 @@ public class Y70ProviderTests
     {
         public string? DisplayId;
         public int FindCalls;
+        public bool SetVcpResult = true;
         public List<(string Id, byte Code, int Value)> Writes { get; } = new();
 
         public string Hint => "";
@@ -205,7 +222,7 @@ public class Y70ProviderTests
         public DisplayBrightnessDto SetBrightness(string id, int percent) => new() { Id = id };
         public DisplayBrightnessWritePolicy GetBrightnessWritePolicy(string id) => new();
         public DisplayVcpDto? GetVcp(string id, byte code) => null;
-        public bool SetVcp(string id, byte code, int value) { Writes.Add((id, code, value)); return true; }
+        public bool SetVcp(string id, byte code, int value) { Writes.Add((id, code, value)); return SetVcpResult; }
         public string? FindDisplayIdByHardwareName(IReadOnlyList<string> nameFragments) { FindCalls++; return DisplayId; }
     }
 

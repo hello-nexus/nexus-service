@@ -52,8 +52,8 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     private readonly IDisplayBrightnessProvider _ddc;
     private readonly HardwarePresence? _presence;
 
-    // A DDC lookup enumerates every display (i2c transactions on Linux); the 3 s heartbeat must not repeat it; the service has no display hotplug signal, so a TTL bounds staleness.
-    private static readonly long DdcLookupTtlMs = 60_000;
+    // A DDC lookup enumerates every display (i2c transactions on Linux), so the heartbeat reuses the last result for a bounded time. A failed write drops a cached hit.
+    private const long DdcLookupTtlMs = 60_000;
     private readonly object _ddcIdLock = new();
     private string? _ddcId;
     private long _ddcIdCheckedAt;
@@ -322,6 +322,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
             return;
         }
         var ok = _ddc.SetVcp(id, Y70DisplayProtocol.VcpBrightness, pct);
+        if (!ok) InvalidateDdcId(id);
         LogApply($"transport=ddc id={id} vcp=brightness ok={ok}");
     }
 
@@ -341,6 +342,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         var ok = _ddc.SetVcp(id, Y70DisplayProtocol.VcpVideoGainRed, gain)
                & _ddc.SetVcp(id, Y70DisplayProtocol.VcpVideoGainGreen, gain)
                & _ddc.SetVcp(id, Y70DisplayProtocol.VcpVideoGainBlue, gain);
+        if (!ok) InvalidateDdcId(id);
         LogApply($"transport=ddc-rgb id={id} gain={gain} ok={ok}");
     }
 
@@ -419,6 +421,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                     return;
                 }
                 var ok = _ddc.SetVcp(id, Y70DisplayProtocol.VcpPower, screenOn ? Y70DisplayProtocol.VcpPowerOn : Y70DisplayProtocol.VcpPowerStandby);
+                if (!ok) InvalidateDdcId(id);
                 LogApply($"transport=ddc id={id} vcp=power on={screenOn} ok={ok}");
             }
         }
@@ -437,6 +440,15 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         if (detail == _lastApplyLog) return;
         _lastApplyLog = detail;
         ServiceLog.Info($"[y70-display] apply {detail}");
+    }
+
+    private void InvalidateDdcId(string id)
+    {
+        lock (_ddcIdLock)
+        {
+            if (_ddcId == id)
+                _ddcIdChecked = false;
+        }
     }
 
     private string? DdcDisplayId(bool reuseMiss = false)

@@ -267,43 +267,63 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         }
     }
 
-    /// <summary>I2c bus numbers of connected DRM connectors only; probing any other /dev/i2c-* (GPU internal, SMBus) can hang the GPU.</summary>
-    internal static List<int> SelectDdcBuses(string drmRoot)
+    private const string I2cDevicesRoot = "/sys/bus/i2c/devices";
+
+    /// <summary>
+    /// I2c bus numbers to probe for DDC: buses linked from connected DRM connectors, plus every NVIDIA
+    /// adapter (the proprietary driver exposes no connector link). Probing any other /dev/i2c-* (GPU internal, SMBus) can hang the GPU.
+    /// </summary>
+    internal static List<int> SelectDdcBuses(string drmRoot, string i2cRoot = I2cDevicesRoot)
     {
         var buses = new SortedSet<int>();
         string[] connectors;
         try { connectors = Directory.GetDirectories(drmRoot, "card*-*"); }
-        catch { return new List<int>(); }
+        catch { connectors = Array.Empty<string>(); }
 
         foreach (var dir in connectors)
         {
             if (LinuxSysfs.ReadText(Path.Combine(dir, "status")) != "connected")
                 continue;
-            // The kernel links the connector's DDC adapter as "ddc"; older layouts nest an i2c-N child.
+            // The kernel links the connector's DDC adapter as "ddc"; DP AUX adapters nest an i2c-N child instead.
             var ddcLink = Path.Combine(dir, "ddc");
             var leaf = LinuxSysfs.ReadLinkLeaf(ddcLink);
-            var adapterDir = ddcLink;
-            if (leaf is null)
+            if (leaf is not null)
             {
-                leaf = ChildI2cLeaf(dir);
-                adapterDir = leaf is null ? ddcLink : Path.Combine(dir, leaf);
-            }
-            // The amdgpu SMU adapter carries power-management table transfers; a DDC probe there wedges the SMU.
-            if (LinuxSysfs.ReadText(Path.Combine(adapterDir, "name"))?.StartsWith("AMDGPU SMU", StringComparison.Ordinal) == true)
+                AddBus(buses, leaf, ddcLink);
                 continue;
-            if (leaf is not null && leaf.StartsWith("i2c-", StringComparison.Ordinal)
-                && int.TryParse(leaf.AsSpan("i2c-".Length), NumberStyles.None, CultureInfo.InvariantCulture, out var bus))
+            }
+            foreach (var child in ChildI2cLeaves(dir))
+                AddBus(buses, child, Path.Combine(dir, child));
+        }
+
+        try
+        {
+            foreach (var adapter in Directory.GetDirectories(i2cRoot, "i2c-*"))
             {
-                buses.Add(bus);
+                if (LinuxSysfs.ReadText(Path.Combine(adapter, "name"))?.StartsWith("NVIDIA i2c adapter", StringComparison.Ordinal) == true)
+                    AddBus(buses, Path.GetFileName(adapter), adapter);
             }
         }
+        catch { }
         return buses.ToList();
     }
 
-    private static string? ChildI2cLeaf(string connectorDir)
+    private static void AddBus(SortedSet<int> buses, string leaf, string adapterDir)
     {
-        try { return Directory.GetDirectories(connectorDir, "i2c-*").Select(Path.GetFileName).FirstOrDefault(); }
-        catch { return null; }
+        // The amdgpu SMU adapter carries power-management table transfers; a DDC probe there wedges the SMU.
+        if (LinuxSysfs.ReadText(Path.Combine(adapterDir, "name"))?.StartsWith("AMDGPU SMU", StringComparison.Ordinal) == true)
+            return;
+        if (leaf.StartsWith("i2c-", StringComparison.Ordinal)
+            && int.TryParse(leaf.AsSpan("i2c-".Length), NumberStyles.None, CultureInfo.InvariantCulture, out var bus))
+        {
+            buses.Add(bus);
+        }
+    }
+
+    private static string[] ChildI2cLeaves(string connectorDir)
+    {
+        try { return Directory.GetDirectories(connectorDir, "i2c-*").Select(d => Path.GetFileName(d)!).Order(StringComparer.Ordinal).ToArray(); }
+        catch { return Array.Empty<string>(); }
     }
 
     /// <summary>Brightness (VCP 0x10) as 0..100, scaling the raw current by the monitor's reported max.</summary>
