@@ -1434,6 +1434,8 @@ public sealed class KrakenFirmwareLighting
 public sealed class DevicesSettings
 {
     public List<string> DisabledLightingDevices { get; set; } = new();
+    /// <summary>Lighting card ids whose LEDs read the mean of a box around them instead of a small spot (Area sampling). Absent = spot, the default.</summary>
+    public List<string> AreaSamplingDevices { get; set; } = new();
     /// <summary>Stable display ids the user turned brightness control off for. Nexus issues no DDC/CI transaction to a listed display - not even the capability probe - which is the escape hatch for a monitor whose firmware hangs on DDC. NOT profile-scoped: a panel's tolerance for DDC is a property of the hardware, not of a lighting/cooling persona.</summary>
     public List<string> DdcDisabledDisplays { get; set; } = new();
     /// <summary>Ids Nexus stops pushing frames to entirely, so firmware/vendor lighting can take over. Distinct from <see cref="DisabledLightingDevices"/>, which still streams black.</summary>

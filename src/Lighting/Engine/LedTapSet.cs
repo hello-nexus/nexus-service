@@ -41,8 +41,8 @@ internal sealed class LedTapSet
     }
 
     /// <summary>Adds every pixel the device's spot reads touch. False for a device whose layout the canvas sampler resolves through the editor preview, which this does not model.</summary>
-    public bool AddDevice(DeviceFrame dev, int canvasW, int canvasH) =>
-        LedTaps.VisitSpotRects(dev, canvasW, canvasH, (_, x0, y0, x1, y1) =>
+    public bool AddDevice(DeviceFrame dev, int canvasW, int canvasH, float[]? areaBoxes = null) =>
+        LedTaps.VisitSpotRects(dev, canvasW, canvasH, areaBoxes, (_, x0, y0, x1, y1) =>
         {
             for (var y = y0; y <= y1; y++)
             {
@@ -60,7 +60,11 @@ internal static class LedTaps
     /// Calls <paramref name="visit"/> with each enabled LED's inclusive pixel box exactly as the canvas sampler's spot read computes it, for a
     /// device that is not full-frame, not stacked and not in the 3D scene. False when the device carries an editor preview.
     /// </summary>
-    public static bool VisitSpotRects(DeviceFrame dev, int cw, int ch, Action<int, int, int, int, int> visit)
+    public static bool VisitSpotRects(DeviceFrame dev, int cw, int ch, Action<int, int, int, int, int> visit) =>
+        VisitSpotRects(dev, cw, ch, null, visit);
+
+    /// <summary>As above, but with <paramref name="areaBoxes"/> each LED's rect is its Area sampling box instead of its spot.</summary>
+    public static bool VisitSpotRects(DeviceFrame dev, int cw, int ch, float[]? areaBoxes, Action<int, int, int, int, int> visit)
     {
         if (dev.PreviewLedCount is not null || (dev.PreviewLayout is { Length: > 0 }))
         {
@@ -81,6 +85,13 @@ internal static class LedTaps
         {
             if (disabled is not null && i < disabled.Length && disabled[i])
             {
+                continue;
+            }
+            if (areaBoxes is not null)
+            {
+                geo.MapBox(areaBoxes[i * 4], areaBoxes[i * 4 + 1], areaBoxes[i * 4 + 2], areaBoxes[i * 4 + 3], out var bx0, out var by0, out var bx1, out var by1);
+                AreaSat.PixelBox(bx0, by0, bx1, by1, cw, ch, out var ax0, out var ay0, out var ax1, out var ay1);
+                visit(i, ax0, ay0, ax1, ay1);
                 continue;
             }
             geo.Center(i, out var sx, out var sy);

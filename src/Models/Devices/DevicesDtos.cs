@@ -239,6 +239,10 @@ public class LightingDevice
     public bool RateCapSupported { get; set; }
     /// <summary>The user's cap in updates per second. Null means no cap.</summary>
     public int? MaxRateHz { get; set; }
+    /// <summary>True when each of this card's LEDs shows the mean of a box around it rather than a small spot.</summary>
+    public bool AreaSampling { get; set; }
+    /// <summary>Area sampling boxes, <c>[u0,v0,u1,v1]</c> per LED (length 4 x <see cref="LedCount"/>) in the card's normalized unrotated frame space, v down. A disabled LED is four zeros. Null when <see cref="AreaSampling"/> is off.</summary>
+    public float[]? AreaBoxes { get; set; }
     public int LedCount { get; set; }
     /// <summary>Number of the card's LEDs not disabled in the resolved layout (applied mapping's disabled set layered under user overrides, which win in both directions). Equals <see cref="LedCount"/> when no disable data exists.</summary>
     public int EnabledLedCount { get; set; }
@@ -292,6 +296,13 @@ public class SetLightingDeviceMaxRateBody
 {
     public string Id { get; set; } = "";
     public int? MaxRateHz { get; set; }
+}
+
+/// <summary>POST /devices/lighting-devices/area-sampling.</summary>
+public class SetLightingDeviceAreaSamplingBody
+{
+    public string Id { get; set; } = "";
+    public bool Enabled { get; set; }
 }
 
 /// <summary>Whole-list replace for the user-made groups; the client owns order and membership.</summary>

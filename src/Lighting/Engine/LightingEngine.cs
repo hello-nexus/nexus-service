@@ -1833,6 +1833,7 @@ public sealed partial class LightingEngine : IDisposable
         DeviceFrame[] devices, CanvasBuffer baseCanvas, bool honorPins,
         Dictionary<string, CanvasBuffer?> pinMap, HashSet<string> pinFullFrame)
     {
+        _areaSatCount = 0;
         var cw = _sampleCanvas.Width;
         var ch = _sampleCanvas.Height;
         const float CW = CanvasUnitsW, CH = CanvasUnitsH;
@@ -1956,11 +1957,18 @@ public sealed partial class LightingEngine : IDisposable
             var geo = LedSpotGeometry.Create(
                 rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, ledCount, devLedU, devLedV, fullFrame,
                 FullFrameStripBreadth);
+            var areaBoxes = AreaBoxesFor(dev.Id, ledCount, devLedU, devLedV, devLedDisabled, 0, ledCount);
             for (int i = 0; i < ledCount; i++)
             {
                 if (devLedDisabled is not null && i < devLedDisabled.Length && devLedDisabled[i])
                 {
                     dev.SetLed(i, 0, 0, 0);
+                    continue;
+                }
+                if (areaBoxes is not null)
+                {
+                    var (ar, ag, ab) = SampleAreaBox(geo, areaBoxes, i);
+                    dev.SetLed(i, ar, ag, ab);
                     continue;
                 }
                 geo.Center(i, out var sx, out var sy);
@@ -2037,11 +2045,18 @@ public sealed partial class LightingEngine : IDisposable
             var halfW = Math.Max(1f / kx, boxW / cols) * 0.5f * kx;
             var halfH = Math.Max(1f / ky, boxH / rows) * 0.5f * ky;
 
+            var areaBoxes = AreaBoxesFor(dev.Id, ledCount, ledU, ledV, disabled, lo, hi);
             for (var i = lo; i < hi; i++)
             {
                 if (disabled is not null && i < disabled.Length && disabled[i])
                 {
                     dev.SetLed(i, 0, 0, 0);
+                    continue;
+                }
+                if (areaBoxes is not null)
+                {
+                    var (ar, ag, ab) = SampleSceneAreaBox(in cam, quad, areaBoxes, i - lo, u0, uSpan, v0, vSpan, kx, ky);
+                    dev.SetLed(i, ar, ag, ab);
                     continue;
                 }
                 float u, v;

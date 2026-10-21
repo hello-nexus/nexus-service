@@ -67,6 +67,24 @@ internal readonly struct LedSpotGeometry
         sy = (_frameCy + llx * _sin + _midY * _cos) * _ky;
     }
 
+    /// <summary>The canvas-pixel bounding rect of a box given in the frame's normalized unrotated space, laid out like LED positions are (frame rect, rotation, canvas scale).</summary>
+    public void MapBox(float u0, float v0, float u1, float v1, out float x0, out float y0, out float x1, out float y1)
+    {
+        x0 = y0 = float.MaxValue;
+        x1 = y1 = float.MinValue;
+        for (var c = 0; c < 4; c++)
+        {
+            var lx = _rectX + ((c & 1) == 0 ? u0 : u1) * _rectW - _frameCx;
+            var ly = _rectY + ((c & 2) == 0 ? v0 : v1) * _rectH - _frameCy;
+            var sx = (_frameCx + lx * _cos - ly * _sin) * _kx;
+            var sy = (_frameCy + lx * _sin + ly * _cos) * _ky;
+            x0 = MathF.Min(x0, sx);
+            x1 = MathF.Max(x1, sx);
+            y0 = MathF.Min(y0, sy);
+            y1 = MathF.Max(y1, sy);
+        }
+    }
+
     /// <summary>Geometry for a device laid out in canvas units. <paramref name="fullFrame"/> is the sweep read, which ignores orientation and widens to the whole canvas.</summary>
     public static LedSpotGeometry Create(
         float rectX, float rectY, float rectW, float rectH, float frameCx, float frameCy, int rotation,

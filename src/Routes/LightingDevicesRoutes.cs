@@ -927,6 +927,39 @@ public static partial class DevicesRoutes
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
+        // Area sampling: the card's LEDs read the mean of a box around them instead of a small spot.
+        // Broadcasts `lighting` so the card's areaSampling/areaBoxes refetch without a reload.
+        app.MapPost("/devices/lighting-devices/area-sampling", (
+            SetLightingDeviceAreaSamplingBody body,
+            ILightingDeviceProvider ld,
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.Engine.LightingEngine engine,
+            FeatureGates gates,
+            Nexus.Service.Sockets.MultiplexHub hub) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            if (string.IsNullOrEmpty(body.Id) || !ld.GetAll().Devices.Any(c => c.Id == body.Id))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid id."));
+            }
+            store.Update(s =>
+            {
+                var ids = new List<string>(s.Devices.AreaSamplingDevices);
+                ids.RemoveAll(i => i == body.Id);
+                if (body.Enabled)
+                {
+                    ids.Add(body.Id);
+                }
+                s.Devices.AreaSamplingDevices = ids;
+            });
+            engine.SetAreaSampling(store.Load().Devices.AreaSamplingDevices);
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+
         // Hue and saturation of a color-capable device (smart lights), as
         // device metadata the UI reads back. Not a pin: what a device shows on
         // its own goes through POST /devices/lighting-devices/pins.

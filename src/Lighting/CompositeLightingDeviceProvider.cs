@@ -375,6 +375,8 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         // Must run AFTER the CNVS / NP50 / MiniHub merges so newly-added hub devices also pick up a default slot.
         ApplyDefaultLayouts(rgb.Devices, settings);
 
+        ApplyAreaSampling(rgb.Devices, settings);
+
         // Mirror into engine frames so running effects sample from the same rectangles. Without this, RgbBridge's
         // existing-frame-wins rule would pin pre-grid coordinates in memory. O(N²), trivial for typical N (<30).
         if (mirrorIntoEngine)
@@ -391,6 +393,42 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             }
         }
         return rgb;
+    }
+
+    /// <summary>Marks each area-sampled card and hands it its boxes, from the engine frame's layout (the layout the sampler reads), else from a plain linear layout. Keeps the engine's id set in step with settings.</summary>
+    private void ApplyAreaSampling(List<LightingDevice> devices, NexusSettings settings)
+    {
+        var ids = settings.Devices.AreaSamplingDevices;
+        if (ids.Count == 0 && !_engine.AnyAreaSampling)
+        {
+            return;
+        }
+        _engine.SetAreaSamplingIfChanged(ids);
+        if (ids.Count == 0)
+        {
+            return;
+        }
+        var frames = _engine.Devices;
+        foreach (var dev in devices)
+        {
+            if (!ids.Contains(dev.Id))
+            {
+                continue;
+            }
+            dev.AreaSampling = true;
+            DeviceFrame? frame = null;
+            foreach (var f in frames)
+            {
+                if (f.Id == dev.Id)
+                {
+                    frame = f;
+                    break;
+                }
+            }
+            dev.AreaBoxes = frame is not null && frame.LedCount == dev.LedCount
+                ? _engine.AreaBoxesFor(frame)
+                : AreaBoxes.Compute(null, null, null, dev.LedCount, 0, dev.LedCount);
+        }
     }
 
     /// <summary>
