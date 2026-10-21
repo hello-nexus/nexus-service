@@ -29,7 +29,7 @@ public class MystiqueSensorsTests
     {
         var reading = MystiqueSensors.Read(Board(), new DeepCoolMystiqueSettings());
 
-        Assert.Equal(new MystiqueReading(55, 25, 26, 7780, 1700, 3341), reading);
+        Assert.Equal(new MystiqueReading(55, 25, 260, 7780, 1700, 3341), reading);
     }
 
     [Fact]
@@ -58,7 +58,21 @@ public class MystiqueSensorsTests
         Assert.Equal(61, reading.TempC);
         Assert.Equal(80, reading.UsagePct);
         Assert.Equal(2900, reading.CpuMhz);
-        Assert.Equal(26, reading.RamPct);
+        Assert.Equal(260, reading.RamTenthsPct);
+    }
+
+    [Fact]
+    public void Ram_usage_keeps_its_tenths_and_rounds_before_splitting()
+    {
+        var sensors = Board();
+        sensors.MemoryLoad = 19.96f;
+
+        var reading = MystiqueSensors.Read(sensors, new DeepCoolMystiqueSettings());
+        var frame = MystiqueProtocol.BuildSensors(reading);
+
+        Assert.Equal(200, reading.RamTenthsPct);
+        Assert.Equal(20, frame[9]);
+        Assert.Equal(0, frame[11]);
     }
 
     [Fact]
@@ -73,7 +87,7 @@ public class MystiqueSensorsTests
         var reading = MystiqueSensors.Read(Board(), settings);
 
         Assert.Equal(0, reading.TempC);
-        Assert.Equal(0, reading.RamPct);
+        Assert.Equal(0, reading.RamTenthsPct);
     }
 
     [Theory]
@@ -167,6 +181,7 @@ public class MystiqueSensorsTests
         }
 
         public IReadOnlyList<HardwareSensor> Motherboard { get; init; } = Array.Empty<HardwareSensor>();
+        public float MemoryLoad { get; set; } = 26f;
 
         public string GetCpuModel() => "TestCPU";
         public IReadOnlyList<HardwareSensor> GetCpuSensors() => !_withCpu ? Array.Empty<HardwareSensor>() : new[]
@@ -184,7 +199,7 @@ public class MystiqueSensorsTests
         public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
         public IReadOnlyList<HardwareSensor> GetMemorySensors() => !_withCpu ? Array.Empty<HardwareSensor>() : new[]
         {
-            new HardwareSensor { Id = "m/l", Name = "Memory", Type = "Load", Value = 26 },
+            new HardwareSensor { Id = "m/l", Name = "Memory", Type = "Load", Value = MemoryLoad },
         };
         public string GetMemoryTotalFormatted() => "32 GB";
         public string GetRamBrandModel() => "";

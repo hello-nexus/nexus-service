@@ -3,8 +3,8 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Peripherals.DeepCool;
 
-/// <summary>The live values the screen shows; percentages are whole numbers, fan and pump are RPM, frequency is MHz.</summary>
-public readonly record struct MystiqueReading(int TempC, int UsagePct, int RamPct, int CpuMhz, int FanRpm, int PumpRpm);
+/// <summary>The live values the screen shows; CPU usage is a whole percent, RAM usage is tenths of a percent, fan and pump are RPM, frequency is MHz.</summary>
+public readonly record struct MystiqueReading(int TempC, int UsagePct, int RamTenthsPct, int CpuMhz, int FanRpm, int PumpRpm);
 
 /// <summary>
 /// Frames for the Mystique AIO screen (USB 3633:0009, one vendor interface). Every frame is
@@ -166,7 +166,7 @@ public static class MystiqueProtocol
     public static byte[] BuildRecordingApply() => BuildFrame(CmdRecordingApply, new byte[] { 0x01 });
 
     /// <summary>
-    /// Live push. Three-byte fields from payload offset 0: temperature, CPU usage, RAM usage, three
+    /// Live push. Three-byte fields from payload offset 0: temperature, CPU usage, RAM usage as whole percent then tenths, three
     /// fields whose meaning is unknown (sent at fixed values seen in the recorded traffic), frequency as GHz
     /// whole part then hundredths, fan RPM and pump RPM as 24-bit little-endian.
     /// </summary>
@@ -175,8 +175,9 @@ public static class MystiqueProtocol
         Span<byte> p = stackalloc byte[MaxPayload];
         p[0] = (byte)Math.Clamp(reading.TempC, 0, 255);
         p[3] = (byte)Math.Clamp(reading.UsagePct, 0, 100);
-        p[6] = (byte)Math.Clamp(reading.RamPct, 0, 100);
-        p[8] = 0x04;
+        int ramTenths = Math.Clamp(reading.RamTenthsPct, 0, 1000);
+        p[6] = (byte)(ramTenths / 10);
+        p[8] = (byte)(ramTenths % 10);
         p[9] = 0x03;
         p[11] = 0x13;
         p[12] = 0x04;

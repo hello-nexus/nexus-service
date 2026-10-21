@@ -32,7 +32,7 @@ public static class MystiqueSensors
         return new MystiqueReading(
             TempC: Round(Value(ctx, settings.CpuTemperature, MystiqueValue.CpuTemperature)),
             UsagePct: Round(Value(ctx, settings.CpuUsage, MystiqueValue.CpuUsage)),
-            RamPct: Round(Value(ctx, settings.RamUsage, MystiqueValue.RamUsage)),
+            RamTenthsPct: Round(Value(ctx, settings.RamUsage, MystiqueValue.RamUsage) * 10f),
             CpuMhz: Round(Value(ctx, settings.CpuFrequency, MystiqueValue.CpuFrequency)),
             FanRpm: Round(Value(ctx, settings.CpuFan, MystiqueValue.CpuFan)),
             PumpRpm: Round(Value(ctx, settings.Pump, MystiqueValue.Pump)));
