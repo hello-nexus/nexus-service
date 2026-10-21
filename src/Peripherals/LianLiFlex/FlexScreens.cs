@@ -236,30 +236,33 @@ public sealed class FlexScreens : IFanLcdScreens
         {
             if (string.Equals(u.ScreenSerial, serial, StringComparison.OrdinalIgnoreCase))
             {
-                return FlexNames.UnitName(_flex.Units, u, mac => _sortIndexOf?.Invoke(mac) ?? 0);
+                return UnitName(u);
             }
         }
         return ScreenOnlyName(serial);
     }
+
+    /// <summary>The name of a paired unit, counting this family's screen-only screens so cooling, lighting and the screen tile agree.</summary>
+    public string UnitName(FlexUnit unit) =>
+        FlexNames.UnitName(_flex.Units, unit, mac => _sortIndexOf?.Invoke(mac) ?? 0, ScreenOnlySerials(unit.Family).Count);
+
+    /// <summary>Screens of a family with no receiver on the bus, by serial.</summary>
+    public IReadOnlyList<string> ScreenOnlySerials(FlexFamily family) =>
+        _lcd.Hub.Screens
+            .Where(x => (_lcd.Discovery?.FamilyOfSerial(x.Serial) ?? FlexFamily.TlFlex) == family
+                && !_flex.Units.Any(u => string.Equals(u.ScreenSerial, x.Serial, StringComparison.OrdinalIgnoreCase)))
+            .Select(x => x.Serial)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
 
     // Numbered after the paired units of its family, in the order FlexNames.UnitName uses; screen-only ones go by serial so the order is stable.
     private string ScreenOnlyName(string serial)
     {
         var family = _lcd.Discovery?.FamilyOfSerial(serial) ?? FlexFamily.TlFlex;
         var paired = _flex.Units.Count(u => u.Family == family);
-        var alone = _lcd.Hub.Screens
-            .Where(x => (_lcd.Discovery?.FamilyOfSerial(x.Serial) ?? FlexFamily.TlFlex) == family
-                && !_flex.Units.Any(u => string.Equals(u.ScreenSerial, x.Serial, StringComparison.OrdinalIgnoreCase)))
-            .Select(x => x.Serial)
-            .OrderBy(x => x, StringComparer.Ordinal)
-            .ToList();
-        var index = alone.FindIndex(x => string.Equals(x, serial, StringComparison.OrdinalIgnoreCase));
-        if (index < 0)
-        {
-            return FlexNames.Short(family);
-        }
-        var position = paired + index;
-        return position > 0 ? $"{FlexNames.Short(family)} {position + 1}" : FlexNames.Short(family);
+        var alone = ScreenOnlySerials(family);
+        var index = alone.ToList().FindIndex(x => string.Equals(x, serial, StringComparison.OrdinalIgnoreCase));
+        return FlexNames.Numbered(family, index < 0 ? -1 : paired + index, paired + alone.Count);
     }
 
     /// <summary>
