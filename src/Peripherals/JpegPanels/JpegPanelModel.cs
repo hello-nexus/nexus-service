@@ -126,6 +126,26 @@ public sealed record JpegPanelModel(
         Surface: Models.Panel.PanelSurfaces.LcdSquare);
 
     /// <summary>
+    /// Nautilus LCD Cap. Frames are the same chunked JPEG as the XC7 with selector 0, but
+    /// the cap sits idle until iCUE's feature-report session has opened.
+    /// </summary>
+    public static readonly JpegPanelModel CorsairNautilusCap = new(
+        HandlerId: "corsair-nautilus-lcd",
+        Name: "Corsair Nautilus LCD Cap",
+        VendorId: 0x1B1C,
+        ProductIds: new[] { 0x0C55 },
+        Width: 480,
+        Height: 480,
+        Circular: true,
+        ReportLength: 1024,
+        HeaderStyle: JpegPanelHeaderStyle.CorsairChunked,
+        Selector: 0x00,
+        Surface: Models.Panel.PanelSurfaces.LcdRound)
+    {
+        Handshake = new NautilusLcdHandshake(),
+    };
+
+    /// <summary>
     /// ID-Cooling FX-LCD. Its init pair turns the panel on ("DIS") and sets the backlight
     /// to 0x19 ("LIG"); shutdown clears it ("CLE") and hands the panel back to the
     /// firmware ("HAN"). Without the init the panel takes frames and shows nothing.
@@ -199,6 +219,7 @@ public sealed record JpegPanelModel(
         HydroShiftLcd,
         CorsairXc7,
         CorsairCapellix,
+        CorsairNautilusCap,
         IdCoolingFx,
         AsRockLcd,
     };
