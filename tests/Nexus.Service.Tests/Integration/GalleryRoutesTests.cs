@@ -171,6 +171,26 @@ public sealed class GalleryRoutesTests : IDisposable
     }
 
     [Fact]
+    public async Task Items_OverCap_ReportsTruncatedAndTotal_UnderCapOmitsThem()
+    {
+        var client = DesktopClient();
+        WriteImage("a.png");
+        await client.PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = _photosDir, Kind = GallerySourceKinds.Folder });
+        var small = await client.GetStringAsync("/gallery/items");
+        Assert.DoesNotContain("truncated", small);
+
+        for (var i = 0; i < GalleryLibrary.MaxItems; i++)
+        {
+            WriteImage($"z{i:D5}.png");
+        }
+
+        var json = await client.GetStringAsync("/gallery/items");
+        Assert.Contains("\"truncated\":true", json);
+        Assert.Contains($"\"total\":{GalleryLibrary.MaxItems + 1}", json);
+    }
+
+    [Fact]
     public async Task PlaylistCrud_RidesOnTheItemsResponse()
     {
         var client = DesktopClient();

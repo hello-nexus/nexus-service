@@ -24,7 +24,13 @@ namespace Nexus.Service.Gallery;
 public sealed class GalleryLibrary
 {
     private const string SourcesFileName = "sources.json";
-    public const int MaxItemsPerFolder = 500;
+    // One cap across every source (folders and single files), so extra
+    // sources or subfolders added as sources cannot get past it.
+    public const int MaxItems = 5000;
+    // Per-folder scan ceiling on matching files seen, so a pathological root
+    // (a whole drive) cannot make one enumeration unbounded. Memory stays at
+    // the cap regardless: only the lowest-sorting candidates are retained.
+    public const int MaxScannedFilesPerFolder = 200_000;
     public const int MaxPlaylists = 50;
     public const int MaxPlaylistNameLength = 48;
     // Per id list on one playlist, so a runaway client cannot grow
@@ -368,7 +374,14 @@ public sealed class GalleryLibrary
     /// name). Duplicate paths across sources collapse to the first occurrence.
     /// Refreshes the id → path map used by <see cref="ResolveItemPath"/>.
     /// </summary>
-    public List<GalleryItem> EnumerateItems()
+    public List<GalleryItem> EnumerateItems() => Enumerate().Items;
+
+    /// <summary>
+    /// <see cref="EnumerateItems"/> plus whether the global cap dropped items
+    /// and how many media files were found. Sources are walked in persisted
+    /// order; within a folder the path-sorted order decides who survives.
+    /// </summary>
+    public GalleryEnumeration Enumerate()
     {
         List<GallerySource> sources;
         long generation;
@@ -383,22 +396,20 @@ public sealed class GalleryLibrary
 
         var items = new List<GalleryItem>();
         var paths = new Dictionary<string, string>();
+        var total = 0;
+        var truncated = false;
 
         foreach (var source in sources)
         {
             if (source.Kind == GallerySourceKinds.Folder)
             {
                 // Recursive: users point at e.g. a Pictures root whose images
-                // live in subfolders. The cap applies before the sort, so an
-                // over-cap tree yields an arbitrary-but-stable subset.
+                // live in subfolders. The path sort happens before the cap, so
+                // which items survive an over-cap tree is deterministic.
                 List<string> files;
                 try
                 {
-                    files = Directory.EnumerateFiles(source.Path, "*", FolderScanOptions)
-                        .Where(IsMediaFile)
-                        .Take(MaxItemsPerFolder)
-                        .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
+                    files = SelectFolderFiles(source, items.Count, paths, ref total, ref truncated);
                 }
                 catch
                 {
@@ -412,6 +423,19 @@ public sealed class GalleryLibrary
             }
             else if (File.Exists(source.Path) && IsMediaFile(source.Path))
             {
+                var full = Path.GetFullPath(source.Path);
+                if (paths.ContainsKey(ItemIdForPath(full)))
+                {
+                    continue;
+                }
+
+                total++;
+                if (items.Count >= MaxItems)
+                {
+                    truncated = true;
+                    continue;
+                }
+
                 AddItem(source.Path, source.Id, source.Name, excluded: null);
             }
         }
@@ -430,7 +454,7 @@ public sealed class GalleryLibrary
             }
         }
 
-        return items;
+        return new GalleryEnumeration(items, truncated, total);
 
         void AddItem(string file, string sourceId, string? name, List<string>? excluded)
         {
@@ -451,6 +475,80 @@ public sealed class GalleryLibrary
                     Kind = IsVideoFile(full) ? GalleryItemKinds.Video : GalleryItemKinds.Image,
                 });
             }
+        }
+    }
+
+    // Streams the folder once and keeps only the lowest-sorting candidates
+    // that still fit under the global cap. Excluded files and files already
+    // taken by an earlier source do not count toward the cap or the total.
+    private static List<string> SelectFolderFiles(
+        GallerySource source, int taken, Dictionary<string, string> seen, ref int total, ref bool truncated)
+    {
+        var room = Math.Max(0, MaxItems - taken);
+        var kept = new SortedSet<string>(PathOrder.Instance);
+        var found = 0;
+        var scanned = 0;
+        var checkIds = source.Excluded.Count > 0 || seen.Count > 0;
+        var excluded = source.Excluded.Count > 0 ? new HashSet<string>(source.Excluded, StringComparer.Ordinal) : null;
+
+        foreach (var file in Directory.EnumerateFiles(source.Path, "*", FolderScanOptions))
+        {
+            if (!IsMediaFile(file))
+            {
+                continue;
+            }
+
+            if (++scanned > MaxScannedFilesPerFolder)
+            {
+                truncated = true;
+                break;
+            }
+
+            if (checkIds)
+            {
+                var id = ItemIdForPath(Path.GetFullPath(file));
+                if ((excluded is not null && excluded.Contains(id)) || seen.ContainsKey(id))
+                {
+                    continue;
+                }
+            }
+
+            found++;
+            if (room == 0)
+            {
+                continue;
+            }
+
+            if (kept.Count < room)
+            {
+                kept.Add(file);
+            }
+            else if (PathOrder.Instance.Compare(file, kept.Max!) < 0)
+            {
+                kept.Remove(kept.Max!);
+                kept.Add(file);
+            }
+        }
+
+        total += found;
+        if (found > room)
+        {
+            truncated = true;
+        }
+
+        return kept.ToList();
+    }
+
+    // Case-insensitive path order with an ordinal tiebreak so two paths that
+    // differ only by case both survive in the set.
+    private sealed class PathOrder : IComparer<string>
+    {
+        public static readonly PathOrder Instance = new();
+
+        public int Compare(string? x, string? y)
+        {
+            var c = StringComparer.OrdinalIgnoreCase.Compare(x, y);
+            return c != 0 ? c : StringComparer.Ordinal.Compare(x, y);
         }
     }
 
@@ -567,3 +665,6 @@ public sealed class GalleryLibrary
     private static GalleryPlaylistMutationResponse FailPlaylist(string msg, string code = "") =>
         new() { Error = true, Msg = msg, Code = code };
 }
+
+/// <summary>Result of <see cref="GalleryLibrary.Enumerate"/>.</summary>
+public sealed record GalleryEnumeration(List<GalleryItem> Items, bool Truncated, int Total);

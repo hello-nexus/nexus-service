@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace Nexus.Service.Models.Gallery;
 
@@ -115,6 +116,12 @@ public sealed class GalleryItem
 public sealed class GalleryItemsResponse
 {
     public List<GalleryItem> Items { get; set; } = new();
+    /// <summary>True when the global item cap dropped media; omitted otherwise.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; set; }
+    /// <summary>Media files found across all sources (a lower bound when a scan hit its ceiling); omitted when not truncated.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int Total { get; set; }
     /// <summary>
     /// Carried with the items (not on a route of its own) so every panel
     /// surface, including a relayed phone, resolves a widget's playlist from
