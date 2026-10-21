@@ -43,23 +43,6 @@ internal static class FlexFanLayout
         return EdgePosition(Upper, wireIndex - 36, 8, OuterInset);
     }
 
-    /// <summary>U and V of <paramref name="count"/> consecutive wire LEDs per fan, fans side by side along u.</summary>
-    public static (float[] U, float[] V) Positions(FlexFamily family, int fans, int firstWire, int count, bool swap = false)
-    {
-        var u = new float[fans * count];
-        var v = new float[fans * count];
-        for (var f = 0; f < fans; f++)
-        {
-            for (var k = 0; k < count; k++)
-            {
-                var (pu, pv) = Position(family, firstWire + k, swap);
-                u[(f * count) + k] = (f + pu) / fans;
-                v[(f * count) + k] = pv;
-            }
-        }
-        return (u, v);
-    }
-
     /// <summary>U and V of a zone's LEDs in zone order, per fan.</summary>
     public static (float[] U, float[] V) ZonePositions(FlexFamily family, string zone, int fans, bool swap)
     {

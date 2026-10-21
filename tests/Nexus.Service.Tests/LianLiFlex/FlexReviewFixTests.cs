@@ -275,6 +275,8 @@ public class FlexReviewFixTests
 
         var frame = FakeFlexTransport.InfoFrame(Mac, 0x33, FlexProtocol.UnboundRxType, 100, 0);
         frame[7] = 0x11;
+        Assert.False(FlexProtocol.ParseInfo(frame)!.RfBound);
+        frame[14] = 1;
         Assert.True(FlexProtocol.ParseInfo(frame)!.RfBound);
         Assert.False(FlexProtocol.ParseInfo(FakeFlexTransport.InfoFrame(Mac, 0x33, FlexProtocol.UnboundRxType, 100, 0))!.RfBound);
     }

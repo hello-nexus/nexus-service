@@ -32,7 +32,9 @@ public sealed class LianLiFlexHandler : IDeviceHandler
     public bool IsConnected(IReadOnlyList<UsbDeviceEntry> detectedDevices) =>
         _hub.IsConnected || detectedDevices.Any(d => Identifiers.Any(id => id.VendorId == d.VendorId && id.ProductId == d.ProductId));
 
-    public bool DrivesDisplay(IReadOnlyList<UsbDeviceEntry> detectedDevices) => _hub.Units.Any(u => u.ScreenSerial.Length > 0);
+    public bool DrivesDisplay(IReadOnlyList<UsbDeviceEntry> detectedDevices) =>
+        _hub.Units.Any(u => u.ScreenSerial.Length > 0)
+        || detectedDevices.Any(d => FlexProtocol.IsScreenProduct(d.VendorId, d.ProductId));
 
     public string GetFirmwareVersion()
     {

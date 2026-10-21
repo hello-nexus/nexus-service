@@ -63,6 +63,9 @@ internal sealed class FlexUnitLink : IDisposable
 /// </summary>
 public sealed class FlexHub : IDisposable
 {
+    // Receivers already reported as silent, so a persistent one logs once until it answers.
+    private readonly HashSet<string> _silentReceivers = new(StringComparer.OrdinalIgnoreCase);
+
     public const int PollPeriodMs = 750;
     public const int ClockPeriodMs = 3000;
     public const int SaveSettleMs = 10_000;
@@ -208,9 +211,14 @@ public sealed class FlexHub : IDisposable
         PollLocked(link);
         if (link.Info is null)
         {
+            if (_silentReceivers.Add(port.ReceiverPath))
+            {
+                ServiceLog.Warn($"[lianli-flex] receiver {port.ReceiverPath} opened but did not answer GetInfo");
+            }
             link.Dispose();
             return null;
         }
+        _silentReceivers.Remove(port.ReceiverPath);
         link.FirmwareVersion = ReadVersion(link);
         return link;
     }

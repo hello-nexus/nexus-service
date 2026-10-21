@@ -200,12 +200,27 @@ public sealed class OpenRgbProcessManager : IDisposable
     }
 
     /// <summary>The detectors held off with Nexus Control on everywhere.</summary>
-    internal static string[] BuildDisabledDetectors(bool macOS)
-        => NativeDetectorClaims.ResolveDisabled(_ => true, macOS).ToArray();
+    internal static string[] BuildDisabledDetectors(bool macOS, bool linux = false)
+    {
+        var list = NativeDetectorClaims.ResolveDisabled(_ => true, macOS);
+        if (linux)
+        {
+            list.AddRange(OpenRgbGpuI2cDetectors.Names);
+        }
+        return list.ToArray();
+    }
 
     /// <summary>Detectors held off by the Nexus Control choice (<see cref="NativeDetectorClaims.ResolveDisabled"/>). Reads the choice and the build lock, so a running vendor app's pause does not move the set; without a gate nothing is on.</summary>
     internal System.Collections.Generic.List<string> ResolveNativeDisabledDetectors()
-        => NativeDetectorClaims.ResolveDisabled(handler => _gate?.IsChosenOn(handler) == true, OperatingSystem.IsMacOS());
+    {
+        var list = NativeDetectorClaims.ResolveDisabled(handler => _gate?.IsChosenOn(handler) == true, OperatingSystem.IsMacOS());
+        if (OperatingSystem.IsLinux())
+        {
+            // Probing the card's I2C buses can hang the amdgpu SMU, so every GPU I2C detector stays off on Linux.
+            list.AddRange(OpenRgbGpuI2cDetectors.Names);
+        }
+        return list;
+    }
 
     private string _appliedNativeSignature = "";
 
@@ -229,7 +244,10 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// walk DIMM addresses outside that gate. Names are the registration
     /// strings verbatim: "Corsair Vengeance RGB DRAM" is DDR4, "Corsair DRAM"
     /// DDR5, and each Patriot file defines its own PATRIOT_CONTROLLER_NAME.
-    /// Motherboard and GPU I2C detectors share the bus and stay enabled.
+    /// Motherboard I2C detectors share the bus and stay enabled. GPU I2C
+    /// detectors stay enabled too, except on Linux where
+    /// <see cref="OpenRgbGpuI2cDetectors"/> holds them off in
+    /// <see cref="ResolveNativeDisabledDetectors"/>.
     /// </summary>
     internal static readonly string[] SmbusDramDetectors =
     {
@@ -346,7 +364,7 @@ public sealed class OpenRgbProcessManager : IDisposable
             }
 
             var changed = false;
-            var nativeDisabled = nativeDisabledDetectors ?? BuildDisabledDetectors(OperatingSystem.IsMacOS());
+            var nativeDisabled = nativeDisabledDetectors ?? BuildDisabledDetectors(OperatingSystem.IsMacOS(), OperatingSystem.IsLinux());
             var nativeSet = new System.Collections.Generic.HashSet<string>(nativeDisabled, StringComparer.Ordinal);
             foreach (var name in nativeDisabled)
             {
