@@ -44,6 +44,30 @@ public class MystiqueSensorsTests
     }
 
     [Fact]
+    public void A_picked_sensor_that_is_not_a_fan_reading_is_ignored()
+    {
+        var sensors = Board();
+        var settings = new DeepCoolMystiqueSettings
+        {
+            CpuFan = new DeepCoolMystiqueSensorPick { Category = "cpu", Sensor = "c/t" },
+        };
+
+        Assert.Equal(0, MystiqueSensors.Read(sensors, settings).FanRpm);
+    }
+
+    [Fact]
+    public void A_renamed_header_matches_by_its_new_name()
+    {
+        var sensors = new FakeSensors(55f, 5380f) { Motherboard = new[] { Fan("fan/a", "Fan #4", 2800), Fan("fan/b", "Fan #5", 1200) } };
+        var names = new Dictionary<string, string> { ["fan/a"] = "AIO Pump", ["fan/b"] = "CPU Fan" };
+
+        var reading = MystiqueSensors.Read(sensors, new DeepCoolMystiqueSettings(), names);
+
+        Assert.Equal(2800, reading.PumpRpm);
+        Assert.Equal(1200, reading.FanRpm);
+    }
+
+    [Fact]
     public void A_missing_header_reads_zero_rather_than_another_headers_speed()
     {
         var sensors = new FakeSensors(55f, 5380f) { Motherboard = new[] { Fan("fan/chassis", "Chassis Fan #1", 900) } };

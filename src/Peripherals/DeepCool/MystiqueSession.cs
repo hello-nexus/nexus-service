@@ -7,23 +7,33 @@ namespace Nexus.Service.Peripherals.DeepCool;
 /// <summary>
 /// One open pipe to a Mystique: the opening exchange, the settings groups the user has
 /// changed, the clock, and the poll plus sensor push that keeps the screen on live data.
-/// Every write is answered on the matching IN pipe; replies are drained so the device never
-/// stalls on a full queue, and a run of unanswered writes fails the session.
+/// Every write is answered on the matching IN pipe. Stale input is drained when the session
+/// opens, a reply that does not match the write is discarded, and a run of unanswered writes
+/// fails the session.
 /// </summary>
 public sealed class MystiqueSession
 {
     private const int ReplyTimeoutMs = 300;
     private const int MaxUnanswered = 5;
-    private static readonly TimeSpan ClockEvery = TimeSpan.FromHours(1);
+    private const int DrainTimeoutMs = 10;
+    private const int MaxDrainReads = 16;
+    private const long ClockEveryMs = 60L * 60 * 1000;
 
     private readonly IBulkUsbPipe _pipe;
+    private readonly Func<long> _monotonicMs;
+    private readonly Func<DateTime, TimeSpan> _utcOffset;
     private DeepCoolMystiqueSettings? _applied;
-    private DateTime _clockSent = DateTime.MinValue;
+    private long _clockSentMs;
+    private TimeSpan _clockOffset;
     private int _unanswered;
 
-    public MystiqueSession(IBulkUsbPipe pipe)
+    /// <param name="monotonicMs">Clock for the resend schedule; wall-clock steps must not move it.</param>
+    /// <param name="utcOffset">Local UTC offset at a given local time, to resend when a time zone or DST change shifts it.</param>
+    public MystiqueSession(IBulkUsbPipe pipe, Func<long>? monotonicMs = null, Func<DateTime, TimeSpan>? utcOffset = null)
     {
         _pipe = pipe;
+        _monotonicMs = monotonicMs ?? (() => Environment.TickCount64);
+        _utcOffset = utcOffset ?? (t => TimeZoneInfo.Local.GetUtcOffset(t));
     }
 
     /// <summary>The identity string the device returned to the opening query, or empty.</summary>
@@ -32,6 +42,13 @@ public sealed class MystiqueSession
     /// <summary>Opening exchange, then the groups the user has set, then the clock. False when the link is unusable.</summary>
     public bool Open(DeepCoolMystiqueSettings settings, DateTime localNow)
     {
+        // A halt the previous owner left rejects every transfer on that pipe until cleared.
+        foreach (var pipe in new[] { MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe })
+        {
+            _pipe.ClearHalt(pipe);
+        }
+        Drain(MystiqueProtocol.SettingsReadPipe);
+        Drain(MystiqueProtocol.LiveReadPipe);
         if (!Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildInfoQuery(), out var reply))
         {
             return false;
@@ -74,11 +91,12 @@ public sealed class MystiqueSession
         {
             return false;
         }
-        _clockSent = localNow;
+        _clockSentMs = _monotonicMs();
+        _clockOffset = _utcOffset(localNow);
         return true;
     }
 
-    /// <summary>One cycle: status poll, then the live values; the clock again once an hour.</summary>
+    /// <summary>One cycle: status poll, then the live values; the clock again on a schedule or when the UTC offset changes.</summary>
     public bool Tick(MystiqueReading reading, DateTime localNow)
     {
         if (!Exchange(MystiqueProtocol.LiveWritePipe, MystiqueProtocol.LiveReadPipe, MystiqueProtocol.BuildPoll(), out _)
@@ -86,7 +104,8 @@ public sealed class MystiqueSession
         {
             return false;
         }
-        return localNow - _clockSent < ClockEvery || SendClock(localNow);
+        bool due = _monotonicMs() - _clockSentMs >= ClockEveryMs || _utcOffset(localNow) != _clockOffset;
+        return !due || SendClock(localNow);
     }
 
     private bool Settings(byte[] frame) =>
@@ -99,17 +118,35 @@ public sealed class MystiqueSession
         {
             return false;
         }
-        int n = _pipe.Read(readPipe, reply, ReplyTimeoutMs);
-        if (n < 0)
+        long deadline = _monotonicMs() + ReplyTimeoutMs;
+        long remaining = ReplyTimeoutMs;
+        while (remaining > 0)
         {
-            return false;
-        }
-        if (n >= MystiqueProtocol.FrameLength && MystiqueProtocol.IsReply(reply, frame[2]))
-        {
-            _unanswered = 0;
-            return true;
+            int n = _pipe.Read(readPipe, reply, (int)remaining);
+            if (n < 0)
+            {
+                return false;
+            }
+            if (n == 0)
+            {
+                break;
+            }
+            if (n >= MystiqueProtocol.FrameLength && MystiqueProtocol.IsReply(reply, frame[2]))
+            {
+                _unanswered = 0;
+                return true;
+            }
+            remaining = deadline - _monotonicMs();
         }
         return ++_unanswered < MaxUnanswered;
+    }
+
+    private void Drain(byte readPipe)
+    {
+        var scratch = new byte[64];
+        for (int i = 0; i < MaxDrainReads && _pipe.Read(readPipe, scratch, DrainTimeoutMs) > 0; i++)
+        {
+        }
     }
 
     private static string ReadInfo(byte[] reply)

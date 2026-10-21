@@ -34,6 +34,9 @@ public class DeepCoolMystiqueRoutesTests
         using (var first = JsonDocument.Parse(await client.GetStringAsync("/devices/deepcool-mystique/state")))
         {
             Assert.False(first.RootElement.GetProperty("modeChosen").GetBoolean());
+            Assert.False(first.RootElement.GetProperty("readoutChosen").GetBoolean());
+            Assert.False(first.RootElement.GetProperty("recordingChosen").GetBoolean());
+            Assert.False(first.RootElement.GetProperty("deviceChosen").GetBoolean());
             Assert.False(first.RootElement.GetProperty("isConnected").GetBoolean());
         }
 
@@ -43,6 +46,9 @@ public class DeepCoolMystiqueRoutesTests
 
         using var after = JsonDocument.Parse(await client.GetStringAsync("/devices/deepcool-mystique/state"));
         Assert.True(after.RootElement.GetProperty("modeChosen").GetBoolean());
+        Assert.True(after.RootElement.GetProperty("deviceChosen").GetBoolean());
+        Assert.True(after.RootElement.GetProperty("recordingChosen").GetBoolean());
+        Assert.False(after.RootElement.GetProperty("readoutChosen").GetBoolean());
         Assert.Equal("recording", after.RootElement.GetProperty("mode").GetString());
         Assert.Equal(40, after.RootElement.GetProperty("brightness").GetInt32());
         Assert.False(after.RootElement.GetProperty("recordTemperature").GetBoolean());
@@ -64,15 +70,18 @@ public class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
-    public async Task A_sensor_from_any_picker_category_is_accepted()
+    public async Task A_sensor_that_does_not_exist_is_refused_and_an_empty_pick_returns_to_automatic()
     {
         using var factory = new NexusAppFactory();
         var client = Client(factory);
 
-        var put = await client.PutAsync("/devices/deepcool-mystique/settings",
-            Json("{\"cpuFan\":{\"category\":\"motherboard\",\"sensor\":\"fan/cpu\"},\"pump\":{\"category\":\"cooler\",\"sensor\":\"p\"}}"));
+        var missing = await client.PutAsync("/devices/deepcool-mystique/settings",
+            Json("{\"cpuFan\":{\"category\":\"motherboard\",\"sensor\":\"fan/none\"}}"));
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
 
-        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        var auto = await client.PutAsync("/devices/deepcool-mystique/settings",
+            Json("{\"cpuFan\":{\"category\":\"\",\"sensor\":\"\"}}"));
+        Assert.Equal(HttpStatusCode.OK, auto.StatusCode);
     }
 
     [Fact]
