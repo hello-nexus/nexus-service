@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
-using System.Reflection;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,7 +23,6 @@ public sealed class OpenMeteoWeatherProviderErrorTests
         Assert.Equal("timeout", OpenMeteoWeatherProvider.Classify(new TaskCanceledException("t", new TimeoutException())));
         Assert.Equal("timeout", OpenMeteoWeatherProvider.Classify(new TimeoutException()));
         Assert.Equal("unreachable", OpenMeteoWeatherProvider.Classify(new HttpRequestException("dns")));
-        Assert.Equal("http", OpenMeteoWeatherProvider.Classify(new HttpRequestException("x", null, HttpStatusCode.BadGateway)));
         Assert.Equal("invalid", OpenMeteoWeatherProvider.Classify(new JsonException("bad")));
     }
 
@@ -70,13 +68,15 @@ public sealed class OpenMeteoWeatherProviderErrorTests
     public async Task Stale_snapshot_is_served_with_error_and_cache_stays_clean()
     {
         var fail = false;
+        var offset = TimeSpan.Zero;
         var p = Provider(_ => fail
             ? throw new TaskCanceledException("t", new TimeoutException())
             : Task.FromResult(Json(GoodForecast)));
+        p.Clock = () => DateTime.UtcNow + offset;
         var first = await p.GetCurrentAsync(1, 2);
         Assert.Null(first.Error);
 
-        AgeCache(p, TimeSpan.FromMinutes(30));
+        offset = TimeSpan.FromMinutes(30);
         fail = true;
         var stale = await p.GetCurrentAsync(1, 2);
         Assert.Equal("timeout", stale.Error);
@@ -87,6 +87,19 @@ public sealed class OpenMeteoWeatherProviderErrorTests
         fail = false;
         var recovered = await p.GetCurrentAsync(1, 2);
         Assert.Null(recovered.Error);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError, "http")]
+    [InlineData(null, "timeout")]
+    public async Task Auto_location_failure_with_no_cache_is_empty_with_error(HttpStatusCode? status, string expected)
+    {
+        var p = Provider(_ => status is { } code
+            ? Task.FromResult(new HttpResponseMessage(code))
+            : throw new TaskCanceledException("t", new TimeoutException()));
+        var snap = await p.GetCurrentAsync();
+        Assert.Equal(expected, snap.Error);
+        Assert.Equal("", snap.AsOf);
     }
 
     [Fact]
@@ -101,7 +114,7 @@ public sealed class OpenMeteoWeatherProviderErrorTests
     [Fact]
     public void Error_serializes_camelCase_and_is_omitted_when_null()
     {
-        var withError = JsonSerializer.Serialize(WeatherSnapshot.Empty.WithErrorForTest("timeout"), AppJsonContext.Default.WeatherSnapshot);
+        var withError = JsonSerializer.Serialize(WeatherSnapshot.Empty.WithError("timeout"), AppJsonContext.Default.WeatherSnapshot);
         Assert.Contains("\"error\":\"timeout\"", withError);
         var without = JsonSerializer.Serialize(WeatherSnapshot.Empty, AppJsonContext.Default.WeatherSnapshot);
         Assert.DoesNotContain("\"error\"", without);
@@ -113,20 +126,6 @@ public sealed class OpenMeteoWeatherProviderErrorTests
     private static OpenMeteoWeatherProvider Provider(Func<HttpRequestMessage, Task<HttpResponseMessage>> respond) =>
         new(new Factory(new FuncHandler(respond)));
 
-    private static void AgeCache(OpenMeteoWeatherProvider p, TimeSpan by)
-    {
-        var field = typeof(OpenMeteoWeatherProvider).GetField("_weatherCache", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var dict = (System.Collections.IDictionary)field.GetValue(p)!;
-        foreach (var key in new List<object>(dict.Keys.Cast<object>()))
-        {
-            var entry = dict[key]!;
-            var t = entry.GetType();
-            var snap = (WeatherSnapshot)t.GetField("Item1")!.GetValue(entry)!;
-            var fetched = (DateTime)t.GetField("Item2")!.GetValue(entry)!;
-            dict[key] = (snap, fetched - by);
-        }
-    }
-
     private sealed class Factory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
@@ -135,14 +134,5 @@ public sealed class OpenMeteoWeatherProviderErrorTests
     private sealed class FuncHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => respond(request);
-    }
-}
-
-internal static class WeatherSnapshotTestExtensions
-{
-    public static WeatherSnapshot WithErrorForTest(this WeatherSnapshot s, string error)
-    {
-        s.Error = error;
-        return s;
     }
 }

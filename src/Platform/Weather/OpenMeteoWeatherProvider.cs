@@ -24,7 +24,7 @@ namespace Nexus.Service.Platform.Weather;
 /// cities. ipwho.is location caches only the auto path, for 24 h. Weather per
 /// key is cached for 15 min. A single request failure returns the last-known
 /// good snapshot for that key if it's still reasonably fresh; total failure
-/// returns WeatherSnapshot.Empty.
+/// returns WeatherSnapshot.Empty. Either failure result has Error set.
 /// </summary>
 public sealed class OpenMeteoWeatherProvider : IWeatherProvider
 {
@@ -33,6 +33,8 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
     private static readonly TimeSpan StaleServeTtl = TimeSpan.FromHours(2);
 
     private readonly IHttpClientFactory _http;
+
+    internal Func<DateTime> Clock { get; set; } = () => DateTime.UtcNow;
 
     private IpLocation? _cachedLocation;
     private DateTime _locationFetchedUtc = DateTime.MinValue;
@@ -56,7 +58,7 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
 
         try
         {
-            var now = DateTime.UtcNow;
+            var now = Clock();
             if (await TryGetCachedAsync(key, WeatherTtl, now).ConfigureAwait(false) is { } fresh)
             {
                 return fresh;
@@ -120,7 +122,7 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
                 await _lock.WaitAsync().ConfigureAwait(false);
                 try
                 {
-                    _weatherCache[key] = (snapshot, DateTime.UtcNow);
+                    _weatherCache[key] = (snapshot, Clock());
                 }
                 finally
                 {
@@ -155,8 +157,7 @@ public sealed class OpenMeteoWeatherProvider : IWeatherProvider
     /// <summary>Maps a failed upstream call to the wire reason.</summary>
     internal static string Classify(Exception ex) => ex switch
     {
-        TaskCanceledException or OperationCanceledException or TimeoutException => ErrorTimeout,
-        HttpRequestException { StatusCode: not null } => ErrorHttp,
+        OperationCanceledException or TimeoutException => ErrorTimeout,
         HttpRequestException => ErrorUnreachable,
         JsonException or NotSupportedException => ErrorInvalid,
         _ => ErrorUnreachable,
