@@ -57,6 +57,7 @@ public static class DeviceControlPolicy
         "corsair-xc7-lcd", "corsair-capellix-lcd", "idcooling-fx-lcd",
         "asrock-lcd", "asus-slc4-lcd", "corsair-link-lcd",
         "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88", "asus-glacial-lcd",
+        "deepcool-mystique",
     };
 
     /// <summary>Feeds <see cref="ConflictAppFor"/> alone: names a competing app for the UI hint; the handler defaults on unless that app starts whitelisted.</summary>

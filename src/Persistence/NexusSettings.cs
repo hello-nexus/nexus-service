@@ -1554,6 +1554,8 @@ public sealed class DevicesSettings
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     /// <summary>What the ROG Crosshair X870E Glacial LCD shows. Service-side so it survives a restart; only what differs from the panel's own state is sent, and a monitor the user chose is resumed on connect.</summary>
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
+    /// <summary>What the DeepCool Mystique screen shows. Service-side so it survives a restart and is re-applied on connect.</summary>
+    public DeepCoolMystiqueSettings DeepCoolMystique { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
@@ -2276,6 +2278,73 @@ public sealed class GlacialLcdSettings
                 ? defaults[i]
                 : new GlacialLcdSlot { Category = slot.Category ?? "", Sensor = slot.Sensor ?? "", Label = slot.Label ?? "" });
         }
+        return copy;
+    }
+}
+
+/// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
+public sealed class DeepCoolMystiqueSensorPick
+{
+    /// <summary>Monitoring category; empty selects the automatic pick.</summary>
+    public string Category { get; set; } = "";
+
+    public string Sensor { get; set; } = "";
+
+    public DeepCoolMystiqueSensorPick Copy() => new() { Category = Category ?? "", Sensor = Sensor ?? "" };
+}
+
+/// <summary>
+/// The Mystique screen's settings. The device cannot be read back, so each command group is
+/// written only after the user has changed something in it; a group the user never touched
+/// keeps whatever the screen already holds.
+/// </summary>
+public sealed class DeepCoolMystiqueSettings
+{
+    public const string ModeMonitor = "monitor";
+    public const string ModeMedia = "media";
+    public const string ModeRecording = "recording";
+
+    public const string ReadoutTemperature = "temperature";
+    public const string ReadoutFrequency = "frequency";
+    public const string ReadoutTime = "time";
+    public const string ReadoutPump = "pump";
+    public const string ReadoutFan = "fan";
+    public const string ReadoutFanPump = "fanPump";
+
+    /// <summary>The user picked a screen mode, so it is written on connect.</summary>
+    public bool ModeEdited { get; set; }
+
+    /// <summary>The user picked a monitor readout.</summary>
+    public bool ReadoutEdited { get; set; }
+
+    /// <summary>The user changed a recording-tab readout.</summary>
+    public bool RecordingEdited { get; set; }
+
+    /// <summary>The user changed brightness, rotation or RGB sync, which share one command.</summary>
+    public bool DeviceEdited { get; set; }
+
+    public string Mode { get; set; } = ModeMonitor;
+    public string Readout { get; set; } = ReadoutTemperature;
+    public bool RecordFrequency { get; set; } = true;
+    public bool RecordTemperature { get; set; } = true;
+    public int Brightness { get; set; } = 70;
+    public bool Gyroscope { get; set; } = true;
+    public bool RgbSync { get; set; }
+
+    /// <summary>Sensor behind the CPU fan readout; empty category picks the motherboard CPU fan header.</summary>
+    public DeepCoolMystiqueSensorPick CpuFan { get; set; } = new();
+
+    /// <summary>Sensor behind the pump readout; empty category picks the motherboard pump or CPU_OPT header.</summary>
+    public DeepCoolMystiqueSensorPick Pump { get; set; } = new();
+
+    /// <summary>A deep copy with nulls from an old or hand-edited file replaced.</summary>
+    public DeepCoolMystiqueSettings Copy()
+    {
+        var copy = (DeepCoolMystiqueSettings)MemberwiseClone();
+        copy.Mode = Mode ?? ModeMonitor;
+        copy.Readout = Readout ?? ReadoutTemperature;
+        copy.CpuFan = CpuFan?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.Pump = Pump?.Copy() ?? new DeepCoolMystiqueSensorPick();
         return copy;
     }
 }
