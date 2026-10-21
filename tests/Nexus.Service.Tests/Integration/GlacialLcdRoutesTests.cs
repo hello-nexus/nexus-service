@@ -39,7 +39,7 @@ public class GlacialLcdRoutesTests
     [Theory]
     [InlineData("quick", "summary/cpu-usage", HttpStatusCode.OK)]
     [InlineData("network", "Network Total", HttpStatusCode.OK)]
-    [InlineData("fps", "fps/app", HttpStatusCode.OK)]
+    [InlineData("fps", "fps/current", HttpStatusCode.OK)]
     [InlineData("nonsense", "x", HttpStatusCode.BadRequest)]
     public async Task Any_picker_category_is_accepted_for_a_widget(string category, string sensor, HttpStatusCode expected)
     {

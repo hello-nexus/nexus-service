@@ -832,7 +832,9 @@ public class GlacialLcdScreenTests
         }
         // Past the room, the cut falls on a character boundary.
         var report = GlacialLcdProtocol.EncodeSlot(0, "x", new string('㎓', 20));
-        Assert.Equal(0, System.Text.Encoding.UTF8.GetByteCount(System.Text.Encoding.UTF8.GetString(report, GlacialLcdProtocol.SlotValueOffset, room).TrimEnd('\0', '\uFFFD')) % 3);
+        // 14 whole characters fit in 44 bytes; the two bytes left over stay zero rather than holding half a character.
+        Assert.All(report.Skip(GlacialLcdProtocol.SlotValueOffset + 42), b => Assert.Equal(0, b));
+        Assert.Equal(0xE3, report[GlacialLcdProtocol.SlotValueOffset + 41 - 2]);
     }
 
     [Fact]
@@ -861,8 +863,8 @@ public class GlacialLcdScreenTests
         var byName = new GlacialLcdSlot { Category = "network", Sensor = "Network Total", Label = "Net" };
         Assert.Equal(("Net", "2.0KB/s"), GlacialLcdSensors.Read(sensors, byName, 0, sources));
 
-        var fps = new SensorSnapshotSources(FpsSensors: new[] { Sensor("fps/app", "Game", "Framerate", 90f) });
-        var fpsSlot = new GlacialLcdSlot { Category = "fps", Sensor = "fps/app", Label = "FPS" };
+        var fps = new SensorSnapshotSources(FpsSensors: new[] { Sensor("fps/current", "FPS", "Framerate", 90f) });
+        var fpsSlot = new GlacialLcdSlot { Category = "fps", Sensor = "FPS", Label = "FPS" };
         Assert.Equal(("FPS", "90FPS"), GlacialLcdSensors.Read(sensors, fpsSlot, 0, fps));
     }
 

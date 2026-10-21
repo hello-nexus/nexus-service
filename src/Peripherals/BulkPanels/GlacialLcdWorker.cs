@@ -183,7 +183,7 @@ public sealed class GlacialLcdWorker : BackgroundService
     /// <summary>Capture only runs while a monitor widget reads the fps category.</summary>
     private static bool WantsFps(GlacialLcdSettings g)
     {
-        if (!g.ModeChosen || g.Mode != GlacialLcdSettings.ModeMonitor)
+        if (!g.ModeChosen || g.Mode != GlacialLcdSettings.ModeMonitor || !g.DisplayOn || g.Brightness == 0)
         {
             return false;
         }
@@ -204,8 +204,9 @@ public sealed class GlacialLcdWorker : BackgroundService
         {
             return null;
         }
-        var names = _store.Load().Cooling.FanNames;
-        if (names.Count == 0)
+        Dictionary<string, string>? names = null;
+        _store.Read(s => names = new Dictionary<string, string>(s.Cooling.FanNames));
+        if (names is null || names.Count == 0)
         {
             return null;
         }
