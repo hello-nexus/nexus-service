@@ -231,7 +231,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private long _lastChangeMs;
     private long _firstPendingMs;
 
-    // Guarded by _stateLock; outlives a worker so the remembered picture and backoff carry over a reconnect.
+    // Guarded by _stateLock; outlives a worker so the remembered picture carries over a reconnect. The backoff does not: Connect resets it.
     private string? _lastHash;
     private string? _persistedHash;
     private long _hashSetMs;

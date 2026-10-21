@@ -656,35 +656,32 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_cancel_ends_the_wait_after_the_end_report_instead_of_sitting_it_out()
+    public void A_cancel_during_the_wait_after_the_end_report_stops_the_upload_before_the_show_step()
     {
         var link = new GlacialLcdLink();
         var driver = Fast(link);
         var pipe = new FakePipe();
-        var hid = new FakeHid();
-        driver.Connect(pipe, hid);
-        long endReportAt = 0;
-        hid.OnWrite = w =>
+        int slices = 0;
+        // The cancel lands inside the first timed read of the wait, so the outcome does not depend on timing.
+        var hid = new FakeHid
         {
-            if (w[1] == 0x73 && w[2] == 0xFF)
+            OnRead = timeoutMs =>
             {
-                Interlocked.Exchange(ref endReportAt, System.Diagnostics.Stopwatch.GetTimestamp());
-                // The cancel arrives while the driver is waiting for the panel's report.
-                _ = Task.Run(async () =>
+                if (timeoutMs == 50 && Interlocked.Increment(ref slices) == 1)
                 {
-                    await Task.Delay(80);
                     link.RequestCancel();
-                });
-            }
+                }
+            },
         };
+        driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
-        var waited = System.Diagnostics.Stopwatch.GetElapsedTime(Interlocked.Read(ref endReportAt));
 
-        // Measured from the end report: one long read would sit out the whole reply window.
-        Assert.True(waited.TotalMilliseconds < 350, waited.TotalMilliseconds.ToString());
+        // One long read would never see a 50 ms slice, so the cancel would not fire and the show step would go out.
         Assert.Equal(0, driver.UploadsCompleted);
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0x51);
+        Assert.DoesNotContain(500, hid.ReadTimeouts);
         driver.Disconnect(pipe, hid);
     }
 
@@ -881,6 +878,9 @@ public class GlacialLcdDriverTests
         /// <summary>A read result that models a vanished device.</summary>
         public bool ReadsFail { get; set; }
 
+        /// <summary>Called at the start of every read with the timeout asked, outside the fake's lock.</summary>
+        public Action<int>? OnRead { get; set; }
+
         private readonly Queue<byte[]> _input = new();
 
         public int VendorId => 0x0B05;
@@ -925,6 +925,7 @@ public class GlacialLcdDriverTests
         public bool SetOutputReport(ReadOnlySpan<byte> report) => false;
         public int Read(Span<byte> buffer, int timeoutMs)
         {
+            OnRead?.Invoke(timeoutMs);
             lock (_lock)
             {
                 ReadTimeouts.Add(timeoutMs);
