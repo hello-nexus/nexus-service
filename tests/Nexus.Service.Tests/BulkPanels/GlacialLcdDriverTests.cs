@@ -390,10 +390,42 @@ public class GlacialLcdDriverTests
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
 
+        // A remembered picture would be shown at once; an unusable value must not be.
+        int looks = driver.Ticks + 3;
+        Assert.True(WaitUntil(() => driver.Ticks >= looks));
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0x51);
+
         driver.SendFrame(pipe, hid, Frame());
 
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        // Nothing remembered means the default slot 2 is taken as on display, so the first upload writes slot 1.
+        Assert.Equal(1, hid.Writes.First(w => w[1] == 0x72)[4]);
+        Assert.Equal(1, hid.Writes.First(w => w[1] == 0x51)[4]);
         driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_stopped_worker_forgets_a_flushed_picture_only_if_nothing_changed_the_remembered_picture_since()
+    {
+        var memory = new FakeMemory();
+        memory.Hashes["asus-glacial-lcd"] = "1:KEEP";
+        var driver = Fast();
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
+        // The link goes down right after the flush: a stopped worker, with nothing stored since.
+        var hid = new FakeHid();
+        hid.OnWrite = w =>
+        {
+            if (w[1] == 0xF1)
+            {
+                driver.Disconnect(pipe, hid);
+            }
+        };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
+        Assert.True(WaitUntil(() => memory.Hashes.Count == 0));
     }
 
     [Fact]

@@ -219,7 +219,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     }
     private volatile int _pace;
     private int _uploadsSinceConnect;
-    private bool _flushSent;
+    private int _pictureGeneration;
     private bool _logAllReplies;
     private readonly Dictionary<string, string> _lastLoggedReply = new();
 
@@ -591,12 +591,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         Interlocked.Increment(ref _uploadAttempts);
 
         int targetSlot;
+        int generation;
         lock (_stateLock)
         {
             // The slot on display is never written: the new picture goes to the other one and is shown when complete.
             targetSlot = _shownSlot == GlacialLcdProtocol.CustomSlots[0] ? GlacialLcdProtocol.CustomSlots[1] : GlacialLcdProtocol.CustomSlots[0];
+            generation = _pictureGeneration;
         }
-        _flushSent = false;
+        var run = new UploadRun();
         var outcome = UploadOutcome.Failed;
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
@@ -605,7 +607,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             lock (_link.Sync)
             {
                 // Waiting for the lock may have outlasted a native edit or a mode change.
-                outcome = ShouldStop(state) ? UploadOutcome.Cancelled : UploadJpeg(state, jpeg, targetSlot);
+                outcome = ShouldStop(state) ? UploadOutcome.Cancelled : UploadJpeg(state, jpeg, targetSlot, run);
                 if (outcome == UploadOutcome.Done)
                 {
                     _link.ShowPending = false;
@@ -623,11 +625,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         watch.Stop();
         FinishUploading(state);
-        if (outcome != UploadOutcome.Done && _flushSent)
+        if (outcome != UploadOutcome.Done && run.FlushSent
+            && (!state.Stop || Volatile.Read(ref _pictureGeneration) == generation))
         {
             // What the flush clears is not known to stop at the slot being written, so after a
             // failed or cut-short upload nothing is assumed to be on display: the next frame is
-            // uploaded again instead of being taken for the stored one.
+            // uploaded again instead of being taken for the stored one. A stopped worker does
+            // this only if nothing has changed the remembered picture since it started, so it
+            // can never wipe what a newer worker stored.
             ForgetPicture();
         }
 
@@ -637,6 +642,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             lock (_stateLock)
             {
                 _lastHash = hash;
+                _pictureGeneration++;
                 _shownSlot = targetSlot;
                 _hashSetMs = now;
                 _failures = 0;
@@ -875,7 +881,13 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private bool ShouldStop(WorkerState state) => state.Stop || _link.CancelRequested || !CanUpload();
 
-    private UploadOutcome UploadJpeg(WorkerState state, byte[] jpeg, int targetSlot)
+    /// <summary>Facts about one upload that the caller needs afterwards; per upload, so another worker cannot reset them.</summary>
+    private sealed class UploadRun
+    {
+        public bool FlushSent { get; set; }
+    }
+
+    private UploadOutcome UploadJpeg(WorkerState state, byte[] jpeg, int targetSlot, UploadRun run)
     {
         UploadOutcome Fail() => ShouldStop(state) ? UploadOutcome.Cancelled : UploadOutcome.Failed;
 
@@ -912,7 +924,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                     _supersedes++;
                     return UploadOutcome.Superseded;
                 }
-                _flushSent = true;
+                run.FlushSent = true;
             }
             if (!HidWrite(state, report))
             {
@@ -1075,6 +1087,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             lock (_stateLock)
             {
                 _lastHash = null;
+                _pictureGeneration++;
                 stored = _persistedValue is not null;
                 _persistedValue = null;
             }
