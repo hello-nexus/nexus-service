@@ -62,7 +62,6 @@ public static class GalleryRoutes
             {
                 Items = e.Items,
                 Truncated = e.Truncated,
-                Total = e.Truncated ? e.Total : 0,
                 Playlists = lib.ListPlaylists(),
             };
         }).AllowPanel();

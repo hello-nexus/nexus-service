@@ -171,7 +171,7 @@ public sealed class GalleryRoutesTests : IDisposable
     }
 
     [Fact]
-    public async Task Items_OverCap_ReportsTruncatedAndTotal_UnderCapOmitsThem()
+    public async Task Items_OverCap_ReportsTruncated_UnderCapOmitsIt()
     {
         var client = DesktopClient();
         WriteImage("a.png");
@@ -187,7 +187,7 @@ public sealed class GalleryRoutesTests : IDisposable
 
         var json = await client.GetStringAsync("/gallery/items");
         Assert.Contains("\"truncated\":true", json);
-        Assert.Contains($"\"total\":{GalleryLibrary.MaxItems + 1}", json);
+        Assert.DoesNotContain("total", json);
     }
 
     [Fact]

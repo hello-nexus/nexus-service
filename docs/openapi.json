@@ -19138,6 +19138,9 @@
               "$ref": "#/components/schemas/GalleryItem"
             }
           },
+          "truncated": {
+            "type": "boolean"
+          },
           "playlists": {
             "type": "array",
             "items": {
