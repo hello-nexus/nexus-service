@@ -395,22 +395,19 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         return rgb;
     }
 
-    /// <summary>Marks each area-sampled card and hands it the boxes of the engine frame it is sampled from. Read only: the engine's id set is seeded at startup and by the route.</summary>
+    /// <summary>Stamps each card with its sampling mode and, for a cell mode, the nearest-LED cells of the engine frame it is sampled from. Read only: the engine's modes are seeded at startup and by the route.</summary>
     internal static void ApplyAreaSampling(LightingEngine engine, List<LightingDevice> devices, NexusSettings settings)
     {
-        var ids = settings.Devices.AreaSamplingDevices;
-        if (ids.Count == 0)
-        {
-            return;
-        }
+        var modes = settings.Devices.SamplingModes;
         var frames = engine.Devices;
         foreach (var dev in devices)
         {
-            if (!ids.Contains(dev.Id))
+            var mode = SamplingModes.Of(modes, dev.Id);
+            dev.Sampling = SamplingModes.Name(mode);
+            if (mode == SamplingMode.Led)
             {
                 continue;
             }
-            dev.AreaSampling = true;
             DeviceFrame? frame = null;
             foreach (var f in frames)
             {
@@ -422,7 +419,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             }
             // Exactly what the engine samples for this card id (frames are created under their card's id). A card with no
             // frame is never sampled, so its cells are all empty; the list always has LedCount entries.
-            dev.AreaCells = engine.AreaCellsForCard(frame, dev.LedCount);
+            dev.AreaCells = engine.AreaCellsForCard(frame, dev.LedCount, mode);
         }
     }
 

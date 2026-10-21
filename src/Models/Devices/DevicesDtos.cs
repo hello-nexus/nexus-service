@@ -239,9 +239,9 @@ public class LightingDevice
     public bool RateCapSupported { get; set; }
     /// <summary>The user's cap in updates per second. Null means no cap.</summary>
     public int? MaxRateHz { get; set; }
-    /// <summary>True when each of this card's LEDs shows the mean of a box around it rather than a small spot.</summary>
-    public bool AreaSampling { get; set; }
-    /// <summary>Area sampling cells: one polygon per LED (exactly <see cref="LedCount"/> entries), each <c>[u,v,u,v,...]</c> vertices in order in the card's normalized unrotated frame space, v down. Empty for a disabled LED or one past the draft count. Null when <see cref="AreaSampling"/> is off.</summary>
+    /// <summary>How the card's LEDs read the canvas: "led" (a small spot, the default), "nearest", "rows" or "columns" (the mean of the LED's nearest-LED cell, the last two with the cells stretched into bands).</summary>
+    public string Sampling { get; set; } = Nexus.Service.Lighting.Engine.SamplingModes.Led;
+    /// <summary>Area sampling cells: one polygon per LED (exactly <see cref="LedCount"/> entries), each <c>[u,v,u,v,...]</c> vertices in order in the card's normalized unrotated frame space, v down. Empty for a disabled LED or one past the draft count. Null when <see cref="Sampling"/> is "led".</summary>
     public float[][]? AreaCells { get; set; }
     public int LedCount { get; set; }
     /// <summary>Number of the card's LEDs not disabled in the resolved layout (applied mapping's disabled set layered under user overrides, which win in both directions). Equals <see cref="LedCount"/> when no disable data exists.</summary>
@@ -304,11 +304,11 @@ public class LedPreviewLayoutResponse : Nexus.Service.Models.ApiResponse
     public float[][]? AreaCells { get; set; }
 }
 
-/// <summary>POST /devices/lighting-devices/area-sampling.</summary>
-public class SetLightingDeviceAreaSamplingBody
+/// <summary>POST /devices/lighting-devices/sampling. <see cref="Mode"/> is one of "led", "nearest", "rows", "columns".</summary>
+public class SetLightingDeviceSamplingBody
 {
     public string Id { get; set; } = "";
-    public bool Enabled { get; set; }
+    public string Mode { get; set; } = "";
 }
 
 /// <summary>Whole-list replace for the user-made groups; the client owns order and membership.</summary>

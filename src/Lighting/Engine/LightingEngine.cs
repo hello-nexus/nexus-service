@@ -156,7 +156,11 @@ public sealed partial class LightingEngine : IDisposable
             }
         }
     }
-    public void UpdateDevices(DeviceFrame[] devices) { _devices = devices; }
+    public void UpdateDevices(DeviceFrame[] devices)
+    {
+        _devices = devices;
+        PruneAreaCaches(devices);
+    }
 
     // Devices placed in the 3D scene and the camera that sees them; null means
     // every device samples its 2D frame. Replaced wholesale, never mutated.
@@ -1835,6 +1839,7 @@ public sealed partial class LightingEngine : IDisposable
     {
         var cw = _sampleCanvas.Width;
         var ch = _sampleCanvas.Height;
+        RefreshSamplingModes();
         const float CW = CanvasUnitsW, CH = CanvasUnitsH;
         // Overlays first, so an LED they own never gets a canvas colour it is
         // about to lose. Correctness no longer rests on this - DeviceFrame

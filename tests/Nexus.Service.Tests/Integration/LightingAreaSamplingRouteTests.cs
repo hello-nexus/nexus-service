@@ -24,7 +24,7 @@ public sealed class LightingAreaSamplingRouteTests : IClassFixture<SiblingZoneHo
     }
 
     private Task<HttpResponseMessage> Post(string body) =>
-        _client.PostAsync("/devices/lighting-devices/area-sampling", new StringContent(body, Encoding.UTF8, "application/json"));
+        _client.PostAsync("/devices/lighting-devices/sampling", new StringContent(body, Encoding.UTF8, "application/json"));
 
     private IConfigStore Store => _factory.Services.GetRequiredService<IConfigStore>();
 
@@ -33,33 +33,46 @@ public sealed class LightingAreaSamplingRouteTests : IClassFixture<SiblingZoneHo
     [Fact]
     public async Task Toggle_PersistsAndReachesTheEngine_ThenClears()
     {
-        var res = await Post("""{"id":"openrgb-s-OTHER","enabled":true}""");
+        var res = await Post("""{"id":"openrgb-s-OTHER","mode":"nearest"}""");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
-        Assert.Contains("openrgb-s-OTHER", Settings.Devices.AreaSamplingDevices);
+        Assert.Equal("nearest", Settings.Devices.SamplingModes["openrgb-s-OTHER"]);
         Assert.True(_factory.Services.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>().AnyAreaSampling);
 
-        await Post("""{"id":"openrgb-s-OTHER","enabled":false}""");
-        Assert.Empty(Settings.Devices.AreaSamplingDevices);
+        await Post("""{"id":"openrgb-s-OTHER","mode":"led"}""");
+        Assert.Empty(Settings.Devices.SamplingModes);
         Assert.False(_factory.Services.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>().AnyAreaSampling);
     }
 
     [Fact]
     public async Task Disabling_an_unlisted_id_succeeds_and_clears_it()
     {
-        Store.Update(s => s.Devices.AreaSamplingDevices = new List<string> { "gone-card" });
-        var res = await Post("""{"id":"gone-card","enabled":false}""");
+        Store.Update(s => s.Devices.SamplingModes = new Dictionary<string, string> { ["gone-card"] = "rows" });
+        var res = await Post("""{"id":"gone-card","mode":"led"}""");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
-        Assert.Empty(Settings.Devices.AreaSamplingDevices);
+        Assert.Empty(Settings.Devices.SamplingModes);
     }
 
     [Theory]
-    [InlineData("""{"id":"","enabled":true}""")]
-    [InlineData("""{"id":"unknown-card","enabled":true}""")]
+    [InlineData("rows")]
+    [InlineData("columns")]
+    public async Task Each_mode_is_stored_by_its_name(string mode)
+    {
+        var res = await Post($$"""{"id":"openrgb-s-OTHER","mode":"{{mode}}"}""");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal(mode, Settings.Devices.SamplingModes["openrgb-s-OTHER"]);
+    }
+
+    [Theory]
+    [InlineData("""{"id":"openrgb-s-OTHER","mode":"sideways"}""")]
+    [InlineData("""{"id":"openrgb-s-OTHER","mode":""}""")]
+    [InlineData("""{"id":"","mode":"led"}""")]
+    [InlineData("""{"id":"","mode":"nearest"}""")]
+    [InlineData("""{"id":"unknown-card","mode":"nearest"}""")]
     public async Task Invalid_id_is_rejected(string body)
     {
         var res = await Post(body);
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-        Assert.Empty(Settings.Devices.AreaSamplingDevices);
+        Assert.Empty(Settings.Devices.SamplingModes);
     }
 
     [Fact]
@@ -75,7 +88,7 @@ public sealed class LightingAreaSamplingRouteTests : IClassFixture<SiblingZoneHo
         // The wire omits nulls (AppJsonContext WhenWritingNull), so "off" is an absent areaCells.
         Assert.False(offDoc.RootElement.TryGetProperty("areaCells", out _));
 
-        await Post("""{"id":"openrgb-s-OTHER","enabled":true}""");
+        await Post("""{"id":"openrgb-s-OTHER","mode":"nearest"}""");
         var on = await _client.PostAsync("/devices/lighting-devices/openrgb-s-OTHER/led-preview-layout", new StringContent(draft, Encoding.UTF8, "application/json"));
         using var onDoc = System.Text.Json.JsonDocument.Parse(await on.Content.ReadAsStringAsync());
         var cells = onDoc.RootElement.GetProperty("areaCells").EnumerateArray()

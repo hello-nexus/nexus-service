@@ -100,7 +100,8 @@ public sealed partial class LightingEngine
     {
         _aheadSpot = null;
         var fullFrameAtStart = FullFrameSampling;
-        var areaAtStart = _areaIds;
+        RefreshSamplingModes();
+        var areaAtStart = _areaModes;
         if (!(LedSpaceGate.Enabled || AheadFastForTest) || fullFrameAtStart)
         {
             return FastWindow.NotUsed;
@@ -268,7 +269,7 @@ public sealed partial class LightingEngine
         }
         // Sampling reads these live. Nothing is published yet, so a flip during the window sends it to the canvas path whole.
         if (FullFrameSampling != fullFrameAtStart || !ReferenceEquals(_scene, scene) || !ReferenceEquals(_stackSlots, slots)
-            || !ReferenceEquals(_areaIds, areaAtStart))
+            || !ReferenceEquals(_areaModes, areaAtStart))
         {
             return FastWindow.NotUsed;
         }

@@ -603,7 +603,8 @@ public static class NexusServiceCollectionExtensions
             engine.KeyReactive = sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
             var areaSettings = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load();
             engine.SetStackSlots(areaSettings.Lighting.DeviceStacks);
-            engine.SetAreaSampling(areaSettings.Devices.AreaSamplingDevices);
+            var modeStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            engine.SamplingModeSource = () => modeStore.Load().Devices.SamplingModes;
             return engine;
         });
         services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>();
