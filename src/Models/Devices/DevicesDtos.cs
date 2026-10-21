@@ -241,8 +241,8 @@ public class LightingDevice
     public int? MaxRateHz { get; set; }
     /// <summary>True when each of this card's LEDs shows the mean of a box around it rather than a small spot.</summary>
     public bool AreaSampling { get; set; }
-    /// <summary>Area sampling boxes, <c>[u0,v0,u1,v1]</c> per LED (length 4 x <see cref="LedCount"/>) in the card's normalized unrotated frame space, v down. A disabled LED is four zeros. Null when <see cref="AreaSampling"/> is off.</summary>
-    public float[]? AreaBoxes { get; set; }
+    /// <summary>Area sampling cells: one polygon per LED (exactly <see cref="LedCount"/> entries), each <c>[u,v,u,v,...]</c> vertices in order in the card's normalized unrotated frame space, v down. Empty for a disabled LED or one past the draft count. Null when <see cref="AreaSampling"/> is off.</summary>
+    public float[][]? AreaCells { get; set; }
     public int LedCount { get; set; }
     /// <summary>Number of the card's LEDs not disabled in the resolved layout (applied mapping's disabled set layered under user overrides, which win in both directions). Equals <see cref="LedCount"/> when no disable data exists.</summary>
     public int EnabledLedCount { get; set; }
@@ -298,10 +298,10 @@ public class SetLightingDeviceMaxRateBody
     public int? MaxRateHz { get; set; }
 }
 
-/// <summary>Response of POST /devices/lighting-devices/{id}/led-preview-layout: the envelope plus the draft layout's area boxes (4 x LED count, see <see cref="LightingDevice.AreaBoxes"/>), null when the card is not area sampled.</summary>
+/// <summary>Response of POST /devices/lighting-devices/{id}/led-preview-layout: the envelope plus the draft layout's area cells (see <see cref="LightingDevice.AreaCells"/>), null when the card is not area sampled.</summary>
 public class LedPreviewLayoutResponse : Nexus.Service.Models.ApiResponse
 {
-    public float[]? AreaBoxes { get; set; }
+    public float[][]? AreaCells { get; set; }
 }
 
 /// <summary>POST /devices/lighting-devices/area-sampling.</summary>

@@ -6,24 +6,33 @@ namespace Nexus.Service.Lighting.Engine;
 
 public sealed partial class LightingEngine
 {
-    private sealed class AreaEntry
+    // What an owner map was built from; a lookup rebuilds it only when one of these changes.
+    private sealed class AreaMapEntry
     {
         public int Count;
-        public int Lo;
-        public int Hi;
         public float[]? U;
         public float[]? V;
         public bool[]? Disabled;
-        public float[] Boxes = Array.Empty<float>();
+        public float[] Geom = Array.Empty<float>();
+        public object? Scene;
+        public AreaOwnerMap Map = null!;
     }
 
-    // Card ids whose LEDs read the mean of a box instead of a spot. Replaced wholesale, never mutated.
+    private sealed class AreaCellsEntry
+    {
+        public int Count;
+        public float W;
+        public float H;
+        public float[]? U;
+        public float[]? V;
+        public bool[]? Disabled;
+        public float[][] Cells = Array.Empty<float[]>();
+    }
+
+    // Card ids whose LEDs read the mean of their nearest-LED cell instead of a spot. Replaced wholesale, never mutated.
     private volatile HashSet<string>? _areaIds;
-    // Boxes per (card, run), rebuilt only when the layout content changes. Shared by the loop, the look-ahead builder and the DTO.
-    private readonly ConcurrentDictionary<(string Id, int Lo, int Hi), AreaEntry> _areaBoxes = new();
-    // Loop thread only: one summed-area table per canvas read this pass, reused across passes.
-    private readonly List<(CanvasBuffer Canvas, AreaSat Sat)> _areaSats = new();
-    private int _areaSatCount;
+    private readonly ConcurrentDictionary<(string Id, int Lo, int Hi), AreaMapEntry> _areaMaps = new();
+    private readonly ConcurrentDictionary<(string Id, int Lo, int Hi), AreaCellsEntry> _areaCells = new();
 
     /// <summary>True when any card has Area sampling on.</summary>
     internal bool AnyAreaSampling => _areaIds is { Count: > 0 };
@@ -33,36 +42,11 @@ public sealed partial class LightingEngine
     {
         var set = new HashSet<string>(ids, StringComparer.Ordinal);
         _areaIds = set.Count == 0 ? null : set;
-        _areaBoxes.Clear();
+        _areaMaps.Clear();
+        _areaCells.Clear();
     }
 
     internal bool IsAreaSampled(string id) => _areaIds?.Contains(id) == true;
-
-    /// <summary>
-    /// The boxes of LEDs [<paramref name="lo"/>, <paramref name="hi"/>) of a card, or null when the card is not area sampled.
-    /// Cached: the layout arrays are swapped whole on change, and a transient editor layout arrives as fresh arrays of equal
-    /// content each tick, so content is compared when the references differ.
-    /// </summary>
-    internal float[]? AreaBoxesFor(string id, int ledCount, float[]? u, float[]? v, bool[]? disabled, int lo, int hi, bool requireOn = true)
-    {
-        if (requireOn && !IsAreaSampled(id))
-        {
-            return null;
-        }
-        var key = (id, lo, hi);
-        if (_areaBoxes.TryGetValue(key, out var e) && e.Count == ledCount
-            && Same(e.U, u) && Same(e.V, v) && Same(e.Disabled, disabled))
-        {
-            return e.Boxes;
-        }
-        var fresh = new AreaEntry
-        {
-            Count = ledCount, Lo = lo, Hi = hi, U = u, V = v, Disabled = disabled,
-            Boxes = AreaBoxes.Compute(u, v, disabled, ledCount, lo, hi),
-        };
-        _areaBoxes[key] = fresh;
-        return fresh.Boxes;
-    }
 
     private static bool Same(float[]? a, float[]? b) =>
         ReferenceEquals(a, b) || (a is not null && b is not null && a.AsSpan().SequenceEqual(b));
@@ -70,27 +54,141 @@ public sealed partial class LightingEngine
     private static bool Same(bool[]? a, bool[]? b) =>
         ReferenceEquals(a, b) || (a is not null && b is not null && a.AsSpan().SequenceEqual(b));
 
-    /// <summary>Boxes of a whole frame, as the sampler resolves its layout (editor preview included).</summary>
-    internal float[]? AreaBoxesFor(DeviceFrame dev, bool requireOn = true)
+    /// <summary>
+    /// Owner map of a flat frame sampled from the given rect, or null when the card is not area sampled. Cached on the layout
+    /// content and geometry: the layout arrays are swapped whole on change, and an editor draft arrives as fresh arrays of equal
+    /// content each tick, so content is compared when the references differ.
+    /// </summary>
+    private AreaOwnerMap? AreaMapFor(
+        string id, int ledCount, float[]? u, float[]? v, bool[]? disabled, float rectX, float rectY, float rectW, float rectH,
+        float frameCx, float frameCy, int rotation, int cw, int ch, in LedSpotGeometry geo, bool fullFrame)
     {
-        if (requireOn && !IsAreaSampled(dev.Id))
+        if (!IsAreaSampled(id))
         {
             return null;
         }
-        var count = dev.PreviewLedCount is { } pc ? Math.Min(pc, dev.LedCount) : dev.LedCount;
-        ResolveLayout(dev, count, out var u, out var v, out var disabled);
-        return AreaBoxesFor(dev.Id, count, u, v, disabled, 0, count, requireOn);
+        var rad = fullFrame ? 0f : (((rotation % 360) + 360) % 360) * (MathF.PI / 180f);
+        float[] geom = { rectX, rectY, rectW, rectH, frameCx, frameCy, rad, cw, ch };
+        var key = (id, 0, ledCount);
+        if (_areaMaps.TryGetValue(key, out var e) && e.Scene is null && e.Count == ledCount && e.Geom.AsSpan().SequenceEqual(geom)
+            && Same(e.U, u) && Same(e.V, v) && Same(e.Disabled, disabled))
+        {
+            return e.Map;
+        }
+        AreaCells.Positions(u, v, disabled, ledCount, 0, ledCount, out var pu, out var pv, out var on);
+        var map = AreaOwnerMap.BuildFrame(pu, pv, on, geo, rectX, rectY, rectW, rectH, frameCx, frameCy, MathF.Cos(rad), MathF.Sin(rad), cw, ch);
+        _areaMaps[key] = new AreaMapEntry { Count = ledCount, U = u, V = v, Disabled = disabled, Geom = geom, Map = map };
+        return map;
     }
 
-    /// <summary>The wire boxes of a card sampled from <paramref name="frame"/> (null frame = never sampled): exactly 4 x <paramref name="ledCount"/> floats, cut or padded with empty boxes.</summary>
-    internal float[] AreaBoxesForCard(DeviceFrame? frame, int ledCount)
+    /// <summary>Owner map of a frame the way the look-ahead builder reads it (own rect, no slot, not full-frame, no editor draft).</summary>
+    internal AreaOwnerMap? AreaMapFor(DeviceFrame dev, int cw, int ch)
     {
-        var boxes = (frame is null ? null : AreaBoxesFor(frame, requireOn: false)) ?? Array.Empty<float>();
-        if (boxes.Length != ledCount * 4)
+        if (!IsAreaSampled(dev.Id) || dev.LedCount <= 0)
         {
-            Array.Resize(ref boxes, ledCount * 4);
+            return null;
         }
-        return boxes;
+        var frameCx = dev.X + dev.W * 0.5f;
+        var frameCy = dev.Y + dev.H * 0.5f;
+        var geo = LedSpotGeometry.Create(
+            dev.X, dev.Y, dev.W, dev.H, frameCx, frameCy, dev.Rotation, cw, ch, dev.LedCount, dev.LedU, dev.LedV, false, FullFrameStripBreadth);
+        return AreaMapFor(dev.Id, dev.LedCount, dev.LedU, dev.LedV, dev.LedDisabled, dev.X, dev.Y, dev.W, dev.H, frameCx, frameCy, dev.Rotation, cw, ch, geo, false);
+    }
+
+    /// <summary>Owner map of one 3D-scene surface run; see <see cref="AreaOwnerMap.BuildScene"/>.</summary>
+    private AreaOwnerMap? AreaSceneMapFor(
+        string id, int ledCount, float[]? ledU, float[]? ledV, bool[]? disabled, int lo, int hi, object sceneRef,
+        in Nexus.Service.Lighting.Scene.SceneCameraBasis cam, Nexus.Service.Lighting.Scene.SceneQuad quad,
+        bool hasUv, float u0, float uSpan, float v0, float vSpan, float kx, float ky, int cw, int ch)
+    {
+        if (!IsAreaSampled(id))
+        {
+            return null;
+        }
+        float[] geom = { cw, ch, u0, uSpan, v0, vSpan };
+        var key = (id, lo, hi);
+        if (_areaMaps.TryGetValue(key, out var e) && ReferenceEquals(e.Scene, sceneRef) && e.Count == ledCount && e.Geom.AsSpan().SequenceEqual(geom)
+            && Same(e.U, ledU) && Same(e.V, ledV) && Same(e.Disabled, disabled))
+        {
+            return e.Map;
+        }
+        var count = hi - lo;
+        var sx = new float[count];
+        var sy = new float[count];
+        var ok = new bool[count];
+        for (var k = 0; k < count; k++)
+        {
+            var i = lo + k;
+            if (disabled is not null && i < disabled.Length && disabled[i])
+            {
+                continue;
+            }
+            float u, v;
+            if (hasUv)
+            {
+                u = uSpan > 1e-6f ? (ledU![i] - u0) / uSpan : 0.5f;
+                v = vSpan > 1e-6f ? (ledV![i] - v0) / vSpan : 0.5f;
+            }
+            else
+            {
+                u = count > 1 ? (float)k / (count - 1) : 0.5f;
+                v = 0.5f;
+            }
+            if (cam.Project(quad.At(u, v), out var cx, out var cy))
+            {
+                sx[k] = cx * kx;
+                sy[k] = cy * ky;
+                ok[k] = true;
+            }
+        }
+        var corners = new (float X, float Y)[4];
+        var quadOk = true;
+        for (var c = 0; c < 4; c++)
+        {
+            if (cam.Project(quad.At(c & 1, c >> 1), out var px, out var py))
+            {
+                corners[c] = (px * kx, py * ky);
+            }
+            else
+            {
+                quadOk = false;
+            }
+        }
+        var map = AreaOwnerMap.BuildScene(sx, sy, ok, corners, quadOk, cw, ch);
+        _areaMaps[key] = new AreaMapEntry { Count = ledCount, U = ledU, V = ledV, Disabled = disabled, Geom = geom, Scene = sceneRef, Map = map };
+        return map;
+    }
+
+    /// <summary>
+    /// The cell polygons of a card sampled from <paramref name="frame"/> (null frame = never sampled), exactly
+    /// <paramref name="ledCount"/> entries: <c>[u,v,u,v,...]</c> per LED, empty for a disabled LED or one past the draft count.
+    /// Aspect is the frame's own size.
+    /// </summary>
+    internal float[][] AreaCellsForCard(DeviceFrame? frame, int ledCount)
+    {
+        var cells = new float[ledCount][];
+        float[][] src = Array.Empty<float[]>();
+        if (frame is not null)
+        {
+            var count = frame.PreviewLedCount is { } pc ? Math.Min(pc, frame.LedCount) : frame.LedCount;
+            ResolveLayout(frame, count, out var u, out var v, out var disabled);
+            var key = (frame.Id, 0, count);
+            if (_areaCells.TryGetValue(key, out var e) && e.Count == count && e.W == frame.W && e.H == frame.H
+                && Same(e.U, u) && Same(e.V, v) && Same(e.Disabled, disabled))
+            {
+                src = e.Cells;
+            }
+            else
+            {
+                src = AreaCells.Compute(u, v, disabled, count, 0, count, frame.W, frame.H);
+                _areaCells[key] = new AreaCellsEntry { Count = count, W = frame.W, H = frame.H, U = u, V = v, Disabled = disabled, Cells = src };
+            }
+        }
+        for (var i = 0; i < ledCount; i++)
+        {
+            cells[i] = i < src.Length ? src[i] : Array.Empty<float>();
+        }
+        return cells;
     }
 
     /// <summary>The per-LED layout arrays the sampler reads: the editor draft when one is live, else the saved layout.</summary>
@@ -126,72 +224,9 @@ public sealed partial class LightingEngine
         disabled = dev.LedDisabled;
     }
 
-    private AreaSat AreaSatFor(CanvasBuffer canvas)
+    private (byte r, byte g, byte b) SampleAreaCell(AreaOwnerMap map, int led)
     {
-        for (var i = 0; i < _areaSatCount; i++)
-        {
-            if (ReferenceEquals(_areaSats[i].Canvas, canvas))
-            {
-                return _areaSats[i].Sat;
-            }
-        }
-        AreaSat sat;
-        if (_areaSatCount < _areaSats.Count)
-        {
-            sat = _areaSats[_areaSatCount].Sat;
-            _areaSats[_areaSatCount] = (canvas, sat);
-        }
-        else
-        {
-            sat = new AreaSat();
-            _areaSats.Add((canvas, sat));
-        }
-        _areaSatCount++;
-        sat.Build(canvas);
-        return sat;
-    }
-
-    /// <summary>Linear-light mean of one LED's box (frame space) on the current sample canvas.</summary>
-    private (byte r, byte g, byte b) SampleAreaBox(in LedSpotGeometry geo, float[] boxes, int k)
-    {
-        var o = k * 4;
-        geo.MapBox(boxes[o], boxes[o + 1], boxes[o + 2], boxes[o + 3], out var x0, out var y0, out var x1, out var y1);
-        AreaSat.PixelBox(x0, y0, x1, y1, _sampleCanvas.Width, _sampleCanvas.Height, out var ix0, out var iy0, out var ix1, out var iy1);
-        return AreaSatFor(_sampleCanvas).Mean(ix0, iy0, ix1, iy1);
-    }
-
-    /// <summary>Scene variant: the box's corners are laid on the LED's surface, projected through the camera, and the canvas rect they span is read.</summary>
-    private (byte r, byte g, byte b) SampleSceneAreaBox(
-        in Nexus.Service.Lighting.Scene.SceneCameraBasis cam, Nexus.Service.Lighting.Scene.SceneQuad quad, float[] boxes, int k,
-        float u0, float uSpan, float v0, float vSpan, float kx, float ky)
-    {
-        var o = k * 4;
-        // Black only when the box centre is off screen, as the spot read does; a corner that fails to project is ignored.
-        var cu = (boxes[o] + boxes[o + 2]) * 0.5f;
-        var cv = (boxes[o + 1] + boxes[o + 3]) * 0.5f;
-        if (!cam.Project(quad.At(
-                uSpan > 1e-6f ? Math.Clamp((cu - u0) / uSpan, 0f, 1f) : 0.5f,
-                vSpan > 1e-6f ? Math.Clamp((cv - v0) / vSpan, 0f, 1f) : 0.5f), out var mx, out var my))
-        {
-            return (0, 0, 0);
-        }
-        float minX = mx, minY = my, maxX = mx, maxY = my;
-        for (var c = 0; c < 4; c++)
-        {
-            var bu = boxes[o + ((c & 1) == 0 ? 0 : 2)];
-            var bv = boxes[o + ((c & 2) == 0 ? 1 : 3)];
-            var u = uSpan > 1e-6f ? Math.Clamp((bu - u0) / uSpan, 0f, 1f) : 0.5f;
-            var v = vSpan > 1e-6f ? Math.Clamp((bv - v0) / vSpan, 0f, 1f) : 0.5f;
-            if (!cam.Project(quad.At(u, v), out var px, out var py))
-            {
-                continue;
-            }
-            minX = MathF.Min(minX, px);
-            maxX = MathF.Max(maxX, px);
-            minY = MathF.Min(minY, py);
-            maxY = MathF.Max(maxY, py);
-        }
-        AreaSat.PixelBox(minX * kx, minY * ky, maxX * kx, maxY * ky, _sampleCanvas.Width, _sampleCanvas.Height, out var ix0, out var iy0, out var ix1, out var iy1);
-        return AreaSatFor(_sampleCanvas).Mean(ix0, iy0, ix1, iy1);
+        map.Sample(_sampleCanvas.Pixels, led, out var r, out var g, out var b);
+        return (r, g, b);
     }
 }

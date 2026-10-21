@@ -63,7 +63,7 @@ public sealed class LightingAreaSamplingRouteTests : IClassFixture<SiblingZoneHo
     }
 
     [Fact]
-    public async Task PreviewLayout_ResponseCarriesTheDraftBoxes_OnlyWhenAreaSamplingIsOn()
+    public async Task PreviewLayout_ResponseCarriesTheDraftCells_OnlyWhenAreaSamplingIsOn()
     {
         var engine = _factory.Services.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>();
         engine.UpdateDevices(new[] { new Nexus.Service.Lighting.Engine.DeviceFrame(0, "openrgb-s-OTHER", 3, 0, 0, 100, 20) });
@@ -72,16 +72,23 @@ public sealed class LightingAreaSamplingRouteTests : IClassFixture<SiblingZoneHo
         var off = await _client.PostAsync("/devices/lighting-devices/openrgb-s-OTHER/led-preview-layout", new StringContent(draft, Encoding.UTF8, "application/json"));
         using var offDoc = System.Text.Json.JsonDocument.Parse(await off.Content.ReadAsStringAsync());
         Assert.False(offDoc.RootElement.GetProperty("error").GetBoolean());
-        // The wire omits nulls (AppJsonContext WhenWritingNull), so "off" is an absent areaBoxes.
-        Assert.False(offDoc.RootElement.TryGetProperty("areaBoxes", out _));
+        // The wire omits nulls (AppJsonContext WhenWritingNull), so "off" is an absent areaCells.
+        Assert.False(offDoc.RootElement.TryGetProperty("areaCells", out _));
 
         await Post("""{"id":"openrgb-s-OTHER","enabled":true}""");
         var on = await _client.PostAsync("/devices/lighting-devices/openrgb-s-OTHER/led-preview-layout", new StringContent(draft, Encoding.UTF8, "application/json"));
         using var onDoc = System.Text.Json.JsonDocument.Parse(await on.Content.ReadAsStringAsync());
-        var boxes = onDoc.RootElement.GetProperty("areaBoxes").EnumerateArray().Select(e => e.GetSingle()).ToArray();
-        Assert.Equal(12, boxes.Length);
-        Assert.Equal(new float[] { 0f, 0f, 0.3f, 1f }, boxes[..4]);
-        Assert.Equal(new float[] { 0.3f, 0f, 1f, 1f }, boxes[4..8]);
-        Assert.Equal(new float[] { 0, 0, 0, 0 }, boxes[8..]);
+        var cells = onDoc.RootElement.GetProperty("areaCells").EnumerateArray()
+            .Select(c => c.EnumerateArray().Select(e => e.GetSingle()).ToArray()).ToArray();
+        Assert.Equal(3, cells.Length);
+        Assert.Empty(cells[2]);
+        static (float min, float max) XRange(float[] poly) =>
+            (Enumerable.Range(0, poly.Length / 2).Min(i => poly[i * 2]), Enumerable.Range(0, poly.Length / 2).Max(i => poly[i * 2]));
+        var (a0, a1) = XRange(cells[0]);
+        var (b0, b1) = XRange(cells[1]);
+        Assert.Equal(0f, a0, 3);
+        Assert.Equal(0.3f, a1, 3);
+        Assert.Equal(0.3f, b0, 3);
+        Assert.Equal(1f, b1, 3);
     }
 }

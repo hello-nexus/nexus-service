@@ -152,7 +152,7 @@ public sealed partial class LightingEngine
                     {
                         pinned[dev.Id] = null;
                     }
-                    if (req.NeedsGlobal && !baseTaps.AddDevice(dev, cw, ch, AreaBoxesFor(dev)))
+                    if (req.NeedsGlobal && !baseTaps.AddDevice(dev, cw, ch, AreaMapFor(dev, cw, ch)))
                     {
                         return FastWindow.NotUsed;
                     }
@@ -167,7 +167,7 @@ public sealed partial class LightingEngine
                         entry = (shader, new LedTapSet(cw, ch));
                         pinTaps[key] = entry;
                     }
-                    if (!entry.Taps.AddDevice(dev, cw, ch, AreaBoxesFor(dev)))
+                    if (!entry.Taps.AddDevice(dev, cw, ch, AreaMapFor(dev, cw, ch)))
                     {
                         return FastWindow.NotUsed;
                     }

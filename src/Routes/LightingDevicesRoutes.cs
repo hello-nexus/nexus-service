@@ -1248,8 +1248,8 @@ public static partial class DevicesRoutes
                     break;
                 }
             }
-            var boxes = found is not null && engine.IsAreaSampled(id) ? engine.AreaBoxesForCard(found, found.LedCount) : null;
-            return Results.Json(new LedPreviewLayoutResponse { AreaBoxes = boxes }, Nexus.Service.Serialization.AppJsonContext.Default.LedPreviewLayoutResponse);
+            var cells = found is not null && engine.IsAreaSampled(id) ? engine.AreaCellsForCard(found, found.LedCount) : null;
+            return Results.Json(new LedPreviewLayoutResponse { AreaCells = cells }, Nexus.Service.Serialization.AppJsonContext.Default.LedPreviewLayoutResponse);
         });
 
 

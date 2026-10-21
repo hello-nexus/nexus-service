@@ -952,6 +952,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, string>))]
 
 [JsonSerializable(typeof(float[]))]
+[JsonSerializable(typeof(float[][]))]
 [JsonSerializable(typeof(List<string>))]
 
 // Helper IPC transport + per-domain payloads. Grouped by domain for
