@@ -131,9 +131,11 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
         }
     }
 
-    public int Read(Span<byte> buffer, int timeoutMs)
+    public int Read(Span<byte> buffer, int timeoutMs) => Read(_readPipeId, buffer, timeoutMs);
+
+    public int Read(byte pipeId, Span<byte> buffer, int timeoutMs)
     {
-        if (_disposed || _readPipeId == 0 || buffer.Length == 0)
+        if (_disposed || pipeId == 0 || buffer.Length == 0)
         {
             return -1;
         }
@@ -143,7 +145,7 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
             {
                 return -1;
             }
-            if (_leftoverCount > 0)
+            if (pipeId == _readPipeId && _leftoverCount > 0)
             {
                 return TakeLeftover(buffer);
             }
@@ -151,7 +153,7 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
             IntPtr nsData = IntPtr.Zero;
             try
             {
-                var pipe = PipeFor(_readPipeId);
+                var pipe = PipeFor(pipeId);
                 if (pipe == IntPtr.Zero)
                 {
                     return -1;
@@ -175,6 +177,10 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                     return read;
                 }
                 received[..buffer.Length].CopyTo(buffer);
+                if (pipeId != _readPipeId)
+                {
+                    return buffer.Length;
+                }
                 _leftover = received[buffer.Length..].ToArray();
                 _leftoverOffset = 0;
                 _leftoverCount = _leftover.Length;

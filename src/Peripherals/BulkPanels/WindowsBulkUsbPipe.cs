@@ -121,9 +121,11 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
         }
     }
 
-    public int Read(Span<byte> buffer, int timeoutMs)
+    public int Read(Span<byte> buffer, int timeoutMs) => Read(_readPipeId, buffer, timeoutMs);
+
+    public int Read(byte pipeId, Span<byte> buffer, int timeoutMs)
     {
-        if (_disposed || _readPipeId == 0 || buffer.Length == 0)
+        if (_disposed || pipeId == 0 || buffer.Length == 0)
         {
             return -1;
         }
@@ -135,7 +137,7 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
             }
             fixed (byte* p = buffer)
             {
-                return TransferLocked(_readPipeId, _readEvent, (IntPtr)p, buffer.Length, (uint)Math.Max(1, timeoutMs), write: false);
+                return TransferLocked(pipeId, _readEvent, (IntPtr)p, buffer.Length, (uint)Math.Max(1, timeoutMs), write: false);
             }
         }
     }

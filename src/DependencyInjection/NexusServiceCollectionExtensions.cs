@@ -1563,6 +1563,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(
             sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>()));
 
+        // DeepCool Mystique AIO screen: bulk-pipe worker keeping it on live sensor data.
+        services.AddSingleton<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>());
+        services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.DeepCoolMystiqueHandler(
+            sp.GetRequiredService<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>()));
+
         // Corsair iCUE LINK System Hub: HID connection worker + lighting + cooling.
         // Auto-detects the daisy chain; no composition (each device is one fixed zone).
         services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkHubs>();

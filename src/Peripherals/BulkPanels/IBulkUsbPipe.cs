@@ -20,6 +20,9 @@ public interface IBulkUsbPipe : IDisposable
     /// </summary>
     int Read(Span<byte> buffer, int timeoutMs);
 
+    /// <summary>Reads one bulk transfer from another IN pipe of the same interface; -1 when the transport has none.</summary>
+    int Read(byte pipeId, Span<byte> buffer, int timeoutMs) => -1;
+
     /// <summary>USB product id of the opened device, for a driver that claims several; 0 when unknown.</summary>
     int ProductId => 0;
 
