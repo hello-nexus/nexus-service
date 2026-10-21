@@ -122,7 +122,18 @@ public class FlexProtocolTests
         f[20] = 11;
         var info = FlexProtocol.ParseInfo(f)!;
         Assert.Equal(1, info.Fans);
-        Assert.True(info.RfBound);
+        Assert.False(info.RfBound);
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(FlexProtocol.UnboundRxType, false)]
+    [InlineData(1, true)]
+    [InlineData(13, true)]
+    public void RfBound_follows_the_slot_when_no_master_is_reported(int rxType, bool bound)
+    {
+        var f = FakeFlexTransport.InfoFrame("112233445566", 0x33, (byte)rxType, 100, 0);
+        Assert.Equal(bound, FlexProtocol.ParseInfo(f)!.RfBound);
     }
 
     [Fact]

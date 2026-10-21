@@ -15,12 +15,15 @@ public sealed class FlexUnitPort
     /// <summary>Instance id of the hub both devices hang off; empty when it could not be resolved.</summary>
     public string HubId { get; init; } = "";
 
-    public FlexFamily Family => FlexProtocol.FamilyOfReceiver(ReceiverPid);
+    public FlexFamily Family => ReceiverPid == 0 ? FlexProtocol.FamilyOfScreen(ScreenPid) : FlexProtocol.FamilyOfReceiver(ReceiverPid);
 }
 
 public interface IFlexDiscovery
 {
     IReadOnlyList<FlexUnitPort> Discover();
+
+    /// <summary>Screens with no receiver on the bus: fans run over the radio and only the screen is on USB.</summary>
+    IReadOnlyList<FlexUnitPort> DiscoverScreenOnly() => Array.Empty<FlexUnitPort>();
 }
 
 public sealed class StubFlexDiscovery : IFlexDiscovery
@@ -60,6 +63,36 @@ public static class FlexDiscoveryParser
     /// Keeps only the Flex receivers and screens and pairs them: by the resolved parent hub when
     /// <paramref name="hubOf"/> knows it, else by family when exactly one of each is present.
     /// </summary>
+    public static IReadOnlyList<FlexUnitPort> ScreenOnly(IEnumerable<string> paths, Func<string, string> hubOf)
+    {
+        var list = paths as IReadOnlyCollection<string> ?? new List<string>(paths);
+        var paired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var u in Pair(list, hubOf))
+        {
+            if (u.ScreenPath.Length > 0)
+            {
+                paired.Add(u.ScreenPath);
+            }
+        }
+        var result = new List<FlexUnitPort>();
+        foreach (var raw in list)
+        {
+            if (TryParse(raw, out var p) && FlexProtocol.IsScreenProduct(p.Vid, p.Pid) && !paired.Contains(p.Path))
+            {
+                result.Add(new FlexUnitPort
+                {
+                    ReceiverPath = "",
+                    ReceiverPid = 0,
+                    ScreenPath = p.Path,
+                    ScreenPid = p.Pid,
+                    ScreenSerial = p.Serial,
+                    HubId = hubOf(p.InstanceId),
+                });
+            }
+        }
+        return result;
+    }
+
     public static IReadOnlyList<FlexUnitPort> Pair(IEnumerable<string> paths, Func<string, string> hubOf)
     {
         var receivers = new List<FlexPath>();

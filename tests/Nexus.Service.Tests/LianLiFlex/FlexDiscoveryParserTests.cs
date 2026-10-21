@@ -63,4 +63,21 @@ public class FlexDiscoveryParserTests
     {
         Assert.Empty(FlexDiscoveryParser.Pair(new[] { Dongle, Hub, "garbage" }, _ => ""));
     }
+
+    [Fact]
+    public void ScreenOnly_lists_screens_whose_fan_has_no_receiver()
+    {
+        var screens = FlexDiscoveryParser.ScreenOnly(new[] { Dongle, InfScreen, TlScreen, Hub }, HubOf);
+        Assert.Equal(2, screens.Count);
+        Assert.All(screens, s => Assert.Equal("", s.ReceiverPath));
+        Assert.Equal("5C00C251854D2B79", screens.Single(s => s.Family == FlexFamily.TlFlex).ScreenSerial);
+        Assert.Equal(FlexProtocol.SlInfScreenProductId, screens.Single(s => s.ScreenPid == FlexProtocol.SlInfScreenProductId).ScreenPid);
+    }
+
+    [Fact]
+    public void ScreenOnly_skips_screens_a_receiver_already_owns()
+    {
+        var screens = FlexDiscoveryParser.ScreenOnly(new[] { TlRx, TlScreen, InfScreen }, HubOf);
+        Assert.Equal(InfScreen, Assert.Single(screens).ScreenPath);
+    }
 }

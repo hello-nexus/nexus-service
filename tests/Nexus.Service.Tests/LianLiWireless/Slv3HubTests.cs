@@ -222,7 +222,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_wired_fan_that_is_bound_to_the_radio_can_be_released_but_not_driven()
+    public void A_wired_fan_that_is_bound_to_the_radio_is_driven_by_the_radio_and_can_be_released()
     {
         var (hub, net, _, _) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
@@ -233,7 +233,7 @@ public partial class Slv3HubTests
 
         var mac = Convert.ToHexString(FanMac);
         hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
-        Assert.False(hub.SetPortDuty(mac, 0, 50));
+        Assert.True(hub.SetPortDuty(mac, 0, 50));
         Assert.False(ManualBind(hub, mac, out _));
         hub.SetLockBoundDevices(false);
         Assert.True(hub.Unbind(mac, out var error), error);

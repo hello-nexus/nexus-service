@@ -99,6 +99,23 @@ public sealed class Slv3Hub : IDisposable
 
     private bool IsWiredOwned(string macHex) => !string.IsNullOrEmpty(macHex) && WiredOwned?.Invoke(macHex) == true;
 
+    /// <summary>A USB-connected fan the radio must leave alone: one bound to this PC's radio is driven over the radio, the single owner.</summary>
+    private bool IsWiredOnly(string macHex)
+    {
+        if (!IsWiredOwned(macHex))
+        {
+            return false;
+        }
+        if (!TryParseMac(macHex, out var mac))
+        {
+            return true;
+        }
+        lock (_lock)
+        {
+            return !(TryFindRecordLocked(mac, out var record) && IsBoundToUsLocked(record));
+        }
+    }
+
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
 
@@ -1016,7 +1033,7 @@ public sealed class Slv3Hub : IDisposable
         var merged = new Dictionary<string, Slv3DeviceRecord>(StringComparer.Ordinal);
         foreach (var record in _lastFanRecords)
         {
-            if (!IsWiredOwned(Convert.ToHexString(record.Mac)) || IsReleasingLocked(Convert.ToHexString(record.Mac)))
+            if (!IsWiredOwned(Convert.ToHexString(record.Mac)) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(Convert.ToHexString(record.Mac))) || IsReleasingLocked(Convert.ToHexString(record.Mac)))
             {
                 merged[Convert.ToHexString(record.Mac)] = record;
             }
@@ -1024,7 +1041,7 @@ public sealed class Slv3Hub : IDisposable
         foreach (var record in _pollRecords)
         {
             var key = Convert.ToHexString(record.Mac);
-            if ((!IsWiredOwned(key) || IsReleasingLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
+            if ((!IsWiredOwned(key) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(key)) || IsReleasingLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
             {
                 merged[key] = record;
             }
@@ -2547,7 +2564,7 @@ public sealed class Slv3Hub : IDisposable
 
     private bool QueueSequencedCommand(string macHex, byte rfCmd, string label, byte arg = 0)
     {
-        if (IsWiredOwned(macHex))
+        if (IsWiredOnly(macHex))
         {
             return false;
         }
@@ -2791,7 +2808,7 @@ public sealed class Slv3Hub : IDisposable
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, bool window,
         out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex)
     {
-        if (IsWiredOwned(macHex))
+        if (IsWiredOnly(macHex))
         {
             channel = 0;
             rxType = 0;
@@ -2986,7 +3003,7 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool SetPortDuty(string macHex, int port, int? percent)
     {
-        if (IsWiredOwned(macHex))
+        if (IsWiredOnly(macHex))
         {
             return false;
         }

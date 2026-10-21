@@ -16,6 +16,8 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
 
     public IReadOnlyList<FlexUnitPort> Discover() => FlexDiscoveryParser.Pair(EnumeratePaths(), ParentHub);
 
+    public IReadOnlyList<FlexUnitPort> DiscoverScreenOnly() => FlexDiscoveryParser.ScreenOnly(EnumeratePaths(), ParentHub);
+
     private static List<string> EnumeratePaths()
     {
         var paths = new List<string>();

@@ -22,13 +22,20 @@ public sealed class FlexScreenDiscovery : ISlv3LcdDiscovery
         _units = units;
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> ScreenPids = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Family of a screen seen by discovery, from its product id; TL when never seen.</summary>
+    public static FlexFamily FamilyOfSerial(string serial) =>
+        ScreenPids.TryGetValue(serial, out var pid) ? FlexProtocol.FamilyOfScreen(pid) : FlexFamily.TlFlex;
+
     public IReadOnlyList<Slv3LcdPortInfo> Discover()
     {
         var result = new List<Slv3LcdPortInfo>();
-        foreach (var u in _units.Discover())
+        foreach (var u in _units.Discover().Concat(_units.DiscoverScreenOnly()))
         {
             if (u.ScreenPath.Length > 0 && u.ScreenSerial.Length > 0)
             {
+                ScreenPids[u.ScreenSerial] = u.ScreenPid;
                 result.Add(new Slv3LcdPortInfo { PortName = u.ScreenPath, Serial = u.ScreenSerial, ProductId = u.ScreenPid });
             }
         }
@@ -223,7 +230,14 @@ public sealed class FlexScreens : IFanLcdScreens
                 return FlexNames.UnitName(_flex.Units, u, mac => _sortIndexOf?.Invoke(mac) ?? 0);
             }
         }
-        return "Lian Li LCD Flex";
+        var family = FlexScreenDiscovery.FamilyOfSerial(serial);
+        var alone = _lcd.Hub.Screens
+            .Where(x => FlexScreenDiscovery.FamilyOfSerial(x.Serial) == family && !_flex.Units.Any(u => string.Equals(u.ScreenSerial, x.Serial, StringComparison.OrdinalIgnoreCase)))
+            .Select(x => x.Serial)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var position = alone.FindIndex(x => string.Equals(x, serial, StringComparison.OrdinalIgnoreCase));
+        return alone.Count > 1 && position > 0 ? $"{FlexNames.Short(family)} {position + 1}" : FlexNames.Short(family);
     }
 
     /// <summary>
