@@ -927,10 +927,10 @@ public static partial class DevicesRoutes
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
-        // Area sampling: the card's LEDs read the mean of a box around them instead of a small spot.
-        // Broadcasts `lighting` so the card's areaSampling/areaBoxes refetch without a reload.
-        app.MapPost("/devices/lighting-devices/area-sampling", (
-            SetLightingDeviceAreaSamplingBody body,
+        // Sampling mode: "led" reads a small spot per LED; "nearest", "rows" and "columns" read the mean of the LED's cell.
+        // Broadcasts `lighting` so the card's sampling/areaCells refetch without a reload.
+        app.MapPost("/devices/lighting-devices/sampling", (
+            SetLightingDeviceSamplingBody body,
             ILightingDeviceProvider ld,
             Nexus.Service.Persistence.IConfigStore store,
             Nexus.Service.Lighting.Engine.LightingEngine engine,
@@ -941,22 +941,29 @@ public static partial class DevicesRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            // Turning off needs no listed card, so a stale id of an unplugged device can still be cleared.
-            if (string.IsNullOrEmpty(body.Id) || (body.Enabled && !ld.GetAll().Devices.Any(c => c.Id == body.Id)))
+            if (!Nexus.Service.Lighting.Engine.SamplingModes.TryParse(body.Mode, out var mode))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid mode."));
+            }
+            // Back to "led" needs no listed card, so a stale id of an unplugged device can still be cleared.
+            if (string.IsNullOrEmpty(body.Id) || (mode != Nexus.Service.Lighting.Engine.SamplingMode.Led && !ld.GetAll().Devices.Any(c => c.Id == body.Id)))
             {
                 return Results.BadRequest(ApiResponse.Fail("Invalid id."));
             }
             store.Update(s =>
             {
-                var ids = new List<string>(s.Devices.AreaSamplingDevices);
-                ids.RemoveAll(i => i == body.Id);
-                if (body.Enabled)
+                var modes = new Dictionary<string, string>(s.Devices.SamplingModes);
+                if (mode == Nexus.Service.Lighting.Engine.SamplingMode.Led)
                 {
-                    ids.Add(body.Id);
+                    modes.Remove(body.Id);
                 }
-                s.Devices.AreaSamplingDevices = ids;
+                else
+                {
+                    modes[body.Id] = body.Mode;
+                }
+                s.Devices.SamplingModes = modes;
             });
-            engine.SetAreaSampling(store.Load().Devices.AreaSamplingDevices);
+            engine.SetSamplingModes(store.Load().Devices.SamplingModes);
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
@@ -1248,8 +1255,8 @@ public static partial class DevicesRoutes
                     break;
                 }
             }
-            var boxes = found is not null && engine.IsAreaSampled(id) ? engine.AreaBoxesForCard(found, found.LedCount) : null;
-            return Results.Json(new LedPreviewLayoutResponse { AreaBoxes = boxes }, Nexus.Service.Serialization.AppJsonContext.Default.LedPreviewLayoutResponse);
+            var cells = engine.AreaCellsForCard(found, found?.LedCount ?? 0);
+            return Results.Json(new LedPreviewLayoutResponse { AreaCells = cells }, Nexus.Service.Serialization.AppJsonContext.Default.LedPreviewLayoutResponse);
         });
 
 

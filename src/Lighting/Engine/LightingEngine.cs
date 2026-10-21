@@ -156,7 +156,11 @@ public sealed partial class LightingEngine : IDisposable
             }
         }
     }
-    public void UpdateDevices(DeviceFrame[] devices) { _devices = devices; }
+    public void UpdateDevices(DeviceFrame[] devices)
+    {
+        _devices = devices;
+        PruneAreaCaches(devices);
+    }
 
     // Devices placed in the 3D scene and the camera that sees them; null means
     // every device samples its 2D frame. Replaced wholesale, never mutated.
@@ -1833,9 +1837,9 @@ public sealed partial class LightingEngine : IDisposable
         DeviceFrame[] devices, CanvasBuffer baseCanvas, bool honorPins,
         Dictionary<string, CanvasBuffer?> pinMap, HashSet<string> pinFullFrame)
     {
-        _areaSatCount = 0;
         var cw = _sampleCanvas.Width;
         var ch = _sampleCanvas.Height;
+        RefreshSamplingModes();
         const float CW = CanvasUnitsW, CH = CanvasUnitsH;
         // Overlays first, so an LED they own never gets a canvas colour it is
         // about to lose. Correctness no longer rests on this - DeviceFrame
@@ -1948,7 +1952,7 @@ public sealed partial class LightingEngine : IDisposable
 
             if (scene is not null && scene.Placements.TryGetValue(dev.Id, out var quads))
             {
-                SampleSceneDevice(dev, ledCount, devLedU, devLedV, devLedDisabled, quads, scene.Camera, kx, ky);
+                SampleSceneDevice(dev, ledCount, devLedU, devLedV, devLedDisabled, quads, scene, scene.Camera, kx, ky);
                 continue;
             }
 
@@ -1957,7 +1961,9 @@ public sealed partial class LightingEngine : IDisposable
             var geo = LedSpotGeometry.Create(
                 rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, ledCount, devLedU, devLedV, fullFrame,
                 FullFrameStripBreadth);
-            var areaBoxes = AreaBoxesFor(dev.Id, ledCount, devLedU, devLedV, devLedDisabled, 0, ledCount);
+            var areaMap = AreaMapFor(
+                dev.Id, ledCount, devLedU, devLedV, devLedDisabled, rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, geo,
+                fullFrame);
             for (int i = 0; i < ledCount; i++)
             {
                 if (devLedDisabled is not null && i < devLedDisabled.Length && devLedDisabled[i])
@@ -1965,9 +1971,9 @@ public sealed partial class LightingEngine : IDisposable
                     dev.SetLed(i, 0, 0, 0);
                     continue;
                 }
-                if (areaBoxes is not null)
+                if (areaMap is not null)
                 {
-                    var (ar, ag, ab) = SampleAreaBox(geo, areaBoxes, i);
+                    var (ar, ag, ab) = SampleAreaCell(areaMap, i);
                     dev.SetLed(i, ar, ag, ab);
                     continue;
                 }
@@ -1988,7 +1994,7 @@ public sealed partial class LightingEngine : IDisposable
     /// </summary>
     private void SampleSceneDevice(
         DeviceFrame dev, int ledCount, float[]? ledU, float[]? ledV, bool[]? disabled,
-        Nexus.Service.Lighting.Scene.SceneQuad[] quads, in Nexus.Service.Lighting.Scene.SceneCameraBasis cam,
+        Nexus.Service.Lighting.Scene.SceneQuad[] quads, object sceneRef, in Nexus.Service.Lighting.Scene.SceneCameraBasis cam,
         float kx, float ky)
     {
         var hasUv = ledU is not null && ledV is not null && ledU.Length == ledCount && ledV.Length == ledCount;
@@ -2045,7 +2051,9 @@ public sealed partial class LightingEngine : IDisposable
             var halfW = Math.Max(1f / kx, boxW / cols) * 0.5f * kx;
             var halfH = Math.Max(1f / ky, boxH / rows) * 0.5f * ky;
 
-            var areaBoxes = AreaBoxesFor(dev.Id, ledCount, ledU, ledV, disabled, lo, hi);
+            var areaMap = AreaSceneMapFor(
+                dev.Id, ledCount, ledU, ledV, disabled, lo, hi, sceneRef, in cam, quad, hasUv, u0, uSpan, v0, vSpan, kx, ky,
+                _sampleCanvas.Width, _sampleCanvas.Height);
             for (var i = lo; i < hi; i++)
             {
                 if (disabled is not null && i < disabled.Length && disabled[i])
@@ -2053,9 +2061,9 @@ public sealed partial class LightingEngine : IDisposable
                     dev.SetLed(i, 0, 0, 0);
                     continue;
                 }
-                if (areaBoxes is not null)
+                if (areaMap is not null)
                 {
-                    var (ar, ag, ab) = SampleSceneAreaBox(in cam, quad, areaBoxes, i - lo, u0, uSpan, v0, vSpan, kx, ky);
+                    var (ar, ag, ab) = SampleAreaCell(areaMap, i - lo);
                     dev.SetLed(i, ar, ag, ab);
                     continue;
                 }

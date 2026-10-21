@@ -100,7 +100,8 @@ public sealed partial class LightingEngine
     {
         _aheadSpot = null;
         var fullFrameAtStart = FullFrameSampling;
-        var areaAtStart = _areaIds;
+        RefreshSamplingModes();
+        var areaAtStart = _areaModes;
         if (!(LedSpaceGate.Enabled || AheadFastForTest) || fullFrameAtStart)
         {
             return FastWindow.NotUsed;
@@ -152,7 +153,7 @@ public sealed partial class LightingEngine
                     {
                         pinned[dev.Id] = null;
                     }
-                    if (req.NeedsGlobal && !baseTaps.AddDevice(dev, cw, ch, AreaBoxesFor(dev)))
+                    if (req.NeedsGlobal && !baseTaps.AddDevice(dev, cw, ch, AreaMapFor(dev, cw, ch)))
                     {
                         return FastWindow.NotUsed;
                     }
@@ -167,7 +168,7 @@ public sealed partial class LightingEngine
                         entry = (shader, new LedTapSet(cw, ch));
                         pinTaps[key] = entry;
                     }
-                    if (!entry.Taps.AddDevice(dev, cw, ch, AreaBoxesFor(dev)))
+                    if (!entry.Taps.AddDevice(dev, cw, ch, AreaMapFor(dev, cw, ch)))
                     {
                         return FastWindow.NotUsed;
                     }
@@ -268,7 +269,7 @@ public sealed partial class LightingEngine
         }
         // Sampling reads these live. Nothing is published yet, so a flip during the window sends it to the canvas path whole.
         if (FullFrameSampling != fullFrameAtStart || !ReferenceEquals(_scene, scene) || !ReferenceEquals(_stackSlots, slots)
-            || !ReferenceEquals(_areaIds, areaAtStart))
+            || !ReferenceEquals(_areaModes, areaAtStart))
         {
             return FastWindow.NotUsed;
         }

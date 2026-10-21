@@ -23,7 +23,24 @@ public static class PinMigration
         if (doc is null) return false;
         var changed = Apply(doc.Lighting);
         changed |= Apply(doc.Cooling);
+        changed |= ApplySamplingModes(doc.Devices);
         return changed;
+    }
+
+    /// <summary>The pre-modes list of area-sampled card ids becomes "nearest" entries (an existing entry wins).</summary>
+    private static bool ApplySamplingModes(DevicesSettings? devices)
+    {
+        if (devices?.AreaSamplingDevices is not { } legacy)
+        {
+            return false;
+        }
+        devices.SamplingModes ??= new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var id in legacy)
+        {
+            devices.SamplingModes.TryAdd(id, Engine.SamplingModes.Nearest);
+        }
+        devices.AreaSamplingDevices = null;
+        return true;
     }
 
     public static bool Apply(LightingSettings? lighting)
