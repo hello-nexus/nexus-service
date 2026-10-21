@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -36,6 +37,9 @@ public sealed class GlacialLcdWorker : BackgroundService
     private readonly HardwarePresence _presence;
     private readonly IConfigStore _store;
     private readonly ISensorProvider _sensors;
+    private readonly Nexus.Service.Fps.IFpsProvider? _fps;
+    private readonly Nexus.Service.Cooling.IFanControlProvider? _fans;
+    private const string FpsDemandSource = "asus-glacial-lcd";
     private readonly int _connectPollMs;
     private readonly SemaphoreSlim _wake = new(0, 1);
     private readonly GlacialLcdConfirmed _confirmed = new();
@@ -44,7 +48,8 @@ public sealed class GlacialLcdWorker : BackgroundService
 
     public GlacialLcdWorker(
         IHidEnumerator hid, DeviceControlGate gate, HardwarePresence presence, IConfigStore store, ISensorProvider sensors,
-        GlacialLcdLink? link = null, int connectPollMs = 5000)
+        GlacialLcdLink? link = null, int connectPollMs = 5000,
+        Nexus.Service.Fps.IFpsProvider? fps = null, Nexus.Service.Cooling.IFanControlProvider? fans = null)
     {
         _link = link ?? new GlacialLcdLink();
         _link.Changed += RequestApply;
@@ -54,6 +59,8 @@ public sealed class GlacialLcdWorker : BackgroundService
         _store = store;
         _sensors = sensors;
         _connectPollMs = connectPollMs;
+        _fps = fps;
+        _fans = fans;
     }
 
     public bool IsConnected => _connected;
@@ -126,7 +133,7 @@ public sealed class GlacialLcdWorker : BackgroundService
         var screen = new GlacialLcdScreen(
             hid,
             ReadSettings,
-            (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index),
+            (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index, GlacialLcdSensors.Gather(_sensors, slot.Category ?? "", _fps, FanHeaderNames)),
             _confirmed,
             Seed,
             message => Log(message, error: false),
@@ -168,7 +175,48 @@ public sealed class GlacialLcdWorker : BackgroundService
         finally
         {
             _connected = false;
+            _fps?.SetDemand(FpsDemandSource, false);
             ServiceLog.Info($"[{HandlerId}] disconnected");
+        }
+    }
+
+    /// <summary>Capture only runs while a monitor widget reads the fps category.</summary>
+    private static bool WantsFps(GlacialLcdSettings g)
+    {
+        if (!g.ModeChosen || g.Mode != GlacialLcdSettings.ModeMonitor)
+        {
+            return false;
+        }
+        for (int i = 0; i < g.SlotCount && i < g.Slots.Count; i++)
+        {
+            if (SensorSnapshotResolver.CategoryUsesFps(g.Slots[i].Category))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The cooling page's fan header renames, so a fan widget reads the name the picker showed.</summary>
+    private IReadOnlyDictionary<string, string>? FanHeaderNames()
+    {
+        if (_fans is null)
+        {
+            return null;
+        }
+        var names = _store.Load().Cooling.FanNames;
+        if (names.Count == 0)
+        {
+            return null;
+        }
+        try
+        {
+            return Nexus.Service.Monitoring.FanSensorNames.BuildMap(_fans.GetFanChannels(), names);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[{HandlerId}] fan header names skipped: {ex.GetType().Name}: {ex.Message}");
+            return null;
         }
     }
 
@@ -256,6 +304,7 @@ public sealed class GlacialLcdWorker : BackgroundService
             await _wake.WaitAsync(LoopMs, stoppingToken).ConfigureAwait(false);
             var saved = ReadSettings();
             PublishToUpload(screen, saved);
+            _fps?.SetDemand(FpsDemandSource, WantsFps(saved));
             // One owner of the panel at a time: an upload in progress holds this for its whole length.
             if (Monitor.TryEnter(_link.Sync))
             {

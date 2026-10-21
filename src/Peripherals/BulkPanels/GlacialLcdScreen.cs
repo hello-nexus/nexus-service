@@ -483,18 +483,63 @@ public sealed class GlacialLcdScreen
         return true;
     }
 
-    /// <summary>Text for a widget reading in the formats the vendor app showed: one-decimal temperature, three-decimal voltage.</summary>
+    /// <summary>
+    /// Text for a widget reading. Temperature, voltage, fan speed and clock use the exact glyph forms the
+    /// vendor app sent in its captures; every other type is plain ASCII, as nothing else is known to render.
+    /// </summary>
     public static string FormatValue(string sensorType, float value)
     {
         if (!float.IsFinite(value))
         {
             return NoReading;
         }
+        var c = CultureInfo.InvariantCulture;
         return sensorType switch
         {
-            "Temperature" => value.ToString("0.0", CultureInfo.InvariantCulture) + "℃",
-            "Voltage" => value.ToString("0.000", CultureInfo.InvariantCulture) + "↊",
+            "Temperature" => value.ToString("0.0", c) + "℃",
+            "Voltage" => value.ToString("0.000", c) + "↊",
+            "Fan" => value.ToString("0", c) + "↌",
+            "Clock" => (value / 1000f).ToString("0.000", c) + "㎓",
+            "Load" or "Control" or "Level" => value.ToString("0.0", c) + "%",
+            "Power" => value.ToString("0.0", c) + "W",
+            "Current" => value.ToString("0.000", c) + "A",
+            "Frequency" => value.ToString("0", c) + "Hz",
+            "Flow" => value.ToString("0", c) + "L/h",
+            "Noise" => value.ToString("0.0", c) + "dBA",
+            "Energy" => value.ToString("0", c) + "mWh",
+            "Data" => value.ToString("0.00", c) + "GB",
+            "SmallData" => value.ToString("0", c) + "MB",
+            "Framerate" => value.ToString("0", c) + "FPS",
+            "FrameTime" => value.ToString("0.0", c) + "ms",
+            "Factor" => value.ToString("0.00", c),
+            "Throughput" or "Rate" => FormatRate(value),
+            "TimeSpan" => FormatSpan(value),
             _ => NoReading,
+        };
+    }
+
+    private static string FormatRate(float bytesPerSecond)
+    {
+        var c = CultureInfo.InvariantCulture;
+        float v = Math.Max(0f, bytesPerSecond);
+        return v switch
+        {
+            >= 1073741824f => (v / 1073741824f).ToString("0.00", c) + "GB/s",
+            >= 1048576f => (v / 1048576f).ToString("0.00", c) + "MB/s",
+            >= 1024f => (v / 1024f).ToString("0.0", c) + "KB/s",
+            _ => v.ToString("0", c) + "B/s",
+        };
+    }
+
+    private static string FormatSpan(float seconds)
+    {
+        var c = CultureInfo.InvariantCulture;
+        return seconds switch
+        {
+            <= 0f => "0s",
+            < 3600f => (seconds / 60f).ToString("0", c) + "m",
+            < 86400f => (seconds / 3600f).ToString("0.0", c) + "h",
+            _ => (seconds / 86400f).ToString("0.0", c) + "d",
         };
     }
 }

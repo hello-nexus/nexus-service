@@ -5,6 +5,7 @@ using Nexus.Service.Models.Sensors;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Persistence;
+using Nexus.Service.Sensors;
 using Nexus.Service.Serialization;
 using Nexus.Service.Tests.StreamDeck;
 using Xunit;
@@ -794,7 +795,73 @@ public class GlacialLcdScreenTests
         Assert.Equal("43.0℃", GlacialLcdScreen.FormatValue("Temperature", 43f));
         Assert.Equal("1.447↊", GlacialLcdScreen.FormatValue("Voltage", 1.4473f));
         Assert.Equal("--", GlacialLcdScreen.FormatValue("Temperature", float.NaN));
-        Assert.Equal("--", GlacialLcdScreen.FormatValue("Load", 40f));
+        Assert.Equal("--", GlacialLcdScreen.FormatValue("Text", 40f));
+    }
+
+    [Theory]
+    // Glyph forms the vendor app sent in the captures.
+    [InlineData("Fan", 630f, "630↌")]
+    [InlineData("Clock", 3600f, "3.600㎓")]
+    // ASCII forms, not seen in any capture.
+    [InlineData("Load", 40.04f, "40.0%")]
+    [InlineData("Control", 55f, "55.0%")]
+    [InlineData("Level", 80f, "80.0%")]
+    [InlineData("Power", 125.46f, "125.5W")]
+    [InlineData("Current", 1.5f, "1.500A")]
+    [InlineData("Frequency", 60f, "60Hz")]
+    [InlineData("Throughput", 1536f, "1.5KB/s")]
+    [InlineData("Rate", 5242880f, "5.00MB/s")]
+    [InlineData("Data", 12.345f, "12.35GB")]
+    [InlineData("SmallData", 8192f, "8192MB")]
+    [InlineData("Framerate", 143.6f, "144FPS")]
+    [InlineData("TimeSpan", 5400f, "1.5h")]
+    [InlineData("Energy", 500f, "500mWh")]
+    public void Other_types_have_a_short_format(string type, float value, string expected)
+    {
+        Assert.Equal(expected, GlacialLcdScreen.FormatValue(type, value));
+    }
+
+    [Fact]
+    public void The_longest_values_still_fit_the_value_field()
+    {
+        int room = GlacialLcdProtocol.ReportBytes - GlacialLcdProtocol.SlotValueOffset;
+        foreach (var type in new[] { "Temperature", "Voltage", "Fan", "Clock", "Load", "Power", "Current", "Data", "Throughput", "TimeSpan" })
+        {
+            var text = GlacialLcdScreen.FormatValue(type, 999999f);
+            Assert.True(System.Text.Encoding.UTF8.GetByteCount(text) <= room, text);
+        }
+        // Past the room, the cut falls on a character boundary.
+        var report = GlacialLcdProtocol.EncodeSlot(0, "x", new string('㎓', 20));
+        Assert.Equal(0, System.Text.Encoding.UTF8.GetByteCount(System.Text.Encoding.UTF8.GetString(report, GlacialLcdProtocol.SlotValueOffset, room).TrimEnd('\0', '\uFFFD')) % 3);
+    }
+
+    [Fact]
+    public void A_quick_summary_sensor_resolves_end_to_end()
+    {
+        var sensors = new FakeSensorProvider
+        {
+            CpuSensors = new[] { Sensor("cpu/load", "CPU Total", "Load", 12.34f) },
+        };
+        var slot = new GlacialLcdSlot { Category = "quick", Sensor = "summary/cpu-usage", Label = "Usage" };
+
+        Assert.Equal(("Usage", "12.3%"), GlacialLcdSensors.Read(sensors, slot, 0));
+    }
+
+    [Fact]
+    public void Network_and_fps_widgets_resolve_with_the_gathered_sources()
+    {
+        var nic = new HardwareComponent { Id = "nic0", Name = "Ethernet" };
+        nic.Sensors.Add(Sensor("nic0/down", "Download Speed", "Throughput", 2048f));
+        var sensors = new FakeSensorProvider { Extras = new SensorExtras { Nics = { nic } } };
+        var slot = new GlacialLcdSlot { Category = "network", Sensor = "network-in", Label = "Net" };
+
+        Assert.Equal(("Net", GlacialLcdScreen.NoReading), GlacialLcdSensors.Read(sensors, slot, 0));
+        var sources = GlacialLcdSensors.Gather(sensors, "network", null, null);
+        Assert.Equal(("Net", "2.0KB/s"), GlacialLcdSensors.Read(sensors, slot, 0, sources));
+
+        var fps = new SensorSnapshotSources(FpsSensors: new[] { Sensor("fps/app", "Game", "Framerate", 90f) });
+        var fpsSlot = new GlacialLcdSlot { Category = "fps", Sensor = "fps/app", Label = "FPS" };
+        Assert.Equal(("FPS", "90FPS"), GlacialLcdSensors.Read(sensors, fpsSlot, 0, fps));
     }
 
     private static HardwareSensor Sensor(string id, string name, string type, float value) =>
