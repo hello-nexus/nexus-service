@@ -119,9 +119,6 @@ public sealed class GalleryItemsResponse
     /// <summary>True when the global item cap dropped media; omitted otherwise.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Truncated { get; set; }
-    /// <summary>Media files found across all sources (a lower bound when a scan hit its ceiling); omitted when not truncated.</summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public int Total { get; set; }
     /// <summary>
     /// Carried with the items (not on a route of its own) so every panel
     /// surface, including a relayed phone, resolves a widget's playlist from

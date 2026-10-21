@@ -186,6 +186,130 @@ public sealed class GalleryLibraryTests : IDisposable
         Assert.Equal(new[] { "apple.jpg", "deep.png", "zebra.png" }, items.Select(i => i.Name).ToArray());
     }
 
+    private string MakeDir(string name, int count, string prefix = "img")
+    {
+        var dir = Path.Combine(_tempDir, name);
+        Directory.CreateDirectory(dir);
+        for (var i = 0; i < count; i++)
+        {
+            File.WriteAllBytes(Path.Combine(dir, $"{prefix}{i:D5}.png"), new byte[] { 1 });
+        }
+
+        return dir;
+    }
+
+    [Fact]
+    public void Cap_IsGlobalAcrossSources_AndSubfolderSourceDedupesAgainstParent()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems - 10);
+        var sub = Path.Combine(big, "sub");
+        Directory.CreateDirectory(sub);
+        for (var i = 0; i < 20; i++)
+        {
+            File.WriteAllBytes(Path.Combine(sub, $"s{i:D2}.png"), new byte[] { 1 });
+        }
+
+        var other = MakeDir("other", 5, "o");
+        var lib = NewLibrary();
+        lib.AddReference(big, GallerySourceKinds.Folder);
+        lib.AddReference(sub, GallerySourceKinds.Folder);
+        lib.AddReference(other, GallerySourceKinds.Folder);
+
+        var result = lib.Enumerate();
+
+        // Parent holds 4990 + 20 = 5010 files, so it fills the cap and the
+        // later sources are never reached.
+        Assert.Equal(GalleryLibrary.MaxItems, result.Items.Count);
+        Assert.True(result.Truncated);
+        Assert.DoesNotContain(result.Items, i => i.Name.StartsWith("o", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Cap_SubfolderSourceTakesNoSlotsWhenParentIsUnderCap()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems - 30);
+        var sub = Path.Combine(big, "sub");
+        Directory.CreateDirectory(sub);
+        for (var i = 0; i < 20; i++)
+        {
+            File.WriteAllBytes(Path.Combine(sub, $"s{i:D2}.png"), new byte[] { 1 });
+        }
+
+        var other = MakeDir("other", 10, "o");
+        var lib = NewLibrary();
+        lib.AddReference(big, GallerySourceKinds.Folder);
+        lib.AddReference(sub, GallerySourceKinds.Folder);
+        lib.AddReference(other, GallerySourceKinds.Folder);
+
+        var result = lib.Enumerate();
+
+        Assert.Equal(GalleryLibrary.MaxItems - 30 + 20 + 10, result.Items.Count);
+        Assert.False(result.Truncated);
+    }
+
+    [Fact]
+    public void Cap_CountsSingleFileSources()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems);
+        var extra = WriteImage("extra.png");
+        var lib = NewLibrary();
+        lib.AddReference(big, GallerySourceKinds.Folder);
+        lib.AddReference(extra, GallerySourceKinds.File);
+
+        var result = lib.Enumerate();
+
+        Assert.Equal(GalleryLibrary.MaxItems, result.Items.Count);
+        Assert.True(result.Truncated);
+        Assert.DoesNotContain(result.Items, i => i.Name == "extra.png");
+    }
+
+    [Fact]
+    public void Cap_ExactlyAtCapIsNotTruncated()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems);
+        var lib = NewLibrary();
+        lib.AddReference(big, GallerySourceKinds.Folder);
+
+        var result = lib.Enumerate();
+
+        Assert.Equal(GalleryLibrary.MaxItems, result.Items.Count);
+        Assert.False(result.Truncated);
+    }
+
+    [Fact]
+    public void Cap_OverCapFolderYieldsSortedStableSubset()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems + 25);
+        var lib = NewLibrary();
+        lib.AddReference(big, GallerySourceKinds.Folder);
+
+        var first = lib.Enumerate();
+        var second = new GalleryLibrary(_rootDir).Enumerate();
+
+        Assert.True(first.Truncated);
+        Assert.Equal(GalleryLibrary.MaxItems, first.Items.Count);
+        var names = first.Items.Select(i => i.Name).ToList();
+        Assert.Equal(names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase), names);
+        Assert.Equal(first.Items.Select(i => i.Id), second.Items.Select(i => i.Id));
+    }
+
+    [Fact]
+    public void Cap_ExcludedItemsTakeNoSlots()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems + 1);
+        var lib = NewLibrary();
+        var source = lib.AddReference(big, GallerySourceKinds.Folder).Source!;
+        var firstId = lib.EnumerateItems()[0].Id;
+        lib.ExcludeItem(source.Id, firstId);
+
+        var result = lib.Enumerate();
+
+        // 5001 files minus one excluded is exactly the cap: all shown, no flag.
+        Assert.Equal(GalleryLibrary.MaxItems, result.Items.Count);
+        Assert.DoesNotContain(result.Items, i => i.Id == firstId);
+        Assert.False(result.Truncated);
+    }
+
     [Fact]
     public void EnumerateItems_TagsVideosByKind_AndSkipsUnplayableContainers()
     {
