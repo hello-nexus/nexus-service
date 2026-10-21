@@ -107,6 +107,8 @@ public class LiquidctlOwnershipTests
         Exclude(r, "Corsair Commander Core", "Corsair Commander Core XT");
         Assert.Equal(2, r.Ids().Length);
         Assert.Equal(0, r.ListCalls);
+        Assert.Equal(1, r.AllCalls);
+        Assert.Empty(r.OneCalls);
     }
 
     [Fact]
@@ -156,29 +158,62 @@ public class LiquidctlOwnershipTests
         Assert.Single(r.Provider.GetAll());
     }
 
-    [Fact]
-    public void Drive_RefusesAWithheldAddress()
+    private static (LinuxLiquidctlProvider P, Rig R, List<string> Calls, string FamilyId, string OtherId) DriveRig(string list = ListJson)
     {
         var calls = new List<string>();
-        var r = new Rig();
-        var p = new LinuxLiquidctlProvider(() => ListJson, () => StatusAll,
+        var r = new Rig { List = list };
+        var p = new LinuxLiquidctlProvider(() => r.List, () => StatusAll,
             e => "[" + StatusFor(e.Address, e.Description) + "]",
             (a, c, d) => { calls.Add(a); return true; }, null, () => r.BridgeActive, () => r.Now);
         var channels = p.GetFanChannels();
         Assert.Equal(2, channels.Count);
-        var familyId = channels.Single(c => c.DeviceId!.Contains("hidraw14")).Id;
-        var otherId = channels.Single(c => c.DeviceId!.Contains("hidraw3")).Id;
+        return (p, r, calls, channels.Single(c => c.DeviceId!.Contains("hidraw14")).Id, channels.Single(c => c.DeviceId!.Contains("hidraw3")).Id);
+    }
 
+    [Fact]
+    public void Drive_RefusesAWithheldAddress_WithAStaleControlMap()
+    {
+        var (p, r, calls, familyId, otherId) = DriveRig();
         p.DriveFanSpeed(familyId, 50);
         Assert.Equal(new[] { "/dev/hidraw14" }, calls);
 
+        // Describe the family device while the bridge is active, then drive from the control map built before.
         r.BridgeActive = true;
         r.Now += 2000;
-        p.GetFanChannels();
+        p.GetAll();
         calls.Clear();
         p.DriveFanSpeed(familyId, 50);
         p.DriveFanSpeed(otherId, 50);
         Assert.Equal(new[] { "/dev/hidraw3" }, calls);
+    }
+
+    [Fact]
+    public void Drive_RefusesAnAddressNoRefreshDescribed_WhileWithholding()
+    {
+        var (p, r, calls, familyId, _) = DriveRig();
+        r.BridgeActive = true;
+        // The next list no longer describes the family address while the control map still holds its channel.
+        r.List = """[{"address":"/dev/hidraw3","description":"NZXT Kraken X53"}]""";
+        r.Now += 2000;
+        p.GetAll();
+        calls.Clear();
+        p.DriveFanSpeed(familyId, 50);
+        Assert.Empty(calls);
+    }
+
+    [Fact]
+    public void FailedListRead_KeepsThePreviousDescriptions()
+    {
+        var (p, r, calls, familyId, otherId) = DriveRig();
+        r.BridgeActive = true;
+        r.Now += 2000;
+        p.GetAll();
+        r.List = "";
+        r.Now += 20000;
+        p.GetAll();
+        p.DriveFanSpeed(familyId, 50);
+        p.DriveFanSpeed(otherId, 50);
+        Assert.DoesNotContain("/dev/hidraw14", calls);
     }
 
     [Theory]

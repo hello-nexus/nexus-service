@@ -242,7 +242,8 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
         {
             _known.TryGetValue(address, out entry);
         }
-        return entry is not null && LiquidctlOwnership.IsWithheld(entry, policy);
+        // An address no refresh has described is refused too: a failed list must not open the family.
+        return entry is null || LiquidctlOwnership.IsWithheld(entry, policy);
     }
 
     private void WarnWithheldOnce(string address)
@@ -312,6 +313,13 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
                     return _snapshot;
             }
             var fresh = ReadEligible(now, policy);
+            var after = CurrentPolicy();
+            if (after != policy)
+            {
+                // The policy changed during the subprocesses: that result may have opened a now-withheld device.
+                policy = after;
+                fresh = ReadEligible(now, policy);
+            }
             lock (_lock)
             {
                 _snapshot = fresh;
@@ -328,7 +336,12 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
         var active = _bridgeActive();
         if (!active)
             return new LiquidctlOwnership.Policy(false, false, false);
-        var names = _config?.Load().Devices.OpenRgbDetectorExclusions.Values.Select(x => x.DetectorName);
+        var names = new List<string>();
+        _config?.Read(s =>
+        {
+            foreach (var ex in s.Devices.OpenRgbDetectorExclusions.Values)
+                names.Add(ex.DetectorName);
+        });
         return LiquidctlOwnership.BuildPolicy(true, names);
     }
 
@@ -338,15 +351,17 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
         if (!policy.WithholdsAnything)
         {
             _skipLogged.Clear();
+            ClearWithheldWarnings(null);
             var all = ParseStatus(_statusAllJson());
-            PublishKnown(all.Select(d => new LiquidctlListEntry(d.Address, null, null, d.Description)));
+            if (all.Count > 0)
+                PublishKnown(all.Select(d => new LiquidctlListEntry(d.Address, null, null, d.Description)));
             return all;
         }
 
         var list = ReadList(now);
-        PublishKnown(list);
         if (list.Count == 0)
             return new List<LiquidDevice>();
+        PublishKnown(list);
 
         var eligible = new List<LiquidctlListEntry>();
         var skipped = new HashSet<string>(StringComparer.Ordinal);
@@ -362,7 +377,17 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
                 ServiceLog.Info($"[liquidctl] not polling {entry.Address} ({entry.Description}): OpenRGB drives Commander Core devices");
         }
         _skipLogged.IntersectWith(skipped);
+        ClearWithheldWarnings(skipped);
         return ReadPerDevice(eligible);
+    }
+
+    private void ClearWithheldWarnings(HashSet<string>? stillWithheld)
+    {
+        lock (_lock)
+        {
+            _warned.RemoveWhere(k => k.StartsWith("withheld:", StringComparison.Ordinal)
+                && (stillWithheld is null || !stillWithheld.Contains(k.Substring("withheld:".Length))));
+        }
     }
 
     private void PublishKnown(IEnumerable<LiquidctlListEntry> entries)
