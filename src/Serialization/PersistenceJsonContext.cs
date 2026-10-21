@@ -136,6 +136,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(NollieStandaloneSettings))]
 [JsonSerializable(typeof(Dictionary<string, NollieStandaloneSettings>))]
 [JsonSerializable(typeof(Galahad2LightingSettings))]
+[JsonSerializable(typeof(DeepCoolMystiqueSettings))]
+[JsonSerializable(typeof(DeepCoolMystiqueSensorPick))]
 [JsonSerializable(typeof(AsiahorseUmbraSettings))]
 [JsonSerializable(typeof(UmbraEffectGroupSettings))]
 [JsonSerializable(typeof(UmbraEffectValues))]

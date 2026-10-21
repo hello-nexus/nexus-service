@@ -1267,6 +1267,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.LianLiTlFanDto[]))]
 // Lian Li Galahad II Trinity AIO.
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2StateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.DeepCoolMystiqueStateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.DeepCoolMystiqueSettingsRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.DeepCoolMystiqueSensorDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.KrakenStateResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.KrakenLcdRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.KrakenFirmwareLightingResponse))]

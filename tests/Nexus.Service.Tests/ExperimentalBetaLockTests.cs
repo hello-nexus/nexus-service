@@ -37,6 +37,7 @@ public class ExperimentalBetaLockTests : IDisposable
     [InlineData("nzxt-kraken")]
     [InlineData("smbus-dram")]
     [InlineData("asus-ryujin-lcd")]
+    [InlineData("deepcool-mystique")]
     public void RequiresBeta_FirstPartyOrStableHandler_IsFalse(string handlerId)
     {
         Assert.False(DeviceControlPolicy.RequiresBeta(handlerId));

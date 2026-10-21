@@ -31,6 +31,7 @@ public static partial class DevicesRoutes
         MapLianLiEndpoints(app);
         MapLianLiTlEndpoints(app);
         MapGalahad2Endpoints(app);
+        MapDeepCoolMystiqueEndpoints(app);
         MapHydroShift2Endpoints(app);
         MapHydroShift2CurveEndpoints(app);
         MapKrakenEndpoints(app);
