@@ -95,8 +95,6 @@ public static class FlexDiscoveryParser
         return new FlexDiscoverySnapshot(units, screenOnly);
     }
 
-    public static IReadOnlyList<FlexUnitPort> ScreenOnly(IEnumerable<string> paths, Func<string, string> hubOf) => Snapshot(paths, hubOf).ScreenOnly;
-
     /// <summary>
     /// Keeps only the Flex receivers and screens and pairs them: by the resolved parent hub when
     /// <paramref name="hubOf"/> knows it, else by family when exactly one of each is present.

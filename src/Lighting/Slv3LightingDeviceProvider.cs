@@ -129,11 +129,16 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     {
         if (!_hub.IsConnected) return "disconnected";
         var sb = new System.Text.StringBuilder("connected");
-        var chains = _store.Load().Devices.LianLiWireless.Chains;
+        var settings = _store.Load();
+        var chains = settings.Devices.LianLiWireless.Chains;
         foreach (var fan in _hub.State.Fans)
         {
             if (!fan.BoundToUs) continue;
             var argb = PlaysMotherboardArgb(fan, chains) ? ":argb" : "";
+            if (FlexFamilyOf(fan) == FlexFamily.TlFlex && settings.Devices.FlexUnits.TryGetValue(fan.Mac, out var flexLook) && flexLook.UpDownSwap)
+            {
+                argb += ":swap";
+            }
             // FanType is part of the signature because the family sets the LED
             // count: a chain first seen with a starved beacon (fans_type all 0,
             // Unknown family) rebuilds once the real subtype arrives. DevType

@@ -253,7 +253,12 @@ public sealed class FlexScreens : IFanLcdScreens
             .Select(x => x.Serial)
             .OrderBy(x => x, StringComparer.Ordinal)
             .ToList();
-        var position = paired + alone.FindIndex(x => string.Equals(x, serial, StringComparison.OrdinalIgnoreCase));
+        var index = alone.FindIndex(x => string.Equals(x, serial, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            return FlexNames.Short(family);
+        }
+        var position = paired + index;
         return position > 0 ? $"{FlexNames.Short(family)} {position + 1}" : FlexNames.Short(family);
     }
 

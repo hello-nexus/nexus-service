@@ -235,4 +235,42 @@ public class FlexFanLayoutTests
             }
         }
     }
+
+    [Fact]
+    public void Scatter_with_swap_shifts_every_tl_led_by_half_a_fan()
+    {
+        var buffers = new[] { new RgbColor[13], new RgbColor[13] };
+        for (var i = 0; i < 13; i++)
+        {
+            buffers[0][i] = new RgbColor(1, (byte)i, 0);
+            buffers[1][i] = new RgbColor(2, (byte)i, 0);
+        }
+        var wire = new RgbColor[26];
+        Assert.True(Slv3LightingFrameWriter.ScatterFlexZones(FlexFamily.TlFlex, 1, buffers, wire, swap: true));
+        Assert.Equal(buffers[0][0], wire[13]);
+        Assert.Equal(buffers[1][0], wire[0]);
+    }
+
+    [Fact]
+    public void A_stored_tl_swap_swaps_the_wireless_positions_and_changes_the_signature()
+    {
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = Convert.FromHexString("112233445566"), MasterMac = net.MasterMac, RxType = 1, FanCount = 2, FansType = 51 });
+        Assert.True(hub.DriveTick());
+        var store = new InMemoryConfigStore();
+        var provider = new Slv3LightingDeviceProvider(hub, store, new Np50IdentifyTracker());
+        var changes = 0;
+        provider.DevicesChanged += () => changes++;
+        provider.OnHubStateUpdated();
+        Assert.Equal(1, changes);
+        var plain = Assert.Single(provider.GetStructures()).Segments[0].DefaultU!.ToArray();
+
+        store.Update(s => s.Devices.FlexUnits["112233445566"] = new Nexus.Service.Persistence.LianLiFlexUnitSettings { UpDownSwap = true });
+        provider.OnHubStateUpdated();
+        Assert.Equal(2, changes);
+        var (expectedU, _) = FlexFanLayout.ZonePositions(FlexFamily.TlFlex, "up", 2, swap: true);
+        var swapped = Assert.Single(provider.GetStructures()).Segments[0].DefaultU!;
+        Assert.Equal(expectedU, swapped);
+        Assert.NotEqual(plain, swapped);
+    }
 }

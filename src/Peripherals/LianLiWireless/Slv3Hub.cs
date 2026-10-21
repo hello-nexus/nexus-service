@@ -1191,7 +1191,7 @@ public sealed class Slv3Hub : IDisposable
         return kept >= AdoptionCap;
     }
 
-    private static bool ValidSlot(int slot) => slot >= Slv3Protocol.MinSlot && slot <= Slv3Protocol.MaxSlot;
+    private static bool ValidSlot(int slot) => Slv3Protocol.IsBoundSlot(slot);
 
     // The slot a chain last held when it is free, else L-Connect's GetRxUnused.
     private byte OwnedSlotOrUnusedLocked(string key)
