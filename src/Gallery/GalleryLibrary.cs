@@ -24,7 +24,10 @@ namespace Nexus.Service.Gallery;
 public sealed class GalleryLibrary
 {
     private const string SourcesFileName = "sources.json";
-    public const int MaxItemsPerFolder = 500;
+    // One cap across every source (folders and single files). The walk stops
+    // at the first countable item past it; excluded files and duplicates of
+    // earlier sources are not countable.
+    public const int MaxItems = 5000;
     public const int MaxPlaylists = 50;
     public const int MaxPlaylistNameLength = 48;
     // Per id list on one playlist, so a runaway client cannot grow
@@ -368,7 +371,15 @@ public sealed class GalleryLibrary
     /// name). Duplicate paths across sources collapse to the first occurrence.
     /// Refreshes the id → path map used by <see cref="ResolveItemPath"/>.
     /// </summary>
-    public List<GalleryItem> EnumerateItems()
+    public List<GalleryItem> EnumerateItems() => Enumerate().Items;
+
+    /// <summary>
+    /// <see cref="EnumerateItems"/> plus whether the global cap dropped items.
+    /// Sources are walked in persisted order and the walk stops once the cap is
+    /// exceeded; only the files kept from a folder are sorted, so the subset
+    /// kept from an over-cap folder is arbitrary but stable.
+    /// </summary>
+    public GalleryEnumeration Enumerate()
     {
         List<GallerySource> sources;
         long generation;
@@ -383,36 +394,74 @@ public sealed class GalleryLibrary
 
         var items = new List<GalleryItem>();
         var paths = new Dictionary<string, string>();
+        var truncated = false;
 
         foreach (var source in sources)
         {
+            if (truncated)
+            {
+                break;
+            }
+
             if (source.Kind == GallerySourceKinds.Folder)
             {
                 // Recursive: users point at e.g. a Pictures root whose images
-                // live in subfolders. The cap applies before the sort, so an
-                // over-cap tree yields an arbitrary-but-stable subset.
-                List<string> files;
+                // live in subfolders. Excluded files and files an earlier
+                // source already holds take no slot.
+                var excluded = new HashSet<string>(source.Excluded, StringComparer.Ordinal);
+                var picked = new List<(string Full, string Id)>();
                 try
                 {
-                    files = Directory.EnumerateFiles(source.Path, "*", FolderScanOptions)
-                        .Where(IsMediaFile)
-                        .Take(MaxItemsPerFolder)
-                        .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
+                    foreach (var file in Directory.EnumerateFiles(source.Path, "*", FolderScanOptions))
+                    {
+                        if (!IsMediaFile(file))
+                        {
+                            continue;
+                        }
+
+                        var full = Path.GetFullPath(file);
+                        var id = ItemIdForPath(full);
+                        if (excluded.Contains(id) || paths.ContainsKey(id))
+                        {
+                            continue;
+                        }
+
+                        if (items.Count + picked.Count >= MaxItems)
+                        {
+                            truncated = true;
+                            break;
+                        }
+
+                        picked.Add((full, id));
+                    }
                 }
                 catch
                 {
                     continue;
                 }
 
-                foreach (var file in files)
+                picked.Sort((x, y) => StringComparer.OrdinalIgnoreCase.Compare(x.Full, y.Full));
+                foreach (var (full, id) in picked)
                 {
-                    AddItem(file, source.Id, name: null, source.Excluded);
+                    AddItem(full, id, source.Id, name: null);
                 }
             }
             else if (File.Exists(source.Path) && IsMediaFile(source.Path))
             {
-                AddItem(source.Path, source.Id, source.Name, excluded: null);
+                var full = Path.GetFullPath(source.Path);
+                var id = ItemIdForPath(full);
+                if (paths.ContainsKey(id))
+                {
+                    continue;
+                }
+
+                if (items.Count >= MaxItems)
+                {
+                    truncated = true;
+                    continue;
+                }
+
+                AddItem(full, id, source.Id, source.Name);
             }
         }
 
@@ -430,17 +479,10 @@ public sealed class GalleryLibrary
             }
         }
 
-        return items;
+        return new GalleryEnumeration(items, truncated);
 
-        void AddItem(string file, string sourceId, string? name, List<string>? excluded)
+        void AddItem(string full, string id, string sourceId, string? name)
         {
-            var full = Path.GetFullPath(file);
-            var id = ItemIdForPath(full);
-            if (excluded is not null && excluded.Contains(id))
-            {
-                return;
-            }
-
             if (paths.TryAdd(id, full))
             {
                 items.Add(new GalleryItem
@@ -567,3 +609,6 @@ public sealed class GalleryLibrary
     private static GalleryPlaylistMutationResponse FailPlaylist(string msg, string code = "") =>
         new() { Error = true, Msg = msg, Code = code };
 }
+
+/// <summary>Result of <see cref="GalleryLibrary.Enumerate"/>.</summary>
+public sealed record GalleryEnumeration(List<GalleryItem> Items, bool Truncated);

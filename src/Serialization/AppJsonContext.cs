@@ -555,6 +555,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.LightingColorAdjustResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.SetLightingColorAdjustBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.SetLightingDeviceMaxRateBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Devices.SetLightingDeviceSamplingBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Devices.LedPreviewLayoutResponse))]
 [JsonSerializable(typeof(SetLightingDeviceColor))]
 [JsonSerializable(typeof(DevicePinsResponse))]
 [JsonSerializable(typeof(SetDevicePinsBody))]
@@ -950,6 +952,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, string>))]
 
 [JsonSerializable(typeof(float[]))]
+[JsonSerializable(typeof(float[][]))]
 [JsonSerializable(typeof(List<string>))]
 
 // Helper IPC transport + per-domain payloads. Grouped by domain for

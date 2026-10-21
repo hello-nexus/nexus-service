@@ -927,6 +927,47 @@ public static partial class DevicesRoutes
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
+        // Sampling mode: "led" reads a small spot per LED; "nearest", "rows" and "columns" read the mean of the LED's cell.
+        // Broadcasts `lighting` so the card's sampling/areaCells refetch without a reload.
+        app.MapPost("/devices/lighting-devices/sampling", (
+            SetLightingDeviceSamplingBody body,
+            ILightingDeviceProvider ld,
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.Engine.LightingEngine engine,
+            FeatureGates gates,
+            Nexus.Service.Sockets.MultiplexHub hub) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            if (!Nexus.Service.Lighting.Engine.SamplingModes.TryParse(body.Mode, out var mode))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid mode."));
+            }
+            // Back to "led" needs no listed card, so a stale id of an unplugged device can still be cleared.
+            if (string.IsNullOrEmpty(body.Id) || (mode != Nexus.Service.Lighting.Engine.SamplingMode.Led && !ld.GetAll().Devices.Any(c => c.Id == body.Id)))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid id."));
+            }
+            store.Update(s =>
+            {
+                var modes = new Dictionary<string, string>(s.Devices.SamplingModes);
+                if (mode == Nexus.Service.Lighting.Engine.SamplingMode.Led)
+                {
+                    modes.Remove(body.Id);
+                }
+                else
+                {
+                    modes[body.Id] = body.Mode;
+                }
+                s.Devices.SamplingModes = modes;
+            });
+            engine.SetSamplingModes(store.Load().Devices.SamplingModes);
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+
         // Hue and saturation of a color-capable device (smart lights), as
         // device metadata the UI reads back. Not a pin: what a device shows on
         // its own goes through POST /devices/lighting-devices/pins.
@@ -1184,10 +1225,12 @@ public static partial class DevicesRoutes
         app.MapPost("/devices/lighting-devices/{id}/led-preview-layout", (string id, LedPreviewLayoutBody body,
             Nexus.Service.Lighting.Engine.LightingEngine engine) =>
         {
+            Nexus.Service.Lighting.Engine.DeviceFrame? found = null;
             foreach (var frame in engine.Devices)
             {
                 if (frame.Id == id)
                 {
+                    found = frame;
                     frame.PreviewLedCount = body.LedCount > 0 ? body.LedCount : null;
                     if (body.Leds.Count > 0)
                     {
@@ -1212,8 +1255,10 @@ public static partial class DevicesRoutes
                     break;
                 }
             }
-            return ApiResponse.Ok();
+            var cells = engine.AreaCellsForCard(found, found?.LedCount ?? 0);
+            return Results.Json(new LedPreviewLayoutResponse { AreaCells = cells }, Nexus.Service.Serialization.AppJsonContext.Default.LedPreviewLayoutResponse);
         });
+
 
         // LED map editor: clear all overlays
         app.MapDelete("/devices/lighting-devices/{id}/led-editor", (string id,

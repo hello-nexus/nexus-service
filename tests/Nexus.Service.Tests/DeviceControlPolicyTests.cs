@@ -47,6 +47,7 @@ public class DeviceControlPolicyTests
     [InlineData("nollie")]
     [InlineData("asus-ryujin-lcd")]
     [InlineData("asrock-lcd")]
+    [InlineData("asus-slc4-lcd")]
     [InlineData("thermalright-lcd")]
     [InlineData("idcooling-fx-lcd")]
     public void IsExperimental_OtherThirdPartyHardware_IsFalse(string handlerId)
