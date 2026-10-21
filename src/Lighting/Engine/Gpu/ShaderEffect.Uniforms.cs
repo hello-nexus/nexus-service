@@ -60,7 +60,15 @@ internal sealed class UniformLocations
             Spectrum64 = gl.GetUniformLocation(prog, "u_spectrum64");
         }
         SpectrumL64 = gl.GetUniformLocation(prog, "u_spectrumL64[0]");
+        if (SpectrumL64 < 0)
+        {
+            SpectrumL64 = gl.GetUniformLocation(prog, "u_spectrumL64");
+        }
         SpectrumR64 = gl.GetUniformLocation(prog, "u_spectrumR64[0]");
+        if (SpectrumR64 < 0)
+        {
+            SpectrumR64 = gl.GetUniformLocation(prog, "u_spectrumR64");
+        }
         SpecHist = gl.GetUniformLocation(prog, "u_specHist[0]");
         if (SpecHist < 0)
         {

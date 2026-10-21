@@ -5,8 +5,9 @@ uniform float u_intensity; // hint_range(0.0, 1.0, 0.01) = 1.0
 // here (not the prelude) so only this effect pays their uniform-vector cost;
 // ShaderEffect.cs / useShaderRenderer.ts upload them when the locations exist.
 //   u_spectrum64 : current frame, 64 log bands, 0..1
-//   u_spectrumL64 / u_spectrumR64 : same bands per audio channel, vec4-packed (band = 4*index + component), only advanced
-//                  while Stereo split is on (the service sees u_stereo and requests them)
+//   u_spectrumL64 / u_spectrumR64 : same bands per audio channel, vec4-packed
+//                  (band = 4*index + component); only advanced while Stereo
+//                  split is on (the service sees u_stereo and requests them)
 //   u_specHist   : 16 bands x 16 frames, vec4-packed; float index = frame*16+band,
 //                  frame 0 = current, frame 15 = oldest retained
 //   u_*Peak      : peak-hold of bass/mid/high, rises instant, decays slow

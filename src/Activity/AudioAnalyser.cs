@@ -159,7 +159,7 @@ public sealed class AudioAnalyser
 
     /// <summary>
     /// Splits interleaved stereo into left, right and a mono mix. The mono gain
-    /// is the equal-power downmix ffmpeg applied when it produced mono itself.
+    /// is the caller's downmix gain, chosen per capture source.
     /// </summary>
     public static void Deinterleave(float[] interleaved, float[] mono, float[] left, float[] right, float monoGain)
     {
