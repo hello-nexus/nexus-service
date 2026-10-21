@@ -7,8 +7,7 @@ using Xunit;
 namespace Nexus.Service.Tests.JpegPanels;
 
 /// <summary>
-/// Byte sequences are those iCUE sent to a Nautilus LCD Cap in a USB capture; no unit has
-/// run these yet.
+/// Byte sequences are those iCUE sent to a Nautilus LCD Cap in a USB capture.
 /// </summary>
 public class NautilusLcdHandshakeTests
 {
@@ -106,6 +105,22 @@ public class NautilusLcdHandshakeTests
     }
 
     [Fact]
+    public void Cancel_during_the_claim_pause_throws_and_returns_the_gate_held()
+    {
+        var handshake = new NautilusLcdHandshake();
+        var device = new FeatureDevice();
+        var gate = new object();
+        using var cts = new System.Threading.CancellationTokenSource();
+        cts.Cancel();
+
+        lock (gate)
+        {
+            Assert.Throws<OperationCanceledException>(() => handshake.Attach(device, ReportLength, gate, cts.Token));
+            Assert.True(System.Threading.Monitor.IsEntered(gate));
+        }
+    }
+
+    [Fact]
     public void A_failed_keepalive_asks_the_hub_to_drop_the_handle()
     {
         var handshake = new NautilusLcdHandshake();
@@ -117,7 +132,7 @@ public class NautilusLcdHandshakeTests
     [Fact]
     public void The_hub_reports_each_frame_to_the_handshake_and_ticks_on_the_icue_cadence()
     {
-        var model = JpegPanelModel.CorsairNautilusCap;
+        var model = JpegPanelModel.CorsairNautilusCap with { Handshake = new NautilusLcdHandshake() };
         using var hub = new JpegPanelHub(model);
         var device = new FeatureDevice();
         Assert.True(hub.Attach(device));
@@ -125,7 +140,7 @@ public class NautilusLcdHandshakeTests
         Assert.True(hub.SendFrame(new byte[2032 + 100]));
         hub.Tick();
 
-        // 3 chunks of 1016: the keepalive size is the JPEG plus two chunk headers.
+        // Three chunks: the keepalive size is the JPEG plus two chunk headers.
         int expected = 2132 + 16;
         var keepalive = device.Sets[^1];
         Assert.Equal(expected, ((keepalive[4] | (keepalive[5] << 8)) << 10) + (keepalive[6] | (keepalive[7] << 8)));

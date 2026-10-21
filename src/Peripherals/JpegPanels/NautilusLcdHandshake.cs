@@ -9,10 +9,10 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 /// handshake, a keepalive while streaming, and a close pair. All reports are 32 bytes on
 /// report id 3, and byte 1 selects the command.
 ///
-/// The keepalive's bytes 4 to 7 carry the size of the last completed frame as it left the
-/// host (JPEG bytes plus one chunk header per chunk but the last), split into whole
-/// 1024-byte blocks and the remainder, each little-endian u16. Bytes 8 and on are stale
-/// buffer contents in the capture and are sent as zero.
+/// The keepalive's size field carries the last completed frame as it left the host (JPEG
+/// bytes plus one chunk header per chunk but the last), split into whole kibibyte blocks
+/// and the remainder, each a little-endian u16. The bytes after it are stale buffer
+/// contents in the capture and are sent as zero.
 /// </summary>
 public sealed class NautilusLcdHandshake : IJpegPanelHandshake, IJpegPanelSession, IJpegPanelFrameObserver
 {
@@ -30,7 +30,7 @@ public sealed class NautilusLcdHandshake : IJpegPanelHandshake, IJpegPanelSessio
     private const byte GetStatus = 0x11;
     private const byte GetLimits = 0x0F;
 
-    /// <summary>iCUE waits this long between reading the limits and claiming the stream.</summary>
+    /// <summary>iCUE pauses between reading the limits and claiming the stream.</summary>
     private const int ClaimDelayMs = 350;
 
     private const int KeepaliveIntervalMs = 4500;
@@ -38,8 +38,6 @@ public sealed class NautilusLcdHandshake : IJpegPanelHandshake, IJpegPanelSessio
     /// <summary>Values iCUE sent on the captured unit when the limits read gives nothing.</summary>
     private const byte FallbackClaimHigh = 0x03;
     private const byte FallbackClaimLow = 0xC4;
-
-    private const int ChunkHeaderBytes = 8;
 
     private bool _streaming;
     private int _frameBytes;
@@ -78,13 +76,32 @@ public sealed class NautilusLcdHandshake : IJpegPanelHandshake, IJpegPanelSessio
         Get(device, GetStatus);
         var limits = Get(device, GetLimits);
 
-        if (cancel.WaitHandle.WaitOne(ClaimDelayMs))
-        {
-            return false;
-        }
+        Pause(gate, cancel, ClaimDelayMs);
         byte high = limits is null ? FallbackClaimHigh : limits[3];
         byte low = limits is null ? FallbackClaimLow : limits[4];
         return device.SetFeature(Report(CmdUnknownClaim, 0x00, high, low));
+    }
+
+    /// <summary>Waits with the hub lock released so frames and ticks are not held; cancel throws like the sibling sessions.</summary>
+    private static void Pause(object? gate, CancellationToken cancel, int ms)
+    {
+        cancel.ThrowIfCancellationRequested();
+        if (gate != null)
+        {
+            Monitor.Exit(gate);
+        }
+        try
+        {
+            cancel.WaitHandle.WaitOne(ms);
+        }
+        finally
+        {
+            if (gate != null)
+            {
+                Monitor.Enter(gate);
+            }
+        }
+        cancel.ThrowIfCancellationRequested();
     }
 
     public void OnDetach(IHidDevice device, int reportLength)
@@ -101,7 +118,7 @@ public sealed class NautilusLcdHandshake : IJpegPanelHandshake, IJpegPanelSessio
     public void OnFrameSent(int jpegBytes, int chunks)
     {
         _streaming = true;
-        _frameBytes = jpegBytes + ((chunks - 1) * ChunkHeaderBytes);
+        _frameBytes = jpegBytes + ((chunks - 1) * JpegPanelProtocol.HeaderLength(JpegPanelHeaderStyle.CorsairChunked, false));
     }
 
     internal byte[] Keepalive(byte command, byte arg)
