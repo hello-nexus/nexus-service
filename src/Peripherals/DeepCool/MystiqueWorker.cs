@@ -155,6 +155,10 @@ public sealed class MystiqueWorker : BackgroundService
             while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(HandlerId))
             {
                 await _wake.WaitAsync(_tickMs, stoppingToken).ConfigureAwait(false);
+                if (!_gate.IsEnabled(HandlerId))
+                {
+                    break;
+                }
                 var settings = ReadSettings();
                 if (!session.Apply(settings) || !session.Tick(MystiqueSensors.Read(_sensors, settings, MystiqueSensors.FanNames(_store, _fans)), DateTime.Now))
                 {

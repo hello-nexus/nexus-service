@@ -20,7 +20,7 @@ public static partial class DevicesRoutes
             return Results.Json(BuildMystiqueState(copy, worker.IsConnected, sensors, MystiqueSensors.FanNames(store, fans)), AppJsonContext.Default.DeepCoolMystiqueStateResponse);
         });
 
-        app.MapPut("/devices/deepcool-mystique/settings", (DeepCoolMystiqueSettingsRequest body, IConfigStore store, MystiqueWorker worker, ISensorProvider sensors) =>
+        app.MapPut("/devices/deepcool-mystique/settings", (DeepCoolMystiqueSettingsRequest body, IConfigStore store, MystiqueWorker worker, ISensorProvider sensors, Nexus.Service.Cooling.IFanControlProvider? fans) =>
         {
             if (body.Mode is not null
                 && body.Mode is not (DeepCoolMystiqueSettings.ModeMonitor or DeepCoolMystiqueSettings.ModeMedia or DeepCoolMystiqueSettings.ModeRecording))
@@ -34,7 +34,10 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("unknown readout"));
             }
-            if (!ValidMystiquePick(body.CpuFan, sensors) || !ValidMystiquePick(body.Pump, sensors))
+            DeepCoolMystiqueSettings stored = new();
+            store.Read(s => stored = s.Devices.DeepCoolMystique.Copy());
+            var fanNames = MystiqueSensors.FanNames(store, fans);
+            if (!ValidMystiquePick(body.CpuFan, stored.CpuFan, sensors, fanNames) || !ValidMystiquePick(body.Pump, stored.Pump, sensors, fanNames))
             {
                 return Results.BadRequest(ApiResponse.Fail("invalid sensor"));
             }
@@ -44,10 +47,14 @@ public static partial class DevicesRoutes
         });
     }
 
-    /// <summary>An empty pick returns the readout to the automatic choice; otherwise the sensor must exist and be a fan reading.</summary>
-    private static bool ValidMystiquePick(DeepCoolMystiqueSensorDto? pick, ISensorProvider sensors)
+    /// <summary>
+    /// An empty pick returns the readout to the automatic choice. A changed pick must name a fan reading that
+    /// exists now; the pick already stored is never re-checked, so an absent header cannot fail an unrelated change.
+    /// </summary>
+    private static bool ValidMystiquePick(
+        DeepCoolMystiqueSensorDto? pick, DeepCoolMystiqueSensorPick stored, ISensorProvider sensors, IReadOnlyDictionary<string, string>? fanNames)
     {
-        if (pick is null)
+        if (pick is null || (pick.Category == stored.Category && pick.Sensor == stored.Sensor))
         {
             return true;
         }
@@ -60,7 +67,7 @@ public static partial class DevicesRoutes
             return pick.Sensor.Length == 0;
         }
         return SensorSnapshotResolver.IsSupportedCategory(pick.Category)
-            && SensorSnapshotResolver.ResolveExact(sensors, pick.Category, pick.Sensor) is { Type: "Fan" };
+            && SensorSnapshotResolver.ResolveExact(sensors, pick.Category, pick.Sensor, new SensorSnapshotSources(null, null, null, fanNames)) is { Type: "Fan" };
     }
 
     /// <summary>Applies a settings request to the saved state; separate from the route so it can be tested.</summary>
