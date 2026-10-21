@@ -29,7 +29,63 @@ public class MystiqueSensorsTests
     {
         var reading = MystiqueSensors.Read(Board(), new DeepCoolMystiqueSettings());
 
-        Assert.Equal(new MystiqueReading(55, 25, 5380, 1700, 3341), reading);
+        Assert.Equal(new MystiqueReading(55, 25, 26, 7780, 1700, 3341), reading);
+    }
+
+    [Fact]
+    public void Auto_frequency_is_the_highest_core_clock_not_the_all_core_mean()
+    {
+        var sensors = Board(mhz: 2900f);
+
+        Assert.Equal(5300, MystiqueSensors.Read(sensors, new DeepCoolMystiqueSettings()).CpuMhz);
+        Assert.Equal("c/clkmax", MystiqueSensors.Find(sensors, new DeepCoolMystiqueSensorPick(), MystiqueValue.CpuFrequency)!.Value.Sensor.Id);
+        Assert.Equal("cpu", MystiqueSensors.Find(sensors, new DeepCoolMystiqueSensorPick(), MystiqueValue.CpuFrequency)!.Value.Category);
+    }
+
+    [Fact]
+    public void Picked_cpu_sensors_override_the_automatic_values()
+    {
+        var settings = new DeepCoolMystiqueSettings
+        {
+            CpuTemperature = new DeepCoolMystiqueSensorPick { Category = "cpu", Sensor = "c/t2" },
+            CpuUsage = new DeepCoolMystiqueSensorPick { Category = "cpu", Sensor = "c/l2" },
+            CpuFrequency = new DeepCoolMystiqueSensorPick { Category = "cpu", Sensor = "c/clk" },
+            RamUsage = new DeepCoolMystiqueSensorPick { Category = "memory", Sensor = "m/l" },
+        };
+
+        var reading = MystiqueSensors.Read(Board(mhz: 2900f), settings);
+
+        Assert.Equal(61, reading.TempC);
+        Assert.Equal(80, reading.UsagePct);
+        Assert.Equal(2900, reading.CpuMhz);
+        Assert.Equal(26, reading.RamPct);
+    }
+
+    [Fact]
+    public void A_pick_of_the_wrong_sensor_type_reads_zero()
+    {
+        var settings = new DeepCoolMystiqueSettings
+        {
+            CpuTemperature = new DeepCoolMystiqueSensorPick { Category = "cpu", Sensor = "c/l" },
+            RamUsage = new DeepCoolMystiqueSensorPick { Category = "cpu", Sensor = "c/t" },
+        };
+
+        var reading = MystiqueSensors.Read(Board(), settings);
+
+        Assert.Equal(0, reading.TempC);
+        Assert.Equal(0, reading.RamPct);
+    }
+
+    [Theory]
+    [InlineData(MystiqueValue.CpuTemperature, "Temperature")]
+    [InlineData(MystiqueValue.CpuFrequency, "Clock")]
+    [InlineData(MystiqueValue.CpuUsage, "Load")]
+    [InlineData(MystiqueValue.RamUsage, "Load")]
+    [InlineData(MystiqueValue.CpuFan, "Fan")]
+    [InlineData(MystiqueValue.Pump, "Fan")]
+    public void Each_readout_takes_one_sensor_type(MystiqueValue value, string type)
+    {
+        Assert.Equal(type, MystiqueSensors.RequiredType(value));
     }
 
     [Fact]
@@ -83,7 +139,7 @@ public class MystiqueSensorsTests
     {
         var reading = MystiqueSensors.Read(new FakeSensors(null, 0f, withCpu: false), new DeepCoolMystiqueSettings());
 
-        Assert.Equal(new MystiqueReading(0, 0, 0, 0, 0), reading);
+        Assert.Equal(new MystiqueReading(0, 0, 0, 0, 0, 0), reading);
     }
 
     [Fact]
@@ -116,14 +172,20 @@ public class MystiqueSensorsTests
         public IReadOnlyList<HardwareSensor> GetCpuSensors() => !_withCpu ? Array.Empty<HardwareSensor>() : new[]
         {
             new HardwareSensor { Id = "c/t", Name = "CPU Package", Type = "Temperature", Value = _temp ?? 0f },
+            new HardwareSensor { Id = "c/t2", Name = "CPU CCD1", Type = "Temperature", Value = 61 },
             new HardwareSensor { Id = "c/l", Name = "CPU Total", Type = "Load", Value = 25 },
+            new HardwareSensor { Id = "c/l2", Name = "CPU Core #1", Type = "Load", Value = 80 },
             new HardwareSensor { Id = "c/clk", Name = "Core Average", Type = "Clock", Value = _mhz },
+            new HardwareSensor { Id = "c/clkmax", Name = "Core Max", Type = "Clock", Value = _mhz + 2400 },
         };
         public (bool Healthy, float DistanceToTJMax) GetCpuHealth() => (true, 20f);
         public IReadOnlyList<string> GetGpuModels() => Array.Empty<string>();
         public IReadOnlyList<HardwareSensor> GetGpuSensors() => Array.Empty<HardwareSensor>();
         public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
-        public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
+        public IReadOnlyList<HardwareSensor> GetMemorySensors() => !_withCpu ? Array.Empty<HardwareSensor>() : new[]
+        {
+            new HardwareSensor { Id = "m/l", Name = "Memory", Type = "Load", Value = 26 },
+        };
         public string GetMemoryTotalFormatted() => "32 GB";
         public string GetRamBrandModel() => "";
         public IReadOnlyDictionary<string, StorageComponent> GetStorageComponents(bool includeSmart = true) => new Dictionary<string, StorageComponent>();
