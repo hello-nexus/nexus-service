@@ -1,6 +1,8 @@
 #if WINDOWS
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using Microsoft.Win32;
 using System.Runtime.InteropServices;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Platform;
@@ -23,6 +25,7 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
     public FlexDiscoverySnapshot Snapshot()
     {
         var paths = EnumeratePaths();
+        var misses = AddPathsOfUnlistedInstances(paths);
         var hubs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         string HubOf(string instanceId)
         {
@@ -45,8 +48,150 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
         {
             ServiceLog.Info($"[lianli-flex] discovery {topology}");
         }
+        bool missesChanged;
+        lock (_topologyLock)
+        {
+            missesChanged = !string.Equals(misses, _lastMisses, StringComparison.Ordinal);
+            _lastMisses = misses;
+        }
+        if (missesChanged && misses.Length > 0)
+        {
+            ServiceLog.Warn($"[lianli-flex] present without an openable path: {misses}");
+        }
         return snapshot;
     }
+
+    private string _lastMisses = "";
+
+    /// <summary>
+    /// Present Flex devices whose interface is not under the shared GUID (a device's own descriptor can name another):
+    /// their registered GUIDs are read from the instance and the paths added. Returns a description of the instances still without a path.
+    /// </summary>
+    private static string AddPathsOfUnlistedInstances(List<string> paths)
+    {
+        var listed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in paths)
+        {
+            if (FlexDiscoveryParser.TryParse(raw, out var p))
+            {
+                listed.Add(p.InstanceId);
+            }
+        }
+        var misses = new List<string>();
+        foreach (var instanceId in PresentUsbInstances())
+        {
+            if (!FlexDiscoveryParser.TryParse(instanceId.Replace('\\', '#'), out var parsed)
+                || !(FlexProtocol.IsReceiverProduct(parsed.Vid, parsed.Pid) || FlexProtocol.IsScreenProduct(parsed.Vid, parsed.Pid))
+                || listed.Contains(parsed.InstanceId))
+            {
+                continue;
+            }
+            var guids = RegisteredGuids(instanceId, out var inf);
+            var found = 0;
+            foreach (var guid in guids)
+            {
+                foreach (var path in InterfacePathsOf(instanceId, guid))
+                {
+                    if (!paths.Contains(path, StringComparer.OrdinalIgnoreCase))
+                    {
+                        paths.Add(path);
+                    }
+                    found++;
+                }
+            }
+            if (found == 0)
+            {
+                misses.Add($"{instanceId} guids=[{string.Join(",", guids)}] inf={inf}");
+            }
+        }
+        return string.Join("; ", misses);
+    }
+
+    private static unsafe List<string> PresentUsbInstances()
+    {
+        var result = new List<string>();
+        if (CM_Get_Device_ID_List_Size(out var chars, "USB", CM_GETIDLIST_FILTER_ENUMERATOR) != 0 || chars <= 1)
+        {
+            return result;
+        }
+        var buf = new char[chars];
+        fixed (char* b = buf)
+        {
+            if (CM_Get_Device_ID_List("USB", b, chars, CM_GETIDLIST_FILTER_ENUMERATOR) != 0)
+            {
+                return result;
+            }
+        }
+        result.AddRange(new string(buf).Split('\0', StringSplitOptions.RemoveEmptyEntries));
+        return result;
+    }
+
+    private static List<Guid> RegisteredGuids(string instanceId, out string inf)
+    {
+        var guids = new List<Guid>();
+        inf = "?";
+        try
+        {
+            using var instance = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Enum\{instanceId}");
+            using var parameters = instance?.OpenSubKey("Device Parameters");
+            foreach (var name in new[] { "DeviceInterfaceGUIDs", "DeviceInterfaceGUID" })
+            {
+                var value = parameters?.GetValue(name);
+                var texts = value is string[] many ? many : value is string one ? new[] { one } : Array.Empty<string>();
+                foreach (var text in texts)
+                {
+                    if (Guid.TryParse(text, out var g) && !guids.Contains(g))
+                    {
+                        guids.Add(g);
+                    }
+                }
+            }
+            if (instance?.GetValue("Driver") is string driver)
+            {
+                using var cls = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Control\Class\{driver}");
+                inf = $"{cls?.GetValue("InfPath")}/{cls?.GetValue("ProviderName")}";
+            }
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or System.IO.IOException)
+        {
+            inf = ex.GetType().Name;
+        }
+        return guids;
+    }
+
+    private static unsafe List<string> InterfacePathsOf(string instanceId, Guid guid)
+    {
+        var result = new List<string>();
+        if (CM_Get_Device_Interface_List_Size(out var chars, ref guid, instanceId, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != 0 || chars <= 1)
+        {
+            return result;
+        }
+        var buf = new char[chars];
+        fixed (char* b = buf)
+        {
+            if (CM_Get_Device_Interface_List(ref guid, instanceId, b, chars, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != 0)
+            {
+                return result;
+            }
+        }
+        result.AddRange(new string(buf).Split('\0', StringSplitOptions.RemoveEmptyEntries));
+        return result;
+    }
+
+    private const uint CM_GETIDLIST_FILTER_ENUMERATOR = 0x1;
+    private const uint CM_GET_DEVICE_INTERFACE_LIST_PRESENT = 0;
+
+    [LibraryImport("cfgmgr32.dll", StringMarshalling = StringMarshalling.Utf16, EntryPoint = "CM_Get_Device_ID_List_SizeW")]
+    private static partial uint CM_Get_Device_ID_List_Size(out uint chars, string filter, uint flags);
+
+    [LibraryImport("cfgmgr32.dll", StringMarshalling = StringMarshalling.Utf16, EntryPoint = "CM_Get_Device_ID_ListW")]
+    private static unsafe partial uint CM_Get_Device_ID_List(string filter, char* buffer, uint bufferLen, uint flags);
+
+    [LibraryImport("cfgmgr32.dll", StringMarshalling = StringMarshalling.Utf16, EntryPoint = "CM_Get_Device_Interface_List_SizeW")]
+    private static partial uint CM_Get_Device_Interface_List_Size(out uint chars, ref Guid guid, string deviceId, uint flags);
+
+    [LibraryImport("cfgmgr32.dll", StringMarshalling = StringMarshalling.Utf16, EntryPoint = "CM_Get_Device_Interface_ListW")]
+    private static unsafe partial uint CM_Get_Device_Interface_List(ref Guid guid, string deviceId, char* buffer, uint bufferLen, uint flags);
 
     private static List<string> EnumeratePaths()
     {
