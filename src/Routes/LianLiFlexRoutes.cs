@@ -36,6 +36,8 @@ public sealed class LianLiFlexFanDto
     /// <summary>The identify flash is running on this unit.</summary>
     public bool Identifying { get; set; }
     public bool ReceiverBound { get; set; }
+    /// <summary>The unit is bound to this PC's radio, which drives its lighting and fan speed.</summary>
+    public bool RadioBound { get; set; }
     public int SortIndex { get; set; }
 }
 
@@ -150,8 +152,8 @@ public static partial class LianLiFlexRoutes
     {
         MapRound2Endpoints(app);
 
-        app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexScreens screens, FlexLcdHub lcd, IConfigStore store, Nexus.Service.Lighting.FlexLightingFrameWriter writer) =>
-            Results.Json(BuildState(hub, store.Load(), screens, writer.IsIdentifying, lcd), AppJsonContext.Default.LianLiFlexStateResponse));
+        app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexScreens screens, FlexLcdHub lcd, Slv3Hub radio, IConfigStore store, Nexus.Service.Lighting.FlexLightingFrameWriter writer) =>
+            Results.Json(BuildState(hub, store.Load(), screens, writer.IsIdentifying, lcd, mac => radio.State.Fans.Any(f => f.BoundToUs && string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))), AppJsonContext.Default.LianLiFlexStateResponse));
 
         app.MapGet("/devices/lianli-flex/lighting", (FlexHub hub, IConfigStore store) =>
             Results.Json(BuildLighting(hub, store.Load()), AppJsonContext.Default.LianLiFlexLightingResponse));
@@ -422,7 +424,7 @@ public static partial class LianLiFlexRoutes
         return screen;
     }
 
-    internal static LianLiFlexStateResponse BuildState(FlexHub hub, NexusSettings settings, FlexScreens? screens = null, Func<string, bool>? identifying = null, FlexLcdHub? lcd = null)
+    internal static LianLiFlexStateResponse BuildState(FlexHub hub, NexusSettings settings, FlexScreens? screens = null, Func<string, bool>? identifying = null, FlexLcdHub? lcd = null, Func<string, bool>? radioBound = null)
     {
         var units = hub.Units;
         var screenOnly = lcd is null
@@ -457,6 +459,7 @@ public static partial class LianLiFlexRoutes
                 LcdRestarting = u.LcdRestarting,
                 Identifying = identifying?.Invoke(u.Mac) ?? false,
                 ReceiverBound = u.Info.RfBound,
+                RadioBound = radioBound?.Invoke(u.Mac) ?? false,
                 SortIndex = look?.SortIndex ?? 0,
             };
         }

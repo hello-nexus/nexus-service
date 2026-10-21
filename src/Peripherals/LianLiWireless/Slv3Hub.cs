@@ -2222,8 +2222,9 @@ public sealed class Slv3Hub : IDisposable
         Stale = stale,
         UsbConnected = (record.IsHydroShift && _usbAioMac is { } usbMac
             && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase))
-            || IsWiredOwned(Convert.ToHexString(record.Mac)),
-        WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)),
+            || (IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record)),
+        WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record),
+        RadioDrivesUsb = IsWiredOwned(Convert.ToHexString(record.Mac)) && IsBoundToUsLocked(record),
         CoolantTempC = record.CoolantTempC,
         FirmwareVersion = record.RfVersion,
         ArgbCableConnected = record.ArgbCableConnected,

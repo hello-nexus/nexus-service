@@ -83,6 +83,8 @@ public sealed class Slv3FanInfo
     public bool UsbConnected { get; set; }
     /// <summary>The fan is plugged in over USB and driven by its own handler, so the radio only lists it: no Bind, steering, lighting or PWM.</summary>
     public bool WiredOwned { get; set; }
+    /// <summary>The fan is plugged in over USB and bound to this PC's radio: the radio drives its lighting and fan speed.</summary>
+    public bool RadioDrivesUsb { get; set; }
     /// <summary>HydroShift II coolant temperature in °C; null for other devices or when not reported.</summary>
     public int? CoolantTempC { get; set; }
     /// <summary>Chain RF firmware version; 0 when not reported.</summary>

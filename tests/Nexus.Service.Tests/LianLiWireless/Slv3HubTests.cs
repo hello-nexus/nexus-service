@@ -233,6 +233,10 @@ public partial class Slv3HubTests
 
         var mac = Convert.ToHexString(FanMac);
         hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans[0].RadioDrivesUsb);
+        Assert.False(hub.State.Fans[0].WiredOwned);
+        Assert.False(hub.State.Fans[0].UsbConnected);
         Assert.True(hub.SetPortDuty(mac, 0, 50));
         Assert.False(ManualBind(hub, mac, out _));
         hub.SetLockBoundDevices(false);
@@ -243,6 +247,7 @@ public partial class Slv3HubTests
         }
         Assert.False(hub.State.Fans[0].BoundToUs);
         Assert.True(hub.State.Fans[0].WiredOwned);
+        Assert.False(hub.State.Fans[0].RadioDrivesUsb);
     }
 
     [Fact]
@@ -494,7 +499,7 @@ public partial class Slv3HubTests
 
         Ticks(hub, 2);
 
-        Assert.True(hub.State.Fans[0].WiredOwned);
+        Assert.True(hub.State.Fans[0].RadioDrivesUsb);
         Assert.Equal(Slv3Protocol.DefaultChannel, hub.State.Fans[0].Channel);
         Assert.Equal(4, hub.State.Fans[0].Slot);
     }
