@@ -14,11 +14,13 @@ public sealed class DxgiScreenCapture : IDisposable
     private IDXGIOutputDuplication? _duplication;
     private ID3D11Texture2D? _stagingTexture;
     private int _screenW, _screenH;
+    private int _surfW, _surfH, _rotation = DesktopRotation.Identity;
     private bool _frameAcquired, _disposed;
 
     public bool IsInitialized => _duplication is not null;
     /// <summary>A non-timeout AcquireNextFrame failure (ACCESS_LOST); the instance never recovers and must be re-created.</summary>
     public bool IsLost { get; private set; }
+    /// <summary>Desktop-oriented size (what the user sees), not the native surface size.</summary>
     public int ScreenWidth => _screenW;
     public int ScreenHeight => _screenH;
 
@@ -39,15 +41,26 @@ public sealed class DxgiScreenCapture : IDisposable
             using var output1 = output.QueryInterface<IDXGIOutput1>();
             output.Dispose();
             _duplication = output1.DuplicateOutput(_device);
-            _stagingTexture = _device.CreateTexture2D(new Texture2DDescription
-            {
-                Width = (uint)_screenW, Height = (uint)_screenH, MipLevels = 1, ArraySize = 1,
-                Format = Format.B8G8R8A8_UNorm, SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging, CPUAccessFlags = CpuAccessFlags.Read,
-            });
+            _rotation = (int)_duplication.Description.Rotation;
+            if (_rotation < DesktopRotation.Identity || _rotation > DesktopRotation.Rotate270) _rotation = DesktopRotation.Identity;
+            // A rotated output duplicates in native orientation: the surface has the axes swapped.
+            if (DesktopRotation.SwapsAxes(_rotation)) { _surfW = _screenH; _surfH = _screenW; }
+            else { _surfW = _screenW; _surfH = _screenH; }
+            CreateStaging();
             return true;
         }
         catch (Exception ex) { Console.Error.WriteLine($"[dxgi-capture] init failed: {ex.Message}"); Dispose(); return false; }
+    }
+
+    private void CreateStaging()
+    {
+        _stagingTexture?.Dispose();
+        _stagingTexture = _device!.CreateTexture2D(new Texture2DDescription
+        {
+            Width = (uint)_surfW, Height = (uint)_surfH, MipLevels = 1, ArraySize = 1,
+            Format = Format.B8G8R8A8_UNorm, SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Staging, CPUAccessFlags = CpuAccessFlags.Read,
+        });
     }
 
     public bool AcquireFrame(uint timeoutMs = 0)
@@ -63,7 +76,14 @@ public sealed class DxgiScreenCapture : IDisposable
                 return false;
             }
             using var tex = resource!.QueryInterface<ID3D11Texture2D>();
-            _context.CopyResource(_stagingTexture, tex);
+            // CopyResource silently does nothing on a size mismatch, which leaves the staging texture black.
+            var td = tex.Description;
+            if ((int)td.Width != _surfW || (int)td.Height != _surfH)
+            {
+                _surfW = (int)td.Width; _surfH = (int)td.Height;
+                CreateStaging();
+            }
+            _context.CopyResource(_stagingTexture!, tex);
             _context.Flush();
             _duplication.ReleaseFrame();
             resource.Dispose();
@@ -87,10 +107,10 @@ public sealed class DxgiScreenCapture : IDisposable
                 var srcPtr = mapped.DataPointer; var rowPitch = (int)mapped.RowPitch;
                 for (int row = 0; row < h; row++)
                 {
-                    var srcRow = srcPtr + (y + row) * rowPitch + x * 4;
                     for (int col = 0; col < w; col++)
                     {
-                        var pixel = srcRow + col * 4; var dstOff = (row * w + col) * 3;
+                        var (sx, sy) = DesktopRotation.MapToSurface(x + col, y + row, _screenW, _screenH, _surfW, _surfH, _rotation);
+                        var pixel = srcPtr + sy * rowPitch + sx * 4; var dstOff = (row * w + col) * 3;
                         rgb[dstOff] = Marshal.ReadByte(pixel + 2);
                         rgb[dstOff + 1] = Marshal.ReadByte(pixel + 1);
                         rgb[dstOff + 2] = Marshal.ReadByte(pixel);
@@ -125,13 +145,11 @@ public sealed class DxgiScreenCapture : IDisposable
                 {
                     for (int y = 0; y < dstH; y++)
                     {
-                        var sy = y * _screenH / dstH;
-                        var srcRow = src + sy * rowPitch;
                         var dstRow = dstPtr + y * dstW * 3;
                         for (int x = 0; x < dstW; x++)
                         {
-                            var sx = x * _screenW / dstW;
-                            var p = srcRow + sx * 4;
+                            var (sx, sy) = DesktopRotation.MapToSurface(x, y, dstW, dstH, _surfW, _surfH, _rotation);
+                            var p = src + sy * rowPitch + sx * 4;
                             var d = dstRow + x * 3;
                             d[0] = p[2];
                             d[1] = p[1];
@@ -160,12 +178,10 @@ public sealed class DxgiScreenCapture : IDisposable
                 var src = (byte*)mapped.DataPointer;
                 for (int y = 0; y < ch; y++)
                 {
-                    var sy = y * _screenH / ch;
-                    var srcRow = src + sy * rowPitch;
                     for (int x = 0; x < cw; x++)
                     {
-                        var sx = x * _screenW / cw;
-                        var p = srcRow + sx * 4;
+                        var (sx, sy) = DesktopRotation.MapToSurface(x, y, cw, ch, _surfW, _surfH, _rotation);
+                        var p = src + sy * rowPitch + sx * 4;
                         canvas.SetPixel(x, y, p[2], p[1], p[0]);
                     }
                 }
