@@ -189,6 +189,7 @@ public sealed partial class Slv3Hub : IDisposable
     private readonly Dictionary<string, BindIntent> _intents = new(StringComparer.Ordinal);
     // Raw wireless records of the latest answered poll, listed or not.
     private List<Slv3DeviceRecord> _pollRecords = new();
+    private List<string> _reportOrder = new();
     // Master records (dev_type 0xFF) by master MAC hex, with the poll that last heard them.
     private readonly Dictionary<string, long> _liveMasters = new(StringComparer.Ordinal);
     internal const int LiveMasterPolls = 30;
@@ -1939,6 +1940,7 @@ public sealed partial class Slv3Hub : IDisposable
             }
         }
         _pollRecords = pollRecords;
+        UpdateReportOrderLocked(pollRecords);
 
         ExpireChainsLocked(nowMs);
 
@@ -1947,6 +1949,35 @@ public sealed partial class Slv3Hub : IDisposable
         _lastRecordCount = Math.Max(count, _knownChains.Count);
         PublishFansLocked(nowMs);
         return true;
+    }
+
+    // The confirmed chains of this reply in report order, then chains an incomplete reply left out in their old order.
+    private void UpdateReportOrderLocked(List<Slv3DeviceRecord> pollRecords)
+    {
+        var order = new List<string>(_knownChains.Count);
+        foreach (var record in pollRecords)
+        {
+            var key = Convert.ToHexString(record.Mac);
+            if (_knownChains.ContainsKey(key) && !order.Contains(key))
+            {
+                order.Add(key);
+            }
+        }
+        foreach (var key in _reportOrder)
+        {
+            if (_knownChains.ContainsKey(key) && !order.Contains(key))
+            {
+                order.Add(key);
+            }
+        }
+        foreach (var key in _knownChains.Keys)
+        {
+            if (!order.Contains(key))
+            {
+                order.Add(key);
+            }
+        }
+        _reportOrder = order;
     }
 
     private void ExpireChainsLocked(long nowMs)
@@ -2386,6 +2417,7 @@ public sealed partial class Slv3Hub : IDisposable
             }
             _userUnbound.Remove(key);
             _unboundHere.Remove(key);
+            _deferredUnbinds.Remove(key);
             _intents[key] = new BindIntent(slot) { Manual = true };
             if (alreadyBound)
             {
@@ -2479,7 +2511,6 @@ public sealed partial class Slv3Hub : IDisposable
             if (IsBoundToUsLocked(existing) && BeginFlexLcdReleaseForUnbindLocked(existing))
             {
                 // The screens go back to USB content first; the release frame follows their acknowledgement or the hold.
-                _userUnbound.Add(key);
                 _deferredUnbinds[key] = (_nowMs() + FlexLcdUnbindHoldMs, macHex);
                 ServiceLog.Info($"[lianli-wireless] unbind of {key} waits for its wireless theme switch to clear");
                 return true;
@@ -2490,7 +2521,7 @@ public sealed partial class Slv3Hub : IDisposable
         return true;
     }
 
-    private void PerformUnbindLocked(string key, string macHex, Slv3DeviceRecord existing)
+    private void PerformUnbindLocked(string key, string macHex, Slv3DeviceRecord? existing)
     {
         _userUnbound.Add(key);
         _unboundHere.Add(key);
@@ -2498,7 +2529,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             _ownedDirty = true;
         }
-        if (Slv3Protocol.MacIsZero(existing.MasterMac))
+        if (existing is not { } target || Slv3Protocol.MacIsZero(target.MasterMac))
         {
             _intents.Remove(key);
         }
@@ -2506,7 +2537,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             ServiceLog.Info($"[lianli-wireless] unbind requested for {key}");
             _intents[key] = new BindIntent(0) { Unbinding = true, Sends = IsWiredOwned(macHex) ? 1 : 0 };
-            SendBindFrameLocked(existing, 0, unbind: true);
+            SendBindFrameLocked(target, 0, unbind: true);
         }
     }
 

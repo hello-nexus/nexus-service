@@ -2,8 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Microsoft.Win32;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Platform;
 
@@ -21,6 +21,13 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
 
     private readonly object _topologyLock = new();
     private string _lastTopology = "";
+    private string _lastMisses = "";
+
+    // The fallback pass is cached per instance id and re-run when the shared-GUID path set changes or after this interval.
+    private const long FallbackRecheckMs = 10_000;
+    private string _fallbackSignature = "";
+    private long _fallbackAtMs = long.MinValue;
+    private readonly Dictionary<string, (List<string> Paths, string? Miss)> _fallback = new(StringComparer.OrdinalIgnoreCase);
 
     public FlexDiscoverySnapshot Snapshot()
     {
@@ -61,69 +68,132 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
         return snapshot;
     }
 
-    private string _lastMisses = "";
-
     /// <summary>
     /// Present Flex devices whose interface is not under the shared GUID (a device's own descriptor can name another):
     /// their registered GUIDs are read from the instance and the paths added. Returns a description of the instances still without a path.
     /// </summary>
-    private static string AddPathsOfUnlistedInstances(List<string> paths)
+    private string AddPathsOfUnlistedInstances(List<string> paths)
     {
-        var listed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var raw in paths)
+        var signature = string.Join("|", paths.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+        var now = Environment.TickCount64;
+        lock (_topologyLock)
         {
-            if (FlexDiscoveryParser.TryParse(raw, out var p))
+            if (!string.Equals(signature, _fallbackSignature, StringComparison.Ordinal) || now - _fallbackAtMs >= FallbackRecheckMs)
             {
-                listed.Add(p.InstanceId);
+                RefreshFallbackLocked(paths);
+                _fallbackSignature = signature;
+                _fallbackAtMs = now;
             }
-        }
-        var misses = new List<string>();
-        foreach (var instanceId in PresentUsbInstances())
-        {
-            if (!FlexDiscoveryParser.TryParse(instanceId.Replace('\\', '#'), out var parsed)
-                || !(FlexProtocol.IsReceiverProduct(parsed.Vid, parsed.Pid) || FlexProtocol.IsScreenProduct(parsed.Vid, parsed.Pid))
-                || listed.Contains(parsed.InstanceId))
+            var misses = new List<string>();
+            foreach (var entry in _fallback.Values)
             {
-                continue;
-            }
-            var guids = RegisteredGuids(instanceId, out var inf);
-            var found = 0;
-            foreach (var guid in guids)
-            {
-                foreach (var path in InterfacePathsOf(instanceId, guid))
+                foreach (var path in entry.Paths)
                 {
                     if (!paths.Contains(path, StringComparer.OrdinalIgnoreCase))
                     {
                         paths.Add(path);
                     }
-                    found++;
+                }
+                if (entry.Miss is not null)
+                {
+                    misses.Add(entry.Miss);
                 }
             }
-            if (found == 0)
-            {
-                misses.Add($"{instanceId} guids=[{string.Join(",", guids)}] inf={inf}");
-            }
+            return string.Join("; ", misses);
         }
-        return string.Join("; ", misses);
     }
 
-    private static unsafe List<string> PresentUsbInstances()
+    private void RefreshFallbackLocked(List<string> paths)
     {
-        var result = new List<string>();
-        if (CM_Get_Device_ID_List_Size(out var chars, "USB", CM_GETIDLIST_FILTER_ENUMERATOR) != 0 || chars <= 1)
+        var present = PresentUsbInstances();
+        if (present is null)
         {
-            return result;
+            return;
         }
-        var buf = new char[chars];
-        fixed (char* b = buf)
+        var listed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in paths)
         {
-            if (CM_Get_Device_ID_List("USB", b, chars, CM_GETIDLIST_FILTER_ENUMERATOR) != 0)
+            var parts = raw.Split('#');
+            if (parts.Length > 2)
             {
-                return result;
+                listed.Add($@"USB\{parts[1]}\{parts[2]}");
             }
         }
-        result.AddRange(new string(buf).Split('\0', StringSplitOptions.RemoveEmptyEntries));
-        return result;
+        var flex = new List<(string Id, FlexPath Parsed)>();
+        foreach (var instanceId in present)
+        {
+            if (FlexDiscoveryParser.TryParse(instanceId.Replace('\\', '#'), out var parsed)
+                && (FlexProtocol.IsReceiverProduct(parsed.Vid, parsed.Pid) || FlexProtocol.IsScreenProduct(parsed.Vid, parsed.Pid)))
+            {
+                flex.Add((instanceId, parsed));
+            }
+        }
+        foreach (var gone in _fallback.Keys.Where(k => !flex.Exists(f => string.Equals(f.Id, k, StringComparison.OrdinalIgnoreCase))).ToList())
+        {
+            _fallback.Remove(gone);
+        }
+        foreach (var (instanceId, parsed) in flex)
+        {
+            // A composite parent has no interface of its own; its MI children are checked on their own.
+            var isCompositeParent = !instanceId.Contains("&MI_", StringComparison.OrdinalIgnoreCase)
+                && flex.Exists(f => f.Parsed.Vid == parsed.Vid && f.Parsed.Pid == parsed.Pid && f.Id.Contains("&MI_", StringComparison.OrdinalIgnoreCase));
+            if (listed.Contains(instanceId) || isCompositeParent)
+            {
+                _fallback.Remove(instanceId);
+                continue;
+            }
+            var guids = RegisteredGuids(instanceId, out var inf);
+            var found = new List<string>();
+            var failed = false;
+            foreach (var guid in guids)
+            {
+                var interfacePaths = InterfacePathsOf(instanceId, guid);
+                if (interfacePaths is null)
+                {
+                    failed = true;
+                }
+                else
+                {
+                    found.AddRange(interfacePaths);
+                }
+            }
+            if (failed && _fallback.ContainsKey(instanceId))
+            {
+                continue;
+            }
+            _fallback[instanceId] = (found, found.Count == 0 ? $"{instanceId} guids=[{string.Join(",", guids)}] inf={inf}" : null);
+        }
+    }
+
+    // A failed enumeration returns null so the caller keeps what it knew.
+    private static unsafe List<string>? PresentUsbInstances()
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            if (CM_Get_Device_ID_List_Size(out var chars, "USB", CM_GETIDLIST_FILTER_ENUMERATOR) != 0)
+            {
+                return null;
+            }
+            if (chars <= 1)
+            {
+                return new List<string>();
+            }
+            var buf = new char[chars];
+            uint rc;
+            fixed (char* b = buf)
+            {
+                rc = CM_Get_Device_ID_List("USB", b, chars, CM_GETIDLIST_FILTER_ENUMERATOR);
+            }
+            if (rc == 0)
+            {
+                return new string(buf).Split('\0', StringSplitOptions.RemoveEmptyEntries).ToList();
+            }
+            if (rc != CR_BUFFER_SMALL)
+            {
+                return null;
+            }
+        }
+        return null;
     }
 
     private static List<Guid> RegisteredGuids(string instanceId, out string inf)
@@ -159,26 +229,38 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
         return guids;
     }
 
-    private static unsafe List<string> InterfacePathsOf(string instanceId, Guid guid)
+    private static unsafe List<string>? InterfacePathsOf(string instanceId, Guid guid)
     {
-        var result = new List<string>();
-        if (CM_Get_Device_Interface_List_Size(out var chars, ref guid, instanceId, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != 0 || chars <= 1)
+        for (var attempt = 0; attempt < 4; attempt++)
         {
-            return result;
-        }
-        var buf = new char[chars];
-        fixed (char* b = buf)
-        {
-            if (CM_Get_Device_Interface_List(ref guid, instanceId, b, chars, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != 0)
+            if (CM_Get_Device_Interface_List_Size(out var chars, ref guid, instanceId, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != 0)
             {
-                return result;
+                return null;
+            }
+            if (chars <= 1)
+            {
+                return new List<string>();
+            }
+            var buf = new char[chars];
+            uint rc;
+            fixed (char* b = buf)
+            {
+                rc = CM_Get_Device_Interface_List(ref guid, instanceId, b, chars, CM_GET_DEVICE_INTERFACE_LIST_PRESENT);
+            }
+            if (rc == 0)
+            {
+                return new string(buf).Split('\0', StringSplitOptions.RemoveEmptyEntries).ToList();
+            }
+            if (rc != CR_BUFFER_SMALL)
+            {
+                return null;
             }
         }
-        result.AddRange(new string(buf).Split('\0', StringSplitOptions.RemoveEmptyEntries));
-        return result;
+        return null;
     }
 
-    private const uint CM_GETIDLIST_FILTER_ENUMERATOR = 0x1;
+    private const uint CR_BUFFER_SMALL = 0x1A;
+    private const uint CM_GETIDLIST_FILTER_ENUMERATOR = 0x1 | 0x100;
     private const uint CM_GET_DEVICE_INTERFACE_LIST_PRESENT = 0;
 
     [LibraryImport("cfgmgr32.dll", StringMarshalling = StringMarshalling.Utf16, EntryPoint = "CM_Get_Device_ID_List_SizeW")]

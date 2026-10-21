@@ -342,42 +342,93 @@ public class Slv3FlexLcdTests
     private static int FirstFrame(Slv3TestHub.FakeTxTransport tx, byte cmd) =>
         tx.SentFrames.FindIndex(f => f.Length > 24 && f[4] == Slv3Protocol.RfFrameType && f[5] == cmd);
 
+    private static void ShortTicks(Slv3Hub hub, int n, long stepMs = 500)
+    {
+        for (var i = 0; i < n; i++)
+        {
+            _clock += stepMs;
+            Assert.True(hub.DriveTick());
+        }
+    }
+
+    private static bool Released(Slv3TestHub.FakeTxTransport tx) =>
+        tx.SentFrames.Exists(f => f.Length > 17 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfBind && f.AsSpan(12, 6).ToArray().All(b => b == 0));
+
     [Fact]
-    public void Unbinding_a_chain_with_themes_on_holds_the_release_frame_until_the_switch_off_is_echoed()
+    public void Unbinding_a_settled_chain_with_themes_on_sends_no_release_before_the_switch_off_is_echoed()
     {
         var (hub, _, tx, fan) = Rig();
         hub.FlexLcd = () => Frame(true, 3);
         Ticks(hub, 20);
         Assert.Equal(1, fan.ThemeSwitch & 1);
         hub.SetLockBoundDevices(false);
-        fan.DropCommands = 3;
+        ShortTicks(hub, 3);
+        fan.DropCommands = 2;
         tx.SentFrames.Clear();
         Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out var error), error);
         Assert.True(FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme) >= 0, "no switch-off frame");
-        Assert.True(FirstFrame(tx, Slv3Protocol.RfBind) < 0, "the release went out before the switch-off was heard");
-        Ticks(hub, 6);
-        var firstSwitch = FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme);
-        var firstBind = FirstFrame(tx, Slv3Protocol.RfBind);
-        Assert.True(firstBind > firstSwitch, "no release frame after the echo");
+        var ticks = 0;
+        while ((fan.ThemeSwitch & 1) != 0 && ticks++ < 7)
+        {
+            ShortTicks(hub, 1);
+            Assert.False(Released(tx), "the release went out while the theme bits were still set");
+        }
         Assert.Equal(0, fan.ThemeSwitch & 1);
-        Assert.Equal(0, tx.SentFrames[firstSwitch][24]);
-        // The theme driver never switches the leaving chain back on.
+        ShortTicks(hub, 4);
+        Assert.True(Released(tx), "no release after the echo");
+        Assert.True(FirstFrame(tx, Slv3Protocol.RfBind) > FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme));
         Assert.DoesNotContain(tx.SentFrames, f => f.Length > 24 && f[5] == Slv3Protocol.RfSwitchWirelessTheme && f[24] != 0);
     }
 
     [Fact]
-    public void The_release_goes_out_after_the_hold_even_if_the_switch_off_is_never_heard()
+    public void The_release_goes_out_only_after_the_hold_when_the_switch_off_is_never_heard()
     {
         var (hub, _, tx, fan) = Rig();
         hub.FlexLcd = () => Frame(true, 3);
         Ticks(hub, 20);
         hub.SetLockBoundDevices(false);
+        ShortTicks(hub, 3);
         fan.IgnoreCommands = true;
         tx.SentFrames.Clear();
         Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
-        Assert.True(FirstFrame(tx, Slv3Protocol.RfBind) < 0);
-        Ticks(hub, 6);
-        Assert.True(FirstFrame(tx, Slv3Protocol.RfBind) >= 0);
+        var steps = (int)(Slv3Hub.FlexLcdUnbindHoldMs / 500) - 1;
+        ShortTicks(hub, steps);
+        Assert.False(Released(tx), "released before the hold ran out");
+        ShortTicks(hub, 4);
+        Assert.True(Released(tx), "no release after the hold");
+    }
+
+    [Fact]
+    public void A_bind_during_the_hold_cancels_the_unbind()
+    {
+        var (hub, _, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 20);
+        hub.SetLockBoundDevices(false);
+        ShortTicks(hub, 3);
+        fan.IgnoreCommands = true;
+        Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
+        ShortTicks(hub, 2);
+        Assert.True(hub.Bind(Convert.ToHexString(TlMac), out var error), error);
+        tx.SentFrames.Clear();
+        ShortTicks(hub, 16);
+        Assert.False(Released(tx), "the cancelled unbind still fired");
+    }
+
+    [Fact]
+    public void Turning_the_lock_on_during_the_hold_cancels_the_unbind()
+    {
+        var (hub, _, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 20);
+        hub.SetLockBoundDevices(false);
+        ShortTicks(hub, 3);
+        fan.IgnoreCommands = true;
+        Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
+        hub.SetLockBoundDevices(true);
+        tx.SentFrames.Clear();
+        ShortTicks(hub, 16);
+        Assert.False(Released(tx));
     }
 
     [Fact]
@@ -497,6 +548,16 @@ public class Slv3FlexLcdTests
         Assert.Equal(1, chain.FanCount);
         Assert.False(chain.Enabled);
         Assert.Equal(25, response.SourceCount);
+    }
+
+    [Fact]
+    public void A_tl_chain_reports_its_stored_up_down_swap()
+    {
+        var (hub, _, _, _) = Rig();
+        var settings = new NexusSettings();
+        Assert.False(Assert.Single(Slv3FlexLcdRoutes.BuildResponse(hub.State, settings).Chains).UpDownSwap);
+        settings.Devices.FlexUnits["6D1007F517E1"] = new LianLiFlexUnitSettings { UpDownSwap = true };
+        Assert.True(Assert.Single(Slv3FlexLcdRoutes.BuildResponse(hub.State, settings).Chains).UpDownSwap);
     }
 
     [Fact]

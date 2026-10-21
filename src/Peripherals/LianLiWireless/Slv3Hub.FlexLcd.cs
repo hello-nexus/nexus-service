@@ -55,20 +55,21 @@ public sealed partial class Slv3Hub
         return _lastFlexLcdFrame;
     }
 
-    // L-Connect's SyncControlInfo puts the count of bound devices ahead of a chain in the dongle's own report order
-    // at [16]; the capture lists the TL fan, the SL-INF fan, then the Strimer, with 0 and 1 on the two fans. Strimers
-    // and HydroShift IIs count like any other bound chain. A chain that is not bound to us is never sent these frames.
+    // L-Connect's SyncControlInfo counts the bound devices ahead of a chain in the dongle's report order at [16]; the
+    // capture lists the TL fan, the SL-INF fan, then the Strimer, with 0 and 1 on the two fans. Strimers and HydroShift
+    // IIs count like any other bound chain. L-Connect also skips a device mid effect change (changingEffect), a transient
+    // this hub does not track. The order is the confirmed chains in the last report, with chains a partial reply missed kept after them.
     private byte FlexLcdOrdinalLocked(Slv3DeviceRecord record)
     {
-        var order = _pollRecords.Exists(r => Slv3Protocol.MacEquals(r.Mac, record.Mac)) ? _pollRecords : _lastFanRecords;
+        var self = Convert.ToHexString(record.Mac);
         var ordinal = 0;
-        foreach (var other in order)
+        foreach (var key in _reportOrder)
         {
-            if (Slv3Protocol.MacEquals(other.Mac, record.Mac))
+            if (string.Equals(key, self, StringComparison.Ordinal))
             {
                 return (byte)ordinal;
             }
-            if (IsBoundToUsLocked(other))
+            if (_knownChains.TryGetValue(key, out var other) && IsBoundToUsLocked(other.Record))
             {
                 ordinal++;
             }
@@ -112,7 +113,7 @@ public sealed partial class Slv3Hub
 
     // A chain the user is unbinding, or whose release is already on the air.
     private bool IsLeavingLocked(string key) =>
-        _userUnbound.Contains(key) || (_intents.TryGetValue(key, out var intent) && intent.Unbinding);
+        _userUnbound.Contains(key) || _deferredUnbinds.ContainsKey(key) || (_intents.TryGetValue(key, out var intent) && intent.Unbinding);
 
     private Slv3FlexLcd.Row DriveFlexLcdChainLocked(Slv3DeviceRecord record, Slv3FlexLcdChain chain, FlexLcdChainState state, long nowMs)
     {
@@ -317,6 +318,11 @@ public sealed partial class Slv3Hub
     {
         foreach (var (key, deferred) in _deferredUnbinds.ToList())
         {
+            if (_lockBound)
+            {
+                _deferredUnbinds.Remove(key);
+                continue;
+            }
             var present = TryFindRecordLocked(Convert.FromHexString(key), out var record);
             var waiting = present && IsBoundToUsLocked(record) && nowMs < deferred.DeadlineMs && (record.WirelessThemeSwitch & FlexLcdMask(record)) != 0;
             if (waiting)
@@ -328,10 +334,7 @@ public sealed partial class Slv3Hub
                 continue;
             }
             _deferredUnbinds.Remove(key);
-            if (present)
-            {
-                PerformUnbindLocked(key, deferred.MacHex, record);
-            }
+            PerformUnbindLocked(key, deferred.MacHex, present ? record : null);
         }
     }
 }

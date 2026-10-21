@@ -36,6 +36,8 @@ public sealed class Slv3FlexLcdChainDto
     public bool Enabled { get; set; }
     public int Brightness { get; set; }
     public int Rotation { get; set; }
+    /// <summary>TL chains only: the two halves of each fan are exchanged; null for other families.</summary>
+    public bool? UpDownSwap { get; set; }
     public Slv3FlexLcdFanDto[] Fans { get; set; } = Array.Empty<Slv3FlexLcdFanDto>();
 }
 
@@ -61,6 +63,8 @@ public sealed class Slv3FlexLcdRequest
     public bool? Enabled { get; set; }
     public int? Brightness { get; set; }
     public int? Rotation { get; set; }
+    /// <summary>TL chains only; stored with the chain's light settings.</summary>
+    public bool? UpDownSwap { get; set; }
     public Slv3FlexLcdFanPatch[]? Fans { get; set; }
 }
 
@@ -79,6 +83,17 @@ public static class Slv3FlexLcdRoutes
             {
                 return Results.Json(ApiResponse.Fail("not an LCD Flex fan bound to this PC"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
+            var chainKey = chain.Mac.ToUpperInvariant();
+            var isTl = Slv3Protocol.ClassifyFanFamily((byte)chain.FanType) != Slv3FanFamily.SlInfFlex;
+            if (body.UpDownSwap is not null && !isTl)
+            {
+                return Results.Json(ApiResponse.Fail("up/down swap is not supported"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+            store.Load().Devices.LianLiWireless.FlexLcd.TryGetValue(chainKey, out var snapshot);
+            if (Validate(body, chain.FanCount, snapshot) is { } early)
+            {
+                return Results.Json(ApiResponse.Fail(early), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
             string? error = null;
             store.Update(s =>
             {
@@ -87,6 +102,15 @@ public static class Slv3FlexLcdRoutes
                 if (error is null)
                 {
                     Apply(s.Devices.LianLiWireless.FlexLcd, chain.Mac.ToUpperInvariant(), chain.FanCount, body);
+                    if (body.UpDownSwap is { } swap)
+                    {
+                        s.Devices.FlexUnits.TryGetValue(chainKey, out var look);
+                        var next = new Dictionary<string, LianLiFlexUnitSettings>(s.Devices.FlexUnits, StringComparer.Ordinal)
+                        {
+                            [chainKey] = LianLiFlexRoutes.Patch(look ?? new LianLiFlexUnitSettings(), new LianLiFlexChainLightingRequest { UpDownSwap = swap }, Nexus.Service.Peripherals.LianLiFlex.FlexFamily.TlFlex),
+                        };
+                        s.Devices.FlexUnits = next;
+                    }
                 }
             });
             if (error is not null)
@@ -131,6 +155,8 @@ public static class Slv3FlexLcdRoutes
                 Enabled = saved?.Enabled ?? false,
                 Brightness = saved?.Brightness ?? 60,
                 Rotation = saved?.Rotation ?? 3,
+                UpDownSwap = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType) == Slv3FanFamily.SlInfFlex ? null
+                    : settings.Devices.FlexUnits.TryGetValue(fan.Mac.ToUpperInvariant(), out var look) && look.UpDownSwap,
                 Fans = fans,
             });
         }

@@ -115,6 +115,20 @@ internal static class Slv3TestHub
                     }
                 }
             }
+            // A release bind (zero master) unbinds the chain, as firmware does on receipt.
+            if (copy.Length >= 25 && copy[0] == Slv3Protocol.UsbSendRf && copy[1] == 0
+                && copy[4] == Slv3Protocol.RfFrameType && copy[5] == Slv3Protocol.RfBind && copy.AsSpan(12, 6).ToArray().All(b => b == 0))
+            {
+                var fanMac = copy.AsSpan(6, 6).ToArray();
+                foreach (var fan in _net.Fans)
+                {
+                    if (Slv3Protocol.MacEquals(fan.Mac, fanMac))
+                    {
+                        fan.MasterMac = new byte[6];
+                        fan.RxType = (byte)254;
+                    }
+                }
+            }
             // The motherboard ARGB switch: RF [17] cmdSeq and [20] on/off land at USB [21] and [24].
             if (copy.Length >= 25 && copy[0] == Slv3Protocol.UsbSendRf && copy[1] == 0
                 && copy[4] == Slv3Protocol.RfFrameType && copy[5] == Slv3Protocol.RfArgbSyncSwitch)
