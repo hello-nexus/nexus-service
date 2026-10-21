@@ -39,6 +39,8 @@ public sealed class LianLiFlexFanDto
     /// <summary>The unit is bound to this PC's radio, which drives its lighting and fan speed.</summary>
     public bool RadioBound { get; set; }
     public int SortIndex { get; set; }
+    /// <summary>The unit's display name, shared by the Cooling, Lighting and Screens views.</summary>
+    public string Name { get; set; } = "";
 }
 
 public sealed class LianLiFlexStateResponse
@@ -461,6 +463,9 @@ public static partial class LianLiFlexRoutes
                 ReceiverBound = u.Info.RfBound,
                 RadioBound = radioBound?.Invoke(u.Mac) ?? false,
                 SortIndex = look?.SortIndex ?? 0,
+                Name = screens is not null
+                    ? screens.UnitName(u)
+                    : FlexNames.UnitName(units, u, mac => settings.Devices.FlexUnits.TryGetValue(mac, out var l) ? l.SortIndex : 0),
             };
         }
         return new LianLiFlexStateResponse

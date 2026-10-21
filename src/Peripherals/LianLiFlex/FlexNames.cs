@@ -16,12 +16,15 @@ public static class FlexNames
             .ThenBy(u => u.Mac, StringComparer.Ordinal)
             .ToList();
 
-    /// <summary>"TL Flex" for the only unit of its family, "TL Flex 1", "TL Flex 2" and so on when several share it, in <see cref="Ordered"/> order.</summary>
-    public static string UnitName(IEnumerable<FlexUnit> units, FlexUnit unit, Func<string, int> sortIndexOf)
+    /// <summary>
+    /// One rule for every Flex fan name: per family, the paired units (in <see cref="Ordered"/> order) then the
+    /// screen-only screens count together; more than one numbers from one, exactly one stays bare.
+    /// </summary>
+    public static string UnitName(IEnumerable<FlexUnit> units, FlexUnit unit, Func<string, int> sortIndexOf, int screenOnlyOfFamily = 0)
     {
         var sameFamily = Ordered(units.Where(u => u.Family == unit.Family), sortIndexOf);
         var position = sameFamily.ToList().FindIndex(u => string.Equals(u.Mac, unit.Mac, StringComparison.OrdinalIgnoreCase));
-        return Numbered(unit.Family, position, sameFamily.Count);
+        return Numbered(unit.Family, position, sameFamily.Count + screenOnlyOfFamily);
     }
 
     /// <summary>The family name, numbered from one only when the family has more than one screen or unit.</summary>

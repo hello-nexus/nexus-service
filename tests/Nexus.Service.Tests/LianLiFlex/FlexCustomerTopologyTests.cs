@@ -119,23 +119,51 @@ public class FlexCustomerTopologyTests
         Assert.Equal("TL Flex 4", screens.PanelName("5D30175F64A28700"));
     }
 
-    [Fact]
-    public void Four_tl_screens_get_four_distinct_numbered_names()
+    private static (FlexHub Hub, FlexScreens Screens, Nexus.Service.Cooling.FlexCoolingProvider Cooling) NamingRig(string[] paths)
     {
-        var snapshot = FlexDiscoveryParser.Snapshot(new[] { Rx1, Rx2 }.Concat(Screens), ResolvedHub);
+        var snapshot = FlexDiscoveryParser.Snapshot(paths, ResolvedHub);
         var discovery = new SnapshotDiscovery(snapshot);
         var macs = new Dictionary<string, string> { [Rx1] = "210807F517E1", [Rx2] = "A41F07F517E1" };
         var hub = new FlexHub(discovery, port => new FakeFlexTransport(macs[port.ReceiverPath]), new FlexClock().Func, null, _ => { });
         hub.Refresh();
-        Assert.Equal(2, hub.Units.Length);
-
         var screenDiscovery = new FlexScreenDiscovery(discovery);
         var lcd = new FlexLcdHub(new Slv3LcdHub(screenDiscovery, _ => new NoLcd()), screenDiscovery);
         lcd.Hub.UpdateScreens(lcd.Hub.Discover().Select(p => new Slv3LcdScreenInfo { Serial = p.Serial }).ToList());
-
         var screens = new FlexScreens(lcd, hub, new FlexClock().Func);
+        return (hub, screens, new Nexus.Service.Cooling.FlexCoolingProvider(hub, null, screens));
+    }
+
+    [Fact]
+    public void One_paired_and_one_screen_only_tl_screen_are_numbered_together()
+    {
+        var (hub, screens, cooling) = NamingRig(new[] { Rx1, Screens[0], Screens[1] });
+        var unit = Assert.Single(hub.Units);
+        Assert.Equal("TL Flex 1", screens.PanelName(unit.ScreenSerial));
+        Assert.Equal("TL Flex 2", screens.PanelName("331964888482C702"));
+        Assert.Equal("TL Flex 1", Assert.Single(cooling.GetFanChannels()).DeviceName);
+    }
+
+    [Fact]
+    public void A_single_tl_screen_stays_bare()
+    {
+        var (hub, screens, cooling) = NamingRig(new[] { Rx1, Screens[0] });
+        Assert.Equal("TL Flex", screens.PanelName(Assert.Single(hub.Units).ScreenSerial));
+        Assert.Equal("TL Flex", Assert.Single(cooling.GetFanChannels()).DeviceName);
+    }
+
+    [Fact]
+    public void Two_paired_and_two_screen_only_tl_screens_get_four_distinct_names_and_cooling_matches_the_paired_ones()
+    {
+        var (hub, screens, cooling) = NamingRig(new[] { Rx1, Rx2 }.Concat(Screens).ToArray());
         var names = new[] { "2B324029848A0703", "47449BCE76D28303", "331964888482C702", "5D30175F64A28700" }.Select(screens.PanelName).ToArray();
         Assert.Equal(new[] { "TL Flex 1", "TL Flex 2", "TL Flex 3", "TL Flex 4" }, names.OrderBy(x => x, StringComparer.Ordinal).ToArray());
+        foreach (var channel in cooling.GetFanChannels())
+        {
+            var unit = hub.Units.Single(u => Nexus.Service.Cooling.FlexCoolingProvider.ChannelId(u.Mac) == channel.Id);
+            Assert.Equal(screens.PanelName(unit.ScreenSerial), channel.DeviceName);
+        }
+        var state = LianLiFlexRoutes.BuildState(hub, new NexusSettings(), screens);
+        Assert.Equal(new[] { "TL Flex 1", "TL Flex 2" }, state.Fans.Select(f => f.Name).OrderBy(x => x, StringComparer.Ordinal).ToArray());
     }
 
     [Theory]
