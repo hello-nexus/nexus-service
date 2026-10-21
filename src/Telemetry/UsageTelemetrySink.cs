@@ -10,8 +10,9 @@ namespace Nexus.Service.Telemetry;
 /// Parallel sink next to PostHog: every event the flush service hands out is
 /// queued here for <see cref="UsageTelemetryWorker"/> to deliver to nexus-api.
 /// The <c>$identify</c> person update is not mirrored as such; its hardware and
-/// usage fields become one <c>profile</c> event instead. The queue is bounded
-/// and in memory only: oldest events shed first.
+/// usage fields become one <c>profile</c> event instead. The queue is bounded:
+/// oldest events shed first. It is snapshotted to disk at exit (<see cref="Persist"/>)
+/// and reloaded at start (<see cref="Restore"/>).
 /// </summary>
 internal sealed class UsageTelemetrySink : ITelemetrySink
 {
@@ -166,6 +167,57 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
     public void RetainOnlyOptOut()
     {
         lock (_lock) _queue.RemoveAll(e => e.Name != TelemetryEvents.OptOut);
+    }
+
+    /// <summary>Moves a snapshot left by <see cref="Persist"/> back to the head of the queue and deletes the file.</summary>
+    public int Restore(string path)
+    {
+        var events = UsageQueueFile.ReadAndDelete(path);
+        if (events.Count > 0)
+            Requeue(events);
+        return events.Count;
+    }
+
+    /// <summary>
+    /// Snapshots the queue plus <paramref name="undrained"/> (events the flush service has not handed over yet) to
+    /// <paramref name="path"/>. An opted-out install keeps only a pending opt_out. Never throws.
+    /// </summary>
+    public void Persist(string path, bool optedOut, IReadOnlyList<TelemetryEvent>? undrained = null)
+    {
+        try
+        {
+            List<UsageEvent> all;
+            lock (_lock) all = new List<UsageEvent>(_queue);
+            if (undrained is not null)
+            {
+                foreach (var e in undrained)
+                {
+                    if (Map(e) is { } mapped)
+                        all.Add(mapped);
+                }
+            }
+            if (optedOut)
+                all.RemoveAll(e => e.Name != TelemetryEvents.OptOut);
+            if (all.Count > MaxQueued)
+                all.RemoveRange(0, all.Count - MaxQueued);
+            UsageQueueFile.Write(path, all);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[usage] queue persist failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The Windows service exits without running host StopAsync (Program.FastServiceShutdown), so the worker's final
+    /// flush never runs there. This is the network-free equivalent: snapshot everything pending, including events
+    /// still in the client queue.
+    /// </summary>
+    public void PersistForShutdown(Persistence.IConfigStore store, TelemetryClient client)
+    {
+        if (!Enabled)
+            return;
+        Persist(UsageQueueFile.DefaultPath(), !store.Load().Telemetry.CollectAnonymousData, client.Snapshot());
     }
 
     public void Clear()

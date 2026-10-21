@@ -79,6 +79,9 @@ internal sealed class TelemetryClient : ITelemetry, IDisposable
         return batch;
     }
 
+    /// <summary>Non-destructive copy of what is still queued.</summary>
+    public TelemetryEvent[] Snapshot() => _queue.ToArray();
+
     /// <summary>Discard everything queued (used when the user opts out).</summary>
     public void Clear()
     {
