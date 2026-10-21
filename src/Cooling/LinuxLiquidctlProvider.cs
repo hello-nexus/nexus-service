@@ -32,9 +32,10 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     public const string IdPrefix = "liquidctl:";
 
     private readonly Func<string> _listJson;
-    private readonly Func<LiquidctlListEntry, string> _statusJson;
+    private readonly Func<string> _statusAllJson;
+    private readonly Func<LiquidctlListEntry, string> _statusOneJson;
     private readonly Func<OpenRgbOwnership> _ownership;
-    private readonly HashSet<string> _skipLogged = new(StringComparer.Ordinal);
+    private readonly Func<long> _nowMs;
     private readonly Func<string, string, int, bool> _setSpeed; // (address, channel, duty) -> applied?
     private readonly bool _forceAvailable;
     private readonly IConfigStore? _config;
@@ -51,20 +52,30 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private const long SnapshotTtlMs = 1500;
     // Enumeration only; hotplug is rare, ownership is re-evaluated every snapshot against this list.
     private const long ListTtlMs = 10000;
-    private List<LiquidctlListEntry>? _list;
-    private long _listAtMs = long.MinValue;
+    // Without a connected, detection-complete OpenRGB list, Commander Core devices stay closed this long.
+    private const long UnknownDeadlineMs = 60000;
     private List<LiquidDevice>? _snapshot;
     private long _snapshotAtMs = long.MinValue;
+
+    // Held across a refresh's subprocesses so _lock stays free for Drive(); guards the fields below.
+    private readonly object _refreshLock = new();
+    private readonly HashSet<string> _skipLogged = new(StringComparer.Ordinal);
+    private List<LiquidctlListEntry>? _list;
+    private long _listAtMs = long.MinValue;
+    private long? _unknownSinceMs;
+    private bool _deadlineLogged;
 
     public LinuxLiquidctlProvider(IConfigStore config, RgbBridge bridge)
     {
         _config = config;
         _listJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "list");
-        _statusJson = e => ShellExecutor.Run("liquidctl", 8000, LiquidctlOwnership.StatusArgs(e));
+        _statusAllJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "status");
+        _statusOneJson = e => ShellExecutor.Run("liquidctl", 8000, LiquidctlOwnership.StatusArgs(e));
+        _nowMs = () => Environment.TickCount64;
         _ownership = () =>
         {
             var v = bridge.GetOwnershipView();
-            return OpenRgbOwnership.FromView(v.Active, v.ListKnown, v.Locations);
+            return OpenRgbOwnership.FromView(v.Active, v.ListKnown, v.Controllers);
         };
         // Verify the write landed (exit 0) instead of assuming it - a rejected
         // `set` (permissions, wrong channel) must not be reported as applied.
@@ -84,17 +95,20 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
 
     // The all-devices statusJson doubles as the list; per-device reads return it filtered by address.
     internal LinuxLiquidctlProvider(Func<string> statusJson, Func<string, string, int, bool> setSpeed,
-        IConfigStore? config, Func<OpenRgbOwnership> ownership)
-        : this(statusJson, e => statusJson(), setSpeed, config, ownership)
+        IConfigStore? config, Func<OpenRgbOwnership> ownership, Func<long>? nowMs = null)
+        : this(statusJson, statusJson, e => statusJson(), setSpeed, config, ownership, nowMs)
     {
     }
 
-    internal LinuxLiquidctlProvider(Func<string> listJson, Func<LiquidctlListEntry, string> statusJson,
-        Func<string, string, int, bool> setSpeed, IConfigStore? config, Func<OpenRgbOwnership> ownership)
+    internal LinuxLiquidctlProvider(Func<string> listJson, Func<string> statusAllJson,
+        Func<LiquidctlListEntry, string> statusOneJson, Func<string, string, int, bool> setSpeed,
+        IConfigStore? config, Func<OpenRgbOwnership> ownership, Func<long>? nowMs = null)
     {
         _listJson = listJson;
-        _statusJson = statusJson;
+        _statusAllJson = statusAllJson;
+        _statusOneJson = statusOneJson;
         _ownership = ownership;
+        _nowMs = nowMs ?? (() => Environment.TickCount64);
         _setSpeed = setSpeed;
         _forceAvailable = true;
         _config = config;
@@ -269,37 +283,78 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     {
         if (!Available())
             return new List<LiquidDevice>();
-        lock (_lock)
+        lock (_refreshLock)
         {
-            var now = Environment.TickCount64;
-            if (_snapshot is not null && now - _snapshotAtMs < SnapshotTtlMs)
-                return _snapshot;
-            _snapshot = ReadEligible(now);
-            _snapshotAtMs = now;
-            return _snapshot;
+            var now = _nowMs();
+            lock (_lock)
+            {
+                if (_snapshot is not null && now - _snapshotAtMs < SnapshotTtlMs)
+                    return _snapshot;
+            }
+            var fresh = ReadEligible(now);
+            lock (_lock)
+            {
+                _snapshot = fresh;
+                _snapshotAtMs = now;
+            }
+            return fresh;
         }
     }
 
-    // Caller holds _lock.
+    // Caller holds _refreshLock. Only the Commander Core family is ever withheld; with nothing to withhold this is the plain all-devices read.
     private List<LiquidDevice> ReadEligible(long now)
     {
-        if (_list is null || now - _listAtMs >= ListTtlMs)
-        {
-            _list = LiquidctlOwnership.ParseList(_listJson());
-            _listAtMs = now;
-        }
         var ownership = _ownership();
-        var devices = new List<LiquidDevice>();
-        foreach (var entry in _list)
+        var expired = false;
+        if (ownership.State == OpenRgbOwnershipState.Unknown)
         {
-            var skip = LiquidctlOwnership.Decide(entry, ownership);
-            if (skip != LiquidctlSkip.None)
+            _unknownSinceMs ??= now;
+            expired = now - _unknownSinceMs.Value >= UnknownDeadlineMs;
+            if (expired && !_deadlineLogged)
             {
-                LogSkipOnce(entry, skip);
+                _deadlineLogged = true;
+                ServiceLog.Warn("[liquidctl] OpenRGB device list still unknown after the deadline; polling Commander Core devices again");
+            }
+        }
+        else
+        {
+            _unknownSinceMs = null;
+            _deadlineLogged = false;
+        }
+
+        var mayWithhold = (ownership.State == OpenRgbOwnershipState.Unknown && !expired)
+            || (ownership.State == OpenRgbOwnershipState.Known && ownership.HasCommanderCore);
+        if (!mayWithhold)
+        {
+            _skipLogged.Clear();
+            return ParseStatus(_statusAllJson());
+        }
+
+        var list = ReadList(now);
+        if (list.Count == 0)
+            return new List<LiquidDevice>();
+
+        var eligible = new List<LiquidctlListEntry>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in list)
+        {
+            var skip = LiquidctlOwnership.Decide(entry, ownership, expired);
+            if (skip == LiquidctlSkip.None)
+            {
+                eligible.Add(entry);
                 continue;
             }
-            _skipLogged.Remove(entry.Address);
-            foreach (var d in ParseStatus(_statusJson(entry)))
+            seen.Add(entry.Address);
+            LogSkipOnce(entry, skip);
+        }
+        _skipLogged.IntersectWith(seen);
+        if (seen.Count == 0)
+            return ParseStatus(_statusAllJson());
+
+        var devices = new List<LiquidDevice>();
+        foreach (var entry in eligible)
+        {
+            foreach (var d in ParseStatus(_statusOneJson(entry)))
             {
                 if (string.Equals(d.Address, entry.Address, StringComparison.Ordinal))
                     devices.Add(d);
@@ -308,12 +363,28 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
         return devices;
     }
 
+    // Enumeration only. A failed or empty read is never cached.
+    private List<LiquidctlListEntry> ReadList(long now)
+    {
+        if (_list is not null && now - _listAtMs < ListTtlMs)
+            return _list;
+        var parsed = LiquidctlOwnership.ParseList(_listJson());
+        if (parsed.Count == 0)
+        {
+            _list = null;
+            return parsed;
+        }
+        _list = parsed;
+        _listAtMs = now;
+        return parsed;
+    }
+
     private void LogSkipOnce(LiquidctlListEntry entry, LiquidctlSkip skip)
     {
         if (!_skipLogged.Add(entry.Address))
             return;
         var why = skip == LiquidctlSkip.OpenRgbOwns
-            ? "OpenRGB has a controller on it"
+            ? "OpenRGB has a Commander Core controller"
             : "OpenRGB's device list is not known yet";
         ServiceLog.Info($"[liquidctl] not polling {entry.Address} ({entry.Description}): {why}");
     }

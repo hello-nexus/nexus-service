@@ -356,19 +356,24 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
-    /// <summary>Active: the daemon is wanted. ListKnown: a device list was read since Activate. Locations: every controller's location string.</summary>
-    public (bool Active, bool ListKnown, IReadOnlyList<string> Locations) GetOwnershipView()
+    /// <summary>Active: the daemon is wanted. ListKnown: connected, a list was read since Activate, and detection is not streaming devices in. Controllers: each one's name and location.</summary>
+    public (bool Active, bool ListKnown, IReadOnlyList<(string Name, string Location)> Controllers) GetOwnershipView()
     {
+        bool active;
+        bool settled;
+        (string Name, string Location)[] controllers;
         lock (_lock)
         {
-            var locations = new string[_devices.Count];
-            for (var i = 0; i < locations.Length; i++)
+            active = _active;
+            settled = _deviceListSettled;
+            controllers = new (string Name, string Location)[_devices.Count];
+            for (var i = 0; i < controllers.Length; i++)
             {
-                locations[i] = _devices[i].Location;
+                controllers[i] = (_devices[i].Name, _devices[i].Location);
             }
-
-            return (_active, _deviceListSettled && _controller.IsConnected, locations);
         }
+
+        return (active, settled && _controller.IsConnected && !DetectionInProgress(), controllers);
     }
 
     public bool IsActive

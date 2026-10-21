@@ -16,24 +16,28 @@ public enum OpenRgbOwnershipState
 }
 
 /// <summary>What OpenRGB currently holds, as seen by the liquidctl poller.</summary>
-internal sealed record OpenRgbOwnership(OpenRgbOwnershipState State, IReadOnlySet<string> HidrawNodes)
+internal sealed record OpenRgbOwnership(OpenRgbOwnershipState State, IReadOnlySet<string> HidrawNodes, bool HasCommanderCore)
 {
-    public static readonly OpenRgbOwnership Off = new(OpenRgbOwnershipState.Off, new HashSet<string>());
+    public static readonly OpenRgbOwnership Off = new(OpenRgbOwnershipState.Off, new HashSet<string>(), false);
+    public static readonly OpenRgbOwnership Unknown = new(OpenRgbOwnershipState.Unknown, new HashSet<string>(), false);
 
-    public static OpenRgbOwnership FromView(bool active, bool listKnown, IEnumerable<string> locations)
+    public static OpenRgbOwnership FromView(bool active, bool listKnown, IEnumerable<(string Name, string Location)> controllers)
     {
         if (!active)
             return Off;
         if (!listKnown)
-            return new OpenRgbOwnership(OpenRgbOwnershipState.Unknown, new HashSet<string>());
+            return Unknown;
         var nodes = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var loc in locations)
+        var core = false;
+        foreach (var (name, location) in controllers)
         {
-            var node = LiquidctlOwnership.NormalizeHidraw(loc);
+            var node = LiquidctlOwnership.NormalizeHidraw(location);
             if (node is not null)
                 nodes.Add(node);
+            if (LiquidctlOwnership.IsCommanderCoreName(name))
+                core = true;
         }
-        return new OpenRgbOwnership(OpenRgbOwnershipState.Known, nodes);
+        return new OpenRgbOwnership(OpenRgbOwnershipState.Known, nodes, core);
     }
 }
 
@@ -45,6 +49,11 @@ internal static class LiquidctlOwnership
 {
     private const int CorsairVendorId = 0x1B1C;
     private static readonly int[] CommanderCoreProductIds = { 0x0C1C, 0x0C2A, 0x0C32 };
+
+    public static bool IsCommanderCoreName(string? name)
+        => name is not null
+            && (name.Contains("Commander Core", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("Commander ST", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>"/dev/hidraw14" or "HID: /dev/hidraw14" to "hidraw14"; null when the string names no hidraw node.</summary>
     public static string? NormalizeHidraw(string? raw)
@@ -64,32 +73,36 @@ internal static class LiquidctlOwnership
     }
 
     public static bool IsCommanderCoreFamily(LiquidctlListEntry e)
-    {
-        if (e.VendorId == CorsairVendorId && e.ProductId is int pid && Array.IndexOf(CommanderCoreProductIds, pid) >= 0)
-            return true;
-        return e.Description.Contains("Commander Core", StringComparison.OrdinalIgnoreCase)
-            || e.Description.Contains("Commander ST", StringComparison.OrdinalIgnoreCase);
-    }
+        => (e.VendorId == CorsairVendorId && e.ProductId is int pid && Array.IndexOf(CommanderCoreProductIds, pid) >= 0)
+            || IsCommanderCoreName(e.Description);
 
-    public static LiquidctlSkip Decide(LiquidctlListEntry e, OpenRgbOwnership ownership)
+    /// <summary>
+    /// Only the Commander Core family is withheld: its wake/sleep status read is byte-identical to OpenRGB's
+    /// hardware-mode command. Known fails closed for the family while OpenRGB holds any Commander Core, since a
+    /// libusb fallback or a stale node can defeat the hidraw match.
+    /// </summary>
+    public static LiquidctlSkip Decide(LiquidctlListEntry e, OpenRgbOwnership ownership, bool unknownExpired)
     {
+        if (!IsCommanderCoreFamily(e))
+            return LiquidctlSkip.None;
         switch (ownership.State)
         {
             case OpenRgbOwnershipState.Known:
                 var node = NormalizeHidraw(e.Address);
-                return node is not null && ownership.HidrawNodes.Contains(node) ? LiquidctlSkip.OpenRgbOwns : LiquidctlSkip.None;
+                return ownership.HasCommanderCore || (node is not null && ownership.HidrawNodes.Contains(node))
+                    ? LiquidctlSkip.OpenRgbOwns : LiquidctlSkip.None;
             case OpenRgbOwnershipState.Unknown:
-                return IsCommanderCoreFamily(e) ? LiquidctlSkip.OpenRgbPending : LiquidctlSkip.None;
+                return unknownExpired ? LiquidctlSkip.None : LiquidctlSkip.OpenRgbPending;
             default:
                 return LiquidctlSkip.None;
         }
     }
 
-    /// <summary>Args for a status read that opens only the named device; non-path addresses (libusb) also pin the bus.</summary>
+    /// <summary>Args for a status read that opens only the named device; PyUSB devices (bus usbN) also pin the bus.</summary>
     public static string[] StatusArgs(LiquidctlListEntry e)
     {
         var args = new List<string> { "--json" };
-        if (e.Address.Length > 0 && e.Address[0] != '/' && e.Bus.Length > 0)
+        if (e.Bus.Length > 0 && !string.Equals(e.Bus, "hid", StringComparison.Ordinal))
         {
             args.Add("--bus");
             args.Add(e.Bus);
@@ -117,7 +130,8 @@ internal static class LiquidctlOwnership
             {
                 if (el.ValueKind != JsonValueKind.Object)
                     continue;
-                var address = Str(el, "address");
+                var address = el.TryGetProperty("address", out var addrEl) && addrEl.ValueKind == JsonValueKind.Number
+                    ? addrEl.GetRawText() : Str(el, "address");
                 if (address.Length == 0)
                     continue;
                 result.Add(new LiquidctlListEntry(address, Str(el, "bus"),
