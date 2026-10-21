@@ -5,14 +5,14 @@ uniform float u_intensity; // hint_range(0.0, 1.0, 0.01) = 1.0
 // here (not the prelude) so only this effect pays their uniform-vector cost;
 // ShaderEffect.cs / useShaderRenderer.ts upload them when the locations exist.
 //   u_spectrum64 : current frame, 64 log bands, 0..1
-//   u_spectrumL64 / u_spectrumR64 : same bands per audio channel, only advanced
+//   u_spectrumL64 / u_spectrumR64 : same bands per audio channel, vec4-packed (band = 4*index + component), only advanced
 //                  while Stereo split is on (the service sees u_stereo and requests them)
 //   u_specHist   : 16 bands x 16 frames, vec4-packed; float index = frame*16+band,
 //                  frame 0 = current, frame 15 = oldest retained
 //   u_*Peak      : peak-hold of bass/mid/high, rises instant, decays slow
 uniform float u_spectrum64[64];
-uniform float u_spectrumL64[64];
-uniform float u_spectrumR64[64];
+uniform vec4  u_spectrumL64[16];
+uniform vec4  u_spectrumR64[16];
 uniform vec4  u_specHist[64];
 uniform float u_bassPeak;
 uniform float u_midPeak;
@@ -46,8 +46,8 @@ float boost() { return clamp(u_audioBoost, 0.0, 2.0); }
 // side: -1 left channel, 1 right channel, 0 mono mix.
 float band64(int i, float side) {
     int k = clamp(i, 0, 63);
-    if (side < -0.5) { return u_spectrumL64[k]; }
-    if (side > 0.5) { return u_spectrumR64[k]; }
+    if (side < -0.5) { return u_spectrumL64[k >> 2][k & 3]; }
+    if (side > 0.5) { return u_spectrumR64[k >> 2][k & 3]; }
     return u_spectrum64[k];
 }
 

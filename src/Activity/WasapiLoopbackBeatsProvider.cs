@@ -218,7 +218,7 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
                     // (shaders track volume changes with nothing playing).
                     if (now - lastPacketTick > silenceTimeoutMs)
                     {
-                        _analyser.Analyse(silenceWindow, cap.GetPeak());
+                        _analyser.Analyse(silenceWindow, cap.GetPeak(), silenceWindow, silenceWindow);
                         totalAnalyses++;
                         try
                         { OnBeat?.Invoke(); }

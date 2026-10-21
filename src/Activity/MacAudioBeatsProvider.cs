@@ -160,14 +160,7 @@ public sealed class MacAudioBeatsProvider : IBeatsProvider
                 }
 
                 Buffer.BlockCopy(buffer, 0, interleaved, 0, WindowBytes);
-                for (int i = 0; i < WindowSize; i++)
-                {
-                    float l = interleaved[i * 2];
-                    float r = interleaved[i * 2 + 1];
-                    left[i] = l;
-                    right[i] = r;
-                    samples[i] = (l + r) * 0.5f;
-                }
+                AudioAnalyser.Deinterleave(interleaved, samples, left, right, 0.5f);
 
                 _analyser.Analyse(samples, null, left, right);
                 try { OnBeat?.Invoke(); } catch { /* swallow subscriber errors */ }

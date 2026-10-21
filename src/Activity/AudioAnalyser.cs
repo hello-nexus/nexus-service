@@ -85,6 +85,7 @@ public sealed class AudioAnalyser
     private readonly float[] _smoothSpectrum64 = new float[64];
     private readonly float[] _smoothLeft64 = new float[64];
     private readonly float[] _smoothRight64 = new float[64];
+    private bool _stereoWasWanted;
     private float _smoothLevel;
     private float _smoothBass;
     private float _smoothMid;
@@ -142,10 +143,33 @@ public sealed class AudioAnalyser
 
         PublishAudioState(samples, volume, bassBeat);
 
-        if (left is not null && right is not null && AudioState.StereoWanted)
+        bool stereo = left is not null && right is not null && AudioState.StereoWanted;
+        if (stereo)
         {
-            PublishSpectrum64(left, _smoothLeft64, AudioState.SpectrumLeft64);
-            PublishSpectrum64(right, _smoothRight64, AudioState.SpectrumRight64);
+            if (!_stereoWasWanted)
+            {
+                Array.Clear(_smoothLeft64);
+                Array.Clear(_smoothRight64);
+            }
+            PublishSpectrum64(left!, _smoothLeft64, AudioState.SpectrumLeft64);
+            PublishSpectrum64(right!, _smoothRight64, AudioState.SpectrumRight64);
+        }
+        _stereoWasWanted = stereo;
+    }
+
+    /// <summary>
+    /// Splits interleaved stereo into left, right and a mono mix. The mono gain
+    /// is the equal-power downmix ffmpeg applied when it produced mono itself.
+    /// </summary>
+    public static void Deinterleave(float[] interleaved, float[] mono, float[] left, float[] right, float monoGain)
+    {
+        for (int i = 0; i < mono.Length; i++)
+        {
+            float l = interleaved[i * 2];
+            float r = interleaved[i * 2 + 1];
+            left[i] = l;
+            right[i] = r;
+            mono[i] = (l + r) * monoGain;
         }
     }
 
@@ -199,26 +223,7 @@ public sealed class AudioAnalyser
             AudioState.Spectrum[b] = next;
         }
 
-        for (int b = 0; b < 64; b++)
-        {
-            int start = _bandEdges64[b];
-            int end = _bandEdges64[b + 1];
-            int width = Math.Max(end - start, 1);
-            float sum64 = 0f;
-            for (int k = start; k < start + width; k++)
-            {
-                float re = _fftRe[k];
-                float im = _fftIm[k];
-                sum64 += MathF.Sqrt(re * re + im * im);
-            }
-            float avg64 = sum64 / width;
-            float norm64 = MathF.Min(MathF.Log10(1f + avg64 * 3f), 1f);
-            float cur64 = _smoothSpectrum64[b];
-            _smoothSpectrum64[b] = norm64 > cur64
-                ? cur64 + (norm64 - cur64) * 0.55f
-                : cur64 + (norm64 - cur64) * 0.18f;
-            AudioState.Spectrum64[b] = _smoothSpectrum64[b];
-        }
+        SmoothBands64(_smoothSpectrum64, AudioState.Spectrum64);
 
         float bassAgg = (_smoothSpectrum[0] + _smoothSpectrum[1] + _smoothSpectrum[2]) / 3f;
         float midAgg = (_smoothSpectrum[3] + _smoothSpectrum[4] + _smoothSpectrum[5] +
@@ -264,23 +269,30 @@ public sealed class AudioAnalyser
             _fftIm[i] = 0f;
         }
         Fft(_fftRe, _fftIm);
+        SmoothBands64(smooth, output);
+    }
 
+    // Reads the spectrum currently held in _fftRe/_fftIm.
+    private void SmoothBands64(float[] smooth, float[] output)
+    {
         for (int b = 0; b < 64; b++)
         {
             int start = _bandEdges64[b];
-            int width = Math.Max(_bandEdges64[b + 1] - start, 1);
-            float sum = 0f;
+            int end = _bandEdges64[b + 1];
+            int width = Math.Max(end - start, 1);
+            float sum64 = 0f;
             for (int k = start; k < start + width; k++)
             {
                 float re = _fftRe[k];
                 float im = _fftIm[k];
-                sum += MathF.Sqrt(re * re + im * im);
+                sum64 += MathF.Sqrt(re * re + im * im);
             }
-            float norm = MathF.Min(MathF.Log10(1f + sum / width * 3f), 1f);
-            float cur = smooth[b];
-            smooth[b] = norm > cur
-                ? cur + (norm - cur) * 0.55f
-                : cur + (norm - cur) * 0.18f;
+            float avg64 = sum64 / width;
+            float norm64 = MathF.Min(MathF.Log10(1f + avg64 * 3f), 1f);
+            float cur64 = smooth[b];
+            smooth[b] = norm64 > cur64
+                ? cur64 + (norm64 - cur64) * 0.55f
+                : cur64 + (norm64 - cur64) * 0.18f;
             output[b] = smooth[b];
         }
     }

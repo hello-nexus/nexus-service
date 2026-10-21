@@ -41,21 +41,23 @@ public static class AudioState
     public static readonly float[] SpectrumLeft64 = new float[Spectrum64Bins];
     public static readonly float[] SpectrumRight64 = new float[Spectrum64Bins];
 
+    public const int Spectrum64Vec4Count = Spectrum64Bins / 4;
+
     private const long StereoHoldMs = 1000;
     private static long _stereoRequestedAt = long.MinValue;
 
     /// <summary>Called every frame by a renderer that reads the per-channel spectra.</summary>
-    public static void RequestStereo() =>
-        Volatile.Write(ref _stereoRequestedAt, Stopwatch.GetTimestamp());
+    public static void RequestStereo() => RequestStereo(Stopwatch.GetTimestamp());
 
-    public static bool StereoWanted
+    public static bool StereoWanted => StereoWantedAt(Stopwatch.GetTimestamp());
+
+    internal static void RequestStereo(long timestamp) =>
+        Volatile.Write(ref _stereoRequestedAt, timestamp);
+
+    internal static bool StereoWantedAt(long now)
     {
-        get
-        {
-            long at = Volatile.Read(ref _stereoRequestedAt);
-            return at != long.MinValue
-                && (Stopwatch.GetTimestamp() - at) * 1000 / Stopwatch.Frequency < StereoHoldMs;
-        }
+        long at = Volatile.Read(ref _stereoRequestedAt);
+        return at != long.MinValue && Stopwatch.GetElapsedTime(at, now).TotalMilliseconds < StereoHoldMs;
     }
 
     /// <summary>Per-band history; SpecHist[frame*HistBands + band], frame 0 newest.</summary>

@@ -168,14 +168,14 @@ public sealed partial class ShaderEffect
                 {
                     fixed (float* p = Nexus.Service.Lighting.Engine.AudioState.SpectrumLeft64)
                     {
-                        gl.Uniform1(u.SpectrumL64, (uint)Nexus.Service.Lighting.Engine.AudioState.Spectrum64Length, p);
+                        gl.Uniform4(u.SpectrumL64, (uint)Nexus.Service.Lighting.Engine.AudioState.Spectrum64Vec4Count, p);
                     }
                 }
                 if (u.SpectrumR64 >= 0)
                 {
                     fixed (float* p = Nexus.Service.Lighting.Engine.AudioState.SpectrumRight64)
                     {
-                        gl.Uniform1(u.SpectrumR64, (uint)Nexus.Service.Lighting.Engine.AudioState.Spectrum64Length, p);
+                        gl.Uniform4(u.SpectrumR64, (uint)Nexus.Service.Lighting.Engine.AudioState.Spectrum64Vec4Count, p);
                     }
                 }
             }
