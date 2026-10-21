@@ -98,6 +98,36 @@ public class DeepCoolMystiqueRoutesTests
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
     }
 
+    [Theory]
+    [InlineData("cpuTemperature", "{\"category\":\"cpu\",\"sensor\":\"fan/x\"}")]
+    [InlineData("ramUsage", "{\"category\":\"nonsense\",\"sensor\":\"x\"}")]
+    [InlineData("cpuFrequency", "{\"category\":\"\",\"sensor\":\"orphan\"}")]
+    public async Task A_new_readout_pick_must_be_a_real_sensor_of_its_type(string field, string pick)
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+
+        var put = await client.PutAsync("/devices/deepcool-mystique/settings", Json($"{{\"{field}\":{pick}}}"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, put.StatusCode);
+    }
+
+    [Fact]
+    public async Task Every_readout_can_return_to_automatic()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+
+        var put = await client.PutAsync("/devices/deepcool-mystique/settings", Json(
+            "{\"cpuTemperature\":{\"category\":\"\",\"sensor\":\"\"},\"cpuFrequency\":{\"category\":\"\",\"sensor\":\"\"},"
+            + "\"cpuUsage\":{\"category\":\"\",\"sensor\":\"\"},\"ramUsage\":{\"category\":\"\",\"sensor\":\"\"}}"));
+
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        using var state = JsonDocument.Parse(await client.GetStringAsync("/devices/deepcool-mystique/state"));
+        Assert.True(state.RootElement.TryGetProperty("ramUsage", out _));
+        Assert.True(state.RootElement.TryGetProperty("cpuFrequency", out _));
+    }
+
     [Fact]
     public void Each_setting_marks_only_its_own_command_group_as_edited()
     {

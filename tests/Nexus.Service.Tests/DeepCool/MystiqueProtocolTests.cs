@@ -92,16 +92,17 @@ public class MystiqueProtocolTests
     [InlineData("AA2E0132000002000013000403001304005F0B005F03003BAC06000D0D00000000000000000000000000484944432904", 50, 2, 3590, 1708, 3341)]
     public void Sensor_push_reproduces_the_recorded_frames(string expected, int temp, int usage, int mhz, int fan, int pump)
     {
-        Assert.Equal(expected, Hex(MystiqueProtocol.BuildSensors(new MystiqueReading(temp, usage, mhz, fan, pump))));
+        Assert.Equal(expected, Hex(MystiqueProtocol.BuildSensors(new MystiqueReading(temp, usage, 19, mhz, fan, pump))));
     }
 
     [Fact]
     public void Sensor_push_encodes_each_field_at_its_offset()
     {
-        var frame = MystiqueProtocol.BuildSensors(new MystiqueReading(73, 18, 4870, 2327, 3358));
+        var frame = MystiqueProtocol.BuildSensors(new MystiqueReading(73, 18, 26, 4870, 2327, 3358));
 
         Assert.Equal(73, frame[3]);
         Assert.Equal(18, frame[6]);
+        Assert.Equal(26, frame[9]);
         Assert.Equal(4, frame[21]);
         Assert.Equal(87, frame[23]);
         Assert.Equal(2327, frame[24] | frame[25] << 8 | frame[26] << 16);
@@ -111,10 +112,11 @@ public class MystiqueProtocolTests
     [Fact]
     public void Sensor_push_clamps_out_of_range_values()
     {
-        var frame = MystiqueProtocol.BuildSensors(new MystiqueReading(-40, 400, -1, -1, int.MaxValue));
+        var frame = MystiqueProtocol.BuildSensors(new MystiqueReading(-40, 400, 250, -1, -1, int.MaxValue));
 
         Assert.Equal(0, frame[3]);
         Assert.Equal(100, frame[6]);
+        Assert.Equal(100, frame[9]);
         Assert.Equal(0, frame[21]);
         Assert.Equal(0, frame[23]);
         Assert.Equal(0, frame[24] | frame[25] << 8 | frame[26] << 16);
@@ -124,7 +126,7 @@ public class MystiqueProtocolTests
     [Fact]
     public void Every_frame_ends_with_the_tag_and_a_little_endian_sum()
     {
-        var frame = MystiqueProtocol.BuildSensors(new MystiqueReading(55, 3, 5380, 1700, 3341));
+        var frame = MystiqueProtocol.BuildSensors(new MystiqueReading(55, 3, 24, 5380, 1700, 3341));
         int sum = 0;
         for (int i = 0; i < 46; i++)
         {
