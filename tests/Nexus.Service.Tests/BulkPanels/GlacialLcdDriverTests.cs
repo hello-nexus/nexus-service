@@ -511,6 +511,113 @@ public class GlacialLcdDriverTests
         driver.Disconnect(pipe, hid);
     }
 
+    private static long TimedUpload(GlacialLcdPanelDriver driver, FakePipe pipe, FakeHid hid)
+    {
+        driver.Connect(pipe, hid);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        watch.Stop();
+        driver.Disconnect(pipe, hid);
+        return watch.ElapsedMilliseconds;
+    }
+
+    [Fact]
+    public void By_default_nothing_is_paced_and_a_picture_goes_out_in_well_under_a_second()
+    {
+        var link = new GlacialLcdLink();
+        link.StreamOpened(new object());
+        var driver = new GlacialLcdPanelDriver(link, settleMs: 0);
+
+        long ms = TimedUpload(driver, new FakePipe(), new FakeHid());
+
+        // The old pacing alone added about ten seconds to a one-transfer picture.
+        Assert.True(ms < 1500, ms.ToString());
+    }
+
+    [Fact]
+    public void The_hidden_pace_setting_brings_the_captured_waits_back_and_is_read_per_upload()
+    {
+        var link = new GlacialLcdLink();
+        link.StreamOpened(new object());
+        int percent = 10;
+        var driver = new GlacialLcdPanelDriver(link, settleMs: 0);
+        driver.BindPaceScale(() => percent);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        long paced = watch.ElapsedMilliseconds;
+
+        percent = 0;
+        watch.Restart();
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
+        long unpaced = watch.ElapsedMilliseconds;
+        driver.Disconnect(pipe, hid);
+
+        // One transfer at a tenth of the captured gaps is about a second of waiting.
+        Assert.True(paced >= 700, paced.ToString());
+        Assert.True(unpaced < paced / 2, $"{unpaced} vs {paced}");
+    }
+
+    [Fact]
+    public void The_panels_reports_are_read_after_each_step_and_logged_with_their_bytes()
+    {
+        var driver = Fast();
+        var lines = new List<string>();
+        driver.LogSink = line => { lock (lines) { lines.Add(line); } };
+        var pipe = new FakePipe();
+        var hid = new FakeHid { Echo = true };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe, hid);
+
+        List<string> seen;
+        lock (lines) { seen = lines.ToList(); }
+        Assert.Contains(seen, l => l.Contains("after DC:") && l.EndsWith("ECDC", StringComparison.Ordinal));
+        Assert.Contains(seen, l => l.Contains("after prelude F1:") && l.EndsWith("ECF1", StringComparison.Ordinal));
+        Assert.Contains(seen, l => l.Contains("after end 73FF:") && l.EndsWith("EC73", StringComparison.Ordinal));
+        Assert.Contains(seen, l => l.Contains("after show 51:") && l.EndsWith("EC51", StringComparison.Ordinal));
+        Assert.Contains(seen, l => l.Contains("picture uploaded") && l.Contains("encode") && l.Contains("ms"));
+    }
+
+    [Fact]
+    public void A_silent_panel_costs_only_short_waits_and_never_fails_the_upload()
+    {
+        var driver = Fast();
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe, hid);
+
+        var timeouts = hid.ReadTimeouts;
+        Assert.All(timeouts, t => Assert.InRange(t, 0, GlacialLcdPanelDriver.FinishReplyWaitMs));
+        Assert.Contains(GlacialLcdPanelDriver.FinishReplyWaitMs, timeouts);
+    }
+
+    [Fact]
+    public void Reads_that_fail_do_not_fail_the_upload()
+    {
+        var driver = Fast();
+        var pipe = new FakePipe();
+        var hid = new FakeHid { ReadsFail = true };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe, hid);
+    }
+
     [Fact]
     public void A_stale_transports_close_cannot_end_a_newer_stream()
     {
@@ -627,6 +734,17 @@ public class GlacialLcdDriverTests
         /// <summary>Runs after each report is recorded, so a test can act at an exact point of the sequence.</summary>
         public Action<byte[]>? OnWrite { get; set; }
 
+        /// <summary>The panel answers every report with its header, as the manual capture shows.</summary>
+        public bool Echo { get; set; }
+
+        /// <summary>Timeouts the driver asked reads to wait, in order.</summary>
+        public List<int> ReadTimeouts { get; } = new();
+
+        /// <summary>A read result that models a vanished device.</summary>
+        public bool ReadsFail { get; set; }
+
+        private readonly Queue<byte[]> _input = new();
+
         public int VendorId => 0x0B05;
         public int ProductId => GlacialLcdProtocol.ProductId;
         public string Path => "/dev/fake-glacial";
@@ -641,6 +759,13 @@ public class GlacialLcdDriverTests
             lock (_lock)
             {
                 _writes.Add(copy);
+                if (Echo)
+                {
+                    var echo = new byte[GlacialLcdProtocol.ReportBytes];
+                    echo[0] = copy[0];
+                    echo[1] = copy[1];
+                    _input.Enqueue(echo);
+                }
             }
             OnWrite?.Invoke(copy);
             return true;
@@ -650,7 +775,24 @@ public class GlacialLcdDriverTests
         public bool GetFeature(Span<byte> buffer) => false;
         public bool GetInputReport(Span<byte> buffer) => false;
         public bool SetOutputReport(ReadOnlySpan<byte> report) => false;
-        public int Read(Span<byte> buffer, int timeoutMs) => 0;
+        public int Read(Span<byte> buffer, int timeoutMs)
+        {
+            lock (_lock)
+            {
+                ReadTimeouts.Add(timeoutMs);
+                if (ReadsFail)
+                {
+                    return -1;
+                }
+                if (_input.Count == 0)
+                {
+                    return 0;
+                }
+                var report = _input.Dequeue();
+                report.CopyTo(buffer);
+                return report.Length;
+            }
+        }
         public void Dispose() { }
     }
 }

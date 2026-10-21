@@ -1430,6 +1430,13 @@ public sealed class KrakenFirmwareLighting
 
 public sealed class DevicesSettings
 {
+    /// <summary>
+    /// Hidden. Pacing of the Glacial LCD picture upload as a percent of the gaps copied from the
+    /// vendor app's capture: 0 (default) sends everything back to back, 100 restores the
+    /// captured timing. No UI; for restoring the old pacing in the field without a new build.
+    /// </summary>
+    public int GlacialLcdPaceScalePercent { get; set; }
+
     public List<string> DisabledLightingDevices { get; set; } = new();
     /// <summary>Stable display ids the user turned brightness control off for. Nexus issues no DDC/CI transaction to a listed display - not even the capability probe - which is the escape hatch for a monitor whose firmware hangs on DDC. NOT profile-scoped: a panel's tolerance for DDC is a property of the hardware, not of a lighting/cooling persona.</summary>
     public List<string> DdcDisabledDisplays { get; set; } = new();

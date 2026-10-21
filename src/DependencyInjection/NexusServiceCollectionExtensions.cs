@@ -1431,6 +1431,14 @@ public static class NexusServiceCollectionExtensions
         {
             glacialStreamDriver.BindMemory(new Nexus.Service.Peripherals.BulkPanels.ConfigStoreLcdUploadMemory(
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+            // Hidden: percent of the captured vendor pacing, read at the start of each upload.
+            var paceStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            glacialStreamDriver.BindPaceScale(() =>
+            {
+                int percent = 0;
+                paceStore.Read(s => percent = s.Devices.GlacialLcdPaceScalePercent);
+                return percent;
+            });
             return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
                 sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),

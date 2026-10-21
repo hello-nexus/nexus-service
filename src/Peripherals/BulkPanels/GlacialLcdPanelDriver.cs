@@ -138,18 +138,36 @@ public sealed class GlacialLcdLink
 /// The ASUS ROG Crosshair X870E Glacial motherboard LCD as a streamed panel. The panel only
 /// takes a stored custom picture, so each frame is a full upload: a worker thread owned by the
 /// driver encodes the newest rendered frame as JPEG and sends it whenever it differs from the
-/// picture the panel already holds, one upload after another. The upload is slow by the
-/// vendor's own pacing, so frames that arrive meanwhile collapse into the latest one. It runs
+/// picture the panel already holds, one upload after another, so frames that arrive meanwhile
+/// collapse into the latest one. Transfers go back to back; the vendor app's captured gaps
+/// are kept only as a scale that a hidden setting can switch back on. It runs
 /// only while the user has chosen the Nexus Panel mode, stays out of the way of native edits,
 /// and sends nothing while the display is dark.
 /// </summary>
 public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 {
-    /// <summary>How long the content must stay unchanged before it is uploaded.</summary>
-    public const int DefaultSettleMs = 1000;
+    /// <summary>
+    /// How long the content must stay unchanged before it is uploaded. Just long enough to
+    /// merge the frames one layout change produces in a burst (they arrive within a few tens
+    /// of milliseconds of each other), well under the interval of the steady frame rate, so a
+    /// single frame is not held back.
+    /// </summary>
+    public const int DefaultSettleMs = 250;
 
     /// <summary>Content that never settles is uploaded anyway after waiting this long.</summary>
-    public const int DefaultMaxSettleMs = 10_000;
+    public const int DefaultMaxSettleMs = 2000;
+
+    /// <summary>How long to wait for the panel's report after a command; the panel answers a command at once, so this only runs out when it stays silent.</summary>
+    public const int ReplyWaitMs = 30;
+
+    /// <summary>How long to look for a report after a bulk transfer.</summary>
+    public const int ChunkReplyWaitMs = 2;
+
+    /// <summary>Longest wait for a report after the end report, before the picture is shown.</summary>
+    public const int FinishReplyWaitMs = 500;
+
+    /// <summary>The first uploads after a start log every report the panel sends; later ones log only reports that are not a plain echo.</summary>
+    private const int FullReplyLogUploads = 3;
 
     /// <summary>First retry delay after a failed upload; doubles each time, capped at the cap below.</summary>
     public const int DefaultBackoffBaseMs = 10_000;
@@ -188,6 +206,18 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private readonly ManualResetEventSlim _abort = new(false);
 
     private ILcdUploadMemory? _memory;
+    private Func<int>? _paceSource;
+
+    /// <summary>Test seam: sees every line this driver logs at info level.</summary>
+    internal Action<string>? LogSink { get; set; }
+
+    private void Info(string message)
+    {
+        ServiceLog.Info(message);
+        LogSink?.Invoke(message);
+    }
+    private volatile int _pace;
+    private int _replyLoggedUploads;
 
     // Guarded by _hidLock.
     private volatile WorkerState? _current;
@@ -224,10 +254,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         public Thread? Thread;
     }
 
-    /// <param name="paceScalePercent">Scales every vendor pacing gap; 100 is the captured pace, 0 removes them (tests).</param>
+    /// <param name="paceScalePercent">Scales every vendor pacing gap; 0 sends everything back to back, 100 is the captured pace. A bound source (see <see cref="BindPaceScale"/>) overrides it per upload.</param>
     public GlacialLcdPanelDriver(
         GlacialLcdLink link,
-        int paceScalePercent = 100,
+        int paceScalePercent = 0,
         int settleMs = DefaultSettleMs,
         int maxSettleMs = DefaultMaxSettleMs,
         int backoffBaseMs = DefaultBackoffBaseMs,
@@ -236,6 +266,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     {
         _link = link;
         _paceScalePercent = paceScalePercent;
+        _pace = paceScalePercent;
         _settleMs = settleMs;
         _maxSettleMs = maxSettleMs;
         _backoffBaseMs = backoffBaseMs;
@@ -284,6 +315,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     {
         get { lock (_hidLock) { return _uploading; } }
     }
+
+    /// <summary>Reads the pace scale from settings at the start of each upload, so a change applies without a restart.</summary>
+    public void BindPaceScale(Func<int> source) => _paceSource = source;
 
     /// <summary>Supplies the store that survives restarts; without one every connect uploads afresh.</summary>
     public void BindMemory(ILcdUploadMemory memory) => _memory = memory;
@@ -495,8 +529,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _latest.CopyTo(snapshot, 0);
             _pending = false;
         }
+        var encodeWatch = System.Diagnostics.Stopwatch.StartNew();
         encoder ??= new BgraJpegEncoder(GlacialLcdProtocol.PanelWidth, GlacialLcdProtocol.PanelHeight, GlacialLcdProtocol.StreamJpegQuality);
         byte[] jpeg = encoder.Encode(snapshot).ToArray();
+        long encodeMs = encodeWatch.ElapsedMilliseconds;
         string hash = Convert.ToHexString(SHA256.HashData(jpeg));
         lock (_stateLock)
         {
@@ -526,6 +562,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _uploading = true;
         }
         _abort.Reset();
+        _pace = Math.Max(0, _paceSource?.Invoke() ?? _paceScalePercent);
         if (ShouldStop(state))
         {
             // A cancel that arrived before the reset is still set; honor it instead of losing it.
@@ -577,7 +614,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             _supersedes = 0;
             Interlocked.Increment(ref _uploadsCompleted);
-            ServiceLog.Info($"[{HandlerId}] picture uploaded, {jpeg.Length} bytes in {watch.ElapsedMilliseconds} ms");
+            Info($"[{HandlerId}] picture uploaded, {jpeg.Length} bytes in {watch.ElapsedMilliseconds} ms (encode {encodeMs} ms, pace {_pace}%)");
         }
         else if (state.Stop)
         {
@@ -607,7 +644,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 delay = Backoff(_failures);
                 _nextAllowedMs = now + delay;
             }
-            Failed($"upload failed after {watch.ElapsedMilliseconds} ms; retrying in {delay / 1000} s");
+            Failed($"upload failed after {watch.ElapsedMilliseconds} ms (encode {encodeMs} ms); retrying in {delay / 1000} s");
         }
     }
 
@@ -692,11 +729,55 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
     }
 
-    /// <summary>A pacing wait from the capture; true when it was cut short by a cancel.</summary>
+    /// <summary>A pacing wait from the capture, scaled by the pace in force; true when it was cut short by a cancel.</summary>
     private bool Pause(int capturedMs)
     {
-        int ms = (int)((long)capturedMs * _paceScalePercent / 100);
+        int ms = (int)((long)capturedMs * _pace / 100);
         return ms > 0 && _abort.Wait(ms);
+    }
+
+    /// <summary>
+    /// Reads one report the panel sent, waiting up to the timeout, and logs it with the time
+    /// since the upload began so a support bundle shows what the panel actually says. Never
+    /// waits longer than the timeout and never fails the upload.
+    /// </summary>
+    private byte[]? ReadReply(IHidDevice hid, int timeoutMs, string step, byte requestOpcode, System.Diagnostics.Stopwatch sinceStart)
+    {
+        var buffer = new byte[GlacialLcdProtocol.ReportBytes];
+        int read;
+        try
+        {
+            read = hid.Read(buffer, timeoutMs);
+        }
+        catch (Exception ex)
+        {
+            Info($"[{HandlerId}] reply read failed at {step}: {ex.GetType().Name}");
+            return null;
+        }
+        if (read <= 0)
+        {
+            return null;
+        }
+        var report = buffer.AsSpan(0, read).ToArray();
+        bool echo = report.Length > 1 && report[1] == requestOpcode;
+        if (Volatile.Read(ref _replyLoggedUploads) < FullReplyLogUploads || !echo)
+        {
+            int last = report.Length;
+            while (last > 0 && report[last - 1] == 0)
+            {
+                last--;
+            }
+            Info($"[{HandlerId}] reply +{sinceStart.ElapsedMilliseconds} ms after {step}: {Convert.ToHexString(report.AsSpan(0, last))}");
+        }
+        return report;
+    }
+
+    private void DrainInput(IHidDevice hid)
+    {
+        var buffer = new byte[GlacialLcdProtocol.ReportBytes];
+        for (int i = 0; i < 64 && hid.Read(buffer, 0) > 0; i++)
+        {
+        }
     }
 
     private bool ShouldStop(WorkerState state) => state.Stop || _link.CancelRequested || !CanUpload();
@@ -705,13 +786,18 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     {
         UploadOutcome Fail() => ShouldStop(state) ? UploadOutcome.Cancelled : UploadOutcome.Failed;
 
-        // The reports and gaps of the captured upload, in order.
+        // Reports from earlier traffic must not be taken for answers to this upload's commands.
+        DrainInput(hid);
+        var sinceStart = System.Diagnostics.Stopwatch.StartNew();
+
+        // The reports of the captured upload, in order; each is followed by a short look at what the panel says back.
         lock (_hidLock)
         {
             if (!hid.Write(GlacialLcdProtocol.EncodeQuery()))
             {
                 return Fail();
             }
+            ReadReply(hid, ReplyWaitMs, "DC", 0xDC, sinceStart);
         }
         foreach (var (report, gapMs) in GlacialLcdProtocol.EncodeCustomImagePrelude(jpeg.Length))
         {
@@ -738,6 +824,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 {
                     return Fail();
                 }
+                ReadReply(hid, ReplyWaitMs, "prelude " + report[1].ToString("X2", System.Globalization.CultureInfo.InvariantCulture), report[1], sinceStart);
             }
         }
         if (Pause(GlacialLcdProtocol.ChunkLeadMs) || ShouldStop(state))
@@ -746,7 +833,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         var chunk = new byte[GlacialLcdProtocol.ChunkBytes];
         var chunkTimer = new System.Diagnostics.Stopwatch();
-        for (int offset = 0; offset < jpeg.Length; offset += GlacialLcdProtocol.ChunkBytes)
+        int index = 0;
+        for (int offset = 0; offset < jpeg.Length; offset += GlacialLcdProtocol.ChunkBytes, index++)
         {
             if (ShouldStop(state))
             {
@@ -760,8 +848,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 return Fail();
             }
+            lock (_hidLock)
+            {
+                ReadReply(hid, ChunkReplyWaitMs, "chunk " + index, 0, sinceStart);
+            }
             // Submit to submit: the gap counts from this write's start, so a slow write does not stretch it.
-            int scaled = (int)((long)GlacialLcdProtocol.ChunkIntervalMs * _paceScalePercent / 100);
+            int scaled = (int)((long)GlacialLcdProtocol.ChunkIntervalMs * _pace / 100);
             int remaining = scaled - (int)chunkTimer.ElapsedMilliseconds;
             if (remaining > 0 && _abort.Wait(remaining))
             {
@@ -778,6 +870,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 return Fail();
             }
+            // The panel's report to the end command; whether it marks the storing as done is what the logs will show.
+            ReadReply(hid, FinishReplyWaitMs, "end 73FF", 0x73, sinceStart);
         }
         if (Pause(GlacialLcdProtocol.FinishSettleMs) || ShouldStop(state))
         {
@@ -786,11 +880,18 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         lock (_hidLock)
         {
             // The picture is stored; showing it is the app's last step.
-            if (!hid.Write(GlacialLcdProtocol.EncodeQuery()) || !hid.Write(GlacialLcdProtocol.EncodeCustomPicture()))
+            if (!hid.Write(GlacialLcdProtocol.EncodeQuery()))
             {
                 return Fail();
             }
+            ReadReply(hid, ReplyWaitMs, "DC before show", 0xDC, sinceStart);
+            if (!hid.Write(GlacialLcdProtocol.EncodeCustomPicture()))
+            {
+                return Fail();
+            }
+            ReadReply(hid, ReplyWaitMs, "show 51", 0x51, sinceStart);
         }
+        Interlocked.Increment(ref _replyLoggedUploads);
         return UploadOutcome.Done;
     }
 
