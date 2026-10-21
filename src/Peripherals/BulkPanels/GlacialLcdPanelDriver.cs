@@ -219,6 +219,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     }
     private volatile int _pace;
     private int _uploadsSinceConnect;
+    private bool _flushSent;
     private bool _logAllReplies;
     private readonly Dictionary<string, string> _lastLoggedReply = new();
 
@@ -367,8 +368,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 _persistedValue = remembered;
                 if (remembered is not null)
                 {
-                    (_shownSlot, _lastHash) = DecodeRemembered(remembered);
-                    _hashSetMs = _clock();
+                    if (DecodeRemembered(remembered) is { } decoded)
+                    {
+                        (_shownSlot, _lastHash) = decoded;
+                        _hashSetMs = _clock();
+                    }
                 }
             }
             start.Thread = new Thread(() => Run(start)) { IsBackground = true, Name = "glacial-lcd-stream" };
@@ -592,6 +596,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             // The slot on display is never written: the new picture goes to the other one and is shown when complete.
             targetSlot = _shownSlot == GlacialLcdProtocol.CustomSlots[0] ? GlacialLcdProtocol.CustomSlots[1] : GlacialLcdProtocol.CustomSlots[0];
         }
+        _flushSent = false;
         var outcome = UploadOutcome.Failed;
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
@@ -618,6 +623,13 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         watch.Stop();
         FinishUploading(state);
+        if (outcome != UploadOutcome.Done && _flushSent)
+        {
+            // What the flush clears is not known to stop at the slot being written, so after a
+            // failed or cut-short upload nothing is assumed to be on display: the next frame is
+            // uploaded again instead of being taken for the stored one.
+            ForgetPicture();
+        }
 
         long now = _clock();
         if (outcome == UploadOutcome.Done)
@@ -892,14 +904,15 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             if (report[1] == 0xF1)
             {
-                // The last point an upload can be dropped for a newer frame: past the flush the
-                // panel is erased, so the picture is always finished. A cap keeps a stream of
-                // changing frames from dropping every upload before it starts.
+                // The last point an upload can be dropped for a newer frame: once the flush is
+                // sent the upload always finishes. A cap keeps a stream of changing frames from
+                // dropping every upload before it starts.
                 if (_supersedes < MaxSupersedes && NewerFrameWaiting())
                 {
                     _supersedes++;
                     return UploadOutcome.Superseded;
                 }
+                _flushSent = true;
             }
             if (!HidWrite(state, report))
             {
@@ -1036,14 +1049,40 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private string RememberedValue() => _shownSlot.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + _lastHash;
 
     /// <summary>Splits a stored value into slot and hash; a bare hash is from a build that always wrote the default slot.</summary>
-    private static (int Slot, string Hash) DecodeRemembered(string value)
+    private static (int Slot, string Hash)? DecodeRemembered(string value)
     {
         int colon = value.IndexOf(':', StringComparison.Ordinal);
-        if (colon > 0 && int.TryParse(value.AsSpan(0, colon), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int slot))
+        int slot = DefaultShownSlot;
+        string hash = value;
+        if (colon >= 0)
         {
-            return (slot, value[(colon + 1)..]);
+            if (colon == 0
+                || !int.TryParse(value.AsSpan(0, colon), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out slot))
+            {
+                return null;
+            }
+            hash = value[(colon + 1)..];
         }
-        return (DefaultShownSlot, value);
+        // A value this build could not have written means nothing is remembered.
+        return hash.Length == 0 || Array.IndexOf(GlacialLcdProtocol.CustomSlots, slot) < 0 ? null : (slot, hash);
+    }
+
+    private void ForgetPicture()
+    {
+        lock (_persistLock)
+        {
+            bool stored;
+            lock (_stateLock)
+            {
+                _lastHash = null;
+                stored = _persistedValue is not null;
+                _persistedValue = null;
+            }
+            if (stored)
+            {
+                _memory?.Clear(_memoryKey);
+            }
+        }
     }
 
     public void PersistState() => PersistNow();

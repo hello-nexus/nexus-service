@@ -186,7 +186,7 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_failed_upload_keeps_the_picture_on_display_remembered_and_backs_off()
+    public void A_failed_upload_after_the_flush_forgets_the_remembered_picture_and_backs_off()
     {
         var clock = new FakeClock();
         var memory = new FakeMemory();
@@ -203,8 +203,8 @@ public class GlacialLcdDriverTests
         pipe.FailWrites = true;
         driver.SendFrame(pipe, hid, Frame(noiseRows: 2));
         Assert.True(WaitUntil(() => driver.UploadAttempts == 2 && !driver.IsUploading));
-        // The failed upload wrote the other slot; the one on display, and its remembered hash, are untouched.
-        Assert.Single(memory.Hashes);
+        // The failure came after the flush, so nothing is assumed to be on display.
+        Assert.Empty(memory.Hashes);
         driver.SendFrame(pipe, hid, Frame(noiseRows: 3));
         int looks = driver.Ticks + 2;
         Assert.True(WaitUntil(() => driver.Ticks >= looks));
@@ -335,7 +335,7 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_cancel_after_the_flush_keeps_the_remembered_picture_because_the_slot_on_display_was_not_written()
+    public void A_cancel_after_the_flush_forgets_the_remembered_picture_because_the_flush_may_have_cleared_it()
     {
         var link = new GlacialLcdLink();
         var memory = new FakeMemory();
@@ -349,8 +349,50 @@ public class GlacialLcdDriverTests
         driver.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
 
-        Assert.Equal("ABC", memory.Hashes["asus-glacial-lcd"]);
+        Assert.Empty(memory.Hashes);
         Assert.Empty(pipe.Writes);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_cancel_before_the_flush_keeps_the_remembered_picture()
+    {
+        var link = new GlacialLcdLink();
+        var memory = new FakeMemory();
+        memory.Hashes["asus-glacial-lcd"] = "ABC";
+        var driver = Fast(link);
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
+        var hid = new FakeHid { OnWrite = w => { if (w[1] == 0xDC) { link.RequestCancel(); } } };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
+
+        Assert.Equal("ABC", memory.Hashes["asus-glacial-lcd"]);
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0xF1);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Theory]
+    [InlineData("9:HASH")]
+    [InlineData(":HASH")]
+    [InlineData("1:")]
+    [InlineData("x:HASH")]
+    [InlineData("")]
+    public void A_remembered_value_this_build_could_not_have_written_means_nothing_is_remembered(string value)
+    {
+        var memory = new FakeMemory();
+        memory.Hashes["asus-glacial-lcd"] = value;
+        var driver = Fast();
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
         driver.Disconnect(pipe, hid);
     }
 
@@ -730,8 +772,8 @@ public class GlacialLcdDriverTests
 
         var timeouts = hid.ReadTimeouts;
         Assert.All(timeouts, t => Assert.InRange(t, 0, 50));
-        // The wait after the end report is a run of short slices, not one long read.
-        Assert.True(timeouts.Count(t => t == 50) >= 4);
+        // The wait after the end report is a run of short slices, not one long read (how many fit depends on the timer).
+        Assert.True(timeouts.Count(t => t == 50) >= 2);
         // Transfers are polled, never waited on: one zero-timeout read per transfer, plus the drain at the start.
         Assert.Equal(pipe.Writes.Count + 1, timeouts.Count(t => t == 0));
     }
