@@ -293,6 +293,7 @@ public sealed partial class Slv3Hub
     }
 
     internal const long FlexLcdUnbindHoldMs = 4000;
+    internal const long FlexLcdUnbindSaveMs = 2000;
 
     private static int FlexLcdMask(Slv3DeviceRecord record) => (1 << Math.Min(Slv3FlexLcd.MaxFans, Math.Max(0, record.FanCount))) - 1;
 
@@ -332,6 +333,25 @@ public sealed partial class Slv3Hub
                     QueueSequencedCommandLocked(record, Slv3Protocol.RfSwitchWirelessTheme, (byte)(record.WirelessThemeSwitch & ~FlexLcdMask(record)));
                 }
                 continue;
+            }
+            if (present && IsBoundToUsLocked(record) && (record.WirelessThemeSwitch & FlexLcdMask(record)) == 0)
+            {
+                // The cleared switch lives in RAM until a SaveCfg writes it to the fan's flash; an unbound fan boots from flash, so the save goes out before the release.
+                if (deferred.ClearedAtMs < 0)
+                {
+                    deferred.ClearedAtMs = nowMs;
+                    SendSaveCfgLocked();
+                    continue;
+                }
+                if (nowMs - deferred.ClearedAtMs < FlexLcdUnbindSaveMs)
+                {
+                    if (!deferred.SavedAgain && nowMs - deferred.ClearedAtMs >= FlexLcdUnbindSaveMs / 2)
+                    {
+                        deferred.SavedAgain = true;
+                        SendSaveCfgLocked();
+                    }
+                    continue;
+                }
             }
             _deferredUnbinds.Remove(key);
             PerformUnbindLocked(key, deferred.MacHex, present ? record : null);

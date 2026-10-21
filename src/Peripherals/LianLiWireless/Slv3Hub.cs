@@ -30,7 +30,7 @@ public sealed partial class Slv3Hub : IDisposable
     private readonly Func<Slv3PortInfo, ISlv3Transport> _transportFactory;
     private readonly object _lock = new();
     private readonly Dictionary<string, Slv3PendingCommand> _pendingCommands = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, (long DeadlineMs, string MacHex)> _deferredUnbinds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DeferredUnbind> _deferredUnbinds = new(StringComparer.Ordinal);
     // Last cmd_seq issued per chain MAC hex, so back-to-back commands stay
     // monotonic even before the chain's record echoes the previous one
     // (L-Connect's per-device targe_cmd_seq).
@@ -2511,7 +2511,7 @@ public sealed partial class Slv3Hub : IDisposable
             if (IsBoundToUsLocked(existing) && BeginFlexLcdReleaseForUnbindLocked(existing))
             {
                 // The screens go back to USB content first; the release frame follows their acknowledgement or the hold.
-                _deferredUnbinds[key] = (_nowMs() + FlexLcdUnbindHoldMs, macHex);
+                _deferredUnbinds[key] = new DeferredUnbind(_nowMs() + FlexLcdUnbindHoldMs, macHex);
                 ServiceLog.Info($"[lianli-wireless] unbind of {key} waits for its wireless theme switch to clear");
                 return true;
             }
@@ -3248,6 +3248,15 @@ public sealed partial class Slv3Hub : IDisposable
         public bool Manual;
         public bool NoSlotLogged;
         public int Sends;
+    }
+
+    // An unbind waiting for the chain's wireless theme switch to clear; ClearedAtMs is when the bits were seen cleared and the config save went out.
+    private sealed class DeferredUnbind(long deadlineMs, string macHex)
+    {
+        public long DeadlineMs { get; } = deadlineMs;
+        public string MacHex { get; } = macHex;
+        public long ClearedAtMs { get; set; } = -1;
+        public bool SavedAgain { get; set; }
     }
 
     private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0, byte[]? Data = null);

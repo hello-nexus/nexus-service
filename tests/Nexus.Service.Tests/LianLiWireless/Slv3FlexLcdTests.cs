@@ -374,9 +374,11 @@ public class Slv3FlexLcdTests
             Assert.False(Released(tx), "the release went out while the theme bits were still set");
         }
         Assert.Equal(0, fan.ThemeSwitch & 1);
-        ShortTicks(hub, 4);
+        ShortTicks(hub, 8);
         Assert.True(Released(tx), "no release after the echo");
-        Assert.True(FirstFrame(tx, Slv3Protocol.RfBind) > FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme));
+        var afterSwitch = FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme);
+        var save = tx.SentFrames.FindIndex(afterSwitch + 1, f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSaveCfg);
+        Assert.True(save > afterSwitch && save < tx.SentFrames.FindIndex(f => f.Length > 17 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfBind && f.AsSpan(12, 6).ToArray().All(x => x == 0)), "the cleared switch was not saved before the release");
         Assert.DoesNotContain(tx.SentFrames, f => f.Length > 24 && f[5] == Slv3Protocol.RfSwitchWirelessTheme && f[24] != 0);
     }
 
