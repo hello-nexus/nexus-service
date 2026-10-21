@@ -1361,6 +1361,72 @@ public class GlacialLcdDriverTests
         driver.Disconnect(pipe, hid);
     }
 
+    private static (Nexus.Service.Panel.PanelDeviceRegistry Registry, Nexus.Service.Panel.Streams.StreamedPanelCoordinator Coordinator, GlacialLcdLink Link, BulkPanelHub Hub) PanelRig(bool override_)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "glacial-gate-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var store = new Nexus.Service.Tests.TestableConfigStore(Path.Combine(dir, "settings.json"));
+        // As an install that ran an earlier build with the gate off: the saved gate is false, the mode is the Nexus panel.
+        store.Update(s =>
+        {
+            s.Devices.GlacialLcdNexusPanel = false;
+            s.Devices.GlacialLcd.UserEdited = true;
+            s.Devices.GlacialLcd.ModeChosen = true;
+            s.Devices.GlacialLcd.Mode = Nexus.Service.Persistence.GlacialLcdSettings.ModePanel;
+        });
+        var link = new GlacialLcdLink { NexusPanelEnabled = override_ };
+        var driver = new GlacialLcdPanelDriver(link, 0, 0);
+        var hub = new BulkPanelHub(driver);
+        Assert.True(hub.Attach(new FakePipe(), new FakeHid()));
+        var discovery = new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
+            hub, null, GlacialLcdNexusPanelGate.Withheld(link, store), listedWhileWithheld: true);
+        var registry = new Nexus.Service.Panel.PanelDeviceRegistry(store);
+        var gate = new Nexus.Service.Devices.DeviceControlGate(store);
+        gate.SetEnabled(GlacialLcdWorker.HandlerId, true);
+        var coordinator = new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
+            new[] { discovery }, new Nexus.Service.Panel.Streams.StreamedPanelStore(Path.Combine(dir, "streams.json")), registry, gate, notifyOverlay: null);
+        return (registry, coordinator, link, hub);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task With_the_saved_gate_off_but_the_override_on_the_nexus_panel_mode_creates_the_panel_record_and_opens_the_stream()
+    {
+        var (registry, coordinator, link, hub) = PanelRig(override_: true);
+        try
+        {
+            coordinator.TickOnce();
+
+            var record = Assert.Single(registry.List(), r => r.Capabilities?.Family == GlacialLcdWorker.HandlerId);
+            Assert.Contains(record.Id, coordinator.LivePanelDeviceIds());
+            Assert.True(link.Streaming);
+        }
+        finally
+        {
+            await coordinator.StopAsync(default);
+            coordinator.Dispose();
+            hub.Detach();
+        }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task With_the_gate_off_the_nexus_panel_mode_creates_no_panel_record_and_opens_no_stream()
+    {
+        var (registry, coordinator, link, hub) = PanelRig(override_: false);
+        try
+        {
+            coordinator.TickOnce();
+
+            Assert.DoesNotContain(registry.List(), r => r.Capabilities?.Family == GlacialLcdWorker.HandlerId);
+            Assert.False(link.Streaming);
+        }
+        finally
+        {
+            await coordinator.StopAsync(default);
+            coordinator.Dispose();
+            hub.Detach();
+        }
+    }
+
     private sealed class FakeMemory : ILcdUploadMemory
     {
         public System.Collections.Concurrent.ConcurrentDictionary<string, string> Hashes { get; } = new();

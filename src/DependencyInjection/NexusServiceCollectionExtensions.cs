@@ -1436,8 +1436,9 @@ public static class NexusServiceCollectionExtensions
         var glacialLink = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink();
         services.AddSingleton(sp =>
         {
-            bool nexusPanelOn = false;
-            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(s => nexusPanelOn = s.Devices.GlacialLcdNexusPanel);
+            // The only read of the gate; everything else asks the link.
+            bool nexusPanelOn = Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelGate.Read(
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>());
             glacialLink.NexusPanelEnabled = nexusPanelOn;
             Nexus.Service.Peripherals.BulkPanels.GlacialLcdLog.Enabled = nexusPanelOn;
             return glacialLink;
@@ -1466,10 +1467,8 @@ public static class NexusServiceCollectionExtensions
         });
         services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
         {
-            var gateStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
-            bool nexusPanel = false;
-            gateStore.Read(s => nexusPanel = s.Devices.GlacialLcdNexusPanel);
-            if (!nexusPanel)
+            sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink>();
+            if (!glacialLink.NexusPanelEnabled)
             {
                 return new Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelMigrationService(() => { });
             }
@@ -1488,14 +1487,9 @@ public static class NexusServiceCollectionExtensions
                 glacialStreamHub,
                 sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(),
                 // The display is the stream's only when the user has picked the Nexus Panel mode; until then it keeps its own modes.
-                withheld: () =>
-                {
-                    bool chosen = false;
-                    sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
-                        s => chosen = s.Devices.GlacialLcdNexusPanel
-                            && Nexus.Service.Persistence.GlacialLcdSettings.StreamChosen(s.Devices.GlacialLcd));
-                    return !chosen;
-                },
+                withheld: Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelGate.Withheld(
+                    sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink>(),
+                    sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()),
                 listedWhileWithheld: true));
         services.AddSingleton(sp => new Nexus.Service.Peripherals.BulkPanels.GlacialLcdTuning(
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
