@@ -531,7 +531,6 @@ public class GlacialLcdDriverTests
 
         long ms = TimedUpload(driver, new FakePipe(), new FakeHid());
 
-        // The old pacing alone added about ten seconds to a one-transfer picture.
         Assert.True(ms < 1500, ms.ToString());
     }
 
@@ -559,7 +558,6 @@ public class GlacialLcdDriverTests
         long unpaced = watch.ElapsedMilliseconds;
         driver.Disconnect(pipe, hid);
 
-        // One transfer at a tenth of the captured gaps is about a second of waiting.
         Assert.True(paced >= 700, paced.ToString());
         Assert.True(unpaced < paced / 2, $"{unpaced} vs {paced}");
     }
@@ -580,11 +578,106 @@ public class GlacialLcdDriverTests
 
         List<string> seen;
         lock (lines) { seen = lines.ToList(); }
-        Assert.Contains(seen, l => l.Contains("after DC:") && l.EndsWith("ECDC", StringComparison.Ordinal));
+        Assert.Contains(seen, l => l.Contains("after DC:") && l.EndsWith("EC5C00000032000000321400000000" + "32", StringComparison.Ordinal));
         Assert.Contains(seen, l => l.Contains("after prelude F1:") && l.EndsWith("ECF1", StringComparison.Ordinal));
         Assert.Contains(seen, l => l.Contains("after end 73FF:") && l.EndsWith("EC73", StringComparison.Ordinal));
         Assert.Contains(seen, l => l.Contains("after show 51:") && l.EndsWith("EC51", StringComparison.Ordinal));
         Assert.Contains(seen, l => l.Contains("picture uploaded") && l.Contains("encode") && l.Contains("ms"));
+    }
+
+    private static (GlacialLcdPanelDriver Driver, FakePipe Pipe, FakeHid Hid, List<string> Lines) LoggingRig()
+    {
+        var driver = Fast();
+        var lines = new List<string>();
+        driver.LogSink = line => { lock (lines) { lines.Add(line); } };
+        var pipe = new FakePipe();
+        var hid = new FakeHid { Echo = true };
+        driver.Connect(pipe, hid);
+        return (driver, pipe, hid, lines);
+    }
+
+    private static int ReplyLines(List<string> lines)
+    {
+        lock (lines) { return lines.Count(l => l.Contains("reply +", StringComparison.Ordinal)); }
+    }
+
+    private static void Upload(GlacialLcdPanelDriver driver, FakePipe pipe, FakeHid hid, int seed)
+    {
+        int before = driver.UploadsCompleted;
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: seed));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == before + 1));
+    }
+
+    [Fact]
+    public void Reply_logging_stops_after_the_first_uploads_unless_a_report_changes_and_starts_again_on_a_connect()
+    {
+        var (driver, pipe, hid, lines) = LoggingRig();
+        for (int i = 1; i <= 3; i++)
+        {
+            Upload(driver, pipe, hid, i);
+        }
+        int afterThree = ReplyLines(lines);
+        Assert.True(afterThree > 0);
+
+        // Same answers every time: nothing more is logged.
+        Upload(driver, pipe, hid, 4);
+        Upload(driver, pipe, hid, 5);
+        Assert.Equal(afterThree, ReplyLines(lines));
+
+        // A different state report is logged once, at both query steps.
+        hid.StateReport = Report("EC 5C 00 00 00 28 00 00 00 28 14 00 00 00 00 28");
+        Upload(driver, pipe, hid, 6);
+        Assert.Equal(afterThree + 2, ReplyLines(lines));
+        driver.Disconnect(pipe, hid);
+
+        // A new connect logs the first uploads in full again.
+        var pipe2 = new FakePipe();
+        var hid2 = new FakeHid { Echo = true };
+        driver.Connect(pipe2, hid2);
+        Upload(driver, pipe2, hid2, 7);
+        Assert.True(ReplyLines(lines) > afterThree + 2);
+        driver.Disconnect(pipe2, hid2);
+    }
+
+    [Fact]
+    public void Input_left_over_from_earlier_traffic_is_not_taken_for_a_reply()
+    {
+        var (driver, pipe, hid, lines) = LoggingRig();
+        hid.Enqueue(Report("EC 99 AA"));
+
+        Upload(driver, pipe, hid, 1);
+        driver.Disconnect(pipe, hid);
+
+        lock (lines)
+        {
+            Assert.DoesNotContain(lines, l => l.Contains("EC99AA", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void A_cancel_ends_the_wait_after_the_end_report_instead_of_sitting_it_out()
+    {
+        var link = new GlacialLcdLink();
+        var driver = Fast(link);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        hid.OnWrite = w =>
+        {
+            if (w[1] == 0x73 && w[2] == 0xFF)
+            {
+                link.RequestCancel();
+            }
+        };
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
+        watch.Stop();
+
+        Assert.True(watch.ElapsedMilliseconds < GlacialLcdPanelDriver.FinishReplyWaitMs, watch.ElapsedMilliseconds.ToString());
+        Assert.Equal(0, driver.UploadsCompleted);
+        driver.Disconnect(pipe, hid);
     }
 
     [Fact]
@@ -600,8 +693,11 @@ public class GlacialLcdDriverTests
         driver.Disconnect(pipe, hid);
 
         var timeouts = hid.ReadTimeouts;
-        Assert.All(timeouts, t => Assert.InRange(t, 0, GlacialLcdPanelDriver.FinishReplyWaitMs));
-        Assert.Contains(GlacialLcdPanelDriver.FinishReplyWaitMs, timeouts);
+        Assert.All(timeouts, t => Assert.InRange(t, 0, 50));
+        // The wait after the end report is a run of short slices, not one long read.
+        Assert.True(timeouts.Count(t => t == 50) >= GlacialLcdPanelDriver.FinishReplyWaitMs / 50 - 1);
+        // Transfers are polled, never waited on.
+        Assert.True(timeouts.Count(t => t == 0) >= 1);
     }
 
     [Fact]
@@ -734,8 +830,17 @@ public class GlacialLcdDriverTests
         /// <summary>Runs after each report is recorded, so a test can act at an exact point of the sequence.</summary>
         public Action<byte[]>? OnWrite { get; set; }
 
-        /// <summary>The panel answers every report with its header, as the manual capture shows.</summary>
+        /// <summary>The panel answers a state query with a state report and every other report with its header.</summary>
         public bool Echo { get; set; }
+
+        /// <summary>Replaces the state report an echoing panel sends for a query.</summary>
+        public byte[]? StateReport { get; set; }
+
+        /// <summary>Input waiting to be read, ahead of anything the panel answers.</summary>
+        public void Enqueue(byte[] report)
+        {
+            lock (_lock) { _input.Enqueue(report); }
+        }
 
         /// <summary>Timeouts the driver asked reads to wait, in order.</summary>
         public List<int> ReadTimeouts { get; } = new();
@@ -761,10 +866,19 @@ public class GlacialLcdDriverTests
                 _writes.Add(copy);
                 if (Echo)
                 {
-                    var echo = new byte[GlacialLcdProtocol.ReportBytes];
-                    echo[0] = copy[0];
-                    echo[1] = copy[1];
-                    _input.Enqueue(echo);
+                    var answer = new byte[GlacialLcdProtocol.ReportBytes];
+                    if (copy[1] == 0xDC)
+                    {
+                        // A state report: id, the state opcode, then the settings fields.
+                        var state = StateReport ?? Report("EC 5C 00 00 00 32 00 00 00 32 14 00 00 00 00 32");
+                        state.CopyTo(answer, 0);
+                    }
+                    else
+                    {
+                        answer[0] = copy[0];
+                        answer[1] = copy[1];
+                    }
+                    _input.Enqueue(answer);
                 }
             }
             OnWrite?.Invoke(copy);
