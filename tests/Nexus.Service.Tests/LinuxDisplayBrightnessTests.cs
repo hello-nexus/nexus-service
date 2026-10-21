@@ -121,7 +121,7 @@ public class LinuxDisplayBrightnessTests
         Connector(t, "card1-DP-2", "disconnected", ddcBus: "i2c-8");
         Connector(t, "card1-HDMI-A-1", "connected", ddcBus: "i2c-3");
         t.Dir("drm/card1"); // GPU node, not a connector
-        t.Dir("devices/i2c-0"); // buses without a connector are never listed
+        t.Dir("devices/i2c-0"); // non-NVIDIA buses without a connector are never listed
 
         Assert.Equal(new[] { 3, 7 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
     }
