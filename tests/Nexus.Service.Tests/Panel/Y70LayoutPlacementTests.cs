@@ -40,4 +40,40 @@ public sealed class Y70LayoutPlacementTests
 
         Assert.Equal((0, 2), (tile.Col, tile.Row));
     }
+
+    [Theory]
+    [InlineData("1x1", 1, 1)]
+    [InlineData("2x2", 2, 2)]
+    [InlineData("2x4", 2, 4)]
+    [InlineData("4x1", 4, 1)]
+    [InlineData("4x2", 4, 2)]
+    [InlineData("4x4", 4, 4)]
+    [InlineData("2x2round", 2, 2)]
+    [InlineData("4x8", 4, 8)]
+    [InlineData("6x4", 4, 4)]
+    [InlineData("8x8", 4, 8)]
+    [InlineData("2x40", 2, 16)]
+    [InlineData("garbage", 2, 2)]
+    [InlineData("", 2, 2)]
+    [InlineData("0x4", 2, 2)]
+    [InlineData("-2x4", 2, 2)]
+    [InlineData("4x", 2, 2)]
+    [InlineData("4x4x4", 2, 2)]
+    public void SpanForSize_ParsesAndClamps(string size, int cols, int rows)
+    {
+        Assert.Equal((cols, rows), Y70LayoutPlacement.SpanForSize(size));
+    }
+
+    [Fact]
+    public void Append_NextToStoredFourByEightDoesNotOverlap()
+    {
+        var big = new PanelWidgetDto { Id = "a", Type = "webview", Size = "4x8", Col = 0, Row = 0 };
+        var pages = new List<PanelPageDto> { new() { Id = "p", Widgets = { big } } };
+        var tile = new PanelWidgetDto { Id = "b", Type = "clock", Size = "2x2" };
+
+        Assert.True(Y70LayoutPlacement.Append(pages, tile, "2x2"));
+
+        Assert.Single(pages);
+        Assert.True(tile.Row >= 8);
+    }
 }

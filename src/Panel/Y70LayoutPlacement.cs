@@ -16,15 +16,26 @@ internal static class Y70LayoutPlacement
     public const int GridRows = 16;
     public const int MaxPages = 10;
 
-    public static (int Cols, int Rows) SpanForSize(string size) => size switch
+    /// <summary>Span for a stored size: the legacy enum names plus any
+    /// <c>"{cols}x{rows}"</c> pair of positive ints, clamped to the grid.
+    /// Anything unparseable is a 2x2.</summary>
+    public static (int Cols, int Rows) SpanForSize(string? size)
     {
-        "1x1" => (1, 1),
-        "2x2" => (2, 2),
-        "4x1" => (4, 1),
-        "4x2" => (4, 2),
-        "4x4" => (4, 4),
-        _ => (2, 2),
-    };
+        if (size == "2x2round")
+        {
+            return (2, 2);
+        }
+        var parts = size?.Split('x');
+        if (parts is { Length: 2 }
+            && int.TryParse(parts[0], out var cols)
+            && int.TryParse(parts[1], out var rows)
+            && cols > 0
+            && rows > 0)
+        {
+            return (cols > GridCols ? GridCols : cols, rows > GridRows ? GridRows : rows);
+        }
+        return (2, 2);
+    }
 
     private static int SnapStride(int span) => span <= 1 ? 1 : 2;
 

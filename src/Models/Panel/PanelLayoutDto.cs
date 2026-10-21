@@ -92,7 +92,7 @@ public sealed class PanelWidgetDto
     /// services don't reject a newer widget type - unknown types are preserved verbatim.</summary>
     public string Type { get; set; } = "";
 
-    /// <summary>"1x1" | "2x2" | "2x4" | "4x1" | "4x2" | "4x4".</summary>
+    /// <summary>"1x1" | "2x2" | "2x4" | "4x1" | "4x2" | "4x4" | "2x2round", or a freeform "{cols}x{rows}" of even spans (Web View, Whiteboard).</summary>
     public string Size { get; set; } = "2x2";
 
     /// <summary>Top-left column on the page grid (0-indexed).
