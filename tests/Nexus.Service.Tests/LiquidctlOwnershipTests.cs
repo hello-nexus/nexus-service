@@ -87,23 +87,98 @@ public class LiquidctlOwnershipTests
         Assert.Equal(2, r.Ids().Length);
     }
 
-    [Fact]
-    public void CommanderCoreDetectorExcluded_ReadsEverything()
+    private static void Exclude(Rig r, params string[] detectors)
     {
-        var r = new Rig { BridgeActive = true };
-        r.Store.Update(s => s.Devices.OpenRgbDetectorExclusions["openrgb-s-x"] =
-            new OpenRgbDetectorExclusion { DetectorName = "Corsair Commander Core", DeviceName = "Corsair Commander Core" });
+        foreach (var d in detectors)
+            r.Store.Update(s => s.Devices.OpenRgbDetectorExclusions["openrgb-s-" + d] =
+                new OpenRgbDetectorExclusion { DetectorName = d, DeviceName = d });
+    }
+
+    private const string TwoFamilyList = """
+    [{"address":"/dev/hidraw14","description":"Corsair Commander Core","vendor_id":6940,"product_id":3122},
+     {"address":"/dev/hidraw15","description":"Corsair Commander Core XT","vendor_id":6940,"product_id":3114},
+     {"address":"/dev/hidraw3","description":"NZXT Kraken X53"}]
+    """;
+
+    [Fact]
+    public void BothDetectorsExcluded_ReadsEverythingWithOneCall()
+    {
+        var r = new Rig { BridgeActive = true, List = TwoFamilyList };
+        Exclude(r, "Corsair Commander Core", "Corsair Commander Core XT");
         Assert.Equal(2, r.Ids().Length);
         Assert.Equal(0, r.ListCalls);
+    }
+
+    [Fact]
+    public void OnlyXtExcluded_ReleasesOnlyTheXt()
+    {
+        var r = new Rig { BridgeActive = true, List = TwoFamilyList };
+        Exclude(r, "Corsair Commander Core XT");
+        var ids = r.Ids();
+        Assert.Equal(new[] { "liquidctl:dev-hidraw15", "liquidctl:dev-hidraw3" }, ids);
+    }
+
+    [Fact]
+    public void OnlyCoreExcluded_ReleasesOnlyTheNonXtIds()
+    {
+        var r = new Rig { BridgeActive = true, List = TwoFamilyList };
+        Exclude(r, "Corsair Commander Core");
+        var ids = r.Ids();
+        Assert.Equal(new[] { "liquidctl:dev-hidraw14", "liquidctl:dev-hidraw3" }, ids);
+    }
+
+    [Fact]
+    public void DescriptionOnlyEntry_StaysWithheldUnlessBothDetectorsExcluded()
+    {
+        var list = """[{"address":"/dev/hidraw14","description":"Corsair Commander ST (broken)"},{"address":"/dev/hidraw3","description":"NZXT Kraken X53"}]""";
+        var r = new Rig { BridgeActive = true, List = list };
+        Exclude(r, "Corsair Commander Core");
+        Assert.Single(r.Ids());
+        Exclude(r, "Corsair Commander Core XT");
+        Assert.Equal(2, r.Ids().Length);
     }
 
     [Fact]
     public void OtherDetectorExcluded_StillWithholds()
     {
         var r = new Rig { BridgeActive = true };
-        r.Store.Update(s => s.Devices.OpenRgbDetectorExclusions["openrgb-s-x"] =
-            new OpenRgbDetectorExclusion { DetectorName = "Some Mouse", DeviceName = "Some Mouse" });
+        Exclude(r, "Some Mouse");
         Assert.Single(r.Ids());
+    }
+
+    [Fact]
+    public void FlippingToWithheld_DropsTheCachedSnapshot()
+    {
+        var r = new Rig();
+        Assert.Equal(2, r.Provider.GetAll().Count);
+        r.BridgeActive = true;
+        // No clock advance: the cached snapshot would still be fresh.
+        Assert.Single(r.Provider.GetAll());
+    }
+
+    [Fact]
+    public void Drive_RefusesAWithheldAddress()
+    {
+        var calls = new List<string>();
+        var r = new Rig();
+        var p = new LinuxLiquidctlProvider(() => ListJson, () => StatusAll,
+            e => "[" + StatusFor(e.Address, e.Description) + "]",
+            (a, c, d) => { calls.Add(a); return true; }, null, () => r.BridgeActive, () => r.Now);
+        var channels = p.GetFanChannels();
+        Assert.Equal(2, channels.Count);
+        var familyId = channels.Single(c => c.DeviceId!.Contains("hidraw14")).Id;
+        var otherId = channels.Single(c => c.DeviceId!.Contains("hidraw3")).Id;
+
+        p.DriveFanSpeed(familyId, 50);
+        Assert.Equal(new[] { "/dev/hidraw14" }, calls);
+
+        r.BridgeActive = true;
+        r.Now += 2000;
+        p.GetFanChannels();
+        calls.Clear();
+        p.DriveFanSpeed(familyId, 50);
+        p.DriveFanSpeed(otherId, 50);
+        Assert.Equal(new[] { "/dev/hidraw3" }, calls);
     }
 
     [Theory]
@@ -142,27 +217,12 @@ public class LiquidctlOwnershipTests
     }
 
     [Fact]
-    public void CachedList_NeverFeedsTheAllDevicesRead()
+    public void Withholding_AlwaysReadsPerDevice_EvenWithoutAFamilyDevice()
     {
         var r = new Rig { BridgeActive = true, List = """[{"bus":"hid","address":"/dev/hidraw3","description":"NZXT Kraken X53"}]""" };
-        r.Ids();
-        Assert.Equal(1, r.AllCalls);
-        // Family device appears while the cached list is still fresh: it must not be opened.
-        r.List = ListJson;
-        Assert.Empty(r.OneCalls);
-        r.Ids();
-        Assert.Equal(1, r.ListCalls);
-        Assert.Equal(1, r.AllCalls);
+        Assert.Single(r.Ids());
+        Assert.Equal(0, r.AllCalls);
         Assert.Equal(new[] { "--json --address /dev/hidraw3 status" }, r.OneCalls);
-    }
-
-    [Fact]
-    public void ListWithoutFamily_UsesAllDevicesOnlyOnAFreshFetch()
-    {
-        var r = new Rig { BridgeActive = true, List = """[{"bus":"hid","address":"/dev/hidraw3","description":"NZXT Kraken X53"}]""" };
-        r.Ids();
-        Assert.Equal(1, r.AllCalls);
-        Assert.Empty(r.OneCalls);
     }
 
     [Fact]

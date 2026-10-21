@@ -47,7 +47,7 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private readonly HashSet<string> _warned = new();
     private bool? _present;
 
-    // Each status read costs ~1-2s per device; one curve tick reads fans + temps.
+    // Each status read is a subprocess spawn; one curve tick reads fans + temps.
     // Cache the parse briefly so a tick spawns it once.
     private const long SnapshotTtlMs = 1500;
     // Enumeration only; hotplug is rare.
@@ -55,6 +55,9 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private const int MaxParallelReads = 4;
     private List<LiquidDevice>? _snapshot;
     private long _snapshotAtMs = long.MinValue;
+    private LiquidctlOwnership.Policy _snapshotPolicy;
+    // address -> entry as of the latest refresh, so Drive can tell a withheld address without waiting on a refresh.
+    private Dictionary<string, LiquidctlListEntry> _known = new(StringComparer.Ordinal);
 
     // Held across a refresh's subprocesses so _lock stays free for Drive(); guards the fields below.
     private readonly object _refreshLock = new();
@@ -208,6 +211,11 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
             if (!control.TryGetValue(channelId, out target))
                 return dutyPercent;
         }
+        if (IsWithheldAddress(target.Address))
+        {
+            WarnWithheldOnce(target.Address);
+            return dutyPercent;
+        }
         if (_setSpeed(target.Address, target.Channel, dutyPercent))
         {
             // Record an explicit user override so it survives a restart and feeds
@@ -222,6 +230,29 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
             WarnOnce(channelId);
         }
         return dutyPercent;
+    }
+
+    private bool IsWithheldAddress(string address)
+    {
+        var policy = CurrentPolicy();
+        if (!policy.WithholdsAnything)
+            return false;
+        LiquidctlListEntry? entry;
+        lock (_lock)
+        {
+            _known.TryGetValue(address, out entry);
+        }
+        return entry is not null && LiquidctlOwnership.IsWithheld(entry, policy);
+    }
+
+    private void WarnWithheldOnce(string address)
+    {
+        lock (_lock)
+        {
+            if (!_warned.Add("withheld:" + address))
+                return;
+        }
+        ServiceLog.Info($"[liquidctl] not writing to {address}: OpenRGB drives Commander Core devices");
     }
 
     private void WarnOnce(string channelId)
@@ -274,49 +305,46 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
         lock (_refreshLock)
         {
             var now = _nowMs();
+            var policy = CurrentPolicy();
             lock (_lock)
             {
-                if (_snapshot is not null && now - _snapshotAtMs < SnapshotTtlMs)
+                if (_snapshot is not null && policy == _snapshotPolicy && now - _snapshotAtMs < SnapshotTtlMs)
                     return _snapshot;
             }
-            var fresh = ReadEligible(now);
+            var fresh = ReadEligible(now, policy);
             lock (_lock)
             {
                 _snapshot = fresh;
                 _snapshotAtMs = now;
+                _snapshotPolicy = policy;
             }
             return fresh;
         }
     }
 
-    // OpenRGB's Commander Core detector runs while the bridge is active unless the user excluded it.
-    private bool WithholdCommanderCore()
+    // The persisted exclusions can lead the daemon: a brief window exists after the user un-controls the device.
+    private LiquidctlOwnership.Policy CurrentPolicy()
     {
-        if (!_bridgeActive())
-            return false;
-        if (_config is null)
-            return true;
-        foreach (var ex in _config.Load().Devices.OpenRgbDetectorExclusions.Values)
-        {
-            if (LiquidctlOwnership.IsCommanderCoreFamily(new LiquidctlListEntry("", null, null, ex.DetectorName))
-                || LiquidctlOwnership.IsCommanderCoreFamily(new LiquidctlListEntry("", null, null, ex.DeviceName)))
-            {
-                return false;
-            }
-        }
-        return true;
+        var active = _bridgeActive();
+        if (!active)
+            return new LiquidctlOwnership.Policy(false, false, false);
+        var names = _config?.Load().Devices.OpenRgbDetectorExclusions.Values.Select(x => x.DetectorName);
+        return LiquidctlOwnership.BuildPolicy(true, names);
     }
 
-    // Caller holds _refreshLock. Withholding never falls back to an all-devices read unless that read follows a list fetched in this same refresh.
-    private List<LiquidDevice> ReadEligible(long now)
+    // Caller holds _refreshLock. Withholding always reads per device: the all-devices read prints nothing if any one device errors.
+    private List<LiquidDevice> ReadEligible(long now, LiquidctlOwnership.Policy policy)
     {
-        if (!WithholdCommanderCore())
+        if (!policy.WithholdsAnything)
         {
             _skipLogged.Clear();
-            return ParseStatus(_statusAllJson());
+            var all = ParseStatus(_statusAllJson());
+            PublishKnown(all.Select(d => new LiquidctlListEntry(d.Address, null, null, d.Description)));
+            return all;
         }
 
-        var list = ReadList(now, out var fetched);
+        var list = ReadList(now);
+        PublishKnown(list);
         if (list.Count == 0)
             return new List<LiquidDevice>();
 
@@ -324,7 +352,7 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
         var skipped = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in list)
         {
-            if (!LiquidctlOwnership.IsCommanderCoreFamily(entry))
+            if (!LiquidctlOwnership.IsWithheld(entry, policy))
             {
                 eligible.Add(entry);
                 continue;
@@ -334,10 +362,15 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
                 ServiceLog.Info($"[liquidctl] not polling {entry.Address} ({entry.Description}): OpenRGB drives Commander Core devices");
         }
         _skipLogged.IntersectWith(skipped);
-
-        if (skipped.Count == 0 && fetched)
-            return ParseStatus(_statusAllJson());
         return ReadPerDevice(eligible);
+    }
+
+    private void PublishKnown(IEnumerable<LiquidctlListEntry> entries)
+    {
+        var map = new Dictionary<string, LiquidctlListEntry>(StringComparer.Ordinal);
+        foreach (var e in entries)
+            map[e.Address] = e;
+        lock (_lock) _known = map;
     }
 
     private List<LiquidDevice> ReadPerDevice(List<LiquidctlListEntry> eligible)
@@ -364,14 +397,10 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     }
 
     // Enumeration only. A failed or empty read is never cached.
-    private List<LiquidctlListEntry> ReadList(long now, out bool fetched)
+    private List<LiquidctlListEntry> ReadList(long now)
     {
         if (_list is not null && now - _listAtMs < ListTtlMs)
-        {
-            fetched = false;
             return _list;
-        }
-        fetched = true;
         var parsed = LiquidctlOwnership.ParseList(_listJson());
         if (parsed.Count == 0)
         {

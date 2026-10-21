@@ -19,6 +19,44 @@ internal static class LiquidctlOwnership
             || e.Description.Contains("Commander Core", StringComparison.OrdinalIgnoreCase)
             || e.Description.Contains("Commander ST", StringComparison.OrdinalIgnoreCase);
 
+    // Detector names the OpenRGB fork registers; the plain name must be matched exactly because the XT name contains it.
+    private const string CoreDetectorName = "Corsair Commander Core";
+    private const string CoreXtDetectorName = "Corsair Commander Core XT";
+    private const int CoreXtProductId = 0x0C2A;
+
+    /// <summary>What decides withholding: whether the bridge is active and which of the two OpenRGB detectors the user excluded.</summary>
+    public readonly record struct Policy(bool BridgeActive, bool CoreExcluded, bool CoreXtExcluded)
+    {
+        public bool WithholdsAnything => BridgeActive && !(CoreExcluded && CoreXtExcluded);
+    }
+
+    public static Policy BuildPolicy(bool bridgeActive, IEnumerable<string>? excludedDetectorNames)
+    {
+        var core = false;
+        var xt = false;
+        if (excludedDetectorNames is not null)
+        {
+            foreach (var name in excludedDetectorNames)
+            {
+                if (string.Equals(name, CoreDetectorName, StringComparison.OrdinalIgnoreCase))
+                    core = true;
+                else if (string.Equals(name, CoreXtDetectorName, StringComparison.OrdinalIgnoreCase))
+                    xt = true;
+            }
+        }
+        return new Policy(bridgeActive, core, xt);
+    }
+
+    /// <summary>Per detector: a known product id follows its own detector; an entry known only by description stays withheld unless both detectors are excluded.</summary>
+    public static bool IsWithheld(LiquidctlListEntry e, Policy policy)
+    {
+        if (!policy.BridgeActive || !IsCommanderCoreFamily(e))
+            return false;
+        if (e.VendorId == CorsairVendorId && e.ProductId is int pid && Array.IndexOf(CommanderCoreProductIds, pid) >= 0)
+            return pid == CoreXtProductId ? !policy.CoreXtExcluded : !policy.CoreExcluded;
+        return policy.WithholdsAnything;
+    }
+
     public static string[] StatusArgs(LiquidctlListEntry e) => new[] { "--json", "--address", e.Address, "status" };
 
     /// <summary>Parses <c>liquidctl --json list</c>.</summary>
