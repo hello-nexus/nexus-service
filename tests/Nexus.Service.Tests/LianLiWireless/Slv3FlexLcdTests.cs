@@ -439,8 +439,14 @@ public class Slv3FlexLcdTests
     private static int ReleaseIndex(Slv3TestHub.FakeTxTransport tx) =>
         tx.SentFrames.FindIndex(f => f.Length > 17 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfBind && f.AsSpan(12, 6).ToArray().All(x => x == 0));
 
-    private static int Saves(Slv3TestHub.FakeTxTransport tx) =>
-        tx.SentFrames.Count(f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSaveCfg);
+    private static void TickUntilCleared(Slv3Hub hub, Slv3TestHub.SimulatedFan fan)
+    {
+        for (var i = 0; i < 40 && (fan.ThemeSwitch & 1) != 0; i++)
+        {
+            ShortTicks(hub, 1, 250);
+        }
+        Assert.True((fan.ThemeSwitch & 1) == 0, "the theme bits were never cleared");
+    }
 
     [Fact]
     public void Theme_bits_that_return_after_a_clear_are_cleared_and_saved_again_before_the_release()
@@ -452,10 +458,7 @@ public class Slv3FlexLcdTests
         ShortTicks(hub, 3);
         tx.SentFrames.Clear();
         Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
-        while ((fan.ThemeSwitch & 1) != 0)
-        {
-            ShortTicks(hub, 1, 250);
-        }
+        TickUntilCleared(hub, fan);
         // First clear: let both of its saves go out, short of the release.
         var guard = 0;
         while (SaveFramesSince(tx, 0) < 2 && guard++ < 20)
@@ -494,10 +497,7 @@ public class Slv3FlexLcdTests
         ShortTicks(hub, 3);
         tx.SentFrames.Clear();
         Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
-        while ((fan.ThemeSwitch & 1) != 0)
-        {
-            ShortTicks(hub, 1, 250);
-        }
+        TickUntilCleared(hub, fan);
         ShortTicks(hub, 1, 250);
         // The bits return just as the hold runs out; the clear then needs the extension.
         _clock += Slv3Hub.FlexLcdUnbindHoldMs;
