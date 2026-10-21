@@ -188,7 +188,8 @@ public sealed partial class LightingEngine
         {
             return null;
         }
-        var geom = new AreaGeom(cw, ch, u0, uSpan, v0, vSpan, 0, 0, 0, 0);
+        var mode = ModeOf(id);
+        var geom = new AreaGeom(cw, ch, u0, uSpan, v0, vSpan, 0, 0, 0, (int)mode);
         var key = (id, lo, hi);
         if (_areaMaps.TryGetValue(key, out var e) && ReferenceEquals(e.Scene, sceneRef) && e.Count == ledCount && e.Geom == geom
             && Same(e.U, ledU) && Same(e.V, ledV) && Same(e.Disabled, disabled))
@@ -237,7 +238,7 @@ public sealed partial class LightingEngine
                 quadOk = false;
             }
         }
-        var map = AreaOwnerMap.BuildScene(sx, sy, ok, corners, quadOk, cw, ch);
+        var map = AreaOwnerMap.BuildScene(sx, sy, ok, corners, quadOk, cw, ch, mode);
         _areaMaps[key] = new AreaMapEntry { Count = ledCount, U = ledU, V = ledV, Disabled = disabled, Geom = geom, Scene = sceneRef, Map = map };
         EvictStale(id, ledCount, scene: true, key);
         return map;
@@ -276,14 +277,24 @@ public sealed partial class LightingEngine
                 src = AreaCells.Compute(u, v, disabled, count, 0, count, aw, ah, mode);
                 if (sw != 1f || sh != 1f)
                 {
-                    foreach (var poly in src)
+                    // New arrays, never in place: LEDs at one position share a polygon, which must be remapped once.
+                    var remapped = new Dictionary<float[], float[]>(ReferenceEqualityComparer.Instance);
+                    var mapped = new float[src.Length][];
+                    for (var i = 0; i < src.Length; i++)
                     {
-                        for (var k = 0; k < poly.Length; k += 2)
+                        if (!remapped.TryGetValue(src[i], out var m))
                         {
-                            poly[k] = sx + poly[k] * sw;
-                            poly[k + 1] = sy + poly[k + 1] * sh;
+                            m = new float[src[i].Length];
+                            for (var k = 0; k < m.Length; k += 2)
+                            {
+                                m[k] = sx + src[i][k] * sw;
+                                m[k + 1] = sy + src[i][k + 1] * sh;
+                            }
+                            remapped[src[i]] = m;
                         }
+                        mapped[i] = m;
                     }
+                    src = mapped;
                 }
                 _areaCells[key] = new AreaCellsEntry { Count = count, Mode = mode, W = aw, H = ah, SlotX = sx, SlotY = sy, U = u, V = v, Disabled = disabled, Cells = src };
                 foreach (var kv in _areaCells)

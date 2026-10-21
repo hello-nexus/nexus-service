@@ -395,7 +395,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         return rgb;
     }
 
-    /// <summary>Stamps each card with its sampling mode and, for a cell mode, the nearest-LED cells of the engine frame it is sampled from. Read only: the engine's modes are seeded at startup and by the route.</summary>
+    /// <summary>Stamps each card with its sampling mode and, for a cell mode, the nearest-LED cells of the engine frame it is sampled from. Read only: the engine follows the same settings dictionary through its mode source.</summary>
     internal static void ApplyAreaSampling(LightingEngine engine, List<LightingDevice> devices, NexusSettings settings)
     {
         var modes = settings.Devices.SamplingModes;

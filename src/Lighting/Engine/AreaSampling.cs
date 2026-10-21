@@ -530,12 +530,14 @@ internal sealed class AreaOwnerMap
 
     /// <summary>
     /// Owner map of a surface in the 3D scene: the pixels inside the surface's projected quad belong to the nearest projected LED
-    /// centre in canvas pixels. This is a screen-space approximation; it ignores perspective foreshortening along the surface.
+    /// centre in canvas pixels. This is a screen-space approximation; it ignores perspective foreshortening along the surface. Rows and columns stretch the canvas's own vertical or horizontal axis (<see cref="AreaMetric.StretchWeight"/>), not the surface's projected axes, so a surface turned on screen is banded along the canvas axes.
     /// An LED that does not project owns nothing; one owning no pixel keeps the pixel it projects to.
     /// </summary>
-    public static AreaOwnerMap BuildScene(float[] sx, float[] sy, bool[] ok, (float X, float Y)[] quad, bool quadOk, int cw, int ch)
+    public static AreaOwnerMap BuildScene(float[] sx, float[] sy, bool[] ok, (float X, float Y)[] quad, bool quadOk, int cw, int ch, SamplingMode mode)
     {
         var count = sx.Length;
+        var kx = mode == SamplingMode.Columns ? (float)AreaMetric.StretchWeight : 1f;
+        var ky = mode == SamplingMode.Rows ? (float)AreaMetric.StretchWeight : 1f;
         var owner = new int[cw * ch];
         Array.Fill(owner, -1);
         var rep = AreaCells.Representatives(sx, sy, ok);
@@ -572,8 +574,8 @@ internal sealed class AreaOwnerMap
                     var bestD = float.MaxValue;
                     for (var j = 0; j < m; j++)
                     {
-                        var ex = sx[idx[j]] - cx;
-                        var ey = sy[idx[j]] - cy;
+                        var ex = (sx[idx[j]] - cx) * kx;
+                        var ey = (sy[idx[j]] - cy) * ky;
                         var d = ex * ex + ey * ey;
                         if (d < bestD)
                         {

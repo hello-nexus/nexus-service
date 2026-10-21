@@ -689,4 +689,67 @@ public class AreaSamplingTests
         engine.RefreshSamplingModes();
         Assert.False(engine.IsAreaSampled("z"));
     }
+
+    [Fact]
+    public void StackSlot_WithCoincidentLeds_RemapsEachPolygonOnce()
+    {
+        var frame = new DeviceFrame(0, "a", 3, 0, 0, 100, 100)
+        {
+            LedU = new[] { 0.25f, 0.25f, 0.75f },
+            LedV = new[] { 0.5f, 0.5f, 0.5f },
+        };
+        float[][] Run(bool slotted)
+        {
+            using var engine = new LightingEngine();
+            Modes(engine, "a");
+            if (slotted)
+            {
+                engine.SetStackSlots(new List<Nexus.Service.Persistence.DeviceGroup>
+                {
+                    new() { Id = "s", Layout = "parallel", Members = new List<string> { "b", "a" } },
+                });
+            }
+            return engine.AreaCellsForCard(frame, 3)!;
+        }
+        var plain = Run(false);
+        var slotted = Run(true);
+        // slot 1 of 2 in a parallel stack is the bottom half: v -> 0.5 + 0.5 * v, u unchanged
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Equal(plain[i].Length, slotted[i].Length);
+            for (var k = 0; k < plain[i].Length; k += 2)
+            {
+                Assert.Equal(plain[i][k], slotted[i][k], 4);
+                Assert.Equal(0.5f + 0.5f * plain[i][k + 1], slotted[i][k + 1], 4);
+            }
+        }
+        Assert.Same(slotted[0], slotted[1]);
+    }
+
+    [Fact]
+    public void SceneOwnerMap_FollowsTheMode()
+    {
+        // two projected LEDs; the canvas point (60, 30) is nearer the first in x, nearer the second in y
+        var sx = new[] { 40f, 100f };
+        var sy = new[] { 20f, 32f };
+        var ok = new[] { true, true };
+        var quad = new (float X, float Y)[] { (0f, 0f), (160f, 0f), (0f, 90f), (160f, 90f) };
+        int OwnerOfPixel(SamplingMode mode, int px, int py)
+        {
+            var map = AreaOwnerMap.BuildScene(sx, sy, ok, quad, true, 160, 90, mode);
+            var off = (py * 160 + px) * 3;
+            for (var led = 0; led < 2; led++)
+            {
+                for (var k = map.Start[led]; k < map.Start[led + 1]; k++)
+                {
+                    if (map.Pix[k] == off) return led;
+                }
+            }
+            return -1;
+        }
+        // (60,30): to led0 dx 19.5 dy 9.5; to led1 dx 39.5 dy 1.5
+        Assert.Equal(0, OwnerOfPixel(SamplingMode.Nearest, 60, 30));
+        Assert.Equal(0, OwnerOfPixel(SamplingMode.Columns, 60, 30));
+        Assert.Equal(1, OwnerOfPixel(SamplingMode.Rows, 60, 30));
+    }
 }
