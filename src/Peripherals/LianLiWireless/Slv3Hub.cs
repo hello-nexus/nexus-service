@@ -3253,7 +3253,8 @@ public sealed partial class Slv3Hub : IDisposable
     // An unbind waiting for the chain's wireless theme switch to clear; ClearedAtMs is when the bits were seen cleared and the config save went out.
     private sealed class DeferredUnbind(long deadlineMs, string macHex)
     {
-        public long DeadlineMs { get; } = deadlineMs;
+        public long DeadlineMs { get; set; } = deadlineMs;
+        public bool Extended { get; set; }
         public string MacHex { get; } = macHex;
         public long ClearedAtMs { get; set; } = -1;
         public bool SavedAgain { get; set; }

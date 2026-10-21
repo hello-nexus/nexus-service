@@ -439,6 +439,9 @@ public class Slv3FlexLcdTests
     private static int ReleaseIndex(Slv3TestHub.FakeTxTransport tx) =>
         tx.SentFrames.FindIndex(f => f.Length > 17 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfBind && f.AsSpan(12, 6).ToArray().All(x => x == 0));
 
+    private static int Saves(Slv3TestHub.FakeTxTransport tx) =>
+        tx.SentFrames.Count(f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSaveCfg);
+
     [Fact]
     public void Theme_bits_that_return_after_a_clear_are_cleared_and_saved_again_before_the_release()
     {
@@ -451,20 +454,65 @@ public class Slv3FlexLcdTests
         Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
         while ((fan.ThemeSwitch & 1) != 0)
         {
-            ShortTicks(hub, 1);
+            ShortTicks(hub, 1, 250);
         }
-        ShortTicks(hub, 1);
-        Assert.True(SaveAfter(tx, FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme)) >= 0, "no save after the first clear");
+        // First clear: let both of its saves go out, short of the release.
+        var guard = 0;
+        while (SaveFramesSince(tx, 0) < 2 && guard++ < 20)
+        {
+            ShortTicks(hub, 1, 250);
+        }
+        Assert.True(SaveFramesSince(tx, 0) >= 2, "the clear was not saved twice");
         Assert.False(Released(tx));
-        // The bits come back before the settle ran out.
         fan.ThemeSwitch = 1;
-        var lastSwitchBefore = tx.SentFrames.Count;
-        ShortTicks(hub, 10);
-        var secondSwitch = tx.SentFrames.FindIndex(lastSwitchBefore, f => f.Length > 24 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSwitchWirelessTheme);
-        Assert.True(secondSwitch >= 0, "the returning bits were not cleared again");
+        var mark = tx.SentFrames.Count;
+        var cleared = false;
+        for (var i = 0; i < 40 && !Released(tx); i++)
+        {
+            ShortTicks(hub, 1, 250);
+            cleared |= (fan.ThemeSwitch & 1) == 0;
+        }
+        Assert.True(cleared, "the returning bits were not cleared again");
+        var secondSwitch = tx.SentFrames.FindIndex(mark, f => f.Length > 24 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSwitchWirelessTheme);
+        Assert.True(secondSwitch >= 0);
         var release = ReleaseIndex(tx);
         Assert.True(release > secondSwitch, "no release");
-        Assert.True(SaveAfter(tx, secondSwitch) is var save && save > secondSwitch && save < release, "the second clear was not saved before the release");
+        var save = SaveAfter(tx, secondSwitch);
+        Assert.True(save > secondSwitch && save < release, "the second clear was not saved before the release");
+    }
+
+    private static int SaveFramesSince(Slv3TestHub.FakeTxTransport tx, int index) =>
+        tx.SentFrames.Skip(index).Count(f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSaveCfg);
+
+    [Fact]
+    public void Theme_bits_that_return_late_get_one_more_hold_before_the_release()
+    {
+        var (hub, _, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 20);
+        hub.SetLockBoundDevices(false);
+        ShortTicks(hub, 3);
+        tx.SentFrames.Clear();
+        Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
+        while ((fan.ThemeSwitch & 1) != 0)
+        {
+            ShortTicks(hub, 1, 250);
+        }
+        ShortTicks(hub, 1, 250);
+        // The bits return just as the hold runs out; the clear then needs the extension.
+        _clock += Slv3Hub.FlexLcdUnbindHoldMs;
+        fan.ThemeSwitch = 1;
+        fan.DropCommands = 1;
+        var mark = tx.SentFrames.Count;
+        ShortTicks(hub, 1, 250);
+        Assert.False(Released(tx), "released with the bits set");
+        for (var i = 0; i < 40 && !Released(tx); i++)
+        {
+            ShortTicks(hub, 1, 250);
+        }
+        Assert.Equal(0, fan.ThemeSwitch & 1);
+        var secondSwitch = tx.SentFrames.FindIndex(mark, f => f.Length > 24 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSwitchWirelessTheme);
+        Assert.True(secondSwitch >= 0 && ReleaseIndex(tx) > secondSwitch, "the extension did not let the bits clear first");
     }
 
     [Fact]

@@ -325,6 +325,12 @@ public sealed partial class Slv3Hub
                 continue;
             }
             var present = TryFindRecordLocked(Convert.FromHexString(key), out var record);
+            if (present && deferred.ClearedAtMs >= 0 && !deferred.Extended && IsBoundToUsLocked(record) && (record.WirelessThemeSwitch & FlexLcdMask(record)) != 0)
+            {
+                // Bits that return after a clear get one more hold to be cleared and saved again.
+                deferred.DeadlineMs = Math.Max(deferred.DeadlineMs, nowMs) + FlexLcdUnbindHoldMs;
+                deferred.Extended = true;
+            }
             var waiting = present && IsBoundToUsLocked(record) && nowMs < deferred.DeadlineMs && (record.WirelessThemeSwitch & FlexLcdMask(record)) != 0;
             if (waiting)
             {
