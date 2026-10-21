@@ -524,15 +524,45 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void By_default_nothing_is_paced_and_a_picture_goes_out_in_well_under_a_second()
+    public void With_the_pace_at_zero_nothing_is_paced_and_a_picture_goes_out_in_well_under_a_second()
     {
         var link = new GlacialLcdLink();
         link.StreamOpened(new object());
-        var driver = new GlacialLcdPanelDriver(link, settleMs: 0);
+        var driver = new GlacialLcdPanelDriver(link, paceScalePercent: 0, settleMs: 0);
 
         long ms = TimedUpload(driver, new FakePipe(), new FakeHid());
 
         Assert.True(ms < 1500, ms.ToString());
+    }
+
+    [Fact]
+    public void The_default_pace_is_a_fifth_of_the_captured_timing()
+    {
+        Assert.Equal(19, new GlacialLcdPanelDriver(new GlacialLcdLink()).ConfiguredPaceScalePercent);
+        Assert.Equal(19, new Nexus.Service.Persistence.DevicesSettings().GlacialLcdPaceScalePercent);
+    }
+
+    [Theory]
+    [InlineData(0, 19)]
+    [InlineData(-5, 19)]
+    [InlineData(1, 1)]
+    [InlineData(100, 100)]
+    [InlineData(5000, 1000)]
+    public void A_stored_pace_of_zero_counts_as_unset_and_the_top_is_capped(int stored, int expected)
+    {
+        Assert.Equal(expected, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdPaceScale(stored));
+    }
+
+    [Fact]
+    public void A_settings_file_without_the_key_gets_the_default_and_one_with_zero_resolves_to_it()
+    {
+        var absent = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"devices\":{}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+        var zero = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"devices\":{\"glacialLcdPaceScalePercent\":0}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+
+        Assert.Equal(19, absent.Devices.GlacialLcdPaceScalePercent);
+        Assert.Equal(19, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdPaceScale(zero.Devices.GlacialLcdPaceScalePercent));
     }
 
     [Fact]
