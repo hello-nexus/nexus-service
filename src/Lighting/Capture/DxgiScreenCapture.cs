@@ -55,6 +55,7 @@ public sealed class DxgiScreenCapture : IDisposable
     private void CreateStaging()
     {
         _stagingTexture?.Dispose();
+        _stagingTexture = null;
         _stagingTexture = _device!.CreateTexture2D(new Texture2DDescription
         {
             Width = (uint)_surfW, Height = (uint)_surfH, MipLevels = 1, ArraySize = 1,
@@ -67,6 +68,7 @@ public sealed class DxgiScreenCapture : IDisposable
     {
         if (_duplication is null || _context is null || _stagingTexture is null) return false;
         if (_frameAcquired) ReleaseFrame();
+        var duplicationFrameHeld = false;
         try
         {
             var result = _duplication.AcquireNextFrame(timeoutMs, out _, out var resource);
@@ -75,6 +77,7 @@ public sealed class DxgiScreenCapture : IDisposable
                 if (result.Code != Vortice.DXGI.ResultCode.WaitTimeout.Code) IsLost = true;
                 return false;
             }
+            duplicationFrameHeld = true;
             using var tex = resource!.QueryInterface<ID3D11Texture2D>();
             // CopyResource silently does nothing on a size mismatch, which leaves the staging texture black.
             var td = tex.Description;
@@ -86,11 +89,17 @@ public sealed class DxgiScreenCapture : IDisposable
             _context.CopyResource(_stagingTexture!, tex);
             _context.Flush();
             _duplication.ReleaseFrame();
+            duplicationFrameHeld = false;
             resource.Dispose();
             _frameAcquired = true;
             return true;
         }
-        catch { IsLost = true; return false; }
+        catch
+        {
+            IsLost = true;
+            if (duplicationFrameHeld) { try { _duplication.ReleaseFrame(); } catch { } }
+            return false;
+        }
     }
 
     public byte[]? ReadRegion(int x, int y, int w, int h)

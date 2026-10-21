@@ -4,7 +4,7 @@ namespace Nexus.Service.Tests.Lighting;
 
 public class DesktopRotationTests
 {
-    // Native surface 4x2, value at (x, y) = y * 4 + x.
+    // Each surface cell holds its own pixel index, so a mapped value identifies its source pixel.
     private const int SurfW = 4;
     private const int SurfH = 2;
 
