@@ -67,7 +67,7 @@ internal readonly struct LedSpotGeometry
         sy = (_frameCy + llx * _sin + _midY * _cos) * _ky;
     }
 
-    /// <summary>The canvas-pixel bounding rect of a box given in the frame's normalized unrotated space, laid out like LED positions are (frame rect, rotation, canvas scale).</summary>
+    /// <summary>The canvas-pixel axis-aligned bounding rect of a box given in the frame's normalized unrotated space, laid out like LED positions are (frame rect, rotation, canvas scale); at a rotation that is not a right-angle multiple it reads the rect's bounding box, slightly more than the turned box.</summary>
     public void MapBox(float u0, float v0, float u1, float v1, out float x0, out float y0, out float x1, out float y1)
     {
         x0 = y0 = float.MaxValue;

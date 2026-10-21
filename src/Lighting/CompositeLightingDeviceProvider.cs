@@ -395,15 +395,10 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         return rgb;
     }
 
-    /// <summary>Marks each area-sampled card and hands it its boxes, from the engine frame's layout (the layout the sampler reads), else from a plain linear layout. Keeps the engine's id set in step with settings.</summary>
+    /// <summary>Marks each area-sampled card and hands it the boxes of the engine frame it is sampled from. Read only: the engine's id set is seeded at startup and by the route.</summary>
     internal static void ApplyAreaSampling(LightingEngine engine, List<LightingDevice> devices, NexusSettings settings)
     {
         var ids = settings.Devices.AreaSamplingDevices;
-        if (ids.Count == 0 && !engine.AnyAreaSampling)
-        {
-            return;
-        }
-        engine.SetAreaSamplingIfChanged(ids);
         if (ids.Count == 0)
         {
             return;
@@ -425,9 +420,15 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
                     break;
                 }
             }
-            dev.AreaBoxes = frame is not null && frame.LedCount == dev.LedCount
-                ? engine.AreaBoxesFor(frame)
-                : AreaBoxes.Compute(null, null, null, dev.LedCount, 0, dev.LedCount);
+            // Exactly what the engine samples for this card id (frames are created under their card's id). A card with no
+            // frame is never sampled, so it has no boxes; a frame of another length is cut or padded with empty boxes so the
+            // wire length stays 4 x LedCount.
+            var boxes = (frame is null ? null : engine.AreaBoxesFor(frame, requireOn: false)) ?? new float[0];
+            if (boxes.Length != dev.LedCount * 4)
+            {
+                Array.Resize(ref boxes, dev.LedCount * 4);
+            }
+            dev.AreaBoxes = boxes;
         }
     }
 

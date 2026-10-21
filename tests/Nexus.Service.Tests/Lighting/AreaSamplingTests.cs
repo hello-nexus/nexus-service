@@ -184,7 +184,7 @@ public class AreaSamplingTests
     public void Card_CarriesAreaSamplingAndBoxesFromTheEngineFrame()
     {
         using var engine = new LightingEngine();
-        var frame = new DeviceFrame(0, "card", 3, 0, 0, 100, 20);
+        var frame = new DeviceFrame(0, "card", 3, 0, 0, 100, 20) { LedDisabled = new[] { false, true, false } };
         engine.UpdateDevices(new[] { frame });
         var cards = new List<LightingDevice> { new() { Id = "card", LedCount = 3 }, new() { Id = "plain", LedCount = 3 } };
         var settings = new NexusSettings();
@@ -193,10 +193,83 @@ public class AreaSamplingTests
         CompositeLightingDeviceProvider.ApplyAreaSampling(engine, cards, settings);
 
         Assert.True(cards[0].AreaSampling);
-        Assert.NotNull(cards[0].AreaBoxes);
-        Assert.Equal(12, cards[0].AreaBoxes!.Length);
+        Assert.Equal(AreaBoxes.Compute(null, null, frame.LedDisabled, 3, 0, 3), cards[0].AreaBoxes);
         Assert.False(cards[1].AreaSampling);
         Assert.Null(cards[1].AreaBoxes);
+    }
+
+    [Fact]
+    public void Card_BoxesKeepFourPerLed_UnderAShorterPreviewCountAndAMismatchedFrame()
+    {
+        using var engine = new LightingEngine();
+        var frame = new DeviceFrame(0, "card", 6, 0, 0, 100, 20) { PreviewLedCount = 4 };
+        engine.UpdateDevices(new[] { frame });
+        var settings = new NexusSettings();
+        settings.Devices.AreaSamplingDevices.AddRange(new[] { "card", "short", "noframe" });
+        engine.UpdateDevices(new[] { frame, new DeviceFrame(1, "short", 8, 0, 0, 100, 20) });
+        var cards = new List<LightingDevice>
+        {
+            new() { Id = "card", LedCount = 6 }, new() { Id = "short", LedCount = 5 }, new() { Id = "noframe", LedCount = 2 },
+        };
+
+        CompositeLightingDeviceProvider.ApplyAreaSampling(engine, cards, settings);
+
+        Assert.Equal(24, cards[0].AreaBoxes!.Length);
+        Assert.Equal(new float[] { 0, 0, 0, 0, 0, 0, 0, 0 }, cards[0].AreaBoxes![16..]);
+        Assert.NotEqual(0f, cards[0].AreaBoxes![2]);
+        Assert.Equal(20, cards[1].AreaBoxes!.Length);
+        Assert.Equal(8, cards[2].AreaBoxes!.Length);
+        Assert.All(cards[2].AreaBoxes!, x => Assert.Equal(0f, x));
+    }
+
+    [Fact]
+    public async Task TurnedOnThenOff_MatchesAnUntouchedEngine()
+    {
+        static void Scene(CanvasBuffer c)
+        {
+            for (var y = 0; y < c.Height; y++)
+            {
+                for (var x = 0; x < c.Width; x++)
+                {
+                    c.SetPixel(x, y, (byte)(x * 255 / (c.Width - 1)), (byte)(y * 255 / (c.Height - 1)), 40);
+                }
+            }
+        }
+        var untouched = await RenderOnce(EdgeKeyboard(), Scene, area: false);
+        using var engine = new LightingEngine();
+        engine.SetAreaSampling(new[] { "kb" });
+        Assert.NotNull(engine.AreaBoxesFor(EdgeKeyboard()));
+        engine.SetAreaSampling(Array.Empty<string>());
+        var dev = EdgeKeyboard();
+        engine.UpdateDevices(new[] { dev });
+        engine.FrameIntervalMs = 10;
+        var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.OnFrame += _ => tcs.TrySetResult(dev.LedBytes.ToArray());
+        engine.SetEffect(new PaintEffect(Scene));
+        await Task.WhenAny(tcs.Task, Task.Delay(3000));
+        Assert.Equal(untouched, await tcs.Task);
+    }
+
+    [Fact]
+    public void Cache_KeepsWholeFrameAndRunBoxesApart()
+    {
+        using var engine = new LightingEngine();
+        engine.SetAreaSampling(new[] { "x" });
+        var whole = engine.AreaBoxesFor("x", 8, null, null, null, 0, 8);
+        var run = engine.AreaBoxesFor("x", 8, null, null, null, 0, 4);
+        Assert.Equal(32, whole!.Length);
+        Assert.Equal(16, run!.Length);
+        Assert.Same(whole, engine.AreaBoxesFor("x", 8, null, null, null, 0, 8));
+    }
+
+    [Fact]
+    public void SummedAreaTable_DoesNotOverflowOnALargeWhiteCanvas()
+    {
+        var canvas = new CanvasBuffer(400, 400);
+        canvas.Fill(255, 255, 255);
+        var sat = new AreaSat();
+        sat.Build(canvas);
+        Assert.Equal(((byte)255, (byte)255, (byte)255), sat.Mean(0, 0, 399, 399));
     }
 
     [Fact]

@@ -20,7 +20,7 @@ public sealed partial class LightingEngine
     // Card ids whose LEDs read the mean of a box instead of a spot. Replaced wholesale, never mutated.
     private volatile HashSet<string>? _areaIds;
     // Boxes per (card, run), rebuilt only when the layout content changes. Shared by the loop, the look-ahead builder and the DTO.
-    private readonly ConcurrentDictionary<(string Id, int Lo), AreaEntry> _areaBoxes = new();
+    private readonly ConcurrentDictionary<(string Id, int Lo, int Hi), AreaEntry> _areaBoxes = new();
     // Loop thread only: one summed-area table per canvas read this pass, reused across passes.
     private readonly List<(CanvasBuffer Canvas, AreaSat Sat)> _areaSats = new();
     private int _areaSatCount;
@@ -36,17 +36,6 @@ public sealed partial class LightingEngine
         _areaBoxes.Clear();
     }
 
-    /// <summary>Applies the settings list only when it differs from the live set, so a listing does not drop the box cache.</summary>
-    internal void SetAreaSamplingIfChanged(IReadOnlyCollection<string> ids)
-    {
-        var cur = _areaIds;
-        if (ids.Count == (cur?.Count ?? 0) && (cur is null || cur.SetEquals(ids)))
-        {
-            return;
-        }
-        SetAreaSampling(ids);
-    }
-
     internal bool IsAreaSampled(string id) => _areaIds?.Contains(id) == true;
 
     /// <summary>
@@ -54,14 +43,14 @@ public sealed partial class LightingEngine
     /// Cached: the layout arrays are swapped whole on change, and a transient editor layout arrives as fresh arrays of equal
     /// content each tick, so content is compared when the references differ.
     /// </summary>
-    internal float[]? AreaBoxesFor(string id, int ledCount, float[]? u, float[]? v, bool[]? disabled, int lo, int hi)
+    internal float[]? AreaBoxesFor(string id, int ledCount, float[]? u, float[]? v, bool[]? disabled, int lo, int hi, bool requireOn = true)
     {
-        if (!IsAreaSampled(id))
+        if (requireOn && !IsAreaSampled(id))
         {
             return null;
         }
-        var key = (id, lo);
-        if (_areaBoxes.TryGetValue(key, out var e) && e.Count == ledCount && e.Hi == hi
+        var key = (id, lo, hi);
+        if (_areaBoxes.TryGetValue(key, out var e) && e.Count == ledCount
             && Same(e.U, u) && Same(e.V, v) && Same(e.Disabled, disabled))
         {
             return e.Boxes;
@@ -82,15 +71,15 @@ public sealed partial class LightingEngine
         ReferenceEquals(a, b) || (a is not null && b is not null && a.AsSpan().SequenceEqual(b));
 
     /// <summary>Boxes of a whole frame, as the sampler resolves its layout (editor preview included).</summary>
-    internal float[]? AreaBoxesFor(DeviceFrame dev)
+    internal float[]? AreaBoxesFor(DeviceFrame dev, bool requireOn = true)
     {
-        if (!IsAreaSampled(dev.Id))
+        if (requireOn && !IsAreaSampled(dev.Id))
         {
             return null;
         }
         var count = dev.PreviewLedCount is { } pc ? Math.Min(pc, dev.LedCount) : dev.LedCount;
         ResolveLayout(dev, count, out var u, out var v, out var disabled);
-        return AreaBoxesFor(dev.Id, count, u, v, disabled, 0, count);
+        return AreaBoxesFor(dev.Id, count, u, v, disabled, 0, count, requireOn);
     }
 
     /// <summary>The per-LED layout arrays the sampler reads: the editor draft when one is live, else the saved layout.</summary>
@@ -166,7 +155,16 @@ public sealed partial class LightingEngine
         float u0, float uSpan, float v0, float vSpan, float kx, float ky)
     {
         var o = k * 4;
-        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+        // Black only when the box centre is off screen, as the spot read does; a corner that fails to project is ignored.
+        var cu = (boxes[o] + boxes[o + 2]) * 0.5f;
+        var cv = (boxes[o + 1] + boxes[o + 3]) * 0.5f;
+        if (!cam.Project(quad.At(
+                uSpan > 1e-6f ? Math.Clamp((cu - u0) / uSpan, 0f, 1f) : 0.5f,
+                vSpan > 1e-6f ? Math.Clamp((cv - v0) / vSpan, 0f, 1f) : 0.5f), out var mx, out var my))
+        {
+            return (0, 0, 0);
+        }
+        float minX = mx, minY = my, maxX = mx, maxY = my;
         for (var c = 0; c < 4; c++)
         {
             var bu = boxes[o + ((c & 1) == 0 ? 0 : 2)];
@@ -175,7 +173,7 @@ public sealed partial class LightingEngine
             var v = vSpan > 1e-6f ? Math.Clamp((bv - v0) / vSpan, 0f, 1f) : 0.5f;
             if (!cam.Project(quad.At(u, v), out var px, out var py))
             {
-                return (0, 0, 0);
+                continue;
             }
             minX = MathF.Min(minX, px);
             maxX = MathF.Max(maxX, px);

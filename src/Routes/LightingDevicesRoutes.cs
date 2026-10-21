@@ -941,7 +941,8 @@ public static partial class DevicesRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            if (string.IsNullOrEmpty(body.Id) || !ld.GetAll().Devices.Any(c => c.Id == body.Id))
+            // Turning off needs no listed card, so a stale id of an unplugged device can still be cleared.
+            if (string.IsNullOrEmpty(body.Id) || (body.Enabled && !ld.GetAll().Devices.Any(c => c.Id == body.Id)))
             {
                 return Results.BadRequest(ApiResponse.Fail("Invalid id."));
             }

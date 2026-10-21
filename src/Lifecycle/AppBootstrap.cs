@@ -297,6 +297,7 @@ internal static class AppBootstrap
             // Stacks are lighting-profile state the engine only re-reads on a
             // stack save, so the incoming profile's slots are pushed here.
             lightingEngine.SetStackSlots(configStore.Load().Lighting.DeviceStacks);
+            lightingEngine.SetAreaSampling(configStore.Load().Devices.AreaSamplingDevices);
 
             // Keeb is profile-scoped via the Device sharing category;
             // push the incoming profile's game mode/firmware lighting/

@@ -97,7 +97,7 @@ internal sealed class AreaSat
     private static readonly ushort[] ToLinear = BuildToLinear();
     private static readonly byte[] ToSrgb = BuildToSrgb();
 
-    private int[] _sum = Array.Empty<int>();
+    private long[] _sum = Array.Empty<long>();
     private int _w;
     private int _h;
 
@@ -134,7 +134,7 @@ internal sealed class AreaSat
         var need = stride * (h + 1) * 3;
         if (_sum.Length != need)
         {
-            _sum = new int[need];
+            _sum = new long[need];
         }
         _w = w;
         _h = h;
@@ -142,7 +142,7 @@ internal sealed class AreaSat
         var sum = _sum;
         for (var y = 0; y < h; y++)
         {
-            int r = 0, g = 0, b = 0;
+            long r = 0, g = 0, b = 0;
             var row = (y + 1) * stride;
             var above = y * stride;
             var src = y * w * 3;
@@ -176,9 +176,9 @@ internal sealed class AreaSat
         long n = (long)(ix1 - ix0 + 1) * (iy1 - iy0 + 1);
         var half = n / 2;
         var s = _sum;
-        var r = ((long)s[br] - s[bl] - s[tr] + s[tl] + half) / n;
-        var g = ((long)s[br + 1] - s[bl + 1] - s[tr + 1] + s[tl + 1] + half) / n;
-        var b = ((long)s[br + 2] - s[bl + 2] - s[tr + 2] + s[tl + 2] + half) / n;
+        var r = (s[br] - s[bl] - s[tr] + s[tl] + half) / n;
+        var g = (s[br + 1] - s[bl + 1] - s[tr + 1] + s[tl + 1] + half) / n;
+        var b = (s[br + 2] - s[bl + 2] - s[tr + 2] + s[tl + 2] + half) / n;
         return (ToSrgb[(int)Math.Min(r, LinMax)], ToSrgb[(int)Math.Min(g, LinMax)], ToSrgb[(int)Math.Min(b, LinMax)]);
     }
 

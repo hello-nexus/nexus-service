@@ -601,7 +601,9 @@ public static class NexusServiceCollectionExtensions
             engine.Pins = sp.GetRequiredService<Nexus.Service.Lighting.DevicePinTracker>();
             engine.LedColorLocks = sp.GetRequiredService<Nexus.Service.Lighting.LedColorLockTracker>();
             engine.KeyReactive = sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
-            engine.SetStackSlots(sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Lighting.DeviceStacks);
+            var areaSettings = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load();
+            engine.SetStackSlots(areaSettings.Lighting.DeviceStacks);
+            engine.SetAreaSampling(areaSettings.Devices.AreaSamplingDevices);
             return engine;
         });
         services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>();
