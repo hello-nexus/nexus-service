@@ -289,6 +289,24 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
+    public void With_the_nexus_panel_off_nothing_uploads_and_no_flush_is_sent()
+    {
+        var link = new GlacialLcdLink { NexusPanelEnabled = false };
+        var driver = Fast(link);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Looked(driver);
+
+        Assert.Equal(0, driver.UploadAttempts);
+        Assert.Empty(pipe.Writes);
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0xF1);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
     public void A_dark_display_or_a_waiting_native_edit_holds_the_upload()
     {
         var link = new GlacialLcdLink();

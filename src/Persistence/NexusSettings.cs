@@ -1446,6 +1446,12 @@ public sealed class DevicesSettings
 
     public const int DefaultGlacialLcdUploadPacePercent = 4;
 
+    /// <summary>
+    /// Hidden. Off, the Glacial LCD keeps only its native modes: nothing streams or uploads to it,
+    /// no panel record is kept for it, and the Nexus panel mode is unavailable. Read at start.
+    /// </summary>
+    public bool GlacialLcdNexusPanel { get; set; }
+
     /// <summary>The pace to use for a stored value: unset (0 or less) is the default, and the top is capped.</summary>
     public static int ResolveGlacialLcdUploadPace(int stored) =>
         stored <= 0 ? DefaultGlacialLcdUploadPacePercent : Math.Min(stored, 1000);

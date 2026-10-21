@@ -1430,8 +1430,35 @@ public static class NexusServiceCollectionExtensions
         var glacialStreamDriver = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver(glacialLink);
         var glacialStreamHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(glacialStreamDriver);
         services.AddSingleton(glacialStreamHub);
+        // Hidden setting, read at start: off, the stream driver never connects and an install that
+        // had the Nexus panel mode is moved to the native modes before the coordinator starts.
         services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
         {
+            var cfg = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            bool on = false;
+            cfg.Read(s => on = s.Devices.GlacialLcdNexusPanel);
+            glacialLink.NexusPanelEnabled = on;
+            return new Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelMigrationService(() =>
+            {
+                if (!on)
+                {
+                    Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelMigration.Run(
+                        cfg,
+                        sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>(),
+                        sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>().Get,
+                        sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove);
+                }
+            });
+        });
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+        {
+            var gateStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            bool nexusPanel = false;
+            gateStore.Read(s => nexusPanel = s.Devices.GlacialLcdNexusPanel);
+            if (!nexusPanel)
+            {
+                return new Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelMigrationService(() => { });
+            }
             glacialStreamDriver.BindMemory(new Nexus.Service.Peripherals.BulkPanels.ConfigStoreLcdUploadMemory(
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
             // Hidden: percent of the captured vendor pacing, read at the start of each upload.
@@ -1458,7 +1485,8 @@ public static class NexusServiceCollectionExtensions
                 {
                     bool chosen = false;
                     sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
-                        s => chosen = Nexus.Service.Persistence.GlacialLcdSettings.StreamChosen(s.Devices.GlacialLcd));
+                        s => chosen = s.Devices.GlacialLcdNexusPanel
+                            && Nexus.Service.Persistence.GlacialLcdSettings.StreamChosen(s.Devices.GlacialLcd));
                     return !chosen;
                 },
                 listedWhileWithheld: true));

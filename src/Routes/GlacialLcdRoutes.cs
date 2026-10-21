@@ -16,7 +16,7 @@ public static partial class DevicesRoutes
     private static void MapGlacialLcdEndpoints(WebApplication app)
     {
         app.MapGet("/devices/asus-glacial-lcd/state", (IConfigStore store, GlacialLcdWorker worker, ISensorProvider sensors) =>
-            Results.Json(BuildGlacialState(ReadGlacial(store), worker.IsConnected, sensors), AppJsonContext.Default.GlacialLcdStateResponse));
+            Results.Json(BuildGlacialState(ReadGlacial(store), worker.IsConnected, sensors, NexusPanelOn(store)), AppJsonContext.Default.GlacialLcdStateResponse));
 
         app.MapPut("/devices/asus-glacial-lcd/settings", (GlacialLcdSettingsRequest body, IConfigStore store, GlacialLcdWorker worker, GlacialLcdLink link, IServiceProvider services) =>
         {
@@ -24,6 +24,10 @@ public static partial class DevicesRoutes
                 && body.Mode is not (GlacialLcdSettings.ModeStatic or GlacialLcdSettings.ModeAnimated or GlacialLcdSettings.ModeMonitor or GlacialLcdSettings.ModePanel))
             {
                 return Results.BadRequest(ApiResponse.Fail("unknown mode"));
+            }
+            if (body.Mode == GlacialLcdSettings.ModePanel && !NexusPanelOn(store))
+            {
+                return Results.BadRequest(ApiResponse.Fail("nexus panel mode is unavailable"));
             }
             if (body.StaticAsset is int sa && !GlacialLcdProtocol.StaticAssets.Contains(sa))
             {
@@ -119,8 +123,16 @@ public static partial class DevicesRoutes
         return copy;
     }
 
-    private static GlacialLcdStateResponse BuildGlacialState(GlacialLcdSettings g, bool connected, ISensorProvider sensors) => new()
+    private static bool NexusPanelOn(IConfigStore store)
     {
+        bool on = false;
+        store.Read(s => on = s.Devices.GlacialLcdNexusPanel);
+        return on;
+    }
+
+    internal static GlacialLcdStateResponse BuildGlacialState(GlacialLcdSettings g, bool connected, ISensorProvider sensors, bool panelModeAvailable) => new()
+    {
+        PanelModeAvailable = panelModeAvailable,
         IsConnected = connected,
         ModeChosen = g.ModeChosen,
         DisplayOn = g.DisplayOn,
@@ -162,6 +174,8 @@ public sealed class GlacialLcdSlotDto
 public sealed class GlacialLcdStateResponse
 {
     public bool IsConnected { get; set; }
+    /// <summary>False when the Nexus panel mode is off for this display, so the page offers only the native modes.</summary>
+    public bool PanelModeAvailable { get; set; }
     public bool DisplayOn { get; set; }
     /// <summary>False until the user has picked a mode, when the mode, asset and widget fields are placeholders and the panel's actual mode is unknown.</summary>
     public bool ModeChosen { get; set; }

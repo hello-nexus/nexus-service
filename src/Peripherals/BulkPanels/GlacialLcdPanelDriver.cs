@@ -91,6 +91,9 @@ public sealed class GlacialLcdLink
     /// <summary>The user's choice still is the Nexus Panel mode; cleared the moment they pick a native one, so an upload stops before the session closes.</summary>
     public volatile bool StreamWanted = true;
 
+    /// <summary>False keeps the stream driver from ever uploading; the service sets it from the hidden setting at start.</summary>
+    public volatile bool NexusPanelEnabled = true;
+
     /// <summary>Raised when the streaming flag flips, so the native worker looks again at once.</summary>
     public event Action? Changed;
 
@@ -459,7 +462,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     }
 
     /// <summary>True when an upload may start or go on: a stream the user wants, the display lit, and no native edit waiting.</summary>
-    private bool CanUpload() => _link.Streaming && _link.StreamWanted && !_link.Dark && !_link.NativePending;
+    private bool CanUpload() => _link.NexusPanelEnabled && _link.Streaming && _link.StreamWanted && !_link.Dark && !_link.NativePending;
 
     private bool Ready()
     {
