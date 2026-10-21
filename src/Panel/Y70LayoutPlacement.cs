@@ -116,7 +116,7 @@ internal static class Y70LayoutPlacement
 
     private static (int Col, int Row)? FirstFreeRect(List<PanelWidgetDto> existing, int colSpan, int rowSpan)
     {
-        var cs = colSpan > GridCols ? GridCols : colSpan;
+        var cs = colSpan;
         var rs = rowSpan;
         var rects = new List<(int Col, int Row, int ColSpan, int RowSpan)>(existing.Count);
         foreach (var w in existing)
