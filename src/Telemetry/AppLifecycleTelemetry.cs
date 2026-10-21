@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Widgets;
@@ -39,16 +40,17 @@ public static class AppLifecycleTelemetry
         }
     }
 
-    /// <summary>App widget instance id to app id for one layout; empty for a null layout.</summary>
+    /// <summary>App widget instance id to app id for one layout; empty for a null layout. Enumerates snapshots, so a layout being edited elsewhere cannot throw mid-walk.</summary>
     internal static Dictionary<string, string> AppWidgets(PanelLayoutDto? layout)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (layout is null) return result;
-        foreach (var page in layout.Pages)
+        if (layout?.Pages is null) return result;
+        foreach (var page in layout.Pages.ToArray())
         {
-            foreach (var w in page.Widgets)
+            if (page?.Widgets is null) continue;
+            foreach (var w in page.Widgets.ToArray())
             {
-                if (WidgetSettingsService.MarketplaceIdFromType(w.Type) is { } appId && AppIds.IsValid(appId))
+                if (w is not null && WidgetSettingsService.MarketplaceIdFromType(w.Type) is { } appId && AppIds.IsValid(appId))
                     result[w.Id] = appId;
             }
         }
@@ -57,24 +59,32 @@ public static class AppLifecycleTelemetry
 
     /// <summary>
     /// Emits app_placed / app_removed for the app widget instances that appeared in or left the layout. A save that
-    /// keeps the same instances emits nothing. A null <paramref name="before"/> is a layout seen for the first time,
-    /// not a placement, so it emits nothing. <paramref name="surfaceOverride"/> names the surface when the layout is not a device's (the desktop dashboard).
+    /// keeps the same instances emits nothing. A null <paramref name="before"/> is a layout never saved, which holds
+    /// no app widgets, so its first placement is reported. <paramref name="surfaceOverride"/> names the surface when
+    /// the layout is not a device's (the desktop dashboard). Never throws: telemetry must not fail a layout save.
     /// </summary>
     public static void LayoutChanged(ITelemetry telemetry, PanelLayoutDto? before, PanelLayoutDto? after, string? surfaceOverride = null)
     {
-        if (before is null || after is null) return;
-        var was = AppWidgets(before);
-        var now = AppWidgets(after);
-        var surface = surfaceOverride ?? after.Surface;
-        foreach (var (instance, appId) in now)
+        if (after is null) return;
+        try
         {
-            if (!was.ContainsKey(instance))
-                telemetry.Capture(TelemetryEvents.AppPlaced, ("app_id", appId), ("surface", surface));
+            var was = AppWidgets(before);
+            var now = AppWidgets(after);
+            var surface = surfaceOverride ?? after.Surface;
+            foreach (var (instance, appId) in now)
+            {
+                if (!was.ContainsKey(instance))
+                    telemetry.Capture(TelemetryEvents.AppPlaced, ("app_id", appId), ("surface", surface));
+            }
+            foreach (var (instance, appId) in was)
+            {
+                if (!now.ContainsKey(instance))
+                    telemetry.Capture(TelemetryEvents.AppRemoved, ("app_id", appId), ("surface", surface));
+            }
         }
-        foreach (var (instance, appId) in was)
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or NullReferenceException)
         {
-            if (!now.ContainsKey(instance))
-                telemetry.Capture(TelemetryEvents.AppRemoved, ("app_id", appId), ("surface", surface));
+            Console.Error.WriteLine($"[telemetry] layout diff skipped: {ex.GetType().Name}");
         }
     }
 }

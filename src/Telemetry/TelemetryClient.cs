@@ -38,6 +38,7 @@ internal sealed class TelemetryClient : ITelemetry, IDisposable
 
         Enqueue(new TelemetryEvent
         {
+            Id = Guid.NewGuid().ToString(),
             Name = @event,
             Timestamp = DateTimeOffset.UtcNow,
             Properties = Map(properties),
@@ -51,6 +52,7 @@ internal sealed class TelemetryClient : ITelemetry, IDisposable
 
         Enqueue(new TelemetryEvent
         {
+            Id = Guid.NewGuid().ToString(),
             Name = "$identify",
             Timestamp = DateTimeOffset.UtcNow,
             Set = Map(properties),

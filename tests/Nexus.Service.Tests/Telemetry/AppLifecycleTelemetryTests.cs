@@ -59,11 +59,10 @@ public sealed class AppLifecycleTelemetryTests : IDisposable
     }
 
     [Fact]
-    public void Surface_override_names_the_desktop_dashboard_and_first_seen_still_emits_nothing()
+    public void Surface_override_names_the_desktop_dashboard()
     {
         var t = new Recorder();
         AppLifecycleTelemetry.LayoutChanged(t, Layout("y70"), Layout("y70", ("b", "app:com.x.app")), "desktop");
-        AppLifecycleTelemetry.LayoutChanged(t, null, Layout("y70", ("c", "app:com.y.app")), "desktop");
 
         var e = Assert.Single(t.Events);
         Assert.Equal("desktop", e.Props["surface"]);
@@ -89,11 +88,24 @@ public sealed class AppLifecycleTelemetryTests : IDisposable
     }
 
     [Fact]
-    public void A_layout_with_no_previous_one_emits_nothing_and_non_app_types_are_ignored()
+    public void A_never_saved_layout_reports_its_first_placement_and_non_app_types_are_ignored()
     {
         var t = new Recorder();
         AppLifecycleTelemetry.LayoutChanged(t, null, Layout("y70", ("b", "app:com.x.app")));
+        Assert.Equal(new[] { TelemetryEvents.AppPlaced }, t.Names);
+        t.Events.Clear();
         AppLifecycleTelemetry.LayoutChanged(t, Layout("y70"), Layout("y70", ("a", "clock"), ("d", "app:")));
+        Assert.Empty(t.Events);
+    }
+
+    [Fact]
+    public void Null_pages_or_widgets_do_not_throw()
+    {
+        var t = new Recorder();
+        var broken = new PanelLayoutDto { Surface = "y70", Pages = null! };
+        var noWidgets = new PanelLayoutDto { Surface = "y70", Pages = { new PanelPageDto { Id = "p", Widgets = null! } } };
+        AppLifecycleTelemetry.LayoutChanged(t, broken, noWidgets);
+        AppLifecycleTelemetry.LayoutChanged(t, noWidgets, broken);
         Assert.Empty(t.Events);
     }
 
@@ -195,6 +207,30 @@ public sealed class AppLifecycleTelemetryTests : IDisposable
         var bad = await other.InstallAsync(new StoreInstallRequest { AppId = "com.hellonexus.aquarium", Version = "3.0.0", Sha256 = "00", Signature = "x" }, default);
         Assert.False(bad.Ok);
         Assert.Empty(t.Events);
+    }
+
+    [Fact]
+    public void Bundled_install_emits_app_installed_with_the_copied_version()
+    {
+        var bundled = Path.Combine(_root, "bundled");
+        var user = Path.Combine(_root, "user");
+        Directory.CreateDirectory(Path.Combine(bundled, "com.x.app"));
+        Directory.CreateDirectory(user);
+        File.WriteAllText(Path.Combine(bundled, "com.x.app", "manifest.json"),
+            "{\"schema\":\"nexus.app/1\",\"id\":\"com.x.app\",\"version\":\"1.0.0\",\"name\":\"X\",\"runtime\":\"sdk\"}");
+        File.WriteAllText(Path.Combine(bundled, "com.x.app", "widget.mjs"), "export default 1;");
+        var registry = new AppRegistry(() => new List<AppInstallPaths.Root>
+        {
+            new(user, AppInstallPaths.Source.User), new(bundled, AppInstallPaths.Source.Bundled),
+        });
+        var t = new Recorder();
+        var installer = new AppInstaller(registry, new Nexus.Service.Sensors.OemInfo(), t, () => user);
+
+        Assert.Null(installer.Install("com.x.app").Error);
+
+        var e = Assert.Single(t.Events);
+        Assert.Equal(TelemetryEvents.AppInstalled, e.Event);
+        Assert.Equal("1.0.0", e.Props["app_version"]);
     }
 
     [Theory]

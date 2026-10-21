@@ -60,19 +60,19 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
             if (source is null)
                 return null;
             var props = source.Where(p => ProfileFields.Contains(p.Key)).ToArray();
-            return props.Length == 0 ? null : New(ProfileEvent, e.Timestamp, props);
+            return props.Length == 0 ? null : New(e.Id, ProfileEvent, e.Timestamp, props);
         }
-        return New(e.Name, e.Timestamp, e.Properties);
+        return New(e.Id, e.Name, e.Timestamp, e.Properties);
     }
 
     private const int EnvelopeBytes = 128;
 
-    private static UsageEvent New(string name, DateTimeOffset ts, IReadOnlyList<KeyValuePair<string, object?>> props)
+    private static UsageEvent New(string eventId, string name, DateTimeOffset ts, IReadOnlyList<KeyValuePair<string, object?>> props)
     {
         var fitted = FitProps(props);
         return new()
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = string.IsNullOrEmpty(eventId) ? Guid.NewGuid().ToString() : eventId,
             Name = name,
             Timestamp = ts,
             Props = fitted,
@@ -192,10 +192,21 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
             {
                 foreach (var e in undrained)
                 {
-                    if (Map(e) is { } mapped)
-                        all.Add(mapped);
+                    // Its own try: one unmappable event (a non-finite number) must not drop the snapshot.
+                    try
+                    {
+                        if (Map(e) is { } mapped)
+                            all.Add(mapped);
+                    }
+                    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+                    {
+                        Console.Error.WriteLine($"[usage] skipped unmappable {e.Name} in snapshot: {ex.GetType().Name}");
+                    }
                 }
             }
+            // A flush tick between the client snapshot and the queue copy puts the same event in both, under one id.
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            all.RemoveAll(e => !seen.Add(e.Id));
             if (optedOut)
                 all.RemoveAll(e => e.Name != TelemetryEvents.OptOut);
             if (all.Count > MaxQueued)
@@ -217,7 +228,9 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
     {
         if (!Enabled)
             return;
-        Persist(UsageQueueFile.DefaultPath(), !store.Load().Telemetry.CollectAnonymousData, client.Snapshot());
+        // Client queue first, then the sink: an event drained in between is then in both, and Persist collapses it by id.
+        var undrained = client.Snapshot();
+        Persist(UsageQueueFile.DefaultPath(), !store.Load().Telemetry.CollectAnonymousData, undrained);
     }
 
     public void Clear()

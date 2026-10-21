@@ -110,12 +110,14 @@ public sealed class AppInstaller
             return new AppInstallResponse { Id = id, Installed = false, Error = "no user widgets directory" };
         }
 
+        string? previousVersion = null;
         try
         {
             // Lock the root ACL before writing into it (prod / LocalSystem only).
             AppInstallPaths.SecureUserRoots();
             Directory.CreateDirectory(userRoot);
             var dest = Path.Combine(userRoot, id);
+            previousVersion = Directory.Exists(dest) ? Nexus.Service.Telemetry.AppLifecycleTelemetry.ReadVersion(dest) : null;
             // Wipe existing dest so the copy is atomic-ish (only one widget
             // dir per id).
             if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true);
@@ -127,7 +129,7 @@ public sealed class AppInstaller
         }
 
         _registry.Refresh();
-        if (_registry.TryGet(id, out var installed))
+        if (_registry.TryGet(id, out var installed) && installed.Manifest.Version != previousVersion)
             Nexus.Service.Telemetry.AppLifecycleTelemetry.Installed(_telemetry, id, installed.Manifest.Version, Nexus.Service.Telemetry.AppLifecycleTelemetry.ReasonUser);
         return new AppInstallResponse { Id = id, Installed = true };
     }

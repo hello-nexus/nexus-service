@@ -56,6 +56,66 @@ public sealed class UsageQueuePersistenceTests : IDisposable
     }
 
     [Fact]
+    public async Task Timestamp_and_id_round_trip_exactly_so_a_resend_dedupes()
+    {
+        var sink = await Filled(Ev("a"));
+        var before = sink.Take(10);
+        sink.Requeue(before);
+        sink.Persist(QueuePath, optedOut: false);
+
+        var back = new UsageTelemetrySink(true);
+        back.Restore(QueuePath);
+        var e = Assert.Single(back.Take(10));
+        Assert.Equal(before[0].Timestamp.UtcTicks, e.Timestamp.UtcTicks);
+        Assert.Equal(before[0].Id, e.Id);
+    }
+
+    [Fact]
+    public async Task An_event_in_both_the_sink_and_the_client_snapshot_is_persisted_once()
+    {
+        var shared = new TelemetryEvent { Id = "same", Name = "a", Timestamp = DateTimeOffset.UtcNow };
+        var sink = new UsageTelemetrySink(true);
+        await sink.SendAsync("i", new[] { shared }, CancellationToken.None);
+
+        sink.Persist(QueuePath, optedOut: false, new[] { shared });
+
+        var back = new UsageTelemetrySink(true);
+        Assert.Equal(1, back.Restore(QueuePath));
+    }
+
+    [Fact]
+    public async Task One_unmappable_undrained_event_does_not_drop_the_snapshot()
+    {
+        var sink = await Filled(Ev("good"));
+        sink.Persist(QueuePath, optedOut: false, new[] { Ev("bad", ("v", double.NaN)), Ev("also_good") });
+
+        var back = new UsageTelemetrySink(true);
+        back.Restore(QueuePath);
+        Assert.Contains("good", back.Take(10).Select(e => e.Name));
+    }
+
+    [Fact]
+    public void Write_drops_the_oldest_events_to_stay_under_the_file_cap()
+    {
+        var big = new string('x', 1024 * 1024);
+        var events = Enumerable.Range(0, 12).Select(i => new UsageEvent
+        {
+            Id = "id" + i,
+            Name = "e" + i,
+            Timestamp = DateTimeOffset.UtcNow,
+            Props = new[] { new KeyValuePair<string, object?>("p", big) },
+        }).ToList();
+
+        UsageQueueFile.Write(QueuePath, events);
+
+        Assert.True(new FileInfo(QueuePath).Length <= UsageQueueFile.MaxFileBytes);
+        var back = UsageQueueFile.ReadAndDelete(QueuePath);
+        Assert.NotEmpty(back);
+        Assert.True(back.Count < events.Count);
+        Assert.Equal("e11", back[^1].Name);
+    }
+
+    [Fact]
     public async Task Restore_deletes_the_file_so_a_delivered_batch_is_not_resent_next_start()
     {
         var sink = await Filled(Ev("a"));

@@ -326,7 +326,7 @@ public static class AppRoutes
         app.MapPost("/apps-api/dispatch",
             async (AppDispatchRequest body, AppRegistry registry,
                    AppActionRegistry actions, AppDispatchRateLimiter limiter,
-                   IServiceProvider services, HttpContext ctx) =>
+                   IServiceProvider services, HttpContext ctx, Nexus.Service.Telemetry.AppUsageTracker usage) =>
         {
             if (!AppIds.IsValid(body.AppId))
             {
@@ -338,6 +338,8 @@ public static class AppRoutes
                 return Results.Json(new AppDispatchResponse { Ok = false, Error = "widget not installed" },
                     AppJsonContext.Default.AppDispatchResponse, statusCode: 404);
             }
+            // A running app calling the host is the recurring signal for a widget that stays mounted for days.
+            usage.Note(body.AppId, entry.Manifest.Version);
             if (!entry.Manifest.Capabilities.Dispatch.Contains(body.Action))
             {
                 return Results.Json(new AppDispatchResponse { Ok = false, Error = $"action '{body.Action}' not in manifest allowlist" },
@@ -379,8 +381,10 @@ public static class AppRoutes
         }).AllowPanel();
 
         app.MapPost("/apps-api/proxy",
-            async (AppProxyRequest body, AppProxyService proxy, HttpContext ctx) =>
+            async (AppProxyRequest body, AppProxyService proxy, HttpContext ctx, AppRegistry registry, Nexus.Service.Telemetry.AppUsageTracker usage) =>
         {
+            if (AppIds.IsValid(body.AppId) && registry.TryGet(body.AppId, out var proxied))
+                usage.Note(body.AppId, proxied.Manifest.Version);
             var result = await proxy.ExecuteAsync(body, ctx.RequestAborted);
             return Results.Json(result, AppJsonContext.Default.AppProxyResponse);
         }).AllowPanel();

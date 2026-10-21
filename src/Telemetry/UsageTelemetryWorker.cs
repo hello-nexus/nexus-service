@@ -15,7 +15,7 @@ internal sealed class UsageTelemetryWorker : BackgroundService
 
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan StopFlushTimeout = TimeSpan.FromSeconds(3);
-    // Two minutes keeps a steady stream at 30 requests/hour against nexus-api's 60/hour per-IP throttle (headroom for retries and a shared NAT); one minute would sit on the limit.
+    // Short enough that little is pending at an abrupt exit, long enough to stay well under nexus-api's per-IP request throttle with room for retries and a shared NAT.
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(2);
 
     private readonly UsageTelemetrySink _sink;

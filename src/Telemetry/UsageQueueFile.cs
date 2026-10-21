@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 
 namespace Nexus.Service.Telemetry;
@@ -10,7 +11,7 @@ namespace Nexus.Service.Telemetry;
 internal static class UsageQueueFile
 {
     internal const string FileName = "usage-queue.json";
-    // Well above a full queue of fitted events; anything bigger is not ours.
+    // Write drops the oldest events to stay under this; Read refuses a larger file as not ours.
     internal const long MaxFileBytes = 8 * 1024 * 1024;
 
     public static string DefaultPath() => Path.Combine(Persistence.NexusDataPaths.NexusRoot(), FileName);
@@ -22,6 +23,27 @@ internal static class UsageQueueFile
             TryDelete(path);
             return;
         }
+        var bytes = Serialize(events);
+        if (bytes.Length > MaxFileBytes)
+        {
+            var keep = (int)(events.Count * (double)MaxFileBytes / bytes.Length);
+            var kept = new List<UsageEvent>(events.Skip(Math.Max(0, events.Count - keep)));
+            while (kept.Count > 0 && (bytes = Serialize(kept)).Length > MaxFileBytes)
+                kept.RemoveRange(0, Math.Max(1, kept.Count / 10));
+            if (kept.Count == 0)
+            {
+                TryDelete(path);
+                return;
+            }
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var tmp = path + ".tmp";
+        File.WriteAllBytes(tmp, bytes);
+        File.Move(tmp, path, overwrite: true);
+    }
+
+    private static byte[] Serialize(IReadOnlyList<UsageEvent> events)
+    {
         var buffer = new ArrayBufferWriter<byte>();
         using (var w = new Utf8JsonWriter(buffer))
         {
@@ -32,7 +54,8 @@ internal static class UsageQueueFile
                 w.WriteStartObject();
                 w.WriteString("id", e.Id);
                 w.WriteString("name", e.Name);
-                w.WriteNumber("ts", e.Timestamp.ToUnixTimeMilliseconds());
+                // Ticks, not milliseconds: a resend must carry the identical ts for the api dedupe.
+                w.WriteNumber("ts", e.Timestamp.UtcTicks);
                 w.WriteNumber("bytes", e.Bytes);
                 w.WriteStartObject("props");
                 foreach (var p in e.Props)
@@ -46,10 +69,7 @@ internal static class UsageQueueFile
             w.WriteEndArray();
             w.WriteEndObject();
         }
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var tmp = path + ".tmp";
-        File.WriteAllBytes(tmp, buffer.WrittenSpan.ToArray());
-        File.Move(tmp, path, overwrite: true);
+        return buffer.WrittenSpan.ToArray();
     }
 
     /// <summary>Reads and deletes the file. A missing, oversized or corrupt file yields an empty list.</summary>
@@ -64,7 +84,7 @@ internal static class UsageQueueFile
             if (info.Length <= MaxFileBytes)
                 Parse(File.ReadAllBytes(path), result);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or KeyNotFoundException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or KeyNotFoundException or ArgumentOutOfRangeException)
         {
             result.Clear();
         }
@@ -84,7 +104,7 @@ internal static class UsageQueueFile
             {
                 Id = el.GetProperty("id").GetString() ?? "",
                 Name = el.GetProperty("name").GetString() ?? "",
-                Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(el.GetProperty("ts").GetInt64()),
+                Timestamp = new DateTimeOffset(el.GetProperty("ts").GetInt64(), TimeSpan.Zero),
                 Bytes = el.GetProperty("bytes").GetInt32(),
                 Props = props.ToArray(),
             });

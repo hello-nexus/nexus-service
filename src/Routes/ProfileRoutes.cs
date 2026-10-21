@@ -663,10 +663,10 @@ public static class ProfileRoutes
                 telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.DashboardModeChanged,
                     ("surface", "cooling"), ("from", cm.From), ("to", cm.To));
             }
-            if (dashboardAfter is not null)
-                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, dashboardBefore, dashboardAfter, "desktop");
             pm.MarkDirty();
             PanelTopics.BroadcastPrefs(hub);
+            if (dashboardAfter is not null)
+                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, dashboardBefore, dashboardAfter, "desktop");
             return ApiResponse.Ok();
         }).AllowPanel();
     }

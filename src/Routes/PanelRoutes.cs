@@ -356,8 +356,6 @@ public static class PanelRoutes
             var updated = registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
-            if (layoutBefore is not null)
-                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, layoutBefore, updated.Layout);
             // Registry mutations go through _store.Update -> OnChanged ->
             // ProfileManager.MarkDirty, so a look edit reaches the active
             // profile's Panels data on the next flush with no explicit pulse.
@@ -368,6 +366,8 @@ public static class PanelRoutes
             if (body.HighResolution.HasValue)
                 streams.Wake();
             BroadcastDeviceChanged(hub, id);
+            if (body.Layout is not null)
+                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, layoutBefore, updated.Layout);
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 

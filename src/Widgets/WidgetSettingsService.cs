@@ -95,12 +95,6 @@ public sealed class WidgetSettingsService
         return Get(instanceId);
     }
 
-    /// <summary>
-    /// Find the <see cref="PanelWidgetDto"/> with this id anywhere in the
-    /// persisted layouts (active desktop dashboard + every registered panel
-    /// device). Also resolves the marketplace manifest so callers don't need
-    /// a second lookup. Returns false if either step fails.
-    /// </summary>
     /// <summary>The app and version behind an app widget instance, false for any other id.</summary>
     public bool TryGetApp(string instanceId, out string appId, out string appVersion)
     {
@@ -112,6 +106,12 @@ public sealed class WidgetSettingsService
         return true;
     }
 
+    /// <summary>
+    /// Find the <see cref="PanelWidgetDto"/> with this id anywhere in the
+    /// persisted layouts (active desktop dashboard + every registered panel
+    /// device). Also resolves the marketplace manifest so callers don't need
+    /// a second lookup. Returns false if either step fails.
+    /// </summary>
     private bool TryResolve(NexusSettings s, string instanceId, out PanelWidgetDto? widget, out AppManifest? manifest)
     {
         widget = FindWidget(s, instanceId);
