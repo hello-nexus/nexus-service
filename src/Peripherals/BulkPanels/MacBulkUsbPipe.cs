@@ -131,6 +131,32 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
         }
     }
 
+    public bool ClearHalt(byte pipeId)
+    {
+        lock (_ioLock)
+        {
+            if (_disposed)
+            {
+                return false;
+            }
+            var pool = MacUsbHost.objc_autoreleasePoolPush();
+            try
+            {
+                var pipe = PipeFor(pipeId);
+                if (pipe == IntPtr.Zero)
+                {
+                    return false;
+                }
+                MacUsbHost.ClearStall(pipe);
+                return true;
+            }
+            finally
+            {
+                MacUsbHost.objc_autoreleasePoolPop(pool);
+            }
+        }
+    }
+
     public int Read(Span<byte> buffer, int timeoutMs) => Read(_readPipeId, buffer, timeoutMs);
 
     public int Read(byte pipeId, Span<byte> buffer, int timeoutMs)

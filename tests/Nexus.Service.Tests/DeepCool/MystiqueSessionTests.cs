@@ -80,18 +80,67 @@ public class MystiqueSessionTests
     }
 
     [Fact]
-    public void Tick_sets_the_clock_again_once_an_hour()
+    public void Tick_sets_the_clock_again_on_the_monotonic_schedule_whatever_the_wall_clock_says()
+    {
+        var pipe = new FakePipe();
+        long mono = 0;
+        var session = new MystiqueSession(pipe, () => mono, _ => TimeSpan.Zero);
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+        pipe.Writes.Clear();
+
+        mono = 59L * 60 * 1000;
+        Assert.True(session.Tick(default, Now.AddDays(30)));
+        Assert.DoesNotContain(MystiqueProtocol.CmdClock, pipe.Commands());
+
+        mono = 61L * 60 * 1000;
+        Assert.True(session.Tick(default, Now.AddSeconds(-5)));
+        Assert.Contains(MystiqueProtocol.CmdClock, pipe.Commands());
+    }
+
+    [Fact]
+    public void Tick_sets_the_clock_at_once_when_the_utc_offset_changes()
+    {
+        var pipe = new FakePipe();
+        var offset = TimeSpan.FromHours(-3);
+        var session = new MystiqueSession(pipe, () => 0, _ => offset);
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+        pipe.Writes.Clear();
+
+        Assert.True(session.Tick(default, Now.AddSeconds(1)));
+        Assert.DoesNotContain(MystiqueProtocol.CmdClock, pipe.Commands());
+
+        offset = TimeSpan.FromHours(-2);
+        Assert.True(session.Tick(default, Now.AddSeconds(2)));
+        Assert.Contains(MystiqueProtocol.CmdClock, pipe.Commands());
+    }
+
+    [Fact]
+    public void Open_clears_a_halt_on_the_settings_pipes_and_drains_stale_input()
+    {
+        var pipe = new FakePipe();
+        pipe.Incoming.Enqueue(MystiqueProtocol.BuildFrame(MystiqueProtocol.CmdMode, ReadOnlySpan<byte>.Empty, MystiqueProtocol.DeviceMagic));
+        pipe.Incoming.Enqueue(MystiqueProtocol.BuildFrame(MystiqueProtocol.CmdInfo, ReadOnlySpan<byte>.Empty, MystiqueProtocol.DeviceMagic));
+        var session = new MystiqueSession(pipe);
+
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+
+        Assert.Contains(MystiqueProtocol.SettingsWritePipe, pipe.Halts);
+        Assert.Contains(MystiqueProtocol.SettingsReadPipe, pipe.Halts);
+        Assert.Equal("03FF021004E0058494069B0700080009", session.Info);
+    }
+
+    [Fact]
+    public void A_reply_that_does_not_match_the_write_is_discarded_and_does_not_count_as_a_miss()
     {
         var pipe = new FakePipe();
         var session = new MystiqueSession(pipe);
         Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
-        pipe.Writes.Clear();
 
-        Assert.True(session.Tick(default, Now.AddMinutes(59)));
-        Assert.DoesNotContain(MystiqueProtocol.CmdClock, pipe.Commands());
-
-        Assert.True(session.Tick(default, Now.AddMinutes(61)));
-        Assert.Contains(MystiqueProtocol.CmdClock, pipe.Commands());
+        for (int i = 0; i < 20; i++)
+        {
+            pipe.Incoming.Enqueue(MystiqueProtocol.BuildFrame(MystiqueProtocol.CmdMode, ReadOnlySpan<byte>.Empty, MystiqueProtocol.DeviceMagic));
+            Assert.True(session.Tick(default, Now));
+        }
     }
 
     [Fact]
@@ -135,8 +184,8 @@ public class MystiqueSessionTests
 
     private sealed class FakePipe : IBulkUsbPipe
     {
-        private byte[]? _pending;
-
+        public Queue<byte[]> Incoming { get; } = new();
+        public List<byte> Halts { get; } = new();
         public List<(byte Pipe, byte[] Frame)> Writes { get; } = new();
         public bool FailWrites { get; set; }
         public bool Answer { get; set; } = true;
@@ -177,7 +226,7 @@ public class MystiqueSessionTests
                 {
                     reply = MystiqueProtocol.BuildFrame(frame[2], ReadOnlySpan<byte>.Empty, MystiqueProtocol.DeviceMagic);
                 }
-                _pending = reply;
+                Incoming.Enqueue(reply);
             }
             return true;
         }
@@ -190,14 +239,19 @@ public class MystiqueSessionTests
             {
                 return forced;
             }
-            if (_pending is null)
+            if (Incoming.Count == 0)
             {
                 return 0;
             }
-            _pending.CopyTo(buffer);
-            int n = _pending.Length;
-            _pending = null;
-            return n;
+            var next = Incoming.Dequeue();
+            next.CopyTo(buffer);
+            return next.Length;
+        }
+
+        public bool ClearHalt(byte pipeId)
+        {
+            Halts.Add(pipeId);
+            return true;
         }
 
         public void Dispose()

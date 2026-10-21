@@ -23,6 +23,9 @@ public interface IBulkUsbPipe : IDisposable
     /// <summary>Reads one bulk transfer from another IN pipe of the same interface; -1 when the transport has none.</summary>
     int Read(byte pipeId, Span<byte> buffer, int timeoutMs) => -1;
 
+    /// <summary>Clears a halt a previous owner left on a pipe; false when the transport cannot.</summary>
+    bool ClearHalt(byte pipeId) => false;
+
     /// <summary>USB product id of the opened device, for a driver that claims several; 0 when unknown.</summary>
     int ProductId => 0;
 
