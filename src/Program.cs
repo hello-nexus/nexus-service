@@ -980,14 +980,21 @@ static void FastServiceShutdown(WebApplication app)
         {
             try
             {
-                var left = teardownBudget - sw.Elapsed;
                 foreach (var glacial in glacialDrivers)
                 {
-                    if (left > TimeSpan.Zero)
+                    var left = teardownBudget - sw.Elapsed;
+                    if (left > TimeSpan.Zero && glacial.WaitIdle(left))
                     {
-                        glacial.WaitIdle(left);
+                        // The flush may have run before the upload's last step; its remembered picture is written again.
+                        glacial.PersistState();
+                    }
+                    else
+                    {
+                        // Cut short: nothing is assumed to be on display, so the next start uploads afresh.
+                        glacial.ForgetRemembered();
                     }
                 }
+                Nexus.Service.Peripherals.BulkPanels.GlacialLcdLog.Flush(300);
             }
             catch { }
         }),

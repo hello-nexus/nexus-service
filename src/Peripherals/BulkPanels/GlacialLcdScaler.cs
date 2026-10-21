@@ -37,8 +37,8 @@ public static class GlacialLcdScaler
 
     /// <summary>
     /// Size of a frame scaled by <paramref name="percent"/>, which snaps to the nearest step that
-    /// keeps the frame's exact aspect ratio on whole 8-pixel blocks: for 9:16 that is a multiple of
-    /// 72 by 128, so 10 percent steps. At least two steps.
+    /// keeps the frame's exact aspect ratio on whole 8-pixel blocks (the panel's 9:16 gives coarse
+    /// steps). At least two steps.
     /// </summary>
     public static (int Width, int Height) ScaledSize(int width, int height, int percent)
     {

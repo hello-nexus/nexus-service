@@ -69,8 +69,8 @@ public sealed class GlacialLcdWorker : BackgroundService
 
     public bool IsConnected => _connected;
 
-    /// <summary>Longest wait for an upload in flight when the host goes to sleep, within what the suspend notification allows.</summary>
-    private const int SuspendWaitMs = 4000;
+    /// <summary>Longest wait for an upload in flight when the host goes to sleep; the suspend notification runs on the shared power-event pump, which the OS gives only a short time.</summary>
+    private const int SuspendWaitMs = 1500;
 
 #if WINDOWS
     private bool _powerEventsSubscribed;
@@ -132,6 +132,7 @@ public sealed class GlacialLcdWorker : BackgroundService
         {
             GlacialLcdLog.Write($"upload in flight when the host suspended, not finished after {watch.ElapsedMilliseconds}ms");
         }
+        GlacialLcdLog.Flush(300);
     }
 
     internal void OnHostResumed()

@@ -68,12 +68,12 @@ public static class GlacialLcdLog
         }
     }
 
-    /// <summary>Waits until every queued line is on disk.</summary>
-    internal static void Flush()
+    /// <summary>Waits until every queued line is on disk, or the timeout.</summary>
+    public static void Flush(int timeoutMs = 10_000)
     {
         lock (Gate)
         {
-            var deadline = Environment.TickCount64 + 10_000;
+            var deadline = Environment.TickCount64 + timeoutMs;
             while ((Pending.Count > 0 || _busy) && Environment.TickCount64 < deadline)
             {
                 Monitor.Wait(Gate, 50);

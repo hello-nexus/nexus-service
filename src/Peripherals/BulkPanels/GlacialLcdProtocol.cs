@@ -178,6 +178,8 @@ public static class GlacialLcdProtocol
     /// The reports MB Manager sends before the bulk transfers, each with the gap it left before
     /// it, in the order captured: begin, flush, target slot, stage, then the 24-bit size.
     /// </summary>
+    public const int PreludeGapTotalMs = 291 + 25 + 67 + 112 + 516;
+
     public static (byte[] Report, int GapMs)[] EncodeCustomImagePrelude(int jpegBytes, int slotId)
     {
         if (jpegBytes <= 0 || jpegBytes > 0xFFFFFF)

@@ -195,6 +195,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private const int EstimateOverheadMs = 3000;
 
+    /// <summary>Reports in the prelude before the bulk transfers.</summary>
+    private const int PreludeSteps = 5;
+
     /// <summary>State queries tried before the panel is called stalled.</summary>
     private const int StallDcTries = 3;
 
@@ -1058,7 +1061,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         public string? Error { get; set; }
     }
 
-    /// <summary>One chunk gap: the captured interval for a 4 KB transfer, scaled by the pace and by the transfer size.</summary>
+    /// <summary>One chunk gap: the captured interval per protocol-size transfer, scaled by the pace and by the transfer size.</summary>
     private static int ChunkGapMs(int pace, int chunkBytes) =>
         (int)((long)GlacialLcdProtocol.ChunkIntervalMs * pace / 100 * chunkBytes / GlacialLcdProtocol.ChunkBytes);
 
@@ -1067,8 +1070,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     {
         int chunkBytes = cfg.ChunkKb * 1024;
         long chunks = (jpegBytes + chunkBytes - 1) / chunkBytes;
-        long fixedGaps = (long)(1011 + GlacialLcdProtocol.ChunkLeadMs + GlacialLcdProtocol.FinishSettleMs) * cfg.PacePercent / 100;
-        return (int)Math.Min(int.MaxValue / 2, fixedGaps + chunks * ChunkGapMs(cfg.PacePercent, chunkBytes) + FinishReplyWaitMs);
+        long fixedGaps = (long)(GlacialLcdProtocol.PreludeGapTotalMs + GlacialLcdProtocol.ChunkLeadMs + GlacialLcdProtocol.FinishSettleMs) * cfg.PacePercent / 100;
+        // Both state queries may run their full retries, and each prelude step waits for its report.
+        long waits = 2L * StallDcTries * DefaultStallReplyMs + PreludeSteps * ReplyWaitMs;
+        return (int)Math.Min(int.MaxValue / 2, fixedGaps + chunks * ChunkGapMs(cfg.PacePercent, chunkBytes) + FinishReplyWaitMs + waits);
     }
 
     private void Tx(UploadRun run, System.Diagnostics.Stopwatch sinceStart, string step) =>
@@ -1212,13 +1217,13 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         int index = 0;
         for (int offset = 0; offset < jpeg.Length; offset += chunkBytes, index++)
         {
-            // The last transfer is zero padded past the picture's end to the next 4 KB boundary, as the vendor's is.
+            // The last transfer is zero padded past the picture's end to the next protocol-size boundary, as the vendor's is.
             int take = Math.Min(chunkBytes, jpeg.Length - offset);
             int length = Math.Min(chunkBytes, (take + GlacialLcdProtocol.ChunkBytes - 1) / GlacialLcdProtocol.ChunkBytes * GlacialLcdProtocol.ChunkBytes);
             Array.Clear(chunk);
             jpeg.AsSpan(offset, take).CopyTo(chunk);
             chunkTimer.Restart();
-            if (!BulkWrite(state, chunk.AsSpan(0, length).ToArray()))
+            if (!BulkWrite(state, length == chunkBytes ? chunk : chunk.AsSpan(0, length).ToArray()))
             {
                 return Fail($"bulk write failed at chunk {index}");
             }
@@ -1402,6 +1407,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     }
 
     public void PersistState() => PersistNow();
+
+    /// <summary>Drops the remembered picture, so the next start uploads afresh.</summary>
+    public void ForgetRemembered() => ForgetPicture(null);
 
     /// <summary>Stops new uploads; one in flight runs on. Called first on shutdown and before a detach.</summary>
     public void BeginShutdown()
