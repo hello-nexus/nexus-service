@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Mappings;
@@ -73,11 +74,38 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     /// </summary>
     public void OnHubStateUpdated()
     {
+        MigrateFlexZones();
         var sig = BuildSignature();
         if (sig == _lastSignature) return;
         _lastSignature = sig;
         WireNewStrimers();
         try { DevicesChanged?.Invoke(); } catch { /* swallow subscriber failures */ }
+    }
+
+    // First sight of a bound SL-INF Flex chain moves its saved zone data to the real zones.
+    private void MigrateFlexZones()
+    {
+        List<(string Mac, int Fans)>? pending = null;
+        var done = _store.Load().Devices.LianLiWireless.FlexZonesMigrated;
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (fan.BoundToUs && !fan.Stale && fan.FanCount > 0 && FlexFamilyOf(fan) == FlexFamily.SlInfFlex
+                && !done.Contains(fan.Mac, StringComparer.OrdinalIgnoreCase))
+            {
+                (pending ??= new()).Add((fan.Mac, fan.FanCount));
+            }
+        }
+        if (pending is null) return;
+        _store.Update(s =>
+        {
+            foreach (var (mac, fans) in pending)
+            {
+                if (Slv3FlexZoneMigration.Apply(s, mac, fans))
+                {
+                    ServiceLog.Info($"[lianli-wireless] {mac}: saved zone data moved to Center/Inner/Outer");
+                }
+            }
+        });
     }
 
     // First sight of a bound Strimer wires its catalog product to the cable:

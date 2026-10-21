@@ -1776,6 +1776,9 @@ public sealed class LianLiWirelessSettings
 
     /// <summary>L-Connect's device lock: owned devices are bound back from any state, including another master. A missing value reads as on.</summary>
     public bool LockBoundDevices { get; set; } = true;
+
+    /// <summary>SL-INF Flex chains (MAC hex, uppercase) whose saved zone data was moved to the Center / Inner / Outer split.</summary>
+    public List<string> FlexZonesMigrated { get; set; } = new();
 }
 
 /// <summary>What a HydroShift II's screen shows while Nexus drives its pump.</summary>
