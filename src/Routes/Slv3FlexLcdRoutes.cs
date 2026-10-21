@@ -76,49 +76,61 @@ public static class Slv3FlexLcdRoutes
         app.MapGet("/devices/lianli-wireless/flex-lcd", (Slv3Hub hub, IConfigStore store) =>
             Results.Json(BuildResponse(hub.State, store.Load()), AppJsonContext.Default.Slv3FlexLcdResponse));
 
-        app.MapPut("/devices/lianli-wireless/flex-lcd/{mac}", (string mac, Slv3FlexLcdRequest body, Slv3Hub hub, IConfigStore store) =>
+        app.MapPut("/devices/lianli-wireless/flex-lcd/{mac}", (string mac, Slv3FlexLcdRequest body, Slv3Hub hub, IConfigStore store, Nexus.Service.Sockets.MultiplexHub mux) =>
         {
-            var chain = EligibleChains(hub.State).FirstOrDefault(f => string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase));
-            if (chain is null)
+            var (status, error, swapChanged) = Put(mac, body, hub.State, store);
+            if (swapChanged)
             {
-                return Results.Json(ApiResponse.Fail("not an LCD Flex fan bound to this PC"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+                Nexus.Service.Sockets.PanelTopics.BroadcastLighting(mux);
             }
-            var chainKey = chain.Mac.ToUpperInvariant();
-            var isTl = Slv3Protocol.ClassifyFanFamily((byte)chain.FanType) != Slv3FanFamily.SlInfFlex;
-            if (body.UpDownSwap is not null && !isTl)
-            {
-                return Results.Json(ApiResponse.Fail("up/down swap is not supported"), AppJsonContext.Default.ApiResponse, statusCode: 400);
-            }
-            store.Load().Devices.LianLiWireless.FlexLcd.TryGetValue(chainKey, out var snapshot);
-            if (Validate(body, chain.FanCount, snapshot) is { } early)
-            {
-                return Results.Json(ApiResponse.Fail(early), AppJsonContext.Default.ApiResponse, statusCode: 400);
-            }
-            string? error = null;
-            store.Update(s =>
-            {
-                s.Devices.LianLiWireless.FlexLcd.TryGetValue(chain.Mac.ToUpperInvariant(), out var current);
-                error = Validate(body, chain.FanCount, current);
-                if (error is null)
-                {
-                    Apply(s.Devices.LianLiWireless.FlexLcd, chain.Mac.ToUpperInvariant(), chain.FanCount, body);
-                    if (body.UpDownSwap is { } swap)
-                    {
-                        s.Devices.FlexUnits.TryGetValue(chainKey, out var look);
-                        var next = new Dictionary<string, LianLiFlexUnitSettings>(s.Devices.FlexUnits, StringComparer.Ordinal)
-                        {
-                            [chainKey] = LianLiFlexRoutes.Patch(look ?? new LianLiFlexUnitSettings(), new LianLiFlexChainLightingRequest { UpDownSwap = swap }, Nexus.Service.Peripherals.LianLiFlex.FlexFamily.TlFlex),
-                        };
-                        s.Devices.FlexUnits = next;
-                    }
-                }
-            });
+            return status == 200
+                ? Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse)
+                : Results.Json(ApiResponse.Fail(error ?? ""), AppJsonContext.Default.ApiResponse, statusCode: status);
+        });
+    }
+
+    /// <summary>Validates and stores one chain's patch; a rejected patch writes nothing. Reports whether the up/down swap changed.</summary>
+    internal static (int Status, string? Error, bool SwapChanged) Put(string mac, Slv3FlexLcdRequest body, Slv3State state, IConfigStore store)
+    {
+        var chain = EligibleChains(state).FirstOrDefault(f => string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase));
+        if (chain is null)
+        {
+            return (404, "not an LCD Flex fan bound to this PC", false);
+        }
+        var chainKey = chain.Mac.ToUpperInvariant();
+        var isTl = Slv3Protocol.ClassifyFanFamily((byte)chain.FanType) != Slv3FanFamily.SlInfFlex;
+        if (body.UpDownSwap is not null && !isTl)
+        {
+            return (400, "up/down swap is not supported", false);
+        }
+        store.Load().Devices.LianLiWireless.FlexLcd.TryGetValue(chainKey, out var snapshot);
+        if (Validate(body, chain.FanCount, snapshot) is { } early)
+        {
+            return (400, early, false);
+        }
+        string? error = null;
+        var swapChanged = false;
+        store.Update(s =>
+        {
+            s.Devices.LianLiWireless.FlexLcd.TryGetValue(chainKey, out var current);
+            error = Validate(body, chain.FanCount, current);
             if (error is not null)
             {
-                return Results.Json(ApiResponse.Fail(error), AppJsonContext.Default.ApiResponse, statusCode: 400);
+                return;
             }
-            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+            Apply(s.Devices.LianLiWireless.FlexLcd, chainKey, chain.FanCount, body);
+            if (body.UpDownSwap is { } swap)
+            {
+                s.Devices.FlexUnits.TryGetValue(chainKey, out var look);
+                swapChanged = (look?.UpDownSwap ?? false) != swap;
+                var next = new Dictionary<string, LianLiFlexUnitSettings>(s.Devices.FlexUnits, StringComparer.Ordinal)
+                {
+                    [chainKey] = LianLiFlexRoutes.Patch(look ?? new LianLiFlexUnitSettings(), new LianLiFlexChainLightingRequest { UpDownSwap = swap }, Nexus.Service.Peripherals.LianLiFlex.FlexFamily.TlFlex),
+                };
+                s.Devices.FlexUnits = next;
+            }
         });
+        return error is null ? (200, null, swapChanged) : (400, error, false);
     }
 
     internal static IEnumerable<Slv3FanInfo> EligibleChains(Slv3State state) =>

@@ -433,6 +433,123 @@ public class Slv3FlexLcdTests
         Assert.False(Released(tx));
     }
 
+    private static int SaveAfter(Slv3TestHub.FakeTxTransport tx, int index) =>
+        tx.SentFrames.FindIndex(index + 1, f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSaveCfg);
+
+    private static int ReleaseIndex(Slv3TestHub.FakeTxTransport tx) =>
+        tx.SentFrames.FindIndex(f => f.Length > 17 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfBind && f.AsSpan(12, 6).ToArray().All(x => x == 0));
+
+    [Fact]
+    public void Theme_bits_that_return_after_a_clear_are_cleared_and_saved_again_before_the_release()
+    {
+        var (hub, _, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 20);
+        hub.SetLockBoundDevices(false);
+        ShortTicks(hub, 3);
+        tx.SentFrames.Clear();
+        Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
+        while ((fan.ThemeSwitch & 1) != 0)
+        {
+            ShortTicks(hub, 1);
+        }
+        ShortTicks(hub, 1);
+        Assert.True(SaveAfter(tx, FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme)) >= 0, "no save after the first clear");
+        Assert.False(Released(tx));
+        // The bits come back before the settle ran out.
+        fan.ThemeSwitch = 1;
+        var lastSwitchBefore = tx.SentFrames.Count;
+        ShortTicks(hub, 10);
+        var secondSwitch = tx.SentFrames.FindIndex(lastSwitchBefore, f => f.Length > 24 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSwitchWirelessTheme);
+        Assert.True(secondSwitch >= 0, "the returning bits were not cleared again");
+        var release = ReleaseIndex(tx);
+        Assert.True(release > secondSwitch, "no release");
+        Assert.True(SaveAfter(tx, secondSwitch) is var save && save > secondSwitch && save < release, "the second clear was not saved before the release");
+    }
+
+    [Fact]
+    public void A_chain_that_leaves_the_list_during_the_hold_is_released_when_it_returns()
+    {
+        var (hub, net, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 20);
+        hub.SetLockBoundDevices(false);
+        ShortTicks(hub, 3);
+        fan.IgnoreCommands = true;
+        tx.SentFrames.Clear();
+        Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
+        net.Fans.Remove(fan);
+        _clock += 40_000;
+        Assert.True(hub.DriveTick());
+        Assert.False(Released(tx), "a gone chain was sent a release");
+        net.Fans.Add(fan);
+        ShortTicks(hub, 8);
+        Assert.True(Released(tx), "the returning chain stayed bound");
+    }
+
+    [Fact]
+    public void An_unbind_right_after_unlocking_still_waits_for_the_switch_off()
+    {
+        var (hub, _, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 20);
+        fan.DropCommands = 2;
+        hub.SetLockBoundDevices(false);
+        tx.SentFrames.Clear();
+        Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out var error), error);
+        var ticks = 0;
+        while ((fan.ThemeSwitch & 1) != 0 && ticks++ < 7)
+        {
+            ShortTicks(hub, 1);
+            Assert.False(Released(tx), "released while the theme bits were still set");
+        }
+        ShortTicks(hub, 8);
+        Assert.True(Released(tx));
+    }
+
+    private sealed class CountingStore : IConfigStore
+    {
+        private readonly NexusSettings _settings = new();
+        public int Updates { get; private set; }
+        public string SettingsPath => ":memory:";
+        public NexusSettings Load() => _settings;
+        public void Update(Action<NexusSettings> mutator) { mutator(_settings); Updates++; OnChanged?.Invoke(); }
+        public void Reload() { }
+        public void FlushNow() { }
+        public event Action? OnChanged;
+    }
+
+    [Fact]
+    public void A_rejected_put_leaves_the_store_untouched()
+    {
+        var (hub, _, _, _) = Rig();
+        var store = new CountingStore();
+        var (status, error, _) = Slv3FlexLcdRoutes.Put("6D1007F517E1", new Slv3FlexLcdRequest { Brightness = 0 }, hub.State, store);
+        Assert.Equal(400, status);
+        Assert.NotNull(error);
+        Assert.Equal(0, store.Updates);
+        Assert.Empty(store.Load().Devices.LianLiWireless.FlexLcd);
+        Assert.Equal(404, Slv3FlexLcdRoutes.Put("AABBCCDDEEFF", new Slv3FlexLcdRequest { Enabled = true }, hub.State, store).Status);
+        Assert.Equal(0, store.Updates);
+    }
+
+    [Fact]
+    public void The_up_down_swap_is_refused_for_an_sl_inf_chain_and_stored_for_a_tl_chain()
+    {
+        var (slHub, _, _, _) = Rig(fansType: 43);
+        var store = new CountingStore();
+        Assert.Equal(400, Slv3FlexLcdRoutes.Put("6D1007F517E1", new Slv3FlexLcdRequest { UpDownSwap = true }, slHub.State, store).Status);
+        Assert.Equal(0, store.Updates);
+        Assert.Empty(store.Load().Devices.FlexUnits);
+
+        var (tlHub, _, _, _) = Rig();
+        var (status, _, changed) = Slv3FlexLcdRoutes.Put("6D1007F517E1", new Slv3FlexLcdRequest { UpDownSwap = true }, tlHub.State, store);
+        Assert.Equal(200, status);
+        Assert.True(changed);
+        Assert.True(store.Load().Devices.FlexUnits["6D1007F517E1"].UpDownSwap);
+        Assert.False(Slv3FlexLcdRoutes.Put("6D1007F517E1", new Slv3FlexLcdRequest { UpDownSwap = true }, tlHub.State, store).SwapChanged);
+    }
+
     [Fact]
     public void Theme_frames_are_never_resent_to_a_chain_that_is_no_longer_bound_to_us()
     {

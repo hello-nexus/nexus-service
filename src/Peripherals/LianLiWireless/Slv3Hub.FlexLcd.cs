@@ -328,6 +328,9 @@ public sealed partial class Slv3Hub
             var waiting = present && IsBoundToUsLocked(record) && nowMs < deferred.DeadlineMs && (record.WirelessThemeSwitch & FlexLcdMask(record)) != 0;
             if (waiting)
             {
+                // Bits that came back after a clear invalidate the save sent for it.
+                deferred.ClearedAtMs = -1;
+                deferred.SavedAgain = false;
                 if (!_pendingCommands.ContainsKey(key))
                 {
                     QueueSequencedCommandLocked(record, Slv3Protocol.RfSwitchWirelessTheme, (byte)(record.WirelessThemeSwitch & ~FlexLcdMask(record)));

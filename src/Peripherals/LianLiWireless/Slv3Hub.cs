@@ -1951,7 +1951,7 @@ public sealed partial class Slv3Hub : IDisposable
         return true;
     }
 
-    // The confirmed chains of this reply in report order, then chains an incomplete reply left out in their old order.
+    // The confirmed chains of this reply in report order, then chains an incomplete reply left out in their old order, then any known chain still missing.
     private void UpdateReportOrderLocked(List<Slv3DeviceRecord> pollRecords)
     {
         var order = new List<string>(_knownChains.Count);
