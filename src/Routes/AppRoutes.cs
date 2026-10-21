@@ -88,16 +88,23 @@ public static class AppRoutes
         }).AllowPanel();
 
         app.MapGet("/apps-api/instance/{instanceId}/settings",
-            (string instanceId, WidgetSettingsService settings, Nexus.Service.Telemetry.AppUsageTracker usage) =>
+            (string instanceId, WidgetSettingsService settings) =>
         {
-            // The widget host loads this when an app widget mounts, which is the service's only render signal.
-            if (settings.TryGetApp(instanceId, out var appId, out var appVersion))
-                usage.Note(appId, appVersion);
             // Instance ids are GUIDs assigned at widget-placement time, so we
             // don't apply the marketplace-id charset whitelist. The service
             // returns an empty doc when the id doesn't resolve to a known
             // placement - the SPA renders that as "no settings".
             return Results.Json(settings.Get(instanceId), AppJsonContext.Default.WidgetSettingsDocument);
+        }).AllowPanel();
+
+        // The widget host posts this when an app widget mounts and hourly while it stays mounted; the settings
+        // editor does not, so editing a widget is not counted as use. The per-day dedupe lives in the tracker.
+        app.MapPost("/apps-api/instance/{instanceId}/used",
+            (string instanceId, WidgetSettingsService settings, Nexus.Service.Telemetry.AppUsageTracker usage) =>
+        {
+            if (settings.TryGetApp(instanceId, out var appId, out var appVersion))
+                usage.Note(appId, appVersion);
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).AllowPanel();
 
         app.MapPatch("/apps-api/instance/{instanceId}/settings",
@@ -326,7 +333,7 @@ public static class AppRoutes
         app.MapPost("/apps-api/dispatch",
             async (AppDispatchRequest body, AppRegistry registry,
                    AppActionRegistry actions, AppDispatchRateLimiter limiter,
-                   IServiceProvider services, HttpContext ctx, Nexus.Service.Telemetry.AppUsageTracker usage) =>
+                   IServiceProvider services, HttpContext ctx) =>
         {
             if (!AppIds.IsValid(body.AppId))
             {
@@ -338,8 +345,6 @@ public static class AppRoutes
                 return Results.Json(new AppDispatchResponse { Ok = false, Error = "widget not installed" },
                     AppJsonContext.Default.AppDispatchResponse, statusCode: 404);
             }
-            // A running app calling the host is the recurring signal for a widget that stays mounted for days.
-            usage.Note(body.AppId, entry.Manifest.Version);
             if (!entry.Manifest.Capabilities.Dispatch.Contains(body.Action))
             {
                 return Results.Json(new AppDispatchResponse { Ok = false, Error = $"action '{body.Action}' not in manifest allowlist" },
@@ -381,10 +386,8 @@ public static class AppRoutes
         }).AllowPanel();
 
         app.MapPost("/apps-api/proxy",
-            async (AppProxyRequest body, AppProxyService proxy, HttpContext ctx, AppRegistry registry, Nexus.Service.Telemetry.AppUsageTracker usage) =>
+            async (AppProxyRequest body, AppProxyService proxy, HttpContext ctx) =>
         {
-            if (AppIds.IsValid(body.AppId) && registry.TryGet(body.AppId, out var proxied))
-                usage.Note(body.AppId, proxied.Manifest.Version);
             var result = await proxy.ExecuteAsync(body, ctx.RequestAborted);
             return Results.Json(result, AppJsonContext.Default.AppProxyResponse);
         }).AllowPanel();
