@@ -107,7 +107,6 @@ public sealed class RgbBridge : IDisposable
     private Action<ReadOnlyMemory<byte>>? _frameHandler;
     private Action? _deviceListHandler;
     private IReadOnlyList<RgbDevice> _devices = Array.Empty<RgbDevice>();
-    private bool _deviceListSettled;
     private HashSet<int> _directModeApplied = new();
     private CancellationTokenSource? _refreshCts;
     private Task? _shutdownTask;
@@ -356,26 +355,6 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
-    /// <summary>Active: the daemon is wanted. ListKnown: connected, a list was read since Activate, and detection is not streaming devices in. Controllers: each one's name and location.</summary>
-    public (bool Active, bool ListKnown, IReadOnlyList<(string Name, string Location)> Controllers) GetOwnershipView()
-    {
-        bool active;
-        bool settled;
-        (string Name, string Location)[] controllers;
-        lock (_lock)
-        {
-            active = _active;
-            settled = _deviceListSettled;
-            controllers = new (string Name, string Location)[_devices.Count];
-            for (var i = 0; i < controllers.Length; i++)
-            {
-                controllers[i] = (_devices[i].Name, _devices[i].Location);
-            }
-        }
-
-        return (active, settled && _controller.IsConnected && !DetectionInProgress(), controllers);
-    }
-
     public bool IsActive
     {
         get
@@ -520,7 +499,6 @@ public sealed class RgbBridge : IDisposable
             cts = _refreshCts;
             _refreshCts = null;
             _devices = Array.Empty<RgbDevice>();
-            _deviceListSettled = false;
             // Views counted the emptied list on the restart broadcast; the first refresh after Activate must re-announce even an unchanged set.
             _frameIdSignature = "";
             _directModeApplied = new();
@@ -1380,7 +1358,6 @@ public sealed class RgbBridge : IDisposable
             lock (_lock)
             {
                 _devices = finalList;
-                _deviceListSettled = true;
                 var addresses = new int[finalList.Count];
                 for (var i = 0; i < addresses.Length; i++)
                 {

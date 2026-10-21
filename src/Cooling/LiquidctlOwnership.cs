@@ -5,115 +5,23 @@ using System.Text.Json;
 
 namespace Nexus.Service.Cooling;
 
-public enum OpenRgbOwnershipState
-{
-    /// <summary>No OpenRGB daemon is wanted; liquidctl may open every device.</summary>
-    Off,
-    /// <summary>The daemon is wanted but its device list is not read yet; Commander Core family devices stay closed.</summary>
-    Unknown,
-    /// <summary>The daemon's controller locations are known.</summary>
-    Known,
-}
-
-/// <summary>What OpenRGB currently holds, as seen by the liquidctl poller.</summary>
-internal sealed record OpenRgbOwnership(OpenRgbOwnershipState State, IReadOnlySet<string> HidrawNodes, bool HasCommanderCore)
-{
-    public static readonly OpenRgbOwnership Off = new(OpenRgbOwnershipState.Off, new HashSet<string>(), false);
-    public static readonly OpenRgbOwnership Unknown = new(OpenRgbOwnershipState.Unknown, new HashSet<string>(), false);
-
-    public static OpenRgbOwnership FromView(bool active, bool listKnown, IEnumerable<(string Name, string Location)> controllers)
-    {
-        if (!active)
-            return Off;
-        if (!listKnown)
-            return Unknown;
-        var nodes = new HashSet<string>(StringComparer.Ordinal);
-        var core = false;
-        foreach (var (name, location) in controllers)
-        {
-            var node = LiquidctlOwnership.NormalizeHidraw(location);
-            if (node is not null)
-                nodes.Add(node);
-            if (LiquidctlOwnership.IsCommanderCoreName(name))
-                core = true;
-        }
-        return new OpenRgbOwnership(OpenRgbOwnershipState.Known, nodes, core);
-    }
-}
-
-internal sealed record LiquidctlListEntry(string Address, string Bus, int? VendorId, int? ProductId, string Description);
-
-internal enum LiquidctlSkip { None, OpenRgbOwns, OpenRgbPending }
+internal sealed record LiquidctlListEntry(string Address, int? VendorId, int? ProductId, string Description);
 
 internal static class LiquidctlOwnership
 {
     private const int CorsairVendorId = 0x1B1C;
-    private static readonly int[] CommanderCoreProductIds = { 0x0C1C, 0x0C2A, 0x0C32 };
+    // Every product id the OpenRGB fork's Commander Core detector registers.
+    private static readonly int[] CommanderCoreProductIds = { 0x0C1C, 0x0C1D, 0x0C2A, 0x0C32, 0x0C3C, 0x0C3D, 0x0C3E };
 
-    public static bool IsCommanderCoreName(string? name)
-        => name is not null
-            && (name.Contains("Commander Core", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("Commander ST", StringComparison.OrdinalIgnoreCase));
-
-    /// <summary>"/dev/hidraw14" or "HID: /dev/hidraw14" to "hidraw14"; null when the string names no hidraw node.</summary>
-    public static string? NormalizeHidraw(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-            return null;
-        var idx = raw.IndexOf("hidraw", StringComparison.OrdinalIgnoreCase);
-        if (idx < 0)
-            return null;
-        var end = idx + "hidraw".Length;
-        var digitsStart = end;
-        while (end < raw.Length && char.IsAsciiDigit(raw[end]))
-            end++;
-        if (end == digitsStart)
-            return null;
-        return "hidraw" + raw.Substring(digitsStart, end - digitsStart);
-    }
-
+    /// <summary>liquidctl wraps each status read in a wake/sleep pair; the sleep is byte-identical to OpenRGB's hardware-mode command.</summary>
     public static bool IsCommanderCoreFamily(LiquidctlListEntry e)
         => (e.VendorId == CorsairVendorId && e.ProductId is int pid && Array.IndexOf(CommanderCoreProductIds, pid) >= 0)
-            || IsCommanderCoreName(e.Description);
+            || e.Description.Contains("Commander Core", StringComparison.OrdinalIgnoreCase)
+            || e.Description.Contains("Commander ST", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Only the Commander Core family is withheld: its wake/sleep status read is byte-identical to OpenRGB's
-    /// hardware-mode command. Known fails closed for the family while OpenRGB holds any Commander Core, since a
-    /// libusb fallback or a stale node can defeat the hidraw match.
-    /// </summary>
-    public static LiquidctlSkip Decide(LiquidctlListEntry e, OpenRgbOwnership ownership, bool unknownExpired)
-    {
-        if (!IsCommanderCoreFamily(e))
-            return LiquidctlSkip.None;
-        switch (ownership.State)
-        {
-            case OpenRgbOwnershipState.Known:
-                var node = NormalizeHidraw(e.Address);
-                return ownership.HasCommanderCore || (node is not null && ownership.HidrawNodes.Contains(node))
-                    ? LiquidctlSkip.OpenRgbOwns : LiquidctlSkip.None;
-            case OpenRgbOwnershipState.Unknown:
-                return unknownExpired ? LiquidctlSkip.None : LiquidctlSkip.OpenRgbPending;
-            default:
-                return LiquidctlSkip.None;
-        }
-    }
+    public static string[] StatusArgs(LiquidctlListEntry e) => new[] { "--json", "--address", e.Address, "status" };
 
-    /// <summary>Args for a status read that opens only the named device; PyUSB devices (bus usbN) also pin the bus.</summary>
-    public static string[] StatusArgs(LiquidctlListEntry e)
-    {
-        var args = new List<string> { "--json" };
-        if (e.Bus.Length > 0 && !string.Equals(e.Bus, "hid", StringComparison.Ordinal))
-        {
-            args.Add("--bus");
-            args.Add(e.Bus);
-        }
-        args.Add("--address");
-        args.Add(e.Address);
-        args.Add("status");
-        return args.ToArray();
-    }
-
-    /// <summary>Parses <c>liquidctl --json list</c> (or any array whose items carry an address).</summary>
+    /// <summary>Parses <c>liquidctl --json list</c>.</summary>
     public static List<LiquidctlListEntry> ParseList(string json)
     {
         var result = new List<LiquidctlListEntry>();
@@ -130,12 +38,10 @@ internal static class LiquidctlOwnership
             {
                 if (el.ValueKind != JsonValueKind.Object)
                     continue;
-                var address = el.TryGetProperty("address", out var addrEl) && addrEl.ValueKind == JsonValueKind.Number
-                    ? addrEl.GetRawText() : Str(el, "address");
+                var address = Str(el, "address");
                 if (address.Length == 0)
                     continue;
-                result.Add(new LiquidctlListEntry(address, Str(el, "bus"),
-                    Id(el, "vendor_id"), Id(el, "product_id"), Str(el, "description")));
+                result.Add(new LiquidctlListEntry(address, Id(el, "vendor_id"), Id(el, "product_id"), Str(el, "description")));
             }
         }
         return result;
