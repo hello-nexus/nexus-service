@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.Hid;
 using Xunit;
@@ -668,7 +669,12 @@ public class GlacialLcdDriverTests
             if (w[1] == 0x73 && w[2] == 0xFF)
             {
                 Interlocked.Exchange(ref endReportAt, System.Diagnostics.Stopwatch.GetTimestamp());
-                link.RequestCancel();
+                // The cancel arrives while the driver is waiting for the panel's report.
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(80);
+                    link.RequestCancel();
+                });
             }
         };
 
@@ -676,8 +682,8 @@ public class GlacialLcdDriverTests
         Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
         var waited = System.Diagnostics.Stopwatch.GetElapsedTime(Interlocked.Read(ref endReportAt));
 
-        // Measured from the end report: a full wait would be the whole reply window.
-        Assert.True(waited.TotalMilliseconds < GlacialLcdPanelDriver.FinishReplyWaitMs, waited.TotalMilliseconds.ToString());
+        // Measured from the end report: one long read would sit out the whole reply window.
+        Assert.True(waited.TotalMilliseconds < 350, waited.TotalMilliseconds.ToString());
         Assert.Equal(0, driver.UploadsCompleted);
         driver.Disconnect(pipe, hid);
     }
@@ -698,8 +704,8 @@ public class GlacialLcdDriverTests
         Assert.All(timeouts, t => Assert.InRange(t, 0, 50));
         // The wait after the end report is a run of short slices, not one long read.
         Assert.True(timeouts.Count(t => t == 50) >= GlacialLcdPanelDriver.FinishReplyWaitMs / 50 - 1);
-        // Transfers are polled, never waited on.
-        Assert.True(timeouts.Count(t => t == 0) >= 1);
+        // Transfers are polled, never waited on: one zero-timeout read per transfer, plus the drain at the start.
+        Assert.Equal(pipe.Writes.Count + 1, timeouts.Count(t => t == 0));
     }
 
     [Fact]
@@ -713,7 +719,28 @@ public class GlacialLcdDriverTests
         driver.SendFrame(pipe, hid, Frame());
 
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        // A read that reports the device gone ends the wait after the end report at once.
+        Assert.True(hid.ReadTimeouts.Count(t => t == 50) <= 1);
         driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_backoff_earned_on_one_link_does_not_carry_over_to_the_next_connect()
+    {
+        var driver = Fast(backoffMs: 600_000);
+        var pipe = new FakePipe { FailWrites = true };
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
+        driver.Disconnect(pipe, hid);
+
+        var pipe2 = new FakePipe();
+        driver.Connect(pipe2, hid);
+        driver.SendFrame(pipe2, hid, Frame(noiseRows: 3));
+
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe2, hid);
     }
 
     [Fact]
@@ -841,7 +868,11 @@ public class GlacialLcdDriverTests
         /// <summary>Input waiting to be read, ahead of anything the panel answers.</summary>
         public void Enqueue(byte[] report)
         {
-            lock (_lock) { _input.Enqueue(report); }
+            lock (_lock)
+            {
+                _input.Enqueue(report);
+                Monitor.PulseAll(_lock);
+            }
         }
 
         /// <summary>Timeouts the driver asked reads to wait, in order.</summary>
@@ -881,6 +912,7 @@ public class GlacialLcdDriverTests
                         answer[1] = copy[1];
                     }
                     _input.Enqueue(answer);
+                    Monitor.PulseAll(_lock);
                 }
             }
             OnWrite?.Invoke(copy);
@@ -899,6 +931,11 @@ public class GlacialLcdDriverTests
                 if (ReadsFail)
                 {
                     return -1;
+                }
+                if (_input.Count == 0 && timeoutMs > 0)
+                {
+                    // Waits for input like a timed read, so a long single read shows up as a long wait.
+                    Monitor.Wait(_lock, timeoutMs);
                 }
                 if (_input.Count == 0)
                 {

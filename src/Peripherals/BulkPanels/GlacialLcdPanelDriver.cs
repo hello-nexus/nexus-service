@@ -198,6 +198,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private readonly object _frameLock = new();
     private readonly object _stateLock = new();
     private readonly WarnLimiter _warn = new();
+    private readonly WarnLimiter _readWarn = new();
     private readonly ManualResetEventSlim _wake = new(false);
     // Cuts a pacing wait short, so a cancel or a disconnect never sits out the vendor's gaps.
     private readonly ManualResetEventSlim _abort = new(false);
@@ -341,6 +342,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         if (start is not null)
         {
             _memoryKey = HandlerId;
+            lock (_stateLock)
+            {
+                // A backoff earned against the previous link means nothing to a new one.
+                _failures = 0;
+                _nextAllowedMs = 0;
+            }
             Volatile.Write(ref _uploadsSinceConnect, 0);
             lock (_lastLoggedReply)
             {
@@ -475,7 +482,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             return;
         }
         long now = _clock();
-        IHidDevice? hid;
         lock (_stateLock)
         {
             if (_lastHash is null || now < _nextShowMs)
@@ -484,14 +490,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             _nextShowMs = now + ShowRetryMs;
         }
-        lock (_hidLock)
-        {
-            hid = state.Stop ? null : _hid;
-        }
-        if (hid is null)
-        {
-            return;
-        }
         lock (_link.Sync)
         {
             if (state.Stop || !CanUpload())
@@ -499,7 +497,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 return;
             }
             _link.ShowPending = false;
-            if (!hid.Write(GlacialLcdProtocol.EncodeQuery()) || !hid.Write(GlacialLcdProtocol.EncodeCustomPicture()))
+            if (!HidWrite(state, GlacialLcdProtocol.EncodeQuery()) || !HidWrite(state, GlacialLcdProtocol.EncodeCustomPicture()))
             {
                 _link.ShowPending = true;
             }
@@ -746,20 +744,31 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// for the first uploads after a connect, then only a report that differs from the last one
     /// logged for the step. Never waits longer than the timeout and never fails the upload.
     /// </summary>
-    private byte[]? ReadReply(IHidDevice hid, int timeoutMs, string step, string key, System.Diagnostics.Stopwatch sinceStart)
+    private byte[]? ReadReply(IHidDevice hid, int timeoutMs, string step, string key, System.Diagnostics.Stopwatch sinceStart, out bool failed)
     {
         var buffer = new byte[GlacialLcdProtocol.ReportBytes];
         int read;
+        failed = false;
         try
         {
             read = hid.Read(buffer, timeoutMs);
         }
         catch (Exception ex)
         {
-            Failed($"reply read failed at {step}: {ex.GetType().Name}");
+            failed = true;
+            // Its own limiter, so a dead read path cannot hide the upload-failed warning.
+            if (_readWarn.Allow(_clock()))
+            {
+                ServiceLog.Warn($"[{HandlerId}] reply read failed at {step}: {ex.GetType().Name}");
+            }
             return null;
         }
-        if (read <= 0)
+        if (read < 0)
+        {
+            failed = true;
+            return null;
+        }
+        if (read == 0)
         {
             return null;
         }
@@ -819,12 +828,20 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
     }
 
-    private byte[]? Reply(WorkerState state, int timeoutMs, string step, string key, System.Diagnostics.Stopwatch sinceStart)
+    private byte[]? Reply(WorkerState state, int timeoutMs, string step, string key, System.Diagnostics.Stopwatch sinceStart) =>
+        Reply(state, timeoutMs, step, key, sinceStart, out _);
+
+    private byte[]? Reply(WorkerState state, int timeoutMs, string step, string key, System.Diagnostics.Stopwatch sinceStart, out bool failed)
     {
         lock (_hidLock)
         {
             var hid = _hid;
-            return state.Stop || hid is null ? null : ReadReply(hid, timeoutMs, step, key, sinceStart);
+            if (state.Stop || hid is null)
+            {
+                failed = false;
+                return null;
+            }
+            return ReadReply(hid, timeoutMs, step, key, sinceStart, out failed);
         }
     }
 
@@ -924,8 +941,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 return UploadOutcome.Cancelled;
             }
-            if (Reply(state, FinishReplySliceMs, "end 73FF", "end", sinceStart) is not null)
+            if (Reply(state, FinishReplySliceMs, "end 73FF", "end", sinceStart, out bool readFailed) is not null || readFailed)
             {
+                // A report arrived, or the read says the device is gone: either way, stop waiting.
                 break;
             }
         }
@@ -978,11 +996,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _pipe = null;
             _hid = null;
             _uploading = false;
+            // Set with the handles cleared, so a write the worker has in flight is a cancel, not a failure.
+            state?.Stop = true;
         }
         if (state is not null)
         {
             // The worker stops on its own; a short join keeps the hub's lock from waiting out a pacing gap.
-            state.Stop = true;
             _abort.Set();
             _wake.Set();
             state.Thread?.Join(JoinOnDisconnectMs);
