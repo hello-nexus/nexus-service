@@ -101,6 +101,17 @@ public sealed class WidgetSettingsService
     /// device). Also resolves the marketplace manifest so callers don't need
     /// a second lookup. Returns false if either step fails.
     /// </summary>
+    /// <summary>The app and version behind an app widget instance, false for any other id.</summary>
+    public bool TryGetApp(string instanceId, out string appId, out string appVersion)
+    {
+        appId = "";
+        appVersion = "";
+        if (!TryResolve(_store.Load(), instanceId, out var widget, out var manifest)) return false;
+        appId = manifest!.Id;
+        appVersion = manifest.Version;
+        return true;
+    }
+
     private bool TryResolve(NexusSettings s, string instanceId, out PanelWidgetDto? widget, out AppManifest? manifest)
     {
         widget = FindWidget(s, instanceId);

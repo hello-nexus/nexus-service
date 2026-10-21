@@ -88,8 +88,11 @@ public static class AppRoutes
         }).AllowPanel();
 
         app.MapGet("/apps-api/instance/{instanceId}/settings",
-            (string instanceId, WidgetSettingsService settings) =>
+            (string instanceId, WidgetSettingsService settings, Nexus.Service.Telemetry.AppUsageTracker usage) =>
         {
+            // The widget host loads this when an app widget mounts, which is the service's only render signal.
+            if (settings.TryGetApp(instanceId, out var appId, out var appVersion))
+                usage.Note(appId, appVersion);
             // Instance ids are GUIDs assigned at widget-placement time, so we
             // don't apply the marketplace-id charset whitelist. The service
             // returns an empty doc when the id doesn't resolve to a known
@@ -383,13 +386,14 @@ public static class AppRoutes
         }).AllowPanel();
 
         // The host posts this when an installed app's page surface opens.
-        app.MapPost("/apps-api/page-opened/{appId}", (string appId, AppRegistry registry, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/apps-api/page-opened/{appId}", (string appId, AppRegistry registry, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Telemetry.AppUsageTracker usage) =>
         {
             if (!AppIds.IsValid(appId) || !registry.TryGet(appId, out var entry))
             {
                 return Results.Json(ApiResponse.Fail("app not installed"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
             Nexus.Service.Telemetry.AppPageTelemetry.CaptureOpened(telemetry, appId, entry.Manifest.Version);
+            usage.Note(appId, entry.Manifest.Version);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).AllowPanel();
 

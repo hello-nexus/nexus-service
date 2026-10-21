@@ -341,7 +341,7 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams, Nexus.Service.Deck.ListedAppIds listed) =>
+        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams, Nexus.Service.Deck.ListedAppIds listed, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
             // A panel session may rearrange or remove the deck keys it has, but
             // authoring a key that opens a file, sends a key chord, types text or
@@ -352,9 +352,12 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
+            var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
             var updated = registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            if (layoutBefore is not null)
+                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, layoutBefore, updated.Layout);
             // Registry mutations go through _store.Update -> OnChanged ->
             // ProfileManager.MarkDirty, so a look edit reaches the active
             // profile's Panels data on the next flush with no explicit pulse.
