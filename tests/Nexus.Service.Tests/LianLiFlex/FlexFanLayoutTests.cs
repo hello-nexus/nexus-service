@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Lighting;
+using Nexus.Service.Peripherals.Hyte.Np50;
 using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Tests.LianLiWireless;
@@ -169,9 +171,9 @@ public class FlexFanLayoutTests
     }
 
     [Theory]
-    [InlineData(51, FlexFamily.TlFlex, 26)]
-    [InlineData(43, FlexFamily.SlInfFlex, 44)]
-    public void Wireless_flex_fans_use_the_same_wire_positions(int fansType, FlexFamily family, int perFan)
+    [InlineData(51, FlexFamily.TlFlex, new[] { "inner", "outer" }, new[] { 13, 13 })]
+    [InlineData(43, FlexFamily.SlInfFlex, new[] { "center", "inner", "outer" }, new[] { 8, 20, 16 })]
+    public void Wireless_flex_fans_get_the_real_zones_at_the_wired_positions(int fansType, FlexFamily family, string[] suffixes, int[] perFanLeds)
     {
         var (hub, net, _) = Slv3TestHub.CreateConnected();
         var mac = Convert.FromHexString("112233445566");
@@ -179,18 +181,56 @@ public class FlexFanLayoutTests
         Assert.True(hub.DriveTick());
         var provider = new Slv3LightingDeviceProvider(hub, new InMemoryConfigStore(), new Np50IdentifyTracker());
         var structure = Assert.Single(provider.GetStructures());
-        var half = perFan / 2;
-        var segs = new[] { (structure.Segments[0], 0, half), (structure.Segments[1], half, perFan - half) };
-        foreach (var (seg, first, count) in segs)
+        Assert.Equal(suffixes.Length, structure.Segments.Count);
+        Assert.Equal(suffixes.Select(x => "lianli-wireless:112233445566:" + x), structure.DefaultZones.Select(z => z.Id));
+        var zones = Slv3LightingDeviceProvider.FlexZonesOf(family);
+        for (var i = 0; i < zones.Length; i++)
         {
-            Assert.Equal(2 * count, seg.DefaultU!.Length);
+            var seg = structure.Segments[i];
+            var map = FlexProtocol.ZoneWireIndexes(family, zones[i].Key);
+            Assert.Equal(perFanLeds[i], map.Count);
+            Assert.Equal(2 * map.Count, seg.LedCount);
             for (var f = 0; f < 2; f++)
             {
-                for (var k = 0; k < count; k++)
+                for (var k = 0; k < map.Count; k++)
                 {
-                    var p = FlexFanLayout.Position(family, first + k);
-                    Assert.Equal((f + p.U) / 2f, seg.DefaultU[(f * count) + k], 5);
-                    Assert.Equal(p.V, seg.DefaultV![(f * count) + k], 5);
+                    var p = FlexFanLayout.Position(family, map[k]);
+                    Assert.Equal((f + p.U) / 2f, seg.DefaultU![(f * map.Count) + k], 5);
+                    Assert.Equal(p.V, seg.DefaultV![(f * map.Count) + k], 5);
+                }
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(FlexFamily.TlFlex)]
+    [InlineData(FlexFamily.SlInfFlex)]
+    public void Scatter_places_every_zone_led_on_its_wire_index_once(FlexFamily family)
+    {
+        var zones = Slv3LightingDeviceProvider.FlexZonesOf(family);
+        var perFan = FlexProtocol.LedsPerFan(family);
+        const int fans = 3;
+        var buffers = new RgbColor[zones.Length][];
+        for (var z = 0; z < zones.Length; z++)
+        {
+            var n = FlexProtocol.ZoneWireIndexes(family, zones[z].Key).Count;
+            buffers[z] = new RgbColor[fans * n];
+            for (var i = 0; i < buffers[z].Length; i++)
+            {
+                buffers[z][i] = new RgbColor((byte)(z + 1), (byte)(i % 250), 7);
+            }
+        }
+        var wire = new RgbColor[fans * perFan];
+        Slv3LightingFrameWriter.ScatterFlexZones(family, fans, buffers, wire);
+        Assert.All(wire, c => Assert.Equal(7, c.B));
+        for (var z = 0; z < zones.Length; z++)
+        {
+            var map = FlexProtocol.ZoneWireIndexes(family, zones[z].Key);
+            for (var f = 0; f < fans; f++)
+            {
+                for (var k = 0; k < map.Count; k++)
+                {
+                    Assert.Equal(buffers[z][(f * map.Count) + k], wire[(f * perFan) + map[k]]);
                 }
             }
         }

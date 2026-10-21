@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Zones;
+using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
@@ -666,6 +667,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         var fanInfo = FindFanInfo(macHex);
         if (fanInfo is null) return 0;
+        if (Slv3LightingDeviceProvider.FlexFamilyOf(fanInfo) is { } flex)
+        {
+            return FillFlexWireBuffer(structure, flex);
+        }
         // Ring lengths must match the provider's structure for this chain or
         // the fan-major interleave misaligns.
         var innerLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
@@ -691,6 +696,39 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             }
         }
         return totalLeds;
+    }
+
+    // Zone-major segment buffers scattered into the fan-major wire buffer by the wired-Flex zone maps.
+    private int FillFlexWireBuffer(DeviceStructure structure, FlexFamily flex)
+    {
+        var zones = Slv3LightingDeviceProvider.FlexZonesOf(flex);
+        var first = FlexProtocol.ZoneWireIndexes(flex, zones[0].Key).Count;
+        if (first <= 0) return 0;
+        var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / first;
+        var perFan = FlexProtocol.LedsPerFan(flex);
+        if (fanCount <= 0) return 0;
+        var totalLeds = fanCount * perFan;
+        EnsureWireBuffer(totalLeds);
+        ScatterFlexZones(flex, fanCount, _segmentBuffers, _wireBuffer);
+        return totalLeds;
+    }
+
+    internal static void ScatterFlexZones(FlexFamily flex, int fanCount, RgbColor[][] zoneBuffers, RgbColor[] wire)
+    {
+        var zones = Slv3LightingDeviceProvider.FlexZonesOf(flex);
+        var perFan = FlexProtocol.LedsPerFan(flex);
+        for (var z = 0; z < zones.Length; z++)
+        {
+            var map = FlexProtocol.ZoneWireIndexes(flex, zones[z].Key);
+            var buffer = zoneBuffers[z];
+            for (var f = 0; f < fanCount; f++)
+            {
+                for (var k = 0; k < map.Count; k++)
+                {
+                    wire[(f * perFan) + map[k]] = buffer[(f * map.Count) + k];
+                }
+            }
+        }
     }
 
     // Retry spacing and cap for the motherboard ARGB switch: the hub already
@@ -779,7 +817,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
         var fanCount = isStrimer
             ? 0
-            : structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / Slv3LightingDeviceProvider.RingLedsFor(fan);
+            : Slv3LightingDeviceProvider.FanCountOf(structure, fan);
         // A beacon with every port empty classifies the chain Unknown for one
         // poll; the uploaded loop keeps playing rather than being overwritten.
         if (!isStrimer && family == Slv3FanFamily.Unknown)

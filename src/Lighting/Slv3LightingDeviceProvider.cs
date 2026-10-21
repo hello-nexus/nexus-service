@@ -557,8 +557,72 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     private static int LedsPerFan(Slv3FanInfo fan) =>
         Slv3Protocol.LedsPerFanFor(Slv3Protocol.ClassifyFanFamily((byte)fan.FanType));
 
+    /// <summary>The Flex family of a chain, or null for any other fan.</summary>
+    internal static FlexFamily? FlexFamilyOf(Slv3FanInfo fan) => Slv3Protocol.ClassifyFanFamily((byte)fan.FanType) switch
+    {
+        Slv3FanFamily.TlFlex => FlexFamily.TlFlex,
+        Slv3FanFamily.SlInfFlex => FlexFamily.SlInfFlex,
+        _ => null,
+    };
+
+    /// <summary>Zones of a Flex chain in segment order: the zone id suffix, the wired-Flex zone key and its label. The first two ids are the ring ids the 50/50 split used.</summary>
+    internal static (string Suffix, string Key, string Label)[] FlexZonesOf(FlexFamily family) => family == FlexFamily.SlInfFlex
+        ? new[] { ("center", "center", "Center"), ("inner", "inner", "Inner"), ("outer", "outer", "Outer") }
+        : new[] { ("inner", "up", "Up"), ("outer", "down", "Down") };
+
+    /// <summary>Fans in a chain from its first segment's size; the segment layout depends on the family.</summary>
+    internal static int FanCountOf(DeviceStructure structure, Slv3FanInfo fan)
+    {
+        if (FlexFamilyOf(fan) is { } flex)
+        {
+            var first = FlexZonesOf(flex)[0];
+            var per = FlexProtocol.ZoneWireIndexes(flex, first.Key).Count;
+            return per > 0 ? structure.Segments[InnerSegment].LedCount / per : 0;
+        }
+        return structure.Segments[InnerSegment].LedCount / RingLedsFor(fan);
+    }
+
+    private static DeviceStructure BuildFlexStructure(Slv3FanInfo fan, FlexFamily flex)
+    {
+        var deviceId = DeviceIdFor(fan.Mac);
+        var deviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan");
+        var structure = new DeviceStructure { DeviceId = deviceId, Name = "Lian Li Wireless Fan", DeviceKey = deviceKey };
+        var zones = FlexZonesOf(flex);
+        for (var i = 0; i < zones.Length; i++)
+        {
+            var (suffix, key, label) = zones[i];
+            var total = FlexProtocol.ZoneWireIndexes(flex, key).Count * fan.FanCount;
+            var (u, v) = FlexFanLayout.ZonePositions(flex, key, fan.FanCount, swap: false);
+            structure.Segments.Add(new StructureSegment
+            {
+                Index = i,
+                Name = label,
+                LedCount = total,
+                FrameLedCount = total,
+                Resizable = false,
+                ZoneType = "linear",
+                DefaultU = u,
+                DefaultV = v,
+            });
+            structure.DefaultZones.Add(new DefaultZoneDef
+            {
+                Id = $"{deviceId}:{suffix}",
+                Name = $"Lian Li Wireless - {label}",
+                RawName = label,
+                DeviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, $"wireless-fan-{suffix}"),
+                LegacyZoneIndex = -1,
+                Slices = { new ZoneSlice { Segment = i, Start = 0, Count = total } },
+            });
+        }
+        return structure;
+    }
+
     private static DeviceStructure BuildStructure(Slv3FanInfo fan)
     {
+        if (FlexFamilyOf(fan) is { } flexFamily)
+        {
+            return BuildFlexStructure(fan, flexFamily);
+        }
         var deviceId = DeviceIdFor(fan.Mac);
         var deviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan");
         var ledsPerRing = RingLedsFor(fan);
@@ -569,12 +633,6 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var edgeBars = family is Slv3FanFamily.Slv3Led or Slv3FanFamily.Slv3Lcd && ledsPerRing == EdgeBarLeds + EdgeLineLeds;
         var (innerU, innerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: true) : BuildFanRingUV(fan.FanCount, InnerRadius, ledsPerRing);
         var (outerU, outerV) = edgeBars ? BuildEdgeBarUV(fan.FanCount, top: false) : BuildFanRingUV(fan.FanCount, OuterRadius, outerPerRing);
-        if (family is Slv3FanFamily.TlFlex or Slv3FanFamily.SlInfFlex)
-        {
-            var flex = family == Slv3FanFamily.TlFlex ? FlexFamily.TlFlex : FlexFamily.SlInfFlex;
-            (innerU, innerV) = FlexFanLayout.Positions(flex, fan.FanCount, 0, ledsPerRing);
-            (outerU, outerV) = FlexFanLayout.Positions(flex, fan.FanCount, ledsPerRing, outerPerRing);
-        }
         var innerName = edgeBars ? "Top" : "Inner Ring";
         var outerName = edgeBars ? "Bottom" : "Outer Ring";
 
