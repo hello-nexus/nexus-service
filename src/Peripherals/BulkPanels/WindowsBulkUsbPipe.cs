@@ -121,6 +121,14 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
         }
     }
 
+    public bool ClearHalt(byte pipeId)
+    {
+        lock (_ioLock)
+        {
+            return !_disposed && Slv3WinUsbInterop.WinUsb_ResetPipe(_winUsbHandle, pipeId);
+        }
+    }
+
     public int Read(Span<byte> buffer, int timeoutMs) => Read(_readPipeId, buffer, timeoutMs);
 
     public int Read(byte pipeId, Span<byte> buffer, int timeoutMs)

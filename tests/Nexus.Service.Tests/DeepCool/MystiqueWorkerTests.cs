@@ -49,10 +49,12 @@ public class MystiqueWorkerTests
     public async Task Does_nothing_while_nexus_control_is_off()
     {
         var pipes = new FakeFactory();
-        var worker = Build(new InMemoryConfigStore(), pipes, present: true, gateOn: false);
+        var store = new CountingStore();
+        var worker = Build(store, pipes, present: true, gateOn: false);
+        int baseline = store.Loads;
 
         await worker.StartAsync(CancellationToken.None);
-        await Task.Delay(300);
+        await WaitFor(() => store.Loads >= baseline + 5);
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(0, pipes.Opens);
@@ -63,20 +65,44 @@ public class MystiqueWorkerTests
     public async Task Does_nothing_while_the_screen_is_absent()
     {
         var pipes = new FakeFactory();
-        var worker = Build(new InMemoryConfigStore(), pipes, present: false, gateOn: true);
+        var usb = new FakeUsb(false);
+        var worker = Build(new InMemoryConfigStore(), pipes, usb);
 
         await worker.StartAsync(CancellationToken.None);
-        await Task.Delay(300);
+        await WaitFor(() => usb.Scans >= 5);
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(0, pipes.Opens);
     }
 
-    private static MystiqueWorker Build(InMemoryConfigStore store, FakeFactory pipes, bool present, bool gateOn)
+    [Fact]
+    public async Task Turning_nexus_control_on_connects_without_waiting_out_the_poll()
+    {
+        var store = new InMemoryConfigStore();
+        var pipes = new FakeFactory();
+        var gate = new DeviceControlGate(store);
+        gate.SetEnabled(MystiqueWorker.HandlerId, false);
+        var worker = new MystiqueWorker(pipes, gate, new HardwarePresence(new FakeUsb(true)), store, new FakeSensors(), connectPollMs: 60_000, tickMs: 20);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            gate.SetEnabled(MystiqueWorker.HandlerId, true);
+            await WaitFor(() => worker.IsConnected);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static MystiqueWorker Build(IConfigStore store, FakeFactory pipes, bool present, bool gateOn) =>
+        Build(store, pipes, new FakeUsb(present), gateOn);
+
+    private static MystiqueWorker Build(IConfigStore store, FakeFactory pipes, FakeUsb usb, bool gateOn = true)
     {
         var gate = new DeviceControlGate(store);
         gate.SetEnabled(MystiqueWorker.HandlerId, gateOn);
-        var usb = new FakeUsb(present);
         return new MystiqueWorker(pipes, gate, new HardwarePresence(usb), store, new FakeSensors(), connectPollMs: 20, tickMs: 20);
     }
 
@@ -99,9 +125,35 @@ public class MystiqueWorkerTests
             _present = present;
         }
 
-        public List<UsbDeviceEntry> Enumerate() => _present
+        private int _scans;
+
+        public int Scans => Volatile.Read(ref _scans);
+
+        public List<UsbDeviceEntry> Enumerate() => Interlocked.Increment(ref _scans) > 0 && _present
             ? new List<UsbDeviceEntry> { new() { VendorId = MystiqueProtocol.VendorId, ProductId = MystiqueProtocol.ProductId } }
             : new List<UsbDeviceEntry>();
+    }
+
+    private sealed class CountingStore : IConfigStore
+    {
+        private readonly InMemoryConfigStore _inner = new();
+        private int _loads;
+
+        public int Loads => Volatile.Read(ref _loads);
+        public string SettingsPath => _inner.SettingsPath;
+        public NexusSettings Load()
+        {
+            Interlocked.Increment(ref _loads);
+            return _inner.Load();
+        }
+        public void Update(Action<NexusSettings> mutator) => _inner.Update(mutator);
+        public void FlushNow() => _inner.FlushNow();
+        public void Reload() => _inner.Reload();
+        public event Action? OnChanged
+        {
+            add => _inner.OnChanged += value;
+            remove => _inner.OnChanged -= value;
+        }
     }
 
     private sealed class FakeFactory : IBulkUsbPipeFactory

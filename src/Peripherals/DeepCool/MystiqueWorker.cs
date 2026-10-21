@@ -14,7 +14,7 @@ namespace Nexus.Service.Peripherals.DeepCool;
 /// <summary>
 /// Keeps a Mystique screen on live data while it is present and Nexus Control is on: opens its
 /// bulk pipes, writes the settings groups the user has changed, then pushes Nexus's sensors
-/// once a second. Without a host the screen falls back to its own preset animation.
+/// every tick. Without a host the screen falls back to its own preset animation.
 /// </summary>
 public sealed class MystiqueWorker : BackgroundService
 {
@@ -23,12 +23,15 @@ public sealed class MystiqueWorker : BackgroundService
     private const int MissesToDetach = 2;
     private const int PresencePollMs = 2000;
     private const int LogEveryMs = 60_000;
+    private const int MaxBackoffMs = 5 * 60 * 1000;
+    private const int StableSessionMs = 30_000;
 
     private readonly IBulkUsbPipeFactory _pipes;
     private readonly DeviceControlGate _gate;
     private readonly HardwarePresence _presence;
     private readonly IConfigStore _store;
     private readonly ISensorProvider _sensors;
+    private readonly Nexus.Service.Cooling.IFanControlProvider? _fans;
     private readonly int _connectPollMs;
     private readonly int _tickMs;
     private readonly SemaphoreSlim _wake = new(0, 1);
@@ -37,10 +40,12 @@ public sealed class MystiqueWorker : BackgroundService
 
     public MystiqueWorker(
         IBulkUsbPipeFactory pipes, DeviceControlGate gate, HardwarePresence presence, IConfigStore store, ISensorProvider sensors,
-        int connectPollMs = 5000, int tickMs = 1000)
+        int connectPollMs = 5000, int tickMs = 1000, Nexus.Service.Cooling.IFanControlProvider? fans = null)
     {
+        _fans = fans;
         _pipes = pipes;
         _gate = gate;
+        _gate.Changed += OnGateChanged;
         _presence = presence;
         _store = store;
         _sensors = sensors;
@@ -57,20 +62,42 @@ public sealed class MystiqueWorker : BackgroundService
         catch (SemaphoreFullException) { }
     }
 
+    private void OnGateChanged(string handlerId, bool enabled)
+    {
+        if (handlerId == HandlerId)
+        {
+            RequestApply();
+        }
+    }
+
+    public override void Dispose()
+    {
+        _gate.Changed -= OnGateChanged;
+        base.Dispose();
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        int failures = 0;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 if (!_gate.IsEnabled(HandlerId) || !_presence.UsbPresent(MystiqueProtocol.VendorId, MystiqueProtocol.ProductId))
                 {
-                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
+                    failures = 0;
+                    await WaitAsync(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
-                if (!await RunSession(stoppingToken).ConfigureAwait(false))
+                long startedMs = Environment.TickCount64;
+                if (await RunSession(stoppingToken).ConfigureAwait(false) || Environment.TickCount64 - startedMs >= StableSessionMs)
                 {
-                    await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
+                    failures = 0;
+                }
+                else
+                {
+                    failures++;
+                    await WaitAsync(Backoff(failures), stoppingToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException)
@@ -79,10 +106,28 @@ public sealed class MystiqueWorker : BackgroundService
             }
             catch (Exception ex)
             {
+                failures++;
                 Log($"worker error: {ex.Message}", error: true);
-                await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
+                await WaitAsync(Backoff(failures), stoppingToken).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>Exponential from the connect poll, capped at a few minutes.</summary>
+    private int Backoff(int failures)
+    {
+        long delay = _connectPollMs;
+        for (int i = 1; i < failures && delay < MaxBackoffMs; i++)
+        {
+            delay *= 2;
+        }
+        return (int)Math.Min(delay, Math.Max(MaxBackoffMs, _connectPollMs));
+    }
+
+    /// <summary>A wait that ends early when the gate flips or a change is requested.</summary>
+    private async Task WaitAsync(int delayMs, CancellationToken ct)
+    {
+        await _wake.WaitAsync(delayMs, ct).ConfigureAwait(false);
     }
 
     /// <summary>One open-to-close session. True when it ended because the screen or the gate went away, false when the link failed.</summary>
@@ -111,7 +156,7 @@ public sealed class MystiqueWorker : BackgroundService
             {
                 await _wake.WaitAsync(_tickMs, stoppingToken).ConfigureAwait(false);
                 var settings = ReadSettings();
-                if (!session.Apply(settings) || !session.Tick(MystiqueSensors.Read(_sensors, settings), DateTime.Now))
+                if (!session.Apply(settings) || !session.Tick(MystiqueSensors.Read(_sensors, settings, MystiqueSensors.FanNames(_store, _fans)), DateTime.Now))
                 {
                     Log("a write was refused; reopening", error: false);
                     return false;

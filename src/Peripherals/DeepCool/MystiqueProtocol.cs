@@ -167,8 +167,8 @@ public static class MystiqueProtocol
 
     /// <summary>
     /// Live push. Three-byte fields from payload offset 0: temperature, usage, four fields whose
-    /// meaning is unknown (sent at their commonest observed values), frequency as GHz whole part
-    /// then hundredths, fan RPM and pump RPM as 24-bit little-endian.
+    /// meaning is unknown (sent at fixed values seen in the recorded traffic), frequency as GHz
+    /// whole part then hundredths, fan RPM and pump RPM as 24-bit little-endian.
     /// </summary>
     public static byte[] BuildSensors(MystiqueReading reading)
     {

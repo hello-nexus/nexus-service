@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Models;
 using Nexus.Service.Peripherals.DeepCool;
@@ -12,14 +13,14 @@ public static partial class DevicesRoutes
 {
     private static void MapDeepCoolMystiqueEndpoints(WebApplication app)
     {
-        app.MapGet("/devices/deepcool-mystique/state", (IConfigStore store, MystiqueWorker worker, ISensorProvider sensors) =>
+        app.MapGet("/devices/deepcool-mystique/state", (IConfigStore store, MystiqueWorker worker, ISensorProvider sensors, Nexus.Service.Cooling.IFanControlProvider? fans) =>
         {
             DeepCoolMystiqueSettings copy = new();
             store.Read(s => copy = s.Devices.DeepCoolMystique.Copy());
-            return Results.Json(BuildMystiqueState(copy, worker.IsConnected, sensors), AppJsonContext.Default.DeepCoolMystiqueStateResponse);
+            return Results.Json(BuildMystiqueState(copy, worker.IsConnected, sensors, MystiqueSensors.FanNames(store, fans)), AppJsonContext.Default.DeepCoolMystiqueStateResponse);
         });
 
-        app.MapPut("/devices/deepcool-mystique/settings", (DeepCoolMystiqueSettingsRequest body, IConfigStore store, MystiqueWorker worker) =>
+        app.MapPut("/devices/deepcool-mystique/settings", (DeepCoolMystiqueSettingsRequest body, IConfigStore store, MystiqueWorker worker, ISensorProvider sensors) =>
         {
             if (body.Mode is not null
                 && body.Mode is not (DeepCoolMystiqueSettings.ModeMonitor or DeepCoolMystiqueSettings.ModeMedia or DeepCoolMystiqueSettings.ModeRecording))
@@ -33,7 +34,7 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("unknown readout"));
             }
-            if (!ValidMystiquePick(body.CpuFan) || !ValidMystiquePick(body.Pump))
+            if (!ValidMystiquePick(body.CpuFan, sensors) || !ValidMystiquePick(body.Pump, sensors))
             {
                 return Results.BadRequest(ApiResponse.Fail("invalid sensor"));
             }
@@ -43,12 +44,24 @@ public static partial class DevicesRoutes
         });
     }
 
-    private static bool ValidMystiquePick(DeepCoolMystiqueSensorDto? pick) =>
-        pick is null
-        || (pick.Category is not null && pick.Sensor is not null
-            && (pick.Category.Length == 0
-                ? pick.Sensor.Length == 0
-                : SensorSnapshotResolver.IsSupportedCategory(pick.Category)));
+    /// <summary>An empty pick returns the readout to the automatic choice; otherwise the sensor must exist and be a fan reading.</summary>
+    private static bool ValidMystiquePick(DeepCoolMystiqueSensorDto? pick, ISensorProvider sensors)
+    {
+        if (pick is null)
+        {
+            return true;
+        }
+        if (pick.Category is null || pick.Sensor is null)
+        {
+            return false;
+        }
+        if (pick.Category.Length == 0)
+        {
+            return pick.Sensor.Length == 0;
+        }
+        return SensorSnapshotResolver.IsSupportedCategory(pick.Category)
+            && SensorSnapshotResolver.ResolveExact(sensors, pick.Category, pick.Sensor) is { Type: "Fan" };
+    }
 
     /// <summary>Applies a settings request to the saved state; separate from the route so it can be tested.</summary>
     internal static void ApplyMystiqueRequest(DeepCoolMystiqueSettings m, DeepCoolMystiqueSettingsRequest body)
@@ -64,10 +77,14 @@ public static partial class DevicesRoutes
         if (body.Pump is not null) { m.Pump = new DeepCoolMystiqueSensorPick { Category = body.Pump.Category, Sensor = body.Pump.Sensor }; }
     }
 
-    internal static DeepCoolMystiqueStateResponse BuildMystiqueState(DeepCoolMystiqueSettings m, bool connected, ISensorProvider sensors) => new()
+    internal static DeepCoolMystiqueStateResponse BuildMystiqueState(
+        DeepCoolMystiqueSettings m, bool connected, ISensorProvider sensors, IReadOnlyDictionary<string, string>? fanNames = null) => new()
     {
         IsConnected = connected,
         ModeChosen = m.ModeEdited,
+        ReadoutChosen = m.ReadoutEdited,
+        RecordingChosen = m.RecordingEdited,
+        DeviceChosen = m.DeviceEdited,
         Mode = m.Mode,
         Readout = m.Readout,
         RecordFrequency = m.RecordFrequency,
@@ -75,13 +92,14 @@ public static partial class DevicesRoutes
         Brightness = m.Brightness,
         Gyroscope = m.Gyroscope,
         RgbSync = m.RgbSync,
-        CpuFan = MystiquePickDto(sensors, m.CpuFan, pump: false),
-        Pump = MystiquePickDto(sensors, m.Pump, pump: true),
+        CpuFan = MystiquePickDto(sensors, m.CpuFan, pump: false, fanNames),
+        Pump = MystiquePickDto(sensors, m.Pump, pump: true, fanNames),
     };
 
-    private static DeepCoolMystiqueSensorDto MystiquePickDto(ISensorProvider sensors, DeepCoolMystiqueSensorPick pick, bool pump)
+    private static DeepCoolMystiqueSensorDto MystiquePickDto(
+        ISensorProvider sensors, DeepCoolMystiqueSensorPick pick, bool pump, IReadOnlyDictionary<string, string>? fanNames)
     {
-        var found = MystiqueSensors.FindFan(sensors, pick, pump);
+        var found = MystiqueSensors.FindFan(sensors, pick, pump, fanNames);
         bool picked = pick.Sensor.Length > 0;
         return new DeepCoolMystiqueSensorDto
         {
@@ -112,6 +130,15 @@ public sealed class DeepCoolMystiqueStateResponse
     /// <summary>False until the user has picked a mode, when the screen's actual mode is unknown.</summary>
     public bool ModeChosen { get; set; }
 
+    /// <summary>False until the user has picked a readout; the readout shown is then a placeholder.</summary>
+    public bool ReadoutChosen { get; set; }
+
+    /// <summary>False until the user has changed a recording graph; the toggles shown are placeholders.</summary>
+    public bool RecordingChosen { get; set; }
+
+    /// <summary>False until the user has changed brightness, rotation or RGB sync, which the screen takes in one command; the values shown are what the first change writes.</summary>
+    public bool DeviceChosen { get; set; }
+
     /// <summary>"monitor", "media" or "recording".</summary>
     public string Mode { get; set; } = "";
 
@@ -121,7 +148,7 @@ public sealed class DeepCoolMystiqueStateResponse
     public bool RecordFrequency { get; set; }
     public bool RecordTemperature { get; set; }
 
-    /// <summary>0-100.</summary>
+    /// <summary>Percent.</summary>
     public int Brightness { get; set; }
 
     public bool Gyroscope { get; set; }
