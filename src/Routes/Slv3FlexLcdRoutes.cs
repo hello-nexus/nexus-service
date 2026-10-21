@@ -79,19 +79,26 @@ public static class Slv3FlexLcdRoutes
             {
                 return Results.Json(ApiResponse.Fail("not an LCD Flex fan bound to this PC"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
-            LianLiFlexWirelessLcdSettings? current = null;
-            store.Read(s => s.Devices.LianLiWireless.FlexLcd.TryGetValue(chain.Mac.ToUpperInvariant(), out current));
-            if (Validate(body, chain.FanCount, current) is { } error)
+            string? error = null;
+            store.Update(s =>
+            {
+                s.Devices.LianLiWireless.FlexLcd.TryGetValue(chain.Mac.ToUpperInvariant(), out var current);
+                error = Validate(body, chain.FanCount, current);
+                if (error is null)
+                {
+                    Apply(s.Devices.LianLiWireless.FlexLcd, chain.Mac.ToUpperInvariant(), chain.FanCount, body);
+                }
+            });
+            if (error is not null)
             {
                 return Results.Json(ApiResponse.Fail(error), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
-            store.Update(s => Apply(s.Devices.LianLiWireless.FlexLcd, chain.Mac.ToUpperInvariant(), chain.FanCount, body));
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
     }
 
     internal static IEnumerable<Slv3FanInfo> EligibleChains(Slv3State state) =>
-        state.Fans.Where(f => f.BoundToUs && !f.Stale && f.FanCount > 0 && Slv3FlexLcd.IsLcdFanType(f.FanType));
+        state.Fans.Where(f => f.FlexLcdEligible);
 
     internal static Slv3FlexLcdResponse BuildResponse(Slv3State state, NexusSettings settings)
     {

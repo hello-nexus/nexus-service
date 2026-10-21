@@ -256,15 +256,15 @@ public class Slv3FlexLcdTests
         default);
 
     [Fact]
-    public void The_frames_the_hub_sends_carry_l_connects_zero_based_ordinal_without_counting_strimers()
+    public void The_frames_the_hub_sends_carry_l_connects_zero_based_ordinal_in_the_captured_report_order()
     {
         _clock = 1_000_000;
         var (hub, net, tx) = Slv3TestHub.CreateConnected(() => _clock);
         var strimer = Convert.FromHexString("64F271E566E1");
         var sl = Convert.FromHexString("C5D212506CE1");
-        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = strimer, MasterMac = net.MasterMac, RxType = 1, DevType = 2, FanCount = 0 });
         net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = TlMac, MasterMac = net.MasterMac, RxType = 4, FanCount = 1, FansType = 51 });
         net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = sl, MasterMac = net.MasterMac, RxType = 5, FanCount = 1, FansType = 43 });
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = strimer, MasterMac = net.MasterMac, RxType = 1, DevType = 2, FanCount = 0 });
         Ticks(hub, 1);
         hub.FlexLcd = () => FrameFor((TlMac, true, 3), (sl, true, 9));
         Ticks(hub, 12);
@@ -339,22 +339,99 @@ public class Slv3FlexLcdTests
         Assert.True(Frames(tx, Slv3Protocol.RfSwitchWirelessTheme).Select(f => f[17]).Distinct().Count() <= 1);
     }
 
+    private static int FirstFrame(Slv3TestHub.FakeTxTransport tx, byte cmd) =>
+        tx.SentFrames.FindIndex(f => f.Length > 24 && f[4] == Slv3Protocol.RfFrameType && f[5] == cmd);
+
     [Fact]
-    public void Unbinding_a_chain_with_themes_on_clears_the_switch_before_the_release_frame()
+    public void Unbinding_a_chain_with_themes_on_holds_the_release_frame_until_the_switch_off_is_echoed()
     {
         var (hub, _, tx, fan) = Rig();
         hub.FlexLcd = () => Frame(true, 3);
         Ticks(hub, 20);
         Assert.Equal(1, fan.ThemeSwitch & 1);
         hub.SetLockBoundDevices(false);
+        fan.DropCommands = 3;
         tx.SentFrames.Clear();
         Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out var error), error);
-        Ticks(hub, 3);
-        var firstSwitch = tx.SentFrames.FindIndex(f => f.Length > 24 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSwitchWirelessTheme);
-        var firstBind = tx.SentFrames.FindIndex(f => f.Length > 5 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfBind);
-        Assert.True(firstSwitch >= 0, "no switch-off frame");
-        Assert.True(firstBind < 0 || firstSwitch < firstBind);
+        Assert.True(FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme) >= 0, "no switch-off frame");
+        Assert.True(FirstFrame(tx, Slv3Protocol.RfBind) < 0, "the release went out before the switch-off was heard");
+        Ticks(hub, 6);
+        var firstSwitch = FirstFrame(tx, Slv3Protocol.RfSwitchWirelessTheme);
+        var firstBind = FirstFrame(tx, Slv3Protocol.RfBind);
+        Assert.True(firstBind > firstSwitch, "no release frame after the echo");
+        Assert.Equal(0, fan.ThemeSwitch & 1);
         Assert.Equal(0, tx.SentFrames[firstSwitch][24]);
+        // The theme driver never switches the leaving chain back on.
+        Assert.DoesNotContain(tx.SentFrames, f => f.Length > 24 && f[5] == Slv3Protocol.RfSwitchWirelessTheme && f[24] != 0);
+    }
+
+    [Fact]
+    public void The_release_goes_out_after_the_hold_even_if_the_switch_off_is_never_heard()
+    {
+        var (hub, _, tx, fan) = Rig();
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 20);
+        hub.SetLockBoundDevices(false);
+        fan.IgnoreCommands = true;
+        tx.SentFrames.Clear();
+        Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
+        Assert.True(FirstFrame(tx, Slv3Protocol.RfBind) < 0);
+        Ticks(hub, 6);
+        Assert.True(FirstFrame(tx, Slv3Protocol.RfBind) >= 0);
+    }
+
+    [Fact]
+    public void Theme_frames_are_never_resent_to_a_chain_that_is_no_longer_bound_to_us()
+    {
+        var (hub, _, tx, fan) = Rig();
+        fan.DropCommands = 1000;
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 2);
+        Assert.NotEmpty(Frames(tx, Slv3Protocol.RfSendColors));
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        Ticks(hub, 1);
+        tx.SentFrames.Clear();
+        Ticks(hub, 10);
+        Assert.Empty(Frames(tx, Slv3Protocol.RfSendColors));
+        Assert.Empty(Frames(tx, Slv3Protocol.RfSwitchWirelessTheme));
+    }
+
+    [Fact]
+    public void A_chain_that_is_unheard_is_not_asked_and_asked_again_when_it_returns()
+    {
+        var (hub, net, tx, fan) = Rig();
+        fan.IgnoreCommands = true;
+        hub.FlexLcd = () => Frame(true, 3);
+        Ticks(hub, 1);
+        net.Fans.Clear();
+        Ticks(hub, 3);
+        var during = Frames(tx, Slv3Protocol.RfSendColors).Select(f => f[17]).Distinct().Count();
+        Ticks(hub, 8);
+        Assert.Equal(during, Frames(tx, Slv3Protocol.RfSendColors).Select(f => f[17]).Distinct().Count());
+        fan.IgnoreCommands = false;
+        net.Fans.Add(fan);
+        Ticks(hub, 20);
+        Assert.Equal(1, fan.ThemeSwitch & 1);
+    }
+
+    [Fact]
+    public void The_ordinal_follows_the_dongles_report_order_and_counts_every_bound_chain()
+    {
+        _clock = 1_000_000;
+        var (hub, net, tx) = Slv3TestHub.CreateConnected(() => _clock);
+        var aio = Convert.FromHexString("EE305E6232E1");
+        var other = Convert.FromHexString("998D1DE566E1");
+        var strimer = Convert.FromHexString("64F271E566E1");
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = aio, MasterMac = net.MasterMac, RxType = 8, DevType = 10, FanCount = 0 });
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = other, MasterMac = net.MasterMac, RxType = 1, FanCount = 3, FansType = 36 });
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = TlMac, MasterMac = net.MasterMac, RxType = 4, FanCount = 1, FansType = 51 });
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = strimer, MasterMac = net.MasterMac, RxType = 2, DevType = 2, FanCount = 0 });
+        Ticks(hub, 1);
+        hub.FlexLcd = () => FrameFor((TlMac, true, 3));
+        Ticks(hub, 8);
+        // Two chains precede the TL fan in the report; the Strimer behind it does not count.
+        Assert.Equal(2, Frames(tx, Slv3Protocol.RfSendColors).Select(f => (int)f[16]).Distinct().Single());
     }
 
     [Fact]

@@ -85,20 +85,20 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     // First sight of a bound SL-INF Flex chain moves its saved zone data to the real zones.
     private void MigrateFlexZones()
     {
-        List<(string Mac, int Fans)>? pending = null;
+        List<string>? pending = null;
         var done = _store.Load().Devices.LianLiWireless.FlexZonesMigrated;
         foreach (var fan in _hub.State.Fans)
         {
             if (fan.BoundToUs && !fan.Stale && fan.FanCount > 0 && FlexFamilyOf(fan) == FlexFamily.SlInfFlex
                 && !done.Contains(fan.Mac, StringComparer.OrdinalIgnoreCase))
             {
-                (pending ??= new()).Add((fan.Mac, fan.FanCount));
+                (pending ??= new()).Add(fan.Mac);
             }
         }
         if (pending is null) return;
         _store.Update(s =>
         {
-            foreach (var (mac, fans) in pending)
+            foreach (var mac in pending)
             {
                 if (Slv3FlexZoneMigration.Apply(s, mac))
                 {

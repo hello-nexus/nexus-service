@@ -17,16 +17,32 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
 
     public IReadOnlyList<FlexUnitPort> Discover() => Snapshot().Units;
 
+    private readonly object _topologyLock = new();
     private string _lastTopology = "";
 
     public FlexDiscoverySnapshot Snapshot()
     {
         var paths = EnumeratePaths();
-        var snapshot = FlexDiscoveryParser.Snapshot(paths, ParentHub);
-        var topology = FlexDiscoveryParser.Describe(paths, ParentHub, snapshot);
-        if (!string.Equals(topology, _lastTopology, StringComparison.Ordinal))
+        var hubs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string HubOf(string instanceId)
         {
+            if (!hubs.TryGetValue(instanceId, out var hub))
+            {
+                hub = ParentHub(instanceId);
+                hubs[instanceId] = hub;
+            }
+            return hub;
+        }
+        var snapshot = FlexDiscoveryParser.Snapshot(paths, HubOf);
+        var topology = FlexDiscoveryParser.Describe(paths, HubOf, snapshot);
+        bool changed;
+        lock (_topologyLock)
+        {
+            changed = !string.Equals(topology, _lastTopology, StringComparison.Ordinal);
             _lastTopology = topology;
+        }
+        if (changed)
+        {
             ServiceLog.Info($"[lianli-flex] discovery {topology}");
         }
         return snapshot;

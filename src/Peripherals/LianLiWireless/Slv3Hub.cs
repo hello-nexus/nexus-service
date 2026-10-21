@@ -30,6 +30,7 @@ public sealed partial class Slv3Hub : IDisposable
     private readonly Func<Slv3PortInfo, ISlv3Transport> _transportFactory;
     private readonly object _lock = new();
     private readonly Dictionary<string, Slv3PendingCommand> _pendingCommands = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (long DeadlineMs, string MacHex)> _deferredUnbinds = new(StringComparer.Ordinal);
     // Last cmd_seq issued per chain MAC hex, so back-to-back commands stay
     // monotonic even before the chain's record echoes the previous one
     // (L-Connect's per-device targe_cmd_seq).
@@ -516,6 +517,7 @@ public sealed partial class Slv3Hub : IDisposable
         _conflictPoll = -1;
         _ownedSlotSightings.Clear();
         _pendingCommands.Clear();
+        _deferredUnbinds.Clear();
         _lastIssuedSeq.Clear();
         _rxAbsentSinceMs = 0;
         _txAbsentSinceMs = 0;
@@ -871,6 +873,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return true;
         }
+        ProcessDeferredUnbindsLocked(nowMs);
         ReconcileLocked();
         TrackOwnedLocked();
         ResolveSlotConflictsLocked();
@@ -1418,7 +1421,9 @@ public sealed partial class Slv3Hub : IDisposable
         foreach (var (key, cmd) in _pendingCommands)
         {
             var found = TryFindRecordLocked(cmd.Mac, out var record);
-            if ((found && record.CmdSeq == cmd.TargetSeq) || cmd.SendsRemaining <= 0)
+            // Theme frames only ever go to a chain that is still ours.
+            if ((found && record.CmdSeq == cmd.TargetSeq) || cmd.SendsRemaining <= 0
+                || (found && cmd.RfCmd is Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme && !IsBoundToUsLocked(record)))
             {
                 (done ??= new List<string>()).Add(key);
                 continue;
@@ -2467,29 +2472,42 @@ public sealed partial class Slv3Hub : IDisposable
                 error = "held by a live master";
                 return false;
             }
-            if (IsBoundToUsLocked(existing))
+            if (_deferredUnbinds.ContainsKey(key))
             {
-                ReleaseFlexLcdBeforeUnbindLocked(existing);
+                return true;
             }
-            _userUnbound.Add(key);
-            _unboundHere.Add(key);
-            if (_owned.Remove(key))
+            if (IsBoundToUsLocked(existing) && BeginFlexLcdReleaseForUnbindLocked(existing))
             {
-                _ownedDirty = true;
+                // The screens go back to USB content first; the release frame follows their acknowledgement or the hold.
+                _userUnbound.Add(key);
+                _deferredUnbinds[key] = (_nowMs() + FlexLcdUnbindHoldMs, macHex);
+                ServiceLog.Info($"[lianli-wireless] unbind of {key} waits for its wireless theme switch to clear");
+                return true;
             }
-            if (Slv3Protocol.MacIsZero(existing.MasterMac))
-            {
-                _intents.Remove(key);
-            }
-            else
-            {
-                ServiceLog.Info($"[lianli-wireless] unbind requested for {key}");
-                _intents[key] = new BindIntent(0) { Unbinding = true, Sends = IsWiredOwned(macHex) ? 1 : 0 };
-                SendBindFrameLocked(existing, 0, unbind: true);
-            }
+            PerformUnbindLocked(key, macHex, existing);
         }
         FlushOwned();
         return true;
+    }
+
+    private void PerformUnbindLocked(string key, string macHex, Slv3DeviceRecord existing)
+    {
+        _userUnbound.Add(key);
+        _unboundHere.Add(key);
+        if (_owned.Remove(key))
+        {
+            _ownedDirty = true;
+        }
+        if (Slv3Protocol.MacIsZero(existing.MasterMac))
+        {
+            _intents.Remove(key);
+        }
+        else
+        {
+            ServiceLog.Info($"[lianli-wireless] unbind requested for {key}");
+            _intents[key] = new BindIntent(0) { Unbinding = true, Sends = IsWiredOwned(macHex) ? 1 : 0 };
+            SendBindFrameLocked(existing, 0, unbind: true);
+        }
     }
 
     /// <summary>

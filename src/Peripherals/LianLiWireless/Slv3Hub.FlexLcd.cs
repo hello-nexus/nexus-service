@@ -35,6 +35,7 @@ public sealed partial class Slv3Hub
         public long SwitchNextMs;
         public int SwitchWantMask = -1;
         public bool SwitchGaveUp;
+        public bool WasStale;
     }
 
     private readonly Dictionary<string, FlexLcdChainState> _flexLcdStates = new(StringComparer.Ordinal);
@@ -54,19 +55,25 @@ public sealed partial class Slv3Hub
         return _lastFlexLcdFrame;
     }
 
-    // L-Connect numbers a chain among the bound fan chains from zero, Strimers not counted.
+    // L-Connect's SyncControlInfo puts the count of bound devices ahead of a chain in the dongle's own report order
+    // at [16]; the capture lists the TL fan, the SL-INF fan, then the Strimer, with 0 and 1 on the two fans. Strimers
+    // and HydroShift IIs count like any other bound chain. A chain that is not bound to us is never sent these frames.
     private byte FlexLcdOrdinalLocked(Slv3DeviceRecord record)
     {
+        var order = _pollRecords.Exists(r => Slv3Protocol.MacEquals(r.Mac, record.Mac)) ? _pollRecords : _lastFanRecords;
         var ordinal = 0;
-        foreach (var other in _lastFanRecords.Where(r => IsBoundToUsLocked(r) && !r.IsStrimer).OrderBy(r => r.RxType))
+        foreach (var other in order)
         {
             if (Slv3Protocol.MacEquals(other.Mac, record.Mac))
             {
-                break;
+                return (byte)ordinal;
             }
-            ordinal++;
+            if (IsBoundToUsLocked(other))
+            {
+                ordinal++;
+            }
         }
-        return (byte)ordinal;
+        return 0;
     }
 
     /// <summary>The ClockSync LCD block for this tick, or null when no chain shows a wireless theme; drives each chain's color and switch steps.</summary>
@@ -79,7 +86,7 @@ public sealed partial class Slv3Hub
             foreach (var record in _lastFanRecords)
             {
                 var key = Convert.ToHexString(record.Mac);
-                if (!IsBoundToUsLocked(record) || record.FansType.Length == 0 || !Slv3FlexLcd.IsLcdFanType(record.FansType[0])
+                if (!IsBoundToUsLocked(record) || IsLeavingLocked(key) || record.FansType.Length == 0 || !Slv3FlexLcd.IsLcdFanType(record.FansType[0])
                     || !frame.Chains.TryGetValue(key, out var chain) || !chain.Enabled || record.FanCount <= 0)
                 {
                     continue;
@@ -103,6 +110,10 @@ public sealed partial class Slv3Hub
         return rows.Count == 0 || frame is null ? null : Slv3FlexLcd.BuildLcdBlock(rows, frame.Sensors, DateTime.Now);
     }
 
+    // A chain the user is unbinding, or whose release is already on the air.
+    private bool IsLeavingLocked(string key) =>
+        _userUnbound.Contains(key) || (_intents.TryGetValue(key, out var intent) && intent.Unbinding);
+
     private Slv3FlexLcd.Row DriveFlexLcdChainLocked(Slv3DeviceRecord record, Slv3FlexLcdChain chain, FlexLcdChainState state, long nowMs)
     {
         var key = Convert.ToHexString(record.Mac);
@@ -113,6 +124,17 @@ public sealed partial class Slv3Hub
         state.Enabled = true;
         state.FanMask = (1 << fans) - 1;
         var wantMask = 0;
+        var stale = _knownChains.TryGetValue(key, out var known) && nowMs - known.LastSeenMs > ChainStaleMs;
+        if (!stale && state.WasStale)
+        {
+            // Heard again: the silence did not count against it.
+            state.SwitchAttempts = 0;
+            state.SwitchGaveUp = false;
+            state.SwitchNextMs = 0;
+            Array.Clear(state.ColorAttempts);
+            state.InFlight = null;
+        }
+        state.WasStale = stale;
         for (var i = 0; i < fans; i++)
         {
             var c = Slv3FlexLcd.CacheIndex(isSlInf, record.RightAttach, record.FanCount, i);
@@ -134,9 +156,12 @@ public sealed partial class Slv3Hub
                 state.Work[c] = (theme, fan.Colors);
             }
         }
-        TrackFlexColorAckLocked(record, key, state);
-        RunFlexColorStepLocked(record, key, state, nowMs);
-        DriveFlexSwitchLocked(record, key, state, wantMask, nowMs);
+        if (!stale)
+        {
+            TrackFlexColorAckLocked(record, key, state);
+            RunFlexColorStepLocked(record, key, state, nowMs);
+            DriveFlexSwitchLocked(record, key, state, wantMask, nowMs);
+        }
         return new Slv3FlexLcd.Row(record.RxType, themes, sources, Slv3FlexLcd.Direction(chain.Rotation), (byte)(chain.Brightness > 0 ? Math.Clamp(chain.Brightness, 1, 100) : 60), fans);
     }
 
@@ -229,7 +254,7 @@ public sealed partial class Slv3Hub
     // A chain the user switched off or that left the radio: its screens go back to USB content while it is still ours.
     private void ReleaseFlexLcdChainLocked(string key, FlexLcdChainState state, long nowMs)
     {
-        var found = TryFindRecordLocked(Convert.FromHexString(key), out var record) && IsBoundToUsLocked(record);
+        var found = TryFindRecordLocked(Convert.FromHexString(key), out var record) && IsBoundToUsLocked(record) && !IsLeavingLocked(key);
         if (!found)
         {
             _flexLcdStates.Remove(key);
@@ -266,22 +291,47 @@ public sealed partial class Slv3Hub
         }
     }
 
-    // Unbinding a chain whose screens show a wireless theme turns them back to USB content first; the bits live in the fan's flash and the USB side cannot clear them.
-    private void ReleaseFlexLcdBeforeUnbindLocked(Slv3DeviceRecord record)
+    internal const long FlexLcdUnbindHoldMs = 4000;
+
+    private static int FlexLcdMask(Slv3DeviceRecord record) => (1 << Math.Min(Slv3FlexLcd.MaxFans, Math.Max(0, record.FanCount))) - 1;
+
+    // Unbinding a chain whose screens show a wireless theme turns them back to USB content first; the bits live in the
+    // fan's flash and the USB side cannot clear them. True while the unbind waits for that.
+    private bool BeginFlexLcdReleaseForUnbindLocked(Slv3DeviceRecord record)
     {
         if (record.FansType.Length == 0 || !Slv3FlexLcd.IsLcdFanType(record.FansType[0]))
         {
-            return;
+            return false;
         }
-        var mask = (1 << Math.Min(Slv3FlexLcd.MaxFans, Math.Max(0, record.FanCount))) - 1;
         _flexLcdStates.Remove(Convert.ToHexString(record.Mac));
+        var mask = FlexLcdMask(record);
         if ((record.WirelessThemeSwitch & mask) == 0)
         {
-            return;
+            return false;
         }
-        if (QueueSequencedCommandLocked(record, Slv3Protocol.RfSwitchWirelessTheme, (byte)(record.WirelessThemeSwitch & ~mask)) is { } seq)
+        return QueueSequencedCommandLocked(record, Slv3Protocol.RfSwitchWirelessTheme, (byte)(record.WirelessThemeSwitch & ~mask)) is not null;
+    }
+
+    // Runs the deferred unbinds: once the chain reports its switch bits cleared, or after the hold, the release frame goes out.
+    private void ProcessDeferredUnbindsLocked(long nowMs)
+    {
+        foreach (var (key, deferred) in _deferredUnbinds.ToList())
         {
-            ServiceLog.Info($"[lianli-wireless] wireless theme switch cleared on {Convert.ToHexString(record.Mac)} before the unbind (seq {seq})");
+            var present = TryFindRecordLocked(Convert.FromHexString(key), out var record);
+            var waiting = present && IsBoundToUsLocked(record) && nowMs < deferred.DeadlineMs && (record.WirelessThemeSwitch & FlexLcdMask(record)) != 0;
+            if (waiting)
+            {
+                if (!_pendingCommands.ContainsKey(key))
+                {
+                    QueueSequencedCommandLocked(record, Slv3Protocol.RfSwitchWirelessTheme, (byte)(record.WirelessThemeSwitch & ~FlexLcdMask(record)));
+                }
+                continue;
+            }
+            _deferredUnbinds.Remove(key);
+            if (present)
+            {
+                PerformUnbindLocked(key, deferred.MacHex, record);
+            }
         }
     }
 }

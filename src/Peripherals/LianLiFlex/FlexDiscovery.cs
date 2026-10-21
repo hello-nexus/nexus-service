@@ -96,10 +96,6 @@ public static class FlexDiscoveryParser
         return new FlexDiscoverySnapshot(units, screenOnly);
     }
 
-    /// <summary>
-    /// Keeps only the Flex receivers and screens and pairs them: by the resolved parent hub when
-    /// <paramref name="hubOf"/> knows it, else by family when exactly one of each is present.
-    /// </summary>
     /// <summary>One line naming every receiver and screen found with its parent hub, the pairing result and the screens no receiver claimed.</summary>
     public static string Describe(IEnumerable<string> paths, Func<string, string> hubOf, FlexDiscoverySnapshot snapshot)
     {
@@ -127,6 +123,10 @@ public static class FlexDiscoveryParser
         return $"receivers=[{string.Join("; ", receivers)}] screens=[{string.Join("; ", screens)}] paired=[{string.Join("; ", paired)}] screenOnly=[{string.Join("; ", alone)}]";
     }
 
+    /// <summary>
+    /// Keeps only the Flex receivers and screens and pairs them: by the resolved parent hub when
+    /// <paramref name="hubOf"/> knows it, else by family when exactly one of each is present.
+    /// </summary>
     public static IReadOnlyList<FlexUnitPort> Pair(IEnumerable<string> paths, Func<string, string> hubOf)
     {
         var receivers = new List<FlexPath>();
