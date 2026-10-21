@@ -135,6 +135,8 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
         try
         {
             var window = new float[AudioAnalyser.WindowSize];
+            var windowL = new float[AudioAnalyser.WindowSize];
+            var windowR = new float[AudioAnalyser.WindowSize];
             int written = 0;
             int channels = cap.Channels;
             int targetRate = AudioAnalyser.SampleRate;
@@ -243,10 +245,12 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
                     if (decimAcc >= decimStep)
                     {
                         decimAcc -= decimStep;
+                        windowL[written] = src[baseIdx];
+                        windowR[written] = channels > 1 ? src[baseIdx + 1] : src[baseIdx];
                         window[written++] = mono;
                         if (written >= window.Length)
                         {
-                            _analyser.Analyse(window, cap.GetPeak());
+                            _analyser.Analyse(window, cap.GetPeak(), windowL, windowR);
                             totalAnalyses++;
                             try
                             { OnBeat?.Invoke(); }

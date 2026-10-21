@@ -120,7 +120,7 @@ public class ShaderParamSpecTests
         {
             "u_time", "u_resolution",
             "u_audioLevel", "u_audioBass", "u_audioMid", "u_audioHigh", "u_audioBeat",
-            "u_spectrum", "u_spectrum64", "u_specHist",
+            "u_spectrum", "u_spectrum64", "u_spectrumL64", "u_spectrumR64", "u_specHist",
             "u_bassPeak", "u_midPeak", "u_highPeak", "u_levelPeak",
         };
         var declRegex = new Regex(@"^uniform\s+float\s+(u_\w+)");

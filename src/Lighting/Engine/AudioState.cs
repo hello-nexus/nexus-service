@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Threading;
 
 namespace Nexus.Service.Lighting.Engine;
 
@@ -35,6 +37,27 @@ public static class AudioState
     public static readonly float[] Spectrum64 = new float[Spectrum64Bins];
     public static int Spectrum64Length => Spectrum64Bins;
 
+    /// <summary>Per-channel 64-band spectra; only advanced while <see cref="StereoWanted"/>.</summary>
+    public static readonly float[] SpectrumLeft64 = new float[Spectrum64Bins];
+    public static readonly float[] SpectrumRight64 = new float[Spectrum64Bins];
+
+    private const long StereoHoldMs = 1000;
+    private static long _stereoRequestedAt = long.MinValue;
+
+    /// <summary>Called every frame by a renderer that reads the per-channel spectra.</summary>
+    public static void RequestStereo() =>
+        Volatile.Write(ref _stereoRequestedAt, Stopwatch.GetTimestamp());
+
+    public static bool StereoWanted
+    {
+        get
+        {
+            long at = Volatile.Read(ref _stereoRequestedAt);
+            return at != long.MinValue
+                && (Stopwatch.GetTimestamp() - at) * 1000 / Stopwatch.Frequency < StereoHoldMs;
+        }
+    }
+
     /// <summary>Per-band history; SpecHist[frame*HistBands + band], frame 0 newest.</summary>
     public const int HistFrames = 16;
     public const int HistBands = 16;
@@ -56,6 +79,9 @@ public static class AudioState
         Beat = 0;
         Array.Clear(Spectrum);
         Array.Clear(Spectrum64);
+        Array.Clear(SpectrumLeft64);
+        Array.Clear(SpectrumRight64);
+        Volatile.Write(ref _stereoRequestedAt, long.MinValue);
         Array.Clear(SpecHist);
         BassPeak = 0;
         MidPeak = 0;

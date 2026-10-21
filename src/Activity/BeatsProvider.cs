@@ -9,7 +9,7 @@ namespace Nexus.Service.Activity;
 
 /// <summary>
 /// Linux audio beat detector backed by ffmpeg (PulseAudio default monitor).
-/// Reads raw float32 mono PCM at 44100 Hz from ffmpeg's stdout and feeds it
+/// Reads raw interleaved float32 stereo PCM at 44100 Hz from ffmpeg's stdout and feeds it
 /// to the shared <see cref="AudioAnalyser"/> pipeline that powers AudioState.
 ///
 /// Windows uses <see cref="WasapiLoopbackBeatsProvider"/> (native WASAPI
@@ -20,10 +20,10 @@ namespace Nexus.Service.Activity;
 public sealed class BeatsProvider : IBeatsProvider
 {
     private const int SampleRate = AudioAnalyser.SampleRate;
-    private const int Channels = 1;
+    private const int Channels = 2;
     private const int WindowSize = AudioAnalyser.WindowSize;
     private const int BytesPerSample = 4;             // float32
-    private const int WindowBytes = WindowSize * BytesPerSample;
+    private const int WindowBytes = WindowSize * Channels * BytesPerSample;
 
     private readonly AudioAnalyser _analyser = new();
 
@@ -112,7 +112,7 @@ public sealed class BeatsProvider : IBeatsProvider
         psi.ArgumentList.Add("-i");
         psi.ArgumentList.Add("default");
 
-        // Output: raw float32 mono PCM to stdout.
+        // Output: raw interleaved float32 stereo PCM to stdout.
         psi.ArgumentList.Add("-f");
         psi.ArgumentList.Add("f32le");
         psi.ArgumentList.Add("-acodec");
@@ -158,7 +158,10 @@ public sealed class BeatsProvider : IBeatsProvider
 
         var buffer = new byte[WindowBytes];
         var stream = _proc.StandardOutput.BaseStream;
+        var interleaved = new float[WindowSize * Channels];
         var samples = new float[WindowSize];
+        var left = new float[WindowSize];
+        var right = new float[WindowSize];
 
         try
         {
@@ -177,9 +180,17 @@ public sealed class BeatsProvider : IBeatsProvider
                     read += n;
                 }
 
-                Buffer.BlockCopy(buffer, 0, samples, 0, WindowBytes);
+                Buffer.BlockCopy(buffer, 0, interleaved, 0, WindowBytes);
+                for (int i = 0; i < WindowSize; i++)
+                {
+                    float l = interleaved[i * 2];
+                    float r = interleaved[i * 2 + 1];
+                    left[i] = l;
+                    right[i] = r;
+                    samples[i] = (l + r) * 0.5f;
+                }
 
-                _analyser.Analyse(samples);
+                _analyser.Analyse(samples, null, left, right);
                 try
                 { OnBeat?.Invoke(); }
                 catch { /* swallow subscriber errors */ }

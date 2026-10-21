@@ -10,7 +10,7 @@ namespace Nexus.Service.Activity;
 /// <summary>
 /// macOS audio capture: spawns the bundled <c>nexus-audio-helper</c> Swift
 /// sidecar, which uses ScreenCaptureKit to grab the system audio output and
-/// pipes float32 mono PCM at 44100 Hz to its stdout. We read from the pipe
+/// pipes interleaved float32 stereo PCM at 44100 Hz to its stdout. We read from the pipe
 /// in <see cref="AudioAnalyser.WindowSize"/>-sample windows and feed the
 /// shared analyser, identical to the Linux ffmpeg path and the Windows WASAPI
 /// path downstream.
@@ -32,7 +32,7 @@ public sealed class MacAudioBeatsProvider : IBeatsProvider
     private const int SampleRate = AudioAnalyser.SampleRate;
     private const int WindowSize = AudioAnalyser.WindowSize;
     private const int BytesPerSample = sizeof(float);
-    private const int WindowBytes = WindowSize * BytesPerSample;
+    private const int WindowBytes = WindowSize * 2 * BytesPerSample;
 
     private readonly AudioAnalyser _analyser = new();
     private readonly object _lock = new();
@@ -142,7 +142,10 @@ public sealed class MacAudioBeatsProvider : IBeatsProvider
 
         var buffer = new byte[WindowBytes];
         var stream = _proc.StandardOutput.BaseStream;
+        var interleaved = new float[WindowSize * 2];
         var samples = new float[WindowSize];
+        var left = new float[WindowSize];
+        var right = new float[WindowSize];
 
         try
         {
@@ -156,9 +159,17 @@ public sealed class MacAudioBeatsProvider : IBeatsProvider
                     read += n;
                 }
 
-                Buffer.BlockCopy(buffer, 0, samples, 0, WindowBytes);
+                Buffer.BlockCopy(buffer, 0, interleaved, 0, WindowBytes);
+                for (int i = 0; i < WindowSize; i++)
+                {
+                    float l = interleaved[i * 2];
+                    float r = interleaved[i * 2 + 1];
+                    left[i] = l;
+                    right[i] = r;
+                    samples[i] = (l + r) * 0.5f;
+                }
 
-                _analyser.Analyse(samples);
+                _analyser.Analyse(samples, null, left, right);
                 try { OnBeat?.Invoke(); } catch { /* swallow subscriber errors */ }
             }
         }

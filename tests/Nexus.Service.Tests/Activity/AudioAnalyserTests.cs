@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Threading;
 using Nexus.Service.Activity;
 using Nexus.Service.Lighting.Engine;
 
@@ -137,6 +139,72 @@ public class AudioAnalyserTests
         Assert.True(quietLevel > 0.5f, $"Quiet content should still produce visible level; got {quietLevel}");
         Assert.True(loudLevel > quietLevel, $"Loud content should exceed quiet; loud={loudLevel} quiet={quietLevel}");
         Assert.True(loudLevel <= 1.0f, $"Level must clamp at 1.0; got {loudLevel}");
+    }
+
+    [Fact]
+    public void Analyse_WithoutStereoRequest_LeavesChannelSpectraUntouchedAndMonoUnchanged()
+    {
+        AudioState.Reset();
+        var baseline = new AudioAnalyser();
+        var window = SynthesizeSine(1500, amplitude: 0.5f);
+        for (int i = 0; i < 30; i++)
+        {
+            baseline.Analyse(window);
+        }
+        var expected = (float[])AudioState.Spectrum64.Clone();
+
+        AudioState.Reset();
+        var analyser = new AudioAnalyser();
+        var silence = new float[AudioAnalyser.WindowSize];
+        for (int i = 0; i < 30; i++)
+        {
+            analyser.Analyse(window, null, window, silence);
+        }
+
+        Assert.Equal(expected, AudioState.Spectrum64);
+        Assert.All(AudioState.SpectrumLeft64, v => Assert.Equal(0f, v));
+        Assert.All(AudioState.SpectrumRight64, v => Assert.Equal(0f, v));
+    }
+
+    [Fact]
+    public void Analyse_WithStereoRequest_LeftOnlySineLightsOnlyTheLeftSpectrum()
+    {
+        AudioState.Reset();
+        var analyser = new AudioAnalyser();
+        var tone = SynthesizeSine(1500, amplitude: 0.5f);
+        var silence = new float[AudioAnalyser.WindowSize];
+        var mono = new float[AudioAnalyser.WindowSize];
+        for (int i = 0; i < mono.Length; i++)
+        {
+            mono[i] = tone[i] * 0.5f;
+        }
+
+        for (int i = 0; i < 30; i++)
+        {
+            AudioState.RequestStereo();
+            analyser.Analyse(mono, null, tone, silence);
+        }
+
+        Assert.True(AudioState.SpectrumLeft64.Max() > 0.2f, $"left max {AudioState.SpectrumLeft64.Max()}");
+        Assert.Equal(0f, AudioState.SpectrumRight64.Max());
+    }
+
+    [Fact]
+    public void StereoWanted_GoesStaleAfterTheHoldWindow()
+    {
+        AudioState.Reset();
+        Assert.False(AudioState.StereoWanted);
+
+        AudioState.RequestStereo();
+        Assert.True(AudioState.StereoWanted);
+
+        Thread.Sleep(1200);
+        Assert.False(AudioState.StereoWanted);
+
+        var analyser = new AudioAnalyser();
+        var tone = SynthesizeSine(1500, amplitude: 0.5f);
+        analyser.Analyse(tone, null, tone, tone);
+        Assert.All(AudioState.SpectrumLeft64, v => Assert.Equal(0f, v));
     }
 
     private static float[] SynthesizeSine(int frequencyHz, float amplitude)

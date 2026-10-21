@@ -83,6 +83,8 @@ public sealed class AudioAnalyser
     private readonly float[] _fftIm = new float[FftSize];
     private readonly float[] _smoothSpectrum = new float[16];
     private readonly float[] _smoothSpectrum64 = new float[64];
+    private readonly float[] _smoothLeft64 = new float[64];
+    private readonly float[] _smoothRight64 = new float[64];
     private float _smoothLevel;
     private float _smoothBass;
     private float _smoothMid;
@@ -99,7 +101,12 @@ public sealed class AudioAnalyser
     /// the OS shows the user (and survives loopback going silent). When null,
     /// volume falls back to the in-window peak of <paramref name="samples"/>.
     /// </param>
-    public void Analyse(float[] samples, float? externalPeak = null)
+    /// <param name="left">
+    /// Optional left-channel window, same length as <paramref name="samples"/>.
+    /// Analysed only while <see cref="AudioState.StereoWanted"/>.
+    /// </param>
+    /// <param name="right">Optional right-channel window, paired with <paramref name="left"/>.</param>
+    public void Analyse(float[] samples, float? externalPeak = null, float[]? left = null, float[]? right = null)
     {
         float bassEnergy = 0;
         float internalPeak = 0;
@@ -134,6 +141,12 @@ public sealed class AudioAnalyser
         float volume = peak <= 0f ? 0f : MathF.Min(MathF.Pow(peak, 0.15f) * 1.003f, 1f);
 
         PublishAudioState(samples, volume, bassBeat);
+
+        if (left is not null && right is not null && AudioState.StereoWanted)
+        {
+            PublishSpectrum64(left, _smoothLeft64, AudioState.SpectrumLeft64);
+            PublishSpectrum64(right, _smoothRight64, AudioState.SpectrumRight64);
+        }
     }
 
     public void Reset()
@@ -142,6 +155,8 @@ public sealed class AudioAnalyser
         _smoothLevel = _smoothBass = _smoothMid = _smoothHigh = _beatEnvelope = 0;
         Array.Clear(_smoothSpectrum);
         Array.Clear(_smoothSpectrum64);
+        Array.Clear(_smoothLeft64);
+        Array.Clear(_smoothRight64);
         AudioState.Reset();
     }
 
@@ -238,6 +253,35 @@ public sealed class AudioAnalyser
         for (int b = 0; b < 16; b++)
         {
             AudioState.SpecHist[b] = _smoothSpectrum[b];
+        }
+    }
+
+    private void PublishSpectrum64(float[] samples, float[] smooth, float[] output)
+    {
+        for (int i = 0; i < FftSize; i++)
+        {
+            _fftRe[i] = samples[i] * _hannWindow[i];
+            _fftIm[i] = 0f;
+        }
+        Fft(_fftRe, _fftIm);
+
+        for (int b = 0; b < 64; b++)
+        {
+            int start = _bandEdges64[b];
+            int width = Math.Max(_bandEdges64[b + 1] - start, 1);
+            float sum = 0f;
+            for (int k = start; k < start + width; k++)
+            {
+                float re = _fftRe[k];
+                float im = _fftIm[k];
+                sum += MathF.Sqrt(re * re + im * im);
+            }
+            float norm = MathF.Min(MathF.Log10(1f + sum / width * 3f), 1f);
+            float cur = smooth[b];
+            smooth[b] = norm > cur
+                ? cur + (norm - cur) * 0.55f
+                : cur + (norm - cur) * 0.18f;
+            output[b] = smooth[b];
         }
     }
 

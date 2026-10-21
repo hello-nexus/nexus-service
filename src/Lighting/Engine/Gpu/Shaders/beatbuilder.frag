@@ -5,10 +5,14 @@ uniform float u_intensity; // hint_range(0.0, 1.0, 0.01) = 1.0
 // here (not the prelude) so only this effect pays their uniform-vector cost;
 // ShaderEffect.cs / useShaderRenderer.ts upload them when the locations exist.
 //   u_spectrum64 : current frame, 64 log bands, 0..1
+//   u_spectrumL64 / u_spectrumR64 : same bands per audio channel, only advanced
+//                  while Stereo split is on (the service sees u_stereo and requests them)
 //   u_specHist   : 16 bands x 16 frames, vec4-packed; float index = frame*16+band,
 //                  frame 0 = current, frame 15 = oldest retained
 //   u_*Peak      : peak-hold of bass/mid/high, rises instant, decays slow
 uniform float u_spectrum64[64];
+uniform float u_spectrumL64[64];
+uniform float u_spectrumR64[64];
 uniform vec4  u_specHist[64];
 uniform float u_bassPeak;
 uniform float u_midPeak;
@@ -21,6 +25,7 @@ uniform float u_barWidth; // hint_range(0.1, 1.0, 0.02) = 0.7  0..1 fill ratio i
 uniform float u_centerGain; // hint_range(0.3, 3.0, 0.05) = 1.2  spectrum amplitude
 uniform float u_centerFloor; // hint_range(0.0, 0.3, 0.01) = 0.04  noise gate
 uniform float u_centerSize; // hint_range(0.3, 1.1, 0.02) = 0.8  vertical half-height of the center region
+uniform float u_stereo; // hint_range(0.0, 1.0, 1.0) = 0.0  0 Mono, 1 Stereo split (left half follows the left channel, right half the right)
 // ---- Top band meters ----
 uniform float u_topMeters; // hint_range(0.0, 1.0, 1.0) = 1.0  0/1
 uniform float u_topHeight; // hint_range(0.04, 0.25, 0.005) = 0.085  top strip height fraction; also sizes the corner squares
@@ -38,7 +43,13 @@ uniform float u_beatPulse; // hint_range(0.0, 1.0, 0.02) = 0.3  scale-on-beat am
 uniform float u_audioBoost; // hint_range(0.0, 2.0, 0.05) = 1.0
 
 float boost() { return clamp(u_audioBoost, 0.0, 2.0); }
-float band64(int i) { return u_spectrum64[clamp(i, 0, 63)]; }
+// side: -1 left channel, 1 right channel, 0 mono mix.
+float band64(int i, float side) {
+    int k = clamp(i, 0, 63);
+    if (side < -0.5) { return u_spectrumL64[k]; }
+    if (side > 0.5) { return u_spectrumR64[k]; }
+    return u_spectrum64[k];
+}
 
 // 16x16 history packed as vec4[64]; frame 0 = current.
 float histAt(int band, int frame) {
@@ -47,19 +58,19 @@ float histAt(int band, int frame) {
 }
 
 // fpos 0..1 -> interpolated 64-band magnitude.
-float spec(float fpos) {
+float spec(float fpos, float side) {
     float x = clamp(fpos, 0.0, 1.0) * 63.0;
     int i = int(floor(x));
-    return mix(band64(i), band64(min(i + 1, 63)), fract(x));
+    return mix(band64(i, side), band64(min(i + 1, 63), side), fract(x));
 }
 
 // The one magnitude sampler every region uses: gated, gain-scaled audio,
 // blended against an idle travelling wave by audio presence so the frame is
 // alive before audio arrives and locks to the music once it does.
-float magAt(float pos) {
+float magAt(float pos, float side) {
     float bz = boost();
     float gain = u_centerGain * (1.0 + u_audioLevel * 0.4 * bz);
-    float audio = max(spec(pos) - u_centerFloor, 0.0) * gain;
+    float audio = max(spec(pos, side) - u_centerFloor, 0.0) * gain;
     float t = u_time * u_speed;
     float idle = 0.16 + 0.13 * sin(t * 1.7 + pos * 17.0) * cos(t * 0.8 + pos * 6.0);
     return clamp(mix(max(idle, 0.0), audio, clamp(audioPresence() * bz, 0.0, 1.0)), 0.0, 1.5);
@@ -81,7 +92,7 @@ vec3 colorFor(float colorT) {
 }
 
 // Center spectrum luminance for the folded coords. Writes colorT via out param.
-float centerField(vec2 f, float aspect, out float colorT) {
+float centerField(vec2 f, float aspect, float side, out float colorT) {
     int style = int(u_centerStyle + 0.5);
     float fx = clamp(abs(f.x) / aspect, 0.0, 1.0);   // 0 center -> 1 edge
     float fy = f.y;                                   // 0 center -> +/-1
@@ -89,7 +100,7 @@ float centerField(vec2 f, float aspect, out float colorT) {
 
     if (style == 1) {
         // Smooth silhouette kept as a centered band, not a full-height fill.
-        float halfH = min(magAt(fx) * u_centerSize * 0.5, 0.8);
+        float halfH = min(magAt(fx, side) * u_centerSize * 0.5, 0.8);
         return smoothstep(halfH + 0.02, halfH - 0.02, abs(fy));
     }
 
@@ -110,7 +121,7 @@ float centerField(vec2 f, float aspect, out float colorT) {
             // frames back) nest into concentric diamonds as the music moves.
             float fpos = cc.x;
             colorT = fpos;
-            float m = magAt(fpos);
+            float m = magAt(fpos, side);
             float ringW = (0.05 + 0.10 * (1.0 - m)) / rows * 6.0;   // thinner when loud
             int hb = int(clamp(fpos, 0.0, 0.999) * 16.0);
             float acc = 0.0;
@@ -125,7 +136,7 @@ float centerField(vec2 f, float aspect, out float colorT) {
         // Dots: vertical spectrum silhouette as cells, lacier where quieter.
         float fpos = cc.x;
         colorT = fpos;
-        float m = magAt(fpos);
+        float m = magAt(fpos, side);
         float lit = step(cc.y, m * u_centerSize);
         float spark = step(hash21(cell + 3.7), 0.3 + 0.7 * m);
         return lit * dotMask * spark;
@@ -136,7 +147,7 @@ float centerField(vec2 f, float aspect, out float colorT) {
     float bi = floor(fx * bars);
     float pos = (bi + 0.5) / bars;
     colorT = pos;
-    float halfH = magAt(pos) * u_centerSize;
+    float halfH = magAt(pos, side) * u_centerSize;
     float within = fract(fx * bars) * 2.0 - 1.0;
     float wmask = step(abs(within), clamp(u_barWidth, 0.1, 1.0));
     float body = step(abs(fy), halfH);
@@ -156,7 +167,8 @@ void main() {
     vec2 f = vec2(abs(c.x), abs(c.y));   // 4-way mirror (quad), matching the video
 
     float colorT;
-    float lum = centerField(f, aspect, colorT);
+    float cside = u_stereo >= 0.5 ? (c.x < 0.0 ? -1.0 : 1.0) : 0.0;
+    float lum = centerField(f, aspect, cside, colorT);
     vec3 col = colorFor(colorT) * lum;
 
     // ---- Bottom bars ----
@@ -167,7 +179,8 @@ void main() {
             float bars = clamp(u_barCount, 8.0, 96.0);   // count tracks the center bars
             float bi = floor(mfx * bars);
             float pos = (bi + 0.5) / bars;
-            float mag = clamp(magAt(pos), 0.0, 1.0);
+            float bside = u_stereo >= 0.5 ? (uv.x < 0.5 ? -1.0 : 1.0) : 0.0;
+            float mag = clamp(magAt(pos, bside), 0.0, 1.0);
             float within = fract(mfx * bars) * 2.0 - 1.0;
             float wmask = step(abs(within), clamp(u_barWidth, 0.1, 1.0));   // width tracks too
             // Full-height bars within the strip; magnitude drives brightness.
