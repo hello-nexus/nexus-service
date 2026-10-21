@@ -20,11 +20,11 @@ namespace Nexus.Service.Sensors;
 /// </summary>
 internal static class GpuAdapterLuids
 {
-    /// <param name="UmdVersion">The user-mode driver version DXGI reports, 0
-    /// when the adapter has none; a driver update changes it.</param>
-    /// <summary>Video memory at or above this marks an adapter as dedicated.</summary>
+    /// <summary>Video memory at or above this marks a dedicated adapter.</summary>
     internal const long DedicatedVramMinMb = 1024;
 
+    /// <param name="UmdVersion">The user-mode driver version DXGI reports, 0
+    /// when the adapter has none; a driver update changes it.</param>
     public readonly record struct Adapter(
         string Luid, string Description, uint VendorId, long DedicatedVramMb,
         uint DeviceId = 0, uint SubSysId = 0, uint Revision = 0, long UmdVersion = 0);
@@ -50,6 +50,17 @@ internal static class GpuAdapterLuids
     private static IReadOnlyList<Adapter>? _cache;
     private static long _cacheAtMs;
 #endif
+
+    /// <summary>Drop the cached enumeration so the next call re-reads DXGI (after a driver reset renumbers adapters).</summary>
+    public static void Invalidate()
+    {
+#if WINDOWS
+        lock (CacheLock)
+        {
+            _cache = null;
+        }
+#endif
+    }
 
     public static IReadOnlyList<Adapter> Enumerate()
     {
@@ -214,12 +225,12 @@ internal static class GpuAdapterLuids
     /// enumerating it as a ghost adapter (no Software flag, real vendor id) -
     /// counting adapters can't tell a ghost from a present card. D3D11CreateDevice
     /// fails on the ghost (hardware absent) and succeeds on a real GPU; without a
-    /// real adapter, GLFW context creation fail-fasts inside the orphaned ICD
+    /// real adapter, GL context creation fail-fasts inside the orphaned ICD
     /// (0xc0000409), which a managed catch can't intercept.
     ///
     /// Necessary for the GL path, NOT sufficient: a single-GPU box has been seen
     /// passing this and still getting ApiUnavailable from WGL. The GL verdict is
-    /// glfwCreateWindow returning null under GlfwErrorGuard. Windows-only.
+    /// WGL context creation failing. Windows-only.
     /// </summary>
     public static bool HasUsableHardwareGpu()
     {

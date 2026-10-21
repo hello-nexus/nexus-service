@@ -28,7 +28,15 @@ internal sealed class FleetEventService
     private readonly IUsbEnumerator _usb;
     private readonly Func<bool> _ibuypowerSystem;
     private readonly TimeProvider _clock;
+    // USB devices can enumerate late on a cold boot; specs snapshot the bus only after this delay.
+    internal static readonly TimeSpan UsbSettleDelay = TimeSpan.FromMinutes(2);
+
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    // Not persisted: USB set captured once per process after the bus settles; later passes reuse it so hot-plugging never changes the hash.
+    private List<FleetEventDevice>? _bootDevices;
+    private readonly DateTimeOffset _startedAt;
+    private readonly TimeSpan _usbSettle;
 
     // Not persisted: caps the install event's PostHog leg to one attempt per process lifetime, independent of nexus-api retries.
     private bool _postHogInstallAttempted;
@@ -57,8 +65,11 @@ internal sealed class FleetEventService
         SystemSpecsCollector specs,
         IUsbEnumerator usb,
         Func<bool> ibuypowerSystem,
-        TimeProvider clock)
+        TimeProvider clock,
+        TimeSpan? usbSettle = null)
     {
+        _startedAt = clock.GetUtcNow();
+        _usbSettle = usbSettle ?? UsbSettleDelay;
         _store = store;
         _transport = transport;
         _telemetry = telemetry;
@@ -210,11 +221,35 @@ internal sealed class FleetEventService
         if (string.IsNullOrWhiteSpace(specs.Processor) && string.IsNullOrWhiteSpace(specs.GraphicsCard))
             return; // not ready yet (cold boot) - retry next pass.
 
-        var gpu = specs.GraphicsCard.Split(
-            " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var ramBytes = SystemProfileService.ParseRamGb(specs.Memory) is int gb ? (long)gb * 1024 * 1024 * 1024 : 0;
+        // Devices enumerate late on a cold boot; wait for the bus before taking the one snapshot.
+        if (_bootDevices is null && _clock.GetUtcNow() - _startedAt < _usbSettle)
+            return;
 
-        var devices = FleetDeviceCollector.Collect(_usb.Enumerate());
+        var gpu = specs.GraphicsCard.Split(
+                " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .OrderBy(g => g, StringComparer.Ordinal)
+            .ToArray();
+        var persisted = _store.Load().Telemetry;
+        var gpuList = ResolveGpu(gpu, persisted.FleetGpu);
+        gpu = gpuList;
+        var ramBytes = ResolveRam(specs.Memory, OperatingSystem.IsWindows(), persisted.FleetRamBytes);
+        if (ramBytes == 0)
+            return; // no RAM figure of any kind yet; never send or hash 0.
+        var gpuJoined = string.Join(" + ", gpu);
+        if (ramBytes != persisted.FleetRamBytes || gpuJoined != persisted.FleetGpu)
+        {
+            // Persist only DIMM-detail RAM and a non-empty GPU list.
+            var keepGpu = gpu.Length > 0 ? gpuJoined : persisted.FleetGpu;
+            var dimm = HasDimmDetail(specs.Memory, OperatingSystem.IsWindows());
+            _store.Update(s =>
+            {
+                if (gpu.Length > 0) s.Telemetry.FleetGpu = keepGpu;
+                if (dimm) s.Telemetry.FleetRamBytes = ramBytes;
+            });
+        }
+
+        _bootDevices ??= FleetDeviceCollector.Collect(_usb.Enumerate());
+        var devices = _bootDevices;
         var y70Seen = _store.Load().Telemetry.FleetY70Seen;
         var ibuypowerSystem = _ibuypowerSystem();
         var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem);
@@ -240,6 +275,32 @@ internal sealed class FleetEventService
         _telemetry.Capture(TelemetryEvents.Specs,
             ("cpu", specs.Processor), ("gpu", gpu), ("ram_bytes", ramBytes), ("motherboard", specs.Motherboard));
     }
+
+    // On Windows the DIMM query appends a parenthesized stick layout; without it the string is the OS-usable total from the sensor fallback. Other platforms accept any figure.
+    internal static bool HasDimmDetail(string memory, bool requireDimmDetail) =>
+        !requireDimmDetail || memory.Contains('(');
+
+    internal static long ParseRamBytes(string memory) =>
+        SystemProfileService.ParseRamGb(memory) is int gb and > 0 ? (long)gb * 1024 * 1024 * 1024 : 0;
+
+    /// <summary>
+    /// The RAM figure to send. A DIMM total wins and is remembered; a read without DIMM detail reuses the remembered
+    /// total so it cannot alternate with the OS-usable figure; with nothing remembered the usable figure is used as-is.
+    /// 0 means no figure at all.
+    /// </summary>
+    internal static long ResolveRam(string memory, bool requireDimmDetail, long persistedDimmBytes)
+    {
+        var current = ParseRamBytes(memory);
+        if (current > 0 && HasDimmDetail(memory, requireDimmDetail))
+            return current;
+        return persistedDimmBytes > 0 ? persistedDimmBytes : current;
+    }
+
+    /// <summary>A non-empty read wins; an empty one reuses the remembered list, else stays empty.</summary>
+    internal static string[] ResolveGpu(string[] current, string persisted) =>
+        current.Length > 0
+            ? current
+            : persisted.Split(" + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     private static FleetEventPayload BuildEnvelope(string type, string installId) => new()
     {

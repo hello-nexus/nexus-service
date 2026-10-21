@@ -7,3 +7,9 @@ public sealed class DeckImageUploadResponse
     public bool Error { get; set; }
     public string Msg { get; set; } = "Ok";
 }
+
+/// <summary>POST /deck/images/stage/{stageId} JSON body; the same fields may instead be sent as multipart form fields.</summary>
+public sealed class DeckImageStageRequest
+{
+    public string? Crop { get; set; }
+}

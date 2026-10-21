@@ -16,6 +16,8 @@ internal sealed class OfflineCloudApiClient : ICloudApiClient
 
     public Task<CloudApiResult<CloudVoid>> RegisterAsync(CloudRegisterRequest body, CancellationToken ct) => Offline<CloudVoid>();
 
+    public Task<CloudApiResult<CloudVoid>> ResendVerificationAsync(CloudResendVerificationRequest body, CancellationToken ct) => Offline<CloudVoid>();
+
     public Task<CloudApiResult<CloudAuthSession>> LoginAsync(CloudLoginRequest body, CancellationToken ct) => Offline<CloudAuthSession>();
 
     public Task<CloudApiResult<CloudAuthSession>> RefreshAsync(string refreshToken, CancellationToken ct) => Offline<CloudAuthSession>();

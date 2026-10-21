@@ -111,6 +111,42 @@ public class NollieConnectionWorkerTests
     }
 
     [Fact]
+    public void Nexus_control_off_releases_the_real_board_and_keeps_the_simulated_one()
+    {
+        Plug("REAL");
+        _worker.Tick();
+        Assert.True(_worker.AttachSimulated(Vid, Pid));
+        Assert.Equal(2, _hub.Controllers.Count);
+
+        _store.Update(s => s.Devices.NexusControlDisabled = new List<string> { NollieConnectionWorker.HandlerId });
+        _worker.Tick();
+        _worker.Tick();
+
+        var left = Assert.Single(_hub.Controllers);
+        Assert.StartsWith(SimulatedNollieDevice.PathPrefix, left.Path, StringComparison.Ordinal);
+
+        _store.Update(s => s.Devices.NexusControlDisabled = new List<string>());
+        _worker.Tick();
+
+        Assert.Equal(2, _hub.Controllers.Count);
+        Assert.Single(_hub.Controllers, c => c.Path.StartsWith(SimulatedNollieDevice.PathPrefix, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_simulated_board_can_be_attached_while_nexus_control_is_off_and_survives_ticks()
+    {
+        _store.Update(s => s.Devices.NexusControlDisabled = new List<string> { NollieConnectionWorker.HandlerId });
+
+        Assert.True(_worker.AttachSimulated(Vid, Pid));
+        _worker.Tick();
+        _worker.Tick();
+
+        Assert.Single(_hub.Controllers);
+        _worker.DetachSimulated();
+        Assert.Empty(_hub.Controllers);
+    }
+
+    [Fact]
     public void A_second_identical_board_attaches_on_the_periodic_recheck()
     {
         Plug("ONE");

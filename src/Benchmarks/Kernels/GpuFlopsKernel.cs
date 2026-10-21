@@ -101,6 +101,7 @@ internal static class GpuFlopsKernel
     internal static GpuMeasurement Measure(
         GpuContext ctx, Action<double>? onProgress, CancellationToken ct)
     {
+        using var background = GpuContext.BeginBackground();
         lock (ctx.Lock)
         {
             ctx.EnsureInitializedLocked();
@@ -117,7 +118,7 @@ internal static class GpuFlopsKernel
         {
             ctx.Invoke(() =>
             {
-                var created = CreateResources(ctx.Gl);
+                var created = CreateResources(ctx.Gl, ctx.IsEs);
                 program = created.Program;
                 fbo = created.Fbo;
                 tex = created.Tex;
@@ -156,9 +157,9 @@ internal static class GpuFlopsKernel
 
     private readonly record struct GlResources(uint Program, uint Fbo, uint Tex);
 
-    private static unsafe GlResources CreateResources(GL gl)
+    private static unsafe GlResources CreateResources(GL gl, bool es)
     {
-        uint program = LinkProgram(gl);
+        uint program = LinkProgram(gl, es);
 
         uint tex = gl.GenTexture();
         gl.BindTexture(TextureTarget.Texture2D, tex);
@@ -180,10 +181,10 @@ internal static class GpuFlopsKernel
         return new GlResources(program, fbo, tex);
     }
 
-    private static uint LinkProgram(GL gl)
+    private static uint LinkProgram(GL gl, bool es)
     {
-        uint vs = CompileShader(gl, ShaderType.VertexShader, VertexSrc);
-        uint fs = CompileShader(gl, ShaderType.FragmentShader, FragmentSrc);
+        uint vs = CompileShader(gl, ShaderType.VertexShader, GlslDialect.For(es, VertexSrc));
+        uint fs = CompileShader(gl, ShaderType.FragmentShader, GlslDialect.For(es, FragmentSrc));
         uint prog = gl.CreateProgram();
         gl.AttachShader(prog, vs);
         gl.AttachShader(prog, fs);

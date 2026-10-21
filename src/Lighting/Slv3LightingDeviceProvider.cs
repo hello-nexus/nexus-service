@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Mappings;
 using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Models.Devices;
+using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -72,11 +74,38 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     /// </summary>
     public void OnHubStateUpdated()
     {
+        MigrateFlexZones();
         var sig = BuildSignature();
         if (sig == _lastSignature) return;
         _lastSignature = sig;
         WireNewStrimers();
         try { DevicesChanged?.Invoke(); } catch { /* swallow subscriber failures */ }
+    }
+
+    // First sight of a bound SL-INF Flex chain moves its saved zone data to the real zones.
+    private void MigrateFlexZones()
+    {
+        List<string>? pending = null;
+        var done = _store.Load().Devices.LianLiWireless.FlexZonesMigrated;
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (fan.BoundToUs && !fan.Stale && fan.FanCount > 0 && FlexFamilyOf(fan) == FlexFamily.SlInfFlex
+                && !done.Contains(fan.Mac, StringComparer.OrdinalIgnoreCase))
+            {
+                (pending ??= new()).Add(fan.Mac);
+            }
+        }
+        if (pending is null) return;
+        _store.Update(s =>
+        {
+            foreach (var mac in pending)
+            {
+                if (Slv3FlexZoneMigration.Apply(s, mac))
+                {
+                    ServiceLog.Info($"[lianli-wireless] {mac}: saved zone data moved to Center/Inner/Outer");
+                }
+            }
+        });
     }
 
     // First sight of a bound Strimer wires its catalog product to the cable:
@@ -128,11 +157,16 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     {
         if (!_hub.IsConnected) return "disconnected";
         var sb = new System.Text.StringBuilder("connected");
-        var chains = _store.Load().Devices.LianLiWireless.Chains;
+        var settings = _store.Load();
+        var chains = settings.Devices.LianLiWireless.Chains;
         foreach (var fan in _hub.State.Fans)
         {
             if (!fan.BoundToUs) continue;
             var argb = PlaysMotherboardArgb(fan, chains) ? ":argb" : "";
+            if (FlexFamilyOf(fan) == FlexFamily.TlFlex && settings.Devices.FlexUnits.TryGetValue(fan.Mac, out var flexLook) && flexLook.UpDownSwap)
+            {
+                argb += ":swap";
+            }
             // FanType is part of the signature because the family sets the LED
             // count: a chain first seen with a starved beacon (fans_type all 0,
             // Unknown family) rebuilds once the real subtype arrives. DevType
@@ -371,7 +405,8 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     private List<DeviceStructure> BuildStructures(bool playsArgb)
     {
         var structures = new List<DeviceStructure>();
-        var chains = _store.Load().Devices.LianLiWireless.Chains;
+        var settings = _store.Load();
+        var chains = settings.Devices.LianLiWireless.Chains;
         foreach (var fan in _hub.State.Fans)
         {
             if (!fan.BoundToUs) continue;
@@ -389,7 +424,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
                 continue;
             }
             if (fan.FanCount <= 0) continue;
-            structures.Add(BuildStructure(fan));
+            structures.Add(BuildStructure(fan, settings.Devices.FlexUnits.TryGetValue(fan.Mac, out var look) && look.UpDownSwap));
         }
         return structures;
     }
@@ -556,8 +591,80 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     private static int LedsPerFan(Slv3FanInfo fan) =>
         Slv3Protocol.LedsPerFanFor(Slv3Protocol.ClassifyFanFamily((byte)fan.FanType));
 
-    private static DeviceStructure BuildStructure(Slv3FanInfo fan)
+    /// <summary>The Flex family of a chain, or null for any other fan.</summary>
+    internal static FlexFamily? FlexFamilyOf(Slv3FanInfo fan) => Slv3Protocol.ClassifyFanFamily((byte)fan.FanType) switch
     {
+        Slv3FanFamily.TlFlex => FlexFamily.TlFlex,
+        Slv3FanFamily.SlInfFlex => FlexFamily.SlInfFlex,
+        _ => null,
+    };
+
+    /// <summary>Zones of a Flex chain in segment order: the zone id suffix, the wired-Flex zone key and its label. TL keeps the inner and outer ids.</summary>
+    internal static (string Suffix, string Key, string Label)[] FlexZonesOf(FlexFamily family)
+    {
+        var keys = FlexLightingDeviceProvider.ZonesOf(family);
+        var zones = new (string, string, string)[keys.Count];
+        for (var i = 0; i < zones.Length; i++)
+        {
+            var suffix = family == FlexFamily.TlFlex ? (i == 0 ? "inner" : "outer") : keys[i];
+            zones[i] = (suffix, keys[i], FlexLightingDeviceProvider.ZoneLabel(keys[i]));
+        }
+        return zones;
+    }
+
+    /// <summary>Fans in a chain from its first segment's size; the segment layout depends on the family.</summary>
+    internal static int FanCountOf(DeviceStructure structure, Slv3FanInfo fan)
+    {
+        if (FlexFamilyOf(fan) is { } flex)
+        {
+            var first = FlexZonesOf(flex)[0];
+            var per = FlexProtocol.ZoneWireIndexes(flex, first.Key).Count;
+            return per > 0 ? structure.Segments[InnerSegment].LedCount / per : 0;
+        }
+        return structure.Segments[InnerSegment].LedCount / RingLedsFor(fan);
+    }
+
+    private static DeviceStructure BuildFlexStructure(Slv3FanInfo fan, FlexFamily flex, bool swap)
+    {
+        var deviceId = DeviceIdFor(fan.Mac);
+        var deviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan");
+        var structure = new DeviceStructure { DeviceId = deviceId, Name = "Lian Li Wireless Fan", DeviceKey = deviceKey };
+        var zones = FlexZonesOf(flex);
+        for (var i = 0; i < zones.Length; i++)
+        {
+            var (suffix, key, label) = zones[i];
+            var total = FlexProtocol.ZoneWireIndexes(flex, key).Count * fan.FanCount;
+            var (u, v) = FlexFanLayout.ZonePositions(flex, key, fan.FanCount, swap);
+            structure.Segments.Add(new StructureSegment
+            {
+                Index = i,
+                Name = label,
+                LedCount = total,
+                FrameLedCount = total,
+                Resizable = false,
+                ZoneType = "linear",
+                DefaultU = u,
+                DefaultV = v,
+            });
+            structure.DefaultZones.Add(new DefaultZoneDef
+            {
+                Id = $"{deviceId}:{suffix}",
+                Name = $"Lian Li Wireless - {label}",
+                RawName = label,
+                DeviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, $"wireless-fan-{suffix}"),
+                LegacyZoneIndex = -1,
+                Slices = { new ZoneSlice { Segment = i, Start = 0, Count = total } },
+            });
+        }
+        return structure;
+    }
+
+    private static DeviceStructure BuildStructure(Slv3FanInfo fan, bool swap = false)
+    {
+        if (FlexFamilyOf(fan) is { } flexFamily)
+        {
+            return BuildFlexStructure(fan, flexFamily, swap && flexFamily == FlexFamily.TlFlex);
+        }
         var deviceId = DeviceIdFor(fan.Mac);
         var deviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan");
         var ledsPerRing = RingLedsFor(fan);

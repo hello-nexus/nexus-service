@@ -7,8 +7,7 @@ internal enum GpuForceMode
 {
     None,
 
-    /// <summary>Init throws on the GL thread: the shape a WGL failure takes once
-    /// the GLFW error callback stops throwing.</summary>
+    /// <summary>Init throws on the GL thread: the shape a WGL failure takes.</summary>
     Fail,
 
     /// <summary>Init never returns: the shape a wedged driver takes.</summary>
@@ -22,9 +21,9 @@ internal enum GpuForceMode
     /// for a crash unrelated to the card (a missing DLL, an AV kill).</summary>
     CrashEarly,
 
-    /// <summary>Asks GLFW for a context version no driver can serve, so a real
-    /// driver error runs through the real error callback on healthy hardware.</summary>
-    GlfwError,
+    /// <summary>Asks WGL for a context version no driver can serve, so a real
+    /// driver error runs through the real failure path on healthy hardware.</summary>
+    ContextError,
 }
 
 /// <summary>
@@ -101,7 +100,7 @@ internal static class GpuTestSeam
         "hang" => GpuForceMode.Hang,
         "crash" => GpuForceMode.Crash,
         "crash-early" => GpuForceMode.CrashEarly,
-        "glfw" or "glfw-error" => GpuForceMode.GlfwError,
+        "context-error" => GpuForceMode.ContextError,
         _ => GpuForceMode.None,
     };
 

@@ -73,6 +73,41 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
         using var doc = JsonDocument.Parse(await (await client.GetAsync("/lighting/audio-output")).Content.ReadAsStringAsync());
         Assert.Equal("{0.0.0.00000000}.{abc}", doc.RootElement.GetProperty("deviceId").GetString());
         Assert.Equal("Speakers", doc.RootElement.GetProperty("deviceName").GetString());
+        Assert.Equal("output", doc.RootElement.GetProperty("direction").GetString());
+    }
+
+    [Fact]
+    public async Task Audio_output_direction_input_persists_across_post_then_get()
+    {
+        var client = AuthedClient();
+
+        var post = await client.PostAsync("/lighting/audio-output",
+            Json("{\"deviceId\":\"{0.0.1.00000000}.{mic}\",\"deviceName\":\"Microphone\",\"direction\":\"input\"}"));
+        Assert.Equal(HttpStatusCode.OK, post.StatusCode);
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync("/lighting/audio-output")).Content.ReadAsStringAsync());
+        Assert.Equal("input", doc.RootElement.GetProperty("direction").GetString());
+        Assert.Equal("{0.0.1.00000000}.{mic}", doc.RootElement.GetProperty("deviceId").GetString());
+
+        await client.PostAsync("/lighting/audio-output", Json("{\"deviceId\":\"\",\"deviceName\":\"\",\"direction\":\"\"}"));
+        using var back = JsonDocument.Parse(await (await client.GetAsync("/lighting/audio-output")).Content.ReadAsStringAsync());
+        Assert.Equal("output", back.RootElement.GetProperty("direction").GetString());
+    }
+
+    [Fact]
+    public async Task Audio_output_bad_direction_is_rejected_and_keeps_the_pick()
+    {
+        var client = AuthedClient();
+        await client.PostAsync("/lighting/audio-output",
+            Json("{\"deviceId\":\"keep\",\"deviceName\":\"Keep\",\"direction\":\"input\"}"));
+
+        var bad = await client.PostAsync("/lighting/audio-output",
+            Json("{\"deviceId\":\"x\",\"deviceName\":\"X\",\"direction\":\"sideways\"}"));
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync("/lighting/audio-output")).Content.ReadAsStringAsync());
+        Assert.Equal("keep", doc.RootElement.GetProperty("deviceId").GetString());
+        Assert.Equal("input", doc.RootElement.GetProperty("direction").GetString());
     }
 
     [Fact]

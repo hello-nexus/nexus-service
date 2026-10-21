@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SIPSorcery embeds sample media for its test-source classes (a music clip and a
+  video test pattern). Nexus uses only the SIPSorcery.Net data channel, so the
+  resources are dead weight in the published binary. ILC removes them at the
+  native compile; see the AddIlcSubstitutions target in Nexus.Service.csproj.
+-->
+<linker>
+  <assembly fullname="SIPSorcery">
+    <resource name="SIPSorcery.media.Macroform_-_Simplicity.raw" action="remove" />
+    <resource name="SIPSorcery.media.testpattern.i420" action="remove" />
+  </assembly>
+</linker>

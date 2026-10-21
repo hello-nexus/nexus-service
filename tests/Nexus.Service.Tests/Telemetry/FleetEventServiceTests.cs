@@ -70,6 +70,13 @@ public class FleetEventServiceTests
         public Task ReadyAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 
+    private sealed class ManualClock : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
     private static FleetEventService MakeService(
         IConfigStore store,
         FakeFleetEventTransport transport,
@@ -78,11 +85,12 @@ public class FleetEventServiceTests
         StubSensors? sensors = null,
         TimeProvider? clock = null,
         IUsbEnumerator? usb = null,
-        bool ibuypowerSystem = false) =>
+        bool ibuypowerSystem = false,
+        TimeSpan? usbSettle = null) =>
         new(store, transport, telemetry ?? new TelemetryClient(store),
             sinks ?? Array.Empty<ITelemetrySink>(), new SystemSpecsCollector(sensors ?? new StubSensors()),
             usb ?? new StubUsbEnumerator(), () => ibuypowerSystem,
-            clock ?? TimeProvider.System);
+            clock ?? TimeProvider.System, usbSettle ?? TimeSpan.Zero);
 
     private sealed class StubUsbEnumerator : IUsbEnumerator
     {
@@ -158,7 +166,8 @@ public class FleetEventServiceTests
         var transport = new FakeFleetEventTransport();
         var cpuA = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
 
-        var svc1 = MakeService(store, transport, sensors: cpuA);
+        var clock = new ManualClock();
+        var svc1 = MakeService(store, transport, sensors: cpuA, clock: clock);
         await svc1.RunPendingRetriesAsync(CancellationToken.None);
         Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
         var hash1 = store.Load().Telemetry.FleetSpecsHash;
@@ -170,7 +179,7 @@ public class FleetEventServiceTests
 
         // Next boot with different hardware - hash differs, resend.
         var cpuB = new StubSensors { Cpu = "CPU B", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
-        var svc2 = MakeService(store, transport, sensors: cpuB);
+        var svc2 = MakeService(store, transport, sensors: cpuB, clock: clock);
         await svc2.RunPendingRetriesAsync(CancellationToken.None);
 
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
@@ -182,6 +191,201 @@ public class FleetEventServiceTests
         Assert.Equal(32L * 1024 * 1024 * 1024, specsPayload.RamBytes);
         Assert.Equal("Board A", specsPayload.Motherboard);
     }
+
+    private static StubSensors Sensors(string gpu = "GPU A", string mem = "32 GB") =>
+        new() { Cpu = "CPU A", GpuModels = gpu.Length == 0 ? Array.Empty<string>() : gpu.Split('+'), MemoryFormatted = mem, Motherboard = "Board A" };
+
+    [Fact]
+    public async Task Specs_wait_for_the_usb_bus_to_settle_then_snapshot_once()
+    {
+        var store = OptedInStore(installDelivered: false);
+        var transport = new FakeFleetEventTransport();
+        var clock = new ManualClock();
+        var usb = new StubUsbEnumerator();
+        var svc = MakeService(store, transport, sensors: Sensors(), clock: clock, usb: usb, usbSettle: TimeSpan.FromMinutes(2));
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal(0, SpecsSent(transport)); // too early: devices may still be enumerating
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Install);
+
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x045e, ProductId = 0x028e, Name = "Controller" });
+        clock.Advance(TimeSpan.FromMinutes(3));
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Single(specs.Devices);
+    }
+
+    [Fact]
+    public async Task Opt_out_reaches_the_usage_sink_through_the_sink_list()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Telemetry.CollectAnonymousData = false;
+            s.Telemetry.InstallId = "install-1";
+            s.Telemetry.FleetPendingConsentEvent = TelemetryEvents.OptOut;
+        });
+        var usage = new UsageTelemetrySink(true);
+        var svc = MakeService(store, new FakeFleetEventTransport(), new TelemetryClient(store), new ITelemetrySink[] { usage });
+
+        await svc.DeliverConsentTransitionAsync(TelemetryEvents.OptOut, CancellationToken.None);
+
+        Assert.Equal(new[] { "opt_out" }, usage.Take(10).Select(e => e.Name));
+    }
+
+    [Fact]
+    public async Task Hourly_passes_reuse_the_boot_usb_snapshot_so_hot_plugging_does_not_resend()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var usb = new StubUsbEnumerator();
+        var svc = MakeService(store, transport, sensors: Sensors(), usb: usb);
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x045e, ProductId = 0x028e, Name = "Controller" });
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+        usb.Entries.Clear();
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+    }
+
+    [Fact]
+    public async Task A_new_process_reads_a_fresh_usb_snapshot_at_its_boot_pass()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var usb = new StubUsbEnumerator();
+        await MakeService(store, transport, sensors: Sensors(), usb: usb).RunPendingRetriesAsync(CancellationToken.None);
+
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x045e, ProductId = 0x028e, Name = "Controller" });
+        await MakeService(store, transport, sensors: Sensors(), usb: usb).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+    }
+
+    [Fact]
+    public async Task Y70_flip_resends_with_the_boot_snapshot_devices_not_a_live_scan()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var usb = new StubUsbEnumerator();
+        var svc = MakeService(store, transport, sensors: Sensors(), usb: usb);
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        usb.Entries.Add(new UsbDeviceEntry { VendorId = 0x045e, ProductId = 0x028e, Name = "Controller" });
+        store.Update(s => s.Telemetry.FleetY70Seen = true);
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+        var last = transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.True(last.Y70Seen);
+        Assert.Empty(last.Devices);
+    }
+
+    [Fact]
+    public async Task Gpu_order_does_not_change_the_hash()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors("GPU A+GPU B")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors("GPU B+GPU A")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Single(transport.Sent, p => p.Type == TelemetryEvents.Specs);
+    }
+
+    private static int SpecsSent(FakeFleetEventTransport t) => t.Sent.Count(p => p.Type == TelemetryEvents.Specs);
+
+    [Fact]
+    public async Task Transient_empty_gpu_read_reuses_the_persisted_list_without_a_resend()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors("GPU A+GPU B")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors(gpu: "")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(1, SpecsSent(transport));
+        Assert.Equal("GPU A + GPU B", store.Load().Telemetry.FleetGpu);
+    }
+
+    [Fact]
+    public async Task Install_that_never_reports_a_gpu_still_sends_an_empty_list()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors(gpu: "")).RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Empty(specs.Gpu);
+    }
+
+    [Fact]
+    public async Task Real_gpu_change_sends_once_and_updates_the_persisted_list()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors("GPU A")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors("GPU B")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors("GPU B")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(2, SpecsSent(transport));
+        Assert.Equal("GPU B", store.Load().Telemetry.FleetGpu);
+    }
+
+    [Fact]
+    public async Task Zero_ram_with_nothing_persisted_sends_nothing_and_stores_nothing()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors(mem: "")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(0, SpecsSent(transport));
+        Assert.Equal(0, store.Load().Telemetry.FleetRamBytes);
+    }
+
+    [Fact]
+    public async Task Zero_ram_read_never_overwrites_the_persisted_total_and_does_not_resend()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors()).RunPendingRetriesAsync(CancellationToken.None);
+        var persisted = store.Load().Telemetry.FleetRamBytes;
+        Assert.True(persisted > 0);
+
+        await MakeService(store, transport, sensors: Sensors(mem: "")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(1, SpecsSent(transport));
+        Assert.Equal(persisted, store.Load().Telemetry.FleetRamBytes);
+    }
+
+    [Fact]
+    public async Task Real_ram_change_sends_once()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: Sensors(mem: "32 GB")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors(mem: "64 GB")).RunPendingRetriesAsync(CancellationToken.None);
+        await MakeService(store, transport, sensors: Sensors(mem: "64 GB")).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(2, SpecsSent(transport));
+        Assert.Equal(64L * 1024 * 1024 * 1024, store.Load().Telemetry.FleetRamBytes);
+    }
+
+    [Theory]
+    [InlineData("32 GB DDR5-6000 (2 × 16 GB)", true, 0, 32)]
+    [InlineData("31.4 GB", true, 0, 31)]
+    [InlineData("31.4 GB", true, 32, 32)]
+    [InlineData("32 GB DDR5-6000 (2 × 16 GB)", true, 16, 32)]
+    [InlineData("", true, 32, 32)]
+    [InlineData("0 GB", false, 0, 0)]
+    [InlineData("", false, 0, 0)]
+    public void Ram_resolves_to_dimm_then_persisted_then_usable(string memory, bool requireDimm, int persistedGb, int expectedGb) =>
+        Assert.Equal(
+            (long)expectedGb * 1024 * 1024 * 1024,
+            FleetEventService.ResolveRam(memory, requireDimm, (long)persistedGb * 1024 * 1024 * 1024));
 
     [Fact]
     public async Task Specs_delivery_that_fails_at_boot_retries_on_a_later_pass_then_stops()
@@ -215,7 +419,8 @@ public class FleetEventServiceTests
         var store = OptedInStore();
         var transport = new FakeFleetEventTransport();
         var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
-        var svc = MakeService(store, transport, sensors: sensors);
+        var clock = new ManualClock();
+        var svc = MakeService(store, transport, sensors: sensors, clock: clock);
 
         await svc.RunPendingRetriesAsync(CancellationToken.None);
         Assert.False(transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.Y70Seen);

@@ -56,6 +56,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     private readonly Func<string, bool>? _displayInUse;
     private readonly Func<string, bool>? _handlerInUse;
     private readonly Func<Dictionary<string, List<(int Pid, string? Path)>>>? _processIndex;
+    private readonly ConflictSignerGate _signerGate;
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
@@ -114,8 +115,10 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         FeatureGates? gates,
         Func<string, bool>? displayInUse,
         Func<Dictionary<string, List<(int Pid, string? Path)>>>? processIndex,
-        Func<string, bool>? handlerInUse = null)
+        Func<string, bool>? handlerInUse = null,
+        ConflictSignerGate? signerGate = null)
     {
+        _signerGate = signerGate ?? ConflictSignerGate.Default;
         _handlerInUse = handlerInUse;
         _hub = hub;
         _openRgb = openRgb;
@@ -399,6 +402,11 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
                     if (IsOurOwnOpenRgb(def.Id, hit.Pid, bundledOpenRgbPath))
                         continue;
 
+                    // A bare name collides across vendors; a signer-pinned entry
+                    // also needs the exe's identity to match.
+                    if (!_signerGate.Matches(def, hit.Pid, hit.Path))
+                        continue;
+
                     // Keep the lowest pid as canonical for the catalog id so
                     // the SPA shows a deterministic value across renders.
                     if (best is null || hit.Pid < best.Pid)
@@ -488,8 +496,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
 
         try
         {
-            using var proc = Process.GetProcessById(pid);
-            var modulePath = proc.MainModule?.FileName;
+            var modulePath = OwnNexusExe.ImagePathOf(pid);
             if (string.IsNullOrEmpty(modulePath))
                 return false;
             return string.Equals(

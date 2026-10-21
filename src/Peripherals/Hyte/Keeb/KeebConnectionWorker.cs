@@ -5,7 +5,6 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting;
-using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Peripherals.Keeb;
 using Nexus.Service.Platform;
 
@@ -26,18 +25,16 @@ public sealed class KeebConnectionWorker : BackgroundService
     private readonly KeebHub _hub;
     private readonly KeebSettingsApplier _applier;
     private readonly HardwarePresence _presence;
-    private readonly LightingEngine _engine;
     private readonly DeviceControlGate _gate;
     private readonly IKeebProvider _provider;
     private readonly KeebLightingDeviceProvider? _lighting;
     private bool _lastConnected;
 
-    public KeebConnectionWorker(KeebHub hub, KeebSettingsApplier applier, HardwarePresence presence, LightingEngine engine, DeviceControlGate gate, IKeebProvider provider, KeebLightingDeviceProvider? lighting = null)
+    public KeebConnectionWorker(KeebHub hub, KeebSettingsApplier applier, HardwarePresence presence, DeviceControlGate gate, IKeebProvider provider, KeebLightingDeviceProvider? lighting = null)
     {
         _hub = hub;
         _applier = applier;
         _presence = presence;
-        _engine = engine;
         _gate = gate;
         _provider = provider;
         _lighting = lighting;
@@ -103,10 +100,10 @@ public sealed class KeebConnectionWorker : BackgroundService
         // While connected and the firmware animation is showing, poll the device's
         // effect + brightness each tick so the panel follows a hardware-side change
         // (middle button cycles the effect, the knob moves the brightness byte, both
-        // with NO host callback in firmware rotary mode). While a software effect
-        // streams, the frame writer is the sole reader on a faster cadence - a second
-        // reader here would race it and bounce the brightness mid-knob-turn.
-        if (connected && _engine.CurrentEffectName == "none") _applier.SyncFromDevice();
+        // with NO host callback in firmware rotary mode). While the frame writer streams,
+        // SyncFromDevice does nothing: the writer is the sole reader on a faster cadence,
+        // and a second reader would race it and bounce the brightness mid-knob-turn.
+        if (connected) _applier.SyncFromDevice();
     }
 
     // Flip the transition flag on every disconnect path (gate-off, bus

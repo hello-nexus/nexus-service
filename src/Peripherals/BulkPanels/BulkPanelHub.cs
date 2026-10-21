@@ -19,6 +19,7 @@ public sealed class BulkPanelHub : IDisposable
     private int _width;
     private int _height;
     private bool _disposed;
+    private volatile bool _openAccessDenied;
 
     public BulkPanelHub(IBulkPanelDriver driver)
     {
@@ -28,6 +29,11 @@ public sealed class BulkPanelHub : IDisposable
     public IBulkPanelDriver Driver => _driver;
 
     public bool IsConnected => _attached;
+
+    /// <summary>True while the last open of a present panel failed because the OS denied access.</summary>
+    public bool OpenAccessDenied => _openAccessDenied;
+
+    public void SetOpenAccessDenied(bool denied) => _openAccessDenied = denied;
 
     /// <summary>Panel width the driver negotiated, or 0 while nothing is attached.</summary>
     public int Width { get { lock (_lock) { return _width; } } }
@@ -166,6 +172,7 @@ public sealed class BulkPanelHub : IDisposable
             catch { /* the panel is usually already gone */ }
         }
         _attached = false;
+        _openAccessDenied = false;
         _width = 0;
         _height = 0;
         _pipe?.Dispose();

@@ -24,7 +24,7 @@ internal sealed class ProcessCameraHelperLauncher : ICameraHelperLauncher
         if (!File.Exists(HelperPath))
         {
             throw new InvalidOperationException(
-                $"camera helper missing at {HelperPath}; rebuild the app bundle (Bundled/macos/build-app.sh)");
+                $"camera helper missing at {HelperPath}; this build does not include the camera extension, so the virtual camera is unavailable");
         }
 
         var psi = new ProcessStartInfo

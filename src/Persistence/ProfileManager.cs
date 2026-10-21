@@ -34,6 +34,9 @@ public sealed partial class ProfileManager : IDisposable
 
     public event Action? OnProfileSwitched;
 
+    /// <summary>Fires outside the lock after a reset changed the live panel looks without a profile switch; the reset routes already re-engage fans and lighting themselves.</summary>
+    public event Action? PanelsChanged;
+
     /// <summary>Fires (profileId) after a profile is deleted, outside the lock.</summary>
     public event Action<string>? ProfileDeleted;
 
@@ -83,8 +86,8 @@ public sealed partial class ProfileManager : IDisposable
             }
 
             // PrimaryProfileId defaults to the active profile so the
-            // day-one default-Shared category (device, per the
-            // NexusSettings.SharedCategories field initializer) resolves to a
+            // day-one default-Shared categories (device and
+            // panels, per the NexusSettings.SharedCategories field initializer) resolve to a
             // valid source. Repaired on every boot in case the Primary was
             // deleted while the service was off.
             _store.Update(s =>
@@ -106,19 +109,14 @@ public sealed partial class ProfileManager : IDisposable
                     .ToList();
             });
 
-            // Pre-device profile files carry default StreamDeck+Keeb blocks
-            // (Device predates both); this seeds root's live values into
-            // every profile file exactly once so the first switch after
-            // upgrade does not wipe them. The marker gates only this initial
-            // seed - blocks added to the device category later are not covered.
-            var root = _store.Load();
-            if (!root.DeviceCategorySeeded)
+            // A file that cannot be written must never leave profile persistence unwired.
+            try
             {
-                foreach (var p in _manifest.Profiles)
-                {
-                    UpdateProfileFile(p.Id, new[] { ProfileSharing.Device }, root);
-                }
-                _store.Update(s => s.DeviceCategorySeeded = true);
+                RunBootSeeds();
+            }
+            catch (Exception ex)
+            {
+                Nexus.Service.Platform.ServiceLog.Error($"[profiles] boot seeds failed: {ex.GetType().Name}: {ex.Message}");
             }
 
             // Every settings mutation marks the active profile dirty so the
@@ -132,6 +130,146 @@ public sealed partial class ProfileManager : IDisposable
                 periodMs: ProfileFlushIntervalMs,
                 jitterMs: ProfileFlushJitterMs,
                 FlushIfDirty);
+        }
+    }
+
+    /// <summary>One-time boot seeds and migrations over the profile files. Best effort per step and per file: a failed write is logged, the markers are still set, and the next shared flush fills the file.</summary>
+    private void RunBootSeeds()
+    {
+        // Pre-device profile files carry default StreamDeck+Keeb blocks
+        // (Device predates both); this seeds root's live values into
+        // every profile file exactly once so the first switch after
+        // upgrade does not wipe them. The marker gates only this initial
+        // seed - blocks added to the device category later are not covered.
+        var root = _store.Load();
+        RunSeedStep("device seed", () =>
+        {
+            if (!root.DeviceCategorySeeded)
+            {
+                foreach (var p in _manifest.Profiles)
+                {
+                    TryWriteProfile(p.Id, "device seed", () => UpdateProfileFile(p.Id, new[] { ProfileSharing.Device }, root));
+                }
+                _store.Update(s => s.DeviceCategorySeeded = true);
+            }
+        });
+
+        // Same one-time seed for the Panels category: profile files written
+        // before it existed hold no panel looks, so root's live looks go into
+        // each of them and the first switch after upgrade changes nothing.
+        // With no live panel records, a file that already carries panel data
+        // (HasPanelsData) is the only copy of the looks (settings.json was lost):
+        // it is never overwritten, and the active profile's saved looks go back
+        // onto the live panels instead.
+        var seededAtBoot = root.PanelsCategorySeeded;
+        var panelsWasShared = root.SharedCategories.Contains(ProfileSharing.Panels);
+        var panelsDefaultApplied = root.PanelsSharedByDefaultApplied;
+        RunSeedStep("panels seed", () =>
+        {
+            if (!seededAtBoot)
+            {
+                var liveLost = root.PanelDevices.Count == 0;
+                _store.Update(s => PanelProfileData.BackfillPresetWidgetSize(s));
+                foreach (var p in _manifest.Profiles)
+                {
+                    if (liveLost && ReadProfileFile(p.Id) is { HasPanelsData: true })
+                    {
+                        continue;
+                    }
+                    TryWriteProfile(p.Id, "panels seed", () =>
+                    {
+                        UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, root);
+                        if (ReadProfileFile(p.Id) is { } file)
+                        {
+                            // Presets saved before WidgetSize joined them take the record's, so loading one
+                            // keeps the size its layout was built for.
+                            PanelProfileData.BackfillPresetWidgetSize(file);
+                            WriteAtomic(ProfileFilePath(p.Id), JsonSerializer.Serialize(file, PersistenceJsonContext.Default.NexusSettings));
+                        }
+                    });
+                }
+                if (liveLost && ReadProfileFile(_manifest.ActiveProfileId) is { HasPanelsData: true } saved)
+                {
+                    _store.Update(s => PanelProfileData.ApplyToLive(s, saved, restoreScreens: true));
+                }
+                _store.Update(s =>
+                {
+                    PanelProfileData.BackfillPresetWidgetSize(s);
+                    s.PanelsCategorySeeded = true;
+                });
+            }
+        });
+
+        // Panels defaults to Shared like Device. Installs that predate the
+        // default (or ran an earlier build of the category) get it added
+        // exactly once; the marker keeps a later opt-out from being undone.
+        // Files are written before the marker so a crash in between re-runs
+        // the step. When the seed above just ran it already wrote the files.
+        RunSeedStep("panels share default", () =>
+        {
+            if (!panelsDefaultApplied)
+            {
+                if (seededAtBoot && !panelsWasShared)
+                {
+                    var live = _store.Load();
+                    foreach (var p in _manifest.Profiles)
+                    {
+                        TryWriteProfile(p.Id, "panels share default", () => UpdateProfileFile(p.Id, new[] { ProfileSharing.Panels }, live));
+                    }
+                }
+                _store.Update(s =>
+                {
+                    if (!s.SharedCategories.Contains(ProfileSharing.Panels))
+                    {
+                        s.SharedCategories.Add(ProfileSharing.Panels);
+                    }
+                    s.PanelsSharedByDefaultApplied = true;
+                });
+            }
+        });
+
+        // Profile files were seeded with the old keeb brightness default, and a profile
+        // switch copies the Device category from the primary file over the workstation
+        // settings, so the old default would come back after the settings migration.
+        // Same marker shape as the seed above; files that arrive later (cloud restore,
+        // import) cannot be told apart from a level the user chose and are left alone.
+        // One shot and best effort: a file that cannot be written (a sharing violation,
+        // say) is logged and keeps its old value, and the marker is set regardless, so a
+        // later boot never touches a level the user chose afterwards.
+        RunSeedStep("keeb brightness migration", () =>
+        {
+            if (!root.KeebBrightnessProfilesMigrated)
+            {
+                foreach (var p in _manifest.Profiles)
+                {
+                    TryWriteProfile(p.Id, "keeb brightness migration", () => MigrateProfileKeebBrightness(p.Id));
+                }
+                _store.Update(s => s.KeebBrightnessProfilesMigrated = true);
+            }
+        });
+    }
+
+    private static void RunSeedStep(string what, Action step)
+    {
+        try
+        {
+            step();
+        }
+        catch (Exception ex)
+        {
+            Nexus.Service.Platform.ServiceLog.Error($"[profiles] {what} failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static void TryWriteProfile(string profileId, string what, Action write)
+    {
+        try
+        {
+            write();
+        }
+        catch (Exception ex)
+        {
+            Nexus.Service.Platform.ServiceLog.Error($"[profiles] {what} failed for {profileId}: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -314,7 +452,7 @@ public sealed partial class ProfileManager : IDisposable
 
             if (profileId == _manifest.ActiveProfileId)
             {
-                return ProfileSharing.ExtractShareable(_store.Load());
+                return ProfileSharing.ExtractShareable(_store.Load(), ReadProfileFile(profileId));
             }
 
             var filePath = ProfileFilePath(profileId);
@@ -384,11 +522,12 @@ public sealed partial class ProfileManager : IDisposable
     /// pull must not fail the sync loop; the suffixed name pushes back on the
     /// profile's next sync.
     /// </summary>
-    internal ProfileEntry ImportProfileWithId(string id, string name, NexusSettings data)
+    internal ProfileEntry ImportProfileWithId(string id, string name, NexusSettings data, bool absorbPanelLooks = false)
     {
         Nexus.Service.Lighting.PinMigration.Apply(data);
         var trimmedName = string.IsNullOrWhiteSpace(name) ? "Imported" : name.Trim();
         bool reactivate;
+        var panelsAdded = false;
         ProfileEntry entry;
         lock (_lock)
         {
@@ -418,6 +557,7 @@ public sealed partial class ProfileManager : IDisposable
                 entry = existing;
             }
 
+            var importedPanels = absorbPanelLooks ? ShareImportedPanels(data) : null;
             var json = JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings);
             WriteAtomic(ProfileFilePath(id), json);
             SaveManifest();
@@ -428,11 +568,16 @@ public sealed partial class ProfileManager : IDisposable
                 LoadProfileIntoSettings(id);
                 _dirty = false;
             }
+            panelsAdded = MergeImportedPanels(importedPanels, entry.Name);
         }
 
         if (reactivate)
         {
             OnProfileSwitched?.Invoke();
+        }
+        else if (panelsAdded)
+        {
+            PanelsChanged?.Invoke();
         }
 
         return entry;
@@ -562,10 +707,48 @@ public sealed partial class ProfileManager : IDisposable
         OnProfileSwitched?.Invoke();
     }
 
+    /// <summary>With Panels shared the imported file takes the live shared copy and the imported looks are returned for <see cref="MergeImportedPanels"/>; null when Panels is per-profile. Caller holds the lock.</summary>
+    private NexusSettings? ShareImportedPanels(NexusSettings data)
+    {
+        var live = _store.Load();
+        if (!live.SharedCategories.Contains(ProfileSharing.Panels))
+        {
+            return null;
+        }
+        var imported = new NexusSettings { PanelDevices = new Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>(data.PanelDevices), HasPanelsData = data.HasPanelsData };
+        // Entries for live panels would read as predecessors of the live records; the rest stay as absent-panel records.
+        PanelProfileData.DropMatched(data, live);
+        ProfileSharing.WriteCategory(data, live, ProfileSharing.Panels);
+        return imported;
+    }
+
+    /// <summary>Adds the imported looks as presets on the matching live panels once the profile file is written, and flushes so every profile file holds them. Caller holds the lock.</summary>
+    private bool MergeImportedPanels(NexusSettings? imported, string profileName)
+    {
+        if (imported is null)
+        {
+            return false;
+        }
+        var added = false;
+        var skipped = 0;
+        _store.Update(s => added = PanelProfileData.MergeImportedLooks(s, imported, profileName, out skipped));
+        if (skipped > 0)
+        {
+            Nexus.Service.Platform.ServiceLog.Warn($"[profiles] imported panel looks over the preset cap were skipped: {skipped}");
+        }
+        if (added)
+        {
+            FlushActiveProfile();
+        }
+        return added;
+    }
+
     public ProfileEntry ImportProfile(string name, NexusSettings data, bool replaceExisting = false)
     {
         Nexus.Service.Lighting.PinMigration.Apply(data);
         bool reactivate = false;
+        var panelsAdded = false;
+        NexusSettings? importedPanels = null;
         ProfileEntry entry;
         lock (_lock)
         {
@@ -596,6 +779,7 @@ public sealed partial class ProfileManager : IDisposable
                 // list stay valid; adopt the imported name's casing.
                 existing.Name = trimmed;
                 existing.UpdatedAt = now;
+                importedPanels = ShareImportedPanels(data);
                 var replaceJson = JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings);
                 WriteAtomic(ProfileFilePath(existing.Id), replaceJson);
                 SaveManifest();
@@ -610,6 +794,7 @@ public sealed partial class ProfileManager : IDisposable
                     _dirty = false;
                 }
                 entry = existing;
+                panelsAdded = MergeImportedPanels(importedPanels, trimmed);
             }
             else
             {
@@ -621,17 +806,23 @@ public sealed partial class ProfileManager : IDisposable
                 var id = Guid.NewGuid().ToString("N")[..8];
                 entry = new ProfileEntry { Id = id, Name = trimmed, CreatedAt = now, UpdatedAt = now };
 
+                importedPanels = ShareImportedPanels(data);
                 var json = JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings);
                 WriteAtomic(ProfileFilePath(id), json);
 
                 _manifest.Profiles.Add(entry);
                 SaveManifest();
+                panelsAdded = MergeImportedPanels(importedPanels, trimmed);
             }
         }
 
         if (reactivate)
         {
             OnProfileSwitched?.Invoke();
+        }
+        else if (panelsAdded)
+        {
+            PanelsChanged?.Invoke();
         }
 
         return entry;
@@ -700,6 +891,12 @@ public sealed partial class ProfileManager : IDisposable
                 }
             }
         }
+    }
+
+    internal void FlushNow()
+    {
+        lock (_lock)
+        { TryFlushActiveProfile(); }
     }
 
     public void Dispose()
@@ -804,7 +1001,7 @@ public sealed partial class ProfileManager : IDisposable
         _dirty = false;
     }
 
-    private void FlushIfDirty()
+    internal void FlushIfDirty()
     {
         if (!_dirty)
         {
@@ -844,10 +1041,10 @@ public sealed partial class ProfileManager : IDisposable
     private void LoadProfileIntoSettings(string profileId)
     {
         // Profile JSONs only carry per-profile data (Lighting, Cooling,
-        // Device, and the Theme + Dashboard subsets of Ui). Keeb is now
-        // profile-scoped via the Device category (ApplyCategory below).
-        // Hardware-bound state (Y70, Devices, every Panel* field on Ui, the
-        // OS tray/status toggles) lives at NexusSettings root and follows the
+        // Device, Theme, Dashboard and Panels). Hardware-bound state (Y70,
+        // Devices apart from the cooler display content Panels carries, panel
+        // identity and hardware settings, every Panel* field on Ui, the OS
+        // tray/status toggles) lives at NexusSettings root and follows the
         // device, not the active profile - so we do not copy those sections
         // from the profile file. They keep whatever the canonical
         // settings.json already loaded into in-memory.
@@ -874,6 +1071,7 @@ public sealed partial class ProfileManager : IDisposable
             // profile saved before free rotation unswaps its quarter-turned
             // layouts here, under the store lock (idempotent).
             Nexus.Service.Lighting.LayoutRotationMigration.Apply(s.Lighting);
+            Nexus.Service.Lighting.RemovedSyncModes.Apply(s.Lighting);
             s.Cooling = data.Cooling ?? new CoolingSettings();
 
             // Theme + Dashboard categories now live in dedicated top-level
@@ -884,6 +1082,11 @@ public sealed partial class ProfileManager : IDisposable
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Theme);
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Dashboard);
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Device);
+            // Panels copies looks onto the matching LIVE panel records only, never
+            // adding or removing one, so the file's stripped entries cannot replace
+            // identity or hardware settings. Before the layout migrations below, so
+            // they walk the copied layouts.
+            ProfileSharing.ApplyCategory(s, data, ProfileSharing.Panels);
 
             // Pre-v11 profiles carry widget types under the legacy
             // marketplace: prefix; rewrite after the category copies so the
@@ -896,10 +1099,86 @@ public sealed partial class ProfileManager : IDisposable
             // its Dashboard category can carry deck widgets with inline
             // config.deck. Idempotent - a no-op on an already-migrated profile.
             Nexus.Service.Deck.DeckModesMigration.Apply(s);
-
-            // PanelDevices is hardware-scoped, not profile-scoped: do NOT
-            // entries that the loaded profile JSON happens to carry into
         });
+    }
+
+    /// <summary>
+    /// A panel record's display fingerprint was just recorded or changed: every other profile file holding
+    /// that record id gets its match key (and nothing else), so the record can be re-matched by fingerprint
+    /// after it is recreated. The active profile re-saves itself on the store change.
+    /// </summary>
+    public void StampFingerprintKeys(IReadOnlyList<string> recordIds)
+    {
+        lock (_lock)
+        {
+            var live = _store.Load().PanelDevices;
+            foreach (var entry in _manifest.Profiles)
+            {
+                if (entry.Id == _manifest.ActiveProfileId || ReadProfileFile(entry.Id) is not { } file)
+                {
+                    continue;
+                }
+                var changed = false;
+                foreach (var id in recordIds)
+                {
+                    if (live.TryGetValue(id, out var record)
+                        && file.PanelDevices.TryGetValue(id, out var saved)
+                        && PanelProfileData.FingerprintKey(record.DisplayFingerprint) is { } key
+                        && saved.FingerprintKey != key)
+                    {
+                        saved.FingerprintKey = key;
+                        PanelProfileData.CollapseKey(file, id);
+                        changed = true;
+                    }
+                }
+                if (changed)
+                {
+                    WriteAtomic(ProfileFilePath(entry.Id), JsonSerializer.Serialize(file, PersistenceJsonContext.Default.NexusSettings));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// A display-bound record was just allocated or re-enabled. When its look is still the default and the
+    /// active profile holds a saved entry for the same monitor, that look applies to the live record now.
+    /// </summary>
+    public bool AdoptSavedLook(string recordId)
+    {
+        // Read and apply under the lock a switch holds, so the file read is the active profile's when it lands.
+        var adopted = false;
+        if (!_store.Load().PanelDevices.TryGetValue(recordId, out var created) || PanelProfileData.IsPhone(created))
+        {
+            return false;
+        }
+        lock (_lock)
+        {
+            var file = ReadProfileFile(_manifest.ActiveProfileId);
+            if (file is null || !file.HasPanelsData)
+            {
+                return false;
+            }
+            _store.Update(s =>
+            {
+                if (s.PanelDevices.TryGetValue(recordId, out var record) && PanelProfileData.IsDefaultLook(record))
+                {
+                    // Saved entries that belong to other live records are not candidates, except
+                    // the same monitor's entry under a stale record that has not relinked yet.
+                    var key = record.FingerprintKey ?? PanelProfileData.FingerprintKey(record.DisplayFingerprint);
+                    foreach (var other in file.PanelDevices
+                        .Where(kv => kv.Key != recordId && s.PanelDevices.ContainsKey(kv.Key)
+                            && (key is null || kv.Value.FingerprintKey != key))
+                        .Select(kv => kv.Key).ToList())
+                    {
+                        file.PanelDevices.Remove(other);
+                    }
+                    var only = new NexusSettings { PanelDevices = { [recordId] = record } };
+                    PanelProfileData.ApplyToLive(only, file);
+                    adopted = !PanelProfileData.IsDefaultLook(record);
+                }
+            });
+        }
+        return adopted;
     }
 
     /// <summary>The id of the profile currently active, for callers that default an import target to it.</summary>
@@ -931,6 +1210,17 @@ public sealed partial class ProfileManager : IDisposable
         }
     }
 
+    /// <summary>Moves a profile file's stored keeb brightness from the old default to the new one, rewriting the file only when it changed.</summary>
+    private void MigrateProfileKeebBrightness(string profileId)
+    {
+        var data = ReadProfileFile(profileId);
+        if (data is null || !KeebBrightnessMigration.Apply(data.Keeb?.FirmwareLighting))
+        {
+            return;
+        }
+        WriteAtomic(ProfileFilePath(profileId), JsonSerializer.Serialize(data, PersistenceJsonContext.Default.NexusSettings));
+    }
+
     /// <summary>Reads the on-disk profile file, applies the named categories from <paramref name="source"/> via <see cref="ProfileSharing.ApplyCategory"/>, and writes it back atomically. Used to mirror shared-category writes to the Primary, and to propagate values when sharing is turned off.</summary>
     private void UpdateProfileFile(string profileId, IEnumerable<string> categories, NexusSettings source)
     {
@@ -956,7 +1246,7 @@ public sealed partial class ProfileManager : IDisposable
 
         foreach (var cat in categories)
         {
-            ProfileSharing.ApplyCategory(target, source, cat);
+            ProfileSharing.WriteCategory(target, source, cat);
         }
 
         // Per-profile JSONs do not carry top-level non-profile fields.
@@ -965,7 +1255,6 @@ public sealed partial class ProfileManager : IDisposable
         target.PrimaryProfileId = null;
         target.SharedCategories = new List<string>();
         target.AiIntegration = new AiIntegrationSettings();
-        target.PanelDevices = new();
 
         var json = JsonSerializer.Serialize(target, PersistenceJsonContext.Default.NexusSettings);
         WriteAtomic(path, json);
@@ -1099,6 +1388,7 @@ public sealed partial class ProfileManager : IDisposable
                         _store.Update(s =>
                         {
                             ProfileSharing.ApplyCategory(s, primaryData, normalized);
+                            Nexus.Service.Lighting.RemovedSyncModes.Apply(s.Lighting);
                             // ReadProfileFile bypasses JsonConfigStore.Migrate, so a
                             // pre-v11 primary can carry legacy marketplace: widget
                             // types into live settings; rewrite them (idempotent).
@@ -1130,6 +1420,7 @@ public sealed partial class ProfileManager : IDisposable
     /// <summary>Reset one category. If shared, the reset is redirected to the Primary's JSON regardless of the named profileId, and the in-memory state is updated so the active profile reflects defaults immediately. If per-profile, the named profile's JSON is reset for that category; if the named profile is the active one, in-memory is also cleared.</summary>
     public void ResetCategory(string profileId, string category)
     {
+        var panelsReset = false;
         lock (_lock)
         {
             if (_manifest.Profiles.All(p => p.Id != profileId))
@@ -1167,12 +1458,19 @@ public sealed partial class ProfileManager : IDisposable
                     UpdateProfileFile(profileId, new[] { normalized }, data);
                 }
             }
+            panelsReset = normalized == ProfileSharing.Panels && (isShared || profileId == _manifest.ActiveProfileId);
+        }
+
+        if (panelsReset)
+        {
+            PanelsChanged?.Invoke();
         }
     }
 
     /// <summary>Reset the per-profile (non-shared) categories on the named profile. Shared categories are identical across every profile under the eager-copy model and are NOT touched by this operation - if the user wants to reset a shared category they use the per-category reset on the Categories list, which clears it everywhere.</summary>
     public void ResetProfile(string profileId)
     {
+        var panelsReset = false;
         lock (_lock)
         {
             if (_manifest.Profiles.All(p => p.Id != profileId))
@@ -1201,6 +1499,7 @@ public sealed partial class ProfileManager : IDisposable
                         ProfileSharing.ResetCategory(s, cat);
                     }
                 });
+                panelsReset = perProfileCats.Contains(ProfileSharing.Panels);
             }
             else
             {
@@ -1211,6 +1510,11 @@ public sealed partial class ProfileManager : IDisposable
                 }
                 UpdateProfileFile(profileId, perProfileCats, data);
             }
+        }
+
+        if (panelsReset)
+        {
+            PanelsChanged?.Invoke();
         }
     }
 }

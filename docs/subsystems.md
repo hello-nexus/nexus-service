@@ -59,9 +59,6 @@ Q-series screens.
   its writer has the overlay paint over black. Presses map to LEDs by the
   board's LED names (OpenRGB `Key: A`, the keeb's slot table) or by position.
 - LAN smart lights (`Lighting/Smart/`): Hue, Nanoleaf, Govee drivers.
-- Game sync (`Lighting/GameSync/`): drive your own hardware from a game's
-  lighting. Razer Chroma, Alienware LightFX, and Logitech capture via the
-  bundled shims from `nexus-gamesync`, plus CS2 Game State Integration.
 
 ## Devices and peripherals
 

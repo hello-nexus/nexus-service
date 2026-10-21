@@ -59,6 +59,29 @@ public static class WebSocketRoutes
             await RunUntilShutdownAsync(ctx, ct => hub.HandleClientAsync(socket, cancellationToken: ct));
         });
 
+        // Live preview of the selected mirror monitor, same binary frame layout as
+        // /lighting/output. Capture runs only while a client is connected. Not in
+        // the panel session path list, so panels (Q-series) cannot reach it.
+        app.Map("/lighting/screen/preview", async (HttpContext ctx) =>
+        {
+            if (!ctx.WebSockets.IsWebSocketRequest)
+            {
+                ctx.Response.StatusCode = 400;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync("{\"error\":true,\"msg\":\"WebSocket expected\"}");
+                return;
+            }
+            using WebSocket socket = await ctx.WebSockets.AcceptWebSocketAsync();
+            var hub = ctx.RequestServices.GetRequiredService<ScreenPreviewHub>();
+            if (hub.IsAvailable?.Invoke() != true)
+            {
+                // No capture source (macOS, or no helper connected): a distinct close code tells the page to fall back to the output stream.
+                await socket.CloseOutputAsync((WebSocketCloseStatus)ScreenPreviewHub.UnavailableCloseCode, "preview unavailable", CancellationToken.None);
+                return;
+            }
+            await RunUntilShutdownAsync(ctx, ct => hub.HandleClientAsync(socket, cancellationToken: ct));
+        });
+
         // Webcam stream - binary phone -> service video frames, one frame per
         // message. LAN-only: trusted relay dispatches are refused before the
         // upgrade, mirroring the REST guard in WebcamRoutes.

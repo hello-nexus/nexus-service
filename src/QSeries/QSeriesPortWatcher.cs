@@ -25,6 +25,7 @@ using Nexus.Service.Panel;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using Nexus.Service.Platform.Windows;
 #if WINDOWS
 using Microsoft.Win32;
 #endif
@@ -197,8 +198,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// </summary>
     private readonly HashSet<string> _offlineNonQSeriesSerials = new(StringComparer.Ordinal);
 
-    /// <summary>Serial -> last USB instance-id lookup time; the lookup spawns
-    /// powershell, so it runs on the recovery-threshold cadence, not per tick.
+    /// <summary>Serial -> last USB instance-id lookup time; the lookup runs on the
+    /// recovery-threshold cadence, not per tick.
     /// Cleared when the serial returns online or detaches.</summary>
     private readonly Dictionary<string, DateTimeOffset> _lastInstanceIdLookupBySerial = new(StringComparer.Ordinal);
 
@@ -470,10 +471,65 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// resume's re-enumeration from a real reseat. Written from the power-event
     /// thread and from the handed-off resume handler, read by the tick loop.
     /// </summary>
-    private void MarkHostResumed() =>
-        Interlocked.Exchange(ref _lastResumeAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+    private void MarkHostResumed()
+    {
+        var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
+        var previous = Interlocked.Exchange(ref _lastResumeAtTicks, nowTicks);
+        // The resume is stamped twice per event (power thread, then the hand-off), so
+        // only a stamp past the settle window opens a new escalation budget epoch.
+        if (previous == 0 || TimeSpan.FromTicks(nowTicks - previous) >= ResumeSettleWindow)
+        {
+            Interlocked.Exchange(ref _resumeEpochOpenedAtTicks, nowTicks);
+            Interlocked.Increment(ref _resumeBudgetEpoch);
+        }
+    }
 
     private long _lastResumeAtTicks;
+
+    /// <summary>
+    /// Counts host resumes. Fast Startup makes every PC startup a resume of one
+    /// long-lived service run, and qshell's one-shot bootstrap needs the rescue on
+    /// each, so the per-run escalation budget restarts per epoch.
+    /// </summary>
+    private long _resumeBudgetEpoch;
+    private long _resumeEpochOpenedAtTicks;
+
+    /// <summary>True once the serial was re-sighted after the current epoch opened, so its grace anchor is post-resume.</summary>
+    private bool SightedSinceResume(DateTimeOffset firstSeenAt) =>
+        firstSeenAt.UtcTicks > Interlocked.Read(ref _resumeEpochOpenedAtTicks);
+    private readonly Dictionary<string, long> _escalationBudgetEpochBySerial = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _staleSessionBudgetEpochBySerial = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _escalationSuppressLogged = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Restarts a serial's reboot budget the first time it is evaluated in a new
+    /// resume epoch, once the panel has been re-sighted after that resume (a panel
+    /// still on its pre-sleep anchor has had no post-resume grace). Returns true
+    /// when it reset. Within an epoch the count and cooldown stand, so a panel
+    /// that keeps failing stays capped.
+    /// </summary>
+    internal static bool ResetBudgetForResume(
+        string serial,
+        long epoch,
+        Dictionary<string, long> appliedEpochBySerial,
+        Dictionary<string, int> countBySerial,
+        Dictionary<string, DateTimeOffset>? lastEscalationBySerial,
+        bool sightedSinceResume = true)
+    {
+        if (!sightedSinceResume) return false;
+        appliedEpochBySerial.TryGetValue(serial, out var applied);
+        if (applied == epoch) return false;
+        appliedEpochBySerial[serial] = epoch;
+        countBySerial.Remove(serial);
+        lastEscalationBySerial?.Remove(serial);
+        return true;
+    }
+
+    /// <summary>The line to log when the budget blocks an escalation reboot, once per serial until the next reset; null when already logged or the block is only the short post-reboot settle.</summary>
+    internal static string? EscalationSuppressionMessage(string serial, string reason, HashSet<string> alreadyLogged) =>
+        !reason.StartsWith("another reboot", StringComparison.Ordinal) && alreadyLogged.Add(serial)
+            ? $"[qseries-port-watcher] {serial}: escalation reboot suppressed: {reason}"
+            : null;
 
     /// <summary>
     /// True while a host resume is recent enough that a changed transport id is
@@ -959,7 +1015,8 @@ public sealed class QSeriesPortWatcher : BackgroundService
         // Re-arm the grace anchor on detach. _escalationRebootCountBySerial and
         // _lastEscalationRebootBySerial are deliberately NOT cleared here - like
         // _lastQshellRebootBySerial they must survive our reboot's re-enumeration
-        // so a still-stranded panel keeps its bounded attempt budget.
+        // so a still-stranded panel keeps its bounded attempt budget. Only a host
+        // resume restarts the budget (ResetBudgetForResume).
         foreach (var key in _firstSeenAtBySerial.Keys.Where(k => !seenSerials.Contains(k)).ToList())
         {
             _firstSeenAtBySerial.Remove(key);
@@ -1074,8 +1131,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
                 continue;
             }
 
-            // The lookup spawns powershell, so throttle it to the recovery cadence
-            // rather than every tick. Deliberately NOT the offline path's dictionary:
+            // Throttle the lookup to the recovery cadence rather than every tick. Deliberately NOT the offline path's dictionary:
             // that one is cleared for every serial absent from the adb list, which is
             // this path's defining state, so sharing it meant no throttle at all.
             if (!force
@@ -1172,7 +1228,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
             var offlineFor = now - since;
             if (!forceThis && offlineFor < OfflineRecoveryThreshold) continue;
 
-            // The lookup spawns powershell, so a serial it can't resolve (device
+            // A serial the lookup can't resolve (device
             // mid-re-enumeration, or a name mismatch) is retried on the threshold
             // cadence, not every tick - while _offlineSince stays truthful so the
             // logged duration accumulates.
@@ -1243,48 +1299,18 @@ public sealed class QSeriesPortWatcher : BackgroundService
 
     /// <summary>
     /// USB composite InstanceId whose tail is the adb serial
-    /// (<c>USB\VID_xxxx&amp;PID_yyyy\&lt;serial&gt;</c>), via Get-PnpDevice.
+    /// (<c>USB\VID_xxxx&amp;PID_yyyy\&lt;serial&gt;</c>).
     /// </summary>
     private static string? TryFindUsbInstanceId(string adbSerial)
     {
         if (!OperatingSystem.IsWindows()) return null;
-        // Both callers reach this with a serial read off a device, so the charset is
-        // enforced here rather than at one call site: a quote would escape the
-        // PowerShell literal and run as LocalSystem, and a wildcard would silently
-        // widen the match to another devnode.
         if (!LooksLikeDeviceSerial(adbSerial)) return null;
-        // No -Class USB filter: a misbound panel does not enumerate under the USB
-        // setup class, so that filter excluded the exact devnode this lookup exists to
-        // find (measured on the Y70: the live parent is class USB, the misbind ghost
-        // is class USBDevice). -PresentOnly is load-bearing, not an optimisation: this
-        // serial also matches stale preloader devnodes, and without it -First 1
-        // returned the not-present PID_2048 ghost rather than the live panel. The
-        // USB\ prefix keeps the match on the USB enumerator; the serial charset is
-        // enforced above, so it cannot break out of the single-quoted literal or
-        // smuggle a -like wildcard.
-        var psScript =
-            "Get-PnpDevice -PresentOnly " +
-            "| Where-Object { $_.InstanceId -like 'USB\\*\\" + adbSerial + "' } " +
-            "| Select-Object -First 1 -ExpandProperty InstanceId";
+        // Present devnodes only, under the USB enumerator with no class filter: a
+        // misbound panel does not enumerate under the USB setup class, and this
+        // serial also matches stale preloader devnodes that are not present.
         try
         {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -NonInteractive -Command \"{psScript}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (p is null) return null;
-            if (!p.WaitForExit(5_000))
-            {
-                try { p.Kill(true); } catch { }
-                return null;
-            }
-            var stdout = p.StandardOutput.ReadToEnd().Trim();
-            return string.IsNullOrEmpty(stdout) ? null : stdout;
+            return WindowsDevnodes.FindPresentUsbInstanceId(adbSerial);
         }
         catch
         {
@@ -1339,31 +1365,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
     private static int? TryReadDeviceProblemCode(string instanceId)
     {
         if (!OperatingSystem.IsWindows()) return null;
-        // The id comes from TryFindUsbInstanceId, which enforces the serial
-        // charset; the quotes below still cannot be broken out of.
-        if (instanceId.Contains('\'') || instanceId.Contains('"')) return null;
-        var psScript =
-            "(Get-PnpDeviceProperty -InstanceId '" + instanceId
-            + "' -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop).Data";
         try
         {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = $"-NoProfile -NonInteractive -Command \"{psScript}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (p is null) return null;
-            if (!p.WaitForExit(10_000))
-            {
-                try { p.Kill(true); } catch { }
-                return null;
-            }
-            var text = p.StandardOutput.ReadToEnd().Trim();
-            return int.TryParse(text, out var code) ? code : null;
+            return WindowsDevnodes.ReadProblemCode(instanceId);
         }
         catch
         {
@@ -1583,12 +1587,9 @@ public sealed class QSeriesPortWatcher : BackgroundService
         && entry.Name.Contains("HYTE", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// A device's own serial, not a synthesised one, and safe to interpolate into the
-    /// instance-id query. Rejects the parent-id token a composite interface node
+    /// A device's own serial, not a synthesised one. Rejects the parent-id token a composite interface node
     /// carries (<c>7&amp;1a2b3c&amp;0&amp;0000</c>), which would address the wrong
-    /// devnode, and anything outside the alphanumeric/-/_ set real serials use - which
-    /// also rules out a quote breaking out of the PowerShell literal and the
-    /// <c>-like</c> wildcards that would silently widen the match.
+    /// devnode, and anything outside the alphanumeric/-/_ set real serials use.
     /// </summary>
     internal static bool LooksLikeDeviceSerial(string serial)
     {
@@ -2119,6 +2120,13 @@ public sealed class QSeriesPortWatcher : BackgroundService
         }
         if (reason is null) return;
 
+        ResetBudgetForResume(
+            device.Serial,
+            Interlocked.Read(ref _resumeBudgetEpoch),
+            _staleSessionBudgetEpochBySerial,
+            _staleSessionRebootCountBySerial,
+            lastEscalationBySerial: null,
+            SightedSinceResume(firstSeenAt));
         _staleSessionRebootCountBySerial.TryGetValue(device.Serial, out var rebootCount);
         if (!EscalationRebootPermitted(
                 rebootCount,
@@ -2272,7 +2280,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// <see cref="EscalationRetryCooldown"/> so a panel whose recovery reboot
     /// lands in another wedge gets further attempts, while a dead panel can't
     /// reboot-loop. NOT cleared on detach (survives the reboot's
-    /// re-enumeration); a fresh service start re-allows.
+    /// re-enumeration); a fresh service start or a host resume re-allows.
     /// </summary>
     private readonly Dictionary<string, int> _escalationRebootCountBySerial = new(StringComparer.Ordinal);
 
@@ -2282,7 +2290,7 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// <summary>Minimum gap between escalation reboots for one serial.</summary>
     private static readonly TimeSpan EscalationRetryCooldown = TimeSpan.FromMinutes(30);
 
-    /// <summary>Escalation reboots allowed per serial per service run.</summary>
+    /// <summary>Escalation reboots allowed per serial per service run or host resume.</summary>
     private const int MaxEscalationRebootsPerRun = 3;
 
     /// <summary>
@@ -3262,13 +3270,28 @@ public sealed class QSeriesPortWatcher : BackgroundService
             return;
         }
 
-        _escalationRebootCountBySerial.TryGetValue(device.Serial, out var rebootCount);
-        if (!EscalationRebootPermitted(
-                rebootCount,
-                _lastQshellRebootBySerial.TryGetValue(device.Serial, out var lastReboot) ? lastReboot : null,
-                _lastEscalationRebootBySerial.TryGetValue(device.Serial, out var lastEscalation) ? lastEscalation : null,
-                now))
+        if (ResetBudgetForResume(
+                device.Serial,
+                Interlocked.Read(ref _resumeBudgetEpoch),
+                _escalationBudgetEpochBySerial,
+                _escalationRebootCountBySerial,
+                _lastEscalationRebootBySerial,
+                SightedSinceResume(firstSeenAt)))
         {
+            _escalationSuppressLogged.Remove(device.Serial);
+        }
+        _escalationRebootCountBySerial.TryGetValue(device.Serial, out var rebootCount);
+        var suppressed = EscalationSuppressionReason(
+            rebootCount,
+            _lastQshellRebootBySerial.TryGetValue(device.Serial, out var lastReboot) ? lastReboot : null,
+            _lastEscalationRebootBySerial.TryGetValue(device.Serial, out var lastEscalation) ? lastEscalation : null,
+            now);
+        if (suppressed is not null)
+        {
+            if (EscalationSuppressionMessage(device.Serial, suppressed, _escalationSuppressLogged) is { } line)
+            {
+                ServiceLog.Info(line);
+            }
             return;
         }
 
@@ -3366,12 +3389,16 @@ public sealed class QSeriesPortWatcher : BackgroundService
     /// <see cref="QshellRebootCooldown"/> window after ANY reboot (a reseat
     /// reboot may still be playing out).
     /// </summary>
-    internal static bool EscalationRebootPermitted(int rebootCount, DateTimeOffset? lastAnyReboot, DateTimeOffset? lastEscalationReboot, DateTimeOffset now)
+    internal static bool EscalationRebootPermitted(int rebootCount, DateTimeOffset? lastAnyReboot, DateTimeOffset? lastEscalationReboot, DateTimeOffset now) =>
+        EscalationSuppressionReason(rebootCount, lastAnyReboot, lastEscalationReboot, now) is null;
+
+    /// <summary>Why the budget blocks an escalation reboot, or null when one is permitted.</summary>
+    internal static string? EscalationSuppressionReason(int rebootCount, DateTimeOffset? lastAnyReboot, DateTimeOffset? lastEscalationReboot, DateTimeOffset now)
     {
-        if (rebootCount >= MaxEscalationRebootsPerRun) return false;
-        if (lastAnyReboot is DateTimeOffset any && now - any < QshellRebootCooldown) return false;
-        if (lastEscalationReboot is DateTimeOffset escalation && now - escalation < EscalationRetryCooldown) return false;
-        return true;
+        if (rebootCount >= MaxEscalationRebootsPerRun) return $"{rebootCount}/{MaxEscalationRebootsPerRun} reboots used since the last host resume or service start";
+        if (lastAnyReboot is DateTimeOffset any && now - any < QshellRebootCooldown) return $"another reboot {(now - any).TotalSeconds:F0}s ago";
+        if (lastEscalationReboot is DateTimeOffset escalation && now - escalation < EscalationRetryCooldown) return $"last escalation reboot {(now - escalation).TotalMinutes:F0}min ago, cooldown {EscalationRetryCooldown.TotalMinutes:F0}min";
+        return null;
     }
 
     /// <summary>

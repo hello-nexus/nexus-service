@@ -65,6 +65,7 @@ public class NexusAppFactory : WebApplicationFactory<Program>
         // delete would restore the previous test's document.
         store.FlushNow();
         try { File.Delete(SettingsPath); } catch { /* already gone */ }
+        try { File.Delete(Nexus.Service.Persistence.AtomicJsonFile.BackupPathFor(SettingsPath)); } catch { /* already gone */ }
         store.Reload();
         if (FeaturesDecided)
         {
@@ -91,6 +92,11 @@ public class NexusAppFactory : WebApplicationFactory<Program>
             // service being started, and they touch hardware/network and add
             // timing nondeterminism - so strip them all.
             services.RemoveAll<IHostedService>();
+
+            // The IP location lookup would otherwise reach the network from a route.
+            services.RemoveAll<Nexus.Service.Platform.Weather.IWeatherProvider>();
+            services.AddSingleton<FakeWeatherProvider>();
+            services.AddSingleton<Nexus.Service.Platform.Weather.IWeatherProvider>(sp => sp.GetRequiredService<FakeWeatherProvider>());
 
             // Isolate config (the auth token + all settings) to a per-factory
             // temp file so integration tests never read or mutate the

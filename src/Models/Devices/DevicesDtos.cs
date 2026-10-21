@@ -235,6 +235,14 @@ public class LightingDevice
     public int Brightness { get; set; }
     public float Hue { get; set; }
     public float Saturation { get; set; }
+    /// <summary>True when the device honors a user update-rate cap (OpenRGB devices only for now).</summary>
+    public bool RateCapSupported { get; set; }
+    /// <summary>The user's cap in updates per second. Null means no cap.</summary>
+    public int? MaxRateHz { get; set; }
+    /// <summary>How the card's LEDs read the canvas: "led" (a small spot, the default), "nearest", "rows" or "columns" (the mean of the LED's nearest-LED cell, the last two with the cells stretched into bands).</summary>
+    public string Sampling { get; set; } = Nexus.Service.Lighting.Engine.SamplingModes.Led;
+    /// <summary>Area sampling cells: one polygon per LED (exactly <see cref="LedCount"/> entries), each <c>[u,v,u,v,...]</c> vertices in order in the card's normalized unrotated frame space, v down. Empty for a disabled LED or one past the draft count. Null when <see cref="Sampling"/> is "led".</summary>
+    public float[][]? AreaCells { get; set; }
     public int LedCount { get; set; }
     /// <summary>Number of the card's LEDs not disabled in the resolved layout (applied mapping's disabled set layered under user overrides, which win in both directions). Equals <see cref="LedCount"/> when no disable data exists.</summary>
     public int EnabledLedCount { get; set; }
@@ -281,6 +289,26 @@ public class GetLightingDevicesResponse
     public List<Nexus.Service.Persistence.DeviceGroup> Groups { get; set; } = new();
     /// <summary>Cards stacked on one canvas frame and one selection, riding the list the same way.</summary>
     public List<Nexus.Service.Persistence.DeviceGroup> Stacks { get; set; } = new();
+}
+
+/// <summary>POST /devices/lighting-devices/max-rate. A null <see cref="MaxRateHz"/> removes the cap.</summary>
+public class SetLightingDeviceMaxRateBody
+{
+    public string Id { get; set; } = "";
+    public int? MaxRateHz { get; set; }
+}
+
+/// <summary>Response of POST /devices/lighting-devices/{id}/led-preview-layout: the envelope plus the draft layout's area cells (see <see cref="LightingDevice.AreaCells"/>), null when the card is not area sampled.</summary>
+public class LedPreviewLayoutResponse : Nexus.Service.Models.ApiResponse
+{
+    public float[][]? AreaCells { get; set; }
+}
+
+/// <summary>POST /devices/lighting-devices/sampling. <see cref="Mode"/> is one of "led", "nearest", "rows", "columns".</summary>
+public class SetLightingDeviceSamplingBody
+{
+    public string Id { get; set; } = "";
+    public string Mode { get; set; } = "";
 }
 
 /// <summary>Whole-list replace for the user-made groups; the client owns order and membership.</summary>
@@ -543,6 +571,43 @@ public sealed class OpenRgbManualDevicesResponse : ApiResponse
     public string ImportSourcePath { get; set; } = "";
     /// <summary>True when that file exists, so the UI can offer the import without probing.</summary>
     public bool ImportSourceAvailable { get; set; }
+}
+
+/// <summary>OpenRGB devices that have at least one user-sizable zone.</summary>
+public sealed class OpenRgbZonesResponse : ApiResponse
+{
+    public List<OpenRgbZoneDeviceDto> Devices { get; set; } = new();
+}
+
+public sealed class OpenRgbZoneDeviceDto
+{
+    /// <summary>Stable OpenRGB device id (the card id of an unsplit device).</summary>
+    public string DeviceId { get; set; } = "";
+    public string Name { get; set; } = "";
+    /// <summary>True for a split motherboard or port controller whose zone counts the LED map editor already owns (ZoneLedCounts), so a second editor would diverge.</summary>
+    public bool SplitOwned { get; set; }
+    public List<OpenRgbZoneDto> Zones { get; set; } = new();
+}
+
+public sealed class OpenRgbZoneDto
+{
+    /// <summary>Zone index within the device, the value the size POST takes.</summary>
+    public int Index { get; set; }
+    public string Name { get; set; } = "";
+    public int LedCount { get; set; }
+    public int LedsMin { get; set; }
+    public int LedsMax { get; set; }
+    /// <summary>True when the controller allows a size and advertises a range (leds_min != leds_max).</summary>
+    public bool Resizable { get; set; }
+    /// <summary>OpenRGB's Zone Initialization rule: sizable and never sized by a user yet.</summary>
+    public bool NeedsSize { get; set; }
+}
+
+public sealed class SetOpenRgbZoneSizeBody
+{
+    public string DeviceId { get; set; } = "";
+    public int ZoneIndex { get; set; }
+    public int LedCount { get; set; }
 }
 
 public sealed class QmkDeviceDto

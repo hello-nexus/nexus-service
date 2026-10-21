@@ -40,6 +40,15 @@ public enum JpegPanelHeaderStyle
     /// checksummed. 1000 payload bytes per report, which is what fills its 1025-byte report.
     /// </summary>
     AsRockFramed,
+
+    /// <summary>
+    /// ASUS ROG Strix SLC IV LCD, measured from a customer's USB capture. The ASRock layout
+    /// with one difference: the byte after the length field carries the wall-clock second of the
+    /// minute, constant across one frame, and the byte after it stays zero. The ASRock row leaves
+    /// both zero. The chunk index and the total are single bytes, so a frame is capped at what
+    /// a byte can count.
+    /// </summary>
+    AsusFramed,
 }
 
 /// <summary>
@@ -61,6 +70,7 @@ public static class JpegPanelProtocol
         // report id, which is why this is the one style whose header length varies.
         JpegPanelHeaderStyle.IdCoolingTagged => isFirstChunk ? 33 : 1,
         JpegPanelHeaderStyle.AsRockFramed => 25,
+        JpegPanelHeaderStyle.AsusFramed => 25,
         _ => throw new ArgumentOutOfRangeException(nameof(style)),
     };
 
@@ -72,7 +82,9 @@ public static class JpegPanelProtocol
     /// Writes one chunk's header plus its slice of <paramref name="jpeg"/> into
     /// <paramref name="report"/>, which must be exactly the device's output report length.
     /// The buffer is cleared first, so trailing padding is always zero. Returns the number
-    /// of payload bytes consumed.
+    /// of payload bytes consumed. <paramref name="frameStamp"/> is the second of the minute
+    /// written by <see cref="JpegPanelHeaderStyle.AsusFramed"/>, ignored by every other style.
+    /// Returns 0 without writing when the frame needs more chunks than the style can number.
     /// </summary>
     public static int FillChunk(
         Span<byte> report,
@@ -80,7 +92,8 @@ public static class JpegPanelProtocol
         byte selector,
         ReadOnlySpan<byte> jpeg,
         int offset,
-        int chunkIndex)
+        int chunkIndex,
+        int frameStamp = 0)
     {
         if (offset < 0 || offset > jpeg.Length)
         {
@@ -123,10 +136,15 @@ public static class JpegPanelProtocol
                 break;
 
             case JpegPanelHeaderStyle.AsRockFramed:
+            case JpegPanelHeaderStyle.AsusFramed:
             {
                 // Every chunk repeats the total count, so it is derived rather than passed:
                 // a caller that got it wrong would desynchronise the panel's reassembly.
                 int chunks = ChunkCount(style, report.Length, jpeg.Length);
+                if (style == JpegPanelHeaderStyle.AsusFramed && chunks > byte.MaxValue)
+                {
+                    return 0;
+                }
                 int framed = 21 + take;
                 report[0] = 0x00;
                 report[1] = 0x5C;
@@ -134,7 +152,7 @@ public static class JpegPanelProtocol
                 report[3] = (byte)(framed & 0xFF);
                 // Image descriptor: id, pad, chunk count, pad, chunk index, format (1 = JPEG),
                 // then 15 reserved zeros the buffer clear already supplies.
-                report[4] = 0x00;
+                report[4] = style == JpegPanelHeaderStyle.AsusFramed ? (byte)frameStamp : (byte)0x00;
                 report[6] = (byte)chunks;
                 report[8] = (byte)chunkIndex;
                 report[9] = 0x01;
@@ -165,6 +183,13 @@ public static class JpegPanelProtocol
         jpeg.Slice(offset, take).CopyTo(report[header..]);
         return take;
     }
+
+    /// <summary>
+    /// False when the style numbers its chunks in a byte and this frame needs more than that.
+    /// Only <see cref="JpegPanelHeaderStyle.AsusFramed"/> refuses such a frame.
+    /// </summary>
+    public static bool FitsChunkCounter(JpegPanelHeaderStyle style, int reportLength, int jpegLength) =>
+        style != JpegPanelHeaderStyle.AsusFramed || ChunkCount(style, reportLength, jpegLength) <= byte.MaxValue;
 
     /// <summary>Reports one frame needs at this report length. Always at least one.</summary>
     public static int ChunkCount(JpegPanelHeaderStyle style, int reportLength, int jpegLength)

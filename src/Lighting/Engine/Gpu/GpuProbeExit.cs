@@ -23,6 +23,9 @@ internal static class GpuProbeExit
     /// marker, because a slow card outruns the child budget and still lands in
     /// the service's wider one.
     /// </summary>
+    /// <summary>Leaving a working WARP context takes a probe that actually passed; a failed or inconclusive one leaves it running.</summary>
+    public static bool AllowsWarpUpgrade(GpuProbeVerdict verdict) => verdict == GpuProbeVerdict.Works;
+
     public static GpuProbeVerdict Verdict(int exitCode, bool sawEnterMarker, bool timedOut)
     {
         if (timedOut)

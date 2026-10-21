@@ -20,13 +20,48 @@ public static class LianLiAioProtocol
     /// <summary>Payload <c>[source, pwm]</c>: source 0 is host control, 1 follows the motherboard header.</summary>
     public const byte CmdSetPumpPwm = 0x8A;
 
+    /// <summary>Payload <c>[0, pwm]</c>: all three fans of a HydroShift LCD share one duty.</summary>
+    public const byte CmdSetFanPwm = 0x8B;
+
     /// <summary>
     /// The pump-head ring, a firmware effect: scope (0 inner, 1 outer, 2 both), mode, brightness 0-4,
     /// speed 0-4, four RGB slots, direction, off flag, source (0 host, 1 motherboard ARGB).
     /// </summary>
     public const byte CmdSetPumpLight = 0x83;
 
+    /// <summary>The fan LEDs' firmware effect; the per-LED path below is primed with it before the first write.</summary>
+    public const byte CmdSetFanLight = 0x85;
+
+    /// <summary>
+    /// B-command carrying per-LED colors on the HydroShift LCD 360R: a selector byte, then RGB bytes
+    /// for each LED in fan order. Rides the same sequenced header as a frame chunk.
+    /// </summary>
+    public const byte CmdSetPerLed = 0x14;
+
+    private const byte PerLedSelector = 0x01;
+
+    /// <summary>The 360R's fan LED zone size, per the reference driver.</summary>
+    public const int HydroShiftFanLedCount = 24;
+
     private const byte PumpSourceHost = 0x00;
+
+    /// <summary>Pump source byte that hands speed control back to the motherboard header.</summary>
+    public const byte PumpSourceMotherboard = 0x01;
+
+    /// <summary>The 360R pump's lowest PWM, the first entry of its rpm-to-PWM table.</summary>
+    public const int HydroShiftPumpDutyFloor = 1;
+
+    /// <summary>Below this the 360R remap writes a stop; a fan channel never asks for it.</summary>
+    public const int HydroShiftFanDutyFloor = 10;
+
+    /// <summary>The duty fans are parked at on release, because the firmware has no command that hands them back.</summary>
+    public const int HydroShiftFanReleaseDuty = 75;
+
+    /// <summary>The 360R pump's rpm-to-PWM table.</summary>
+    private static readonly (int Rpm, int Pwm)[] HydroShiftPumpRpmToPwm =
+    {
+        (2000, 1), (2300, 25), (2600, 50), (2900, 75), (3200, 100),
+    };
 
     private const byte LightScopeBoth = 2;
     private const byte LightModeStatic = 3;
@@ -71,7 +106,55 @@ public static class LianLiAioProtocol
         FillACommand(report, CmdSetPumpPwm, payload);
     }
 
-    /// <summary>Lights the whole ring one colour from the host, at full firmware brightness so the colour carries the level.</summary>
+    /// <summary>Pump target on a 360R: <paramref name="source"/> 0 drives it at <paramref name="dutyPercent"/>, 1 follows the motherboard header.</summary>
+    public static void FillHydroShiftPumpPwm(Span<byte> report, byte source, int dutyPercent)
+    {
+        Span<byte> payload = stackalloc byte[2];
+        payload[0] = source;
+        payload[1] = (byte)Math.Clamp(dutyPercent, HydroShiftPumpDutyFloor, 100);
+        FillACommand(report, CmdSetPumpPwm, payload);
+    }
+
+    /// <summary>Fan target on a 360R, remapped the way its firmware expects.</summary>
+    public static void FillHydroShiftFanPwm(Span<byte> report, int dutyPercent)
+    {
+        Span<byte> payload = stackalloc byte[2];
+        payload[0] = PumpSourceHost;
+        payload[1] = HydroShiftFanPwm(Math.Clamp(dutyPercent, HydroShiftFanDutyFloor, 100));
+        FillACommand(report, CmdSetFanPwm, payload);
+    }
+
+    /// <summary>Maps a 10 to 100 duty onto the 360R's 12 to 95 PWM range; below 10 is a stop.</summary>
+    public static byte HydroShiftFanPwm(int dutyPercent)
+    {
+        if (dutyPercent < 10)
+        {
+            return 0;
+        }
+        return (byte)Math.Min(12 + ((dutyPercent - 10) * 83 / 90), 95);
+    }
+
+    /// <summary>The PWM that runs a 360R pump at <paramref name="rpm"/>, interpolated and clamped to its table.</summary>
+    public static int HydroShiftPumpPwmForRpm(int rpm)
+    {
+        var table = HydroShiftPumpRpmToPwm;
+        if (rpm <= table[0].Rpm)
+        {
+            return table[0].Pwm;
+        }
+        for (int i = 1; i < table.Length; i++)
+        {
+            if (rpm <= table[i].Rpm)
+            {
+                var (r0, p0) = table[i - 1];
+                var (r1, p1) = table[i];
+                return (int)Math.Round(p0 + (double)(rpm - r0) * (p1 - p0) / (r1 - r0));
+            }
+        }
+        return table[^1].Pwm;
+    }
+
+    /// <summary>Lights the whole ring one color from the host, at full firmware brightness so the color carries the level.</summary>
     public static void FillSetPumpLight(Span<byte> report, byte r, byte g, byte b)
     {
         Span<byte> payload = stackalloc byte[19];
@@ -87,6 +170,45 @@ public static class LianLiAioProtocol
         }
         payload[18] = LightSourceHost;
         FillACommand(report, CmdSetPumpLight, payload);
+    }
+
+    /// <summary>
+    /// The two prime payloads the 360R's per-LED path is brought up with (static mode, full
+    /// brightness, no color, then a shifted variant), each sent as <see cref="CmdSetFanLight"/>
+    /// and then <see cref="CmdSetPumpLight"/>.
+    /// </summary>
+    private static readonly byte[] PrimeA =
+    {
+        0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32,
+    };
+
+    private static readonly byte[] PrimeB =
+    {
+        0x00, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
+    /// <summary>Prime packets in the order they go out: A then B under each command.</summary>
+    public const int PrimePacketCount = 4;
+
+    public static void FillFanLedPrime(Span<byte> report, int index)
+    {
+        var payload = (index & 1) == 0 ? PrimeA : PrimeB;
+        FillACommand(report, index < 2 ? CmdSetFanLight : CmdSetPumpLight, payload);
+    }
+
+    /// <summary>
+    /// One per-LED color set: <paramref name="rgb"/> is <see cref="HydroShiftFanLedCount"/> RGB triples
+    /// in fan order. The sequenced header's total and chunk length both count selector plus colors.
+    /// </summary>
+    public static void FillPerLed(Span<byte> report, ReadOnlySpan<byte> rgb)
+    {
+        Span<byte> payload = stackalloc byte[1 + (HydroShiftFanLedCount * 3)];
+        payload.Clear();
+        payload[0] = PerLedSelector;
+        rgb[..Math.Min(rgb.Length, payload.Length - 1)].CopyTo(payload[1..]);
+        JpegPanelProtocol.FillChunk(report, JpegPanelHeaderStyle.LianLiSequenced, CmdSetPerLed, payload, 0, 0);
     }
 
     /// <summary>The PWM that runs the pump at <paramref name="rpm"/>, interpolated and clamped to the table.</summary>

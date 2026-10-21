@@ -192,6 +192,52 @@ public class StreamDeckConnectionWorkerTests
         Assert.True(simulated.SetKeyImageCallCount > before);
     }
 
+    /// <summary>A key showing the fallback face for a video icon must repaint when that video's poster frame lands.</summary>
+    [Fact]
+    public async Task PosterReady_RepaintsTheDeckThatShowedTheFallbackFace()
+    {
+        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-worker-poster-" + Guid.NewGuid().ToString("N")[..8]);
+        var release = new System.Threading.Tasks.TaskCompletionSource();
+        var images = new DeckImageStore(root, async (_, _, args) =>
+        {
+            await release.Task;
+            using var bmp = new SkiaSharp.SKBitmap(8, 8);
+            bmp.Erase(SkiaSharp.SKColors.Lime);
+            using var data = bmp.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+            System.IO.File.WriteAllBytes(args[^1], data.ToArray());
+            return "";
+        });
+        var mp4 = new byte[64];
+        "\0\0\0\u0018ftypisom"u8.CopyTo(mp4);
+        var id = images.Store(mp4)!;
+        var f = NewFixtures(devicePresent: false);
+        f = f with { KeyRenderer = new Nexus.Service.Rendering.DeckKeyRenderer(images, new FakeShortcutsProvider(), new FakeProcessIconProvider()) };
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig
+            {
+                Pages = { new DeckPage { Slots = { new DeckSlot { Action = new DeckAction { Type = "launchApp", AppId = "app-1" }, Icon = new DeckIcon { Kind = "image", Value = id } } } } },
+            },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        try
+        {
+            worker.Tick();
+            var before = simulated.SetKeyImageCallCount;
+
+            release.SetResult();
+            await images.EnsurePosterAsync(id);
+
+            Assert.True(simulated.SetKeyImageCallCount > before);
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
     /// <summary>A deck seen for the first time since schema v18 has no migration to hoist an instance row for it; OnSurfaceConnected must seed one itself, joining the first host-wide preset like a widget's lazy GET does.</summary>
     [Fact]
     public void Tick_ConnectingANewDeck_JoinsTheFirstExistingPreset()
@@ -363,8 +409,8 @@ public class StreamDeckConnectionWorkerTests
     public void Tick_GateDisabled_DoesNotDisposeTheSimulatedSurface()
     {
         // The simulated surface is a shared DI singleton the dev routes also
-        // hold a reference to; disabling Nexus Control must stop tracking it,
-        // not dispose the shared instance out from under those routes.
+        // hold a reference to; disabling Nexus Control releases real decks
+        // only and must not dispose the shared instance.
         var f = NewFixtures(devicePresent: false);
         var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
         using var worker = NewWorker(f, simulated);
@@ -374,6 +420,106 @@ public class StreamDeckConnectionWorkerTests
         worker.Tick();
 
         Assert.True(simulated.IsConnected);
+    }
+
+    [Fact]
+    public void Tick_GateOff_ReleasesRealDecksButKeepsTheSimulatedOne_AndGateOnDoesNotDuplicate()
+    {
+        var f = NewFixtures(devicePresent: true);
+        AddMiniDevice(f.Hid, "path-1", "SERIAL-1");
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+        var real = worker.FindBySerial("SERIAL-1")!;
+        Assert.Equal(2, worker.Surfaces.Count);
+
+        f.Gate.SetEnabled("streamdeck", false);
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Null(worker.FindBySerial("SERIAL-1"));
+        Assert.False(real.IsConnected);
+        Assert.True(simulated.IsConnected);
+        Assert.Same(simulated, worker.FindBySerial("sim-0001"));
+        Assert.Single(worker.Surfaces);
+
+        f.Gate.SetEnabled("streamdeck", true);
+        worker.Tick();
+
+        Assert.Equal(2, worker.Surfaces.Count);
+        Assert.Single(worker.Surfaces, kv => kv.Value.Serial == "sim-0001");
+    }
+
+    [Fact]
+    public void SetSimulatedModel_WhileGateIsOff_SurvivesTicksAndClearStillRemovesIt()
+    {
+        var f = NewFixtures(devicePresent: false);
+        f.Gate.SetEnabled("streamdeck", false);
+        using var worker = NewWorker(f);
+
+        Assert.True(worker.SetSimulatedModel(0x0063));
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Single(worker.Surfaces);
+
+        worker.ClearSimulatedModel();
+        Assert.Empty(worker.Surfaces);
+    }
+
+    [Fact]
+    public async Task Tick_GateOff_StillDeliversSimulatedInputToTheExecutor()
+    {
+        var f = NewFixtures(devicePresent: false);
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        var action = new DeckAction { Type = "openUrl", Url = "https://example.com" };
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+        f.Gate.SetEnabled("streamdeck", false);
+
+        simulated.Poke(0, true);
+        worker.Tick();
+        if (worker.LastDispatchTask is not null)
+        {
+            await worker.LastDispatchTask;
+        }
+
+        var call = Assert.Single(f.Executor.Calls);
+        Assert.Same(action, call.Action);
+    }
+
+    [Fact]
+    public void Tick_GateOff_StillRefreshesMonitoringKeysOnTheSimulatedDeck()
+    {
+        var f = NewFixtures(devicePresent: false);
+        f.Sensors.CpuSensors = new[]
+        {
+            new HardwareSensor { Id = "cpu/core0", Name = "Core 0", Type = "Load", Value = 42f, Formatted = "42%", Parent = new SensorParent() },
+        };
+        var action = new DeckAction { Type = "monitoring", Category = "cpu", Sensor = "cpu/core0", Style = "number" };
+        var simulated = new SimulatedStreamDeckSurface(Mini, "sim-0001");
+        f.Store.Update(s => s.StreamDeck.Decks["sim-0001"] = new PhysicalDeckSettings
+        {
+            LegacyDeck = new DeckConfig { Pages = { new DeckPage { Slots = { new DeckSlot { Action = action } } } } },
+        });
+        f.Store.Update(s => ActivateLegacyDeck(s, "sim-0001"));
+        using var worker = NewWorker(f, simulated);
+        worker.Tick();
+        var before = simulated.SetKeyImageCallCount;
+        f.Gate.SetEnabled("streamdeck", false);
+        f.Sensors.CpuSensors = new[]
+        {
+            new HardwareSensor { Id = "cpu/core0", Name = "Core 0", Type = "Load", Value = 91f, Formatted = "91%", Parent = new SensorParent() },
+        };
+
+        worker.Tick();
+
+        Assert.True(simulated.SetKeyImageCallCount > before);
     }
 
     [Fact]

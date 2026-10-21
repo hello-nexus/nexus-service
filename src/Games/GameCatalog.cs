@@ -7,8 +7,7 @@ using Microsoft.Win32;
 namespace Nexus.Service.Games;
 
 /// <summary>Cheap installed-game enumeration (manifests/registry only, no
-/// file content scan) shared by GameSyncGameScanner (which layers its own
-/// Chroma file scan on top) and GameCatalog.</summary>
+/// file content scan) used by GameCatalog.</summary>
 internal static class InstalledGameCollectors
 {
     public readonly record struct Candidate(string Name, string InstallDir, string Store, string AppId);
@@ -367,8 +366,7 @@ public interface IGameInstallLocator
 
 /// <summary>
 /// Installed-game identity resolver: enumerates the same Steam/Epic/Ubisoft/Battle.net
-/// sources GameSyncGameScanner does (via InstalledGameCollectors, so both
-/// share one implementation) and matches a foreground exe path to a game by
+/// sources (via InstalledGameCollectors) and matches a foreground exe path to a game by
 /// longest install-dir prefix. Refreshed at boot and rate-limited to once
 /// per RefreshRateLimitSeconds thereafter via NotifyUnknownExe, so a newly
 /// installed game is picked up without a service restart.
@@ -395,8 +393,7 @@ public sealed class GameCatalog : IGameInstallLocator
         // Off the constructor thread: GameCatalog is a constructor dependency
         // of FpsSessionRecorder (a hosted service), so a synchronous scan
         // here would add Steam/Epic/Ubisoft enumeration latency directly to
-        // service boot, the same reason GameSyncGameScanner's own scan runs
-        // via Task.Run rather than inline.
+        // service boot.
         Task.Run(RefreshNow);
     }
 

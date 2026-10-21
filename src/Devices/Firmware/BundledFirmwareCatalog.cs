@@ -25,7 +25,13 @@ public sealed class BundledFirmwareCatalog
     private const string ResourcePrefix = "firmware/";
     private const string HexExtension = ".hex";
 
-    // deviceId -> versions, newest first.
+    // Devices that run a byte-identical image embed it once, under the source
+    // id; the alias serves the same resources unless it has images of its own.
+    private static readonly (string Alias, string Source)[] SharedImages =
+    {
+        ("y70-truly", "y70-infinite"),
+    };
+
     // deviceId -> versions (newest first).
     private readonly Dictionary<string, List<string>> _versions = new(StringComparer.Ordinal);
     // "deviceId/version" -> the ACTUAL manifest resource name. The build host's
@@ -116,6 +122,14 @@ public sealed class BundledFirmwareCatalog
             }
             if (!list.Contains(version)) list.Add(version);
             _resourceNames[$"{deviceId}/{version}"] = name;
+        }
+
+        foreach (var (alias, source) in SharedImages)
+        {
+            if (_versions.ContainsKey(alias) || !_versions.TryGetValue(source, out var shared)) continue;
+            _versions[alias] = new List<string>(shared);
+            foreach (var version in shared)
+                _resourceNames[$"{alias}/{version}"] = _resourceNames[$"{source}/{version}"];
         }
 
         foreach (var list in _versions.Values)

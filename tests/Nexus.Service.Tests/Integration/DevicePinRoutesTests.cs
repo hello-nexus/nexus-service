@@ -67,7 +67,7 @@ public sealed class DevicePinRoutesTests : IClassFixture<StubDeviceHostFactory>
     }
 
     [Theory]
-    [InlineData("""{"kind":"gamesync"}""")]
+    [InlineData("""{"kind":"bogus"}""")]
     [InlineData("""{"kind":""}""")]
     [InlineData("""{"kind":"animate","effect":"gradientlinear"}""")]
     [InlineData("""{"kind":"animate","effect":"simplered"}""")]

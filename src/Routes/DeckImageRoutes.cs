@@ -1,9 +1,11 @@
 using System.IO;
+using System.Text.Json;
 using System.Security.Cryptography;
 using System.Linq;
 using Microsoft.Net.Http.Headers;
 using Nexus.Service.Auth;
 using Nexus.Service.Deck;
+using Nexus.Service.Media;
 using Nexus.Service.Models.Deck;
 using Nexus.Service.Serialization;
 
@@ -19,7 +21,7 @@ public static class DeckImageRoutes
 {
     public static void MapDeckImageEndpoints(this WebApplication app)
     {
-        app.MapPost("/deck/images", async (HttpRequest req, DeckImageStore store) =>
+        app.MapPost("/deck/images", async (HttpRequest req, DeckImageStore store, CancellationToken ct) =>
         {
             if (!req.HasFormContentType)
             {
@@ -28,9 +30,9 @@ public static class DeckImageRoutes
 
             // Reject before ReadFormAsync buffers the body: the framework's
             // multipart limit (~128MB) would otherwise let a body far over the
-            // per-image cap be spooled to disk before the length check below.
+            // animated-image cap be spooled to disk before the length check below.
             // The envelope allowance covers the multipart boundary + headers.
-            if (req.ContentLength is > DeckImageStore.MaxBytes + 16 * 1024)
+            if (req.ContentLength is > DeckImageStore.MaxAnimatedBytes + 16 * 1024)
             {
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "File too large" });
             }
@@ -42,25 +44,99 @@ public static class DeckImageRoutes
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "No file provided" });
             }
 
-            if (file.Length > DeckImageStore.MaxBytes)
+            if (file.Length > DeckImageStore.MaxAnimatedBytes)
             {
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "File too large" });
             }
 
-            byte[] bytes;
-            using (var ms = new MemoryStream())
+            var bytes = new byte[file.Length];
+            await using (var upload = file.OpenReadStream())
             {
-                await file.CopyToAsync(ms);
-                bytes = ms.ToArray();
+                await upload.ReadExactlyAsync(bytes);
             }
 
-            var id = store.Store(bytes);
-            if (id is null)
+            // A crop reshapes an animated or video upload; stills arrive already cropped by the client.
+            var cropRaw = form["crop"].ToString();
+            if (cropRaw.Length > 0 && !CropRect.TryParse(cropRaw, out _))
+            {
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "invalid crop" });
+            }
+            var sniffed = DeckImageStore.SniffExtension(bytes);
+            if (CropRect.TryParse(cropRaw, out _) && sniffed is ".gif" or ".mp4" or ".webm")
+            {
+                var kind = sniffed == ".gif" ? DeckImageTranscoder.Kind.Gif : DeckImageTranscoder.Kind.Video;
+                var cropped = await TranscodeBytesAsync(bytes, sniffed!, kind, cropRaw, ct);
+                if (cropped.Bytes is null)
+                {
+                    return TranscodeFailure(cropped.Error);
+                }
+                bytes = cropped.Bytes;
+            }
+
+            return (await StoreResultAsync(store, bytes, ct)).Result;
+        }).AllowPanel().DisableAntiforgery();
+
+        // A Klipy pick is staged by POST /media/klipy/stage; this crops and transcodes the staged file into a deck icon.
+        app.MapPost("/deck/images/stage/{stageId}", async (string stageId, HttpRequest req, MediaLibrary lib, DeckImageStore store, CancellationToken ct) =>
+        {
+            if (!MediaLibrary.IsValidId(stageId))
+            {
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "invalid stage id" });
+            }
+
+            // The body only carries a crop string: refuse anything bigger before it is buffered.
+            if (req.ContentLength is > StageBodyLimit)
+            {
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Request too large" });
+            }
+            if (req.HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
+            {
+                limit.MaxRequestBodySize = StageBodyLimit;
+            }
+
+            string? cropRaw = null;
+            try
+            {
+                if (req.HasFormContentType)
+                {
+                    cropRaw = (await req.ReadFormAsync(ct))["crop"].ToString();
+                }
+                else if (req.HasJsonContentType())
+                {
+                    cropRaw = (await req.ReadFromJsonAsync(AppJsonContext.Default.DeckImageStageRequest, ct))?.Crop;
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidDataException or Microsoft.AspNetCore.Http.BadHttpRequestException)
+            {
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Invalid request body" });
+            }
+            if (!string.IsNullOrEmpty(cropRaw) && !CropRect.TryParse(cropRaw, out _))
+            {
+                return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "invalid crop" });
+            }
+
+            var stagedPath = lib.FindStagedRaw(stageId);
+            if (stagedPath is null || !File.Exists(stagedPath))
+            {
+                return Results.NotFound(new DeckImageUploadResponse { Error = true, Msg = "Stage not found or expired" });
+            }
+            if (DeckImageTranscoder.KindForExtension(Path.GetExtension(stagedPath)) is not { } kind)
             {
                 return Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Unsupported image format" });
             }
 
-            return Results.Json(new DeckImageUploadResponse { Id = id }, AppJsonContext.Default.DeckImageUploadResponse);
+            var result = await DeckImageTranscoder.RunAsync(stagedPath, kind, cropRaw, ct);
+            if (result.Bytes is null)
+            {
+                return TranscodeFailure(result.Error);
+            }
+
+            var stored = await StoreResultAsync(store, result.Bytes, ct);
+            if (stored.Ok)
+            {
+                lib.DeleteStage(stageId);
+            }
+            return stored.Result;
         }).AllowPanel().DisableAntiforgery();
 
         app.MapGet("/deck/images/{id}", (string id, HttpContext ctx, DeckImageStore store) =>
@@ -79,7 +155,7 @@ public static class DeckImageRoutes
             var (bytes, contentType) = loaded.Value;
             // Content-addressed: the id IS the hash, so it is a valid ETag with no extra hashing.
             ctx.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
-            return Results.File(bytes, contentType, entityTag: new EntityTagHeaderValue($"\"{id}\""));
+            return Results.File(bytes, contentType, entityTag: new EntityTagHeaderValue($"\"{id}\""), enableRangeProcessing: true);
         }).AllowPanel();
 
         // A panel has no route to the open internet, so the fetch has to happen
@@ -110,5 +186,42 @@ public static class DeckImageRoutes
             ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
             return Results.File(bytes, contentType, entityTag: new EntityTagHeaderValue($"\"{hash}\""));
         }).AllowPanel();
+    }
+
+    private static async Task<(byte[]? Bytes, string? Error)> TranscodeBytesAsync(byte[] bytes, string ext, DeckImageTranscoder.Kind kind, string cropRaw, CancellationToken ct)
+    {
+        var input = Path.Combine(Path.GetTempPath(), $"nexus-deck-upload-{Guid.NewGuid():N}{ext}");
+        try
+        {
+            await File.WriteAllBytesAsync(input, bytes, ct);
+            return await DeckImageTranscoder.RunAsync(input, kind, cropRaw, ct);
+        }
+        finally
+        {
+            try { File.Delete(input); }
+            catch { }
+        }
+    }
+
+    private const long StageBodyLimit = 16 * 1024;
+
+    private static IResult TranscodeFailure(string? error) => error == DeckImageTranscoder.BusyMessage
+        ? Results.Json(new DeckImageUploadResponse { Error = true, Msg = DeckImageTranscoder.BusyMessage }, AppJsonContext.Default.DeckImageUploadResponse, statusCode: StatusCodes.Status503ServiceUnavailable)
+        : Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = error ?? "Unsupported image format" });
+
+    private static async Task<(IResult Result, bool Ok)> StoreResultAsync(DeckImageStore store, byte[] bytes, CancellationToken ct)
+    {
+        var id = store.Store(bytes);
+        if (id is null)
+        {
+            return (Results.BadRequest(new DeckImageUploadResponse { Error = true, Msg = "Unsupported image format" }), false);
+        }
+
+        if (DeckImageStore.IsVideoExtension(DeckImageStore.SniffExtension(bytes)!))
+        {
+            await store.EnsurePosterAsync(id, ct);
+        }
+
+        return (Results.Json(new DeckImageUploadResponse { Id = id }, AppJsonContext.Default.DeckImageUploadResponse), true);
     }
 }

@@ -11,6 +11,7 @@ public static class TelemetryEvents
     public const string DeviceConnected = "device_connected";
     public const string DeviceDisconnected = "device_disconnected";
     public const string FanSpeedSet = "fan_speed_set";
+    public const string FanControlTaken = "fan_control_taken";
     public const string FanCurveApplied = "fan_curve_applied";
     public const string LightingEffectApplied = "lighting_effect_applied";
     public const string WidgetOpened = "widget_opened";
@@ -29,6 +30,9 @@ public static class TelemetryEvents
     /// is the only way to tell a deliberate switch from the v15 migration,
     /// which seeded every pre-existing install to "advanced".</summary>
     public const string DashboardModeChanged = "dashboard_mode_changed";
+
+    /// <summary>Unchanged-profile refresh; delivered to nexus-api only, never PostHog.</summary>
+    public const string ProfileRefresh = "profile";
 
     public const string OnboardingCompleted = "onboarding_completed";
 

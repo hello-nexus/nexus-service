@@ -4,19 +4,20 @@ using System.Linq;
 using System.Security.Cryptography;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Panel;
 
 /// <summary>
 /// Owns the per-device panel records persisted under
-/// <c>NexusSettings.PanelDevices</c> (top-level, NOT profile-scoped).
+/// <c>NexusSettings.PanelDevices</c>. The records themselves (identity, display
+/// binding, hardware settings) are global; the Panels profile category carries
+/// only their looks (see <see cref="Nexus.Service.Persistence.PanelProfileData"/>).
 /// Allocation, lookup, patching, removal all flow through here. Phone
 /// pairing keeps its own auth-token registry; this is the identity +
 /// layout surface that any panel device (Y70, kiosk, phone) maps onto via
-/// the URL <c>/panel/{deviceId}</c>. Storage is global because device
-/// identity describes physical hardware, not user preferences - profile
-/// switches preserve the registry so the connected panel never loses its
-/// own record mid-session.
+/// the URL <c>/panel/{deviceId}</c>. Profile switches never add or
+/// remove a record, so the connected panel never loses its own mid-session.
 /// </summary>
 public sealed class PanelDeviceRegistry
 {
@@ -39,6 +40,12 @@ public sealed class PanelDeviceRegistry
     /// </summary>
     public event Action<PanelDeviceRecord>? DisplayRecordReady;
 
+    /// <summary>Raised after Allocate mints a new record (a reused single-instance record does not raise it), before the caller can customize it.</summary>
+    public event Action<PanelDeviceRecord>? RecordCreated;
+
+    /// <summary>Raised (record ids) after a record's display fingerprint was first recorded or changed, so profile files can pick up its match key.</summary>
+    public event Action<IReadOnlyList<string>>? FingerprintsChanged;
+
     /// <param name="canReuse">Narrows which record a single-instance surface may reuse; null allows any.</param>
     public PanelDeviceRecord Allocate(string? displayName, PanelDeviceCapabilities? capabilities, Func<PanelDeviceRecord, bool>? canReuse = null)
     {
@@ -46,6 +53,7 @@ public sealed class PanelDeviceRegistry
         var surface = capabilities?.Surface;
 
         PanelDeviceRecord? result = null;
+        var created = false;
         _store.Update(s =>
         {
             // Single-instance surfaces (Y70, Q-series) are one physical panel
@@ -88,8 +96,10 @@ public sealed class PanelDeviceRegistry
             };
             s.PanelDevices[record.Id] = record;
             result = Clone(record);
+            created = true;
         });
 
+        if (created) RecordCreated?.Invoke(result!);
         return result!;
     }
 
@@ -103,7 +113,7 @@ public sealed class PanelDeviceRegistry
     /// monitor and orphan a record on demote. Returns
     /// <c>Created == false</c> with the existing record when already bound.
     /// </summary>
-    public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities)
+    public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities, Nexus.Service.Models.Displays.DisplayFingerprint? fingerprint = null)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var record = new PanelDeviceRecord
@@ -114,6 +124,7 @@ public sealed class PanelDeviceRegistry
             LastSeenAt = now,
             Capabilities = capabilities,
             DisplayId = displayId,
+            DisplayFingerprint = fingerprint,
         };
 
         PanelDeviceRecord? result = null;
@@ -132,6 +143,7 @@ public sealed class PanelDeviceRegistry
                     candidate.Enabled = true;
                     candidate.Capabilities = capabilities ?? candidate.Capabilities;
                     candidate.LastSeenAt = now;
+                    candidate.DisplayFingerprint ??= fingerprint;
                     activated = true;
                 }
                 result = Clone(candidate);
@@ -147,6 +159,100 @@ public sealed class PanelDeviceRegistry
         _store.FlushNow();
         if (activated) DisplayRecordReady?.Invoke(result!);
         return (result!, activated);
+    }
+
+    /// <summary>Minimum gap between two identical weak plans before the second applies.</summary>
+    internal const long WeakRelinkConfirmMs = 5000;
+
+    internal Func<long> ClockMs { get; init; } = () => Environment.TickCount64;
+
+    private readonly object _pendingLock = new();
+    // In memory only: record id -> (target display id, first time this exact plan was seen).
+    private Dictionary<string, (string Target, long FirstSeenMs)> _pendingWeak = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Keeps display-bound records attached to their physical monitor: stamps a
+    /// hardware fingerprint on records that lack one, and rewrites the
+    /// DisplayId of a record whose display id no longer exists when its
+    /// hardware is the single unclaimed attached monitor. A serial-backed match
+    /// applies at once; a model-only match applies once the identical plan has
+    /// been seen on two scans at least <see cref="WeakRelinkConfirmMs"/> apart,
+    /// so a transient partial scan cannot hand a record to a lookalike.
+    /// Ambiguity changes nothing. <c>PendingWeak</c> tells the caller to rescan.
+    /// </summary>
+    internal (IReadOnlyList<(string RecordId, string OldDisplayId, string NewDisplayId)> Applied, bool PendingWeak) ReconcileDisplayFingerprints(
+        IReadOnlyList<RelinkDisplay> attached)
+    {
+        static List<RelinkRecord> Snapshot(IEnumerable<PanelDeviceRecord> records)
+            => records
+                .Where(r => !string.IsNullOrEmpty(r.DisplayId))
+                .Select(r => new RelinkRecord(r.Id, r.DisplayId!, r.DisplayFingerprint, r.SiblingDisplayIds?.ToList()))
+                .ToList();
+
+        RelinkPlan precheck = null!;
+        _store.Read(s => precheck = PanelDisplayRelink.Plan(Snapshot(s.PanelDevices.Values), attached));
+        var allowed = new HashSet<(string, string)>();
+        bool pending;
+        lock (_pendingLock)
+        {
+            var now = ClockMs();
+            var next = new Dictionary<string, (string Target, long FirstSeenMs)>(StringComparer.Ordinal);
+            foreach (var move in precheck.Moves)
+            {
+                if (!move.Weak)
+                {
+                    allowed.Add((move.RecordId, move.NewDisplayId));
+                    continue;
+                }
+                if (_pendingWeak.TryGetValue(move.RecordId, out var seen)
+                    && string.Equals(seen.Target, move.NewDisplayId, StringComparison.Ordinal))
+                {
+                    if (now - seen.FirstSeenMs >= WeakRelinkConfirmMs) allowed.Add((move.RecordId, move.NewDisplayId));
+                    else next[move.RecordId] = seen;
+                }
+                else
+                {
+                    next[move.RecordId] = (move.NewDisplayId, now);
+                }
+            }
+            _pendingWeak = next;
+            pending = next.Count > 0;
+        }
+        if (precheck.Backfills.Count == 0 && precheck.SiblingUpdates.Count == 0 && allowed.Count == 0)
+            return (Array.Empty<(string, string, string)>(), pending);
+
+        var applied = new List<(string RecordId, string OldDisplayId, string NewDisplayId)>();
+        var fingerprinted = new List<string>();
+        _store.Update(s =>
+        {
+            var plan = PanelDisplayRelink.Plan(Snapshot(s.PanelDevices.Values), attached);
+            foreach (var (recordId, fingerprint) in plan.Backfills)
+            {
+                if (s.PanelDevices.TryGetValue(recordId, out var record))
+                {
+                    record.DisplayFingerprint = fingerprint;
+                    fingerprinted.Add(recordId);
+                }
+            }
+            foreach (var (recordId, siblings) in plan.SiblingUpdates)
+            {
+                if (s.PanelDevices.TryGetValue(recordId, out var record)) record.SiblingDisplayIds = siblings;
+            }
+            foreach (var move in plan.Moves)
+            {
+                if (!allowed.Contains((move.RecordId, move.NewDisplayId))) continue;
+                if (!s.PanelDevices.TryGetValue(move.RecordId, out var record)) continue;
+                record.DisplayId = move.NewDisplayId;
+                record.DisplayFingerprint = move.Fingerprint;
+                fingerprinted.Add(move.RecordId);
+                applied.Add((move.RecordId, move.OldDisplayId, move.NewDisplayId));
+                ServiceLog.Info($"[panel-relink] record {move.RecordId} display '{move.OldDisplayId}' -> '{move.NewDisplayId}' "
+                    + $"(fingerprint {move.Fingerprint.Manufacturer}:{move.Fingerprint.Product} serial {move.Fingerprint.Serial})");
+            }
+        });
+        if (applied.Count > 0) _store.FlushNow();
+        if (fingerprinted.Count > 0) FingerprintsChanged?.Invoke(fingerprinted);
+        return (applied, pending);
     }
 
     /// <summary>
@@ -362,7 +468,8 @@ public sealed class PanelDeviceRegistry
             if (newest is null) return;
             id = newest.Id;
 
-            var layout = newest.Layout ?? PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70);
+            var layout = newest.Layout
+                ?? PanelLayoutDefaults.WithStableIds(PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70), newest.Id);
             foreach (var page in layout.Pages)
             {
                 foreach (var widget in page.Widgets)
@@ -720,6 +827,7 @@ public sealed class PanelDeviceRegistry
             record.Font = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
+            record.WidgetSize = null;
             // Presets are personalization too, and they reference the media
             // the caller deletes.
             record.Presets = null;
@@ -995,6 +1103,7 @@ public sealed class PanelDeviceRegistry
         return copy;
     }
 
+    // The response clone: DisplayFingerprint and SiblingDisplayIds stay in the store, off the wire.
     private static PanelDeviceRecord Clone(PanelDeviceRecord r)
     {
         return new PanelDeviceRecord

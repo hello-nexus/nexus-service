@@ -270,6 +270,10 @@ public static class LightingDevicesCatalog
         Native("Lian Li", "Uni Fan SL v2",          "fan",      "0x0CF2", "0xA103"),
         Native("Lian Li", "Uni Fan AL v2",          "fan",      "0x0CF2", "0xA104"),
         Native("Lian Li", "Uni Fan TL",             "fan",      "0x0416", "0x7372"),
+        Native("Lian Li", "TL LCD Flex Fan",        "fan",      "0x43A8", "0x0102", screen: true),
+        Native("Lian Li", "TL LCD Flex Fan Screen", "fan",      "0x1CBE", "0xA018", screen: true, rgb: false),
+        Native("Lian Li", "SL-INF LCD Flex Fan",    "fan",      "0x43A8", "0x0104", screen: true),
+        Native("Lian Li", "SL-INF LCD Flex Fan Screen", "fan",  "0x1CBE", "0xA019", screen: true, rgb: false),
         Native("Lian Li", "Strimer",                "light",    "0x0CF2", "0xA200"),
         Native("Lian Li", "Galahad II Trinity",     "aio",      "0x0416", "0x7373"),
         Native("Lian Li", "Galahad II Performance", "aio",      "0x0416", "0x7371"),
@@ -329,17 +333,19 @@ public static class LightingDevicesCatalog
         Native("Aftershock", "Glacier Matrix 360",  "aio",      "0x38C1", "0x0026", screen: true, rgb: false),
 
         // JPEG-over-HID cooler LCDs - PIDs from src/Peripherals/JpegPanels/JpegPanelModel.cs.
-        // Screen only: Nexus drives the glass on these, not their RGB. Only the HydroShift
-        // rows have been run against hardware; all ship with Nexus Control off by default.
+        // Screen only: Nexus drives the glass on these, not their RGB, except the HydroShift
+        // 360R, whose three ARGB fans are driven per LED. Only the HydroShift rows have been
+        // run against hardware; all ship with Nexus Control off by default.
         Native("Lian Li",    "Galahad II LCD",      "aio",      "0x0416", "0x7395", screen: true, rgb: false),
         Native("Lian Li",    "HydroShift LCD 360S", "aio",      "0x0416", "0x7398", screen: true, rgb: false),
-        Native("Lian Li",    "HydroShift LCD 360R", "aio",      "0x0416", "0x7399", screen: true, rgb: false),
+        Native("Lian Li",    "HydroShift LCD 360R", "aio",      "0x0416", "0x7399", screen: true),
         Native("Lian Li",    "HydroShift LCD 360TL","aio",      "0x0416", "0x739A", screen: true, rgb: false),
         Native("Corsair",    "XC7 RGB Elite LCD",   "aio",      "0x1B1C", "0x0C42", screen: true, rgb: false),
         Native("Corsair",    "Elite Capellix LCD",  "aio",      "0x1B1C", "0x0C39", screen: true, rgb: false),
         Native("Corsair",    "Elite Capellix LCD",  "aio",      "0x1B1C", "0x0C33", screen: true, rgb: false),
         Native("ID-Cooling", "FX-LCD",              "aio",      "0x2000", "0x3000", screen: true, rgb: false),
         Native("ASRock",     "AIO LCD",             "aio",      "0x26CE", "0x0A10", screen: true, rgb: false),
+        Native("ASUS",       "ROG Strix SLC IV LCD","aio",      "0x0B05", "0x1DE6", screen: true, rgb: false),
 
         // Bulk-pipe cooler LCDs - drivers in src/Peripherals/BulkPanels/. Reachable only
         // where Windows has bound WinUSB, and likewise untested.

@@ -19,6 +19,9 @@ public sealed class StudioLiveBody
     public float Saturation { get; set; } = 1f;
     public float Contrast { get; set; } = 1f;
     public Dictionary<string, float>? Params { get; set; }
+
+    /// <summary>Per sensor uniform, the pick over the fragment's default binding. Null or absent keeps the defaults.</summary>
+    public Dictionary<string, Nexus.Service.Persistence.SensorBinding>? Sensors { get; set; }
 }
 
 /// <summary>Answer to POST /lighting/studio-live (Error and Msg come from the envelope).</summary>

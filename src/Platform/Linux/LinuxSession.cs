@@ -151,7 +151,7 @@ public static partial class LinuxSession
         Environment.SetEnvironmentVariable("WAYLAND_DISPLAY", ResolveWaylandDisplay(s.Type, s.Wayland));
         // DISPLAY/XAUTHORITY stay out of this process's environment: the lighting
         // shader context renders headless via EGL (LinuxEglContext), and a visible
-        // DISPLAY tempts a GLFW/GLX path that segfaults creating an nvidia GL
+        // DISPLAY tempts a GLX path that segfaults creating an nvidia GL
         // context as root on the user's XWayland. Browsers take them per-child.
         SessionDisplay = s.Display;
         SessionXauthority = s.Xauthority;

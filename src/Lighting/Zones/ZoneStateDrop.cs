@@ -21,6 +21,13 @@ public static class ZoneStateDrop
             settings.Devices.AppliedMappings.Remove(id);
             settings.Devices.LedGroups.Remove(id);
             settings.Devices.MappingAutoApplyDeclined.Remove(id);
+            if (settings.Devices.SamplingModes.ContainsKey(id))
+            {
+                // Replaced wholesale: the engine adopts a new dictionary reference.
+                var modes = new Dictionary<string, string>(settings.Devices.SamplingModes);
+                modes.Remove(id);
+                settings.Devices.SamplingModes = modes;
+            }
             if (settings.Devices.DisabledLightingDevices.Contains(id))
             {
                 // Replace rather than mutate: the frame writers read this list

@@ -2,6 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Microsoft.Extensions.DependencyInjection;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Engine.Gpu;
@@ -56,6 +60,30 @@ public class StaticModeTests : IDisposable
         Persist = true,
         Params = look.Params.Select(kv => new ShaderParam { Name = kv.Key, Value = kv.Value }).ToList(),
     };
+
+    [Fact]
+    public async Task The_set_mode_app_action_persists_and_acks_static_for_game_sync()
+    {
+        var registry = new Nexus.Service.Widgets.AppActionRegistry();
+        Nexus.Service.Widgets.AppActions.LightingActions.RegisterAll(registry);
+        var services = new ServiceCollection()
+            .AddSingleton<ILightingProvider>(_provider)
+            .BuildServiceProvider();
+        Assert.True(registry.TryGet("lighting.setMode", out var handler));
+
+        var result = await handler(services, new Dictionary<string, JsonElement> { ["mode"] = JsonDocument.Parse("\"gamesync\"").RootElement }, CancellationToken.None);
+
+        Assert.Equal("static", _store.Load().Lighting.Sync);
+        Assert.Equal("static", result!.Value.GetProperty("applied").GetString());
+    }
+
+    [Fact]
+    public void A_removed_game_sync_mode_arriving_at_runtime_persists_as_static()
+    {
+        _provider.SetSync("gamesync");
+
+        Assert.Equal("static", _store.Load().Lighting.Sync);
+    }
 
     [Fact]
     public void StartStatic_persists_the_mode_and_selection()

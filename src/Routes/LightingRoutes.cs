@@ -20,10 +20,61 @@ public static class LightingRoutes
         return s.Length == 0 || !(s is "0" or "false" or "False" or "FALSE");
     }
 
+    private const int MaxSunLabelLength = 80;
+
+    private static Models.Lighting.BrightnessScheduleBody BuildBrightnessScheduleBody(
+        Nexus.Service.Persistence.BrightnessSchedule schedule, Nexus.Service.Lighting.Sun.SunLocationResolver resolver, bool forceResolve = false)
+    {
+        // The lookup runs in the background; this response reports no-location until it lands.
+        if (Nexus.Service.Lighting.Sun.SunShift.NeedsAutoLocation(schedule))
+        {
+            resolver.Request(forceResolve);
+        }
+        var location = Nexus.Service.Lighting.Sun.SunShift.Effective(schedule);
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var plan = Nexus.Service.Lighting.Sun.SunShift.PlanFor(location, today, schedule.SunNightLevel, schedule.SunDayLevel);
+        var sun = new Models.Lighting.BrightnessScheduleSun
+        {
+            Date = today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            Status = plan is null ? "no-location" : plan.Day.Status switch
+            {
+                Nexus.Service.Lighting.Sun.SunStatus.Ok => "ok",
+                Nexus.Service.Lighting.Sun.SunStatus.PolarDay => "polar-day",
+                Nexus.Service.Lighting.Sun.SunStatus.PolarNight => "polar-night",
+                _ => "no-location",
+            },
+            SunriseMin = plan?.Day.SunriseMin,
+            SunsetMin = plan?.Day.SunsetMin,
+            ResolvedLocation = location is null ? null : ToDto(location),
+            AutoLocation = Nexus.Service.Lighting.Sun.SunShift.AutoLocation is { } auto ? ToDto(auto) : null,
+        };
+        if (plan is not null)
+        {
+            for (var i = 0; i < plan.Minutes.Length; i++)
+            {
+                sun.SunPoints.Add(new() { Min = plan.Minutes[i], Brightness = plan.Levels[i] });
+            }
+        }
+        return new Models.Lighting.BrightnessScheduleBody
+        {
+            Enabled = schedule.Enabled,
+            Points = schedule.Points ?? new(),
+            Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
+            SunShift = schedule.SunShiftOn,
+            SunNight = schedule.SunNightLevel,
+            SunDay = schedule.SunDayLevel,
+            Location = schedule.SunLocation is null ? null : ToDto(schedule.SunLocation),
+            Sun = sun,
+        };
+    }
+
+    private static Models.Lighting.SunLocationDto ToDto(Nexus.Service.Persistence.WeatherSavedLocation l) =>
+        new() { Lat = l.Lat, Lon = l.Lon, Label = l.Label, Cc = l.Cc };
+
     public static void MapLightingEndpoints(this WebApplication app)
     {
         app.MapPost("/lighting/stop", (ILightingProvider l, MultiplexHub hub) => { l.StopAll(); ResetEffectSignature(); PanelTopics.BroadcastLighting(hub); return ApiResponse.Ok(); }).AllowPanel();
-        app.MapGet("/lighting/current", (ILightingProvider l) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused, StudioLive = l.StudioLiveActive }).AllowPanel();
+        app.MapGet("/lighting/current", (ILightingProvider l, Nexus.Service.Persistence.IConfigStore store) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused, StudioLive = l.StudioLiveActive, GameSyncRemovedNotice = store.Load().GameSyncRemovedNotice }).AllowPanel();
         // Freeze/resume the active effect's rendered frame. No-op with no active
         // effect (engine not running); returns the resulting paused state either way.
         app.MapPost("/lighting/pause", (Models.Lighting.LightingPauseBody body, ILightingProvider l, MultiplexHub hub) =>
@@ -106,20 +157,31 @@ public static class LightingRoutes
         app.MapGet("/lighting/audio-output", (Nexus.Service.Persistence.IConfigStore store) =>
         {
             var l = store.Load().Lighting;
-            return new Models.Lighting.AudioOutputBody { DeviceId = l.AudioOutputDeviceId, DeviceName = l.AudioOutputDeviceName };
+            return new Models.Lighting.AudioOutputBody
+            {
+                DeviceId = l.AudioOutputDeviceId,
+                DeviceName = l.AudioOutputDeviceName,
+                Direction = l.AudioOutputDeviceDirection == "input" ? "input" : "output",
+            };
         }).AllowPanel();
         app.MapPost("/lighting/audio-output", (Models.Lighting.AudioOutputBody body,
             Nexus.Service.Persistence.IConfigStore store,
             MultiplexHub hub) =>
         {
+            var direction = string.IsNullOrEmpty(body.Direction) ? "output" : body.Direction;
+            if (direction != "output" && direction != "input")
+            {
+                return Results.Json(ApiResponse.Fail("direction must be output or input"), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status400BadRequest);
+            }
             store.Update(s =>
             {
                 s.Lighting.AudioOutputDeviceId = body.DeviceId ?? "";
                 s.Lighting.AudioOutputDeviceName = body.DeviceName ?? "";
+                s.Lighting.AudioOutputDeviceDirection = direction;
             });
             // Settings and the lighting canvas each show the pick; the bump makes the other re-read it.
             PanelTopics.BroadcastLighting(hub);
-            return ApiResponse.Ok();
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).AllowPanel();
         // Blank lighting while the host sleeps. Host-only: this is a property of
         // the machine going to sleep, not something a paired phone should flip.
@@ -164,11 +226,11 @@ public static class LightingRoutes
                 var entry = custom.Get(name[ShaderLibrary.CustomPrefix.Length..]);
                 return entry is null
                     ? Results.NotFound()
-                    : Results.Json(new ShaderSourceResponse { Frag = entry.Frag }, AppJsonContext.Default.ShaderSourceResponse);
+                    : Results.Json(ToShaderSource(entry.Frag, Nexus.Service.Lighting.Engine.Gpu.SensorUniformSpec.Parse(entry.Frag)), AppJsonContext.Default.ShaderSourceResponse);
             }
             if (!ShaderLibrary.AllEffectKeys.Contains(name))
                 return Results.NotFound();
-            return Results.Json(new ShaderSourceResponse { Frag = ShaderLibrary.Get(name) }, AppJsonContext.Default.ShaderSourceResponse);
+            return Results.Json(ToShaderSource(ShaderLibrary.Get(name), ShaderLibrary.SensorUniforms(name)), AppJsonContext.Default.ShaderSourceResponse);
         }).AllowPanel();
         MapCustomEffects(app);
         MapStudioLive(app);
@@ -207,7 +269,13 @@ public static class LightingRoutes
                 // Same enumeration the render-GPU picker gates on, so the UI never
                 // offers a shortcut to a control that will not be there. Cached:
                 // GetGpus() runs a full LHM refresh and this is polled.
-                GpuCanSwitch = MultiGpuCache.Value(sp),
+                GpuCanSwitch = MultiGpuCache.Value(sp)
+                    || GpuBackend.SoftwareRenderingAvailable(
+                        sp.GetService<Nexus.Service.Persistence.IConfigStore>()?.Load().Lighting.RenderBackend,
+                        GpuBackend.AngleAvailable()),
+                GpuRenderer = gpu is { Available: true } ? gpu.Renderer ?? "" : "",
+                GpuSoftware = gpu is { Available: true, IsWarp: true },
+                GpuSoftwareForced = gpu is { Available: true, IsWarp: true } && GpuBackend.SoftwareForced,
             };
         }).AllowPanel();
         // Master brightness slider: caps every LED channel before it leaves the
@@ -235,18 +303,12 @@ public static class LightingRoutes
         // Time-of-day cap on master brightness. Read live by every frame writer
         // through MasterBrightness.Effective, so a POST lands on the next push.
         // AllowPanel like the slider: a paired phone toggles it from bed.
-        app.MapGet("/lighting/brightness-schedule", (Nexus.Service.Persistence.IConfigStore store) =>
-        {
-            var schedule = store.Load().Lighting.BrightnessSchedule ?? new();
-            return new Models.Lighting.BrightnessScheduleBody
-            {
-                Enabled = schedule.Enabled,
-                Points = schedule.Points ?? new(),
-                Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
-            };
-        }).AllowPanel();
+        app.MapGet("/lighting/brightness-schedule", (Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.Sun.SunLocationResolver sunResolver) =>
+            BuildBrightnessScheduleBody(store.Load().Lighting.BrightnessSchedule ?? new(), sunResolver)).AllowPanel();
         app.MapPost("/lighting/brightness-schedule", (Models.Lighting.BrightnessScheduleBody body,
-            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
+            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub,
+            Nexus.Service.Lighting.Sun.SunLocationResolver sunResolver) =>
         {
             // Below the editor's floor there is no curve to interpolate. Values
             // are clamped rather than refused so an out-of-range hand edit still
@@ -255,6 +317,37 @@ public static class LightingRoutes
             if (body.Points is null || body.Points.Count < 2)
             {
                 return Results.BadRequest(ApiResponse.Fail("at least two points"));
+            }
+            Nexus.Service.Persistence.WeatherSavedLocation? location = null;
+            if (body.LocationSpecified && body.Location is { } l)
+            {
+                if (l.Lat is not { } lat || l.Lon is not { } lon)
+                {
+                    return Results.BadRequest(ApiResponse.Fail("location needs lat and lon"));
+                }
+                if (!double.IsFinite(lat) || !double.IsFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180)
+                {
+                    return Results.BadRequest(ApiResponse.Fail("location out of range"));
+                }
+                var label = (l.Label ?? "").Trim();
+                if (label.Length > MaxSunLabelLength)
+                {
+                    label = label.Substring(0, MaxSunLabelLength);
+                }
+                var cc = (l.Cc ?? "").Trim().ToUpperInvariant();
+                if (cc.Length > 3)
+                {
+                    cc = cc.Substring(0, 3);
+                }
+                location = new() { Lat = lat, Lon = lon, Label = label, Cc = cc };
+            }
+            if (body.SunNight is < 0 or > 100)
+            {
+                return Results.BadRequest(ApiResponse.Fail("sunNight must be within 0..100"));
+            }
+            if (body.SunDay is < 0 or > 100)
+            {
+                return Results.BadRequest(ApiResponse.Fail("sunDay must be within 0..100"));
             }
             var byHour = new SortedDictionary<int, Nexus.Service.Persistence.BrightnessSchedulePoint>();
             foreach (var p in body.Points)
@@ -269,9 +362,53 @@ public static class LightingRoutes
             var points = new List<Nexus.Service.Persistence.BrightnessSchedulePoint>(byHour.Values);
             // Replace the object, never mutate the list: frame writers walk the
             // reference they read, unlocked.
-            store.Update(s => s.Lighting.BrightnessSchedule = new() { Enabled = body.Enabled, Points = points });
+            var changed = false;
+            string? levelError = null;
+            store.Update(s =>
+            {
+                var current = s.Lighting.BrightnessSchedule;
+                // Checked against the stored pair under the store's update, and both
+                // resolved values saved, so the saved pair is the checked pair.
+                int? savedNight = current?.SunNight;
+                int? savedDay = current?.SunDay;
+                if (body.SunNight is not null || body.SunDay is not null)
+                {
+                    var night = body.SunNight ?? current?.SunNightLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunNight;
+                    var day = body.SunDay ?? current?.SunDayLevel ?? Nexus.Service.Persistence.BrightnessSchedule.DefaultSunDay;
+                    if (night > day)
+                    {
+                        levelError = "sunNight must not be above sunDay";
+                        return;
+                    }
+                    savedNight = night;
+                    savedDay = day;
+                }
+                // Pin the resolved choice on first save so editing the curve
+                // cannot flip an unchosen sun shift from on to off.
+                var sunShift = body.SunShift ?? current?.SunShiftOn ?? true;
+                var newLocation = body.LocationSpecified ? location : current?.SunLocation;
+                var old = current?.SunLocation;
+                changed = body.Enabled != (current?.Enabled ?? false)
+                    || sunShift != (current?.SunShiftOn ?? true)
+                    || old?.Lat != newLocation?.Lat
+                    || old?.Lon != newLocation?.Lon;
+                s.Lighting.BrightnessSchedule = new()
+                {
+                    Enabled = body.Enabled,
+                    Points = points,
+                    SunShift = sunShift,
+                    SunNight = savedNight,
+                    SunDay = savedDay,
+                    SunLocation = newLocation,
+                };
+            });
+            if (levelError is not null)
+            {
+                return Results.BadRequest(ApiResponse.Fail(levelError));
+            }
+            var saved = store.Load().Lighting.BrightnessSchedule;
             PanelTopics.BroadcastLighting(hub);
-            return Results.Ok(ApiResponse.Ok());
+            return Results.Ok(BuildBrightnessScheduleBody(saved, sunResolver, forceResolve: changed));
         }).AllowPanel();
         // Dim to a user-set level while the PC is idle. The controller picks the
         // change up from the store, so a POST applies at once (a dimmed room
@@ -315,11 +452,27 @@ public static class LightingRoutes
         // persists + writes the OS preference; applying it needs a service restart
         // (POST /service/restart), since the GL context is created once at boot.
         app.MapGet("/lighting/render-gpu", (Nexus.Service.Persistence.IConfigStore store) =>
-            new Models.Lighting.RenderGpuBody { Value = store.Load().Lighting.RenderGpu }).LocalhostOnly();
+        {
+            var lighting = store.Load().Lighting;
+            return new Models.Lighting.RenderGpuInfo
+            {
+                Value = lighting.RenderGpu,
+                SoftwareRenderingAvailable = GpuBackend.SoftwareRenderingAvailable(
+                    lighting.RenderBackend, GpuBackend.AngleAvailable()),
+            };
+        }).LocalhostOnly();
         app.MapPost("/lighting/render-gpu", (Models.Lighting.RenderGpuBody body,
             Nexus.Service.Persistence.IConfigStore store, Nexus.Service.Sensors.ISensorProvider sensors) =>
         {
             var value = string.IsNullOrWhiteSpace(body.Value) ? "auto" : body.Value.Trim();
+            if (GpuBackend.IsSoftwareChoice(value))
+            {
+                if (!GpuBackend.SoftwareRenderingAvailable(store.Load().Lighting.RenderBackend, GpuBackend.AngleAvailable()))
+                {
+                    return Results.BadRequest(ApiResponse.Fail("software rendering needs the ANGLE backend"));
+                }
+                value = GpuBackend.SoftwareChoice;
+            }
             store.Update(s => s.Lighting.RenderGpu = value);
             GpuRenderPreference.Apply(value, sensors.GetGpus());
 #if WINDOWS
@@ -327,10 +480,10 @@ public static class LightingRoutes
             // re-probes (recovers from a persisted "off" where no card worked).
             GpuRenderSelect.ClearState();
 #endif
-            return ApiResponse.Ok();
+            return Results.Ok(ApiResponse.Ok());
         }).LocalhostOnly();
         // The GL backend Windows creates the lighting context with. No UI: it is
-        // the escape if a driver ever refuses the direct WGL path, and support
+        // the escape (wgl) if a driver ever refuses ANGLE, and support
         // needs to be able to flip it without hand-editing settings.json as
         // SYSTEM. Restart-to-apply.
         app.MapGet("/lighting/render-backend", (Nexus.Service.Persistence.IConfigStore store) =>
@@ -338,46 +491,46 @@ public static class LightingRoutes
         app.MapPost("/lighting/render-backend", (Models.Lighting.RenderGpuBody body,
             Nexus.Service.Persistence.IConfigStore store) =>
         {
-            var value = string.Equals(body.Value?.Trim(), "glfw", StringComparison.OrdinalIgnoreCase)
-                ? "glfw"
-                : "wgl";
+            var requested = body.Value?.Trim();
+            var value = string.Equals(requested, "wgl", StringComparison.OrdinalIgnoreCase) ? "wgl" : "angle";
             store.Update(s => s.Lighting.RenderBackend = value);
             return ApiResponse.Ok();
         }).LocalhostOnly();
         // Headless start endpoints
-        app.MapPost("/lighting/animate/headless-start", (AnimateHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/lighting/animate/headless-start", (AnimateHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            l.StartAnimate(body);
-            CaptureEffect(telemetry, "animate", body.Effect);
+            StartAndCapture(telemetry, store, "animate", body.Effect, null, () => l.StartAnimate(body));
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
-        app.MapPost("/lighting/static/headless-start", (StaticHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/lighting/static/headless-start", (StaticHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            try { l.StartStatic(body); }
+            try { StartAndCapture(telemetry, store, "static", body.Effect, body.Color, () => l.StartStatic(body)); }
             catch (System.ArgumentException ex) { return Results.Ok(ApiResponse.Fail(ex.Message)); }
-            CaptureEffect(telemetry, "static", body.Effect);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
-        app.MapPost("/lighting/screen/headless-start", (ScreenHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/lighting/screen/headless-start", (ScreenHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
-            l.StartScreen(body);
-            if (!body.KeepMode)
+            if (body.KeepMode)
             {
-                CaptureEffect(telemetry, "screen", null);
+                l.StartScreen(body);
+            }
+            else
+            {
+                StartAndCapture(telemetry, store, "screen", null, null, () => l.StartScreen(body));
             }
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
@@ -412,6 +565,16 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
         }).AllowPanel();
+    }
+
+    private static ShaderSourceResponse ToShaderSource(string frag, IReadOnlyList<Nexus.Service.Lighting.Engine.Gpu.SensorUniformSpec> sensors)
+    {
+        var response = new ShaderSourceResponse { Frag = frag };
+        foreach (var spec in sensors)
+        {
+            response.Sensors.Add(new SensorUniformInfo { Uniform = spec.Name, Binding = spec.Default.Copy() });
+        }
+        return response;
     }
 
     private static Nexus.Service.Models.Lighting.CustomEffectResponse ToResponse(Nexus.Service.Lighting.CustomEffects.CustomEffectEntry e) => new()
@@ -535,20 +698,90 @@ public static class LightingRoutes
     }
 
     // The three headless-start routes are re-posted on every slider move, so
-    // only a changed mode/effect pair is worth an event. One slot, not one per
-    // mode: it tracks what is currently applied, so switching away and back is
-    // two real transitions.
-    private static string _lastEffectSignature = "";
+    // only a changed look is worth an event. Each request compares against the
+    // look persisted BEFORE its start (a local, so no request can change what
+    // another compares against) and against the last look captured under that
+    // same persisted look. The second check covers posts that do not persist
+    // (a slider drag): they leave the persisted look unchanged, so without it
+    // every post of the new look would count. Keying it on the persisted look
+    // keeps a stale entry from swallowing a later real change.
+    private static readonly object _effectLock = new();
+    private static (string? Persisted, string Signature) _lastCaptured = (null, "");
+    private static int _effectsInFlight;
 
-    internal static void ResetEffectSignature() => Interlocked.Exchange(ref _lastEffectSignature, "");
+    /// <summary>A flat color is one look whatever effect key the client sends alongside it.</summary>
+    internal const string FlatEffect = "flat";
 
-    internal static void CaptureEffect(Nexus.Service.Telemetry.ITelemetry telemetry, string routeMode, string? effect)
+    internal static string PersistedEffectSignature(Nexus.Service.Persistence.LightingSettings lighting)
     {
-        var (mode, slug) = ResolveEffect(routeMode, effect);
+        var sync = (lighting.Sync ?? "").Trim().ToLowerInvariant();
+        switch (sync)
+        {
+            case "":
+            case "none":
+            case "music":
+            case "media":
+            case "gif":
+                return "";
+            case "screen":
+                return EffectSignature("screen", null);
+            case "static":
+                // A non-flat static start nulls the color; a flat one never writes the effect.
+                return Nexus.Service.Lighting.StaticColorHex.TryParse(lighting.Static.Color, out _, out _, out _)
+                    ? "static:" + FlatEffect
+                    : EffectSignature("static", lighting.Static.Effect);
+            default:
+                return EffectSignature("animate", sync);
+        }
+    }
+
+    internal static void ResetEffectSignature()
+    {
+        lock (_effectLock)
+        {
+            _lastCaptured = (null, "");
+        }
+    }
+
+    /// <summary>Reads the persisted look, runs the start, then captures; the read must come first because the start rewrites it.</summary>
+    internal static void StartAndCapture(Nexus.Service.Telemetry.ITelemetry telemetry,
+        Nexus.Service.Persistence.IConfigStore store, string routeMode, string? effect, string? color, Action start)
+    {
+        Interlocked.Increment(ref _effectsInFlight);
+        try
+        {
+            var persistedBefore = PersistedEffectSignature(store.Load().Lighting);
+            start();
+            // Only the sole in-flight request may retire the last-captured pair: an
+            // overlapping request that read the same persisted look still needs it.
+            var persistedAfter = Volatile.Read(ref _effectsInFlight) == 1
+                ? PersistedEffectSignature(store.Load().Lighting)
+                : null;
+            CaptureEffect(telemetry, routeMode, effect, persistedBefore, color, persistedAfter);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _effectsInFlight);
+        }
+    }
+
+    internal static void CaptureEffect(Nexus.Service.Telemetry.ITelemetry telemetry, string routeMode, string? effect,
+        string persistedBefore = "", string? color = null, string? persistedAfter = null)
+    {
+        var (mode, slug) = routeMode == "static" && !string.IsNullOrEmpty(color)
+            ? ("static", FlatEffect)
+            : ResolveEffect(routeMode, effect);
         var signature = mode + ":" + slug;
-        // Both operands are typed string, so this is ordinal value equality;
-        // a change to ReferenceEquals would silently stop deduping.
-        if (Interlocked.Exchange(ref _lastEffectSignature, signature) == signature) return;
+        lock (_effectLock)
+        {
+            // Both operands are typed string, so this is ordinal value equality;
+            // a change to ReferenceEquals would silently stop deduping.
+            var seen = signature == persistedBefore
+                || (_lastCaptured.Persisted == persistedBefore && _lastCaptured.Signature == signature);
+            // Persisting clears the pair: an outside restore must not swallow the next pick.
+            _lastCaptured = persistedAfter == signature ? (null, "") : (persistedBefore, signature);
+            if (seen) return;
+        }
         telemetry.Capture(Nexus.Service.Telemetry.TelemetryEvents.LightingEffectApplied,
             ("mode", mode), ("effect", slug));
     }

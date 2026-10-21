@@ -15,6 +15,11 @@ public sealed class Slv3MacRequest
     public string Mac { get; set; } = "";
 }
 
+public sealed class Slv3LockRequest
+{
+    public bool? Enabled { get; set; }
+}
+
 public sealed class Slv3LightingModeDto
 {
     public string Key { get; set; } = "";
@@ -212,24 +217,36 @@ public static partial class Slv3Routes
         });
 
         // POST /devices/lianli-wireless/bind - request binding a discovered fan
-        // to our master, into the first free slot. The connection worker's tick
+        // to our master, into L-Connect's next unused slot. The connection worker's tick
         // drives the RF state machine until the device list confirms.
         app.MapPost("/devices/lianli-wireless/bind", (Slv3MacRequest body, Slv3Hub hub) =>
         {
-            if (!hub.Bind(body.Mac))
+            if (!hub.Bind(body.Mac, out var error))
             {
-                return Results.Json(ApiResponse.Fail("invalid mac or no free slot"), AppJsonContext.Default.ApiResponse);
+                return Results.Json(ApiResponse.Fail(error), AppJsonContext.Default.ApiResponse);
             }
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        // POST /devices/lianli-wireless/unbind - request releasing a fan from our master.
+        // POST /devices/lianli-wireless/unbind - request releasing a fan from whichever master holds it.
         app.MapPost("/devices/lianli-wireless/unbind", (Slv3MacRequest body, Slv3Hub hub) =>
         {
-            if (!hub.Unbind(body.Mac))
+            if (!hub.Unbind(body.Mac, out var error))
             {
-                return Results.Json(ApiResponse.Fail("invalid mac"), AppJsonContext.Default.ApiResponse);
+                return Results.Json(ApiResponse.Fail(error), AppJsonContext.Default.ApiResponse);
             }
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+
+        // PUT /devices/lianli-wireless/lock - persist the lock-bound-devices setting; no RF is sent.
+        app.MapPut("/devices/lianli-wireless/lock", (Slv3LockRequest body, Slv3Hub hub, IConfigStore store) =>
+        {
+            if (body.Enabled is not { } enabled)
+            {
+                return Results.BadRequest(ApiResponse.Fail("enabled is required"));
+            }
+            store.Update(settings => settings.Devices.LianLiWireless.LockBoundDevices = enabled);
+            hub.SetLockBoundDevices(enabled);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 

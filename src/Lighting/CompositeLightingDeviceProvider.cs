@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting.Engine;
@@ -28,6 +29,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     private readonly IbpPeripheralLightingDeviceProvider _ibp;
     private readonly LianLiLightingDeviceProvider _lianLi;
     private readonly Slv3LightingDeviceProvider _lianLiWireless;
+    private readonly FlexLightingDeviceProvider _flex;
     private readonly CorsairLinkLightingDeviceProvider _corsair;
     private readonly StrimerLightingDeviceProvider _strimer;
     private readonly Galahad2LightingDeviceProvider _galahad2;
@@ -36,6 +38,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     private readonly HydroShift2LightingDeviceProvider _hydroShift2;
     private readonly HydroShift2CurveLightingDeviceProvider _hydroShift2Curve;
     private readonly Galahad2LcdLightingProvider _galahad2Lcd;
+    private readonly HydroShiftLcdLightingProvider _hydroShiftLcd;
     private readonly AsiahorseUmbraLightingDeviceProvider _umbra;
     private readonly Peripherals.LianLiTl.TlFanHub _tl;
     private readonly Nexus.Service.Lighting.Smart.SmartLightProvider _smart;
@@ -53,6 +56,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         IbpPeripheralLightingDeviceProvider ibp,
         LianLiLightingDeviceProvider lianLi,
         Slv3LightingDeviceProvider lianLiWireless,
+        FlexLightingDeviceProvider flex,
         CorsairLinkLightingDeviceProvider corsair,
         StrimerLightingDeviceProvider strimer,
         Galahad2LightingDeviceProvider galahad2,
@@ -61,6 +65,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         HydroShift2LightingDeviceProvider hydroShift2,
         HydroShift2CurveLightingDeviceProvider hydroShift2Curve,
         Galahad2LcdLightingProvider galahad2Lcd,
+        HydroShiftLcdLightingProvider hydroShiftLcd,
         AsiahorseUmbraLightingDeviceProvider umbra,
         Peripherals.LianLiTl.TlFanHub tl,
         Nexus.Service.Lighting.Smart.SmartLightProvider smart,
@@ -77,6 +82,8 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         _ibp      = ibp;
         _lianLi   = lianLi;
         _lianLiWireless = lianLiWireless;
+        _flex = flex;
+        _flex.DefaultRects = FlexDefaultRects;
         _corsair  = corsair;
         _strimer  = strimer;
         _galahad2 = galahad2;
@@ -85,6 +92,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         _hydroShift2 = hydroShift2;
         _hydroShift2Curve = hydroShift2Curve;
         _galahad2Lcd = galahad2Lcd;
+        _hydroShiftLcd = hydroShiftLcd;
         _umbra    = umbra;
         _tl       = tl;
         _smart    = smart;
@@ -147,9 +155,11 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         };
     }
 
-    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _umbra.IsConnected || _smart.IsConnected;
+    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _flex.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _hydroShiftLcd.IsConnected || _umbra.IsConnected || _smart.IsConnected;
 
-    public GetLightingDevicesResponse GetAll()
+    public GetLightingDevicesResponse GetAll() => Listing(mirrorIntoEngine: true);
+
+    private GetLightingDevicesResponse Listing(bool mirrorIntoEngine)
     {
         var rgb = _openRgb.GetAll();
 
@@ -195,55 +205,6 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             if (qseriesZombieId is not null)
             {
                 rgb.Devices.RemoveAll(d => string.Equals(d.Id, qseriesZombieId, StringComparison.OrdinalIgnoreCase));
-            }
-            if (_keeb.IsConnected)
-            {
-                // We disable the "HYTE Keeb TKL" detector in openrgb-headless so
-                // OpenRGB never claims the board, but strip by name too so a stale
-                // entry can never shadow our direct card.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("HYTE Keeb", StringComparison.OrdinalIgnoreCase) ||
-                    d.Name.Contains("Keeb TKL", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_lianLi.IsConnected)
-            {
-                // Every HID Uni Hub detector is disabled in openrgb-headless;
-                // strip by name too so a stale OpenRGB entry
-                // (the "detected but not drivable" zombie) can't shadow our cards.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Lian Li Uni Hub", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_corsair.IsConnected)
-            {
-                // The iCUE Link System Hub detector is disabled in openrgb-headless;
-                // strip by name too so a stale OpenRGB zombie can't shadow our cards.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("iCUE Link", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_strimer.IsConnected)
-            {
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Lian Li Strimer", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_galahad2.IsConnected)
-            {
-                // OpenRGB names this device "Lian Li GAII Trinity".
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("GAII", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_nollie.IsConnected)
-            {
-                // Nollie detectors are disabled in openrgb-headless; strip by
-                // name too so a stale entry can't shadow the native cards. The
-                // Prism8 shares the firmware and OpenRGB's naming.
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Nollie", StringComparison.OrdinalIgnoreCase) ||
-                    d.Name.Contains("Prism8", StringComparison.OrdinalIgnoreCase));
-            }
-            if (_kraken.IsConnected)
-            {
-                rgb.Devices.RemoveAll(d =>
-                    d.Name.Contains("Kraken", StringComparison.OrdinalIgnoreCase));
             }
         }
 
@@ -310,6 +271,13 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             TagControlHandler(lianLiWireless.Devices, "lianli-wireless");
             rgb.Devices.AddRange(lianLiWireless.Devices);
         }
+        var flex = _flex.GetAll();
+        if (flex.Devices.Count > 0)
+        {
+            rgb.IsInit = rgb.IsInit || flex.IsInit;
+            TagControlHandler(flex.Devices, "lianli-flex");
+            rgb.Devices.AddRange(flex.Devices);
+        }
         var corsair = _corsair.GetAll();
         if (corsair.Devices.Count > 0)
         {
@@ -359,6 +327,13 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             TagControlHandler(galahad2Lcd.Devices, Galahad2LcdLightingProvider.DeviceId);
             rgb.Devices.AddRange(galahad2Lcd.Devices);
         }
+        var hydroShiftLcd = _hydroShiftLcd.GetAll();
+        if (hydroShiftLcd.Devices.Count > 0)
+        {
+            rgb.IsInit = rgb.IsInit || hydroShiftLcd.IsInit;
+            TagControlHandler(hydroShiftLcd.Devices, HydroShiftLcdLightingProvider.DeviceId);
+            rgb.Devices.AddRange(hydroShiftLcd.Devices);
+        }
         var umbra = _umbra.GetAll();
         if (umbra.Devices.Count > 0)
         {
@@ -397,32 +372,123 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             dev.Controlled = uncontrolled.Count == 0 || !uncontrolled.Contains(dev.Id);
         }
 
-        // Spread every device without a persisted layout across the grid. totalCount counts persisted devices too so the
-        // slot for any one device is stable across calls (resetting one card doesn't shuffle the others). Must run
-        // AFTER the CNVS / NP50 / MiniHub merges so newly-added hub devices also pick up a default slot.
-        var layouts = settings.Lighting.DeviceLayouts;
-        var total = rgb.Devices.Count;
-        for (var i = 0; i < total; i++)
-        {
-            var dev = rgb.Devices[i];
-            if (layouts.ContainsKey(dev.Id)) continue;
-            var (x, y, w, h) = CanvasGridLayout.Slot(i, total);
-            dev.CanvasX = x; dev.CanvasY = y; dev.CanvasW = w; dev.CanvasH = h;
-        }
+        // Must run AFTER the CNVS / NP50 / MiniHub merges so newly-added hub devices also pick up a default slot.
+        ApplyDefaultLayouts(rgb.Devices, settings);
+
+        ApplyAreaSampling(_engine, rgb.Devices, settings);
 
         // Mirror into engine frames so running effects sample from the same rectangles. Without this, RgbBridge's
         // existing-frame-wins rule would pin pre-grid coordinates in memory. O(N²), trivial for typical N (<30).
-        foreach (var frame in _engine.Devices)
+        if (mirrorIntoEngine)
         {
-            for (var i = 0; i < rgb.Devices.Count; i++)
+            foreach (var frame in _engine.Devices)
             {
-                var dev = rgb.Devices[i];
-                if (dev.Id != frame.Id) continue;
-                frame.X = dev.CanvasX; frame.Y = dev.CanvasY; frame.W = dev.CanvasW; frame.H = dev.CanvasH;
-                break;
+                for (var i = 0; i < rgb.Devices.Count; i++)
+                {
+                    var dev = rgb.Devices[i];
+                    if (dev.Id != frame.Id) continue;
+                    frame.X = dev.CanvasX; frame.Y = dev.CanvasY; frame.W = dev.CanvasW; frame.H = dev.CanvasH;
+                    break;
+                }
             }
         }
         return rgb;
+    }
+
+    /// <summary>Stamps each card with its sampling mode and, for a cell mode, the nearest-LED cells of the engine frame it is sampled from. Read only: the engine follows the same settings dictionary through its mode source.</summary>
+    internal static void ApplyAreaSampling(LightingEngine engine, List<LightingDevice> devices, NexusSettings settings)
+    {
+        var modes = settings.Devices.SamplingModes;
+        var frames = engine.Devices;
+        foreach (var dev in devices)
+        {
+            var mode = SamplingModes.Of(modes, dev.Id);
+            dev.Sampling = SamplingModes.Name(mode);
+            if (mode == SamplingMode.Led)
+            {
+                continue;
+            }
+            DeviceFrame? frame = null;
+            foreach (var f in frames)
+            {
+                if (f.Id == dev.Id)
+                {
+                    frame = f;
+                    break;
+                }
+            }
+            // Exactly what the engine samples for this card id (frames are created under their card's id). A card with no
+            // frame is never sampled, so its cells are all empty; the list always has LedCount entries.
+            dev.AreaCells = engine.AreaCellsForCard(frame, dev.LedCount, mode);
+        }
+    }
+
+    /// <summary>
+    /// Gives every device without a persisted layout its default rect: the whole canvas on a
+    /// <see cref="NexusSettings.MaximizedCanvasDefaults"/> install, else a grid slot. The grid's totalCount counts
+    /// persisted devices too so the slot for any one device is stable across calls (resetting one card doesn't
+    /// shuffle the others).
+    /// </summary>
+    internal static void ApplyDefaultLayouts(List<LightingDevice> devices, NexusSettings settings)
+    {
+        var layouts = settings.Lighting.DeviceLayouts;
+        // One slot per device, except that all zones of one Flex fan share the fan's slot (the fan lands
+        // on the canvas as one block, its LEDs sit in it by position). With no Flex device this is the
+        // plain one-slot-per-device grid.
+        var slotOf = new int[devices.Count];
+        var flexSlots = new Dictionary<string, int>(StringComparer.Ordinal);
+        var total = 0;
+        for (var i = 0; i < devices.Count; i++)
+        {
+            var fan = FlexFanKey(devices[i].Id);
+            if (fan is not null && flexSlots.TryGetValue(fan, out var shared))
+            {
+                slotOf[i] = shared;
+                continue;
+            }
+            slotOf[i] = total;
+            if (fan is not null)
+            {
+                flexSlots[fan] = total;
+            }
+            total++;
+        }
+        for (var i = 0; i < devices.Count; i++)
+        {
+            var dev = devices[i];
+            if (layouts.ContainsKey(dev.Id)) continue;
+            var (x, y, w, h) = settings.MaximizedCanvasDefaults ? CanvasGridLayout.Full : CanvasGridLayout.Slot(slotOf[i], total);
+            dev.CanvasX = x; dev.CanvasY = y; dev.CanvasW = w; dev.CanvasH = h;
+        }
+    }
+
+    /// <summary>"lianli-flex:{MAC}" for a Flex zone id (the zones of one fan share it), else null.</summary>
+    internal static string? FlexFanKey(string id)
+    {
+        if (!IsFlexId(id))
+        {
+            return null;
+        }
+        var second = id.IndexOf(':', "lianli-flex:".Length);
+        return second < 0 ? id : id[..second];
+    }
+
+    /// <summary>
+    /// The grid rect of every Flex zone without a saved layout, from one listing that does not touch the
+    /// engine's frames (the Flex provider asks while it builds them).
+    /// </summary>
+    private IReadOnlyDictionary<string, (float x, float y, float w, float h)> FlexDefaultRects()
+    {
+        var saved = _store.Load().Lighting.DeviceLayouts;
+        var rects = new Dictionary<string, (float, float, float, float)>(StringComparer.Ordinal);
+        foreach (var device in Listing(mirrorIntoEngine: false).Devices)
+        {
+            if (IsFlexId(device.Id) && !saved.ContainsKey(device.Id))
+            {
+                rects[device.Id] = (device.CanvasX, device.CanvasY, device.CanvasW, device.CanvasH);
+            }
+        }
+        return rects;
     }
 
     public void SetDisabled(IReadOnlyList<string> ids)
@@ -439,6 +505,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         var ibpIds        = new List<string>(ids.Count);
         var lianLiIds     = new List<string>(ids.Count);
         var lianLiWirelessIds = new List<string>(ids.Count);
+        var flexIds = new List<string>(ids.Count);
         var corsairIds    = new List<string>(ids.Count);
         var strimerIds    = new List<string>(ids.Count);
         var galahad2Ids   = new List<string>(ids.Count);
@@ -446,6 +513,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         var hydroShift2Ids = new List<string>(ids.Count);
         var hydroShift2CurveIds = new List<string>(ids.Count);
         var galahad2LcdIds = new List<string>(ids.Count);
+        var hydroShiftLcdIds = new List<string>(ids.Count);
         var umbraIds      = new List<string>(ids.Count);
         var smartLightIds = new List<string>(ids.Count);
         foreach (var id in ids)
@@ -459,6 +527,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             else if (IsIbpId(id))       ibpIds.Add(id);
             else if (IsLianLiId(id))    lianLiIds.Add(id);
             else if (IsLianLiWirelessId(id)) lianLiWirelessIds.Add(id);
+            else if (IsFlexId(id))      flexIds.Add(id);
             else if (IsCorsairId(id))   corsairIds.Add(id);
             else if (IsStrimerId(id))   strimerIds.Add(id);
             else if (IsGalahad2Id(id))  galahad2Ids.Add(id);
@@ -466,6 +535,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             else if (HydroShift2LightingDeviceProvider.IsHydroShift2Id(id)) hydroShift2Ids.Add(id);
             else if (HydroShift2CurveLightingDeviceProvider.IsHydroShift2CurveId(id)) hydroShift2CurveIds.Add(id);
             else if (Galahad2LcdLightingProvider.IsGalahad2LcdId(id)) galahad2LcdIds.Add(id);
+            else if (HydroShiftLcdLightingProvider.IsHydroShiftLcdId(id)) hydroShiftLcdIds.Add(id);
             else if (AsiahorseUmbraLightingDeviceProvider.IsUmbraId(id)) umbraIds.Add(id);
             else if (_smart.Owns(id))   smartLightIds.Add(id);
             else                        rgbIds.Add(id);
@@ -480,6 +550,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         if (ibpIds.Count > 0)        _ibp.SetDisabled(ibpIds);
         if (lianLiIds.Count > 0)     _lianLi.SetDisabled(lianLiIds);
         if (lianLiWirelessIds.Count > 0) _lianLiWireless.SetDisabled(lianLiWirelessIds);
+        if (flexIds.Count > 0)       _flex.SetDisabled(flexIds);
         if (corsairIds.Count > 0)    _corsair.SetDisabled(corsairIds);
         if (strimerIds.Count > 0)    _strimer.SetDisabled(strimerIds);
         if (galahad2Ids.Count > 0)   _galahad2.SetDisabled(galahad2Ids);
@@ -487,6 +558,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         if (hydroShift2Ids.Count > 0) _hydroShift2.SetDisabled(hydroShift2Ids);
         if (hydroShift2CurveIds.Count > 0) _hydroShift2Curve.SetDisabled(hydroShift2CurveIds);
         if (galahad2LcdIds.Count > 0) _galahad2Lcd.SetDisabled(galahad2LcdIds);
+        if (hydroShiftLcdIds.Count > 0) _hydroShiftLcd.SetDisabled(hydroShiftLcdIds);
         if (umbraIds.Count > 0)      _umbra.SetDisabled(umbraIds);
         if (smartLightIds.Count > 0) _smart.SetDisabled(smartLightIds);
     }
@@ -508,6 +580,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         : IsIbpId(id)        ? _ibp
         : IsLianLiId(id)     ? _lianLi
         : IsLianLiWirelessId(id) ? _lianLiWireless
+        : IsFlexId(id)       ? _flex
         : IsCorsairId(id)    ? _corsair
         : IsStrimerId(id)    ? _strimer
         : IsGalahad2Id(id)   ? _galahad2
@@ -516,6 +589,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         : HydroShift2LightingDeviceProvider.IsHydroShift2Id(id) ? _hydroShift2
         : HydroShift2CurveLightingDeviceProvider.IsHydroShift2CurveId(id) ? _hydroShift2Curve
         : Galahad2LcdLightingProvider.IsGalahad2LcdId(id) ? _galahad2Lcd
+        : HydroShiftLcdLightingProvider.IsHydroShiftLcdId(id) ? _hydroShiftLcd
         : AsiahorseUmbraLightingDeviceProvider.IsUmbraId(id) ? _umbra
         : _smart.Owns(id)    ? _smart
         : _openRgb;
@@ -549,6 +623,9 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
 
     private static bool IsLianLiWirelessId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith("lianli-wireless:", StringComparison.Ordinal);
+
+    internal static bool IsFlexId(string id) =>
+        !string.IsNullOrEmpty(id) && id.StartsWith("lianli-flex:", StringComparison.Ordinal);
 
     private static bool IsCorsairId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith("corsair:", StringComparison.Ordinal);

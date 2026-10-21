@@ -121,8 +121,6 @@ internal static class McpTestHarness
         public bool StartMedia(string mediaId) => false;
         public bool StartMedia(string mediaId, bool keepMode) => false;
         public void StartMediaIdle() { }
-        public void StartGameSync() { }
-        public Nexus.Service.Lighting.Engine.Effects.GameSyncEffect? ActiveGameSyncEffect() => null;
         public void UpdateScreenEffect(float hue, float colorize, float saturation, float contrast, bool flipX, bool flipY, bool persist, bool reactive = false, float reactivity = 0.5f, float intensity = 0.5f) { }
         public void UpdateMediaEffect(float hue, float colorize, float saturation, float contrast, bool flipX, bool flipY, bool persist) { }
         public (byte[] Bytes, string Tag)? CaptureAnimateThumbnail(string key, int slot, bool skipCache = false, bool frozen = false) => null;

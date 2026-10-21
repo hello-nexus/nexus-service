@@ -26,13 +26,16 @@ public sealed class CloudApiResult<T>
 
     /// <summary>ISO timestamp from the upstream error body's retryAt field (e.g. username_cooldown). Null unless the server sent one.</summary>
     public string? ErrorRetryAt { get; init; }
+
+    /// <summary>Address from an email_unverified error body; null otherwise.</summary>
+    public string? ErrorEmail { get; init; }
     public bool Offline { get; init; }
 
     public static CloudApiResult<T> Ok(T value, int statusCode = 200) =>
         new() { Success = true, StatusCode = statusCode, Value = value };
 
-    public static CloudApiResult<T> Fail(int statusCode, string? code, string? message, string? retryAt = null) =>
-        new() { Success = false, StatusCode = statusCode, ErrorCode = code, ErrorMessage = message, ErrorRetryAt = retryAt };
+    public static CloudApiResult<T> Fail(int statusCode, string? code, string? message, string? retryAt = null, string? email = null) =>
+        new() { Success = false, StatusCode = statusCode, ErrorCode = code, ErrorMessage = message, ErrorRetryAt = retryAt, ErrorEmail = email };
 
     public static CloudApiResult<T> NetworkError(string message) =>
         new() { Success = false, Offline = true, ErrorMessage = message };
@@ -59,6 +62,7 @@ public sealed class CloudRawResponse
 public interface ICloudApiClient
 {
     Task<CloudApiResult<CloudVoid>> RegisterAsync(CloudRegisterRequest body, CancellationToken ct);
+    Task<CloudApiResult<CloudVoid>> ResendVerificationAsync(CloudResendVerificationRequest body, CancellationToken ct);
     Task<CloudApiResult<CloudAuthSession>> LoginAsync(CloudLoginRequest body, CancellationToken ct);
     Task<CloudApiResult<CloudAuthSession>> RefreshAsync(string refreshToken, CancellationToken ct);
     Task<CloudApiResult<CloudVoid>> LogoutAsync(string refreshToken, CancellationToken ct);
@@ -122,6 +126,9 @@ public sealed class CloudApiClient : ICloudApiClient
 
     public Task<CloudApiResult<CloudVoid>> RegisterAsync(CloudRegisterRequest body, CancellationToken ct) =>
         PostVoidAsync("/auth/register", body, AppJsonContext.Default.CloudRegisterRequest, ct);
+
+    public Task<CloudApiResult<CloudVoid>> ResendVerificationAsync(CloudResendVerificationRequest body, CancellationToken ct) =>
+        PostVoidAsync("/auth/verify/resend", body, AppJsonContext.Default.CloudResendVerificationRequest, ct);
 
     public Task<CloudApiResult<CloudAuthSession>> LoginAsync(CloudLoginRequest body, CancellationToken ct) =>
         PostAsync("/auth/login", body, AppJsonContext.Default.CloudLoginRequest, AppJsonContext.Default.CloudAuthSession, ct);
@@ -385,8 +392,8 @@ public sealed class CloudApiClient : ICloudApiClient
         {
             return CloudApiResult<CloudVoid>.Ok(CloudVoid.Instance, (int)res.StatusCode);
         }
-        var (code, message, retryAt) = await ReadErrorAsync(res, ct).ConfigureAwait(false);
-        return CloudApiResult<CloudVoid>.Fail((int)res.StatusCode, code, message, retryAt);
+        var (code, message, retryAt, email) = await ReadErrorAsync(res, ct).ConfigureAwait(false);
+        return CloudApiResult<CloudVoid>.Fail((int)res.StatusCode, code, message, retryAt, email);
     }
 
     private static async Task<CloudApiResult<T>> ToResultAsync<T>(
@@ -399,8 +406,8 @@ public sealed class CloudApiClient : ICloudApiClient
                 ? CloudApiResult<T>.Ok(value, (int)res.StatusCode)
                 : CloudApiResult<T>.Fail((int)res.StatusCode, "invalid_response", "Empty or malformed response body.");
         }
-        var (code, message, retryAt) = await ReadErrorAsync(res, ct).ConfigureAwait(false);
-        return CloudApiResult<T>.Fail((int)res.StatusCode, code, message, retryAt);
+        var (code, message, retryAt, email) = await ReadErrorAsync(res, ct).ConfigureAwait(false);
+        return CloudApiResult<T>.Fail((int)res.StatusCode, code, message, retryAt, email);
     }
 
     private static async Task<T?> ReadJsonAsync<T>(
@@ -416,16 +423,16 @@ public sealed class CloudApiClient : ICloudApiClient
         }
     }
 
-    private static async Task<(string? code, string? message, string? retryAt)> ReadErrorAsync(HttpResponseMessage res, CancellationToken ct)
+    private static async Task<(string? code, string? message, string? retryAt, string? email)> ReadErrorAsync(HttpResponseMessage res, CancellationToken ct)
     {
         try
         {
             var body = await res.Content.ReadFromJsonAsync(AppJsonContext.Default.CloudErrorBody, ct).ConfigureAwait(false);
-            return (body?.Code, body?.Message, body?.RetryAt);
+            return (body?.Code, body?.Message, body?.RetryAt, body?.Email);
         }
         catch
         {
-            return (null, null, null);
+            return (null, null, null, null);
         }
     }
 }

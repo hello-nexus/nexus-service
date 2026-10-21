@@ -5,10 +5,10 @@ namespace Nexus.Service.Tests;
 public class ProfileSharingTests
 {
     [Fact]
-    public void All_ListsFiveCategoriesInDocumentedOrder()
+    public void All_ListsSixCategoriesInDocumentedOrder()
     {
         Assert.Equal(
-            new[] { ProfileSharing.Lighting, ProfileSharing.Cooling, ProfileSharing.Theme, ProfileSharing.Dashboard, ProfileSharing.Device },
+            new[] { ProfileSharing.Lighting, ProfileSharing.Cooling, ProfileSharing.Theme, ProfileSharing.Dashboard, ProfileSharing.Device, ProfileSharing.Panels },
             ProfileSharing.All);
     }
 
@@ -53,6 +53,20 @@ public class ProfileSharingTests
 
         ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
         Assert.Equal(new[] { "gcc" }, target.Ui.ConflictAutoKillExclusions);
+    }
+
+    [Fact]
+    public void Dashboard_LeavesTheWorkstationHiddenSidebarDevicesAlone()
+    {
+        var source = new NexusSettings();
+        var target = new NexusSettings();
+        target.Ui.HiddenSidebarDevices = new List<string> { "curated:keeb" };
+
+        ProfileSharing.ApplyCategory(target, source, ProfileSharing.Dashboard);
+        Assert.Equal(new[] { "curated:keeb" }, target.Ui.HiddenSidebarDevices);
+
+        ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
+        Assert.Equal(new[] { "curated:keeb" }, target.Ui.HiddenSidebarDevices);
     }
 
     [Fact]

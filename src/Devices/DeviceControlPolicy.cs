@@ -29,6 +29,7 @@ public static class DeviceControlPolicy
         ["lianli4"] = "lian-li-l-connect",
         ["lianli-tl"] = "lian-li-l-connect",
         ["lianli-wireless"] = "lian-li-l-connect",
+        ["lianli-flex"] = "lian-li-l-connect",
         ["lianli-aio"] = "lian-li-l-connect",
         ["lianli-hydroshift-lcd"] = "lian-li-l-connect",
         ["strimer"] = "lian-li-l-connect",
@@ -54,7 +55,7 @@ public static class DeviceControlPolicy
     {
         "lianli-galahad2-lcd",
         "corsair-xc7-lcd", "corsair-capellix-lcd", "idcooling-fx-lcd",
-        "asrock-lcd", "corsair-link-lcd",
+        "asrock-lcd", "asus-slc4-lcd", "corsair-link-lcd",
         "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88",
     };
 

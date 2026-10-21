@@ -11,14 +11,20 @@ namespace Nexus.Service.Obs;
 public sealed class ObsProvider : IObsProvider, IDisposable
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(2.5);
+    private static readonly TimeSpan RestartTolerance = TimeSpan.FromSeconds(5);
 
     private readonly IConfigStore _store;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly TimeProvider _time;
     private ClientWebSocket? _socket;
 
-    public ObsProvider(IConfigStore store)
+    // OBS's streaming outputDuration counts video packets across every track, so multitrack streams report it inflated.
+    private long? _streamStart;
+
+    public ObsProvider(IConfigStore store, TimeProvider? time = null)
     {
         _store = store;
+        _time = time ?? TimeProvider.System;
     }
 
     public ObsConfigResponse GetConfig()
@@ -54,6 +60,7 @@ public sealed class ObsProvider : IObsProvider, IDisposable
         try
         {
             ResetSocketLocked();
+            _streamStart = null;
         }
         finally
         {
@@ -78,7 +85,16 @@ public sealed class ObsProvider : IObsProvider, IDisposable
         {
             var toggled = await SendRequestLockedAsync("ToggleStream", null, ct).ConfigureAwait(false);
             var status = await BuildStatusLockedAsync(ct).ConfigureAwait(false);
-            ApplyToggledOutput(toggled, status, recording: false);
+            var active = ApplyToggledOutput(toggled, status, recording: false);
+            if (active == true)
+            {
+                _streamStart = _time.GetTimestamp();
+                status.StreamingDurationMs = 0;
+            }
+            else if (active == false)
+            {
+                _streamStart = null;
+            }
             return status;
         }, cancellationToken);
 
@@ -203,6 +219,7 @@ public sealed class ObsProvider : IObsProvider, IDisposable
         var recordData = await SendRequestLockedAsync("GetRecordStatus", null, cancellationToken).ConfigureAwait(false);
         var streamData = await SendRequestLockedAsync("GetStreamStatus", null, cancellationToken).ConfigureAwait(false);
         var settings = _store.Load().Obs;
+        var streaming = ReadBool(streamData, "outputActive");
 
         return new ObsStatusResponse
         {
@@ -212,10 +229,30 @@ public sealed class ObsProvider : IObsProvider, IDisposable
             ActiveScene = ReadString(sceneData, "currentProgramSceneName"),
             Scenes = ReadScenes(sceneData),
             Recording = ReadBool(recordData, "outputActive"),
-            Streaming = ReadBool(streamData, "outputActive"),
+            Streaming = streaming,
             RecordingDurationMs = ReadLong(recordData, "outputDuration"),
-            StreamingDurationMs = ReadLong(streamData, "outputDuration"),
+            StreamingDurationMs = TrackStreamElapsedMs(streaming, ReadLong(streamData, "outputDuration")),
         };
+    }
+
+    private long TrackStreamElapsedMs(bool streaming, long obsDurationMs)
+    {
+        if (!streaming)
+        {
+            _streamStart = null;
+            return 0;
+        }
+
+        var now = _time.GetTimestamp();
+        var obsTicks = (long)(obsDurationMs / 1000.0 * _time.TimestampFrequency);
+        // OBS's duration is frame-based and never below real elapsed time, so
+        // elapsed beyond it (past jitter) means a new stream began unobserved.
+        if (_streamStart is null ||
+            _time.GetElapsedTime(_streamStart.Value, now) > TimeSpan.FromMilliseconds(obsDurationMs) + RestartTolerance)
+        {
+            _streamStart = now - obsTicks;
+        }
+        return (long)_time.GetElapsedTime(_streamStart.Value, now).TotalMilliseconds;
     }
 
     private async Task<JsonElement> SendRequestLockedAsync(
@@ -501,13 +538,13 @@ public sealed class ObsProvider : IObsProvider, IDisposable
     /// status re-read that follows can still report the previous value. The
     /// toggle's own <c>outputActive</c> is the new state, so it wins.
     /// </summary>
-    private static void ApplyToggledOutput(JsonElement toggled, ObsStatusResponse status, bool recording)
+    private static bool? ApplyToggledOutput(JsonElement toggled, ObsStatusResponse status, bool recording)
     {
         if (toggled.ValueKind != JsonValueKind.Object ||
             !toggled.TryGetProperty("outputActive", out var property) ||
             (property.ValueKind != JsonValueKind.True && property.ValueKind != JsonValueKind.False))
         {
-            return;
+            return null;
         }
 
         var active = property.ValueKind == JsonValueKind.True;
@@ -527,6 +564,7 @@ public sealed class ObsProvider : IObsProvider, IDisposable
                 status.StreamingDurationMs = 0;
             }
         }
+        return active;
     }
 
     private static bool ReadBool(JsonElement element, string name)

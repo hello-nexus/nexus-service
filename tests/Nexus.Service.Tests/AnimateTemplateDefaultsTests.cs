@@ -293,5 +293,6 @@ public class AnimateTemplateDefaultsTests
         Saturation = s.Saturation,
         Contrast = s.Contrast,
         Params = new Dictionary<string, float>(s.Params),
+        Sensors = Nexus.Service.Persistence.SensorBinding.CopyMap(s.Sensors),
     };
 }

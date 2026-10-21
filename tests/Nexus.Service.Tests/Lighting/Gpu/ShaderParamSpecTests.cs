@@ -147,6 +147,11 @@ public class ShaderParamSpecTests
                 {
                     continue;
                 }
+                // A sensor uniform is fed by the service, not tuned by a slider, so it carries no range.
+                if (SensorUniformSpec.Parse(trimmed).Count > 0)
+                {
+                    continue;
+                }
                 var name = m.Groups[1].Value;
                 if (allowlist.Contains(name))
                 {

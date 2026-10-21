@@ -8,13 +8,15 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Activity;
 
 /// <summary>
-/// Windows-only audio-loopback provider that captures a render endpoint
-/// (i.e. whatever's playing through it) via WASAPI: the output picked in
-/// Lighting settings while it is plugged in, otherwise the system default.
+/// Windows-only audio provider that captures via WASAPI the endpoint picked in
+/// Lighting settings while it is plugged in, otherwise the default of the picked
+/// direction: loopback of a render endpoint (whatever is playing) or a capture
+/// endpoint (microphone / line-in). An input pick falls back to the default
+/// output loopback on the first open when no input endpoint opens.
 ///
 /// Windows path; <see cref="BeatsProvider"/> is the Linux ffmpeg fallback.
-/// WASAPI loopback is built into Windows (Vista+), needs no extra binary,
-/// and captures the active output with no driver support or user setup.
+/// WASAPI is built into Windows (Vista+) and needs no extra binary, driver
+/// support or user setup.
 ///
 /// WASAPI COM interfaces are called via direct vtable dispatch using function
 /// pointers. This avoids ComImport's reflection-based marshalling (which
@@ -25,7 +27,7 @@ namespace Nexus.Service.Activity;
 /// </summary>
 public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
 {
-    // Loopback stays bound to the endpoint it opened, so the loop re-resolves
+    // A stream stays bound to the endpoint it opened, so the loop re-resolves
     // the target this often to follow a new pick, a default switch or an unplug.
     private const int TargetCheckMs = 1000;
 
@@ -42,6 +44,8 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
 
     public void Start()
     {
+        CancellationTokenSource cts;
+        CancellationToken token;
         lock (_lock)
         {
             if (_running)
@@ -50,16 +54,17 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             }
 
             _running = true;
+            cts = _cts = new CancellationTokenSource();
+            token = cts.Token;
         }
 
         try
         {
-            _cts = new CancellationTokenSource();
             // Dedicated thread so the WASAPI COM objects are accessed from a
             // single, deterministic thread the whole time (Task.Run would
             // thread-hop on every await and the COM pointers are apartment-
             // affine). Background so it doesn't block CLR shutdown.
-            _captureThread = new Thread(() => CaptureLoop(_cts.Token))
+            _captureThread = new Thread(() => CaptureLoop(cts, token))
             {
                 IsBackground = true,
                 Name = "wasapi-loopback-capture",
@@ -70,12 +75,18 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
         {
             Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] failed to start: {ex.Message}");
             lock (_lock)
-            { _running = false; }
+            {
+                if (ReferenceEquals(_cts, cts))
+                {
+                    _running = false;
+                }
+            }
         }
     }
 
     public void Stop()
     {
+        CancellationTokenSource? cts;
         lock (_lock)
         {
             if (!_running)
@@ -84,50 +95,42 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             }
 
             _running = false;
+            cts = _cts;
+            _cts = null;
         }
 
         try
-        { _cts?.Cancel(); }
+        { cts?.Cancel(); }
         catch { }
         try
-        { _cts?.Dispose(); }
+        { cts?.Dispose(); }
         catch { }
-        _cts = null;
 
         AudioState.Reset();
     }
 
     public void Dispose() => Stop();
 
-    private void CaptureLoop(CancellationToken ct)
+    private void CaptureLoop(CancellationTokenSource owner, CancellationToken ct)
     {
-        WasapiCapturer? cap = null;
-        var initial = PreferredDeviceId();
-        try
+        var (initialInput, initial) = PreferredTarget();
+        var cap = OpenWithFallback(initialInput, initial, fallbackToOutput: true, sameDirectionDefault: true, out var openError);
+        if (cap is null)
         {
-            cap = WasapiCapturer.Open(initial);
-            Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] opened: {cap.SampleRate} Hz, {cap.Channels} ch");
+            Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] open failed: {openError}");
+            // Nothing opened: let a later Start() retry, unless a newer run already replaced this one.
+            lock (_lock)
+            {
+                if (ReferenceEquals(_cts, owner))
+                {
+                    _running = false;
+                }
+            }
+            return;
         }
-        catch (Exception ex)
-        {
-            Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] open failed: {ex}");
-            if (initial.Length == 0)
-            {
-                return;
-            }
-            // A plugged-in pick can still refuse the loopback stream; capture the
-            // default meanwhile and let the target check retry the pick.
-            try
-            {
-                cap = WasapiCapturer.Open("");
-                Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] opened default instead: {cap.SampleRate} Hz, {cap.Channels} ch");
-            }
-            catch (Exception fallbackEx)
-            {
-                Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] default open failed: {fallbackEx}");
-                return;
-            }
-        }
+        Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log(
+            $"[wasapi] opened {(cap.Input ? "input" : "output")} {cap.DeviceId}: {cap.SampleRate} Hz, {cap.Channels} ch"
+            + (openError is null ? "" : $" (fell back after: {openError})"));
 
         try
         {
@@ -144,7 +147,7 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
             long lastLogTick = Environment.TickCount64;
             long lastPacketTick = Environment.TickCount64;
             var stalled = false;
-            // WASAPI loopback stops emitting packets entirely when the endpoint
+            // WASAPI loopback (not microphone capture) stops emitting packets entirely when the endpoint
             // is silent. After this timeout we synthesise silence windows so
             // smoothed AudioState decays to zero and shaders fall back to idle.
             const int silenceTimeoutMs = 250;
@@ -155,15 +158,17 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
                 if (Environment.TickCount64 - lastTargetTick >= TargetCheckMs)
                 {
                     lastTargetTick = Environment.TickCount64;
-                    var preferred = PreferredDeviceId();
-                    var target = cap.TargetId(preferred);
+                    var (preferredInput, preferred) = PreferredTarget();
+                    var target = cap.TargetId(preferredInput, preferred);
                     // Invalidated covers a replug of the same endpoint (same id)
                     // and a format change in Sound settings.
-                    if (target.Length > 0 && (target != cap.DeviceId || cap.Invalidated))
+                    if (target.Length > 0 && (target != cap.DeviceId || preferredInput != cap.Input || cap.Invalidated))
                     {
-                        try
+                        // Across directions a refused pick falls back to that direction's default, not the old stream.
+                        var next = OpenWithFallback(preferredInput, preferred, fallbackToOutput: false,
+                            sameDirectionDefault: preferredInput != cap.Input, out var error);
+                        if (next is not null)
                         {
-                            var next = WasapiCapturer.Open(preferred);
                             cap.Dispose();
                             cap = next;
                             channels = cap.Channels;
@@ -173,12 +178,12 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
                             failedTarget = "";
                             Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] switched endpoint: {cap.SampleRate} Hz, {cap.Channels} ch");
                         }
-                        catch (Exception ex)
+                        else
                         {
                             // Retried every check, logged once per target.
                             if (target != failedTarget)
                             {
-                                Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] switch failed: {ex.Message}");
+                                Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] switch failed: {error}");
                             }
                             failedTarget = target;
                         }
@@ -263,7 +268,37 @@ public sealed class WasapiLoopbackBeatsProvider : IBeatsProvider
         }
     }
 
-    private string PreferredDeviceId() => _store.Load().Lighting.AudioOutputDeviceId ?? "";
+    /// <summary>
+    /// Opens the pick, then (optionally) the same-direction default, then (optionally) the default output so
+    /// capture keeps running when no microphone resolves. Error joins every failed attempt, in order.
+    /// </summary>
+    private static WasapiCapturer? OpenWithFallback(bool input, string id, bool fallbackToOutput, bool sameDirectionDefault, out string? error)
+    {
+        error = null;
+        var attempts = new List<(bool Input, string Id)> { (input, id) };
+        if (id.Length > 0 && sameDirectionDefault)
+        {
+            attempts.Add((input, ""));
+        }
+        if (input && fallbackToOutput)
+        {
+            attempts.Add((false, ""));
+        }
+        foreach (var (tryInput, tryId) in attempts)
+        {
+            try
+            { return WasapiCapturer.Open(tryInput, tryId); }
+            catch (Exception ex)
+            { error = error is null ? ex.Message : $"{error} | {ex.Message}"; }
+        }
+        return null;
+    }
+
+    private (bool Input, string Id) PreferredTarget()
+    {
+        var l = _store.Load().Lighting;
+        return (l.AudioOutputDeviceDirection == "input", l.AudioOutputDeviceId ?? "");
+    }
 }
 
 /// <summary>
@@ -278,6 +313,8 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     public int Channels { get; private set; }
     /// <summary>IMMDevice id of the endpoint this capturer is bound to.</summary>
     public string DeviceId { get; private set; } = "";
+    /// <summary>True when bound to a capture endpoint (microphone / line-in), false for render loopback.</summary>
+    public bool Input { get; private set; }
     /// <summary>The stream died under us (endpoint removed or reformatted); only a reopen recovers it.</summary>
     public bool Invalidated { get; private set; }
 
@@ -301,6 +338,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     private const uint AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000;
     private const int COINIT_MULTITHREADED = 0;
     private const int eRender = 0;
+    private const int eCapture = 1;
     private const int eConsole = 0;
     private const uint DEVICE_STATE_ACTIVE = 0x1;
     private const int AUDCLNT_E_DEVICE_INVALIDATED = unchecked((int)0x88890004);
@@ -316,22 +354,22 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     [DllImport("ole32", ExactSpelling = true)]
     private static extern void CoTaskMemFree(IntPtr ptr);
 
-    /// <summary>Opens <paramref name="preferredId"/> when it is plugged in, else the default output.</summary>
-    public static WasapiCapturer Open(string preferredId)
+    /// <summary>Opens <paramref name="preferredId"/> when it is plugged in, else the default endpoint of the same direction.</summary>
+    public static WasapiCapturer Open(bool input, string preferredId)
     {
         // COINIT_MULTITHREADED is safe to call repeatedly; COM tolerates it
         // returning RPC_E_CHANGED_MODE if something else already initialised
         // the apartment, and our usage doesn't care which apartment it lands in.
         _ = CoInitializeEx(IntPtr.Zero, COINIT_MULTITHREADED);
 
-        var cap = new WasapiCapturer();
+        var cap = new WasapiCapturer { Input = input };
         try
         {
             int hr = CoCreateInstance(CLSID_MMDeviceEnumerator, IntPtr.Zero, CLSCTX_ALL,
                 IID_IMMDeviceEnumerator, out cap._enumerator);
             ThrowOnHr(hr, "CoCreateInstance(MMDeviceEnumerator)");
 
-            cap._device = cap.ResolveDevice(preferredId);
+            cap._device = cap.ResolveDevice(input, preferredId);
             cap.DeviceId = GetId(cap._device);
 
             // IMMDevice.Activate (slot 3 after IUnknown).
@@ -360,13 +398,13 @@ internal sealed unsafe class WasapiCapturer : IDisposable
                 Nexus.Service.Lighting.Engine.Gpu.GpuContext.Log($"[wasapi] non-float format detected (bits={bitsPerSample}); will read raw");
             }
 
-            // ~200ms loopback buffer. The capture loop sleeps 10ms between
-            // drained packets, well below the 200ms overflow window.
+            // The capture loop sleeps briefly between drained packets, well
+            // below this buffer's overflow window.
             long hnsBuffer = 200 * ReftimesPerMs;
             // IAudioClient.Initialize (slot 3).
             var initialize = (delegate* unmanaged[Stdcall]<IntPtr, int, uint, long, long, IntPtr, IntPtr, int>)acVtbl[3];
             hr = initialize(cap._audioClient, AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK, hnsBuffer, 0, cap._mixFormat, IntPtr.Zero);
+                input ? 0u : AUDCLNT_STREAMFLAGS_LOOPBACK, hnsBuffer, 0, cap._mixFormat, IntPtr.Zero);
             ThrowOnHr(hr, "IAudioClient.Initialize");
 
             // IAudioClient.GetService (slot 14) - get IAudioCaptureClient.
@@ -376,7 +414,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
 
             // IAudioMeterInformation off the same IMMDevice. Same Activate slot
             // as IAudioClient. Read separately each frame for the calibrated
-            // post-volume peak that survives loopback going silent. If
+            // post-volume peak that survives the stream going silent. If
             // activation fails (rare; some virtual endpoints don't expose it)
             // we leave _meterInfo at zero and fall back to in-window peak.
             try
@@ -408,11 +446,11 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     }
 
     /// <summary>Id of the endpoint <see cref="Open"/> would bind right now; empty when none resolves.</summary>
-    public string TargetId(string preferredId)
+    public string TargetId(bool input, string preferredId)
     {
         try
         {
-            var dev = ResolveDevice(preferredId);
+            var dev = ResolveDevice(input, preferredId);
             try
             { return GetId(dev); }
             finally
@@ -424,7 +462,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
         }
     }
 
-    private IntPtr ResolveDevice(string preferredId)
+    private IntPtr ResolveDevice(bool input, string preferredId)
     {
         var enumVtbl = *(IntPtr**)_enumerator;
         if (preferredId.Length > 0)
@@ -453,7 +491,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
         // IMMDeviceEnumerator.GetDefaultAudioEndpoint (vtable slot 4 after
         // 3 IUnknown entries).
         var getDefault = (delegate* unmanaged[Stdcall]<IntPtr, int, int, out IntPtr, int>)enumVtbl[4];
-        int hr = getDefault(_enumerator, eRender, eConsole, out var device);
+        int hr = getDefault(_enumerator, input ? eCapture : eRender, eConsole, out var device);
         ThrowOnHr(hr, "GetDefaultAudioEndpoint");
         return device;
     }
@@ -530,7 +568,7 @@ internal sealed unsafe class WasapiCapturer : IDisposable
     }
 
     /// <summary>
-    /// Returns the calibrated post-volume peak [0,1] of the captured render
+    /// Returns the calibrated post-volume peak [0,1] of the captured
     /// endpoint, or null if IAudioMeterInformation is unavailable. Same value
     /// the Windows volume mixer indicator uses; works even when WASAPI
     /// loopback emits no packets (silence).

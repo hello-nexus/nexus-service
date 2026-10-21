@@ -21,11 +21,13 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
 {
     private const int ConnectPollMs = 5000;
     private const int PresencePollMs = 2000;
+    private const int PresenceSlackMs = 100;
 
     private readonly IHidEnumerator _hid;
     private readonly JpegPanelHub _hub;
     private readonly DeviceControlGate _gate;
     private readonly HardwarePresence _presence;
+    private readonly AttachBackoff _backoff;
 
     /// <summary>Latched so a retry every few seconds does not repeat the miss.</summary>
     private bool _missLogged;
@@ -36,6 +38,8 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
         _hub = hub;
         _gate = gate;
         _presence = presence;
+        // Only a model with a session has a re-attach loop worth spacing out; the rest keep the fixed retry.
+        _backoff = new AttachBackoff(() => Environment.TickCount64, enabled: hub.SettleMs > 0);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -45,14 +49,21 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
         {
             try
             {
+                await _backoff.WaitAsync(
+                    () => !_gate.IsEnabled(model.HandlerId) || !OnBus(),
+                    Task.Delay,
+                    stoppingToken).ConfigureAwait(false);
+
                 if (!_gate.IsEnabled(model.HandlerId))
                 {
+                    _backoff.Clear();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!OnBus())
                 {
+                    _backoff.Clear();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
@@ -66,27 +77,68 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
                 }
                 _missLogged = false;
 
-                if (!_hub.Attach(device))
+                if (_hub.SettleMs > 0)
                 {
+                    try
+                    {
+                        await Task.Delay(_hub.SettleMs, stoppingToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        device.Dispose();
+                        throw;
+                    }
+                }
+
+                if (!_hub.Attach(device, stoppingToken))
+                {
+                    NoteFailedCycle("attach failed");
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
-                ServiceLog.Info($"[{model.HandlerId}] connected: {model.Name}, {model.Width}x{model.Height}");
+                bool quiet = _backoff.Failures > 0;
+                if (!quiet)
+                {
+                    ServiceLog.Info($"[{model.HandlerId}] connected: {model.Name}, {model.Width}x{model.Height}");
+                }
+                long connectedMs = Environment.TickCount64;
                 try
                 {
+                    int tickMs = _hub.TickIntervalMs;
+                    long nextPresenceMs = 0;
                     while (!stoppingToken.IsCancellationRequested
                         && _gate.IsEnabled(model.HandlerId)
                         && _hub.IsConnected
-                        && StillPresent())
+                        && PresenceHolds(ref nextPresenceMs))
                     {
-                        await Task.Delay(PresencePollMs, stoppingToken).ConfigureAwait(false);
+                        await Task.Delay(tickMs > 0 ? tickMs : PresencePollMs, stoppingToken).ConfigureAwait(false);
+                        if (tickMs > 0)
+                        {
+                            _hub.Tick();
+                        }
+                        if (_hub.IsConnected && Environment.TickCount64 - connectedMs >= AttachBackoff.HealthyAfterMs)
+                        {
+                            int ended = _backoff.NoteHealthy();
+                            if (ended > 0)
+                            {
+                                ServiceLog.Info($"[{model.HandlerId}] recovered after {ended} failed cycle(s)");
+                            }
+                        }
                     }
                 }
                 finally
                 {
+                    bool dropped = !_hub.IsConnected && !stoppingToken.IsCancellationRequested && _gate.IsEnabled(model.HandlerId);
                     _hub.Detach();
-                    ServiceLog.Info($"[{model.HandlerId}] disconnected");
+                    if (dropped)
+                    {
+                        NoteFailedCycle("handle dropped");
+                    }
+                    else if (!quiet)
+                    {
+                        ServiceLog.Info($"[{model.HandlerId}] disconnected");
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -100,6 +152,29 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
             }
         }
         _hub.Detach();
+    }
+
+    private void NoteFailedCycle(string what)
+    {
+        int report = _backoff.NoteFailure();
+        if (report > 0)
+        {
+            ServiceLog.Warn($"[{_hub.Model.HandlerId}] {what}; {report} failed cycle(s) since the last report, next attempt in {_backoff.DelayMs / 1000} s");
+        }
+    }
+
+    /// <summary>The presence probe keeps its own cadence even when the loop ticks faster for session traffic.</summary>
+    private bool PresenceHolds(ref long nextCheckMs)
+    {
+        long now = Environment.TickCount64;
+        // The loop delay can equal the probe period, and the tick clock is coarse, so a
+        // wake a few ms early must still probe rather than wait a whole extra period.
+        if (now + PresenceSlackMs < nextCheckMs)
+        {
+            return true;
+        }
+        nextCheckMs = now + PresencePollMs;
+        return StillPresent();
     }
 
     private void LogMissOnce()

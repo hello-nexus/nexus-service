@@ -17,6 +17,15 @@ public sealed class AudioStateSnapshot
 public sealed class ShaderSourceResponse
 {
     public string Frag { get; set; } = "";
+    /// <summary>The sensor uniforms the source declares with their authored default bindings; empty for an effect with none.</summary>
+    public List<SensorUniformInfo> Sensors { get; set; } = new();
+}
+
+/// <summary>One sensor uniform of a shader: its GLSL name and the binding the author picked.</summary>
+public sealed class SensorUniformInfo
+{
+    public string Uniform { get; set; } = "";
+    public Nexus.Service.Persistence.SensorBinding Binding { get; set; } = new();
 }
 
 public class CurrentSyncResponse : ApiResponse
@@ -27,6 +36,9 @@ public class CurrentSyncResponse : ApiResponse
 
     /// <summary>True while a Shader Studio live session drives the LEDs. Sync and Paused then report the state before the session, which is what a client should keep and save.</summary>
     public bool StudioLive { get; set; }
+
+    /// <summary>True on an install upgraded from a version that had Game Sync, which is gone. Drives a one-release notice.</summary>
+    public bool GameSyncRemovedNotice { get; set; }
 }
 
 /// <summary>POST body for /lighting/pause. Freezes the active effect's rendered
@@ -61,12 +73,77 @@ public class GlobalBrightnessBody
 /// <summary>GET response / POST body for /lighting/brightness-schedule: the
 /// time-of-day cap on master brightness. Points are whole hours 0..23 holding
 /// 0..100%. The GET also carries the out-of-box curve so the editor's reset
-/// needs no second copy of it; a POST leaves it null.</summary>
+/// needs no second copy of it; a POST leaves it null. SunShift swaps the curve
+/// for one generated from today's sunrise and sunset. On a POST an absent
+/// SunShift or Location keeps the stored value and a null Location selects the
+/// IP location; <see cref="LocationSpecified"/> tells the two nulls apart.</summary>
 public sealed class BrightnessScheduleBody
 {
+    private SunLocationDto? _location;
+
     public bool Enabled { get; set; }
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint> Points { get; set; } = new();
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint>? Defaults { get; set; }
+    public bool? SunShift { get; set; }
+
+    /// <summary>Night and day levels of the generated curve, percent. GET returns the resolved values; on a POST absent keeps the stored ones.</summary>
+    public int? SunNight { get; set; }
+    public int? SunDay { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public SunLocationDto? Location
+    {
+        get => _location;
+        set
+        {
+            _location = value;
+            LocationSpecified = true;
+        }
+    }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool LocationSpecified { get; private set; }
+
+    public BrightnessScheduleSun? Sun { get; set; }
+}
+
+/// <summary>Today's sun times for the schedule's place, PC-local minutes since
+/// midnight. Status is ok, polar-day, polar-night or no-location; SunPoints is
+/// the generated curve and is empty unless the status is ok.</summary>
+public sealed class BrightnessScheduleSun
+{
+    public string Status { get; set; } = "no-location";
+    public string Date { get; set; } = "";
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public double? SunriseMin { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public double? SunsetMin { get; set; }
+
+    public List<BrightnessSunPoint> SunPoints { get; set; } = new();
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public SunLocationDto? ResolvedLocation { get; set; }
+
+    /// <summary>The IP-resolved place whenever known, whichever place is chosen.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public SunLocationDto? AutoLocation { get; set; }
+}
+
+/// <summary>A place on the schedule's wire. Lat and Lon are nullable so a POST that omits one can be refused instead of reading as 0.</summary>
+public sealed class SunLocationDto
+{
+    public double? Lat { get; set; }
+    public double? Lon { get; set; }
+    public string? Label { get; set; }
+    public string? Cc { get; set; }
+}
+
+public sealed class BrightnessSunPoint
+{
+    public double Min { get; set; }
+    public double Brightness { get; set; }
 }
 
 /// <summary>POST body for /lighting/idle-dim. TimeoutSeconds 0 means "when my
@@ -97,6 +174,14 @@ public class RenderGpuBody
     public string Value { get; set; } = "auto";
 }
 
+/// <summary>GET response for /lighting/render-gpu.</summary>
+public class RenderGpuInfo
+{
+    public string Value { get; set; } = "auto";
+    /// <summary>True when "software" (CPU rendering) is a valid Value, i.e. the ANGLE backend is in use.</summary>
+    public bool SoftwareRenderingAvailable { get; set; }
+}
+
 public class SpeedScale
 {
     public Dictionary<string, int> Scale { get; set; } = new();
@@ -114,12 +199,14 @@ public sealed class MusicReactiveBody
     public bool Enabled { get; set; }
 }
 
-/// <summary>GET/POST body for /lighting/audio-output: the render endpoint
-/// audio-reactive capture listens to. Empty id follows the system default.</summary>
+/// <summary>GET/POST body for /lighting/audio-output: the endpoint audio-reactive
+/// capture listens to. Empty id follows the system default of the direction.</summary>
 public sealed class AudioOutputBody
 {
     public string DeviceId { get; set; } = "";
     public string DeviceName { get; set; } = "";
+    /// <summary>"output" (loopback of a render endpoint) or "input" (microphone / line-in). Null or empty means "output".</summary>
+    public string? Direction { get; set; }
 }
 
 /// <summary>GET/POST body for /lighting/sleep-blackout: blank lighting while
@@ -163,6 +250,8 @@ public class AnimateHeadlessStart
     public float Contrast { get; set; } = 1f;
     /// <summary>Per-effect uniforms keyed by GLSL name (e.g. u_zoom, u_warp).</summary>
     public List<ShaderParam> Params { get; set; } = new();
+    /// <summary>Per sensor uniform, the user's pick over the shader's default binding. Null or absent keeps the defaults.</summary>
+    public Dictionary<string, Nexus.Service.Persistence.SensorBinding>? Sensors { get; set; }
     /// <summary>
     /// False while the user is actively dragging a slider -- updates the live
     /// engine uniforms but skips the settings.json write. True (default) on
@@ -239,89 +328,6 @@ public sealed class PostProcessBody
     public bool Reactive { get; set; }
     public float Reactivity { get; set; } = 0.5f;
     public float Intensity { get; set; } = 0.5f;
-}
-
-/// <summary>
-/// Per-device Chroma frame posted by the native shim to
-/// /lighting/game-sync/frame. One POST per device per rendered frame.
-///
-/// effect: CHROMA_NONE | CHROMA_STATIC | CHROMA_CUSTOM | CHROMA_CUSTOM2 |
-///         CHROMA_CUSTOM_KEY
-/// colors: packed COLORREF values (0x00BBGGRR). For CHROMA_STATIC exactly
-///         one entry. For CHROMA_CUSTOM rows*cols entries, row-major. Empty
-///         for CHROMA_NONE.
-/// rows/cols: grid dimensions implied by the effect but carried explicitly so
-///            the receiver does not need to infer them from effect alone.
-/// </summary>
-public sealed class GameSyncFrameBody
-{
-    /// <summary>Device type string from the shim: keyboard | mouse | mousepad | headset | keypad | chromalink.</summary>
-    public string Device { get; set; } = "";
-    /// <summary>Chroma effect name as decoded by the shim.</summary>
-    public string Effect { get; set; } = "";
-    /// <summary>Grid row count (1 for non-grid effects).</summary>
-    public int Rows { get; set; }
-    /// <summary>Grid column count (1 for STATIC, 0 for NONE).</summary>
-    public int Cols { get; set; }
-    /// <summary>COLORREF values, row-major. Each entry is 0x00BBGGRR.</summary>
-    public int[] Colors { get; set; } = System.Array.Empty<int>();
-    /// <summary>Source application title reported by the shim. Empty when the game calls Init() without InitSDK().</summary>
-    public string App { get; set; } = "";
-}
-
-/// <summary>One device entry in the Game Sync state response.</summary>
-public sealed class GameSyncDeviceInfo
-{
-    public string Name { get; set; } = "";
-    /// <summary>Archetype from DeviceFrame: keyboard/mouse/mousepad/headset/keypad/chromalink, or "ambient" when the frame has no archetype (strips, fans, RAM).</summary>
-    public string Archetype { get; set; } = "";
-    public int LedCount { get; set; }
-}
-
-public sealed class GameSyncStateResponse
-{
-    /// <summary>True when Game Sync is the current lighting mode.</summary>
-    public bool Active { get; set; }
-
-    /// <summary>Both Chroma shim pairs are installed in System32/SysWOW64 and are ours.</summary>
-    public bool ProviderInstalled { get; set; }
-
-    /// <summary>A real Razer Chroma SDK DLL was found; our shim was not installed.</summary>
-    public bool SynapseConflict { get; set; }
-
-    public List<GameSyncDeviceInfo> Devices { get; set; } = new();
-
-    /// <summary>Unix epoch milliseconds of the most recently ingested Chroma frame. Null when no frame has been received this session.</summary>
-    public long? LastFrameAt { get; set; }
-
-    /// <summary>Source application title from the most recent shim frame that carried one. Null when unknown.</summary>
-    public string? ActiveApp { get; set; }
-}
-
-public sealed class DetectedGame
-{
-    public string Name { get; set; } = "";
-    public string Store { get; set; } = "";
-    public string InstallDir { get; set; } = "";
-    public string AppId { get; set; } = "";
-    public bool EmitsChroma { get; set; }
-    public bool EmitsGsi { get; set; }
-    public int ScannedFiles { get; set; }
-    public int SkippedFiles { get; set; }
-}
-
-/// <summary>On-disk mirror of the last completed scan. Machine-local cache, not profile state.</summary>
-public sealed class GameSyncScanCache
-{
-    public long ScannedAt { get; set; }
-    public List<DetectedGame> Games { get; set; } = new();
-}
-
-public sealed class GameSyncGamesResponse
-{
-    public bool Scanning { get; set; }
-    public long? ScannedAt { get; set; }
-    public List<DetectedGame> Games { get; set; } = new();
 }
 
 // On-connect WS payloads

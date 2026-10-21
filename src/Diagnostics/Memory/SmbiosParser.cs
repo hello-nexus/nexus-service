@@ -56,10 +56,26 @@ public static class SmbiosParser
     /// header (Used20CallingMethod/MajorVersion/MinorVersion/DmiRevision/Length).</summary>
     public static (IReadOnlyList<MemoryModuleInfo> Modules, bool? XmpLikelyActive) Parse(byte[]? rawFirmwareTableBuffer)
     {
+        var parsed = ParseDevices(rawFirmwareTableBuffer);
+        var modules = new List<MemoryModuleInfo>(parsed.Count);
+        foreach (var p in parsed) modules.Add(p.Info);
+        return (modules, ComputeXmpLikelyActive(parsed));
+    }
+
+    /// <summary>Each populated module with its raw SMBIOS memory-type byte (Win32_PhysicalMemory.SMBIOSMemoryType).</summary>
+    internal static IReadOnlyList<(MemoryModuleInfo Info, byte? MemoryType)> ParseModules(byte[]? rawFirmwareTableBuffer)
+    {
+        var result = new List<(MemoryModuleInfo, byte?)>();
+        foreach (var p in ParseDevices(rawFirmwareTableBuffer)) result.Add((p.Info, p.MemoryType));
+        return result;
+    }
+
+    private static List<ParsedModule> ParseDevices(byte[]? rawFirmwareTableBuffer)
+    {
         var parsed = new List<ParsedModule>();
         if (rawFirmwareTableBuffer is null || rawFirmwareTableBuffer.Length < 8)
         {
-            return (Array.Empty<MemoryModuleInfo>(), null);
+            return parsed;
         }
 
         uint tableLength = BitConverter.ToUInt32(rawFirmwareTableBuffer, 4);
@@ -95,9 +111,7 @@ public static class SmbiosParser
             offset = next;
         }
 
-        var modules = new List<MemoryModuleInfo>(parsed.Count);
-        foreach (var p in parsed) modules.Add(p.Info);
-        return (modules, ComputeXmpLikelyActive(parsed));
+        return parsed;
     }
 
     // Scans for the double-null (00 00) terminator following a structure's

@@ -6,7 +6,6 @@ using Nexus.Service.Activity;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Engine.Effects;
-using Nexus.Service.Lighting.GameSync;
 using Nexus.Service.Lighting.Engine.Gpu;
 using Nexus.Service.Lighting.Rgb;
 using Nexus.Service.Lighting.Capture;
@@ -60,7 +59,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly MediaLibrary _media;
     private readonly IMonitorEnumerator _monitors;
     private readonly IScreenFrameSource? _frameSource;
-    private readonly GameSyncGameScanner? _scanner;
     private readonly IBeatsProvider? _beats;
 
     // Serializes audio-capture reconcile so two near-simultaneous effect
@@ -79,15 +77,13 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly PostProcessState _screenPP = new();
     private readonly PostProcessState _mediaPP = new();
 
-    // Shared GameSyncEffect instance. Kept alive across StartGameSync calls so
-    // frames that arrive while the effect is already running are not dropped.
-    private GameSyncEffect? _gameSyncEffect;
-
     private readonly FeatureGates _gates;
+    private readonly SensorFeed? _sensorFeed;
 
-    public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, GameSyncGameScanner? scanner = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null)
+    public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null, ScreenPreviewHub? previewHub = null, SensorFeed? sensorFeed = null)
     {
         _panelHub = panelHub;
+        _sensorFeed = sensorFeed;
         _gates = gates ?? FeatureGates.AllEnabled;
         _store = store;
         _engine = engine;
@@ -99,13 +95,18 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         _engine.PinLookTag = PinTag;
         _engine.PinEffectFactory = BuildPinnedEffect;
         _sharedSource = frameSource is null ? null : new SharedScreenFrameSource(frameSource);
+        if (previewHub is not null && _sharedSource is not null)
+        {
+            var shared = _sharedSource;
+            previewHub.IsAvailable = () => shared.Available;
+            _previewStreamer = new ScreenPreviewStreamer(previewHub, shared.CreateObserver, () => _mirrorMonitor, _screenPP);
+        }
         _hub = hub;
         _rgb = rgb;
         _gpu = gpu;
         _media = media;
         _monitors = monitors;
         _frameSource = frameSource;
-        _scanner = scanner;
         _beats = beats;
 
         var s = _store.Load().Lighting;
@@ -118,7 +119,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         // Any settings write can move a pinned effect's look, the pin set, or the mirrored screen.
         _store.OnChanged += RefreshPinnedLooks;
         RefreshPinnedLooks();
-        _scanner?.OnScanComplete = OnGameScanComplete;
         // A store that was unreadable at boot registers its sources late; a custom effect
         // restored meanwhile is running the rainbow stand-in until this rebuilds it.
         customEffects?.Recovered += () =>
@@ -156,7 +156,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         return _engine.Frozen ? "static" : _engine.CurrentEffectName;
     }
 
-    public void SetSync(string sync) => _store.Update(s => s.Lighting.Sync = sync);
+    public void SetSync(string sync) => _store.Update(s => s.Lighting.Sync = RemovedSyncModes.Normalize(sync));
 
     public bool IsPaused => _engine.Paused;
 
@@ -359,6 +359,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var saturation = body.Saturation;
         var contrast = body.Contrast;
         var extras = ParamsToDict(body.Params);
+        var sensors = Nexus.Service.Persistence.SensorBinding.CopyMap(body.Sensors);
         var effectSpeed = name == "pulse" ? speed * 0.5f : speed;
         // A sweep is meant to read end to end on every device at once, so the
         // engine stops treating the canvas as a shared scene for these.
@@ -378,6 +379,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             cur.Saturation = saturation;
             cur.Contrast = contrast;
             cur.ExtraParams = extras;
+            cur.SensorOverrides = sensors;
             // Reusing the running shader skips SetEffect, which is what clears
             // the hold. Leaving it set after a static->animate switch freezes
             // the animation on its first frame and keeps GetSync reporting
@@ -388,7 +390,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             // BuildAnimateEffect applies its own pulse scaling, so pass the
             // pre-scaling value here to avoid scaling twice.
-            _engine.SetEffect(BuildAnimateEffect(name, speed, intensity, hue, colorize, saturation, contrast, extras));
+            _engine.SetEffect(BuildAnimateEffect(name, speed, intensity, hue, colorize, saturation, contrast, extras, sensors));
         }
         // Skip the settings write while the user is still dragging a slider.
         // The UI sends Persist=false during drag (updates go to the engine
@@ -409,6 +411,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             Params = extras is not null
                 ? new System.Collections.Generic.Dictionary<string, float>(extras)
                 : new(),
+            Sensors = sensors,
         };
         _store.Update(s =>
         {
@@ -434,6 +437,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                     Saturation = baseline.Saturation,
                     Contrast = baseline.Contrast,
                     Params = baseline.Params,
+                    Sensors = baseline.Sensors,
                 };
             }
             if (baseline is not null && AnimateTemplateDefaults.StateEquals(incoming, baseline))
@@ -581,9 +585,11 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         return d;
     }
 
-    private ShaderEffect MakeShader(string name, string src, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras) =>
+    private ShaderEffect MakeShader(string name, string src, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras, System.Collections.Generic.IReadOnlyDictionary<string, Nexus.Service.Persistence.SensorBinding>? sensors = null) =>
         new ShaderEffect(name, _gpu, src)
         {
+            SensorFeed = _sensorFeed,
+            SensorOverrides = sensors,
             Speed = speed,
             Intensity = intensity,
             Hue = hue,
@@ -618,15 +624,42 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         }
     }
 
+    // Identity of this exact build (release version plus the executable's size and write time), folded into every disk key so no build serves another build's images.
+    private static readonly string ThumbnailDiskVersion = BuildIdentity();
+
+    private static string BuildIdentity()
+    {
+        var version = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(LightingProvider).Assembly)?.InformationalVersion
+            ?? typeof(LightingProvider).Assembly.GetName().Version?.ToString()
+            ?? "0";
+        try
+        {
+            if (Environment.ProcessPath is { } exe)
+            {
+                var info = new System.IO.FileInfo(exe);
+                return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{version}|{info.Length}|{info.LastWriteTimeUtc.Ticks}");
+            }
+        }
+        catch
+        {
+        }
+        return version;
+    }
+
+    // Thumbnails are fixed-size BMPs, so a stored file of any other length is damaged.
+    private const int ThumbnailWidth = 160;
+    private const int ThumbnailHeight = 90;
+    private const int ThumbnailBmpBytes = 54 + (ThumbnailWidth * 3 + (4 - ThumbnailWidth * 3 % 4) % 4) * ThumbnailHeight;
+    private const long ThumbnailDiskCapBytes = 64L * 1024 * 1024;
+
+    // Rendered thumbnails survive a restart. Shared by every provider and created on first use, which starts its background init.
+    private static readonly Lazy<Engine.Gpu.DiskBlobCache> ThumbnailDiskLazy = new(() => new Engine.Gpu.DiskBlobCache(
+        System.IO.Path.Combine(Engine.Gpu.BlobCachePolicy.CacheRoot(), "lighting-thumbnails"),
+        ThumbnailDiskCapBytes, Engine.Gpu.BlobCachePolicy.Allowed));
+
     private (byte[] Bytes, string Tag)? CaptureAnimateThumbnailCore(string key, int slot, bool skipCache, bool frozen)
     {
-        // Shader thumbnails are GPU-rendered; with no usable GPU the render is a
-        // no-op and the frame stays black, so skip it and let the caller 404 -
-        // the UI shows a placeholder instead of a grid of black tiles.
-        if (!_gpu.Available)
-        {
-            return null;
-        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var name = (key ?? "").ToLowerInvariant();
         if (!ShaderLibrary.IsKnownKey(name))
         {
@@ -646,9 +679,30 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             return (cached.Bytes, tag);
         }
+        // Shader thumbnails are GPU-rendered; with no usable GPU the render is a
+        // no-op and the frame stays black, so skip it and let the caller 404 -
+        // the UI shows a placeholder instead of a grid of black tiles.
+        if (!_gpu.Available)
+        {
+            return null;
+        }
+        var diskName = Engine.Gpu.DiskBlobCache.ThumbnailName(name, slot, frozen, tag, ThumbnailDiskVersion);
+        if (!skipCache && ThumbnailDiskLazy.Value.TryGet(diskName) is { Length: ThumbnailBmpBytes } onDisk)
+        {
+            _thumbnailCache[cacheKey] = (tag, onDisk);
+            Engine.Gpu.GpuContext.Log($"[thumb] {cacheKey} disk {sw.Elapsed.TotalMilliseconds:0}ms");
+            return (onDisk, tag);
+        }
 
-        var canvas = new Engine.CanvasBuffer(160, 90);
+        var canvas = new Engine.CanvasBuffer(ThumbnailWidth, ThumbnailHeight);
+        var generation = _gpu.Generation;
         var effect = BuildThumbnailEffect(name, defaults, state, frozen);
+        if (effect is ShaderEffect thumbShader)
+        {
+            thumbShader.FixedSensorValue = ThumbnailSensorValue;
+        }
+        // Thumbnails ride the GL thread's background lane so a page full of them cannot stall the live frame.
+        using var background = Engine.Gpu.GpuContext.BeginBackground();
         try
         {
             if (!frozen && TimeLapseWindowMs(name) is var (start, span))
@@ -668,6 +722,12 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         }
         var bytes = BmpEncoder.Encode(canvas.Pixels, canvas.Width, canvas.Height);
         _thumbnailCache[cacheKey] = (tag, bytes);
+        // A failed compile or a lost context leaves a black frame: serve it, but never persist it.
+        if (_gpu.Available && _gpu.Generation == generation && effect is not ShaderEffect { HasFailed: true })
+        {
+            ThumbnailDiskLazy.Value.Put(diskName, bytes);
+        }
+        Engine.Gpu.GpuContext.Log($"[thumb] {cacheKey} render {sw.Elapsed.TotalMilliseconds:0}ms");
         return (bytes, tag);
     }
 
@@ -788,7 +848,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             ShaderEffect fresh;
             try
             {
-                fresh = MakeShader(key, ShaderLibrary.Get(key), cur.Speed, cur.Intensity, cur.Hue, cur.Colorize, cur.Saturation, cur.Contrast, extras);
+                fresh = MakeShader(key, ShaderLibrary.Get(key), cur.Speed, cur.Intensity, cur.Hue, cur.Colorize, cur.Saturation, cur.Contrast, extras, cur.SensorOverrides);
             }
             catch (System.IO.FileNotFoundException)
             {
@@ -889,7 +949,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
     // Immutable look per pinned Animate effect, resolved off the engine thread and
     // published by reference swap; the engine only ever reads this.
-    private sealed record PinnedLook(Nexus.Service.Persistence.AnimateEffectState State, string Tag);
+    private sealed record PinnedLook(string Effect, Nexus.Service.Persistence.AnimateEffectState State, string Tag);
     private volatile System.Collections.Generic.Dictionary<string, PinnedLook> _pinnedLooks = new();
     private volatile bool _pinnedAudio;
     private long _pinnedLooksSeq;
@@ -897,6 +957,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     // The one screen capture. The global Mirror effect and the mirror-pin effect
     // each take a handle, so the capture runs once and closes with its last user.
     private readonly SharedScreenFrameSource? _sharedSource;
+    private readonly ScreenPreviewStreamer? _previewStreamer;
     // Monitor and its pin tag change together, so a reader never sees one
     // without the other and the per-tick tag lookup allocates nothing.
     private sealed record MirrorSelection(string Monitor, string Tag);
@@ -954,7 +1015,13 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             foreach (var pin in s.Lighting.DevicePins.Values)
             {
                 var key = pin?.Kind == Nexus.Service.Persistence.DevicePinKinds.Animate ? pin.Effect : null;
-                if (string.IsNullOrEmpty(key) || next.ContainsKey(key))
+                if (string.IsNullOrEmpty(key))
+                {
+                    continue;
+                }
+                // Pins that differ in their sensor picks render apart; the rest of the look is the effect's.
+                var renderKey = DevicePinLook.AnimateRenderKey(pin!);
+                if (next.ContainsKey(renderKey))
                 {
                     continue;
                 }
@@ -972,7 +1039,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                         ? persisted
                         : new Nexus.Service.Persistence.AnimateEffectState();
                 }
-                if (slot is null && ShaderLibrary.IsCustomKey(key))
+                if (slot is null && (ShaderLibrary.IsCustomKey(key) || ShaderLibrary.IsSensorEffect(key)))
                 {
                     // A custom effect with no saved preset runs as a fresh start of it does: its last
                     // activation state, else the install defaults.
@@ -995,6 +1062,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                     Params = slot.Params is null
                         ? new()
                         : new System.Collections.Generic.Dictionary<string, float>(slot.Params),
+                    Sensors = Nexus.Service.Persistence.SensorBinding.Merge(slot.Sensors, pin!.Sensors),
                 };
                 // A custom effect's source can change under the same look, so the tag carries it.
                 var tag = HashSlot(copy);
@@ -1002,13 +1070,13 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                 {
                     tag += "|" + ShaderLibrary.SourceTag(key);
                 }
-                next[key] = new PinnedLook(copy, tag);
+                next[renderKey] = new PinnedLook(key, copy, tag);
             }
         });
         var audio = false;
-        foreach (var key in next.Keys)
+        foreach (var look in next.Values)
         {
-            audio |= ShaderLibrary.IsAudioEffect(key);
+            audio |= ShaderLibrary.IsAudioEffect(look.Effect);
         }
         bool audioChanged;
         lock (_mediaLoadLock)
@@ -1020,6 +1088,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             }
             _pinnedLooksSeq = mediaSeq;
             _pinnedLooks = next;
+            // A render key no pin uses any more must not keep its source tag for the life of the process.
+            foreach (var builtKey in _pinBuiltSource.Keys)
+            {
+                if (!next.ContainsKey(builtKey))
+                {
+                    _pinBuiltSource.TryRemove(builtKey, out _);
+                }
+            }
             audioChanged = _pinnedAudio != audio;
             _pinnedAudio = audio;
         }
@@ -1121,6 +1197,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             return null;
         }
         var look = pinned.State;
+        // The engine's key may carry the pin's sensor picks; the shader is the effect's own.
+        var renderKey = effect;
+        effect = pinned.Effect;
         var speed = (float)(look.Speed / 50.0);
         var intensity = look.Intensity > 0 ? look.Intensity : 1f;
         var extras = look.Params is { Count: > 0 }
@@ -1130,7 +1209,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var custom = ShaderLibrary.IsCustomKey(effect);
         var sourceTag = custom ? ShaderLibrary.SourceTag(effect) : null;
         if (existing is ShaderEffect cur && cur.Name == effect
-            && (!custom || (_pinBuiltSource.TryGetValue(effect, out var builtFrom) && builtFrom == sourceTag)))
+            && (!custom || (_pinBuiltSource.TryGetValue(renderKey, out var builtFrom) && builtFrom == sourceTag)))
         {
             cur.Speed = effect == "pulse" ? speed * 0.5f : speed;
             cur.Intensity = intensity;
@@ -1139,13 +1218,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             cur.Saturation = look.Saturation;
             cur.Contrast = look.Contrast;
             cur.ExtraParams = extras;
+            cur.SensorOverrides = look.Sensors;
             return cur;
         }
         if (custom)
         {
-            _pinBuiltSource[effect] = sourceTag!;
+            _pinBuiltSource[renderKey] = sourceTag!;
         }
-        return BuildAnimateEffect(effect, speed, intensity, look.Hue, look.Colorize, look.Saturation, look.Contrast, extras);
+        return BuildAnimateEffect(effect, speed, intensity, look.Hue, look.Colorize, look.Saturation, look.Contrast, extras, look.Sensors);
     }
 
     // Source tag each pinned custom instance was compiled from; only the engine thread writes it.
@@ -1214,6 +1294,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         cur.ExtraParams = slot.Params is not null && slot.Params.Count > 0
             ? new System.Collections.Generic.Dictionary<string, float>(slot.Params)
             : null;
+        cur.SensorOverrides = Nexus.Service.Persistence.SensorBinding.CopyMap(slot.Sensors);
     }
 
     /// <summary>Stable content tag over a slot's render-affecting fields (FNV-1a, base16).</summary>
@@ -1233,6 +1314,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                 sb.Append(';').Append(k).Append('=').Append(R(slot.Params[k]));
             }
         }
+        sb.Append(Nexus.Service.Persistence.SensorBinding.MapKey(slot.Sensors));
         uint h = 2166136261;
         foreach (var c in sb.ToString())
         {
@@ -1241,6 +1323,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         }
         return h.ToString("x8");
     }
+
+    // A thumbnail is one frame with no live reading behind it; sensor uniforms sit at this fill so the tile shows the effect partway.
+    private const float ThumbnailSensorValue = 0.65f;
 
     /// <summary>
     /// Build the effect whose single frame becomes the thumbnail. Renders the
@@ -1433,7 +1518,17 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         return result;
     }
 
-    private IEffect BuildAnimateEffect(string name, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras)
+    private IEffect BuildAnimateEffect(string name, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras, System.Collections.Generic.IReadOnlyDictionary<string, Nexus.Service.Persistence.SensorBinding>? sensors = null)
+    {
+        var effect = BuildAnimateEffectCore(name, speed, intensity, hue, colorize, saturation, contrast, extras);
+        if (effect is ShaderEffect shader)
+        {
+            shader.SensorOverrides = sensors;
+        }
+        return effect;
+    }
+
+    private IEffect BuildAnimateEffectCore(string name, float speed, float intensity, float hue, float colorize, float saturation, float contrast, System.Collections.Generic.Dictionary<string, float>? extras)
     {
         // Every animate mode is a fragment-only GLSL shader. GPU-only - if
         // the context can't initialise, the canvas stays dark. Pulse gets
@@ -1464,6 +1559,12 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         // static patterns below - the switch has no arm for them and its
         // rainbow default would render them all identically.
         if (ShaderLibrary.IsSweepEffect(name))
+        {
+            return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
+        }
+        // A built-in sensor effect is a self-contained baked fragment loaded by its own name; the
+        // switch below has no arm for it and would run rainbow in its place.
+        if (ShaderLibrary.IsSensorEffect(name))
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
         }
@@ -1602,7 +1703,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             return;
         }
         EnsureRgbActive();
-        _engine.FrameIntervalMs = 16;
         // Do NOT overwrite _screenPP from body. The post-process holder is the
         // authoritative live state; it was loaded from settings at construction
         // and is mutated only by the /lighting/screen/effect endpoint. If a
@@ -1683,102 +1783,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         });
     }
 
-    // Fires on the scanner's background thread after each scan completes.
-    // Ensures the GSI cfg is present when Game Sync is active and a supported
-    // GSI game was found, without requiring the user to re-toggle.
-    private void OnGameScanComplete(IReadOnlyList<DetectedGame> games)
-    {
-        if (!string.Equals(GetSync(), "gamesync", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var hasGsiGame = false;
-        foreach (var g in games)
-        {
-            if (g.EmitsGsi)
-            {
-                hasGsiGame = true;
-                break;
-            }
-        }
-
-        if (!hasGsiGame)
-        {
-            return;
-        }
-
-        var token = _store.Load().Auth?.Token ?? "";
-        if (token.Length > 0)
-        {
-            GsiConfigInstaller.EnsureInstalled(token);
-        }
-    }
-
-    public void StartGameSync()
-    {
-        if (!_gates.Lighting)
-        {
-            return;
-        }
-        EnsureRgbActive();
-        // Reuse the existing effect instance so frames ingested before the
-        // mode selection round-trip arrives are not lost.
-        if (_gameSyncEffect is null || _engine.CurrentEffect != _gameSyncEffect)
-        {
-            _gameSyncEffect = new GameSyncEffect();
-            _engine.SetEffect(_gameSyncEffect);
-        }
-        // Clear per-session signal so a stale app name or last-seen time
-        // from a previous Game Sync session does not bleed into the new one.
-        _gameSyncEffect.Reset();
-        _store.Update(s =>
-        {
-            s.Lighting.Sync = "gamesync";
-            LightingPresetLooks.CaptureIntoActive(s);
-        });
-
-        // Deploy shim DLLs into System32/SysWOW64. Idempotent and guarded by
-        // an elevation check; skipped on macOS/Linux (NotApplicable).
-        var shimResult = GameSyncShimInstaller.EnsureInstalled();
-        switch (shimResult)
-        {
-            case ChromaShimInstallResult.Installed:
-                ServiceLog.Info("[chroma-shim] shim DLLs installed");
-                break;
-            case ChromaShimInstallResult.AlreadyCurrent:
-                ServiceLog.Info("[chroma-shim] shim DLLs already current");
-                break;
-            case ChromaShimInstallResult.SynapseConflict:
-                ServiceLog.Warn("[chroma-shim] Razer Chroma SDK present; shim not installed");
-                break;
-            case ChromaShimInstallResult.NotElevated:
-                ServiceLog.Warn("[chroma-shim] not elevated; shim install skipped");
-                break;
-            case ChromaShimInstallResult.BundleMissing:
-                ServiceLog.Info("[chroma-shim] bundled shim DLLs not found; Game Sync stays inactive");
-                break;
-            case ChromaShimInstallResult.Failed:
-                ServiceLog.Error("[chroma-shim] shim install failed");
-                break;
-        }
-
-        var token = _store.Load().Auth?.Token ?? "";
-        if (token.Length > 0)
-        {
-            GsiConfigInstaller.EnsureInstalled(token);
-        }
-    }
-
-    public GameSyncEffect? ActiveGameSyncEffect()
-    {
-        if (_engine.CurrentEffect is GameSyncEffect eff)
-        {
-            return eff;
-        }
-        return null;
-    }
-
     public bool StartMedia(string mediaId)
     {
         if (!_gates.Lighting)
@@ -1852,6 +1856,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     public void Dispose()
     {
         _studioTimer?.Dispose();
+        _previewStreamer?.Dispose();
         _rgb?.Dispose();
         _engine.Dispose();
     }

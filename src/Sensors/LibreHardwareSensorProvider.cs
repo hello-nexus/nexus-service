@@ -359,14 +359,10 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
     public string GetRamBrandModel()
     {
         if (_ramBrandModel is not null) return _ramBrandModel;
-        // PowerShell CIM is faster + AOT-safer than System.Management WMI. Pull
-        // Manufacturer + PartNumber for the first physical DIMM. Multi-DIMM rigs
-        // almost always mix kits from the same SKU, so one module is enough for
-        // catalog matching.
-        var csv = ShellOut("powershell.exe", 5000,
-            "-NoProfile", "-Command",
-            "Get-CimInstance -ClassName Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,PartNumber | ConvertTo-Csv -NoTypeInformation");
-        _ramBrandModel = ParseCsvBrandModel(csv);
+        // Multi-DIMM rigs almost always mix kits from the same SKU, so the first
+        // module is enough for catalog matching.
+        var (mfg, part) = WindowsSpecsNative.ReadFirstDimm();
+        _ramBrandModel = JoinBrandModel(mfg, part);
         return _ramBrandModel;
     }
 
@@ -374,64 +370,28 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
     {
         if (_storageBrandModel is not null) return _storageBrandModel;
         // The disk holding the OS partition: the benchmark's DiskSpd file lands
-        // in the service temp dir under %SystemRoot%. Get-Disk covers an OS
-        // volume with no Get-PhysicalDisk row (Storage Spaces, RAID).
-        var csv = ShellOut("powershell.exe", 5000,
-            "-NoProfile", "-Command",
-            "$n = (Get-Partition -DriveLetter $env:SystemDrive[0]).DiskNumber; $d = Get-PhysicalDisk | Where-Object DeviceId -eq $n; if (-not $d) { $d = Get-Disk -Number $n }; $d | Select-Object -First 1 Manufacturer,Model | ConvertTo-Csv -NoTypeInformation");
-        _storageBrandModel = ParseCsvBrandModel(csv);
+        // in the service temp dir under %SystemRoot%.
+        var (vendor, product) = WindowsSpecsNative.ReadSystemDiskBrand();
+        _storageBrandModel = JoinBrandModel(vendor, product);
         return _storageBrandModel;
     }
 
     /// <summary>
-    /// ConvertTo-Csv output on a 2-column (Manufacturer, Model) select produces
-    /// two quoted-or-bare lines: header row, then the values row. Strip quotes,
-    /// drop sentinel values like "Standard disk drives" / "Not Specified", join
-    /// manufacturer + model into a single matcher string. Returns "" if neither
-    /// column yields useful content.
+    /// Drops sentinel values like "Standard disk drives" / "Not Specified" and
+    /// joins manufacturer + model into a single matcher string. Returns "" if
+    /// neither yields useful content.
     /// </summary>
-    private static string ParseCsvBrandModel(string csv)
+    private static string JoinBrandModel(string manufacturer, string model)
     {
-        if (string.IsNullOrWhiteSpace(csv)) return "";
-        var rows = csv.Split('\n').Select(r => r.Trim()).Where(r => r.Length > 0).ToList();
-        if (rows.Count < 2) return "";
-        var vals = SplitCsvRow(rows[1]);
-        if (vals.Count < 2) return "";
-        var mfg = CleanField(vals[0]);
-        var model = CleanField(vals[1]);
-        if (string.IsNullOrEmpty(mfg) && string.IsNullOrEmpty(model)) return "";
-        if (string.IsNullOrEmpty(mfg)) return model;
-        if (string.IsNullOrEmpty(model)) return mfg;
+        var mfg = CleanField(manufacturer);
+        var mdl = CleanField(model);
+        if (string.IsNullOrEmpty(mfg) && string.IsNullOrEmpty(mdl)) return "";
+        if (string.IsNullOrEmpty(mfg)) return mdl;
+        if (string.IsNullOrEmpty(mdl)) return mfg;
         // Avoid "Samsung Samsung 980 PRO" when the model already starts with
-        // the manufacturer, which PowerShell's Model column often does.
-        if (model.StartsWith(mfg, StringComparison.OrdinalIgnoreCase)) return model;
-        return $"{mfg} {model}";
-    }
-
-    private static List<string> SplitCsvRow(string row)
-    {
-        var cells = new List<string>();
-        var i = 0;
-        var cur = new System.Text.StringBuilder();
-        var inQuotes = false;
-        while (i < row.Length)
-        {
-            var c = row[i];
-            if (inQuotes)
-            {
-                if (c == '"' && i + 1 < row.Length && row[i + 1] == '"') { cur.Append('"'); i += 2; continue; }
-                if (c == '"') { inQuotes = false; i++; continue; }
-                cur.Append(c); i++;
-            }
-            else
-            {
-                if (c == '"') { inQuotes = true; i++; continue; }
-                if (c == ',') { cells.Add(cur.ToString()); cur.Clear(); i++; continue; }
-                cur.Append(c); i++;
-            }
-        }
-        cells.Add(cur.ToString());
-        return cells;
+        // the manufacturer.
+        if (mdl.StartsWith(mfg, StringComparison.OrdinalIgnoreCase)) return mdl;
+        return $"{mfg} {mdl}";
     }
 
     private static string CleanField(string v)
@@ -444,32 +404,6 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         if (s.Equals("Standard disk drives", StringComparison.OrdinalIgnoreCase)) return "";
         if (s.Equals("(Standard disk drives)", StringComparison.OrdinalIgnoreCase)) return "";
         return s;
-    }
-
-    private static string ShellOut(string fileName, int timeoutMs, params string[] args)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = fileName,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            using var proc = Process.Start(psi);
-            if (proc is null) return "";
-            var stdout = proc.StandardOutput.ReadToEnd();
-            if (!proc.WaitForExit(timeoutMs))
-            {
-                try { proc.Kill(); } catch { }
-                return "";
-            }
-            return stdout;
-        }
-        catch { return ""; }
     }
 
     public SensorExtras GetSensorExtras()

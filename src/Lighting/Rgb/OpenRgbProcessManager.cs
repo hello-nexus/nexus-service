@@ -199,77 +199,26 @@ public sealed class OpenRgbProcessManager : IDisposable
         return Path.Combine(baseDir, "Nexus", "openrgb-config");
     }
 
-    /// <summary>Test seam for the macOS split documented on
-    /// <see cref="AlwaysDisabledDetectors"/>. Static initializers
-    /// run in declaration order, so <see cref="DisabledDetectors"/> is declared
-    /// after the array it reads.</summary>
+    /// <summary>The detectors held off with Nexus Control on everywhere.</summary>
     internal static string[] BuildDisabledDetectors(bool macOS)
+        => NativeDetectorClaims.ResolveDisabled(_ => true, macOS).ToArray();
+
+    /// <summary>Detectors held off by the Nexus Control choice (<see cref="NativeDetectorClaims.ResolveDisabled"/>). Reads the choice and the build lock, so a running vendor app's pause does not move the set; without a gate nothing is on.</summary>
+    internal System.Collections.Generic.List<string> ResolveNativeDisabledDetectors()
+        => NativeDetectorClaims.ResolveDisabled(handler => _gate?.IsChosenOn(handler) == true, OperatingSystem.IsMacOS());
+
+    private string _appliedNativeSignature = "";
+
+    private static string SignatureOf(System.Collections.Generic.IEnumerable<string> names)
     {
-        var list = new System.Collections.Generic.List<string>(AlwaysDisabledDetectors);
-        if (!macOS)
-        {
-            list.Insert(1, "HYTE Nexus");
-        }
-        return list.ToArray();
+        var sorted = new System.Collections.Generic.List<string>(names);
+        sorted.Sort(StringComparer.Ordinal);
+        return string.Join('|', sorted);
     }
 
-    /// <summary>
-    /// OpenRGB detectors nexus-service keeps disabled because it drives those
-    /// devices directly over their own transport. The keeb rides raw HID, where
-    /// the COM-port "first open wins" guard the serial hubs rely on does NOT
-    /// apply - two stacks could hold the HID handle and fight over the LEDs - so
-    /// the detector MUST be disabled here. Names match the
-    /// <c>REGISTER_*_DETECTOR</c> strings in nexus-rgb/openrgb-headless verbatim
-    /// (HYTEKeyboardControllerDetect.cpp -> "HYTE Keeb TKL";
-    /// LianLiControllerDetect.cpp -> every HID Uni Hub, Strimer L Connect and
-    /// GA II Trinity detector: LianLiHub, StrimerHub and Galahad2Hub drive all of
-    /// them. A Lian Li detector left enabled hands the device to OpenRGB the
-    /// moment its Nexus Control is turned off, so Nexus keeps overriding
-    /// L-Connect. The original "Lian Li Uni Hub" (0x7750) stays enabled: it takes
-    /// libusb control transfers with a custom wIndex, which the native HID worker
-    /// cannot send, so OpenRGB is its only working driver;
-    /// CorsairICueLinkControllerDetect.cpp -> "Corsair iCUE Link System Hub";
-    /// NZXTHue2ControllerDetect.cpp -> "NZXT Kraken 2024 ELITE Series RGB").
-    /// The Kraken is the same raw-HID case as the keeb: OpenRGB's Hue 2 controller
-    /// opens the cooler's vendor HID interface, which is the one KrakenHub drives,
-    /// and the two stacks then interleave writes on the same pipe. OpenRGB also
-    /// reads its fan chain as zero LEDs (its accessory table has no 0x1B entry),
-    /// so nothing is lost by keeping it off.
-    /// "HYTE Nexus" (HYTENexusControllerDetect.cpp) covers exactly the THICC Q60
-    /// and the Nexus Portal NP50. On Windows and Linux both are driven natively
-    /// over CDC serial: on Windows the native workers open the COM port at
-    /// startup and OpenRGB's later open fails, but a Linux tty has no such
-    /// guard, so both stacks wrote frames to the same port and a static color
-    /// flashed whenever the two interleaved. macOS has no native NP50 or
-    /// Q-series discovery, so the detector stays enabled there.
-    /// Unknown names in this list are ignored, so disabling the iCUE Link detector
-    /// is a safe no-op on bundled builds that predate that controller.
-    ///
-    /// "HID LampArray Device" is disabled for a different reason: it is a generic
-    /// detector matching the standard LampArray HID usage on any vendor, so a
-    /// board that exposes both a vendor protocol and a LampArray collection is
-    /// detected twice - once by its real controller with full zones, and once as
-    /// a near-empty duplicate on the other HID interface. Upstream registers it
-    /// unconditionally with no check for an existing controller, so the dedupe
-    /// has to happen here.
-    /// </summary>
-    private static readonly string[] AlwaysDisabledDetectors = {
-        "HYTE Keeb TKL", "Corsair iCUE Link System Hub",
-        "Lian Li Uni Hub - SL", "Lian Li Uni Hub - AL", "Lian Li Uni Hub - SL V2",
-        "Lian Li Uni Hub - AL V2", "Lian Li Uni Hub - SL V2 v0.5", "Lian Li Uni Hub - SL Infinity",
-        "Lian Li Strimer L Connect", "Lian Li GA II Trinity", "Lian Li GA II Trinity Performance",
-        "NZXT Kraken 2024 ELITE Series RGB", "HID LampArray Device",
-        // Nollie controllers are driven natively; names match the
-        // REGISTER_HID_DETECTOR strings in openrgb-headless.
-        "Nollie 32CH", "Nollie 16CH", "Nollie 8CH", "Nollie 1CH", "Nollie 28 12", "Nollie 28 L1",
-        "Nollie 28 L2", "Nollie 32_OS2", "Nollie 16_OS2", "Nollie 8_OS2", "Nollie 1_OS2",
-        "Nollie 32_OS2_1", "Nollie 16_OS2_1", "Nollie 8_OS2_1", "Prism8 8_OS2_1", "Nollie 1_OS2_1",
-        // StreamDeckConnectionWorker drives the deck's keys over the same HID
-        // interface; OpenRGB painting them as LEDs overwrites the key images.
-        "Elgato Stream Deck MK.2",
-    };
-
-    private static readonly string[] DisabledDetectors = BuildDisabledDetectors(OperatingSystem.IsMacOS());
+    /// <summary>True when a native toggle moved the detector set away from what the daemon was last given.</summary>
+    internal bool NativeDetectorSetChanged()
+        => SignatureOf(ResolveNativeDisabledDetectors()) != Volatile.Read(ref _appliedNativeSignature);
 
     /// <summary>
     /// Every detector in the bundled fork that reaches a DIMM over the chipset
@@ -340,7 +289,9 @@ public sealed class OpenRgbProcessManager : IDisposable
     internal string? RefreshDetectorOverrides()
     {
         var configDir = ResolveConfigDir();
-        EnsureDetectorOverrides(configDir, ResolvePlaceholderDetectors(), ResolveBusDisabledDetectors());
+        var native = ResolveNativeDisabledDetectors();
+        EnsureDetectorOverrides(configDir, ResolvePlaceholderDetectors(), ResolveBusDisabledDetectors(), native);
+        Volatile.Write(ref _appliedNativeSignature, SignatureOf(native));
         try
         {
             var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(configDir, "OpenRGB.json")));
@@ -360,12 +311,14 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// are also recorded in the <c>Detectors.placeholder_only</c> array, which
     /// only the service reads: names dropped from it since the last write get
     /// their detector re-enabled. Best-effort: a failure here just
-    /// means OpenRGB might surface a zombie entry, which
-    /// CompositeLightingDeviceProvider also strips.
+    /// means OpenRGB might surface a zombie entry, which native providers drop
+    /// by the detector that produced it.
     /// </summary>
+    /// <param name="nativeDisabledDetectors">Detectors held off for an enabled native driver; null holds every native-claimed detector. A claimed detector outside it and outside the other lists is returned to OpenRGB's default by dropping its entry.</param>
     /// <param name="busDisabledDetectors">Detectors held off because their shared bus is toggled off (<see cref="SmbusDramDetectors"/>). Tracked in the service-owned <c>Detectors.bus_disabled</c> array with the same drop-to-re-enable rule as user exclusions.</param>
     internal static void EnsureDetectorOverrides(string configDir, System.Collections.Generic.IReadOnlyCollection<string>? placeholderOnlyDetectors,
-        System.Collections.Generic.IReadOnlyCollection<string>? busDisabledDetectors = null)
+        System.Collections.Generic.IReadOnlyCollection<string>? busDisabledDetectors = null,
+        System.Collections.Generic.IReadOnlyCollection<string>? nativeDisabledDetectors = null)
     {
         try
         {
@@ -393,7 +346,9 @@ public sealed class OpenRgbProcessManager : IDisposable
             }
 
             var changed = false;
-            foreach (var name in DisabledDetectors)
+            var nativeDisabled = nativeDisabledDetectors ?? BuildDisabledDetectors(OperatingSystem.IsMacOS());
+            var nativeSet = new System.Collections.Generic.HashSet<string>(nativeDisabled, StringComparer.Ordinal);
+            foreach (var name in nativeDisabled)
             {
                 var alreadyDisabled = map[name] is System.Text.Json.Nodes.JsonValue v
                     && v.TryGetValue<bool>(out var b) && b == false;
@@ -425,7 +380,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                 var desired = new System.Collections.Generic.HashSet<string>(placeholderOnlyDetectors, StringComparer.Ordinal);
                 foreach (var name in previous)
                 {
-                    if (!desired.Contains(name) && Array.IndexOf(DisabledDetectors, name) < 0)
+                    if (!desired.Contains(name) && !nativeSet.Contains(name))
                     {
                         map[name] = true;
                         changed = true;
@@ -473,7 +428,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                 foreach (var name in previous)
                 {
                     // A dropped name re-enables unless another list still holds it.
-                    if (!desired.Contains(name) && !placeholders.Contains(name) && Array.IndexOf(DisabledDetectors, name) < 0)
+                    if (!desired.Contains(name) && !placeholders.Contains(name) && !nativeSet.Contains(name))
                     {
                         map[name] = true;
                         changed = true;
@@ -501,10 +456,29 @@ public sealed class OpenRgbProcessManager : IDisposable
                 }
             }
 
+            // Skipped when the exclusion list is unknown, so a settings hiccup cannot release a held-off name.
+            if (placeholderOnlyDetectors is not null)
+            {
+                var held = new System.Collections.Generic.HashSet<string>(placeholderOnlyDetectors, StringComparer.Ordinal);
+                if (busDisabledDetectors is not null)
+                {
+                    held.UnionWith(busDisabledDetectors);
+                }
+                foreach (var name in NativeDetectorClaims.Universe())
+                {
+                    if (!nativeSet.Contains(name) && !held.Contains(name) && map[name] is System.Text.Json.Nodes.JsonValue v
+                        && v.TryGetValue<bool>(out var b) && b == false)
+                    {
+                        map.Remove(name);
+                        changed = true;
+                    }
+                }
+            }
+
             if (changed)
             {
                 File.WriteAllText(path, root.ToJsonString());
-                ServiceLog.Info($"[openrgb-proc] detector overrides written ({DisabledDetectors.Length} first-party, {(placeholderOnlyDetectors is null ? "unchanged" : placeholderOnlyDetectors.Count.ToString())} placeholder-only, {(busDisabledDetectors is null ? "unchanged" : busDisabledDetectors.Count.ToString())} bus-disabled) in {path}");
+                ServiceLog.Info($"[openrgb-proc] detector overrides written ({nativeDisabled.Count} native-driven, {(placeholderOnlyDetectors is null ? "unchanged" : placeholderOnlyDetectors.Count.ToString())} placeholder-only, {(busDisabledDetectors is null ? "unchanged" : busDisabledDetectors.Count.ToString())} bus-disabled) in {path}");
             }
         }
         catch (Exception ex)
@@ -637,7 +611,9 @@ public sealed class OpenRgbProcessManager : IDisposable
             // Keep OpenRGB from claiming devices nexus-service drives directly
             // or the user excluded. Re-asserted on every (re)launch so a
             // supervisor restart can't run an instance that re-grabs them.
-            EnsureDetectorOverrides(configDir, ResolvePlaceholderDetectors(), ResolveBusDisabledDetectors());
+            var native = ResolveNativeDisabledDetectors();
+            EnsureDetectorOverrides(configDir, ResolvePlaceholderDetectors(), ResolveBusDisabledDetectors(), native);
+            Volatile.Write(ref _appliedNativeSignature, SignatureOf(native));
 
             // Registrations for hardware no detector can match on its own (QMK
             // boards, E1.31 devices). Re-asserted per launch for the same

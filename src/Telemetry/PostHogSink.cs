@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -35,7 +36,12 @@ internal sealed class PostHogSink : ITelemetrySink
 
     public async Task SendAsync(string distinctId, IReadOnlyList<TelemetryEvent> batch, CancellationToken ct)
     {
-        if (!Enabled || batch.Count == 0)
+        if (!Enabled)
+            return;
+
+        if (batch.Any(IsUsageOnly))
+            batch = batch.Where(e => !IsUsageOnly(e)).ToArray();
+        if (batch.Count == 0)
             return;
 
         var buffer = new ArrayBufferWriter<byte>();
@@ -52,6 +58,10 @@ internal sealed class PostHogSink : ITelemetrySink
         if (!res.IsSuccessStatusCode)
             Console.Error.WriteLine($"[telemetry] {(int)res.StatusCode} from PostHog");
     }
+
+    // Delivered to nexus-api only (UsageTelemetrySink).
+    private static bool IsUsageOnly(TelemetryEvent e) =>
+        e.Name is TelemetryEvents.AppStarted or TelemetryEvents.ProfileRefresh;
 
     // internal + static for testability: deterministic body from inputs alone.
     internal static void WriteBody(IBufferWriter<byte> buffer, string apiKey, string distinctId, IReadOnlyList<TelemetryEvent> batch)
@@ -95,7 +105,7 @@ internal sealed class PostHogSink : ITelemetrySink
     }
 
     // Reflection-free value writer - covers the property types Capture accepts.
-    private static void WriteValue(Utf8JsonWriter w, object? v)
+    internal static void WriteValue(Utf8JsonWriter w, object? v)
     {
         switch (v)
         {

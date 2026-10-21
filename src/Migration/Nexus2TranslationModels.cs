@@ -27,6 +27,8 @@ internal sealed class Nexus2DockDeck
     public int Rows { get; set; } = 1;
     public int Items { get; set; }
     public int MappedItems { get; set; }
+    /// <summary>Keys whose Nexus 2 tile carries a custom image or video, with the source file to copy into the deck image store.</summary>
+    public List<(Nexus.Service.Deck.DeckSlot Slot, string Path)> TileImages { get; set; } = new();
 }
 
 /// <summary>Where the Y70 background Nexus 2 is showing comes from.</summary>

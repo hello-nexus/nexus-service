@@ -64,6 +64,9 @@ public interface ISlv3Transport : IDisposable
     /// <summary>Writes one 64-byte USB frame. False on a transport failure.</summary>
     bool RfSend(ReadOnlySpan<byte> frame);
 
+    /// <summary>True when the last <see cref="RfSend"/> failed by running into the pipe's write timeout rather than by an error.</summary>
+    bool LastWriteTimedOut => false;
+
     /// <summary>
     /// Reassembles a reply from 64-byte interrupt reads up to <paramref name="expectedLen"/>
     /// bytes (the decompiled RfRead/ReadAll loop): stops early on a zero-length or short
@@ -148,6 +151,8 @@ public sealed class Slv3Transport : ISlv3Transport
     public Slv3DongleRole Role { get; }
     public string PortName { get; }
 
+    public bool LastWriteTimedOut { get; private set; }
+
     public bool RfSend(ReadOnlySpan<byte> frame)
     {
         if (_disposed)
@@ -157,6 +162,7 @@ public sealed class Slv3Transport : ISlv3Transport
         var buffer = frame.ToArray();
         lock (_ioLock)
         {
+            LastWriteTimedOut = false;
             if (Role == Slv3DongleRole.Rx)
             {
                 // A GetDev reply arrives as 64-byte packets; whatever a previous
@@ -175,6 +181,7 @@ public sealed class Slv3Transport : ISlv3Transport
             // closes this handle so the hub reopens the TX. RX failures keep
             // the hub's own reset escalation.
             var err = Marshal.GetLastWin32Error();
+            LastWriteTimedOut = err == ErrorSemTimeout;
             if (Role == Slv3DongleRole.Tx && err != ErrorSemTimeout && !_dead)
             {
                 _dead = true;

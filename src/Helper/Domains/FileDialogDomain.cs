@@ -38,28 +38,55 @@ public static class FileDialogCommands
     public const string PickType = "dialog.pick";
     public const string OpenFolderType = "dialog.openFolder";
     private const int TimeoutMs = 600_000;
+    private const int OpenFolderAckMs = 5000;
+    private const int OpenFolderWriteMarginMs = 1000;
 
     /// <summary>
     /// Open a folder in Explorer inside the user session, brought in front
-    /// of the app window. Fire-and-forget semantics; returns false when no
-    /// helper session is connected.
+    /// of the app window. The whole send is time-bounded; a missing ack is
+    /// reported as <see cref="OpenFolderOutcome.TimedOut"/> because Explorer
+    /// may still appear.
     /// </summary>
-    public static async Task<bool> OpenFolderAsync(HelperRegistry r, string path, CancellationToken ct = default)
+    public static async Task<OpenFolderOutcome> TryOpenFolderAsync(HelperRegistry? r, string path, CancellationToken ct = default)
     {
-        var conn = r.GetAny();
+        var conn = r?.GetAny();
         if (conn is null)
         {
-            return false;
+            return OpenFolderOutcome.NoHelper;
         }
 
-        var result = await conn.SendCommandAsync(
+        var send = conn.SendCommandAsync(
             OpenFolderType,
             new FileDialogRequest { Path = path },
             AppJsonContext.Default.FileDialogRequest,
-            timeoutMs: 5000,
-            ct: ct).ConfigureAwait(false);
-        return result.Ok;
+            timeoutMs: OpenFolderAckMs,
+            ct: ct);
+        // The ack timeout starts only after the pipe write, which a frozen helper with a full pipe never completes.
+        try
+        {
+            await send.WaitAsync(TimeSpan.FromMilliseconds(OpenFolderAckMs + OpenFolderWriteMarginMs), ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // Reads a later fault (helper killed mid-write) so it is not reported as unobserved.
+            _ = send.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            ServiceLog.Warn("[helper] dialog.openFolder send did not complete in time");
+            return OpenFolderOutcome.TimedOut;
+        }
+
+        var result = await send.ConfigureAwait(false);
+        var outcome = OpenFolderOutcomes.FromResult(result.Ok, result.Error);
+        if (outcome == OpenFolderOutcome.TimedOut)
+        {
+            ServiceLog.Warn("[helper] dialog.openFolder not acked in time");
+        }
+
+        return outcome;
     }
+
+    /// <summary>Opened-only view of <see cref="TryOpenFolderAsync"/> for callers that treat a timeout as failure.</summary>
+    public static async Task<bool> OpenFolderAsync(HelperRegistry r, string path, CancellationToken ct = default) =>
+        await TryOpenFolderAsync(r, path, ct).ConfigureAwait(false) == OpenFolderOutcome.Opened;
 
     public static async Task<FileDialogResult> PickAsync(HelperRegistry r, FileDialogPickMode mode, CancellationToken ct = default)
     {

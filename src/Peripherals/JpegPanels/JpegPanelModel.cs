@@ -34,6 +34,9 @@ public sealed record JpegPanelModel(
     /// </summary>
     public IJpegPanelHandshake? Handshake { get; init; }
 
+    /// <summary>The panel never shares a Nexus Panel record with another device's screen: cooler LCDs share surfaces, and a shared record would carry another model's layout.</summary>
+    public bool MultiInstance { get; init; }
+
     /// <summary>The panel's backlight is host-settable, so its record carries a brightness.</summary>
     public bool SupportsBrightness => Handshake is IJpegPanelBrightness;
 
@@ -91,7 +94,7 @@ public sealed record JpegPanelModel(
         Surface: Models.Panel.PanelSurfaces.LcdSquare)
     {
         Fps = HydroShiftFps,
-        Handshake = new LianLiAioHandshake("lianli-hydroshift-lcd", HydroShiftFps),
+        Handshake = new LianLiAioHandshake("lianli-hydroshift-lcd", HydroShiftFps, referenceSession: true),
         // Measured on a 360S (firmware N9,01,HS,SQ,HydroShift,V3.A.008,0.3): a pushed frame
         // lands a quarter turn clockwise, while the panel draws its own boot logo upright.
         // The LCD-control rotation byte is ignored by this firmware - 0, 1, 2 and 3 all
@@ -175,6 +178,26 @@ public sealed record JpegPanelModel(
     { Handshake = new AsRockLcdHandshake() };
 
     /// <summary>
+    /// ASUS ROG Strix SLC IV 360 ARGB LCD AIO. Measured from a customer's USB capture of
+    /// Armoury Crate: square baseline JPEG frames, chunked as the ASRock panel is (see
+    /// <see cref="AsusSlc4LcdHandshake"/> for the control channel).
+    /// Pump, fans and ARGB were not captured and are not driven.
+    /// </summary>
+    public static readonly JpegPanelModel AsusSlc4Lcd = new(
+        HandlerId: "asus-slc4-lcd",
+        Name: "ASUS ROG Strix SLC IV LCD",
+        VendorId: 0x0B05,
+        ProductIds: new[] { 0x1DE6 },
+        Width: 720,
+        Height: 720,
+        Circular: false,
+        ReportLength: 1025,
+        HeaderStyle: JpegPanelHeaderStyle.AsusFramed,
+        Selector: 0x5C,
+        Surface: Models.Panel.PanelSurfaces.LcdSquare)
+    { Fps = 22, Handshake = new AsusSlc4LcdHandshake(), MultiInstance = true };
+
+    /// <summary>
     /// Wired UNI FAN TL LCD: one HID device per fan screen, so it stays out of <see cref="All"/>
     /// and <see cref="TlLcdPanels"/> copies this row per screen with its own handshake. Its handler
     /// id names the screens' panel family; the screens follow the Uni Fan TL's switch.
@@ -201,6 +224,7 @@ public sealed record JpegPanelModel(
         CorsairCapellix,
         IdCoolingFx,
         AsRockLcd,
+        AsusSlc4Lcd,
     };
 
     /// <summary>

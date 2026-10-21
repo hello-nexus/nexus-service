@@ -108,13 +108,13 @@ public sealed class IconDiskCache
         {
             var key = KeyFor(targetId);
             Directory.CreateDirectory(_root);
-            AtomicJsonFile.Write(PngPath(key), pngBytes);
+            AtomicJsonFile.Write(PngPath(key), pngBytes, flushToDisk: false);
             var meta = new IconCacheMeta
             {
                 SourcePath = sourcePath,
                 SourceWriteTimeUtcTicks = sourceWriteTimeUtc.Ticks,
             };
-            AtomicJsonFile.Write(MetaPath(key), JsonSerializer.Serialize(meta, AppJsonContext.Default.IconCacheMeta));
+            AtomicJsonFile.Write(MetaPath(key), JsonSerializer.Serialize(meta, AppJsonContext.Default.IconCacheMeta), flushToDisk: false);
         }
         catch
         {

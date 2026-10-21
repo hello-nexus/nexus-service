@@ -369,10 +369,10 @@ public sealed class CorsairLinkLcd
 
     /// <summary>
     /// Selects the stored image or the coolant screen as the hand-back screen and shows it
-    /// now. iCUE wraps the choice in host mode on, choice, host mode off. Frames are ignored
+    /// now. With <paramref name="resumePainting"/> false host mode stays off, so the device keeps its own screen. iCUE wraps the choice in host mode on, choice, host mode off. Frames are ignored
     /// out of host mode, so if Nexus was painting the glass host mode goes back on.
     /// </summary>
-    public bool SelectHandBackScreen(bool storedImage)
+    public bool SelectHandBackScreen(bool storedImage, bool resumePainting = true)
     {
         lock (_lock)
         {
@@ -385,7 +385,7 @@ public sealed class CorsairLinkLcd
                 && _device.SetFeature(new byte[] { 0x03, 0x1e, source, 0x01 })
                 && _device.SetFeature(HostModeOff);
             _hostMode = false;
-            if (ok && painting)
+            if (ok && painting && resumePainting)
             {
                 ok = _hostMode = _device.SetFeature(HostModeOn);
                 System.Threading.Volatile.Write(ref _repaintRequested, 1);

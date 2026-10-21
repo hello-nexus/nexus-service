@@ -16,15 +16,43 @@ internal static class Y70LayoutPlacement
     public const int GridRows = 16;
     public const int MaxPages = 10;
 
-    public static (int Cols, int Rows) SpanForSize(string size) => size switch
+    private const int MaxSideSpan = 32;
+
+    /// <summary>Span for a stored size: the legacy enum names plus any
+    /// <c>"{cols}x{rows}"</c> pair of plain decimal digits, each side in range
+    /// of the web grammar, clamped to the grid. Anything unparseable is a 4x4,
+    /// matching the web's size normalization.</summary>
+    public static (int Cols, int Rows) SpanForSize(string? size)
     {
-        "1x1" => (1, 1),
-        "2x2" => (2, 2),
-        "4x1" => (4, 1),
-        "4x2" => (4, 2),
-        "4x4" => (4, 4),
-        _ => (2, 2),
-    };
+        if (size == "2x2round")
+        {
+            return (2, 2);
+        }
+        var parts = size?.Split('x');
+        if (parts is { Length: 2 } && TryParseSide(parts[0], out var cols) && TryParseSide(parts[1], out var rows))
+        {
+            return (cols > GridCols ? GridCols : cols, rows > GridRows ? GridRows : rows);
+        }
+        return (4, 4);
+    }
+
+    private static bool TryParseSide(string text, out int value)
+    {
+        value = 0;
+        if (text.Length is < 1 or > 2 || text[0] == '0')
+        {
+            return false;
+        }
+        foreach (var ch in text)
+        {
+            if (ch is < '0' or > '9')
+            {
+                return false;
+            }
+            value = (value * 10) + (ch - '0');
+        }
+        return value <= MaxSideSpan;
+    }
 
     private static int SnapStride(int span) => span <= 1 ? 1 : 2;
 
@@ -70,7 +98,7 @@ internal static class Y70LayoutPlacement
             foreach (var w in pages[0].Widgets)
             {
                 var (ecs, ers) = SpanForSize(w.Size);
-                if (RectsOverlap((w.Col, w.Row, ecs > GridCols ? GridCols : ecs, ers), target))
+                if (RectsOverlap((w.Col, w.Row, ecs, ers), target))
                 {
                     return false;
                 }
@@ -88,13 +116,13 @@ internal static class Y70LayoutPlacement
 
     private static (int Col, int Row)? FirstFreeRect(List<PanelWidgetDto> existing, int colSpan, int rowSpan)
     {
-        var cs = colSpan > GridCols ? GridCols : colSpan;
+        var cs = colSpan;
         var rs = rowSpan;
         var rects = new List<(int Col, int Row, int ColSpan, int RowSpan)>(existing.Count);
         foreach (var w in existing)
         {
             var (ecs, ers) = SpanForSize(w.Size);
-            rects.Add((w.Col, w.Row, ecs > GridCols ? GridCols : ecs, ers));
+            rects.Add((w.Col, w.Row, ecs, ers));
         }
 
         // Stride-aligned pass first (snap aesthetics), then a stride-1 pass so

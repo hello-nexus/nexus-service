@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
@@ -10,6 +11,8 @@ using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using RAMSPDToolkit.I2CSMBus;
+using RAMSPDToolkit.SPD;
 using RAMSPDToolkit.Windows.Driver;
 using RAMSPDToolkit.Windows.Driver.Interfaces;
 
@@ -37,7 +40,7 @@ namespace Nexus.Service.Sensors;
 /// preset (via SignalLhmOpened), and CurveEngine re-drives channels as they
 /// appear, so the delayed open never strands fan control.
 /// </summary>
-public sealed class LhmComputer : IDisposable
+public sealed class LhmComputer : IDisposable, ISpdPageReset
 {
     private readonly Computer _computer;
     private readonly Task _openTask;
@@ -52,6 +55,9 @@ public sealed class LhmComputer : IDisposable
     private readonly Nexus.Service.Sockets.MultiplexHub? _hub;
     private readonly SmartActiveFlip _smartActive;
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
+    private volatile bool _spdActive;
+    private volatile bool _settingSeen;
+    private volatile bool _disposed;
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
 
     // Hard cap of one hardware walk per second. Measured from the walk's START,
@@ -77,11 +83,14 @@ public sealed class LhmComputer : IDisposable
         // Open and reads each DIMM thermal sensor per walk, which knocks iCUE
         // off the same bus. Seated before Open, the stub keeps the group's
         // RAM-usage sensors and skips the DIMM path.
-        var spdDisabled = !_gate.IsEnabled(SmbusDramHandler.HandlerId);
+        var startup = SpdReadPolicy.Decide(_gate.IsEnabled(SmbusDramHandler.HandlerId), config.Load().ReadRamTemperatures, currentlyActive: false);
+        _settingSeen = config.Load().ReadRamTemperatures;
+        var spdDisabled = !startup.Wanted;
+        _spdActive = startup.Wanted;
         if (spdDisabled)
         {
             DriverManager.Driver = NoSpdDriver.Instance;
-            Console.WriteLine("[lhm] DIMM SPD polling off: Nexus Control for the memory device is off");
+            Console.WriteLine($"[lhm] DIMM SPD polling off: {startup.Reason}");
         }
         // With GPU disabled LHM never constructs its AMD/NVIDIA GPU nodes, so
         // no ADL FrameMetrics/PMLog session is opened and no per-node D3DKMT
@@ -134,12 +143,10 @@ public sealed class LhmComputer : IDisposable
             }
         });
         _gate.Changed += OnControlGateChanged;
-        // A toggle between the read above and this subscription would otherwise
+        _config.OnChanged += OnConfigChanged;
+        // A toggle between the reads above and these subscriptions would otherwise
         // hold until the next restart.
-        if (_gate.IsEnabled(SmbusDramHandler.HandlerId) == spdDisabled)
-        {
-            OnControlGateChanged(SmbusDramHandler.HandlerId, !spdDisabled);
-        }
+        ScheduleSpdApply();
     }
 
     public Computer Instance => _computer;
@@ -150,21 +157,43 @@ public sealed class LhmComputer : IDisposable
         {
             return;
         }
-        // The swap needs Open() finished; the open task never faults, so the
-        // continuation always runs. State is re-read under the lock rather than
-        // captured here, so two racing toggles cannot land out of order.
-        _ = _openTask.ContinueWith(_ => ApplySpdGate(), TaskScheduler.Default);
+        ScheduleSpdApply();
     }
+
+    private void OnConfigChanged()
+    {
+        var setting = _config.Load().ReadRamTemperatures;
+        if (setting == _settingSeen)
+        {
+            return;
+        }
+        _settingSeen = setting;
+        ScheduleSpdApply();
+    }
+
+    // The swap needs Open() finished; the open task never faults, so the
+    // continuation always runs. State is re-read under the lock rather than
+    // captured here, so two racing toggles cannot land out of order.
+    private void ScheduleSpdApply() => _ = _openTask.ContinueWith(_ => ApplySpdGate(), TaskScheduler.Default);
 
     /// <summary>Rebuilds the memory group live: IsMemoryEnabled removes and re-adds it on an open Computer, and the driver seated at that moment decides whether the new group probes SPD.</summary>
     private void ApplySpdGate()
     {
         try
         {
-            bool enabled;
+            SpdDecision decision;
             lock (_updateLock)
             {
-                enabled = _gate.IsEnabled(SmbusDramHandler.HandlerId);
+                decision = SpdReadPolicy.Decide(_gate.IsEnabled(SmbusDramHandler.HandlerId), _config.Load().ReadRamTemperatures, _spdActive);
+                if (_disposed || !decision.Changed)
+                {
+                    return;
+                }
+                // Page reset runs while the real driver is still seated.
+                if (!decision.Wanted)
+                {
+                    ResetLocked(SpdLiveResetBudget);
+                }
                 // Group first (cancels its retry task, closes its DIMMs), then
                 // the driver swap. Re-enabling probes eight addresses
                 // synchronously under the lock.
@@ -174,17 +203,92 @@ public sealed class LhmComputer : IDisposable
                 // page through them later, dereferencing the disposed module on
                 // the finalizer thread and terminating the process. The old
                 // modules stay open until the next re-enable re-detects buses.
-                DriverManager.Driver = enabled ? null : NoSpdDriver.Instance;
+                DriverManager.Driver = decision.Wanted ? null : NoSpdDriver.Instance;
                 _computer.IsMemoryEnabled = true;
+                _spdActive = decision.Wanted;
             }
-            Console.WriteLine(enabled
-                ? "[lhm] DIMM SPD polling on: Nexus Control for the memory device turned on"
-                : "[lhm] DIMM SPD polling off: Nexus Control for the memory device turned off");
+            Console.WriteLine(decision.Wanted
+                ? $"[lhm] DIMM SPD polling on: {decision.Reason}"
+                : $"[lhm] DIMM SPD polling off: {decision.Reason}");
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[lhm] DIMM SPD gate apply failed: {ex.Message}");
         }
+    }
+
+    private static readonly TimeSpan SpdDisposeBudget = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SpdLiveResetBudget = TimeSpan.FromMilliseconds(750);
+
+    /// <inheritdoc />
+    public int ResetSpdPages(TimeSpan budget)
+    {
+        if (!_spdActive)
+        {
+            return 0;
+        }
+        var clock = Stopwatch.StartNew();
+        // Open() and ApplySpdGate rebuild the bus list and the DIMM set under these.
+        if (!_openTask.Wait(budget) || !Monitor.TryEnter(_updateLock, budget > clock.Elapsed ? budget - clock.Elapsed : TimeSpan.Zero))
+        {
+            Console.WriteLine("[lhm] DIMM SPD page reset skipped: LHM busy past the shutdown budget");
+            return 0;
+        }
+        try
+        {
+            var remaining = budget - clock.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                Console.WriteLine("[lhm] DIMM SPD page reset skipped: shutdown budget spent waiting for LHM");
+                return 0;
+            }
+            return ResetLocked(remaining);
+        }
+        finally
+        {
+            Monitor.Exit(_updateLock);
+        }
+    }
+
+    private int ResetLocked(TimeSpan budget) =>
+        SpdPageResetRunner.Run(_spdActive, expired => ResetDetectedDimms(expired), budget, Console.WriteLine);
+
+    private int ResetDetectedDimms(Func<bool> expired)
+    {
+        var addresses = new List<byte>();
+        CollectDimmAddresses(_computer.Hardware, addresses);
+        if (addresses.Count == 0)
+        {
+            return 0;
+        }
+        var buses = SMBusManager.RegisteredSMBuses.Select(b => (ISpdBus)new ToolkitSpdBus(b)).ToArray();
+        return SpdPageReset.Run(buses, addresses, expired);
+    }
+
+    private static void CollectDimmAddresses(IEnumerable<IHardware> hardware, List<byte> addresses)
+    {
+        const string DimmPrefix = "/memory/dimm/";
+        foreach (var h in hardware)
+        {
+            var id = h.Identifier.ToString();
+            if (id.StartsWith(DimmPrefix, StringComparison.Ordinal)
+                && int.TryParse(id.AsSpan(DimmPrefix.Length), out var index)
+                && index is >= 0 and < 8
+                && !addresses.Contains((byte)(0x50 + index)))
+            {
+                addresses.Add((byte)(0x50 + index));
+            }
+            CollectDimmAddresses(h.SubHardware, addresses);
+        }
+    }
+
+    private sealed class ToolkitSpdBus : ISpdBus
+    {
+        private readonly SMBusInterface _bus;
+        public ToolkitSpdBus(SMBusInterface bus) => _bus = bus;
+        public int ReadByte(byte address, byte register) => _bus.i2c_smbus_read_byte_data(address, register);
+        public bool ResetDdr5Page(byte address) => DDR5Accessor.IsAvailable(_bus, address);
+        public void SelectDdr4Page0() => _bus.i2c_smbus_write_byte_data(0x36, 0, byte.MaxValue);
     }
 
     /// <summary>A RAMSPDToolkit driver that reports open so MemoryGroup keeps it instead of installing its PawnIO one, and fails to load because it is none of the three kinds DriverManager accepts, so no bus is ever detected.</summary>
@@ -355,11 +459,14 @@ public sealed class LhmComputer : IDisposable
     public void Dispose()
     {
         _gate.Changed -= OnControlGateChanged;
+        _config.OnChanged -= OnConfigChanged;
         // Wait for the background open to finish before Close(): LHM's
         // Computer.Close() isn't documented thread-safe against an in-flight
         // Open(), and Dispose() is only called at service shutdown so the
         // wait is rare and not on any user-visible path.
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
+        _disposed = true;
+        ResetSpdPages(SpdDisposeBudget);
         _computer.Close();
     }
 }

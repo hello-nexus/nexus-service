@@ -1,12 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Lighting.Engine.Effects;
 
 namespace Nexus.Service.Lighting.Engine;
 
-public sealed class LightingEngine : IDisposable
+public sealed partial class LightingEngine : IDisposable
 {
     private readonly CanvasBuffer _canvas;
     private readonly CanvasBuffer _aheadCanvas;
@@ -70,7 +71,7 @@ public sealed class LightingEngine : IDisposable
 
     public LightingEngine()
     {
-        _canvas = new CanvasBuffer(160, 90);
+        _canvas = new CanvasBuffer(CanvasBuffer.DefaultWidth, CanvasBuffer.DefaultHeight);
         _aheadCanvas = new CanvasBuffer(_canvas.Width, _canvas.Height);
         _sampleCanvas = _canvas;
     }
@@ -82,7 +83,7 @@ public sealed class LightingEngine : IDisposable
     /// An LED reads the plain mean of a spot this size centered on its sample position, clamped at the canvas edges and
     /// never larger than the LED's own cell.
     /// </summary>
-    private const float SpotSideOfCanvasWidth = 3f / 160f;
+    internal const float SpotSideOfCanvasWidth = 3f / 160f;
 
     /// <summary>
     /// Every device samples the WHOLE canvas instead of the rect its layout
@@ -95,7 +96,7 @@ public sealed class LightingEngine : IDisposable
     /// <summary>Fraction of the canvas height a linear strip integrates under
     /// <see cref="FullFrameSampling"/>; wide enough to reject single-pixel
     /// noise, narrow enough to keep a band's edge.</summary>
-    private const float FullFrameStripBreadth = 0.08f;
+    internal const float FullFrameStripBreadth = 0.08f;
 
     // Shader Studio live preview: painted over every device, above pins and the running effect, below the
     // LED mapper's highlight and test pattern and a blackout hold. Memory only.
@@ -155,7 +156,11 @@ public sealed class LightingEngine : IDisposable
             }
         }
     }
-    public void UpdateDevices(DeviceFrame[] devices) { _devices = devices; }
+    public void UpdateDevices(DeviceFrame[] devices)
+    {
+        _devices = devices;
+        PruneAreaCaches(devices);
+    }
 
     // Devices placed in the 3D scene and the camera that sees them; null means
     // every device samples its 2D frame. Replaced wholesale, never mutated.
@@ -236,17 +241,39 @@ public sealed class LightingEngine : IDisposable
     // device does globally while a sweep is the active effect.
     private readonly HashSet<string> _pinFullFrame = new(StringComparer.Ordinal);
     private long _pinTick;
-    private bool[] _gameSkip = Array.Empty<bool>();
 
     // One assignment renders once into this scratch canvas and every device
     // wearing that look samples it. Static is a held frame, so a look is
     // rendered only when its key changes, not per frame.
     private CanvasBuffer? _assignCanvas;
     private readonly Dictionary<string, byte[]> _assignRenders = new(StringComparer.Ordinal);
-    private int _assignVersionSeen = -1;
+    // Static-pin shaders whose first frame has not been drawn, kept alive so the compile can finish. Loop thread only.
+    private readonly Dictionary<string, IEffect> _assignPending = new(StringComparer.Ordinal);
+    // Failed builds per look: when to try again and how many attempts so far.
+    private readonly Dictionary<string, (long At, int Attempts)> _assignRetry = new(StringComparer.Ordinal);
+    // The last finished look each device painted, held while its next look compiles.
+    private readonly Dictionary<string, byte[]> _assignLastGood = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _assignRefKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _assignRefDevices = new(StringComparer.Ordinal);
+    private int _assignPruneVersion = -1;
+    private DeviceFrame[]? _assignPruneDevices;
+    internal const long AssignRetryBaseMs = 1000;
+    internal const long AssignRetryMaxMs = 60000;
+    // The longest build is compile, fallback compile, then link (three phases), each forced after DefaultForceAfterMs; four is deliberate headroom.
+    private const int AssignBuildPhases = 4;
+    private const long AssignBudgetMarginMs = 5000;
+    /// <summary>A compile that has drawn nothing for this long is abandoned and handed to the retry backoff; it outlasts the build's own force timeouts.</summary>
+    internal static readonly long DefaultAssignPendingBudgetMs = (long)Gpu.AsyncProgramBuild.DefaultForceAfterMs * AssignBuildPhases + AssignBudgetMarginMs;
+    internal long AssignPendingBudgetMs { get; set; } = DefaultAssignPendingBudgetMs;
+    /// <summary>A gap between polls longer than this means nothing was polling (blackout, sleep, pause), so the budget starts over.</summary>
+    internal long AssignPollGapMs { get; set; } = 2000;
+    private readonly Dictionary<string, (long Since, long Polled)> _assignPendingSince = new(StringComparer.Ordinal);
     // Reused per-frame scratch: which devices ApplyTestOverlays painted. Valid
     // for the rest of the tick after SampleDevicesFromCanvas returns.
     private bool[] _overlaid = Array.Empty<bool>();
+    // The subset of _overlaid that key reactions must not paint over. A static pin
+    // owns its device's colors yet is the base a reaction composes onto.
+    private bool[] _reactionBlocked = Array.Empty<bool>();
 
     /// <summary>
     /// Freezes or resumes the render loop for the current effect; a no-op with
@@ -609,6 +636,8 @@ public sealed class LightingEngine : IDisposable
         lock (_lock)
         {
             var old = _currentEffect;
+            // Queued before the new effect is published, so the render thread never sees it without its handover.
+            var retired = RetireOutgoing(effect, old);
             _currentEffect = effect;
             _paused = false;
             _frozen = false;
@@ -617,7 +646,12 @@ public sealed class LightingEngine : IDisposable
             ReleaseBlackoutState();
             Interlocked.Increment(ref _frozenEpoch);
             try
-            { old?.Dispose(); }
+            {
+                if (!retired)
+                {
+                    old?.Dispose();
+                }
+            }
             catch { }
             if (_loopTask is null || _loopTask.IsCompleted)
             {
@@ -647,13 +681,74 @@ public sealed class LightingEngine : IDisposable
             {
                 return false;
             }
+            var retired = RetireOutgoing(replacement, expected);
             _currentEffect = replacement;
             try
-            { expected.Dispose(); }
+            {
+                if (!retired)
+                {
+                    expected.Dispose();
+                }
+            }
             catch { }
         }
         OnEffectChanged?.Invoke();
         return true;
+    }
+
+    // Shader effects leaving the stage, with the effect replacing each. The render thread settles these at the top of a
+    // tick: the incoming shader takes over drawing the outgoing one until its own program lands (shader to shader, so a
+    // switch or a custom-shader save keeps animating), otherwise the outgoing one is disposed. Doing it there, not on the
+    // calling thread, keeps adoption ordered against the frames that read both effects. An outgoing effect that is not a
+    // shader is disposed at once: the incoming shader holds the canvas's last frame until it lands, because such an
+    // effect may own capture sources that stop with the switch.
+    private readonly Queue<(IEffect Incoming, Gpu.ShaderEffect Outgoing)> _handovers = new();
+
+    private bool RetireOutgoing(IEffect incoming, IEffect? outgoing)
+    {
+        if (outgoing is not Gpu.ShaderEffect shader)
+        {
+            return false;
+        }
+        lock (_handovers)
+        {
+            _handovers.Enqueue((incoming, shader));
+        }
+        return true;
+    }
+
+    private bool HandoversPending
+    {
+        get
+        {
+            lock (_handovers)
+            {
+                return _handovers.Count > 0;
+            }
+        }
+    }
+
+    private void SettleHandovers()
+    {
+        while (true)
+        {
+            (IEffect Incoming, Gpu.ShaderEffect Outgoing) item;
+            lock (_handovers)
+            {
+                if (!_handovers.TryDequeue(out item))
+                {
+                    return;
+                }
+            }
+            try
+            {
+                if (!(item.Incoming is Gpu.ShaderEffect incoming && incoming.AdoptPredecessor(item.Outgoing)))
+                {
+                    item.Outgoing.Dispose();
+                }
+            }
+            catch { }
+        }
     }
 
     public void Stop()
@@ -670,6 +765,15 @@ public sealed class LightingEngine : IDisposable
             try
             { old?.Dispose(); }
             catch { }
+            lock (_handovers)
+            {
+                while (_handovers.TryDequeue(out var pending))
+                {
+                    try
+                    { pending.Outgoing.Dispose(); }
+                    catch { }
+                }
+            }
             _canvas.Clear();
             foreach (var dev in _devices)
             {
@@ -697,7 +801,13 @@ public sealed class LightingEngine : IDisposable
         {
             while (!ct.IsCancellationRequested)
             {
+                SettleHandovers();
                 var effect = _currentEffect;
+                // A switch that landed between the settle and the read has its handover queued already.
+                if (HandoversPending)
+                {
+                    SettleHandovers();
+                }
                 DeviceFrame[]? aheadDevices = null;
                 if (effect is null)
                 {
@@ -726,34 +836,43 @@ public sealed class LightingEngine : IDisposable
                         // still runs so device changes reach hardware.
                         _resampleOnce = false;
                         var epoch = Volatile.Read(ref _frozenEpoch);
-                        if (!_frozen || Volatile.Read(ref _frozenRenderedEpoch) != epoch)
+                        // One snapshot for the sample and the publish:
+                        // UpdateDevices swaps the array lock-free.
+                        var devices = _devices;
+                        // The main effect and the pinned looks read back together, closed before any canvas is sampled.
+                        var liveBatch = effect is Gpu.ShaderEffect liveShader ? Gpu.ReadbackBatch.TryBegin(liveShader.Context) : null;
+                        var markRendered = false;
+                        try
                         {
-                            _lastRenderMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                            _lastRenderEffect = effect;
-                            effect.RenderFrame(_canvas, _lastRenderMs);
+                            if (!_frozen || Volatile.Read(ref _frozenRenderedEpoch) != epoch)
+                            {
+                                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                                _lastRenderMs = nowMs;
+                                _lastRenderEffect = effect;
+                                effect.RenderFrame(_canvas, _lastRenderMs);
+                                // A shader still compiling drew nothing of its own: keep asking until it does.
+                                if (effect is not Gpu.ShaderEffect { IsRenderPending: true })
+                                {
+                                    markRendered = true;
+                                }
+                            }
+                            RenderPins(effect, devices);
+                        }
+                        finally
+                        {
+                            liveBatch?.Dispose();
+                        }
+                        // Only once the readback landed: a reset context leaves the old canvas, which must be drawn again.
+                        if (markRendered && liveBatch?.Lost != true)
+                        {
                             Volatile.Write(ref _frozenRenderedEpoch, epoch);
                         }
-                        // One snapshot for the sample, the game pass and the
-                        // publish: UpdateDevices swaps the array lock-free,
-                        // and the skip mask below is indexed against it.
-                        var devices = _devices;
-                        RenderPins(effect, devices);
                         // After RenderPins, which updates pinned looks in place.
                         TrackAheadParams(effect);
                         TrackPinAhead(effect);
                         SampleDevicesFromCanvas(devices);
                         ApplyLedColorLocks(devices);
-                        if (effect is GameSyncEffect gs)
-                        {
-                            // A static pin (or a highlight / test pattern)
-                            // already owns its device; the game frame must
-                            // not paint over it.
-                            gs.WriteToDevices(devices, GameSkipMask(devices));
-                            // The game frame paints whole devices, locked LEDs too.
-                            ApplyLedColorLocks(devices);
-                        }
-                        // After the game frame so a press shows over game lighting too.
-                        if (KeyReactive?.Apply(devices, _overlaid, Environment.TickCount64) == true)
+                        if (KeyReactive?.Apply(devices, _reactionBlocked, Environment.TickCount64) == true)
                         {
                             ApplyLedColorLocks(devices);
                         }
@@ -781,13 +900,20 @@ public sealed class LightingEngine : IDisposable
                         }
                         aheadDevices = devices;
                     }
-                    else if ((_studioOverlay is not null || _resampleOnce) && wakeMs <= 0)
+                    else if ((_studioOverlay is not null || _resampleOnce || AnyAssignPollable()) && wakeMs <= 0)
                     {
                         // Paused: the effect holds, the studio overlay keeps animating over it, and once it clears the effect's paused frame is repainted onto the devices.
                         var devices = _devices;
                         if (_studioOverlay is not null)
                         {
                             ApplyTestOverlays(devices);
+                        }
+                        else if (!_resampleOnce)
+                        {
+                            // Only a pending static look holds this branch open: the main effect is not rendered again (input-driven
+                            // effects must not animate while paused), only the pins are polled and painted.
+                            ApplyTestOverlays(devices);
+                            ApplyLedColorLocks(devices);
                         }
                         else
                         {
@@ -796,11 +922,6 @@ public sealed class LightingEngine : IDisposable
                             effect.RenderFrame(_canvas, ReferenceEquals(effect, _lastRenderEffect) ? _lastRenderMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                             SampleDevicesFromCanvas(devices);
                             ApplyLedColorLocks(devices);
-                            if (effect is GameSyncEffect pausedGame)
-                            {
-                                pausedGame.WriteToDevices(devices, GameSkipMask(devices));
-                                ApplyLedColorLocks(devices);
-                            }
                         }
                         foreach (var dev in devices)
                         {
@@ -857,6 +978,7 @@ public sealed class LightingEngine : IDisposable
         finally
         {
             DisposePinRenders();
+            DisposeAssignState();
             _canvas.Clear();
             foreach (var dev in _devices)
             {
@@ -880,7 +1002,7 @@ public sealed class LightingEngine : IDisposable
     {
         if (pin.Kind == Nexus.Service.Persistence.DevicePinKinds.Animate && !string.IsNullOrEmpty(pin.Effect))
         {
-            return pin.Effect;
+            return Nexus.Service.Lighting.DevicePinLook.AnimateRenderKey(pin);
         }
         if (pin.Kind == Nexus.Service.Persistence.DevicePinKinds.Mirror)
         {
@@ -1016,7 +1138,9 @@ public sealed class LightingEngine : IDisposable
                     try
                     {
                         render.Effect.RenderFrame(render.Canvas, nowMs);
-                        render.Rendered = true;
+                        // Still compiling with nothing to stand in: leave the devices on the global canvas instead of a blank one.
+                        // A shader that failed outright stays pinned (black) instead of recompiling on every retry.
+                        render.Rendered = render.Effect is not Gpu.ShaderEffect { IsRenderPending: true, CanPaint: false };
                     }
                     catch (Exception ex)
                     {
@@ -1078,7 +1202,12 @@ public sealed class LightingEngine : IDisposable
             var built = factory(key, previous);
             if (!ReferenceEquals(built, render.Effect))
             {
-                try { render.Effect?.Dispose(); } catch { /* best-effort */ }
+                // A shader that has to compile keeps the pin showing the outgoing look until it lands.
+                var handedOver = built is Gpu.ShaderEffect incoming && render.Effect is Gpu.ShaderEffect outgoing && incoming.AdoptPredecessor(outgoing);
+                if (!handedOver)
+                {
+                    try { render.Effect?.Dispose(); } catch { /* best-effort */ }
+                }
             }
             render.Effect = built;
             render.Tag = tag;
@@ -1093,26 +1222,6 @@ public sealed class LightingEngine : IDisposable
             render.RetryAtMs = nowMs + PinRetryMs;
             Gpu.GpuContext.Log($"[pin] build failed for {key}: {ex.GetType().Name}: {ex.Message}");
         }
-    }
-
-    /// <summary>
-    /// The skip mask for the game frame: whatever an overlay painted, plus
-    /// pinned devices, which the shared game frame must not overwrite.
-    /// The key-reactive pass keeps using the overlay mask alone, so a pinned
-    /// keyboard still reacts to presses.
-    /// </summary>
-    private bool[] GameSkipMask(DeviceFrame[] devices)
-    {
-        if (_pinnedDevices.Count == 0)
-        {
-            return _overlaid;
-        }
-        if (_gameSkip.Length < devices.Length) _gameSkip = new bool[devices.Length];
-        for (var i = 0; i < devices.Length; i++)
-        {
-            _gameSkip[i] = (i < _overlaid.Length && _overlaid[i]) || _pinnedDevices.ContainsKey(devices[i].Id);
-        }
-        return _gameSkip;
     }
 
     /// <summary>
@@ -1184,7 +1293,7 @@ public sealed class LightingEngine : IDisposable
     // Shaders that read no audio and the clock-only effects depend on the clock and their settings alone.
     // A shader that failed leaves its canvas as it was, so it is not a source to pre-render.
     private static bool IsTimePure(IEffect? effect) =>
-        effect is Effects.IClockOnlyEffect or Gpu.ShaderEffect { ReadsAudio: false, HasFailed: false };
+        effect is Effects.IClockOnlyEffect or Gpu.ShaderEffect { ReadsAudio: false, ReadsSensors: false, HasFailed: false };
 
     // A pinned source that failed to build or render shows the base canvas, as it does live. A shader that failed
     // without throwing keeps its stale canvas live, so IsTimePure rejects it and the chain stays live.
@@ -1217,11 +1326,11 @@ public sealed class LightingEngine : IDisposable
                 usesGlobal = true;
                 break;
             case Nexus.Service.Persistence.DevicePinKinds.Animate:
-                if (string.Equals(active.Name, pin.Effect, StringComparison.Ordinal))
+                if (string.Equals(active.Name, PinRenderKey(pin), StringComparison.Ordinal))
                 {
                     usesGlobal = true;
                 }
-                else if (_pinRenders.TryGetValue(pin.Effect!, out var render) && PinSourceRendering(render, out var fx))
+                else if (PinRenderKey(pin) is { } renderKey && _pinRenders.TryGetValue(renderKey, out var render) && PinSourceRendering(render, out var fx))
                 {
                     ok = IsTimePure(fx);
                     animates = ok;
@@ -1268,7 +1377,7 @@ public sealed class LightingEngine : IDisposable
                 _pinHashes.Clear();
                 foreach (var (id, pin) in pins!)
                 {
-                    _pinHashes[id] = HashCode.Combine(pin.Kind, Nexus.Service.Lighting.DevicePinLook.StaticKey(pin));
+                    _pinHashes[id] = HashCode.Combine(pin.Kind, Nexus.Service.Lighting.DevicePinLook.StaticKey(pin), Nexus.Service.Persistence.SensorBinding.MapKey(pin.Sensors));
                 }
             }
             var matched = 0;
@@ -1427,6 +1536,22 @@ public sealed class LightingEngine : IDisposable
         return req;
     }
 
+    // Frames of one window rendered back to back before their readbacks are mapped together.
+    private const int AheadBatchFrames = 8;
+
+    // The active window's renders all go through ShaderEffect, so several frames may share one readback batch.
+    private bool _aheadBatchOk;
+    // Set by RenderAheadPins when a pinned source renders straight into its canvas instead of queueing a readback.
+    private bool _aheadImmediatePin;
+    private readonly List<DeviceFrame[]> _aheadBatchShadows = new();
+    private readonly List<Dictionary<string, CanvasBuffer?>> _aheadBatchPinned = new();
+    private readonly List<HashSet<string>> _aheadBatchFullFrame = new();
+
+    private bool AheadAbandoned(AheadRequest req, IEffect effect) =>
+        req.Abandoned || _studioOverlay is not null || req.PinSig != PinAheadSig(req.DeviceIds)
+        || (Pins?.Version ?? -1) != _pinAheadSeenVersion
+        || (req.NeedsGlobal && (!ReferenceEquals(req.Effect, effect) || req.ParamsSig != _aheadParamsSig || !IsTimePure(effect)));
+
     private void ServiceAheadRequests(IEffect effect, DeviceFrame[] devices)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -1442,45 +1567,101 @@ public sealed class LightingEngine : IDisposable
                 }
                 req.Begin(effect, _aheadParamsSig, PinAheadSig(req.DeviceIds), NeedsGlobal(req.DeviceIds), devices);
                 _aheadActive = req;
+                _aheadBatchOk = false;
             }
             // A window whose zones are all pinned does not depend on the global effect at all.
-            if (req.Abandoned || _studioOverlay is not null || req.PinSig != PinAheadSig(req.DeviceIds)
-                || (Pins?.Version ?? -1) != _pinAheadSeenVersion
-                || (req.NeedsGlobal && (!ReferenceEquals(req.Effect, effect) || req.ParamsSig != _aheadParamsSig || !IsTimePure(effect))))
+            if (AheadAbandoned(req, effect))
             {
                 _aheadActive = null;
                 req.Done.Set();
                 continue;
             }
+            if (req.NextFrame == 0)
+            {
+                switch (TryFastWindow(req, effect))
+                {
+                    case FastWindow.Done:
+                        rendered += req.TickMs.Length;
+                        req.Frames = req.Rendered;
+                        _aheadActive = null;
+                        req.Done.Set();
+                        continue;
+                    default:
+                        break;
+                }
+            }
+            // The first frame of a window renders alone and shows whether every source queues its readback;
+            // after that, up to AheadBatchFrames frames read back together. Without an open batch each
+            // frame renders straight into the shared canvases, so it must be sampled before the next one.
+            var batch = _aheadBatchOk && effect is Gpu.ShaderEffect batchShader ? Gpu.ReadbackBatch.TryBegin(batchShader.Context) : null;
+            var want = batch is not null ? Math.Min(AheadBatchFrames, req.TickMs.Length - req.NextFrame) : 1;
+            var count = 0;
+            var discard = false;
             try
             {
-                var shadow = req.NewShadowFrames();
-                if (req.NeedsGlobal)
+                for (; count < want; count++)
                 {
-                    effect.RenderFrame(_aheadCanvas, req.TickMs[req.NextFrame]);
+                    if (count > 0 && (AheadAbandoned(req, effect) || sw.Elapsed.TotalMilliseconds >= AheadBudgetMs))
+                    {
+                        break;
+                    }
+                    var tickMs = req.TickMs[req.NextFrame + count];
+                    var shadow = req.NewShadowFrames();
+                    batch?.Group = count;
+                    if (req.NeedsGlobal)
+                    {
+                        effect.RenderFrame(_aheadCanvas, tickMs);
+                    }
+                    else
+                    {
+                        _aheadCanvas.Clear();
+                    }
+                    _aheadImmediatePin = false;
+                    var failed = RenderAheadPins(effect, shadow, tickMs)
+                        || (req.NeedsGlobal && effect is Gpu.ShaderEffect { HasFailed: true } or Gpu.ShaderEffect { IsRenderPending: true });
+                    if (failed)
+                    {
+                        // A shader that failed mid-window left a stale canvas; ship nothing rather than those frames.
+                        discard = true;
+                        break;
+                    }
+                    if (count > 0 && _aheadImmediatePin)
+                    {
+                        // A source that renders straight into its canvas joined mid-group and overwrote earlier frames.
+                        _aheadBatchOk = false;
+                        discard = true;
+                        break;
+                    }
+                    if (count == 0)
+                    {
+                        _aheadBatchOk = !_aheadImmediatePin && (!req.NeedsGlobal || effect is Gpu.ShaderEffect { TestRender: null });
+                    }
+                    SnapshotAheadMaps(count, shadow);
                 }
-                else
+                if (discard)
                 {
-                    _aheadCanvas.Clear();
-                }
-                var failed = RenderAheadPins(effect, shadow, req.TickMs[req.NextFrame])
-                    || (req.NeedsGlobal && effect is Gpu.ShaderEffect { HasFailed: true });
-                if (failed)
-                {
-                    // A shader that failed mid-window left a stale canvas; ship nothing rather than those frames.
+                    batch?.Cancel();
                     _aheadActive = null;
                     req.Done.Set();
                     continue;
                 }
-                _sampleCanvas = _aheadCanvas;
-                SampleDevicesFromCanvas(shadow, pinned: _aheadPinned, pinFullFrame: _aheadPinFullFrame);
-                ApplyLedColorLocks(shadow);
-                foreach (var d in shadow)
+                batch?.Resolve();
+                for (var i = 0; i < count; i++)
                 {
-                    d.Publish();
+                    batch?.Apply(i);
+                    CheckSpot(req, req.NextFrame);
+                    var shadow = _aheadBatchShadows[i];
+                    RestoreAheadMaps(i);
+                    _sampleCanvas = _aheadCanvas;
+                    SampleDevicesFromCanvas(shadow, pinned: _aheadPinned, pinFullFrame: _aheadPinFullFrame);
+                    ApplyLedColorLocks(shadow);
+                    foreach (var d in shadow)
+                    {
+                        d.Publish();
+                    }
+                    req.Rendered[req.NextFrame++] = shadow;
+                    rendered++;
                 }
-                req.Rendered[req.NextFrame++] = shadow;
-                rendered++;
             }
             catch
             {
@@ -1491,6 +1672,15 @@ public sealed class LightingEngine : IDisposable
             finally
             {
                 _sampleCanvas = _canvas;
+                try
+                {
+                    batch?.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    // Already resolved on the normal path, so this only runs while another exception unwinds; keep that one.
+                    Gpu.GpuContext.Log($"[lighting-engine] look-ahead batch close failed: {ex.Message}");
+                }
             }
             if (req.NextFrame == req.TickMs.Length)
             {
@@ -1501,10 +1691,79 @@ public sealed class LightingEngine : IDisposable
         }
     }
 
+    // Keeps frame i's shadow devices and pin routing while later frames of the batch render over the shared maps.
+    private void SnapshotAheadMaps(int i, DeviceFrame[] shadow)
+    {
+        if (i == 0)
+        {
+            _aheadBatchShadows.Clear();
+        }
+        while (_aheadBatchPinned.Count <= i)
+        {
+            _aheadBatchPinned.Add(new Dictionary<string, CanvasBuffer?>(StringComparer.Ordinal));
+            _aheadBatchFullFrame.Add(new HashSet<string>(StringComparer.Ordinal));
+        }
+        _aheadBatchShadows.Add(shadow);
+        var pinned = _aheadBatchPinned[i];
+        pinned.Clear();
+        foreach (var kv in _aheadPinned)
+        {
+            pinned[kv.Key] = kv.Value;
+        }
+        var full = _aheadBatchFullFrame[i];
+        full.Clear();
+        full.UnionWith(_aheadPinFullFrame);
+    }
+
+    private void RestoreAheadMaps(int i)
+    {
+        _aheadPinned.Clear();
+        foreach (var kv in _aheadBatchPinned[i])
+        {
+            _aheadPinned[kv.Key] = kv.Value;
+        }
+        _aheadPinFullFrame.Clear();
+        _aheadPinFullFrame.UnionWith(_aheadBatchFullFrame[i]);
+    }
+
     private readonly Dictionary<string, CanvasBuffer?> _aheadPinned = new(StringComparer.Ordinal);
     private readonly HashSet<string> _aheadPinFullFrame = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CanvasBuffer> _aheadPinCanvases = new(StringComparer.Ordinal);
     private readonly HashSet<string> _aheadPinRendered = new(StringComparer.Ordinal);
+
+    private enum AheadPinKind { Base, FollowActive, Pin }
+
+    /// <summary>
+    /// Where a look-ahead device reads its canvas: the base canvas (no animate pin, or its pinned source cannot render),
+    /// the active effect's canvas (pinned to what runs globally), or its own pinned source. Shared by the canvas
+    /// window and the LED window so both route every device the same way.
+    /// </summary>
+    private AheadPinKind ResolveAheadPin(
+        DeviceFrame dev, Dictionary<string, Nexus.Service.Persistence.DevicePin> pins, IEffect active,
+        out string key, out IEffect? fx, out bool sweep)
+    {
+        key = "";
+        fx = null;
+        sweep = false;
+        if (!pins.TryGetValue(dev.Id, out var pin)
+            || pin.Kind != Nexus.Service.Persistence.DevicePinKinds.Animate
+            || string.IsNullOrEmpty(pin.Effect))
+        {
+            return AheadPinKind.Base;
+        }
+        key = PinRenderKey(pin)!;
+        sweep = Gpu.ShaderLibrary.IsSweepEffect(key);
+        if (string.Equals(active.Name, key, StringComparison.Ordinal))
+        {
+            return AheadPinKind.FollowActive;
+        }
+        if (!_pinRenders.TryGetValue(key, out var render) || !PinSourceRendering(render, out fx) || !IsTimePure(fx))
+        {
+            fx = null;
+            return AheadPinKind.Base;
+        }
+        return AheadPinKind.Pin;
+    }
 
     /// <summary>
     /// Renders each animate-pinned source the chain uses at <paramref name="tickMs"/> onto its own scratch
@@ -1527,23 +1786,15 @@ public sealed class LightingEngine : IDisposable
         var pins = tracker.Snapshot();
         foreach (var dev in shadow)
         {
-            if (!pins.TryGetValue(dev.Id, out var pin)
-                || pin.Kind != Nexus.Service.Persistence.DevicePinKinds.Animate
-                || string.IsNullOrEmpty(pin.Effect))
+            var kind = ResolveAheadPin(dev, pins, active, out var key, out var fx, out var sweep);
+            if (kind == AheadPinKind.Base)
             {
                 continue;
             }
-            var key = pin.Effect;
-            var sweep = Gpu.ShaderLibrary.IsSweepEffect(key);
-            if (string.Equals(active.Name, key, StringComparison.Ordinal))
+            if (kind == AheadPinKind.FollowActive)
             {
                 _aheadPinned[dev.Id] = null;
                 if (sweep) _aheadPinFullFrame.Add(dev.Id);
-                continue;
-            }
-            if (!_pinRenders.TryGetValue(key, out var render) || !PinSourceRendering(render, out var fx) || !IsTimePure(fx))
-            {
-                // Follows the base canvas, as a pinned source that cannot render does live.
                 continue;
             }
             if (!_aheadPinCanvases.TryGetValue(key, out var canvas))
@@ -1553,8 +1804,12 @@ public sealed class LightingEngine : IDisposable
             }
             if (_aheadPinRendered.Add(key))
             {
-                fx.RenderFrame(canvas, tickMs);
-                failed |= fx is Gpu.ShaderEffect { HasFailed: true };
+                fx!.RenderFrame(canvas, tickMs);
+                if (!Gpu.ReadbackBatch.CanDefer(fx))
+                {
+                    _aheadImmediatePin = true;
+                }
+                failed |= fx is Gpu.ShaderEffect { HasFailed: true } or Gpu.ShaderEffect { IsRenderPending: true };
             }
             _aheadPinned[dev.Id] = canvas;
             if (sweep) _aheadPinFullFrame.Add(dev.Id);
@@ -1584,6 +1839,7 @@ public sealed class LightingEngine : IDisposable
     {
         var cw = _sampleCanvas.Width;
         var ch = _sampleCanvas.Height;
+        RefreshSamplingModes();
         const float CW = CanvasUnitsW, CH = CanvasUnitsH;
         // Overlays first, so an LED they own never gets a canvas colour it is
         // about to lose. Correctness no longer rests on this - DeviceFrame
@@ -1645,14 +1901,6 @@ public sealed class LightingEngine : IDisposable
             var frameCy = rectY + rectH * 0.5f;
             var kx = cw / CW;
             var ky = ch / CH;
-            // A full-frame device is not placed on the canvas at all, so it has
-            // no orientation to honour either: the pattern reads along its LED
-            // order whichever way its card is turned.
-            var rad = fullFrame ? 0f : (((dev.Rotation % 360) + 360) % 360) * (MathF.PI / 180f);
-            var cos = MathF.Cos(rad);
-            var sin = MathF.Sin(rad);
-            var absCos = MathF.Abs(cos);
-            var absSin = MathF.Abs(sin);
             var slots = fullFrame ? null : _stackSlots;
             if (slots is not null && slots.TryGetValue(dev.Id, out var slot))
             {
@@ -1704,81 +1952,18 @@ public sealed class LightingEngine : IDisposable
 
             if (scene is not null && scene.Placements.TryGetValue(dev.Id, out var quads))
             {
-                SampleSceneDevice(dev, ledCount, devLedU, devLedV, devLedDisabled, quads, scene.Camera, kx, ky);
+                SampleSceneDevice(dev, ledCount, devLedU, devLedV, devLedDisabled, quads, scene, scene.Camera, kx, ky);
                 continue;
             }
 
-            if (devLedU is not null && devLedV is not null
-                && devLedU.Length == ledCount && devLedV.Length == ledCount)
-            {
-                // Cell dims from a uniform cols x rows density estimate matched
-                // to the rect aspect. The true UV layout may be non-uniform, so
-                // neighbouring cells can overlap or leave small gaps; keyboards
-                // land at ~key-sized cells and keep per-key sharpness. The cell
-                // read is the turned cell's bounding box.
-                var aspect = rectH > 0.001f ? rectW / rectH : 1f;
-                var cols = Math.Max(1, (int)MathF.Round(MathF.Sqrt(ledCount * aspect)));
-                var rows = Math.Max(1, (ledCount + cols - 1) / cols);
-                // Cells are at least one pixel on each axis.
-                var cellHalfW = Math.Max(1f / kx, rectW / cols) * 0.5f;
-                var cellHalfH = Math.Max(1f / ky, rectH / rows) * 0.5f;
-                // Full frame: the grid estimate spreads cols over the WHOLE
-                // canvas, so a device whose LEDs really run in a line gets a
-                // cell an order of magnitude too wide and the box mean flattens
-                // the pattern into a wash. The rect is not this device's frame
-                // here, so the layout tells us nothing about spacing - take the
-                // same cell the linear path does, n samples across the pattern
-                // by a thin slice.
-                // Width comes from the LED COUNT, not the span the u values
-                // actually cover, which matters for a hand-authored map that
-                // clusters its LEDs into a sliver of u: every LED then reads the
-                // same narrow window and the device pulses with the bands. A
-                // count-derived cell is the damping choice there - sizing it to
-                // the real (small) u extent would narrow the window further and
-                // sharpen the pulse, not soften it. The fix, if one is wanted,
-                // is to spread u over the full width under full frame.
-                if (fullFrame)
-                {
-                    cellHalfW = Math.Max(1f / kx, rectW / ledCount) * 0.5f;
-                    cellHalfH = Math.Max(1f / ky, rectH * FullFrameStripBreadth) * 0.5f;
-                }
-                var uvHalfW = (cellHalfW * absCos + cellHalfH * absSin) * kx;
-                var uvHalfH = (cellHalfW * absSin + cellHalfH * absCos) * ky;
-                for (int i = 0; i < ledCount; i++)
-                {
-                    if (devLedDisabled is not null && i < devLedDisabled.Length && devLedDisabled[i])
-                    {
-                        dev.SetLed(i, 0, 0, 0);
-                        continue;
-                    }
-                    var lx = rectX + devLedU[i] * rectW - frameCx;
-                    var ly = rectY + devLedV[i] * rectH - frameCy;
-                    var sx = (frameCx + lx * cos - ly * sin) * kx;
-                    var sy = (frameCy + lx * sin + ly * cos) * ky;
-                    var (r, g, b) = fullFrame
-                        ? SampleLedBox(sx - uvHalfW, sy - uvHalfH, sx + uvHalfW, sy + uvHalfH)
-                        : SampleLedSpot(sx, sy, uvHalfW, uvHalfH);
-                    dev.SetLed(i, r, g, b);
-                }
-                continue;
-            }
-
-            // Linear strip fallback: the LEDs walk the unturned rect's width
-            // along its centreline, first LED at the left. Each LED's cell spans
-            // the full breadth across the strip and one LED pitch along it, so
-            // content anywhere inside the frame reaches the LED at that position
-            // instead of only the centerline; the read is the turned cell's
-            // bounding box.
-            var pitchHalf = Math.Max(1f / kx, rectW / ledCount) * 0.5f;
-            // Full frame: a cell spanning the canvas top to bottom averages
-            // every band into one colour, so the strip reads a thin slice
-            // through the middle instead.
-            var breadth = fullFrame ? rectH * FullFrameStripBreadth : rectH;
-            var breadthHalf = Math.Max(1f / ky, breadth) * 0.5f;
-            var linHalfW = (pitchHalf * absCos + breadthHalf * absSin) * kx;
-            var linHalfH = (pitchHalf * absSin + breadthHalf * absCos) * ky;
-            var midY = rectY + rectH * 0.5f - frameCy;
-            var denom = ledCount > 1 ? 1f / (ledCount - 1) : 0f;
+            // UV maps read a cell sized from a uniform cols x rows density matched to the rect aspect; strips read one LED
+            // pitch along the centerline by the frame breadth. Geometry and spot rule live in LedSampling.cs.
+            var geo = LedSpotGeometry.Create(
+                rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, ledCount, devLedU, devLedV, fullFrame,
+                FullFrameStripBreadth);
+            var areaMap = AreaMapFor(
+                dev.Id, ledCount, devLedU, devLedV, devLedDisabled, rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, geo,
+                fullFrame);
             for (int i = 0; i < ledCount; i++)
             {
                 if (devLedDisabled is not null && i < devLedDisabled.Length && devLedDisabled[i])
@@ -1786,13 +1971,16 @@ public sealed class LightingEngine : IDisposable
                     dev.SetLed(i, 0, 0, 0);
                     continue;
                 }
-                var t = ledCount > 1 ? i * denom - 0.5f : 0f;
-                var lx = rectX + rectW * 0.5f + t * rectW - frameCx;
-                var sx = (frameCx + lx * cos - midY * sin) * kx;
-                var sy = (frameCy + lx * sin + midY * cos) * ky;
+                if (areaMap is not null)
+                {
+                    var (ar, ag, ab) = SampleAreaCell(areaMap, i);
+                    dev.SetLed(i, ar, ag, ab);
+                    continue;
+                }
+                geo.Center(i, out var sx, out var sy);
                 var (r, g, b) = fullFrame
-                    ? SampleLedBox(sx - linHalfW, sy - linHalfH, sx + linHalfW, sy + linHalfH)
-                    : SampleLedSpot(sx, sy, linHalfW, linHalfH);
+                    ? SampleLedBox(sx - geo.HalfW, sy - geo.HalfH, sx + geo.HalfW, sy + geo.HalfH)
+                    : SampleLedSpot(sx, sy, geo.HalfW, geo.HalfH);
                 dev.SetLed(i, r, g, b);
             }
         }
@@ -1806,7 +1994,7 @@ public sealed class LightingEngine : IDisposable
     /// </summary>
     private void SampleSceneDevice(
         DeviceFrame dev, int ledCount, float[]? ledU, float[]? ledV, bool[]? disabled,
-        Nexus.Service.Lighting.Scene.SceneQuad[] quads, in Nexus.Service.Lighting.Scene.SceneCameraBasis cam,
+        Nexus.Service.Lighting.Scene.SceneQuad[] quads, object sceneRef, in Nexus.Service.Lighting.Scene.SceneCameraBasis cam,
         float kx, float ky)
     {
         var hasUv = ledU is not null && ledV is not null && ledU.Length == ledCount && ledV.Length == ledCount;
@@ -1863,11 +2051,20 @@ public sealed class LightingEngine : IDisposable
             var halfW = Math.Max(1f / kx, boxW / cols) * 0.5f * kx;
             var halfH = Math.Max(1f / ky, boxH / rows) * 0.5f * ky;
 
+            var areaMap = AreaSceneMapFor(
+                dev.Id, ledCount, ledU, ledV, disabled, lo, hi, sceneRef, in cam, quad, hasUv, u0, uSpan, v0, vSpan, kx, ky,
+                _sampleCanvas.Width, _sampleCanvas.Height);
             for (var i = lo; i < hi; i++)
             {
                 if (disabled is not null && i < disabled.Length && disabled[i])
                 {
                     dev.SetLed(i, 0, 0, 0);
+                    continue;
+                }
+                if (areaMap is not null)
+                {
+                    var (ar, ag, ab) = SampleAreaCell(areaMap, i - lo);
+                    dev.SetLed(i, ar, ag, ab);
                     continue;
                 }
                 float u, v;
@@ -1906,15 +2103,9 @@ public sealed class LightingEngine : IDisposable
     /// </summary>
     private (byte r, byte g, byte b) SampleLedSpot(float sx, float sy, float cellHalfW, float cellHalfH)
     {
-        var spotHalf = Math.Max(0.5f, _sampleCanvas.Width * SpotSideOfCanvasWidth * 0.5f);
-        var hx = Math.Min(cellHalfW, spotHalf);
-        var hy = Math.Min(cellHalfH, spotHalf);
-        var cx = MathF.Floor(sx) + 0.5f;
-        var cy = MathF.Floor(sy) + 0.5f;
-        var ix0 = Math.Clamp((int)MathF.Floor(cx - hx), 0, _sampleCanvas.Width - 1);
-        var iy0 = Math.Clamp((int)MathF.Floor(cy - hy), 0, _sampleCanvas.Height - 1);
-        var ix1 = Math.Clamp((int)MathF.Ceiling(cx + hx) - 1, ix0, _sampleCanvas.Width - 1);
-        var iy1 = Math.Clamp((int)MathF.Ceiling(cy + hy) - 1, iy0, _sampleCanvas.Height - 1);
+        LedSpotGeometry.SpotRect(
+            sx, sy, cellHalfW, cellHalfH, _sampleCanvas.Width, _sampleCanvas.Height, SpotSideOfCanvasWidth,
+            out var ix0, out var iy0, out var ix1, out var iy1);
         long n = 0, rSum = 0, gSum = 0, bSum = 0;
         for (int py = iy0; py <= iy1; py++)
         {
@@ -1995,6 +2186,16 @@ public sealed class LightingEngine : IDisposable
         if (_overlaid.Length < devices.Length) _overlaid = new bool[devices.Length];
         var owned = _overlaid;
         Array.Clear(owned, 0, devices.Length);
+        if (_reactionBlocked.Length < devices.Length) _reactionBlocked = new bool[devices.Length];
+        var blocked = _reactionBlocked;
+        Array.Clear(blocked, 0, devices.Length);
+        // The one place a device is claimed, so the two arrays cannot drift apart.
+        void Claim(int index, bool blocksReactions)
+        {
+            owned[index] = true;
+            blocked[index] = blocksReactions;
+        }
+        PruneAssignments(devices);
         var studio = _studioOverlay;
         if (studio is not null)
         {
@@ -2022,7 +2223,7 @@ public sealed class LightingEngine : IDisposable
                         dev.SetLed(i, 0, 0, 0);
                     }
                 }
-                owned[di] = true;
+                Claim(di, blocksReactions: true);
                 continue;
             }
 
@@ -2030,7 +2231,7 @@ public sealed class LightingEngine : IDisposable
             if (studio is not null && dev.TestPattern is null && _studioCanvas is not null)
             {
                 PaintStudioOverlay(dev, previewCount, _studioCanvas);
-                owned[di] = true;
+                Claim(di, blocksReactions: true);
                 continue;
             }
 
@@ -2040,19 +2241,19 @@ public sealed class LightingEngine : IDisposable
                 && Pins.TryGet(dev.Id, out var assignment)
                 && assignment.Kind == Nexus.Service.Persistence.DevicePinKinds.Static)
             {
-                // A palette pick is a colour, not an effect: nothing to render,
+                // A palette pick is a color, not an effect: nothing to render,
                 // nothing to sample, no canvas. Paint it and move on.
                 if (Nexus.Service.Lighting.StaticColorHex.TryParse(assignment.Color, out var cr, out var cg, out var cb))
                 {
                     for (int i = 0; i < previewCount; i++) dev.SetLed(i, cr, cg, cb);
-                    owned[di] = true;
+                    Claim(di, blocksReactions: false);
                     continue;
                 }
-                var render = RenderAssignment(assignment);
+                var render = RenderAssignment(dev.Id, assignment);
                 if (render is not null)
                 {
                     PaintFromAssignment(dev, previewCount, render);
-                    owned[di] = true;
+                    Claim(di, blocksReactions: false);
                     continue;
                 }
             }
@@ -2063,7 +2264,7 @@ public sealed class LightingEngine : IDisposable
                 if (pattern == "none")
                 {
                     dev.Fill(0, 0, 0);
-                    owned[di] = true;
+                    Claim(di, blocksReactions: true);
                 }
                 else
                 {
@@ -2110,7 +2311,7 @@ public sealed class LightingEngine : IDisposable
                         }
                         // Short UV arrays would leave a tail the canvas still
                         // has to fill, so only a full sweep claims the device.
-                        owned[di] = covered >= previewCount;
+                        if (covered >= previewCount) Claim(di, blocksReactions: true);
                     }
                     // No UVs: nothing was painted, so the canvas sample stands.
                 }
@@ -2214,45 +2415,168 @@ public sealed class LightingEngine : IDisposable
     /// <summary>
     /// Rendered pixels for an assignment, rendering it if this look has not been
     /// seen. Runs on the engine thread, which is where the GL context lives.
+    /// Only a frame the shader actually drew is cached. While the program is still
+    /// compiling, or the draw was skipped or dropped, the effect stays alive for the
+    /// next tick and the device keeps its last finished look (or, with none, the
+    /// shared canvas via null). A failed or overdue build backs off from AssignRetryBaseMs up to AssignRetryMaxMs and the
+    /// device keeps the same fallback: unlike an animate pin, which holds black, a
+    /// static look has no live frame to lose, so black would only hide the fault.
     /// </summary>
-    private byte[]? RenderAssignment(Nexus.Service.Persistence.DevicePin assignment)
+    private byte[]? RenderAssignment(string deviceId, Nexus.Service.Persistence.DevicePin assignment)
     {
-        var tracker = Pins;
         var factory = StaticPinEffectFactory;
-        if (tracker is null || factory is null) return null;
-        if (tracker.Version != _assignVersionSeen)
-        {
-            // A control moved: every cached look is potentially stale.
-            _assignVersionSeen = tracker.Version;
-            _assignRenders.Clear();
-        }
+        if (Pins is null || factory is null) return null;
         var key = Nexus.Service.Lighting.DevicePinLook.StaticKey(assignment);
-        if (_assignRenders.TryGetValue(key, out var cached)) return cached;
+        if (_assignRenders.TryGetValue(key, out var cached))
+        {
+            _assignLastGood[deviceId] = cached;
+            return cached;
+        }
+        _assignLastGood.TryGetValue(deviceId, out var fallback);
+        var nowTick = Environment.TickCount64;
+        _assignRetry.TryGetValue(key, out var retry);
+        if (retry.Attempts > 0 && nowTick < retry.At) return fallback;
 
+        var keep = false;
         IEffect? effect = null;
         try
         {
-            effect = factory(assignment);
+            if (!_assignPending.TryGetValue(key, out effect))
+            {
+                effect = factory(assignment);
+            }
             if (effect is null) return null;
             _assignCanvas ??= new CanvasBuffer(_canvas.Width, _canvas.Height);
             _assignCanvas.Clear();
             // Static holds a frame, so one render at tick 0 is the whole look.
             effect.RenderFrame(_assignCanvas, 0);
+            if (effect is Gpu.ShaderEffect shader)
+            {
+                if (shader.HasFailed)
+                {
+                    ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, "render failed", null);
+                    return fallback;
+                }
+                if (!shader.DrewFrame)
+                {
+                    var since = nowTick;
+                    if (_assignPendingSince.TryGetValue(key, out var track) && nowTick - track.Polled <= AssignPollGapMs)
+                    {
+                        since = track.Since;
+                    }
+                    if (nowTick - since > AssignPendingBudgetMs)
+                    {
+                        // Never drew and never failed: give the compile up and retry on the backoff.
+                        ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, "no frame drawn within the pending budget", null);
+                        return fallback;
+                    }
+                    _assignPendingSince[key] = (since, nowTick);
+                    _assignPending[key] = effect;
+                    keep = true;
+                    return fallback;
+                }
+            }
             var pixels = _assignCanvas.Pixels.ToArray();
             _assignRenders[key] = pixels;
+            _assignLastGood[deviceId] = pixels;
+            _assignRetry.Remove(key);
             return pixels;
         }
         catch (Exception ex)
         {
-            // A look that cannot render must not take the whole frame down; the
-            // device falls through to the shared canvas.
-            Gpu.GpuContext.Log($"[static-pin] render failed for {assignment.Effect}: {ex.GetType().Name}: {ex.Message}");
-            return null;
+            // A look that cannot render must not take the whole frame down.
+            ScheduleAssignRetry(key, assignment.Effect, retry.Attempts, nowTick, "render failed", ex);
+            return fallback;
         }
         finally
         {
-            try { effect?.Dispose(); } catch { /* best-effort */ }
+            if (!keep)
+            {
+                _assignPending.Remove(key);
+                _assignPendingSince.Remove(key);
+                try { effect?.Dispose(); } catch { /* best-effort */ }
+            }
         }
+    }
+
+    private void ScheduleAssignRetry(string key, string? effectName, int attempts, long nowTick, string reason, Exception? ex)
+    {
+        if (attempts == 0)
+        {
+            Gpu.GpuContext.Log($"[static-pin] {reason} for {effectName}, retrying with backoff{(ex is null ? "" : $": {ex.GetType().Name}: {ex.Message}")}");
+        }
+        var delay = Math.Min(AssignRetryMaxMs, AssignRetryBaseMs << Math.Min(attempts, 10));
+        _assignRetry[key] = (nowTick + delay, attempts + 1);
+    }
+
+    /// <summary>
+    /// Drops cached looks, pending compiles, retries and held pixels that no current
+    /// device pin references. A look is keyed by every control, so a pin change on
+    /// one device leaves every other device's look alone. Runs when the pin set or
+    /// the device array changes.
+    /// </summary>
+    private void PruneAssignments(DeviceFrame[] devices)
+    {
+        // Look-ahead passes a fresh shadow array every frame; only the live device array defines what is referenced.
+        if (!ReferenceEquals(devices, _devices)) return;
+        var pins = Pins;
+        var version = pins?.Version ?? -1;
+        if (version == _assignPruneVersion && ReferenceEquals(devices, _assignPruneDevices)) return;
+        _assignPruneVersion = version;
+        _assignPruneDevices = devices;
+        if (_assignRenders.Count + _assignPending.Count + _assignRetry.Count + _assignLastGood.Count == 0) return;
+        _assignRefKeys.Clear();
+        _assignRefDevices.Clear();
+        if (pins is not null)
+        {
+            foreach (var dev in devices)
+            {
+                if (pins.TryGet(dev.Id, out var a)
+                    && a.Kind == Nexus.Service.Persistence.DevicePinKinds.Static
+                    && !Nexus.Service.Lighting.StaticColorHex.TryParse(a.Color, out _, out _, out _))
+                {
+                    _assignRefKeys.Add(Nexus.Service.Lighting.DevicePinLook.StaticKey(a));
+                    _assignRefDevices.Add(dev.Id);
+                }
+            }
+        }
+        foreach (var k in _assignRenders.Keys.Where(k => !_assignRefKeys.Contains(k)).ToList()) _assignRenders.Remove(k);
+        foreach (var k in _assignRetry.Keys.Where(k => !_assignRefKeys.Contains(k)).ToList()) _assignRetry.Remove(k);
+        foreach (var k in _assignPending.Keys.Where(k => !_assignRefKeys.Contains(k)).ToList())
+        {
+            try { _assignPending[k].Dispose(); } catch { /* best-effort */ }
+            _assignPending.Remove(k);
+            _assignPendingSince.Remove(k);
+        }
+        foreach (var d in _assignLastGood.Keys.Where(d => !_assignRefDevices.Contains(d)).ToList()) _assignLastGood.Remove(d);
+    }
+
+    /// <summary>True while a pending static look can still make progress: its context is up, so polling it is not a no-op.</summary>
+    private bool AnyAssignPollable()
+    {
+        foreach (var e in _assignPending.Values)
+        {
+            if (e is Gpu.ShaderEffect { CanPoll: true })
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void DisposeAssignState()
+    {
+        foreach (var e in _assignPending.Values)
+        {
+            try { e.Dispose(); } catch { /* best-effort */ }
+        }
+        _assignPending.Clear();
+        _assignPendingSince.Clear();
+        _assignRenders.Clear();
+        _assignRetry.Clear();
+        _assignLastGood.Clear();
+        _assignPruneVersion = -1;
+        _assignPruneDevices = null;
     }
 
     /// <summary>

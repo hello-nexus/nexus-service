@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Conflicts;
-using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Mcp;
 using Nexus.Service.Serialization;
 
@@ -38,18 +37,6 @@ public sealed class GetConflictsTool : IMcpTool
             Category = c.Category,
             ConflictsWith = DescribeConflict(c.Category),
         }).ToList();
-
-        // A loaded Chroma SDK DLL is distinct from ConflictAppCatalog's razer-synapse entry (a running process); GetState() no-ops off Windows so this is safe unconditionally.
-        if (GameSyncShimInstaller.GetState().SynapseConflict)
-        {
-            items.Add(new McpConflictItem
-            {
-                Id = "razer-chroma-shim",
-                DisplayName = "Razer Synapse (Chroma SDK)",
-                Category = "lighting",
-                ConflictsWith = "Nexus Game Sync's Chroma capture shim - a real Razer Chroma SDK DLL occupies at least one shim slot Nexus needs.",
-            });
-        }
 
         var result = new McpConflictsResult { AnyConflict = items.Count > 0, Conflicts = items };
         var json = JsonSerializer.Serialize(result, AppJsonContext.Default.McpConflictsResult);

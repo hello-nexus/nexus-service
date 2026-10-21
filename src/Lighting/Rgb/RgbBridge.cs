@@ -67,9 +67,9 @@ public sealed class RgbBridge : IDisposable
     private static readonly TimeSpan BounceCooldown = TimeSpan.FromSeconds(10);
     /// <summary>
     /// The visible list holds still while the daemon detects (a rescan empties its
-    /// list and refills it), for as long as detection keeps reporting progress
-    /// within this window. It outlasts the fork's per-detector timeout, so a gap
-    /// this long means detection ended without a COMPLETE we saw.
+    /// list and refills it). Without a STARTED seen on this session, detection counts as
+    /// running only while progress arrives within this window; with one seen, it runs until
+    /// COMPLETE or <see cref="DetectionStallLimit"/> of silence.
     /// </summary>
     private static readonly TimeSpan DetectionQuietWindow = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan BlackoutSettlePoll = TimeSpan.FromMilliseconds(25);
@@ -108,13 +108,6 @@ public sealed class RgbBridge : IDisposable
     private Action? _deviceListHandler;
     private IReadOnlyList<RgbDevice> _devices = Array.Empty<RgbDevice>();
     private HashSet<int> _directModeApplied = new();
-    // StableIds seen drivable (LedCount > 0) on a settled, post-hold commit. A
-    // device that ever settles drivable stays shown even if a later fetch
-    // glitches it to 0 LEDs; a device only ever seen non-drivable stays hidden.
-    // Only serial/location ids latch - the index fallback is reused across
-    // bounces. Survives a subprocess bounce (same real hardware re-enumerates);
-    // cleared only on Deactivate. Guarded by _lock.
-    private readonly HashSet<string> _drivableLatched = new(StringComparer.Ordinal);
     private CancellationTokenSource? _refreshCts;
     private Task? _shutdownTask;
 
@@ -135,6 +128,8 @@ public sealed class RgbBridge : IDisposable
     private long _lastBounceTicks;         // DateTime.UtcNow.Ticks; updated via Interlocked
     // Last detection activity (our re-detect request, DETECTION_STARTED/PROGRESS); 0 once COMPLETE arrives. UtcNow ticks, Interlocked.
     private long _detectionActivityTicks;
+    // 1 between a STARTED seen on this session and its COMPLETE.
+    private int _detectionStartedSeen;
     // When the outstanding re-detect was requested; 0 when none or once COMPLETE arrives. UtcNow ticks, Interlocked.
     private long _redetectRequestedTicks;
     // Addresses of the committed list, compared against the cheap poll. Guarded by _lock.
@@ -171,6 +166,44 @@ public sealed class RgbBridge : IDisposable
     // via OpenRGB's RESIZEZONE opcode inside RefreshDevicesAsync under the
     // refresh semaphore so it never races with the frame push path.
     private readonly ConcurrentQueue<(int physIdx, int zoneIdx, int newSize)> _pendingZoneResizes = new();
+    // Resolved to a controller address only at drain, so a daemon restart between request and drain cannot aim it at another unit.
+    private readonly ConcurrentQueue<PendingIdResize> _pendingIdZoneResizes = new();
+
+    /// <summary>How long a resize waits for its device to be in the list before it is discarded.</summary>
+    internal static readonly TimeSpan PendingResizeLifetime = TimeSpan.FromSeconds(60);
+
+    internal readonly record struct PendingIdResize(string DeviceId, int ZoneIdx, int NewSize, long EnqueuedTicks);
+
+    /// <summary>Splits queued resizes into those whose device is listed, those still waiting for it, and those past their lifetime.</summary>
+    internal static void PartitionPendingResizes(IReadOnlyList<RgbDevice> devices, IEnumerable<PendingIdResize> pending, long nowTicks,
+        List<(int physIdx, int zoneIdx, int newSize)> resolved, List<PendingIdResize> waiting, List<PendingIdResize> expired)
+    {
+        // Newest request per zone wins; an older one for the same zone would only resize it twice.
+        var newest = new Dictionary<(string, int), PendingIdResize>();
+        foreach (var p in pending)
+        {
+            if (!newest.TryGetValue((p.DeviceId, p.ZoneIdx), out var seen) || p.EnqueuedTicks >= seen.EnqueuedTicks)
+            {
+                newest[(p.DeviceId, p.ZoneIdx)] = p;
+            }
+        }
+        foreach (var p in newest.Values)
+        {
+            var address = AddressOfDevice(devices, p.DeviceId);
+            if (address >= 0)
+            {
+                resolved.Add((address, p.ZoneIdx, p.NewSize));
+            }
+            else if (nowTicks - p.EnqueuedTicks > PendingResizeLifetime.Ticks)
+            {
+                expired.Add(p);
+            }
+            else
+            {
+                waiting.Add(p);
+            }
+        }
+    }
     // Per-physical-device colour buffers. When a motherboard is split into zones
     // in the engine, each zone's DeviceFrame writes its slice into this buffer
     // at the zone's LED offset; the whole physical device is then pushed once.
@@ -189,6 +222,11 @@ public sealed class RgbBridge : IDisposable
     private readonly ConcurrentDictionary<int, RgbColor[]> _lastPushed = new();
     private readonly ConcurrentDictionary<int, long> _lastPushTicks = new();
     private const long HeartbeatMs = 1000;
+    // Physical index -> user cap in Hz for devices that have one, rebuilt every frame.
+    private readonly Dictionary<int, int> _physCapsHz = new();
+    // Physical index -> stable OpenRGB device id, the key LightingMaxRates uses. Replaced wholesale on device-set change.
+    private volatile Dictionary<int, string> _physStableIds = new();
+    private readonly PushRateLimiter<int> _pushLimiter = new();
     // Reused across frames - set of physical indices that had at least one zone
     // written in the current OnFrame. Cleared at the start of every frame.
     // Only touched inside OnFrame which the engine serialises, so a plain HashSet
@@ -209,6 +247,9 @@ public sealed class RgbBridge : IDisposable
 
     /// <summary>Raised when the engine's frame set changes (a device or zone appears, goes away, or gains its LEDs), under the refresh lock, and after a contributor change even when the frame set did not change, outside the lock; handlers must not block.</summary>
     public event Action? DeviceSetChanged;
+
+    /// <summary>Raised once per refresh pass after a resize it sent shows its new count in the re-read, so views recount even though the device set did not change.</summary>
+    public event Action? ZoneResizeApplied;
 
     private readonly IReadOnlyList<ILightingFrameContributor> _frameContributors;
     private readonly Nexus.Service.Lighting.Mappings.ContributorFrameLayouts _contributorLayouts;
@@ -267,18 +308,23 @@ public sealed class RgbBridge : IDisposable
     }
 
     /// <summary>
-    /// The SMBus device's toggle rewrites the daemon's DRAM-detector denylist,
-    /// which the next detection pass reads. Every other handler's gate is
-    /// honored by its own connection worker.
+    /// The SMBus toggle rewrites the daemon's DRAM-detector denylist, and a native driver's toggle
+    /// moves its OpenRGB detector on or off; the next detection pass reads both. Every other
+    /// handler's gate is honored by its own connection worker.
     /// </summary>
     private void OnControlGateChanged(string handlerId, bool enabled)
     {
-        if (!string.Equals(handlerId, Nexus.Service.Devices.Handlers.SmbusDramHandler.HandlerId, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(handlerId, Nexus.Service.Devices.Handlers.SmbusDramHandler.HandlerId, StringComparison.OrdinalIgnoreCase))
         {
+            ServiceLog.Info($"[rgb-bridge] SMBus DRAM detectors {(enabled ? "re-enabled" : "disabled")}: Nexus Control for the memory device turned {(enabled ? "on" : "off")}");
+            Redetect("smbus-dram-gate", detectorsChanged: true);
             return;
         }
-        ServiceLog.Info($"[rgb-bridge] SMBus DRAM detectors {(enabled ? "re-enabled" : "disabled")}: Nexus Control for the memory device turned {(enabled ? "on" : "off")}");
-        Redetect("smbus-dram-gate", detectorsChanged: true);
+        if (NativeDetectorClaims.AffectsDetectors(handlerId) && _proc.NativeDetectorSetChanged())
+        {
+            ServiceLog.Info($"[rgb-bridge] native driver '{handlerId}' turned {(enabled ? "on" : "off")}: its OpenRGB detector follows");
+            Redetect("native-driver-gate", detectorsChanged: true);
+        }
     }
 
     // Fire-and-forget - RefreshDevicesAsync is the same path the periodic refresh loop
@@ -305,22 +351,6 @@ public sealed class RgbBridge : IDisposable
             lock (_lock)
             {
                 return _devices;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Snapshot of the StableIds latched drivable (see <c>_drivableLatched</c>).
-    /// Consulted by card emission so a device that settled drivable is never
-    /// hidden by a later transient 0-LED fetch.
-    /// </summary>
-    public IReadOnlySet<string> DrivableIds
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return new HashSet<string>(_drivableLatched, StringComparer.Ordinal);
             }
         }
     }
@@ -428,6 +458,7 @@ public sealed class RgbBridge : IDisposable
             }
             // The list starts empty, so detection streams devices straight in;
             // this only drives the scanning spinner.
+            Volatile.Write(ref _detectionStartedSeen, 0);
             MarkDetectionActivity();
 
             _proc.Start();
@@ -471,7 +502,6 @@ public sealed class RgbBridge : IDisposable
             // Views counted the emptied list on the restart broadcast; the first refresh after Activate must re-announce even an unchanged set.
             _frameIdSignature = "";
             _directModeApplied = new();
-            _drivableLatched.Clear();
             _loggedDeviceSignatures.Clear();
             _loggedResizeOutcomes.Clear();
         }
@@ -685,6 +715,34 @@ public sealed class RgbBridge : IDisposable
     /// <summary>Restarts the daemon so it re-reads OpenRGB.json; manual device registrations are only picked up at launch.</summary>
     public void BounceForManualDevices() => BounceSubprocess("manual-devices");
 
+    /// <summary>Queues a resize for the device with this stable id; its controller address is looked up when the resize is applied.</summary>
+    public void RequestZoneResizeById(string deviceId, int zoneIndex, int newSize)
+    {
+        if (string.IsNullOrEmpty(deviceId) || zoneIndex < 0 || newSize < 0)
+            return;
+        _pendingIdZoneResizes.Enqueue(new PendingIdResize(deviceId, zoneIndex, newSize, DateTime.UtcNow.Ticks));
+        if (IsActive && _controller.IsConnected)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                { await RefreshDevicesAsync().ConfigureAwait(false); }
+                catch (Exception ex) { Console.Error.WriteLine($"[rgb-bridge] resize-triggered refresh failed: {ex.Message}"); }
+            });
+        }
+    }
+
+    /// <summary>The controller address of the device with this stable id, or -1 when it is not in the list.</summary>
+    internal static int AddressOfDevice(IReadOnlyList<RgbDevice> devices, string deviceId)
+    {
+        foreach (var d in devices)
+        {
+            if (d.StableId == deviceId)
+                return d.Address;
+        }
+        return -1;
+    }
+
     /// <summary>
     /// Queue a motherboard ARGB zone resize. Applied via OpenRGB's RESIZEZONE
     /// opcode on the next refresh pass under the refresh semaphore, so it never
@@ -847,17 +905,34 @@ public sealed class RgbBridge : IDisposable
         // and no COMPLETE will clear these, so the lights-off must not wait on them.
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
+        Volatile.Write(ref _detectionStartedSeen, 0);
+        OpenRgbDetectorMap.EndHold();
         return true;
     }
 
-    private void MarkDetectionActivity() => Interlocked.Exchange(ref _detectionActivityTicks, DateTime.UtcNow.Ticks);
+    private void MarkDetectionActivity()
+    {
+        Interlocked.Exchange(ref _detectionActivityTicks, DateTime.UtcNow.Ticks);
+        OpenRgbDetectorMap.BeginHold();
+    }
 
     /// <summary>True while detection is visibly running, so a commit would show a half-detected list.</summary>
     private bool DetectionInProgress()
     {
+        var holdGeneration = OpenRgbDetectorMap.HoldGeneration;
         var last = Interlocked.Read(ref _detectionActivityTicks);
-        return last != 0 && DateTime.UtcNow.Ticks - last < DetectionQuietWindow.Ticks;
+        var holds = last != 0
+            && DetectionHolds(TimeSpan.FromTicks(DateTime.UtcNow.Ticks - last), Volatile.Read(ref _detectionStartedSeen) != 0, _controller.IsConnected);
+        if (!holds && OpenRgbDetectorMap.HoldActive)
+        {
+            OpenRgbDetectorMap.EndHold(holdGeneration);
+        }
+        return holds;
     }
+
+    /// <summary>A detector can run long with no progress packet, so a seen STARTED holds until COMPLETE (or the stall limit); without one only the quiet window holds.</summary>
+    internal static bool DetectionHolds(TimeSpan sinceActivity, bool startedSeen, bool connected)
+        => sinceActivity < DetectionQuietWindow || (startedSeen && connected && sinceActivity < DetectionStallLimit);
 
     /// <summary>
     /// Progress only extends a pass already under way. Hotplug runs a detector
@@ -876,9 +951,12 @@ public sealed class RgbBridge : IDisposable
     {
         if (detecting)
         {
+            Volatile.Write(ref _detectionStartedSeen, 1);
             MarkDetectionActivity();
             return;
         }
+        Volatile.Write(ref _detectionStartedSeen, 0);
+        OpenRgbDetectorMap.EndHold();
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
         string? deferred;
@@ -962,6 +1040,7 @@ public sealed class RgbBridge : IDisposable
             _loggedResizeOutcomes.Clear();
         }
         ServiceLog.Info($"[rgb-bridge] bouncing subprocess ({reason})");
+        Volatile.Write(ref _detectionStartedSeen, 0);
         MarkDetectionActivity();
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
         Interlocked.Exchange(ref _daemonFailures, 0);
@@ -1041,7 +1120,11 @@ public sealed class RgbBridge : IDisposable
     /// fire several in quick succession (one per detected plugin result); we
     /// only want to query the device list once per burst.
     /// </summary>
-    private void OnDeviceListChanged() => ScheduleRefresh();
+    private void OnDeviceListChanged()
+    {
+        OpenRgbDetectorMap.Invalidate();
+        ScheduleRefresh();
+    }
 
     /// <summary>
     /// Schedule a debounced device refresh. Coalesces using a 0/1 flag: the
@@ -1209,6 +1292,7 @@ public sealed class RgbBridge : IDisposable
             // device list becomes the engine's source of truth. Re-fetch the
             // list afterwards so zone LED counts reflect the new sizes.
             var resizeAttempts = await ApplyZoneResizesAsync(devices).ConfigureAwait(false);
+            var resizeTook = false;
             if (resizeAttempts.Count > 0)
             {
                 var refetched = false;
@@ -1227,6 +1311,7 @@ public sealed class RgbBridge : IDisposable
                 if (refetched && devices.Count > 0)
                 {
                     LogZoneResizeOutcomes(resizeAttempts, devices);
+                    resizeTook = AnyResizeTook(resizeAttempts, devices);
                 }
             }
 
@@ -1272,20 +1357,6 @@ public sealed class RgbBridge : IDisposable
             var inDetection = DetectionInProgress();
             lock (_lock)
             {
-                // A list committed outside detection is complete: latch every
-                // drivable device so a later 0-LED report can't hide it. Only
-                // hardware-id devices latch; index-only ids can be reassigned
-                // to a different controller across a rescan.
-                if (!inDetection)
-                {
-                    foreach (var d in finalList)
-                    {
-                        if (d.LedCount > 0 && d.HasStableHardwareId)
-                        {
-                            _drivableLatched.Add(d.StableId);
-                        }
-                    }
-                }
                 _devices = finalList;
                 var addresses = new int[finalList.Count];
                 for (var i = 0; i < addresses.Length; i++)
@@ -1297,6 +1368,11 @@ public sealed class RgbBridge : IDisposable
                 _directModeApplied.IntersectWith(addresses);
             }
             Interlocked.Exchange(ref _listCommitted, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+            // After the commit, so the refetch this triggers reads the new count.
+            if (resizeTook)
+            {
+                ZoneResizeApplied?.Invoke();
+            }
 
             // Move any legacy per-device state on a split motherboard onto its
             // ARGB header ids before this refresh resolves partitions and
@@ -1460,12 +1536,17 @@ public sealed class RgbBridge : IDisposable
             }
 
             var frames = framesList.ToArray();
+            if (settingsSnapshot.MaximizedCanvasDefaults)
+            {
+                // Under the store lock: preset load and batch layouts Clear() and refill DeviceLayouts in place.
+                _store.Read(s => CanvasGridLayout.MaximizeUnplaced(frames, s.Lighting.DeviceLayouts));
+            }
             var liveIds = new List<string>(frames.Length);
             foreach (var f in frames) liveIds.Add(f.Id);
             _contributorLayouts.Prune(liveIds);
             _engine.UpdateDevices(frames);
 
-            // The LED bit counts: /devices/lighting-devices/all hides a 0-LED device until its LEDs arrive.
+            // The LED bit counts: a 0-LED device shows as an unavailable card until its LEDs arrive.
             var setKeys = new string[frames.Length];
             for (var i = 0; i < frames.Length; i++)
             {
@@ -1597,7 +1678,13 @@ public sealed class RgbBridge : IDisposable
         return names;
     }
 
-    private bool IsOwnedByFirstParty(RgbDevice d)
+    /// <summary>A device Nexus drives through OpenRGB: not claimed by a native provider, not detector-excluded and not left uncontrolled.</summary>
+    internal bool IsSizableDevice(RgbDevice d, NexusSettings settings)
+        => !IsOwnedByFirstParty(d)
+            && !settings.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)
+            && !OpenRgbZoneSupport.IsFullyUncontrolled(d, settings);
+
+    internal bool IsOwnedByFirstParty(RgbDevice d)
     {
         for (int i = 0; i < _deviceOwners.Count; i++)
         {
@@ -1789,15 +1876,23 @@ public sealed class RgbBridge : IDisposable
     /// Compares as bytes: RgbColor has no IEquatable, so Span.SequenceEqual over
     /// the structs themselves would fall back to reflective ValueType.Equals and
     /// cost more than the push it saves.</summary>
-    private bool ShouldPush(int physIdx, RgbColor[] buf)
+    internal bool ShouldPush(int physIdx, RgbColor[] buf, int capHz = 0, long? nowMs = null)
     {
-        var now = Environment.TickCount64;
+        var now = nowMs ?? Environment.TickCount64;
         if (_lastPushed.TryGetValue(physIdx, out var last)
             && last.Length == buf.Length
             && _lastPushTicks.TryGetValue(physIdx, out var when)
             && now - when < HeartbeatMs
             && System.Runtime.InteropServices.MemoryMarshal.AsBytes(buf.AsSpan())
                 .SequenceEqual(System.Runtime.InteropServices.MemoryMarshal.AsBytes(last.AsSpan())))
+        {
+            return false;
+        }
+
+        // After the dedupe so an identical frame never spends the gap. A frame
+        // dropped here is not recorded as pushed, so the next OnFrame offers
+        // the then-current buffer again and sends it once the gap has elapsed.
+        if (capHz > 0 && !_pushLimiter.TryPass(physIdx, capHz, now))
         {
             return false;
         }
@@ -1809,11 +1904,49 @@ public sealed class RgbBridge : IDisposable
         return true;
     }
 
-    private void SyncPhysicalBuffers(IReadOnlyList<RgbDevice> devices)
+    /// <summary>
+    /// Fills <paramref name="caps"/> (cleared first) with physical index -> Hz for
+    /// every bridge frame whose owning device has a cap. The cap is keyed by the
+    /// physical device, so all zone frames sharing a push resolve the same value.
+    /// </summary>
+    internal static void ComputePhysicalCaps(
+        IReadOnlyList<DeviceFrame> deviceFrames,
+        IReadOnlySet<string> bridgeFrameIds,
+        IReadOnlyDictionary<int, string> physStableIds,
+        IReadOnlyDictionary<string, int> maxRates,
+        Dictionary<int, int> caps)
+    {
+        caps.Clear();
+        if (maxRates.Count == 0)
+        {
+            return;
+        }
+        foreach (var f in deviceFrames)
+        {
+            if (IsBridgeFrame(f, bridgeFrameIds)
+                && physStableIds.TryGetValue(f.PhysicalIndex, out var key)
+                && maxRates.TryGetValue(key, out var hz) && hz > 0)
+            {
+                caps[f.PhysicalIndex] = hz;
+            }
+        }
+    }
+
+    internal void SyncPhysicalBuffers(IReadOnlyList<RgbDevice> devices)
     {
         // Indices are being re-derived, so every dedup baseline is suspect.
         _lastPushed.Clear();
         _lastPushTicks.Clear();
+        _pushLimiter.Reset();
+        var stableIds = new Dictionary<int, string>();
+        foreach (var d in devices)
+        {
+            if (d.LedCount > 0)
+            {
+                stableIds[d.Address] = d.StableId;
+            }
+        }
+        _physStableIds = stableIds;
         SizePhysicalBuffers(_physBuffers, devices);
     }
 
@@ -1871,6 +2004,38 @@ public sealed class RgbBridge : IDisposable
     private async Task<List<ZoneResizeAttempt>> ApplyZoneResizesAsync(IReadOnlyList<RgbDevice> devices)
     {
         var attempts = new List<ZoneResizeAttempt>();
+
+        var drained = new List<PendingIdResize>();
+        while (_pendingIdZoneResizes.TryDequeue(out var byId))
+        {
+            drained.Add(byId);
+        }
+        if (drained.Count > 0)
+        {
+            var resolved = new List<(int physIdx, int zoneIdx, int newSize)>();
+            var waiting = new List<PendingIdResize>();
+            var expired = new List<PendingIdResize>();
+            PartitionPendingResizes(devices, drained, DateTime.UtcNow.Ticks, resolved, waiting, expired);
+            var settings = _store.Load();
+            foreach (var r in resolved)
+            {
+                var target = FindDevice(devices, r.physIdx);
+                if (target is null || !IsSizableDevice(target, settings))
+                {
+                    ServiceLog.Warn($"[rgb-bridge] resize of controller {r.physIdx} zone {r.zoneIdx} dropped: the device is no longer sizable through OpenRGB");
+                    continue;
+                }
+                _pendingZoneResizes.Enqueue(r);
+            }
+            foreach (var w in waiting)
+            {
+                _pendingIdZoneResizes.Enqueue(w);
+            }
+            foreach (var e in expired)
+            {
+                ServiceLog.Warn($"[rgb-bridge] resize of {e.DeviceId} zone {e.ZoneIdx} to {e.NewSize} discarded: the device did not appear within {PendingResizeLifetime.TotalSeconds:0}s");
+            }
+        }
 
         while (_pendingZoneResizes.TryDequeue(out var req))
         {
@@ -1970,7 +2135,7 @@ public sealed class RgbBridge : IDisposable
     }
 
     /// <summary>One RESIZEZONE we sent, carried to the post-refetch pass that reports whether it took.</summary>
-    private readonly record struct ZoneResizeAttempt(int PhysIdx, int ZoneIdx, string ZoneName, int From, int To, string Source);
+    internal readonly record struct ZoneResizeAttempt(int PhysIdx, int ZoneIdx, string ZoneName, int From, int To, string Source);
 
     /// <summary>
     /// RESIZEZONE has no reply, so a re-read is the only confirmation. Both totals
@@ -2008,6 +2173,19 @@ public sealed class RgbBridge : IDisposable
                 ServiceLog.Warn($"[rgb-bridge] resize did not take: {what}, zone still reports {observed}; {totals}");
             }
         }
+    }
+
+    /// <summary>True when any attempted resize now reads back as its requested count.</summary>
+    internal static bool AnyResizeTook(IReadOnlyList<ZoneResizeAttempt> attempts, IReadOnlyList<RgbDevice> devices)
+    {
+        foreach (var a in attempts)
+        {
+            if (DescribeZone(devices, a.PhysIdx, a.ZoneIdx).Current == a.To)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static RgbDevice? FindDevice(IReadOnlyList<RgbDevice> devices, int address)
@@ -2393,6 +2571,7 @@ public sealed class RgbBridge : IDisposable
 
         _touchedPhysicals.Clear();
         ComputeFullyUncontrolledPhysicals(deviceFrames, _bridgeFrameIds, uncontrolled, _physFullyUncontrolled);
+        ComputePhysicalCaps(deviceFrames, _bridgeFrameIds, _physStableIds, settings.Devices.LightingMaxRates, _physCapsHz);
 
         var deviceCount = frame[pos++];
         for (int d = 0; d < deviceCount && pos + 3 <= frame.Length; d++)
@@ -2530,7 +2709,8 @@ public sealed class RgbBridge : IDisposable
 
         foreach (var physIdx in _touchedPhysicals)
         {
-            if (_physBuffers.TryGetValue(physIdx, out var buf) && ShouldPush(physIdx, buf))
+            if (_physBuffers.TryGetValue(physIdx, out var buf)
+                && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx)))
             {
                 _ = _controller.PushFrameAsync(physIdx, buf);
             }

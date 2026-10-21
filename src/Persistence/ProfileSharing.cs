@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Nexus.Service.Persistence;
 
 /// <summary>
-/// Routing helpers for the per-category profile sharing feature. Five
+/// Routing helpers for the per-category profile sharing feature. Six
 /// categories correspond to the NexusSettings sections that the user can pin to
 /// a Primary profile (so switching profiles still loads that profile's data
 /// for the pinned category). Theme copies the entire <see cref="ThemeSettings"/>
@@ -14,10 +15,12 @@ namespace Nexus.Service.Persistence;
 /// <see cref="StreamDeckSettings"/> and <see cref="KeebSettings"/> blocks,
 /// making Stream Deck bindings and keyboard personalization (macros, key
 /// overrides, rotary, game mode, firmware lighting, layers) profile-scoped
-/// instead of workstation-global. Panel cosmetics + AutoLaunch live at the
-/// NexusSettings root under <see cref="PanelSettings"/>; they're
-/// workstation-level (they describe how panel devices look and behave, not the
-/// active profile) so they are NEVER copied via sharing.
+/// instead of workstation-global. Panels carries each panel's look and the
+/// cooler display content (see <see cref="PanelProfileData"/>); a profile file
+/// holds it as stripped records that apply onto the matching live panels. Device
+/// and Panels default to Shared (see <see cref="NexusSettings.SharedCategories"/>).
+/// Panel cosmetics + AutoLaunch at the NexusSettings root under
+/// <see cref="PanelSettings"/> are workstation-level and are NEVER copied via sharing.
 /// </summary>
 public static class ProfileSharing
 {
@@ -26,10 +29,11 @@ public static class ProfileSharing
     public const string Theme = "theme";
     public const string Dashboard = "dashboard";
     public const string Device = "device";
+    public const string Panels = "panels";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
-        Lighting, Cooling, Theme, Dashboard, Device,
+        Lighting, Cooling, Theme, Dashboard, Device, Panels,
     };
 
     public static string? Normalize(string? id)
@@ -61,17 +65,33 @@ public static class ProfileSharing
     /// individual Cooling fields, so it must run after Cooling replaces the
     /// whole block.
     /// </summary>
-    public static NexusSettings ExtractShareable(NexusSettings source)
+    public static NexusSettings ExtractShareable(NexusSettings source, NexusSettings? prior = null)
     {
-        var extract = new NexusSettings();
+        // Panel records the profile file holds for panels absent from this PC ride along.
+        var extract = new NexusSettings { PanelDevices = prior?.PanelDevices.ToDictionary(kv => kv.Key, kv => kv.Value) ?? new() };
         for (var i = 0; i < All.Count; i++)
         {
-            ApplyCategory(extract, source, All[i]);
+            WriteCategory(extract, source, All[i]);
         }
         return extract;
     }
 
-    /// <summary>Copies the named category from <paramref name="source"/> onto <paramref name="target"/>. Sibling state on target is preserved.</summary>
+    /// <summary>
+    /// Writes a category into a profile file or export payload. Identical to
+    /// <see cref="ApplyCategory"/> except Panels, which a file stores as
+    /// stripped records instead of matching onto live ones.
+    /// </summary>
+    public static void WriteCategory(NexusSettings file, NexusSettings source, string category)
+    {
+        if (Normalize(category) == Panels)
+        {
+            PanelProfileData.WriteTo(file, source);
+            return;
+        }
+        ApplyCategory(file, source, category);
+    }
+
+    /// <summary>Copies the named category from <paramref name="source"/> onto <paramref name="target"/>. Sibling state on target is preserved. Panels copies looks onto target's matching panel records only.</summary>
     public static void ApplyCategory(NexusSettings target, NexusSettings source, string category)
     {
         switch (Normalize(category))
@@ -116,6 +136,9 @@ public static class ProfileSharing
                 };
                 target.Keeb = source.Keeb;
                 break;
+            case Panels:
+                PanelProfileData.ApplyToLive(target, source);
+                break;
         }
     }
 
@@ -152,6 +175,9 @@ public static class ProfileSharing
             case Device:
                 target.StreamDeck = new StreamDeckSettings();
                 target.Keeb = new KeebSettings();
+                break;
+            case Panels:
+                PanelProfileData.Reset(target);
                 break;
         }
     }

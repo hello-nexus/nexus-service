@@ -266,11 +266,15 @@ public static class OpenRgbZoneSupport
         return true;
     }
 
+    /// <summary>Caps are keyed by the owning device (the cards' ParentDeviceId, else the card id), so they survive re-partitioning.</summary>
+    private static int? MaxRateFor(Dictionary<string, int> rates, string id) => rates.TryGetValue(id, out var hz) ? hz : null;
+
     /// <summary>Full GetAll card emission; static and bridge-free so tests cover it with fake controller data.</summary>
-    public static GetLightingDevicesResponse BuildCards(IReadOnlyList<RgbDevice> devices, NexusSettings settings, bool isInit, IReadOnlySet<string>? drivableIds = null)
+    public static GetLightingDevicesResponse BuildCards(IReadOnlyList<RgbDevice> devices, NexusSettings settings, bool isInit)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
+        var maxRates = settings.Devices.LightingMaxRates;
         var layouts = settings.Lighting.DeviceLayouts;
         var zoneLedCounts = settings.Devices.ZoneLedCounts;
         var exclusions = settings.Devices.OpenRgbDetectorExclusions;
@@ -303,15 +307,6 @@ public static class OpenRgbZoneSupport
 
             if (isDefault && !isSplitMotherboard)
             {
-                // OpenRGB false-positive detectors register a controller with no
-                // readable LED zones; nexus cannot drive it, so drop the whole-device
-                // card rather than surfacing a phantom the user never owned. Non-split
-                // whole devices are never resizable, so a zero count means nothing to drive.
-                // A device that ever settled drivable is latched (drivableIds) so a
-                // later transient 0-LED fetch mid-enumeration can't hide real hardware.
-                if (d.LedCount <= 0 && drivableIds?.Contains(d.StableId) != true)
-                    continue;
-
                 prefs.TryGetValue(baseId, out var pref);
                 layouts.TryGetValue(baseId, out var layout);
                 var (dx, dy, dw, dh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot, d);
@@ -326,6 +321,8 @@ public static class OpenRgbZoneSupport
                     Brightness = pref?.Brightness ?? 100,
                     Hue = pref?.Hue ?? 0,
                     Saturation = pref?.Saturation ?? 1.0f,
+                    RateCapSupported = true,
+                    MaxRateHz = MaxRateFor(maxRates, baseId),
                     LedCount = d.LedCount,
                     EnabledLedCount = ZoneResolution.CountEnabled(structure, zones[0], baseId, d.LedCount, zones[0].LegacyZoneIndex, settings),
                     CanvasX = layout?.X ?? dx,
@@ -385,6 +382,8 @@ public static class OpenRgbZoneSupport
                         Brightness = pref?.Brightness ?? 100,
                         Hue = pref?.Hue ?? 0,
                         Saturation = pref?.Saturation ?? 1.0f,
+                        RateCapSupported = true,
+                        MaxRateHz = MaxRateFor(maxRates, baseId),
                         LedCount = effectiveLedCount,
                         EnabledLedCount = ZoneResolution.CountEnabled(portStructures[z], portZone, zoneId, effectiveLedCount, zoneHint, settings),
                         CanvasX = layout?.X ?? sx,
@@ -436,6 +435,8 @@ public static class OpenRgbZoneSupport
                     Brightness = pref?.Brightness ?? 100,
                     Hue = pref?.Hue ?? 0,
                     Saturation = pref?.Saturation ?? 1.0f,
+                    RateCapSupported = true,
+                    MaxRateHz = MaxRateFor(maxRates, baseId),
                     LedCount = zone.LedCount,
                     EnabledLedCount = ZoneResolution.CountEnabled(structure, zone, zone.Id, zone.LedCount, zone.Ordinal, settings),
                     CanvasX = layout?.X ?? zx,
@@ -496,6 +497,8 @@ public static class OpenRgbZoneSupport
                     Brightness = pref?.Brightness ?? 100,
                     Hue = pref?.Hue ?? 0,
                     Saturation = pref?.Saturation ?? 1.0f,
+                    RateCapSupported = true,
+                    MaxRateHz = MaxRateFor(maxRates, key),
                     LedCount = snap.LedCount,
                     EnabledLedCount = snap.LedCount,
                     CanvasX = layout?.X ?? dx,

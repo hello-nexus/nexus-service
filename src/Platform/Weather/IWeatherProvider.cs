@@ -18,5 +18,8 @@ public interface IWeatherProvider
     /// </summary>
     Task<WeatherSnapshot> GetCurrentAsync(double? lat = null, double? lon = null, string? label = null, string? countryCode = null);
 
+    /// <summary>The IP-derived location (cached), or null while it cannot be resolved.</summary>
+    Task<Nexus.Service.Persistence.WeatherSavedLocation?> GetApproximateLocationAsync();
+
     Task<List<WeatherGeocodeResult>> SearchLocationsAsync(string query, string? language);
 }

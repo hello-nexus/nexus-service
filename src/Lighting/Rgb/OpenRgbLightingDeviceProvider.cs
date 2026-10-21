@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Models.Devices;
@@ -38,7 +39,20 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
     public bool IsConnected => _bridge.IsConnected;
 
     public GetLightingDevicesResponse GetAll()
-        => OpenRgbZoneSupport.BuildCards(_bridge.Devices, _store.Load(), _bridge.IsConnected, _bridge.DrivableIds);
+    {
+        var devices = _bridge.Devices;
+        List<RgbDevice>? unowned = null;
+        for (var i = 0; i < devices.Count; i++)
+        {
+            if (!_bridge.IsOwnedByFirstParty(devices[i]))
+            {
+                unowned?.Add(devices[i]);
+                continue;
+            }
+            unowned ??= new List<RgbDevice>(devices.Take(i));
+        }
+        return OpenRgbZoneSupport.BuildCards(unowned ?? devices, _store.Load(), _bridge.IsConnected);
+    }
 
     // ── IDeviceStructureSource ──
 
@@ -121,12 +135,15 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         pref.Saturation = saturation;
     });
 
-    public void SetZoneLedCount(string id, int count)
+    public void SetZoneLedCount(string id, int count) => ApplyZoneLedCount(id, count);
+
+    /// <summary>False when the count is out of range or the id names no resizable zone, in which case nothing changed.</summary>
+    private bool ApplyZoneLedCount(string id, int count)
     {
-        if (count < 0 || count > 1024)
-            return;
+        if (count < 0 || count > MaxZoneLedCount)
+            return false;
         if (!TryResolveResizableZone(id, out var physIdx, out var zoneIdx, out var deviceId))
-            return;
+            return false;
         foreach (var d in _bridge.Devices)
         {
             if (d.StableId == deviceId)
@@ -160,6 +177,78 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         });
 
         _bridge.RequestZoneResize(physIdx, zoneIdx, count);
+        return true;
+    }
+
+    private const int MaxZoneLedCount = 1024;
+
+    /// <summary>Devices with a zone the controller lets the user size, in OpenRGB's own terms (flags, range, needs-size).</summary>
+    public List<OpenRgbZoneDeviceDto> GetSizableZones()
+    {
+        var result = new List<OpenRgbZoneDeviceDto>();
+        var settings = _store.Load();
+        foreach (var d in _bridge.Devices)
+        {
+            if (!_bridge.IsSizableDevice(d, settings))
+                continue;
+            OpenRgbZoneDeviceDto? dto = null;
+            for (var z = 0; z < d.Zones.Count; z++)
+            {
+                var zone = d.Zones[z];
+                if (!zone.IsConfigurableSize)
+                    continue;
+                dto ??= new OpenRgbZoneDeviceDto { DeviceId = d.StableId, Name = d.Name, SplitOwned = OpenRgbZoneSupport.IsSplitMotherboard(d) };
+                dto.Zones.Add(new OpenRgbZoneDto
+                {
+                    Index = z,
+                    Name = string.IsNullOrWhiteSpace(zone.Name) ? $"Zone {z + 1}" : zone.Name,
+                    LedCount = zone.LedCount,
+                    LedsMin = (int)Math.Min(zone.LedsMin, int.MaxValue),
+                    LedsMax = (int)Math.Min(zone.LedsMax, int.MaxValue),
+                    Resizable = zone.IsResizable,
+                    NeedsSize = zone.NeedsSize,
+                });
+            }
+            if (dto is not null)
+                result.Add(dto);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Sizes any user-sizable zone through the SDK resize, clamped to the zone's range. The daemon
+    /// persists the size itself and reapplies it on registration; a split motherboard or port
+    /// controller also records it in ZoneLedCounts, which Nexus reapplies on every refresh.
+    /// </summary>
+    public string? TrySetOpenRgbZoneSize(string deviceId, int zoneIndex, int count)
+    {
+        foreach (var d in _bridge.Devices)
+        {
+            if (d.StableId != deviceId)
+                continue;
+            if (zoneIndex < 0 || zoneIndex >= d.Zones.Count)
+                return "unknown zone";
+            if (!_bridge.IsSizableDevice(d, _store.Load()))
+                return "device is not controlled through OpenRGB";
+            var zone = d.Zones[zoneIndex];
+            if (!zone.IsResizable)
+                return "zone size is not configurable";
+            var max = (int)Math.Min(zone.LedsMax, int.MaxValue);
+            count = Math.Clamp(count, (int)Math.Min(zone.LedsMin, int.MaxValue), max);
+            if (count > MaxZoneLedCount)
+                return "size is above the supported maximum";
+            if (OpenRgbZoneSupport.IsSplitMotherboard(d))
+            {
+                if (!ApplyZoneLedCount($"{d.StableId}-{zoneIndex}", count))
+                    return "size was not accepted";
+            }
+            else
+            {
+                _bridge.RequestZoneResizeById(d.StableId, zoneIndex, count);
+            }
+            return null;
+        }
+        return "unknown device";
     }
 
     public void Identify(string id, int durationMs)

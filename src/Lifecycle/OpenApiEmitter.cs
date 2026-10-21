@@ -1,3 +1,4 @@
+#if DEBUG
 using System;
 using System.IO;
 using System.Threading;
@@ -53,3 +54,4 @@ internal static class OpenApiEmitter
         }
     }
 }
+#endif
