@@ -46,6 +46,34 @@ public class MystiqueWorkerTests
     }
 
     [Fact]
+    public async Task Nothing_reaches_the_screen_after_nexus_control_is_switched_off()
+    {
+        var store = new InMemoryConfigStore();
+        var pipes = new FakeFactory();
+        var gate = new DeviceControlGate(store);
+        gate.SetEnabled(MystiqueWorker.HandlerId, true);
+        var worker = new MystiqueWorker(pipes, gate, new HardwarePresence(new FakeUsb(true)), store, new FakeSensors(), connectPollMs: 60_000, tickMs: 20);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitFor(() => worker.IsConnected);
+            gate.SetEnabled(MystiqueWorker.HandlerId, false);
+            await WaitFor(() => !worker.IsConnected);
+            int written = pipes.Pipe!.Commands().Length;
+
+            worker.RequestApply();
+            worker.RequestApply();
+
+            Assert.Equal(written, pipes.Pipe.Commands().Length);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task Does_nothing_while_nexus_control_is_off()
     {
         var pipes = new FakeFactory();

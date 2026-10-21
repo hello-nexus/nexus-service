@@ -85,6 +85,20 @@ public class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
+    public async Task An_unrelated_change_succeeds_while_the_stored_pick_is_absent_from_this_pc()
+    {
+        using var factory = new NexusAppFactory();
+        factory.Services.GetRequiredService<IConfigStore>().Update(
+            s => s.Devices.DeepCoolMystique.CpuFan = new DeepCoolMystiqueSensorPick { Category = "motherboard", Sensor = "fan/unplugged" });
+        var client = Client(factory);
+
+        var put = await client.PutAsync("/devices/deepcool-mystique/settings",
+            Json("{\"brightness\":50,\"cpuFan\":{\"category\":\"motherboard\",\"sensor\":\"fan/unplugged\"}}"));
+
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+    }
+
+    [Fact]
     public void Each_setting_marks_only_its_own_command_group_as_edited()
     {
         var m = new DeepCoolMystiqueSettings();
