@@ -1446,6 +1446,9 @@ public sealed class DevicesSettings
 
     public const int DefaultGlacialLcdUploadPacePercent = 4;
 
+    /// <summary>Hidden. The Glacial LCD Nexus panel upload knobs; a field left null takes its default.</summary>
+    public GlacialLcdTuningSettings GlacialLcdTuning { get; set; } = new();
+
     /// <summary>
     /// Hidden. Off, the Glacial LCD keeps only its native modes: nothing streams or uploads to it,
     /// no panel record is kept for it, and the Nexus panel mode is unavailable. Read at start.
@@ -2195,6 +2198,19 @@ public sealed class HydroShift2CurveSettings
     public bool? PumpFollowsMotherboard { get; set; }
     /// <summary>The glass's Offline Mode (date and time shown while the PC is off). Null until set in Nexus, so a flag set in L-Connect is left alone.</summary>
     public bool? OfflineMode { get; set; }
+}
+
+/// <summary>Stored knobs of the Glacial LCD Nexus panel upload; null means the default, which <see cref="Nexus.Service.Peripherals.BulkPanels.GlacialLcdTuning"/> supplies.</summary>
+public sealed class GlacialLcdTuningSettings
+{
+    public double? MaxFps { get; set; }
+    public int? PacePercent { get; set; }
+    public bool? ReplyDriven { get; set; }
+    public int? ScalePercent { get; set; }
+    public string? ScaleMode { get; set; }
+    public int? JpegQuality { get; set; }
+    public int? ChunkKb { get; set; }
+    public bool? DoubleBuffer { get; set; }
 }
 
 /// <summary>One hardware-monitor widget: the sensor it shows and the label sent to the panel.</summary>

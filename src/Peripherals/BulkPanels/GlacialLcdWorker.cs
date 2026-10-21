@@ -167,6 +167,7 @@ public sealed class GlacialLcdWorker : BackgroundService
             return false;
         }
         ServiceLog.Info($"[{HandlerId}] connected");
+        GlacialLcdLog.Write("native worker connected");
         _connected = true;
         try
         {
@@ -177,6 +178,7 @@ public sealed class GlacialLcdWorker : BackgroundService
             _connected = false;
             _fps?.SetDemand(FpsDemandSource, false);
             ServiceLog.Info($"[{HandlerId}] disconnected");
+            GlacialLcdLog.Write("native worker disconnected");
         }
     }
 
@@ -256,6 +258,7 @@ public sealed class GlacialLcdWorker : BackgroundService
         var g = s.Devices.GlacialLcd;
         if (GlacialLcdScreen.ModeKeyOf(g.Copy()) == key)
         {
+            GlacialLcdLog.Write($"native mode landed key={key}");
             g.ModePending = false;
         }
     });

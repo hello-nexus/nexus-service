@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -60,7 +61,7 @@ public class GlacialLcdDriverTests
         public void Advance(long ms) => Interlocked.Add(ref _now, ms);
     }
 
-    private static GlacialLcdPanelDriver Fast(GlacialLcdLink? link = null, FakeClock? clock = null, int paceScale = 0, int settleMs = 0, int backoffMs = 10, bool streaming = true)
+    private static GlacialLcdPanelDriver Fast(GlacialLcdLink? link = null, FakeClock? clock = null, int paceScale = 0, int settleMs = 0, int backoffMs = 10, bool streaming = true, int disconnectWaitMs = 0)
     {
         clock ??= new FakeClock();
         link ??= new GlacialLcdLink();
@@ -68,7 +69,7 @@ public class GlacialLcdDriverTests
         {
             link.StreamOpened(new object());
         }
-        return new GlacialLcdPanelDriver(link, paceScale, settleMs, 600_000, backoffMs, 10, () => clock.Now);
+        return new GlacialLcdPanelDriver(link, paceScale, settleMs, 600_000, backoffMs, 10, () => clock.Now, disconnectWaitMs);
     }
 
     [Fact]
@@ -236,10 +237,10 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void The_native_worker_cannot_enter_while_an_upload_runs_and_a_cancel_ends_it()
+    public void The_native_worker_cannot_enter_while_an_upload_runs_and_a_cancel_waits_for_its_last_step()
     {
         var link = new GlacialLcdLink();
-        var driver = Fast(link, paceScale: 100);
+        var driver = Fast(link, paceScale: 3);
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
@@ -259,10 +260,16 @@ public class GlacialLcdDriverTests
         probe.Join();
         Assert.False(entered);
 
+        // A mode switch or a dark display arriving now does not cut the sequence short.
+        link.StreamWanted = false;
+        link.Dark = true;
         link.RequestCancel();
-        Assert.True(WaitUntil(() => !driver.IsUploading, 4000));
-        Assert.Equal(0, driver.UploadsCompleted);
-        Assert.DoesNotContain(hid.Writes, w => w[1] == 0x73 && w[2] == 0xFF);
+        Assert.True(WaitUntil(() => !driver.IsUploading, 20_000));
+        Assert.Equal(1, driver.UploadsCompleted);
+        var writes = hid.Writes;
+        Assert.Contains(writes, w => w[1] == 0x73 && w[2] == 0xFF);
+        Assert.Equal(0xDC, writes[^2][1]);
+        Assert.Equal(0x51, writes[^1][1]);
         driver.Disconnect(pipe, hid);
     }
 
@@ -353,42 +360,55 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_cancel_after_the_flush_forgets_the_remembered_picture_because_the_flush_may_have_cleared_it()
+    public void A_cancel_after_the_flush_does_not_cut_the_sequence_short()
     {
         var link = new GlacialLcdLink();
-        var memory = new FakeMemory();
-        memory.Hashes["asus-glacial-lcd"] = "ABC";
         var driver = Fast(link);
-        driver.BindMemory(memory);
         var pipe = new FakePipe();
         var hid = new FakeHid { OnWrite = w => { if (w[1] == 0xF1) { link.RequestCancel(); } } };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+
+        Assert.NotEmpty(pipe.Writes);
+        Assert.Contains(hid.Writes, w => w[1] == 0x73 && w[2] == 0xFF);
+        Assert.Equal(0x51, hid.Writes[^1][1]);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_write_failing_after_the_flush_forgets_the_remembered_picture()
+    {
+        var memory = new FakeMemory();
+        memory.Hashes["asus-glacial-lcd"] = "ABC";
+        var driver = Fast();
+        driver.BindMemory(memory);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        hid.OnWrite = w => { if (w[1] == 0xF1) { pipe.FailWrites = true; } };
         driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading && memory.Hashes.IsEmpty));
 
         Assert.Empty(memory.Hashes);
-        Assert.Empty(pipe.Writes);
         driver.Disconnect(pipe, hid);
     }
 
     [Fact]
-    public void A_cancel_before_the_flush_keeps_the_remembered_picture()
+    public void A_cancel_during_the_opening_query_does_not_cut_the_sequence_short()
     {
         var link = new GlacialLcdLink();
-        var memory = new FakeMemory();
-        memory.Hashes["asus-glacial-lcd"] = "ABC";
         var driver = Fast(link);
-        driver.BindMemory(memory);
         var pipe = new FakePipe();
         var hid = new FakeHid { OnWrite = w => { if (w[1] == 0xDC) { link.RequestCancel(); } } };
         driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
-        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
 
-        Assert.Equal("ABC", memory.Hashes["asus-glacial-lcd"]);
-        Assert.DoesNotContain(hid.Writes, w => w[1] == 0xF1);
+        Assert.Contains(hid.Writes, w => w[1] == 0x73 && w[2] == 0xFF);
         driver.Disconnect(pipe, hid);
     }
 
@@ -479,16 +499,16 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_newer_frame_drops_an_upload_only_before_the_flush()
+    public void A_newer_frame_drops_an_upload_only_before_its_first_command()
     {
         var driver = Fast();
         var pipe = new FakePipe();
-        int queries = 0;
+        int reads = 0;
         var hid = new FakeHid();
-        hid.OnWrite = w =>
+        hid.OnRead = _ =>
         {
-            // The first upload's opening query is when the newer frame arrives.
-            if (w[1] == 0xDC && ++queries == 1)
+            // The first read of the first upload is its start: the newer frame arrives before any command went out.
+            if (Interlocked.Increment(ref reads) == 1)
             {
                 driver.SendFrame(pipe, hid, Frame(noiseRows: 100, seed: 9));
             }
@@ -499,7 +519,7 @@ public class GlacialLcdDriverTests
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
 
         Assert.Equal(2, driver.UploadAttempts);
-        // The dropped attempt sent no flush; the one that ran sent one flush and finished.
+        Assert.Equal(1, hid.Writes.Count(w => w[1] == 0xDC && hid.Writes.IndexOf(w) < hid.Writes.FindIndex(x => x[1] == 0xF1)));
         Assert.Equal(1, hid.Writes.Count(w => w[1] == 0xF1));
         Assert.Equal(1, hid.Writes.Count(w => w[1] == 0x73 && w[2] == 0xFF));
         driver.Disconnect(pipe, hid);
@@ -799,13 +819,12 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void A_cancel_during_the_wait_after_the_end_report_stops_the_upload_before_the_show_step()
+    public void A_cancel_during_the_wait_after_the_end_report_still_ends_with_the_query_and_the_show_step()
     {
         var link = new GlacialLcdLink();
         var driver = Fast(link);
         var pipe = new FakePipe();
         int slices = 0;
-        // The cancel lands inside the first timed read of the wait, so the outcome does not depend on timing.
         var hid = new FakeHid
         {
             OnRead = timeoutMs =>
@@ -819,33 +838,11 @@ public class GlacialLcdDriverTests
         driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
-        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
-
-        // One long read would never see a 50 ms slice, so the cancel would not fire and the show step would go out.
-        Assert.Equal(0, driver.UploadsCompleted);
-        Assert.DoesNotContain(hid.Writes, w => w[1] == 0x51);
-        Assert.DoesNotContain(500, hid.ReadTimeouts);
-        driver.Disconnect(pipe, hid);
-    }
-
-    [Fact]
-    public void A_silent_panel_costs_only_short_waits_and_never_fails_the_upload()
-    {
-        var driver = Fast();
-        var pipe = new FakePipe();
-        var hid = new FakeHid();
-        driver.Connect(pipe, hid);
-
-        driver.SendFrame(pipe, hid, Frame());
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
-        driver.Disconnect(pipe, hid);
 
-        var timeouts = hid.ReadTimeouts;
-        Assert.All(timeouts, t => Assert.InRange(t, 0, 50));
-        // The wait after the end report is a run of short slices, not one long read (how many fit depends on the timer).
-        Assert.True(timeouts.Count(t => t == 50) >= 2);
-        // Transfers are polled, never waited on: one zero-timeout read per transfer, plus the drain at the start.
-        Assert.Equal(pipe.Writes.Count + 1, timeouts.Count(t => t == 0));
+        Assert.Equal(0xDC, hid.Writes[^2][1]);
+        Assert.Equal(0x51, hid.Writes[^1][1]);
+        driver.Disconnect(pipe, hid);
     }
 
     [Fact]
@@ -859,8 +856,8 @@ public class GlacialLcdDriverTests
         driver.SendFrame(pipe, hid, Frame());
 
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
-        // A read that reports the device gone ends the wait after the end report at once.
-        Assert.True(hid.ReadTimeouts.Count(t => t == 50) <= 1);
+        // A read that reports the device gone ends each wait at once: the two state queries and the end report.
+        Assert.True(hid.ReadTimeouts.Count(t => t == 50) <= 3);
         driver.Disconnect(pipe, hid);
     }
 
@@ -985,6 +982,265 @@ public class GlacialLcdDriverTests
         Assert.Equal("lcd-square", driver.Surface);
     }
 
+    private static GlacialLcdTuning NewTuning(out string dir)
+    {
+        dir = Path.Combine(Path.GetTempPath(), "glacial-tune-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var tuning = new GlacialLcdTuning(new Nexus.Service.Tests.TestableConfigStore(Path.Combine(dir, "settings.json")));
+        tuning.Apply(new GlacialLcdTuningChange { PacePercent = 0 });
+        return tuning;
+    }
+
+    private static int SentJpegBytes(FakeHid hid)
+    {
+        var announce = hid.Writes.Last(w => w[1] == 0x7F);
+        return announce[3] | (announce[4] << 8) | (announce[5] << 16);
+    }
+
+    [Fact]
+    public void A_panel_that_stays_silent_stalls_the_upload_before_anything_is_flushed_and_resume_clears_it()
+    {
+        var tuning = NewTuning(out _);
+        var driver = Fast();
+        driver.StallReplyMs = 100;
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid { Echo = false };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => tuning.Stalled));
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0xF1);
+        Assert.Equal(0, driver.UploadsCompleted);
+        var stats = tuning.Stats();
+        Assert.Equal(1, stats.UploadsFailed);
+        Assert.Contains("DC", stats.LastError);
+        Assert.NotNull(stats.LastErrorAt);
+        int attempts = driver.UploadAttempts;
+        Looked(driver);
+        Assert.Equal(attempts, driver.UploadAttempts);
+
+        hid.Echo = true;
+        tuning.Resume();
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        Assert.False(tuning.Stalled);
+        Assert.Equal(1, tuning.Stats().UploadsOk);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_stall_after_the_transfer_forgets_the_picture_and_stops_uploads()
+    {
+        var tuning = NewTuning(out _);
+        var driver = Fast();
+        driver.StallReplyMs = 100;
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        hid.OnWrite = w =>
+        {
+            if (w[1] == 0x73 && w[2] == 0xFF)
+            {
+                hid.Echo = false;
+                hid.Drain();
+            }
+        };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => tuning.Stalled));
+        Assert.Equal(0, driver.UploadsCompleted);
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0x51);
+        Assert.Contains("after the transfer", tuning.Stats().LastError);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void The_chunk_size_knob_sets_the_bulk_transfer_size()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { ChunkKb = 8, PacePercent = 0 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+
+        Assert.All(pipe.Writes, w => Assert.Equal(8192, w.Length));
+        Assert.Equal((SentJpegBytes(hid) + 8191) / 8192, pipe.Writes.Count);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Theory]
+    [InlineData(false, new[] { 2, 2 })]
+    [InlineData(true, new[] { 1, 2 })]
+    public void The_double_buffer_knob_picks_one_slot_or_two(bool doubleBuffer, int[] expected)
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { DoubleBuffer = doubleBuffer, PacePercent = 0 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 1));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 2));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
+
+        var slots = hid.Writes.Where(w => w[1] == 0x72).Select(w => (int)w[4]).ToArray();
+        Assert.Equal(expected, slots);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void The_max_fps_knob_spaces_the_start_of_uploads()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { MaxFps = 0.5, PacePercent = 0 });
+        var clock = new FakeClock();
+        var driver = Fast(clock: clock);
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 1));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 2));
+        clock.Advance(500);
+        Looked(driver);
+        Assert.Equal(1, driver.UploadAttempts);
+
+        clock.Advance(2000);
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void The_reply_driven_knob_ends_each_wait_on_the_panels_report_not_the_timer()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { ReplyDriven = true, PacePercent = 100 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        // The panel reports on each transfer it takes.
+        pipe.OnWrite = () => hid.Enqueue(Report("EE 14 00 00 10"));
+        driver.Connect(pipe, hid);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1, 30_000));
+
+        // Timers alone would take well over this at the captured pace.
+        Assert.True(watch.ElapsedMilliseconds < 8000, watch.ElapsedMilliseconds.ToString());
+        driver.Disconnect(pipe, hid);
+    }
+
+    private static (int Width, int Height) JpegSize(FakePipe pipe)
+    {
+        var data = pipe.Writes.SelectMany(w => w).ToArray();
+        for (int i = 0; i + 9 < data.Length; i++)
+        {
+            if (data[i] == 0xFF && data[i + 1] == 0xC0)
+            {
+                return ((data[i + 7] << 8) | data[i + 8], (data[i + 5] << 8) | data[i + 6]);
+            }
+        }
+        return (0, 0);
+    }
+
+    [Theory]
+    [InlineData("send", 50, 360, 640)]
+    [InlineData("upscale", 50, 720, 1280)]
+    [InlineData("send", 100, 720, 1280)]
+    public void The_scale_knob_sends_a_smaller_picture_or_a_smoothed_full_size_one(string mode, int percent, int width, int height)
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { ScaleMode = mode, ScalePercent = percent, PacePercent = 0 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 50));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+
+        Assert.Equal((width, height), JpegSize(pipe));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void The_quality_knob_changes_the_picture_size_and_the_stats_follow_the_uploads()
+    {
+        var tuning = NewTuning(out _);
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        tuning.Apply(new GlacialLcdTuningChange { JpegQuality = 90, PacePercent = 0 });
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 200, seed: 3));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        int high = SentJpegBytes(hid);
+        tuning.Apply(new GlacialLcdTuningChange { JpegQuality = 30 });
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 200, seed: 3).Select((b, i) => i == 0 ? (byte)(b ^ 1) : b).ToArray());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
+        int low = SentJpegBytes(hid);
+
+        Assert.True(low < high, $"{low} vs {high}");
+        var stats = tuning.Stats();
+        Assert.Equal(2, stats.UploadsOk);
+        Assert.Equal(low, stats.LastFrameBytes);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Every_upload_is_logged_with_its_steps_and_every_reply()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "glacial-log-" + Guid.NewGuid().ToString("N")[..8]);
+        GlacialLcdLog.UseDirectory(dir);
+        try
+        {
+            var tuning = NewTuning(out _);
+            tuning.Apply(new GlacialLcdTuningChange { PacePercent = 0 });
+            var driver = Fast();
+            driver.BindTuning(tuning);
+            var pipe = new FakePipe();
+            var hid = new FakeHid();
+            driver.Connect(pipe, hid);
+            for (int i = 1; i <= 5; i++)
+            {
+                driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: i));
+                Assert.True(WaitUntil(() => driver.UploadsCompleted == i));
+            }
+            driver.Disconnect(pipe, hid);
+
+            string text = File.ReadAllText(Path.Combine(dir, GlacialLcdLog.FileName));
+            Assert.Contains("settings id=", text);
+            Assert.Contains("start settings=", text);
+            foreach (string step in new[] { "TX +", "DC", "prelude 71", "prelude F1", "prelude 72", "prelude 73", "prelude 7F", "chunk 1/", "end 73FF", "DC before show", "show 51" })
+            {
+                Assert.Contains(step, text);
+            }
+            // Replies are logged for the fifth upload too, not only the first few.
+            Assert.Contains("u5 RX", text);
+            Assert.Contains("RX +", text);
+        }
+        finally
+        {
+            GlacialLcdLogTestSetup.Restore();
+        }
+    }
+
     private sealed class FakeMemory : ILcdUploadMemory
     {
         public System.Collections.Concurrent.ConcurrentDictionary<string, string> Hashes { get; } = new();
@@ -1052,7 +1308,7 @@ public class GlacialLcdDriverTests
         public Action<byte[]>? OnWrite { get; set; }
 
         /// <summary>The panel answers a state query with a state report and every other report with its header.</summary>
-        public bool Echo { get; set; }
+        public bool Echo { get; set; } = true;
 
         /// <summary>Replaces the state report an echoing panel sends for a query.</summary>
         public byte[]? StateReport { get; set; }
@@ -1077,6 +1333,14 @@ public class GlacialLcdDriverTests
         public Action<int>? OnRead { get; set; }
 
         private readonly Queue<byte[]> _input = new();
+
+        public void Drain()
+        {
+            lock (_lock)
+            {
+                _input.Clear();
+            }
+        }
 
         public int VendorId => 0x0B05;
         public int ProductId => GlacialLcdProtocol.ProductId;

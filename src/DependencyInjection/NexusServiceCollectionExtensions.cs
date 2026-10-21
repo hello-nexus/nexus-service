@@ -1474,14 +1474,7 @@ public static class NexusServiceCollectionExtensions
             }
             glacialStreamDriver.BindMemory(new Nexus.Service.Peripherals.BulkPanels.ConfigStoreLcdUploadMemory(
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
-            // Hidden: percent of the captured vendor pacing, read at the start of each upload.
-            var paceStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
-            glacialStreamDriver.BindPaceScale(() =>
-            {
-                int stored = 0;
-                paceStore.Read(s => stored = s.Devices.GlacialLcdUploadPacePercent);
-                return Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(stored);
-            });
+            glacialStreamDriver.BindTuning(sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdTuning>());
             return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
                 sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
@@ -1503,6 +1496,8 @@ public static class NexusServiceCollectionExtensions
                     return !chosen;
                 },
                 listedWhileWithheld: true));
+        services.AddSingleton(sp => new Nexus.Service.Peripherals.BulkPanels.GlacialLcdTuning(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>());
         services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(

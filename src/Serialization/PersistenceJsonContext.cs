@@ -142,6 +142,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Galahad2LightingSettings))]
 [JsonSerializable(typeof(GlacialLcdSettings))]
 [JsonSerializable(typeof(GlacialLcdSlot))]
+[JsonSerializable(typeof(GlacialLcdTuningSettings))]
 [JsonSerializable(typeof(List<GlacialLcdSlot>))]
 [JsonSerializable(typeof(AsiahorseUmbraSettings))]
 [JsonSerializable(typeof(UmbraEffectGroupSettings))]

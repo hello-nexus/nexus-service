@@ -13,6 +13,42 @@ public static partial class DevicesRoutes
 {
     private static void MapGlacialLcdEndpoints(WebApplication app)
     {
+        app.MapGet("/devices/asus-glacial-lcd/tuning", (GlacialLcdTuning tuning) =>
+            Results.Json(BuildTuningResponse(tuning), AppJsonContext.Default.GlacialLcdTuningResponse));
+
+        app.MapPut("/devices/asus-glacial-lcd/tuning", (GlacialLcdTuningRequest body, GlacialLcdTuning tuning) =>
+        {
+            var change = new GlacialLcdTuningChange
+            {
+                MaxFps = body.MaxFps,
+                PacePercent = body.PacePercent,
+                ReplyDriven = body.ReplyDriven,
+                ScalePercent = body.ScalePercent,
+                ScaleMode = body.ScaleMode,
+                JpegQuality = body.JpegQuality,
+                ChunkKb = body.ChunkKb,
+                DoubleBuffer = body.DoubleBuffer,
+            };
+            if (GlacialLcdTuning.Validate(change) is { } error)
+            {
+                return Results.BadRequest(ApiResponse.Fail(error));
+            }
+            tuning.Apply(change);
+            return Results.Json(BuildTuningResponse(tuning), AppJsonContext.Default.GlacialLcdTuningResponse);
+        });
+
+        app.MapPost("/devices/asus-glacial-lcd/tuning/reset-stats", (GlacialLcdTuning tuning) =>
+        {
+            tuning.ResetStats();
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+
+        app.MapPost("/devices/asus-glacial-lcd/tuning/resume", (GlacialLcdTuning tuning) =>
+        {
+            tuning.Resume();
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+
         app.MapGet("/devices/asus-glacial-lcd/state", (IConfigStore store, GlacialLcdWorker worker, ISensorProvider sensors, GlacialLcdLink link) =>
             Results.Json(BuildGlacialState(ReadGlacial(store), worker.IsConnected, sensors, link.NexusPanelEnabled), AppJsonContext.Default.GlacialLcdStateResponse));
 
@@ -47,7 +83,12 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("invalid slots"));
             }
+            string modeBefore = ReadGlacial(store).Mode;
             store.Update(s => ApplyGlacialRequest(s.Devices.GlacialLcd, body));
+            if (body.Mode is not null)
+            {
+                GlacialLcdLog.Write($"mode request {modeBefore} -> {body.Mode}");
+            }
             if (body.Mode is not null)
             {
                 // Leaving the Nexus Panel mode stops a running upload now and closes the session on
@@ -119,6 +160,38 @@ public static partial class DevicesRoutes
         GlacialLcdSettings copy = new();
         store.Read(s => copy = s.Devices.GlacialLcd.Copy());
         return copy;
+    }
+
+    internal static GlacialLcdTuningResponse BuildTuningResponse(GlacialLcdTuning tuning)
+    {
+        var v = tuning.Current();
+        var st = tuning.Stats();
+        return new GlacialLcdTuningResponse
+        {
+            Settings = new GlacialLcdTuningSettingsDto
+            {
+                MaxFps = v.MaxFps,
+                PacePercent = v.PacePercent,
+                ReplyDriven = v.ReplyDriven,
+                ScalePercent = v.ScalePercent,
+                ScaleMode = v.ScaleMode,
+                JpegQuality = v.JpegQuality,
+                ChunkKb = v.ChunkKb,
+                DoubleBuffer = v.DoubleBuffer,
+            },
+            Stats = new GlacialLcdTuningStatsDto
+            {
+                UploadsOk = st.UploadsOk,
+                UploadsFailed = st.UploadsFailed,
+                LastUploadMs = st.LastUploadMs,
+                UploadsPerSec = Math.Round(st.UploadsPerSec, 2),
+                LastFrameBytes = st.LastFrameBytes,
+                LastEncodeMs = st.LastEncodeMs,
+                LastError = st.LastError,
+                LastErrorAt = st.LastErrorAt?.ToString("o", System.Globalization.CultureInfo.InvariantCulture),
+                Stalled = st.Stalled,
+            },
+        };
     }
 
     internal static GlacialLcdStateResponse BuildGlacialState(GlacialLcdSettings g, bool connected, ISensorProvider sensors, bool panelModeAvailable) => new()
@@ -193,4 +266,49 @@ public sealed class GlacialLcdSettingsRequest
     public GlacialLcdSlotDto[]? Slots { get; set; }
     public int? Brightness { get; set; }
     public bool? StayOnWhileAsleep { get; set; }
+}
+
+public sealed class GlacialLcdTuningSettingsDto
+{
+    public double MaxFps { get; set; }
+    public int PacePercent { get; set; }
+    public bool ReplyDriven { get; set; }
+    public int ScalePercent { get; set; }
+    public string ScaleMode { get; set; } = "send";
+    public int JpegQuality { get; set; }
+    public int ChunkKb { get; set; }
+    public bool DoubleBuffer { get; set; }
+}
+
+public sealed class GlacialLcdTuningStatsDto
+{
+    public int UploadsOk { get; set; }
+    public int UploadsFailed { get; set; }
+    public long LastUploadMs { get; set; }
+    public double UploadsPerSec { get; set; }
+    public int LastFrameBytes { get; set; }
+    public long LastEncodeMs { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public string? LastError { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public string? LastErrorAt { get; set; }
+    public bool Stalled { get; set; }
+}
+
+public sealed class GlacialLcdTuningResponse
+{
+    public GlacialLcdTuningSettingsDto Settings { get; set; } = new();
+    public GlacialLcdTuningStatsDto Stats { get; set; } = new();
+}
+
+public sealed class GlacialLcdTuningRequest
+{
+    public double? MaxFps { get; set; }
+    public int? PacePercent { get; set; }
+    public bool? ReplyDriven { get; set; }
+    public int? ScalePercent { get; set; }
+    public string? ScaleMode { get; set; }
+    public int? JpegQuality { get; set; }
+    public int? ChunkKb { get; set; }
+    public bool? DoubleBuffer { get; set; }
 }

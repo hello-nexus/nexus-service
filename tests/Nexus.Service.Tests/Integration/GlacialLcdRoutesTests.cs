@@ -50,4 +50,92 @@ public class GlacialLcdRoutesTests
             new StringContent($"{{\"slots\":[{{\"category\":\"{category}\",\"sensor\":\"{sensor}\",\"label\":\"W\"}}]}}", Encoding.UTF8, "application/json"));
         Assert.Equal(expected, put.StatusCode);
     }
+
+    private static StringContent Body(string json) => new(json, Encoding.UTF8, "application/json");
+
+    [Fact]
+    public async Task The_tuning_api_reports_the_proven_defaults_and_the_stats_shape()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+
+        var res = await client.GetAsync("/devices/asus-glacial-lcd/tuning");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var settings = doc.RootElement.GetProperty("settings");
+        Assert.Equal(19, settings.GetProperty("pacePercent").GetInt32());
+        Assert.Equal(4, settings.GetProperty("chunkKb").GetInt32());
+        Assert.Equal(65, settings.GetProperty("jpegQuality").GetInt32());
+        Assert.Equal(100, settings.GetProperty("scalePercent").GetInt32());
+        Assert.Equal("send", settings.GetProperty("scaleMode").GetString());
+        Assert.False(settings.GetProperty("doubleBuffer").GetBoolean());
+        Assert.False(settings.GetProperty("replyDriven").GetBoolean());
+        Assert.Equal(30, settings.GetProperty("maxFps").GetDouble());
+        var stats = doc.RootElement.GetProperty("stats");
+        foreach (string name in new[] { "uploadsOk", "uploadsFailed", "lastUploadMs", "uploadsPerSec", "lastFrameBytes", "lastEncodeMs", "stalled" })
+        {
+            Assert.True(stats.TryGetProperty(name, out _), name);
+        }
+        Assert.Equal(JsonValueKind.Null, stats.GetProperty("lastError").ValueKind);
+        Assert.Equal(JsonValueKind.Null, stats.GetProperty("lastErrorAt").ValueKind);
+    }
+
+    [Fact]
+    public async Task A_partial_put_is_validated_persisted_and_returned()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+
+        var put = await client.PutAsync("/devices/asus-glacial-lcd/tuning", Body("{\"pacePercent\":50,\"chunkKb\":8,\"scaleMode\":\"upscale\"}"));
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        using var doc = JsonDocument.Parse(await put.Content.ReadAsStringAsync());
+        Assert.Equal(50, doc.RootElement.GetProperty("settings").GetProperty("pacePercent").GetInt32());
+
+        var get = await client.GetAsync("/devices/asus-glacial-lcd/tuning");
+        using var again = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
+        var settings = again.RootElement.GetProperty("settings");
+        Assert.Equal(8, settings.GetProperty("chunkKb").GetInt32());
+        Assert.Equal("upscale", settings.GetProperty("scaleMode").GetString());
+        Assert.Equal(65, settings.GetProperty("jpegQuality").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("{\"maxFps\":0.1}")]
+    [InlineData("{\"maxFps\":31}")]
+    [InlineData("{\"pacePercent\":101}")]
+    [InlineData("{\"scalePercent\":10}")]
+    [InlineData("{\"scaleMode\":\"x\"}")]
+    [InlineData("{\"jpegQuality\":10}")]
+    [InlineData("{\"chunkKb\":17}")]
+    public async Task An_out_of_range_tuning_value_is_refused_and_changes_nothing(string json)
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+
+        var put = await client.PutAsync("/devices/asus-glacial-lcd/tuning", Body(json));
+
+        Assert.Equal(HttpStatusCode.BadRequest, put.StatusCode);
+        var get = await client.GetAsync("/devices/asus-glacial-lcd/tuning");
+        using var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
+        Assert.Equal(19, doc.RootElement.GetProperty("settings").GetProperty("pacePercent").GetInt32());
+    }
+
+    [Fact]
+    public async Task Reset_stats_and_resume_are_mapped_and_clear_their_state()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+        var tuning = factory.Services.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdTuning>();
+        tuning.UploadFailed("x");
+        tuning.Stall("silent");
+
+        var resume = await client.PostAsync("/devices/asus-glacial-lcd/tuning/resume", null);
+        Assert.Equal(HttpStatusCode.OK, resume.StatusCode);
+        Assert.False(tuning.Stalled);
+
+        var reset = await client.PostAsync("/devices/asus-glacial-lcd/tuning/reset-stats", null);
+        Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
+        Assert.Equal(0, tuning.Stats().UploadsFailed);
+    }
 }

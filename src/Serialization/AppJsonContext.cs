@@ -1271,6 +1271,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2StateResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdStateResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdSettingsRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdTuningResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdTuningRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdSlotDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdSlotDto[]))]
 [JsonSerializable(typeof(Nexus.Service.Routes.KrakenStateResponse))]
