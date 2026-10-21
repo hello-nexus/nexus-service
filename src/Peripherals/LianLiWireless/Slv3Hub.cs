@@ -20,7 +20,7 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// All hardware I/O and shared state are guarded by one lock: the connection
 /// worker's ticks and route-driven bind/unbind/identify calls both touch it.
 /// </summary>
-public sealed class Slv3Hub : IDisposable
+public sealed partial class Slv3Hub : IDisposable
 {
     // Shared read-only default (all null = motherboard-sync) for a chain that
     // has never had a duty set. Never mutated - safe to share across keys.
@@ -792,10 +792,11 @@ public sealed class Slv3Hub : IDisposable
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
+        var flexLcd = ReadFlexLcd();
         EnsureOwnedLoaded();
         try
         {
-            return DriveLocked(aioSensors, aioScreens);
+            return DriveLocked(aioSensors, aioScreens, flexLcd);
         }
         finally
         {
@@ -803,7 +804,7 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens)
+    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, Slv3FlexLcdFrame? flexLcd)
     {
         lock (_lock)
         {
@@ -820,7 +821,7 @@ public sealed class Slv3Hub : IDisposable
                 SyncPwmLocked();
                 SyncAioLocked(aioSensors, aioScreens);
                 RefreshMasterMacLocked();
-                SendClockHeartbeatLocked();
+                SendClockHeartbeatLocked(SyncFlexLcdLocked(flexLcd, _nowMs()));
                 RunSaveCfgScheduleLocked();
                 return true;
             });
@@ -1424,7 +1425,7 @@ public sealed class Slv3Hub : IDisposable
             }
             if (found)
             {
-                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq, cmd.Arg);
+                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq, cmd.Arg, cmd.Data);
             }
             // A chain that dropped out of the list still spends its budget, so a
             // stale command cannot outlive the chain and fire on its return.
@@ -2288,15 +2289,15 @@ public sealed class Slv3Hub : IDisposable
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
 
-    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq, byte arg = 0)
+    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq, byte arg = 0, byte[]? data = null)
     {
         if (_tx is null)
         {
             return false;
         }
         // lian-li-linux switch_to_wireless_theme carries the AIO's bind ordinal at [16].
-        var slot = rfCmd == Slv3Protocol.RfAioSwitchWireless ? BindOrdinalLocked(record.Mac) : (byte)0;
-        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg);
+        var slot = rfCmd is Slv3Protocol.RfAioSwitchWireless or Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme ? BindOrdinalLocked(record.Mac) : (byte)0;
+        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg, data);
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
 
@@ -2308,13 +2309,13 @@ public sealed class Slv3Hub : IDisposable
     }
 
     // L-Connect SyncMasterClock: once a second, broadcast pipe (USB rx 0xFF).
-    private void SendClockHeartbeatLocked()
+    private void SendClockHeartbeatLocked(byte[]? lcdBlock = null)
     {
         if (_tx is null)
         {
             return;
         }
-        WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildClockSync(_masterMac, DateTime.Now));
+        WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildClockSync(_masterMac, DateTime.Now, lcdBlock));
     }
 
     /// <summary>
@@ -2588,17 +2589,17 @@ public sealed class Slv3Hub : IDisposable
     }
 
     // Sends the first frame now and leaves the rest to SyncControlLocked; null when the send failed.
-    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte arg = 0)
+    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte arg = 0, byte[]? data = null)
     {
         var key = Convert.ToHexString(record.Mac);
         _lastIssuedSeq.TryGetValue(key, out var lastIssued);
         var seq = Slv3Protocol.NextCmdSeq((byte)Math.Max(lastIssued, record.CmdSeq));
-        if (!SendSequencedCommandLocked(record, rfCmd, seq, arg))
+        if (!SendSequencedCommandLocked(record, rfCmd, seq, arg, data))
         {
             return null;
         }
         _lastIssuedSeq[key] = seq;
-        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1, arg);
+        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1, arg, data);
         return seq;
     }
 
@@ -3194,7 +3195,7 @@ public sealed class Slv3Hub : IDisposable
         public int Sends;
     }
 
-    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
+    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0, byte[]? Data = null);
 
     // BlindMsAtSeen = the hub's blind total at that sighting, so expiry can leave out later blind time.
     private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs, long Poll, long BlindMsAtSeen);

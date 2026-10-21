@@ -1,0 +1,253 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Nexus.Service.Models;
+using Nexus.Service.Peripherals.LianLiWireless;
+using Nexus.Service.Persistence;
+using Nexus.Service.Sensors;
+using Nexus.Service.Serialization;
+
+namespace Nexus.Service.Routes;
+
+public sealed class Slv3FlexLcdThemeDto
+{
+    public int Index { get; set; }
+    public int ColorCount { get; set; }
+    public string[] Defaults { get; set; } = Array.Empty<string>();
+}
+
+public sealed class Slv3FlexLcdFanDto
+{
+    public int Theme { get; set; }
+    public int Source { get; set; }
+    /// <summary>"#RRGGBB" per editable color of the theme, or null for the theme's defaults.</summary>
+    public string[]? Colors { get; set; }
+}
+
+public sealed class Slv3FlexLcdChainDto
+{
+    public string Mac { get; set; } = "";
+    /// <summary>"tlFlex" or "slInfFlex".</summary>
+    public string Family { get; set; } = "";
+    public int FanCount { get; set; }
+    public bool Enabled { get; set; }
+    public int Brightness { get; set; }
+    public int Rotation { get; set; }
+    public Slv3FlexLcdFanDto[] Fans { get; set; } = Array.Empty<Slv3FlexLcdFanDto>();
+}
+
+public sealed class Slv3FlexLcdResponse
+{
+    public int SourceCount { get; set; }
+    public Slv3FlexLcdThemeDto[] Themes { get; set; } = Array.Empty<Slv3FlexLcdThemeDto>();
+    public Slv3FlexLcdChainDto[] Chains { get; set; } = Array.Empty<Slv3FlexLcdChainDto>();
+}
+
+public sealed class Slv3FlexLcdFanPatch
+{
+    public int Index { get; set; }
+    public int? Theme { get; set; }
+    public int? Source { get; set; }
+    /// <summary>Colors for the fan's current theme; an empty array returns to the theme's defaults.</summary>
+    public string[]? Colors { get; set; }
+}
+
+/// <summary>Patch for one chain's wireless themes; null fields keep their value.</summary>
+public sealed class Slv3FlexLcdRequest
+{
+    public bool? Enabled { get; set; }
+    public int? Brightness { get; set; }
+    public int? Rotation { get; set; }
+    public Slv3FlexLcdFanPatch[]? Fans { get; set; }
+}
+
+/// <summary>Wireless themes of the TL / SL-INF LCD Flex fans bound to this PC's radio.</summary>
+public static class Slv3FlexLcdRoutes
+{
+    public static void MapSlv3FlexLcdEndpoints(this WebApplication app)
+    {
+        app.MapGet("/devices/lianli-wireless/flex-lcd", (Slv3Hub hub, IConfigStore store) =>
+            Results.Json(BuildResponse(hub.State, store.Load()), AppJsonContext.Default.Slv3FlexLcdResponse));
+
+        app.MapPut("/devices/lianli-wireless/flex-lcd/{mac}", (string mac, Slv3FlexLcdRequest body, Slv3Hub hub, IConfigStore store) =>
+        {
+            var chain = EligibleChains(hub.State).FirstOrDefault(f => string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase));
+            if (chain is null)
+            {
+                return Results.Json(ApiResponse.Fail("not an LCD Flex fan bound to this PC"), AppJsonContext.Default.ApiResponse, statusCode: 404);
+            }
+            if (Validate(body, chain.FanCount) is { } error)
+            {
+                return Results.Json(ApiResponse.Fail(error), AppJsonContext.Default.ApiResponse);
+            }
+            store.Update(s => Apply(s.Devices.LianLiWireless.FlexLcd, chain.Mac.ToUpperInvariant(), chain.FanCount, body));
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+    }
+
+    internal static IEnumerable<Slv3FanInfo> EligibleChains(Slv3State state) =>
+        state.Fans.Where(f => f.BoundToUs && !f.Stale && f.FanCount > 0 && Slv3FlexLcd.IsLcdFanType(f.FanType));
+
+    internal static Slv3FlexLcdResponse BuildResponse(Slv3State state, NexusSettings settings)
+    {
+        var themes = new Slv3FlexLcdThemeDto[Slv3FlexLcd.ThemeCount];
+        for (var i = 0; i < themes.Length; i++)
+        {
+            themes[i] = new Slv3FlexLcdThemeDto
+            {
+                Index = i,
+                ColorCount = Slv3FlexLcd.ColorCount(i),
+                Defaults = Slv3FlexLcd.DefaultColors(i).Select(Hex).ToArray(),
+            };
+        }
+        var chains = new List<Slv3FlexLcdChainDto>();
+        foreach (var fan in EligibleChains(state))
+        {
+            settings.Devices.LianLiWireless.FlexLcd.TryGetValue(fan.Mac.ToUpperInvariant(), out var saved);
+            var count = Math.Min(Slv3FlexLcd.MaxFans, fan.FanCount);
+            var fans = new Slv3FlexLcdFanDto[count];
+            for (var i = 0; i < count; i++)
+            {
+                var f = saved is not null && i < saved.Fans.Count ? saved.Fans[i] : new LianLiFlexWirelessLcdFan();
+                fans[i] = new Slv3FlexLcdFanDto { Theme = f.Theme, Source = f.Source, Colors = f.Colors?.ToArray() };
+            }
+            chains.Add(new Slv3FlexLcdChainDto
+            {
+                Mac = fan.Mac,
+                Family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType) == Slv3FanFamily.SlInfFlex ? "slInfFlex" : "tlFlex",
+                FanCount = count,
+                Enabled = saved?.Enabled ?? false,
+                Brightness = saved?.Brightness ?? 60,
+                Rotation = saved?.Rotation ?? 3,
+                Fans = fans,
+            });
+        }
+        return new Slv3FlexLcdResponse { SourceCount = Slv3FlexLcd.DataSourceCount, Themes = themes, Chains = chains.ToArray() };
+    }
+
+    internal static string? Validate(Slv3FlexLcdRequest body, int fanCount)
+    {
+        if (body.Brightness is < 0 or > 100)
+        {
+            return "brightness must be 0-100";
+        }
+        if (body.Rotation is < 0 or > 3)
+        {
+            return "rotation must be 0-3";
+        }
+        foreach (var f in body.Fans ?? Array.Empty<Slv3FlexLcdFanPatch>())
+        {
+            if (f.Index < 0 || f.Index >= Math.Min(Slv3FlexLcd.MaxFans, fanCount))
+            {
+                return "fan index out of range";
+            }
+            if (f.Theme is < 0 or >= Slv3FlexLcd.ThemeCount)
+            {
+                return "theme out of range";
+            }
+            if (f.Source is < 0 or >= Slv3FlexLcd.DataSourceCount)
+            {
+                return "source out of range";
+            }
+            if (f.Colors is { Length: > 0 } colors && colors.Any(c => !TryParseHex(c, out _)))
+            {
+                return "colors must be #RRGGBB";
+            }
+        }
+        return null;
+    }
+
+    internal static void Apply(Dictionary<string, LianLiFlexWirelessLcdSettings> all, string mac, int fanCount, Slv3FlexLcdRequest body)
+    {
+        if (!all.TryGetValue(mac, out var current))
+        {
+            current = new LianLiFlexWirelessLcdSettings();
+            all[mac] = current;
+        }
+        var count = Math.Min(Slv3FlexLcd.MaxFans, fanCount);
+        while (current.Fans.Count < count)
+        {
+            current.Fans.Add(new LianLiFlexWirelessLcdFan());
+        }
+        if (body.Enabled is { } enabled)
+        {
+            current.Enabled = enabled;
+        }
+        if (body.Brightness is { } brightness)
+        {
+            current.Brightness = brightness;
+        }
+        if (body.Rotation is { } rotation)
+        {
+            current.Rotation = rotation;
+        }
+        foreach (var patch in body.Fans ?? Array.Empty<Slv3FlexLcdFanPatch>())
+        {
+            var fan = current.Fans[patch.Index];
+            if (patch.Theme is { } theme && theme != fan.Theme)
+            {
+                fan.Theme = theme;
+                fan.Colors = null;
+            }
+            if (patch.Source is { } source)
+            {
+                fan.Source = source;
+            }
+            if (patch.Colors is { } colors)
+            {
+                var wanted = Slv3FlexLcd.ColorCount(fan.Theme);
+                fan.Colors = colors.Length == wanted && wanted > 0 ? colors.Select(c => c.ToUpperInvariant()).ToList() : null;
+            }
+        }
+    }
+
+    internal static Slv3FlexLcdFrame? BuildFrame(NexusSettings settings, Func<SummarySensorKind, float?> read)
+    {
+        var chains = new Dictionary<string, Slv3FlexLcdChain>(StringComparer.Ordinal);
+        foreach (var (mac, s) in settings.Devices.LianLiWireless.FlexLcd)
+        {
+            var fans = s.Fans.Select(f => new Slv3FlexLcdFan(f.Theme, f.Source, ColorsOf(f))).ToArray();
+            chains[mac.ToUpperInvariant()] = new Slv3FlexLcdChain(mac.ToUpperInvariant(), s.Enabled, s.Brightness, s.Rotation, fans);
+        }
+        if (!chains.Values.Any(c => c.Enabled))
+        {
+            return null;
+        }
+        var total = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1024.0 / 1024.0;
+        var memoryUsage = read(SummarySensorKind.MemoryUsage) ?? 0f;
+        var sensors = new Slv3FlexLcdSensors(
+            read(SummarySensorKind.CpuTemp) ?? 0f, read(SummarySensorKind.CpuUsage) ?? 0f,
+            read(SummarySensorKind.GpuTemp) ?? 0f, read(SummarySensorKind.GpuUsage) ?? 0f,
+            read(SummarySensorKind.CpuClock) ?? 0f, read(SummarySensorKind.GpuClock) ?? 0f,
+            0, 0, total, total * memoryUsage / 100.0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        return new Slv3FlexLcdFrame(chains, sensors);
+    }
+
+    private static uint[]? ColorsOf(LianLiFlexWirelessLcdFan fan)
+    {
+        if (fan.Colors is not { Count: > 0 } list || list.Count != Slv3FlexLcd.ColorCount(fan.Theme))
+        {
+            return null;
+        }
+        var result = new uint[list.Count];
+        for (var i = 0; i < result.Length; i++)
+        {
+            if (!TryParseHex(list[i], out result[i]))
+            {
+                return null;
+            }
+        }
+        return result;
+    }
+
+    private static bool TryParseHex(string? text, out uint rgb)
+    {
+        rgb = 0;
+        return text is { Length: 7 } && text[0] == '#' && uint.TryParse(text.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out rgb);
+    }
+
+    private static string Hex(uint rgb) => "#" + (rgb & 0xFFFFFF).ToString("X6", CultureInfo.InvariantCulture);
+}

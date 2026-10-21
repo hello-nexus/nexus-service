@@ -1111,6 +1111,9 @@ public static class NexusServiceCollectionExtensions
                     Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.GpuUsage));
             };
             var store = sp.GetRequiredService<IConfigStore>();
+            hub.FlexLcd = () => Nexus.Service.Routes.Slv3FlexLcdRoutes.BuildFrame(
+                store.Load(),
+                kind => Nexus.Service.Sensors.SummarySensors.Value(sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(), kind));
             hub.AioScreens = () =>
             {
                 var screens = new Dictionary<string, Nexus.Service.Peripherals.LianLiWireless.Slv3AioScreen>(StringComparer.Ordinal);

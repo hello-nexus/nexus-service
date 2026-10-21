@@ -56,6 +56,8 @@ public static class Slv3Protocol
     public const byte RfRgbSync = 0x20;            // streamed RGB frame animation
     public const byte RfMbSyncSwitch = 0x24;
     public const byte RfLightSyncSwitch = 0x26;
+    public const byte RfSendColors = 0x28;         // Flex wireless theme: one fan's colors at [20..95], cmdSeq-acked
+    public const byte RfSwitchWirelessTheme = 0x29; // Flex wireless theme: [20] = fan bitmask of screens showing a built-in theme, cmdSeq-acked
     public const byte RfArgbSyncSwitch = 0x27;     // fan chain plays its motherboard ARGB input; [20] = 1 on, 0 off (cmdSeq-acked)
 
     /// <summary>Constant frame-type byte at RF payload[0] for every host->fan frame.</summary>
@@ -626,12 +628,17 @@ public static class Slv3Protocol
     /// (L-Connect SyncControlInfo).
     /// </summary>
     public static byte[] BuildSequencedCommand(
-        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq, byte slot = 0, byte arg = 0)
+        byte rfCmd, ReadOnlySpan<byte> fanMac, ReadOnlySpan<byte> masterMac, byte targetRx, byte targetChannel, byte cmdSeq, byte slot = 0, byte arg = 0,
+        ReadOnlySpan<byte> data = default)
     {
         var payload = new byte[RfPayloadSize];
         WriteRfHeader(payload, rfCmd, fanMac, masterMac, targetRx, targetChannel, slot, cmdSeq);
         // Switch commands carry their on/off byte here; the rest leave it zero.
         payload[20] = arg;
+        if (!data.IsEmpty)
+        {
+            data.Slice(0, Math.Min(data.Length, RfPayloadSize - 20)).CopyTo(payload.AsSpan(20));
+        }
         return payload;
     }
 
@@ -642,12 +649,18 @@ public static class Slv3Protocol
     /// bytes, the wall clock (year BE16, month, day, hour, minute, second) at
     /// [46..52], 11 more filler bytes. Sent with USB rxType 0xFF.
     /// </summary>
-    public static byte[] BuildClockSync(ReadOnlySpan<byte> masterMac, DateTime now)
+    public static byte[] BuildClockSync(ReadOnlySpan<byte> masterMac, DateTime now, ReadOnlySpan<byte> lcdBlock = default)
     {
         var payload = new byte[RfPayloadSize];
         payload[0] = RfFrameType;
         payload[1] = RfClockSync;
         masterMac.Slice(0, MacLength).CopyTo(payload.AsSpan(8));
+        if (lcdBlock.Length == Slv3FlexLcd.LcdBlockLength)
+        {
+            // Flex wireless themes: host readings then the slot table, clock inside the readings.
+            lcdBlock.CopyTo(payload.AsSpan(14));
+            return payload;
+        }
         payload.AsSpan(14, 50).Fill(ClockSyncFillByte);
         payload[46] = (byte)(now.Year >> 8);
         payload[47] = (byte)(now.Year & 0xFF);
@@ -724,6 +737,7 @@ public static class Slv3Protocol
         {
             Flags = flags,
             RfVersion = rfVersion,
+            WirelessThemeSwitch = (byte)(rec[30] >> 4),
         };
         return true;
     }
@@ -774,6 +788,9 @@ public readonly record struct Slv3DeviceRecord(
 
     /// <summary>A record with dev_type 0xFF is another master on the link, not a fan.</summary>
     public bool IsMaster => DevType == 0xFF;
+
+    /// <summary>High nibble of port 1's tach byte: one bit per fan, set while its screen shows a built-in wireless theme (TL / SL-INF Flex).</summary>
+    public byte WirelessThemeSwitch { get; init; }
 
     /// <summary>Cable flag nibble: bit 3 ARGB sync cable, bit 2 playing the motherboard ARGB input, bit 1 PWM cable, bit 0 tach output.</summary>
     public byte Flags { get; init; }

@@ -11,12 +11,14 @@ namespace Nexus.Service.Tests.LianLiWireless;
 /// </summary>
 internal static class Slv3TestHub
 {
-    public static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx) CreateConnected()
+    public static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx) CreateConnected(Func<long>? nowMs = null)
     {
         var net = new FakeSlv3Network();
         var tx = new FakeTxTransport(net);
         var rx = new FakeRxTransport(net);
-        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false };
+        var hub = nowMs is null
+            ? new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx) { ConfirmNewChains = false }
+            : new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx, nowMs) { ConfirmNewChains = false };
         if (!hub.EnsureConnected())
         {
             throw new InvalidOperationException("test harness failed to connect");
@@ -56,6 +58,8 @@ internal static class Slv3TestHub
         public bool SupportsArgbSwitch { get; set; } = true;
         /// <summary>Command sequence the chain last applied, echoed at record byte 40.</summary>
         public byte CmdSeq { get; set; }
+        /// <summary>One bit per fan, set while its screen shows a built-in wireless theme (record byte 30, high nibble).</summary>
+        public byte ThemeSwitch { get; set; }
     }
 
     public sealed class FakeSlv3Network
@@ -121,6 +125,23 @@ internal static class Slv3TestHub
                     }
                 }
             }
+            // Flex wireless themes: SendColors and SwitchWirelessTheme are acked by cmdSeq; the switch byte lands at USB [24].
+            if (copy.Length >= 25 && copy[0] == Slv3Protocol.UsbSendRf && copy[1] == 0
+                && copy[4] == Slv3Protocol.RfFrameType && copy[5] is Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme)
+            {
+                var fanMac = copy.AsSpan(6, 6).ToArray();
+                foreach (var fan in _net.Fans)
+                {
+                    if (Slv3Protocol.MacEquals(fan.Mac, fanMac))
+                    {
+                        fan.CmdSeq = copy[21];
+                        if (copy[5] == Slv3Protocol.RfSwitchWirelessTheme)
+                        {
+                            fan.ThemeSwitch = copy[24];
+                        }
+                    }
+                }
+            }
             return true;
         }
 
@@ -174,6 +195,7 @@ internal static class Slv3TestHub
                 rec[35] = (byte)fan.PumpRpm;
                 fan.EffectIndex.CopyTo(rec.Slice(20, 4));
                 rec[28] = (byte)((fan.ArgbCable ? 0x80 : 0) | (fan.PlayingMotherboardArgb ? 0x40 : 0));
+                rec[30] = (byte)(fan.ThemeSwitch << 4);
                 rec[40] = fan.CmdSeq;
                 rec[41] = Slv3Protocol.RecordValidator;
             }
