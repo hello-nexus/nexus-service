@@ -611,21 +611,21 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void The_default_pace_is_a_fifth_of_the_captured_timing()
+    public void The_default_pace_is_four_percent_of_the_captured_timing()
     {
-        Assert.Equal(19, new GlacialLcdPanelDriver(new GlacialLcdLink()).ConfiguredPaceScalePercent);
-        Assert.Equal(19, new Nexus.Service.Persistence.DevicesSettings().GlacialLcdPaceScalePercent);
+        Assert.Equal(4, new GlacialLcdPanelDriver(new GlacialLcdLink()).ConfiguredPaceScalePercent);
+        Assert.Equal(4, new Nexus.Service.Persistence.DevicesSettings().GlacialLcdUploadPacePercent);
     }
 
     [Theory]
-    [InlineData(0, 19)]
-    [InlineData(-5, 19)]
+    [InlineData(0, 4)]
+    [InlineData(-5, 4)]
     [InlineData(1, 1)]
     [InlineData(100, 100)]
     [InlineData(5000, 1000)]
     public void A_stored_pace_of_zero_counts_as_unset_and_the_top_is_capped(int stored, int expected)
     {
-        Assert.Equal(expected, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdPaceScale(stored));
+        Assert.Equal(expected, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(stored));
     }
 
     [Fact]
@@ -634,10 +634,23 @@ public class GlacialLcdDriverTests
         var absent = System.Text.Json.JsonSerializer.Deserialize(
             "{\"devices\":{}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
         var zero = System.Text.Json.JsonSerializer.Deserialize(
-            "{\"devices\":{\"glacialLcdPaceScalePercent\":0}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+            "{\"devices\":{\"glacialLcdUploadPacePercent\":0}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
 
-        Assert.Equal(19, absent.Devices.GlacialLcdPaceScalePercent);
-        Assert.Equal(19, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdPaceScale(zero.Devices.GlacialLcdPaceScalePercent));
+        Assert.Equal(4, absent.Devices.GlacialLcdUploadPacePercent);
+        Assert.Equal(4, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(zero.Devices.GlacialLcdUploadPacePercent));
+    }
+
+    [Fact]
+    public void Values_stored_by_earlier_builds_under_the_old_key_are_ignored_and_the_new_key_can_restore_an_earlier_pace()
+    {
+        var old = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"devices\":{\"glacialLcdPaceScalePercent\":19}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+        var restored = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"devices\":{\"glacialLcdUploadPacePercent\":19}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+
+        Assert.Equal(4, old.Devices.GlacialLcdUploadPacePercent);
+        Assert.Equal(19, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(restored.Devices.GlacialLcdUploadPacePercent));
+        Assert.Equal(100, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(100));
     }
 
     [Fact]

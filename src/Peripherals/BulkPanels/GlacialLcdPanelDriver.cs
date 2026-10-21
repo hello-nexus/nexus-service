@@ -259,10 +259,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         public Thread? Thread;
     }
 
-    /// <param name="paceScalePercent">Scales every vendor pacing gap; 0 sends everything back to back, 100 is the captured pace, and the default is a fifth of it. A bound source (see <see cref="BindPaceScale"/>) overrides it per upload.</param>
+    /// <param name="paceScalePercent">Scales every vendor pacing gap; 0 sends everything back to back, 100 is the captured pace, and the default is four percent of it. A bound source (see <see cref="BindPaceScale"/>) overrides it per upload.</param>
     public GlacialLcdPanelDriver(
         GlacialLcdLink link,
-        int paceScalePercent = DevicesSettings.DefaultGlacialLcdPaceScalePercent,
+        int paceScalePercent = DevicesSettings.DefaultGlacialLcdUploadPacePercent,
         int settleMs = DefaultSettleMs,
         int maxSettleMs = DefaultMaxSettleMs,
         int backoffBaseMs = DefaultBackoffBaseMs,

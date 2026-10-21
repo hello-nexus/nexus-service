@@ -1432,17 +1432,18 @@ public sealed class DevicesSettings
 {
     /// <summary>
     /// Hidden. Pacing of the Glacial LCD picture upload as a percent of the gaps copied from the
-    /// vendor app's capture; 100 is the captured timing. No UI; a value of 0 or less counts as
-    /// unset and means the default, because an earlier build wrote 0 into every settings file
-    /// (use 1 for effectively none).
+    /// vendor app's capture; 100 is the captured timing, 19 the pace that worked in the field
+    /// before. No UI. The key is new on purpose: values earlier builds stored under the old name
+    /// (0, 19) are ignored, so the default below reaches every install. A value of 0 or less
+    /// counts as unset (use 1 for effectively none).
     /// </summary>
-    public int GlacialLcdPaceScalePercent { get; set; } = DefaultGlacialLcdPaceScalePercent;
+    public int GlacialLcdUploadPacePercent { get; set; } = DefaultGlacialLcdUploadPacePercent;
 
-    public const int DefaultGlacialLcdPaceScalePercent = 19;
+    public const int DefaultGlacialLcdUploadPacePercent = 4;
 
     /// <summary>The pace to use for a stored value: unset (0 or less) is the default, and the top is capped.</summary>
-    public static int ResolveGlacialLcdPaceScale(int stored) =>
-        stored <= 0 ? DefaultGlacialLcdPaceScalePercent : Math.Min(stored, 1000);
+    public static int ResolveGlacialLcdUploadPace(int stored) =>
+        stored <= 0 ? DefaultGlacialLcdUploadPacePercent : Math.Min(stored, 1000);
 
     public List<string> DisabledLightingDevices { get; set; } = new();
     /// <summary>Stable display ids the user turned brightness control off for. Nexus issues no DDC/CI transaction to a listed display - not even the capability probe - which is the escape hatch for a monitor whose firmware hangs on DDC. NOT profile-scoped: a panel's tolerance for DDC is a property of the hardware, not of a lighting/cooling persona.</summary>

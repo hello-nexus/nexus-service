@@ -1436,8 +1436,8 @@ public static class NexusServiceCollectionExtensions
             glacialStreamDriver.BindPaceScale(() =>
             {
                 int stored = 0;
-                paceStore.Read(s => stored = s.Devices.GlacialLcdPaceScalePercent);
-                return Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdPaceScale(stored);
+                paceStore.Read(s => stored = s.Devices.GlacialLcdUploadPacePercent);
+                return Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(stored);
             });
             return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
                 sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
