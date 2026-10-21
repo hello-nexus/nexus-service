@@ -365,7 +365,7 @@ public class GlacialLcdDriverTests
         driver.Connect(pipe, hid);
 
         driver.SendFrame(pipe, hid, Frame());
-        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading));
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 1 && !driver.IsUploading && memory.Hashes.IsEmpty));
 
         Assert.Empty(memory.Hashes);
         Assert.Empty(pipe.Writes);
@@ -987,19 +987,19 @@ public class GlacialLcdDriverTests
 
     private sealed class FakeMemory : ILcdUploadMemory
     {
-        public Dictionary<string, string> Hashes { get; } = new();
+        public System.Collections.Concurrent.ConcurrentDictionary<string, string> Hashes { get; } = new();
 
         public string? Load(string key) => Hashes.TryGetValue(key, out var hash) ? hash : null;
 
         public void Save(string key, string hash) => Hashes[key] = hash;
 
-        public void Clear(string key) => Hashes.Remove(key);
+        public void Clear(string key) => Hashes.TryRemove(key, out _);
 
         public void ClearOthers(string keep)
         {
             foreach (var other in Hashes.Keys.Where(k => k != keep).ToList())
             {
-                Hashes.Remove(other);
+                Hashes.TryRemove(other, out _);
             }
         }
     }
