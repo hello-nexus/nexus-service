@@ -68,6 +68,8 @@ public class FlexRoutesTests
         hub.Refresh();
         var settings = new NexusSettings();
         var state = LianLiFlexRoutes.BuildState(hub, settings);
+        Assert.False(Assert.Single(state.Fans).RadioBound);
+        Assert.True(Assert.Single(LianLiFlexRoutes.BuildState(hub, settings, null, null, null, mac => mac == "6D1007F517E1").Fans).RadioBound);
         var json = System.Text.Json.JsonSerializer.Serialize(state, Nexus.Service.Serialization.AppJsonContext.Default.LianLiFlexStateResponse);
         Assert.Contains("\"family\":\"tlFlex\"", json);
         Assert.Contains("\"mac\":\"6D1007F517E1\"", json);

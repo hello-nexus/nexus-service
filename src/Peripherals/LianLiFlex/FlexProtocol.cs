@@ -312,7 +312,7 @@ public sealed class FlexReceiverInfo
 
     public int Fans => FanNum >= 10 ? FanNum - 10 : FanNum;
 
-    public bool RfBound => RxType != FlexProtocol.UnboundRxType || MasterMac.Trim('0').Length > 0;
+    public bool RfBound => Slv3Protocol.IsBoundSlot(RxType);
 
     /// <summary>The ARGB sync cable to a motherboard header is plugged in.</summary>
     public bool ArgbCableConnected => PortFlags.Length > 0 && (PortFlags[0] & 0x8) != 0;

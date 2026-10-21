@@ -222,7 +222,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_wired_fan_that_is_bound_to_the_radio_can_be_released_but_not_driven()
+    public void A_wired_fan_that_is_bound_to_the_radio_is_driven_by_the_radio_and_can_be_released()
     {
         var (hub, net, _, _) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
@@ -233,7 +233,11 @@ public partial class Slv3HubTests
 
         var mac = Convert.ToHexString(FanMac);
         hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
-        Assert.False(hub.SetPortDuty(mac, 0, 50));
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans[0].RadioDrivesUsb);
+        Assert.False(hub.State.Fans[0].WiredOwned);
+        Assert.False(hub.State.Fans[0].UsbConnected);
+        Assert.True(hub.SetPortDuty(mac, 0, 50));
         Assert.False(ManualBind(hub, mac, out _));
         hub.SetLockBoundDevices(false);
         Assert.True(hub.Unbind(mac, out var error), error);
@@ -243,6 +247,7 @@ public partial class Slv3HubTests
         }
         Assert.False(hub.State.Fans[0].BoundToUs);
         Assert.True(hub.State.Fans[0].WiredOwned);
+        Assert.False(hub.State.Fans[0].RadioDrivesUsb);
     }
 
     [Fact]
@@ -482,6 +487,56 @@ public partial class Slv3HubTests
 
         Assert.Equal(Slv3Protocol.DefaultChannel, hub.State.Fans[0].Channel);
         Assert.Equal(4, hub.State.Fans[0].Slot);
+    }
+
+    [Fact]
+    public void A_wired_fan_bound_to_us_is_steered_back_by_reconcile_with_the_lock_on()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, _, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4, Channel = 11 });
+
+        Ticks(hub, 2);
+
+        Assert.True(hub.State.Fans[0].RadioDrivesUsb);
+        Assert.Equal(Slv3Protocol.DefaultChannel, hub.State.Fans[0].Channel);
+        Assert.Equal(4, hub.State.Fans[0].Slot);
+    }
+
+    [Fact]
+    public void A_wired_fan_not_bound_to_us_is_left_alone_by_reconcile()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 254, Channel = 11 });
+        tx.SentFrames.Clear();
+
+        Ticks(hub, 3);
+
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.Equal(11, hub.State.Fans[0].Channel);
+    }
+
+    [Fact]
+    public void Uploads_and_sequenced_commands_reach_a_wired_fan_bound_to_us_and_never_one_that_is_not()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        Assert.False(hub.SendRgbFrame(mac, new RgbColor[26], 100, 30, out _));
+        Assert.False(hub.SetMotherboardArgb(mac, true));
+
+        hub.WiredOwned = null;
+        Assert.True(ManualBind(hub, mac));
+        Assert.True(hub.DriveTick());
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.True(hub.SendRgbFrame(mac, new RgbColor[26], 100, 30, out _));
+        Assert.True(hub.SetMotherboardArgb(mac, true));
     }
 
     [Fact]

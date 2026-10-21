@@ -1780,6 +1780,34 @@ public sealed class LianLiWirelessSettings
 
     /// <summary>L-Connect's device lock: owned devices are bound back from any state, including another master. A missing value reads as on.</summary>
     public bool LockBoundDevices { get; set; } = true;
+
+    /// <summary>SL-INF Flex chains (MAC hex, uppercase) whose saved zone data was moved to the Center / Inner / Outer split.</summary>
+    public List<string> FlexZonesMigrated { get; set; } = new();
+
+    /// <summary>Built-in wireless themes of TL / SL-INF LCD Flex chains on the radio, keyed by chain MAC hex (uppercase).</summary>
+    public Dictionary<string, LianLiFlexWirelessLcdSettings> FlexLcd { get; set; } = new();
+}
+
+/// <summary>One LCD Flex chain's wireless themes: off leaves the screens to USB content.</summary>
+public sealed class LianLiFlexWirelessLcdSettings
+{
+    public bool Enabled { get; set; }
+    /// <summary>Backlight, percent.</summary>
+    public int Brightness { get; set; } = 60;
+    /// <summary>0..3, quarter turns.</summary>
+    public int Rotation { get; set; } = 3;
+    /// <summary>By fan position, left to right as the page lists them.</summary>
+    public List<LianLiFlexWirelessLcdFan> Fans { get; set; } = new();
+}
+
+public sealed class LianLiFlexWirelessLcdFan
+{
+    /// <summary>Built-in theme index, 0..28.</summary>
+    public int Theme { get; set; }
+    /// <summary>Index into L-Connect's 25 data sources.</summary>
+    public int Source { get; set; }
+    /// <summary>"#RRGGBB" per editable color of the theme; null = the theme's defaults.</summary>
+    public List<string>? Colors { get; set; }
 }
 
 /// <summary>What a HydroShift II's screen shows while Nexus drives its pump.</summary>

@@ -71,6 +71,9 @@ public sealed class Slv3FanInfo
     public int DevType { get; set; }
     /// <summary>Fan subtype from fans_type[0] (0x18=24 SLV3-LCD, 20-23 SLV3-LED, 36-39 SL-Infinity).</summary>
     public int FanType { get; set; }
+    /// <summary>An LCD Flex chain bound to this PC's radio, the ones with built-in wireless themes.</summary>
+    public bool FlexLcdChain => BoundToUs && FanCount > 0 && Slv3FlexLcd.IsLcdFanType(FanType);
+    public bool FlexLcdEligible => FlexLcdChain && !Stale;
     public int FanCount { get; set; }
     public int[] Rpm { get; set; } = Array.Empty<int>();
     /// <summary>Per-port fans_pwm echo on the firmware's 0..255 scale (6 = following the motherboard header), not a percent.</summary>
@@ -83,6 +86,8 @@ public sealed class Slv3FanInfo
     public bool UsbConnected { get; set; }
     /// <summary>The fan is plugged in over USB and driven by its own handler, so the radio only lists it: no Bind, steering, lighting or PWM.</summary>
     public bool WiredOwned { get; set; }
+    /// <summary>The fan is plugged in over USB and bound to this PC's radio: the radio drives its lighting and fan speed.</summary>
+    public bool RadioDrivesUsb { get; set; }
     /// <summary>HydroShift II coolant temperature in °C; null for other devices or when not reported.</summary>
     public int? CoolantTempC { get; set; }
     /// <summary>Chain RF firmware version; 0 when not reported.</summary>

@@ -20,7 +20,7 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// All hardware I/O and shared state are guarded by one lock: the connection
 /// worker's ticks and route-driven bind/unbind/identify calls both touch it.
 /// </summary>
-public sealed class Slv3Hub : IDisposable
+public sealed partial class Slv3Hub : IDisposable
 {
     // Shared read-only default (all null = motherboard-sync) for a chain that
     // has never had a duty set. Never mutated - safe to share across keys.
@@ -30,6 +30,7 @@ public sealed class Slv3Hub : IDisposable
     private readonly Func<Slv3PortInfo, ISlv3Transport> _transportFactory;
     private readonly object _lock = new();
     private readonly Dictionary<string, Slv3PendingCommand> _pendingCommands = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DeferredUnbind> _deferredUnbinds = new(StringComparer.Ordinal);
     // Last cmd_seq issued per chain MAC hex, so back-to-back commands stay
     // monotonic even before the chain's record echoes the previous one
     // (L-Connect's per-device targe_cmd_seq).
@@ -98,6 +99,23 @@ public sealed class Slv3Hub : IDisposable
     internal const int WiredReleaseMaxSends = 20;
 
     private bool IsWiredOwned(string macHex) => !string.IsNullOrEmpty(macHex) && WiredOwned?.Invoke(macHex) == true;
+
+    /// <summary>A USB-connected fan the radio must leave alone: one bound to this PC's radio is driven over the radio, the single owner.</summary>
+    private bool IsWiredOnly(string macHex)
+    {
+        if (!IsWiredOwned(macHex))
+        {
+            return false;
+        }
+        if (!TryParseMac(macHex, out var mac))
+        {
+            return true;
+        }
+        lock (_lock)
+        {
+            return !(TryFindRecordLocked(mac, out var record) && IsBoundToUsLocked(record));
+        }
+    }
 
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
@@ -171,6 +189,7 @@ public sealed class Slv3Hub : IDisposable
     private readonly Dictionary<string, BindIntent> _intents = new(StringComparer.Ordinal);
     // Raw wireless records of the latest answered poll, listed or not.
     private List<Slv3DeviceRecord> _pollRecords = new();
+    private List<string> _reportOrder = new();
     // Master records (dev_type 0xFF) by master MAC hex, with the poll that last heard them.
     private readonly Dictionary<string, long> _liveMasters = new(StringComparer.Ordinal);
     internal const int LiveMasterPolls = 30;
@@ -499,6 +518,7 @@ public sealed class Slv3Hub : IDisposable
         _conflictPoll = -1;
         _ownedSlotSightings.Clear();
         _pendingCommands.Clear();
+        _deferredUnbinds.Clear();
         _lastIssuedSeq.Clear();
         _rxAbsentSinceMs = 0;
         _txAbsentSinceMs = 0;
@@ -775,10 +795,11 @@ public sealed class Slv3Hub : IDisposable
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
+        var flexLcd = ReadFlexLcd();
         EnsureOwnedLoaded();
         try
         {
-            return DriveLocked(aioSensors, aioScreens);
+            return DriveLocked(aioSensors, aioScreens, flexLcd);
         }
         finally
         {
@@ -786,7 +807,7 @@ public sealed class Slv3Hub : IDisposable
         }
     }
 
-    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens)
+    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, Slv3FlexLcdFrame? flexLcd)
     {
         lock (_lock)
         {
@@ -803,7 +824,7 @@ public sealed class Slv3Hub : IDisposable
                 SyncPwmLocked();
                 SyncAioLocked(aioSensors, aioScreens);
                 RefreshMasterMacLocked();
-                SendClockHeartbeatLocked();
+                SendClockHeartbeatLocked(SyncFlexLcdLocked(flexLcd, _nowMs()));
                 RunSaveCfgScheduleLocked();
                 return true;
             });
@@ -853,6 +874,7 @@ public sealed class Slv3Hub : IDisposable
         {
             return true;
         }
+        ProcessDeferredUnbindsLocked(nowMs);
         ReconcileLocked();
         TrackOwnedLocked();
         ResolveSlotConflictsLocked();
@@ -1016,7 +1038,7 @@ public sealed class Slv3Hub : IDisposable
         var merged = new Dictionary<string, Slv3DeviceRecord>(StringComparer.Ordinal);
         foreach (var record in _lastFanRecords)
         {
-            if (!IsWiredOwned(Convert.ToHexString(record.Mac)) || IsReleasingLocked(Convert.ToHexString(record.Mac)))
+            if (!IsWiredOwned(Convert.ToHexString(record.Mac)) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(Convert.ToHexString(record.Mac))) || IsReleasingLocked(Convert.ToHexString(record.Mac)))
             {
                 merged[Convert.ToHexString(record.Mac)] = record;
             }
@@ -1024,7 +1046,7 @@ public sealed class Slv3Hub : IDisposable
         foreach (var record in _pollRecords)
         {
             var key = Convert.ToHexString(record.Mac);
-            if ((!IsWiredOwned(key) || IsReleasingLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
+            if ((!IsWiredOwned(key) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(key)) || IsReleasingLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
             {
                 merged[key] = record;
             }
@@ -1174,7 +1196,7 @@ public sealed class Slv3Hub : IDisposable
         return kept >= AdoptionCap;
     }
 
-    private static bool ValidSlot(int slot) => slot >= Slv3Protocol.MinSlot && slot <= Slv3Protocol.MaxSlot;
+    private static bool ValidSlot(int slot) => Slv3Protocol.IsBoundSlot(slot);
 
     // The slot a chain last held when it is free, else L-Connect's GetRxUnused.
     private byte OwnedSlotOrUnusedLocked(string key)
@@ -1400,14 +1422,16 @@ public sealed class Slv3Hub : IDisposable
         foreach (var (key, cmd) in _pendingCommands)
         {
             var found = TryFindRecordLocked(cmd.Mac, out var record);
-            if ((found && record.CmdSeq == cmd.TargetSeq) || cmd.SendsRemaining <= 0)
+            // Theme frames only ever go to a chain that is still ours.
+            if ((found && record.CmdSeq == cmd.TargetSeq) || cmd.SendsRemaining <= 0
+                || (found && cmd.RfCmd is Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme && !IsBoundToUsLocked(record)))
             {
                 (done ??= new List<string>()).Add(key);
                 continue;
             }
             if (found)
             {
-                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq, cmd.Arg);
+                SendSequencedCommandLocked(record, cmd.RfCmd, cmd.TargetSeq, cmd.Arg, cmd.Data);
             }
             // A chain that dropped out of the list still spends its budget, so a
             // stale command cannot outlive the chain and fire on its return.
@@ -1916,6 +1940,7 @@ public sealed class Slv3Hub : IDisposable
             }
         }
         _pollRecords = pollRecords;
+        UpdateReportOrderLocked(pollRecords);
 
         ExpireChainsLocked(nowMs);
 
@@ -1924,6 +1949,35 @@ public sealed class Slv3Hub : IDisposable
         _lastRecordCount = Math.Max(count, _knownChains.Count);
         PublishFansLocked(nowMs);
         return true;
+    }
+
+    // The confirmed chains of this reply in report order, then chains an incomplete reply left out in their old order, then any known chain still missing.
+    private void UpdateReportOrderLocked(List<Slv3DeviceRecord> pollRecords)
+    {
+        var order = new List<string>(_knownChains.Count);
+        foreach (var record in pollRecords)
+        {
+            var key = Convert.ToHexString(record.Mac);
+            if (_knownChains.ContainsKey(key) && !order.Contains(key))
+            {
+                order.Add(key);
+            }
+        }
+        foreach (var key in _reportOrder)
+        {
+            if (_knownChains.ContainsKey(key) && !order.Contains(key))
+            {
+                order.Add(key);
+            }
+        }
+        foreach (var key in _knownChains.Keys)
+        {
+            if (!order.Contains(key))
+            {
+                order.Add(key);
+            }
+        }
+        _reportOrder = order;
     }
 
     private void ExpireChainsLocked(long nowMs)
@@ -2149,8 +2203,7 @@ public sealed class Slv3Hub : IDisposable
 
     private static bool IsBoundTo(Slv3DeviceRecord record, byte[] masterMac) =>
         Slv3Protocol.MacEquals(record.MasterMac, masterMac)
-        && record.RxType >= Slv3Protocol.MinSlot
-        && record.RxType <= Slv3Protocol.MaxSlot;
+        && Slv3Protocol.IsBoundSlot(record.RxType);
 
     // A flapping record logs at most once per BindingLogIntervalMs per chain, so
     // it cannot push older lines out of the support bundle's log tail.
@@ -2206,8 +2259,9 @@ public sealed class Slv3Hub : IDisposable
         Stale = stale,
         UsbConnected = (record.IsHydroShift && _usbAioMac is { } usbMac
             && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase))
-            || IsWiredOwned(Convert.ToHexString(record.Mac)),
-        WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)),
+            || (IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record)),
+        WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record),
+        RadioDrivesUsb = IsWiredOwned(Convert.ToHexString(record.Mac)) && IsBoundToUsLocked(record),
         CoolantTempC = record.CoolantTempC,
         FirmwareVersion = record.RfVersion,
         ArgbCableConnected = record.ArgbCableConnected,
@@ -2271,15 +2325,17 @@ public sealed class Slv3Hub : IDisposable
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
 
-    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq, byte arg = 0)
+    private bool SendSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte cmdSeq, byte arg = 0, byte[]? data = null)
     {
         if (_tx is null)
         {
             return false;
         }
         // lian-li-linux switch_to_wireless_theme carries the AIO's bind ordinal at [16].
-        var slot = rfCmd == Slv3Protocol.RfAioSwitchWireless ? BindOrdinalLocked(record.Mac) : (byte)0;
-        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg);
+        var slot = rfCmd == Slv3Protocol.RfAioSwitchWireless
+            ? BindOrdinalLocked(record.Mac)
+            : rfCmd is Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme ? FlexLcdOrdinalLocked(record) : (byte)0;
+        var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg, data);
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
     }
 
@@ -2291,13 +2347,13 @@ public sealed class Slv3Hub : IDisposable
     }
 
     // L-Connect SyncMasterClock: once a second, broadcast pipe (USB rx 0xFF).
-    private void SendClockHeartbeatLocked()
+    private void SendClockHeartbeatLocked(byte[]? lcdBlock = null)
     {
         if (_tx is null)
         {
             return;
         }
-        WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildClockSync(_masterMac, DateTime.Now));
+        WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildClockSync(_masterMac, DateTime.Now, lcdBlock));
     }
 
     /// <summary>
@@ -2361,6 +2417,7 @@ public sealed class Slv3Hub : IDisposable
             }
             _userUnbound.Remove(key);
             _unboundHere.Remove(key);
+            _deferredUnbinds.Remove(key);
             _intents[key] = new BindIntent(slot) { Manual = true };
             if (alreadyBound)
             {
@@ -2447,25 +2504,41 @@ public sealed class Slv3Hub : IDisposable
                 error = "held by a live master";
                 return false;
             }
-            _userUnbound.Add(key);
-            _unboundHere.Add(key);
-            if (_owned.Remove(key))
+            if (_deferredUnbinds.ContainsKey(key))
             {
-                _ownedDirty = true;
+                return true;
             }
-            if (Slv3Protocol.MacIsZero(existing.MasterMac))
+            if (IsBoundToUsLocked(existing) && BeginFlexLcdReleaseForUnbindLocked(existing))
             {
-                _intents.Remove(key);
+                // The screens go back to USB content first; the release frame follows their acknowledgement or the hold.
+                _deferredUnbinds[key] = new DeferredUnbind(_nowMs() + FlexLcdUnbindHoldMs, macHex);
+                ServiceLog.Info($"[lianli-wireless] unbind of {key} waits for its wireless theme switch to clear");
+                return true;
             }
-            else
-            {
-                ServiceLog.Info($"[lianli-wireless] unbind requested for {key}");
-                _intents[key] = new BindIntent(0) { Unbinding = true, Sends = IsWiredOwned(macHex) ? 1 : 0 };
-                SendBindFrameLocked(existing, 0, unbind: true);
-            }
+            PerformUnbindLocked(key, macHex, existing);
         }
         FlushOwned();
         return true;
+    }
+
+    private void PerformUnbindLocked(string key, string macHex, Slv3DeviceRecord? existing)
+    {
+        _userUnbound.Add(key);
+        _unboundHere.Add(key);
+        if (_owned.Remove(key))
+        {
+            _ownedDirty = true;
+        }
+        if (existing is not { } target || Slv3Protocol.MacIsZero(target.MasterMac))
+        {
+            _intents.Remove(key);
+        }
+        else
+        {
+            ServiceLog.Info($"[lianli-wireless] unbind requested for {key}");
+            _intents[key] = new BindIntent(0) { Unbinding = true, Sends = IsWiredOwned(macHex) ? 1 : 0 };
+            SendBindFrameLocked(target, 0, unbind: true);
+        }
     }
 
     /// <summary>
@@ -2547,7 +2620,7 @@ public sealed class Slv3Hub : IDisposable
 
     private bool QueueSequencedCommand(string macHex, byte rfCmd, string label, byte arg = 0)
     {
-        if (IsWiredOwned(macHex))
+        if (IsWiredOnly(macHex))
         {
             return false;
         }
@@ -2571,17 +2644,17 @@ public sealed class Slv3Hub : IDisposable
     }
 
     // Sends the first frame now and leaves the rest to SyncControlLocked; null when the send failed.
-    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte arg = 0)
+    private byte? QueueSequencedCommandLocked(Slv3DeviceRecord record, byte rfCmd, byte arg = 0, byte[]? data = null)
     {
         var key = Convert.ToHexString(record.Mac);
         _lastIssuedSeq.TryGetValue(key, out var lastIssued);
         var seq = Slv3Protocol.NextCmdSeq((byte)Math.Max(lastIssued, record.CmdSeq));
-        if (!SendSequencedCommandLocked(record, rfCmd, seq, arg))
+        if (!SendSequencedCommandLocked(record, rfCmd, seq, arg, data))
         {
             return null;
         }
         _lastIssuedSeq[key] = seq;
-        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1, arg);
+        _pendingCommands[key] = new Slv3PendingCommand(record.Mac, rfCmd, seq, SequencedCommandBudget - 1, arg, data);
         return seq;
     }
 
@@ -2791,7 +2864,7 @@ public sealed class Slv3Hub : IDisposable
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, bool window,
         out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex)
     {
-        if (IsWiredOwned(macHex))
+        if (IsWiredOnly(macHex))
         {
             channel = 0;
             rxType = 0;
@@ -2986,7 +3059,7 @@ public sealed class Slv3Hub : IDisposable
     /// </summary>
     public bool SetPortDuty(string macHex, int port, int? percent)
     {
-        if (IsWiredOwned(macHex))
+        if (IsWiredOnly(macHex))
         {
             return false;
         }
@@ -3177,7 +3250,17 @@ public sealed class Slv3Hub : IDisposable
         public int Sends;
     }
 
-    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0);
+    // An unbind waiting for the chain's wireless theme switch to clear; ClearedAtMs is when the bits were seen cleared and the config save went out.
+    private sealed class DeferredUnbind(long deadlineMs, string macHex)
+    {
+        public long DeadlineMs { get; set; } = deadlineMs;
+        public bool Extended { get; set; }
+        public string MacHex { get; } = macHex;
+        public long ClearedAtMs { get; set; } = -1;
+        public bool SavedAgain { get; set; }
+    }
+
+    private readonly record struct Slv3PendingCommand(byte[] Mac, byte RfCmd, byte TargetSeq, int SendsRemaining, byte Arg = 0, byte[]? Data = null);
 
     // BlindMsAtSeen = the hub's blind total at that sighting, so expiry can leave out later blind time.
     private readonly record struct Slv3KnownChain(Slv3DeviceRecord Record, long LastSeenMs, long Poll, long BlindMsAtSeen);
