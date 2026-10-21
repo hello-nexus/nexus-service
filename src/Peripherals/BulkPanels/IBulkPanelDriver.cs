@@ -54,6 +54,11 @@ public interface IBulkPanelDriver
     /// <summary>The panel never shares a Nexus Panel record with another device's screen.</summary>
     bool MultiInstance => false;
 
+    /// <summary>Called by the hub before it takes its lock to detach: lets work in flight finish, within the driver's own bound.</summary>
+    void PrepareDetach()
+    {
+    }
+
     /// <summary>Writes any state the driver keeps in memory to settings; called on service shutdown, which skips the hub's disconnect.</summary>
     void PersistState()
     {

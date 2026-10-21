@@ -10,6 +10,10 @@ using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
 
+#if WINDOWS
+using Microsoft.Win32;
+#endif
+
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
@@ -64,6 +68,79 @@ public sealed class GlacialLcdWorker : BackgroundService
     }
 
     public bool IsConnected => _connected;
+
+    /// <summary>Longest wait for an upload in flight when the host goes to sleep, within what the suspend notification allows.</summary>
+    private const int SuspendWaitMs = 4000;
+
+#if WINDOWS
+    private bool _powerEventsSubscribed;
+#endif
+
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+#if WINDOWS
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                SystemEvents.PowerModeChanged += OnPowerModeChanged;
+                _powerEventsSubscribed = true;
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Info($"[{HandlerId}] failed to subscribe to power events: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+#endif
+        return base.StartAsync(cancellationToken);
+    }
+
+    public override Task StopAsync(CancellationToken cancellationToken)
+    {
+#if WINDOWS
+        if (_powerEventsSubscribed && OperatingSystem.IsWindows())
+        {
+            try { SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { }
+            _powerEventsSubscribed = false;
+        }
+#endif
+        return base.StopAsync(cancellationToken);
+    }
+
+#if WINDOWS
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        // Suspend runs inline: the machine stops once every subscriber returns.
+        if (e.Mode == PowerModes.Suspend) { OnHostSuspending(); }
+        else if (e.Mode == PowerModes.Resume) { OnHostResumed(); }
+    }
+#endif
+
+    /// <summary>Stops new uploads and waits for the one in flight; the panel's lock is the upload's own, so holding it means it is done.</summary>
+    internal void OnHostSuspending(int waitMs = SuspendWaitMs)
+    {
+        _link.Suspended = true;
+        GlacialLcdLog.Write("host suspending: uploads stopped");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        if (Monitor.TryEnter(_link.Sync, waitMs))
+        {
+            Monitor.Exit(_link.Sync);
+            GlacialLcdLog.Write($"no upload in flight after {watch.ElapsedMilliseconds}ms");
+        }
+        else
+        {
+            GlacialLcdLog.Write($"upload in flight when the host suspended, not finished after {watch.ElapsedMilliseconds}ms");
+        }
+    }
+
+    internal void OnHostResumed()
+    {
+        _link.Suspended = false;
+        _link.ShowPending = true;
+        GlacialLcdLog.Write("host resumed: uploads allowed");
+        RequestApply();
+    }
 
     /// <summary>Tells the worker the saved state changed; it applies the difference on its next pass.</summary>
     public void RequestApply()

@@ -158,6 +158,8 @@ public sealed class BulkPanelHub : IDisposable
 
     public void Detach()
     {
+        // Outside the lock: a driver may wait for work in flight, and discovery and frames take the lock.
+        _driver.PrepareDetach();
         lock (_lock)
         {
             DetachLocked();
@@ -183,6 +185,10 @@ public sealed class BulkPanelHub : IDisposable
 
     public void Dispose()
     {
+        if (!_disposed)
+        {
+            _driver.PrepareDetach();
+        }
         lock (_lock)
         {
             if (_disposed)

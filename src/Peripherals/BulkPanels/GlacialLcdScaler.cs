@@ -35,10 +35,26 @@ public static class GlacialLcdScaler
         }
     }
 
-    /// <summary>Size of a frame scaled by <paramref name="percent"/>, kept to whole 8-pixel blocks and at least 16.</summary>
+    /// <summary>
+    /// Size of a frame scaled by <paramref name="percent"/>, which snaps to the nearest step that
+    /// keeps the frame's exact aspect ratio on whole 8-pixel blocks: for 9:16 that is a multiple of
+    /// 72 by 128, so 10 percent steps. At least two steps.
+    /// </summary>
     public static (int Width, int Height) ScaledSize(int width, int height, int percent)
     {
-        int Scale(int v) => Math.Clamp((int)Math.Round(v * percent / 100.0 / 8.0) * 8, 16, v);
-        return (Scale(width), Scale(height));
+        int g = Gcd(width, height);
+        int unitW = width / g;
+        int unitH = height / g;
+        // The smallest unit that is a whole number of 8-pixel blocks on both sides.
+        int step = 1;
+        while ((unitW * step) % 8 != 0 || (unitH * step) % 8 != 0)
+        {
+            step++;
+        }
+        int units = Math.Max(1, width / (unitW * step));
+        int chosen = Math.Clamp((int)Math.Round(units * percent / 100.0, MidpointRounding.AwayFromZero), Math.Min(2, units), units);
+        return (unitW * step * chosen, unitH * step * chosen);
     }
+
+    private static int Gcd(int a, int b) => b == 0 ? a : Gcd(b, a % b);
 }

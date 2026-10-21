@@ -13,11 +13,17 @@ public static partial class DevicesRoutes
 {
     private static void MapGlacialLcdEndpoints(WebApplication app)
     {
-        app.MapGet("/devices/asus-glacial-lcd/tuning", (GlacialLcdTuning tuning) =>
-            Results.Json(BuildTuningResponse(tuning), AppJsonContext.Default.GlacialLcdTuningResponse));
+        app.MapGet("/devices/asus-glacial-lcd/tuning", (GlacialLcdTuning tuning, GlacialLcdLink link) =>
+            !link.NexusPanelEnabled
+                ? TuningOff()
+                : Results.Json(BuildTuningResponse(tuning), AppJsonContext.Default.GlacialLcdTuningResponse));
 
-        app.MapPut("/devices/asus-glacial-lcd/tuning", (GlacialLcdTuningRequest body, GlacialLcdTuning tuning) =>
+        app.MapPut("/devices/asus-glacial-lcd/tuning", (GlacialLcdTuningRequest body, GlacialLcdTuning tuning, GlacialLcdLink link) =>
         {
+            if (!link.NexusPanelEnabled)
+            {
+                return TuningOff();
+            }
             var change = new GlacialLcdTuningChange
             {
                 MaxFps = body.MaxFps,
@@ -37,14 +43,22 @@ public static partial class DevicesRoutes
             return Results.Json(BuildTuningResponse(tuning), AppJsonContext.Default.GlacialLcdTuningResponse);
         });
 
-        app.MapPost("/devices/asus-glacial-lcd/tuning/reset-stats", (GlacialLcdTuning tuning) =>
+        app.MapPost("/devices/asus-glacial-lcd/tuning/reset-stats", (GlacialLcdTuning tuning, GlacialLcdLink link) =>
         {
+            if (!link.NexusPanelEnabled)
+            {
+                return TuningOff();
+            }
             tuning.ResetStats();
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
-        app.MapPost("/devices/asus-glacial-lcd/tuning/resume", (GlacialLcdTuning tuning) =>
+        app.MapPost("/devices/asus-glacial-lcd/tuning/resume", (GlacialLcdTuning tuning, GlacialLcdLink link) =>
         {
+            if (!link.NexusPanelEnabled)
+            {
+                return TuningOff();
+            }
             tuning.Resume();
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
@@ -161,6 +175,9 @@ public static partial class DevicesRoutes
         store.Read(s => copy = s.Devices.GlacialLcd.Copy());
         return copy;
     }
+
+    private static IResult TuningOff() =>
+        Results.Json(ApiResponse.Fail("nexus panel mode is off for this display"), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status409Conflict);
 
     internal static GlacialLcdTuningResponse BuildTuningResponse(GlacialLcdTuning tuning)
     {

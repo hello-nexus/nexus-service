@@ -1439,6 +1439,7 @@ public static class NexusServiceCollectionExtensions
             bool nexusPanelOn = false;
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(s => nexusPanelOn = s.Devices.GlacialLcdNexusPanel);
             glacialLink.NexusPanelEnabled = nexusPanelOn;
+            Nexus.Service.Peripherals.BulkPanels.GlacialLcdLog.Enabled = nexusPanelOn;
             return glacialLink;
         });
         var glacialStreamDriver = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver(glacialLink);

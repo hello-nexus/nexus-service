@@ -35,13 +35,14 @@ public class GlacialLcdWorkerTests
         public InMemoryConfigStore Store { get; } = new();
         public RecordingDevice Device { get; } = new();
         public GlacialLcdWorker Worker { get; }
+        public GlacialLcdLink Link { get; } = new();
 
         public Rig(int connectPollMs = 50)
         {
             Store.Update(s => s.Devices.NexusControlEnabled.Add(GlacialLcdWorker.HandlerId));
             Worker = new GlacialLcdWorker(
                 new SingleHid(Device), new DeviceControlGate(Store), new HardwarePresence(Usb), Store, new FakeSensorProvider(),
-                connectPollMs: connectPollMs);
+                Link, connectPollMs: connectPollMs);
         }
     }
 
@@ -220,5 +221,56 @@ public class GlacialLcdWorkerTests
         public bool SetOutputReport(ReadOnlySpan<byte> report) => false;
         public int Read(Span<byte> buffer, int timeoutMs) => 0;
         public void Dispose() { }
+    }
+
+    [Fact]
+    public void A_suspend_stops_new_uploads_and_waits_for_the_one_in_flight()
+    {
+        var rig = new Rig();
+        bool finished = false;
+        // An upload holds the panel's lock for its whole length.
+        var upload = new Thread(() =>
+        {
+            lock (rig.Link.Sync)
+            {
+                Thread.Sleep(400);
+                finished = true;
+            }
+        });
+        upload.Start();
+        Thread.Sleep(50);
+
+        rig.Worker.OnHostSuspending(waitMs: 5000);
+
+        Assert.True(rig.Link.Suspended);
+        Assert.True(finished);
+        upload.Join();
+
+        rig.Worker.OnHostResumed();
+        Assert.False(rig.Link.Suspended);
+        Assert.True(rig.Link.ShowPending);
+    }
+
+    [Fact]
+    public void A_suspend_does_not_wait_longer_than_it_is_given()
+    {
+        var rig = new Rig();
+        var release = new ManualResetEventSlim(false);
+        var upload = new Thread(() =>
+        {
+            lock (rig.Link.Sync)
+            {
+                release.Wait();
+            }
+        });
+        upload.Start();
+        Thread.Sleep(50);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        rig.Worker.OnHostSuspending(waitMs: 150);
+
+        Assert.True(watch.ElapsedMilliseconds < 2000);
+        release.Set();
+        upload.Join();
     }
 }

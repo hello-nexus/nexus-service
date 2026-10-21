@@ -1436,18 +1436,11 @@ public sealed class KrakenFirmwareLighting
 
 public sealed class DevicesSettings
 {
-    /// <summary>
-    /// Hidden, no UI. Pacing of the Glacial LCD picture upload as a percent of the gaps copied
-    /// from the vendor app's capture. 0 or less means unset, which is the default, so files store
-    /// 0 and a later change of the default reaches every install; see
-    /// <see cref="ResolveGlacialLcdUploadPace"/>.
-    /// </summary>
+    /// <summary>Hidden. Earlier key for the Glacial LCD upload pace, 0 when unset; read through while the tuning pace is unset.</summary>
     public int GlacialLcdUploadPacePercent { get; set; }
 
-    public const int DefaultGlacialLcdUploadPacePercent = 4;
-
     /// <summary>Hidden. The Glacial LCD Nexus panel upload knobs; a field left null takes its default.</summary>
-    public GlacialLcdTuningSettings GlacialLcdTuning { get; set; } = new();
+    public GlacialLcdTuningSettings? GlacialLcdTuning { get; set; }
 
     /// <summary>
     /// Hidden. Off, the Glacial LCD keeps only its native modes: nothing streams or uploads to it,
@@ -1455,9 +1448,6 @@ public sealed class DevicesSettings
     /// </summary>
     public bool GlacialLcdNexusPanel { get; set; }
 
-    /// <summary>The pace to use for a stored value: unset (0 or less) is the default, and the top is capped.</summary>
-    public static int ResolveGlacialLcdUploadPace(int stored) =>
-        stored <= 0 ? DefaultGlacialLcdUploadPacePercent : Math.Min(stored, 1000);
 
     public List<string> DisabledLightingDevices { get; set; } = new();
     /// <summary>Per-card sampling mode by card id ("nearest", "rows" or "columns"); only non-default entries are stored, a card absent here reads the plain spot ("led").</summary>

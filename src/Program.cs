@@ -941,6 +941,16 @@ static void FastServiceShutdown(WebApplication app)
             try { sp.GetService<Nexus.Service.Lighting.SleepBlackoutCoordinator>()?.OnHostShutdown(); } catch { }
         }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
         : Task.CompletedTask;
+    // New Glacial uploads stop at once; one in flight is waited for in its own task below, never in the flush's.
+    var glacialDrivers = sp.GetServices<Nexus.Service.Peripherals.BulkPanels.BulkPanelHub>()
+        .Select(h => h.Driver).OfType<Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver>().ToList();
+    foreach (var glacial in glacialDrivers)
+    {
+        glacial.BeginShutdown();
+    }
+    var teardownBudget = osShutdown
+        ? Nexus.Service.Lifecycle.HostShutdown.OsShutdownTeardownBudget
+        : Nexus.Service.Lifecycle.HostShutdown.FastTeardownBudget;
     Nexus.Service.Lifecycle.UserHelperBootstrapper.NoteServiceStopping();
     Nexus.Service.Cooling.AdlxInitGuard.Stop(Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
     // Awaited past the cap below (it bounds itself): a refresh token the server
@@ -962,6 +972,21 @@ static void FastServiceShutdown(WebApplication app)
                 if (osShutdown)
                 {
                     sp.GetService<Nexus.Service.QSeries.QSeriesPortWatcher>()?.SleepPanelsForOsShutdown();
+                }
+            }
+            catch { }
+        }),
+        Task.Run(() =>
+        {
+            try
+            {
+                var left = teardownBudget - sw.Elapsed;
+                foreach (var glacial in glacialDrivers)
+                {
+                    if (left > TimeSpan.Zero)
+                    {
+                        glacial.WaitIdle(left);
+                    }
                 }
             }
             catch { }

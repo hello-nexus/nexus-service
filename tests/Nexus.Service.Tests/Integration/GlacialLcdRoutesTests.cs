@@ -12,8 +12,9 @@ namespace Nexus.Service.Tests.Integration;
 
 public class GlacialLcdRoutesTests
 {
-    private static HttpClient Client(NexusAppFactory factory)
+    private static HttpClient Client(NexusAppFactory factory, bool nexusPanel = true)
     {
+        factory.Services.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink>().NexusPanelEnabled = nexusPanel;
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", factory.Services.GetRequiredService<TokenService>().Token);
@@ -24,7 +25,7 @@ public class GlacialLcdRoutesTests
     public async Task With_the_nexus_panel_off_the_state_says_so_and_the_panel_mode_is_refused()
     {
         using var factory = new NexusAppFactory();
-        var client = Client(factory);
+        var client = Client(factory, nexusPanel: false);
 
         var state = await client.GetAsync("/devices/asus-glacial-lcd/state");
         Assert.Equal(HttpStatusCode.OK, state.StatusCode);
@@ -137,5 +138,19 @@ public class GlacialLcdRoutesTests
         var reset = await client.PostAsync("/devices/asus-glacial-lcd/tuning/reset-stats", null);
         Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
         Assert.Equal(0, tuning.Stats().UploadsFailed);
+    }
+
+    [Fact]
+    public async Task With_the_nexus_panel_off_every_tuning_route_says_so_and_nothing_is_created()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory, nexusPanel: false);
+
+        Assert.Equal(HttpStatusCode.Conflict, (await client.GetAsync("/devices/asus-glacial-lcd/tuning")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PutAsync("/devices/asus-glacial-lcd/tuning", Body("{\"chunkKb\":8}"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync("/devices/asus-glacial-lcd/tuning/resume", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync("/devices/asus-glacial-lcd/tuning/reset-stats", null)).StatusCode);
+        var store = factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+        Assert.Null(store.Load().Devices.GlacialLcdTuning);
     }
 }

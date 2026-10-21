@@ -9,7 +9,16 @@ internal static class GlacialLcdLogTestSetup
     internal static readonly string Dir = Path.Combine(Path.GetTempPath(), "nexus-tests-glacial-log");
 
     [ModuleInitializer]
-    internal static void Init() => Restore();
+    internal static void Init()
+    {
+        GlacialLcdLog.ForceOn = true;
+        GlacialLcdLog.SetDefaultDirectory(Dir);
+    }
 
-    internal static void Restore() => GlacialLcdLog.UseDirectory(Dir);
+    /// <summary>Ends a test's own log directory; its lines are on disk first.</summary>
+    internal static void Restore()
+    {
+        GlacialLcdLog.Flush();
+        GlacialLcdLog.UseDirectory(null);
+    }
 }

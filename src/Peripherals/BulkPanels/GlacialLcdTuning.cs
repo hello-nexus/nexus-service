@@ -71,14 +71,24 @@ public sealed class GlacialLcdTuning
 
     public GlacialLcdTuningValues Current()
     {
-        GlacialLcdTuningSettings stored = new();
+        double? maxFps = null;
+        int? pace = null, scale = null, quality = null, chunk = null;
+        bool? replyDriven = null, doubleBuffer = null;
+        string? scaleMode = null;
         int legacyPace = 0;
         _store.Read(s =>
         {
-            stored = s.Devices.GlacialLcdTuning ?? new();
+            var t = s.Devices.GlacialLcdTuning;
+            maxFps = t?.MaxFps;
+            pace = t?.PacePercent;
+            scale = t?.ScalePercent;
+            quality = t?.JpegQuality;
+            chunk = t?.ChunkKb;
+            replyDriven = t?.ReplyDriven;
+            doubleBuffer = t?.DoubleBuffer;
+            scaleMode = t?.ScaleMode;
             legacyPace = s.Devices.GlacialLcdUploadPacePercent;
         });
-        int pace = stored.PacePercent ?? (legacyPace > 0 ? legacyPace : DefaultPacePercent);
         int version;
         lock (_lock)
         {
@@ -86,14 +96,14 @@ public sealed class GlacialLcdTuning
         }
         return new GlacialLcdTuningValues(
             version,
-            Math.Clamp(stored.MaxFps ?? MaxMaxFps, MinMaxFps, MaxMaxFps),
-            Math.Clamp(pace, 0, MaxPace),
-            stored.ReplyDriven ?? false,
-            Math.Clamp(stored.ScalePercent ?? DefaultScalePercent, MinScale, 100),
-            stored.ScaleMode == ScaleUpscale ? ScaleUpscale : ScaleSend,
-            Math.Clamp(stored.JpegQuality ?? DefaultJpegQuality, MinQuality, MaxQuality),
-            Math.Clamp(stored.ChunkKb ?? DefaultChunkKb, 1, MaxChunkKb),
-            stored.DoubleBuffer ?? false);
+            Math.Clamp(maxFps ?? MaxMaxFps, MinMaxFps, MaxMaxFps),
+            Math.Clamp(pace ?? (legacyPace > 0 ? legacyPace : DefaultPacePercent), 0, MaxPace),
+            replyDriven ?? false,
+            Math.Clamp(scale ?? DefaultScalePercent, MinScale, 100),
+            scaleMode == ScaleUpscale ? ScaleUpscale : ScaleSend,
+            Math.Clamp(quality ?? DefaultJpegQuality, MinQuality, MaxQuality),
+            Math.Clamp(chunk ?? DefaultChunkKb, 1, MaxChunkKb),
+            doubleBuffer ?? false);
     }
 
     /// <summary>The message for the first field out of range, or null when the change is valid.</summary>
@@ -132,7 +142,7 @@ public sealed class GlacialLcdTuning
         var before = Current();
         _store.Update(s =>
         {
-            var t = s.Devices.GlacialLcdTuning ??= new();
+            var t = s.Devices.GlacialLcdTuning ??= new GlacialLcdTuningSettings();
             if (c.MaxFps.HasValue) { t.MaxFps = c.MaxFps; }
             if (c.PacePercent.HasValue) { t.PacePercent = c.PacePercent; }
             if (c.ReplyDriven.HasValue) { t.ReplyDriven = c.ReplyDriven; }

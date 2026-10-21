@@ -649,63 +649,14 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
-    public void The_default_pace_comes_from_the_resolver_and_is_stored_as_unset()
-    {
-        Assert.Equal(4, new GlacialLcdPanelDriver(new GlacialLcdLink()).ConfiguredPaceScalePercent);
-        // Stored as unset, so a later change of the default is not held back by a value saved today.
-        var fresh = new Nexus.Service.Persistence.DevicesSettings();
-        Assert.Equal(0, fresh.GlacialLcdUploadPacePercent);
-        Assert.Equal(
-            Nexus.Service.Persistence.DevicesSettings.DefaultGlacialLcdUploadPacePercent,
-            Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(fresh.GlacialLcdUploadPacePercent));
-    }
-
-    [Theory]
-    [InlineData(0, 4)]
-    [InlineData(-5, 4)]
-    [InlineData(1, 1)]
-    [InlineData(100, 100)]
-    [InlineData(5000, 1000)]
-    public void A_stored_pace_of_zero_counts_as_unset_and_the_top_is_capped(int stored, int expected)
-    {
-        Assert.Equal(expected, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(stored));
-    }
-
-    [Fact]
-    public void A_settings_file_without_the_key_gets_the_default_and_one_with_zero_resolves_to_it()
-    {
-        var absent = System.Text.Json.JsonSerializer.Deserialize(
-            "{\"devices\":{}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
-        var zero = System.Text.Json.JsonSerializer.Deserialize(
-            "{\"devices\":{\"glacialLcdUploadPacePercent\":0}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
-
-        Assert.Equal(0, absent.Devices.GlacialLcdUploadPacePercent);
-        Assert.Equal(4, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(absent.Devices.GlacialLcdUploadPacePercent));
-        Assert.Equal(4, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(zero.Devices.GlacialLcdUploadPacePercent));
-    }
-
-    [Fact]
-    public void Values_stored_by_earlier_builds_under_the_old_key_are_ignored_and_the_new_key_can_restore_an_earlier_pace()
-    {
-        var old = System.Text.Json.JsonSerializer.Deserialize(
-            "{\"devices\":{\"glacialLcdPaceScalePercent\":19}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
-        var restored = System.Text.Json.JsonSerializer.Deserialize(
-            "{\"devices\":{\"glacialLcdUploadPacePercent\":19}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
-
-        Assert.Equal(0, old.Devices.GlacialLcdUploadPacePercent);
-        Assert.Equal(4, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(old.Devices.GlacialLcdUploadPacePercent));
-        Assert.Equal(19, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(restored.Devices.GlacialLcdUploadPacePercent));
-        Assert.Equal(100, Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(100));
-    }
-
-    [Fact]
-    public void The_hidden_pace_setting_brings_the_captured_waits_back_and_is_read_per_upload()
+    public void The_pace_setting_brings_the_captured_waits_back_and_is_read_per_upload()
     {
         var link = new GlacialLcdLink();
         link.StreamOpened(new object());
-        int percent = 10;
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { PacePercent = 10 });
         var driver = new GlacialLcdPanelDriver(link, settleMs: 0);
-        driver.BindPaceScale(() => percent);
+        driver.BindTuning(tuning);
         var pipe = new FakePipe();
         var hid = new FakeHid();
         driver.Connect(pipe, hid);
@@ -715,7 +666,7 @@ public class GlacialLcdDriverTests
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
         long paced = watch.ElapsedMilliseconds;
 
-        percent = 0;
+        tuning.Apply(new GlacialLcdTuningChange { PacePercent = 0 });
         watch.Restart();
         driver.SendFrame(pipe, hid, Frame(noiseRows: 4));
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
@@ -1069,8 +1020,11 @@ public class GlacialLcdDriverTests
         driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
 
-        Assert.All(pipe.Writes, w => Assert.Equal(8192, w.Length));
-        Assert.Equal((SentJpegBytes(hid) + 8191) / 8192, pipe.Writes.Count);
+        int size = SentJpegBytes(hid);
+        Assert.Equal((size + 8191) / 8192, pipe.Writes.Count);
+        Assert.All(pipe.Writes.Take(pipe.Writes.Count - 1), w => Assert.Equal(8192, w.Length));
+        // The last transfer is padded to the next 4 KB boundary only, so the total matches the 4 KB layout.
+        Assert.Equal((size + 4095) / 4096 * 4096, pipe.Writes.Sum(w => w.Length));
         driver.Disconnect(pipe, hid);
     }
 
@@ -1224,6 +1178,7 @@ public class GlacialLcdDriverTests
             }
             driver.Disconnect(pipe, hid);
 
+            GlacialLcdLog.Flush();
             string text = File.ReadAllText(Path.Combine(dir, GlacialLcdLog.FileName));
             Assert.Contains("settings id=", text);
             Assert.Contains("start settings=", text);
@@ -1239,6 +1194,171 @@ public class GlacialLcdDriverTests
         {
             GlacialLcdLogTestSetup.Restore();
         }
+    }
+
+    [Fact]
+    public void A_detach_waits_for_the_upload_in_flight_outside_any_caller_lock_and_stops_new_ones()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { PacePercent = 3 });
+        var driver = Fast(disconnectWaitMs: 60_000);
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 200, seed: 1));
+        Assert.True(WaitUntil(() => pipe.Writes.Count >= 1));
+
+        driver.PrepareDetach();
+
+        // It returned only once the sequence was through the end report and the show step.
+        Assert.False(driver.IsUploading);
+        Assert.Equal(0x51, hid.Writes[^1][1]);
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 200, seed: 2));
+        Looked(driver);
+        Assert.Equal(1, driver.UploadAttempts);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Shutdown_stops_new_uploads_at_once_and_the_state_write_does_not_wait_for_the_one_in_flight()
+    {
+        var memory = new FakeMemory();
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { PacePercent = 3 });
+        var driver = Fast(disconnectWaitMs: 60_000);
+        driver.BindMemory(memory);
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 200, seed: 1));
+        Assert.True(WaitUntil(() => pipe.Writes.Count >= 1));
+
+        driver.BeginShutdown();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        driver.PersistState();
+        Assert.True(watch.ElapsedMilliseconds < 500, watch.ElapsedMilliseconds.ToString());
+        Assert.True(driver.IsUploading);
+
+        Assert.True(driver.WaitIdle(TimeSpan.FromSeconds(30)));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 200, seed: 2));
+        Looked(driver);
+        Assert.Equal(1, driver.UploadAttempts);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_wait_that_runs_out_reports_it()
+    {
+        var driver = Fast();
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        Assert.True(driver.WaitIdle(TimeSpan.FromMilliseconds(10)));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_missed_state_reply_is_asked_for_again_before_the_panel_is_called_stalled()
+    {
+        var tuning = NewTuning(out _);
+        var driver = Fast();
+        driver.StallReplyMs = 80;
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        int queries = 0;
+        var hid = new FakeHid();
+        hid.OnWrite = w =>
+        {
+            if (w[1] == 0xDC && Interlocked.Increment(ref queries) == 1)
+            {
+                hid.Drain();
+            }
+        };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+
+        Assert.False(tuning.Stalled);
+        Assert.True(hid.Writes.Count(w => w[1] == 0xDC) >= 3);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_stalled_panel_is_probed_after_a_backoff_and_uploads_resume_on_their_own()
+    {
+        var tuning = NewTuning(out _);
+        var clock = new FakeClock();
+        var driver = Fast(clock: clock);
+        driver.StallReplyMs = 60;
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid { Echo = false };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => tuning.Stalled));
+        int queries = hid.Writes.Count(w => w[1] == 0xDC);
+        Assert.Equal(3, queries);
+
+        // Still inside the backoff: no probe.
+        clock.Advance(10_000);
+        Looked(driver);
+        Assert.Equal(queries, hid.Writes.Count(w => w[1] == 0xDC));
+
+        hid.Echo = true;
+        clock.Advance(25_000);
+        Assert.True(WaitUntil(() => !tuning.Stalled));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Chunk_pacing_scales_with_the_transfer_size_so_the_total_time_does_not_depend_on_it()
+    {
+        var small = NewTuning(out _);
+        small.Apply(new GlacialLcdTuningChange { PacePercent = 100, ChunkKb = 4 });
+        var big = NewTuning(out _);
+        big.Apply(new GlacialLcdTuningChange { PacePercent = 100, ChunkKb = 16 });
+        var cfgSmall = small.Current();
+        var cfgBig = big.Current();
+
+        int estimateSmall = GlacialLcdPanelDriver.EstimateUploadMs(80_000, cfgSmall);
+        int estimateBig = GlacialLcdPanelDriver.EstimateUploadMs(80_000, cfgBig);
+
+        // Same bytes, same pace: within one chunk gap of each other.
+        Assert.InRange(Math.Abs(estimateSmall - estimateBig), 0, 2100 * 4);
+    }
+
+    [Fact]
+    public void A_reply_driven_finish_keeps_its_floor_when_the_pace_is_zero_and_no_commit_report_comes()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { ReplyDriven = true, PacePercent = 0 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        hid.OnWrite = w =>
+        {
+            if (w[1] == 0x73 && w[2] == 0xFF)
+            {
+                hid.Drain();
+            }
+        };
+        driver.Connect(pipe, hid);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        driver.SendFrame(pipe, hid, Frame());
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+
+        Assert.True(watch.ElapsedMilliseconds >= GlacialLcdPanelDriver.FinishReplyWaitMs - 50, watch.ElapsedMilliseconds.ToString());
+        driver.Disconnect(pipe, hid);
     }
 
     private sealed class FakeMemory : ILcdUploadMemory

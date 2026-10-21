@@ -91,6 +91,9 @@ public sealed class GlacialLcdLink
     /// <summary>The user's choice still is the Nexus Panel mode; cleared the moment they pick a native one, so an upload stops before the session closes.</summary>
     public volatile bool StreamWanted = true;
 
+    /// <summary>The host is going to sleep: no upload starts until it resumes.</summary>
+    public volatile bool Suspended;
+
     /// <summary>False keeps the stream driver from ever uploading; the service sets it from the hidden setting at start.</summary>
     public volatile bool NexusPanelEnabled = true;
 
@@ -187,8 +190,15 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// <summary>The remembered picture is written to settings only once it has stood this long, and when the stream stops.</summary>
     public const int PersistAfterMs = 10 * 60 * 1000;
 
-    /// <summary>Longest wait for an upload in flight to reach its last step before a disconnect or shutdown acts.</summary>
-    public const int DefaultDisconnectWaitMs = 20_000;
+    /// <summary>Hard cap on the wait for an upload in flight before a detach; the wait itself is sized from the upload's own estimate.</summary>
+    public const int DefaultDisconnectWaitMs = 120_000;
+
+    private const int EstimateOverheadMs = 3000;
+
+    /// <summary>State queries tried before the panel is called stalled.</summary>
+    private const int StallDcTries = 3;
+
+    private static readonly int[] ProbeBackoffMs = { 30_000, 60_000, 120_000 };
 
     /// <summary>A device that sends nothing in this long after a state query is taken to be stalled.</summary>
     public const int DefaultStallReplyMs = 3000;
@@ -219,7 +229,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private readonly ManualResetEventSlim _abort = new(false);
 
     private ILcdUploadMemory? _memory;
-    private Func<int>? _paceSource;
     private GlacialLcdTuning? _tuning;
 
     // Set only by a disconnect: an upload in progress runs to its last step through a cancel or a dark display.
@@ -229,6 +238,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private long _nextStartMs;
     private long _lastRateLogMs;
     private int _uploadSeq;
+    private volatile bool _quiescing;
+    private int _inflightEstimateMs;
+    private int _stallStreak;
+    private long _nextProbeMs;
 
     /// <summary>Test seam: sees every line this driver logs at info level.</summary>
     internal Action<string>? LogSink { get; set; }
@@ -280,10 +293,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         public Thread? Thread;
     }
 
-    /// <param name="paceScalePercent">Scales every vendor pacing gap; 0 sends everything back to back, 100 is the captured pace, and the default is <see cref="DevicesSettings.DefaultGlacialLcdUploadPacePercent"/>. A bound source (see <see cref="BindPaceScale"/>) overrides it per upload.</param>
+    /// <param name="paceScalePercent">Scales every vendor pacing gap; 0 sends everything back to back, 100 is the captured pace, and used only while no tuning is bound.</param>
     public GlacialLcdPanelDriver(
         GlacialLcdLink link,
-        int paceScalePercent = DevicesSettings.DefaultGlacialLcdUploadPacePercent,
+        int paceScalePercent = GlacialLcdTuning.DefaultPacePercent,
         int settleMs = DefaultSettleMs,
         int maxSettleMs = DefaultMaxSettleMs,
         int backoffBaseMs = DefaultBackoffBaseMs,
@@ -337,7 +350,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private GlacialLcdTuningValues Cfg() =>
         _tuning?.Current() ?? new GlacialLcdTuningValues(
-            0, GlacialLcdTuning.MaxMaxFps, Math.Clamp(_paceSource?.Invoke() ?? _paceScalePercent, 0, MaxPaceScalePercent), false,
+            0, GlacialLcdTuning.MaxMaxFps, Math.Clamp(_paceScalePercent, 0, MaxPaceScalePercent), false,
             GlacialLcdTuning.DefaultScalePercent, GlacialLcdTuning.ScaleSend, GlacialLcdProtocol.StreamJpegQuality,
             GlacialLcdProtocol.ChunkBytes / 1024, true);
 
@@ -362,12 +375,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         get { lock (_hidLock) { return _uploading; } }
     }
 
-    /// <summary>The pace scale the driver was built with, before any bound source.</summary>
-    internal int ConfiguredPaceScalePercent => _paceScalePercent;
-
-    /// <summary>Reads the pace scale from settings at the start of each upload, so a change applies without a restart.</summary>
-    public void BindPaceScale(Func<int> source) => _paceSource = source;
-
     /// <summary>Supplies the store that survives restarts; without one every connect uploads afresh.</summary>
     public void BindMemory(ILcdUploadMemory memory) => _memory = memory;
 
@@ -387,6 +394,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 start = _current = new WorkerState();
                 _abort.Reset();
                 _hardAbort.Reset();
+                _quiescing = false;
             }
         }
         if (start is not null)
@@ -492,6 +500,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 }
                 else
                 {
+                    ProbeStalled(state);
                     ShowIfNeeded(state);
                 }
                 PersistIfStable();
@@ -504,6 +513,38 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             Interlocked.Increment(ref _ticks);
         }
+    }
+
+    /// <summary>After a stall, sends a state query now and then; a reply resumes uploads on its own.</summary>
+    private void ProbeStalled(WorkerState state)
+    {
+        if (_tuning is not { Stalled: true } || _stallStreak == 0 || _clock() < _nextProbeMs || !CanUpload())
+        {
+            return;
+        }
+        bool answered;
+        var sinceStart = System.Diagnostics.Stopwatch.StartNew();
+        var run = new UploadRun { Seq = Volatile.Read(ref _uploadSeq) };
+        lock (_link.Sync)
+        {
+            if (!CanUpload() || !HidWrite(state, GlacialLcdProtocol.EncodeQuery()))
+            {
+                return;
+            }
+            Tx(run, sinceStart, "probe DC");
+            answered = AwaitAnyReply(state, StallReplyMs, "probe DC", sinceStart);
+        }
+        if (answered)
+        {
+            GlacialLcdLog.Write("probe answered, uploads resume");
+            _tuning.Resume();
+            MarkPending();
+            return;
+        }
+        int backoff = ProbeBackoffMs[Math.Min(_stallStreak, ProbeBackoffMs.Length - 1)];
+        _stallStreak++;
+        _nextProbeMs = _clock() + backoff;
+        GlacialLcdLog.Write($"probe unanswered, next in {backoff / 1000}s");
     }
 
     private void LogRate()
@@ -524,7 +565,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     }
 
     /// <summary>True when an upload may start or go on: a stream the user wants, the display lit, and no native edit waiting.</summary>
-    private bool CanUpload() => _link.NexusPanelEnabled && _link.Streaming && _link.StreamWanted && !_link.Dark && !_link.NativePending;
+    private bool CanUpload() => !_quiescing && !_link.Suspended && _link.NexusPanelEnabled && _link.Streaming && _link.StreamWanted && !_link.Dark && !_link.NativePending;
 
     private bool Ready()
     {
@@ -702,9 +743,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 : _shownSlot == GlacialLcdProtocol.CustomSlots[0] ? GlacialLcdProtocol.CustomSlots[1] : GlacialLcdProtocol.CustomSlots[0];
             generation = _pictureGeneration;
         }
+        int estimateMs = EstimateUploadMs(jpeg.Length, cfg);
+        Volatile.Write(ref _inflightEstimateMs, estimateMs);
         _nextStartMs = cfg.MaxFps >= GlacialLcdTuning.MaxMaxFps ? 0 : _clock() + (long)(1000.0 / cfg.MaxFps);
         int seq = Interlocked.Increment(ref _uploadSeq);
-        GlacialLcdLog.Write($"u{seq} start settings={cfg.Id} frame={encW}x{encH} jpegBytes={jpeg.Length} encodeMs={encodeMs} slot={targetSlot} pace={cfg.PacePercent} chunkKb={cfg.ChunkKb} q={cfg.JpegQuality} scale={cfg.ScalePercent}/{cfg.ScaleMode} replyDriven={cfg.ReplyDriven} doubleBuffer={cfg.DoubleBuffer} maxFps={cfg.MaxFps}");
+        GlacialLcdLog.Write($"u{seq} start settings={cfg.Id} frame={encW}x{encH} jpegBytes={jpeg.Length} encodeMs={encodeMs} slot={targetSlot} pace={cfg.PacePercent} chunkKb={cfg.ChunkKb} q={cfg.JpegQuality} scale={cfg.ScalePercent}/{cfg.ScaleMode} replyDriven={cfg.ReplyDriven} doubleBuffer={cfg.DoubleBuffer} maxFps={cfg.MaxFps} estimateMs={estimateMs}");
         var run = new UploadRun { Seq = seq };
         var outcome = UploadOutcome.Failed;
         var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -758,6 +801,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 _nextAllowedMs = 0;
             }
             _supersedes = 0;
+            _stallStreak = 0;
             Interlocked.Increment(ref _uploadsCompleted);
             _tuning?.UploadOk(watch.ElapsedMilliseconds, jpeg.Length, encodeMs);
             Info($"[{HandlerId}] picture uploaded, {jpeg.Length} bytes in {watch.ElapsedMilliseconds} ms (encode {encodeMs} ms, pace {_pace}%)");
@@ -765,6 +809,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         else if (outcome == UploadOutcome.Stalled)
         {
             MarkPending();
+            int backoff = ProbeBackoffMs[Math.Min(_stallStreak, ProbeBackoffMs.Length - 1)];
+            _stallStreak++;
+            _nextProbeMs = now + backoff;
+            GlacialLcdLog.Write($"stall #{_stallStreak}: probing again in {backoff / 1000}s");
             _tuning?.Stall(run.Error ?? "no reply");
             Failed($"upload stalled: {run.Error}");
         }
@@ -1010,6 +1058,19 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         public string? Error { get; set; }
     }
 
+    /// <summary>One chunk gap: the captured interval for a 4 KB transfer, scaled by the pace and by the transfer size.</summary>
+    private static int ChunkGapMs(int pace, int chunkBytes) =>
+        (int)((long)GlacialLcdProtocol.ChunkIntervalMs * pace / 100 * chunkBytes / GlacialLcdProtocol.ChunkBytes);
+
+    /// <summary>The longest the upload should take on its timers.</summary>
+    internal static int EstimateUploadMs(int jpegBytes, GlacialLcdTuningValues cfg)
+    {
+        int chunkBytes = cfg.ChunkKb * 1024;
+        long chunks = (jpegBytes + chunkBytes - 1) / chunkBytes;
+        long fixedGaps = (long)(1011 + GlacialLcdProtocol.ChunkLeadMs + GlacialLcdProtocol.FinishSettleMs) * cfg.PacePercent / 100;
+        return (int)Math.Min(int.MaxValue / 2, fixedGaps + chunks * ChunkGapMs(cfg.PacePercent, chunkBytes) + FinishReplyWaitMs);
+    }
+
     private void Tx(UploadRun run, System.Diagnostics.Stopwatch sinceStart, string step) =>
         GlacialLcdLog.Write($"u{run.Seq} TX +{sinceStart.ElapsedMilliseconds}ms {step}");
 
@@ -1031,6 +1092,28 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 // A read path that errors cannot show silence, so it is not taken for a stall.
                 return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Waits for a reply to a state query already sent, asking again up to the try limit before giving up.</summary>
+    private bool AwaitDc(WorkerState state, UploadRun run, System.Diagnostics.Stopwatch sinceStart, string step)
+    {
+        for (int attempt = 1; attempt <= StallDcTries; attempt++)
+        {
+            if (AwaitAnyReply(state, StallReplyMs, step, sinceStart))
+            {
+                return true;
+            }
+            GlacialLcdLog.Write($"u{run.Seq} no reply to {step} (try {attempt}/{StallDcTries})");
+            if (attempt < StallDcTries)
+            {
+                if (!HidWrite(state, GlacialLcdProtocol.EncodeQuery()))
+                {
+                    return false;
+                }
+                Tx(run, sinceStart, step + " retry");
             }
         }
         return false;
@@ -1097,7 +1180,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             return Fail("write failed at DC");
         }
         Tx(run, sinceStart, "DC");
-        if (!AwaitAnyReply(state, StallReplyMs, "DC", sinceStart))
+        if (!AwaitDc(state, run, sinceStart, "DC"))
         {
             return Stall("no reply to DC");
         }
@@ -1129,17 +1212,19 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         int index = 0;
         for (int offset = 0; offset < jpeg.Length; offset += chunkBytes, index++)
         {
-            // The last transfer is a full chunk, zero padded past the picture's end.
+            // The last transfer is zero padded past the picture's end to the next 4 KB boundary, as the vendor's is.
+            int take = Math.Min(chunkBytes, jpeg.Length - offset);
+            int length = Math.Min(chunkBytes, (take + GlacialLcdProtocol.ChunkBytes - 1) / GlacialLcdProtocol.ChunkBytes * GlacialLcdProtocol.ChunkBytes);
             Array.Clear(chunk);
-            jpeg.AsSpan(offset, Math.Min(chunkBytes, jpeg.Length - offset)).CopyTo(chunk);
+            jpeg.AsSpan(offset, take).CopyTo(chunk);
             chunkTimer.Restart();
-            if (!BulkWrite(state, chunk))
+            if (!BulkWrite(state, chunk.AsSpan(0, length).ToArray()))
             {
                 return Fail($"bulk write failed at chunk {index}");
             }
-            Tx(run, sinceStart, $"chunk {index + 1}/{chunks} {chunkBytes}B");
+            Tx(run, sinceStart, $"chunk {index + 1}/{chunks} {length}B");
             // Submit to submit: the gap counts from this write's start, so a slow write does not stretch it.
-            int scaled = (int)((long)GlacialLcdProtocol.ChunkIntervalMs * _pace / 100);
+            int scaled = ChunkGapMs(_pace, chunkBytes);
             int remaining = scaled - (int)chunkTimer.ElapsedMilliseconds;
             if (cfg.ReplyDriven)
             {
@@ -1172,7 +1257,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         int settleMs = (int)((long)GlacialLcdProtocol.FinishSettleMs * _pace / 100);
         if (cfg.ReplyDriven)
         {
-            bool got = AwaitCompletionReply(state, settleMs, "end 73FF", sinceStart);
+            // The floor holds unless a commit report arrives: a zero timer must not mean no wait.
+            bool got = AwaitCompletionReply(state, Math.Max(settleMs, FinishReplyWaitMs), "end 73FF", sinceStart);
             GlacialLcdLog.Write($"u{run.Seq} commit wait ended {(got ? "on a reply" : "on the timer")} +{sinceStart.ElapsedMilliseconds}ms");
         }
         else
@@ -1201,7 +1287,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             return Fail("write failed at DC before show");
         }
         Tx(run, sinceStart, "DC before show");
-        if (!AwaitAnyReply(state, StallReplyMs, "DC before show", sinceStart))
+        if (!AwaitDc(state, run, sinceStart, "DC before show"))
         {
             return Stall("no reply to DC after the transfer");
         }
@@ -1221,12 +1307,6 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     {
         GlacialLcdLog.Write("stream driver disconnect");
         WorkerState? state;
-        if (_disconnectWaitMs > 0 && !_idle.IsSet)
-        {
-            GlacialLcdLog.Write("disconnect waits for the upload in flight");
-            bool finished = _idle.Wait(_disconnectWaitMs);
-            GlacialLcdLog.Write(finished ? "upload in flight finished" : "upload in flight did not finish in time");
-        }
         lock (_hidLock)
         {
             state = _current;
@@ -1321,13 +1401,36 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
     }
 
-    /// <summary>Shutdown path: lets an upload in flight reach its last step first, within the bound.</summary>
-    public void PersistState()
+    public void PersistState() => PersistNow();
+
+    /// <summary>Stops new uploads; one in flight runs on. Called first on shutdown and before a detach.</summary>
+    public void BeginShutdown()
     {
-        if (_disconnectWaitMs > 0 && !_idle.Wait(_disconnectWaitMs))
+        _quiescing = true;
+        _wake.Set();
+    }
+
+    /// <summary>Waits for an upload in flight to reach its last step; false when it did not within the time.</summary>
+    public bool WaitIdle(TimeSpan timeout)
+    {
+        if (_idle.IsSet)
         {
-            GlacialLcdLog.Write("shutdown: upload in flight did not finish in time");
+            return true;
         }
-        PersistNow();
+        GlacialLcdLog.Write($"waiting up to {(int)timeout.TotalMilliseconds}ms for the upload in flight");
+        bool finished = _idle.Wait(timeout);
+        GlacialLcdLog.Write(finished ? "upload in flight finished" : "upload in flight did not finish in time");
+        return finished;
+    }
+
+    public void PrepareDetach()
+    {
+        BeginShutdown();
+        if (_disconnectWaitMs <= 0)
+        {
+            return;
+        }
+        int estimate = Volatile.Read(ref _inflightEstimateMs);
+        WaitIdle(TimeSpan.FromMilliseconds(Math.Min(_disconnectWaitMs, estimate + estimate / 2 + EstimateOverheadMs)));
     }
 }

@@ -50,7 +50,7 @@ public sealed class GlacialLcdTuningTests : IDisposable
         Assert.Equal(7, tuning.Current().PacePercent);
 
         _store.Update(s => s.Devices.GlacialLcdUploadPacePercent = 900);
-        _store.Update(s => s.Devices.GlacialLcdTuning.PacePercent = null);
+        _store.Update(s => s.Devices.GlacialLcdTuning!.PacePercent = null);
         Assert.Equal(100, tuning.Current().PacePercent);
     }
 
@@ -103,7 +103,8 @@ public sealed class GlacialLcdTuningTests : IDisposable
             var after = tuning.Apply(new GlacialLcdTuningChange { ChunkKb = 8, ReplyDriven = true });
 
             Assert.True(after.Id > before);
-            Assert.Equal(8, _store.Load().Devices.GlacialLcdTuning.ChunkKb);
+            Assert.Equal(8, _store.Load().Devices.GlacialLcdTuning!.ChunkKb);
+            GlacialLcdLog.Flush();
             string text = File.ReadAllText(Path.Combine(logs, GlacialLcdLog.FileName));
             Assert.Contains("chunkKb 4 -> 8", text);
             Assert.Contains("replyDriven False -> True", text);
@@ -151,6 +152,7 @@ public sealed class GlacialLcdTuningTests : IDisposable
             {
                 GlacialLcdLog.Write("line " + i + " " + new string('x', 30));
             }
+            GlacialLcdLog.Flush();
             var main = new FileInfo(Path.Combine(logs, GlacialLcdLog.FileName));
             var old = new FileInfo(Path.Combine(logs, GlacialLcdLog.RotatedFileName));
             Assert.True(main.Exists && old.Exists);
@@ -179,6 +181,7 @@ public sealed class GlacialLcdTuningTests : IDisposable
         {
             GlacialLcdLogTestSetup.Restore();
         }
+        Assert.True(File.Exists(Path.Combine(logs, GlacialLcdLog.RotatedFileName)));
 
         var bytes = SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
         {
@@ -199,8 +202,22 @@ public sealed class GlacialLcdTuningTests : IDisposable
     {
         Assert.Equal((360, 640), GlacialLcdScaler.ScaledSize(720, 1280, 50));
         Assert.Equal((720, 1280), GlacialLcdScaler.ScaledSize(720, 1280, 100));
-        var (w, h) = GlacialLcdScaler.ScaledSize(720, 1280, 25);
-        Assert.Equal(0, w % 8);
-        Assert.Equal(0, h % 8);
+        Assert.Equal((216, 384), GlacialLcdScaler.ScaledSize(720, 1280, 25));
+        for (int percent = 25; percent <= 100; percent++)
+        {
+            var (w, h) = GlacialLcdScaler.ScaledSize(720, 1280, percent);
+            Assert.Equal(0, w % 8);
+            Assert.Equal(0, h % 8);
+            Assert.Equal(w * 16, h * 9);
+        }
+    }
+
+    [Fact]
+    public void A_fresh_settings_document_carries_no_tuning_object()
+    {
+        string json = System.Text.Json.JsonSerializer.Serialize(
+            new Nexus.Service.Persistence.NexusSettings(), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+
+        Assert.DoesNotContain("glacialLcdTuning", json, StringComparison.Ordinal);
     }
 }
