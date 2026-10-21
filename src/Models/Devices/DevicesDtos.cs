@@ -298,6 +298,12 @@ public class SetLightingDeviceMaxRateBody
     public int? MaxRateHz { get; set; }
 }
 
+/// <summary>Response of POST /devices/lighting-devices/{id}/led-preview-layout: the envelope plus the draft layout's area boxes (4 x LED count, see <see cref="LightingDevice.AreaBoxes"/>), null when the card is not area sampled.</summary>
+public class LedPreviewLayoutResponse : Nexus.Service.Models.ApiResponse
+{
+    public float[]? AreaBoxes { get; set; }
+}
+
 /// <summary>POST /devices/lighting-devices/area-sampling.</summary>
 public class SetLightingDeviceAreaSamplingBody
 {

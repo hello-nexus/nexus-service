@@ -82,6 +82,17 @@ public sealed partial class LightingEngine
         return AreaBoxesFor(dev.Id, count, u, v, disabled, 0, count, requireOn);
     }
 
+    /// <summary>The wire boxes of a card sampled from <paramref name="frame"/> (null frame = never sampled): exactly 4 x <paramref name="ledCount"/> floats, cut or padded with empty boxes.</summary>
+    internal float[] AreaBoxesForCard(DeviceFrame? frame, int ledCount)
+    {
+        var boxes = (frame is null ? null : AreaBoxesFor(frame, requireOn: false)) ?? Array.Empty<float>();
+        if (boxes.Length != ledCount * 4)
+        {
+            Array.Resize(ref boxes, ledCount * 4);
+        }
+        return boxes;
+    }
+
     /// <summary>The per-LED layout arrays the sampler reads: the editor draft when one is live, else the saved layout.</summary>
     private static void ResolveLayout(DeviceFrame dev, int ledCount, out float[]? u, out float[]? v, out bool[]? disabled)
     {

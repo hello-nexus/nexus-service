@@ -61,4 +61,27 @@ public sealed class LightingAreaSamplingRouteTests : IClassFixture<SiblingZoneHo
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         Assert.Empty(Settings.Devices.AreaSamplingDevices);
     }
+
+    [Fact]
+    public async Task PreviewLayout_ResponseCarriesTheDraftBoxes_OnlyWhenAreaSamplingIsOn()
+    {
+        var engine = _factory.Services.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>();
+        engine.UpdateDevices(new[] { new Nexus.Service.Lighting.Engine.DeviceFrame(0, "openrgb-s-OTHER", 3, 0, 0, 100, 20) });
+        const string draft = """{"ledCount":3,"leds":[{"index":0,"u":0.1,"v":0.5,"disabled":false},{"index":1,"u":0.5,"v":0.5,"disabled":false},{"index":2,"u":0.9,"v":0.5,"disabled":true}]}""";
+
+        var off = await _client.PostAsync("/devices/lighting-devices/openrgb-s-OTHER/led-preview-layout", new StringContent(draft, Encoding.UTF8, "application/json"));
+        using var offDoc = System.Text.Json.JsonDocument.Parse(await off.Content.ReadAsStringAsync());
+        Assert.False(offDoc.RootElement.GetProperty("error").GetBoolean());
+        // The wire omits nulls (AppJsonContext WhenWritingNull), so "off" is an absent areaBoxes.
+        Assert.False(offDoc.RootElement.TryGetProperty("areaBoxes", out _));
+
+        await Post("""{"id":"openrgb-s-OTHER","enabled":true}""");
+        var on = await _client.PostAsync("/devices/lighting-devices/openrgb-s-OTHER/led-preview-layout", new StringContent(draft, Encoding.UTF8, "application/json"));
+        using var onDoc = System.Text.Json.JsonDocument.Parse(await on.Content.ReadAsStringAsync());
+        var boxes = onDoc.RootElement.GetProperty("areaBoxes").EnumerateArray().Select(e => e.GetSingle()).ToArray();
+        Assert.Equal(12, boxes.Length);
+        Assert.Equal(new float[] { 0f, 0f, 0.3f, 1f }, boxes[..4]);
+        Assert.Equal(new float[] { 0.3f, 0f, 1f, 1f }, boxes[4..8]);
+        Assert.Equal(new float[] { 0, 0, 0, 0 }, boxes[8..]);
+    }
 }

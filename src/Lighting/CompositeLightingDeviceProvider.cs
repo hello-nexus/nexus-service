@@ -423,11 +423,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             // Exactly what the engine samples for this card id (frames are created under their card's id). A card with no
             // frame is never sampled, so it has no boxes; a frame of another length is cut or padded with empty boxes so the
             // wire length stays 4 x LedCount.
-            var boxes = (frame is null ? null : engine.AreaBoxesFor(frame, requireOn: false)) ?? new float[0];
-            if (boxes.Length != dev.LedCount * 4)
-            {
-                Array.Resize(ref boxes, dev.LedCount * 4);
-            }
+            var boxes = engine.AreaBoxesForCard(frame, dev.LedCount);
             dev.AreaBoxes = boxes;
         }
     }

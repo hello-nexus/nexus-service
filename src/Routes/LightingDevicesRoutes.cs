@@ -1218,10 +1218,12 @@ public static partial class DevicesRoutes
         app.MapPost("/devices/lighting-devices/{id}/led-preview-layout", (string id, LedPreviewLayoutBody body,
             Nexus.Service.Lighting.Engine.LightingEngine engine) =>
         {
+            Nexus.Service.Lighting.Engine.DeviceFrame? found = null;
             foreach (var frame in engine.Devices)
             {
                 if (frame.Id == id)
                 {
+                    found = frame;
                     frame.PreviewLedCount = body.LedCount > 0 ? body.LedCount : null;
                     if (body.Leds.Count > 0)
                     {
@@ -1246,8 +1248,10 @@ public static partial class DevicesRoutes
                     break;
                 }
             }
-            return ApiResponse.Ok();
+            var boxes = found is not null && engine.IsAreaSampled(id) ? engine.AreaBoxesForCard(found, found.LedCount) : null;
+            return Results.Json(new LedPreviewLayoutResponse { AreaBoxes = boxes }, Nexus.Service.Serialization.AppJsonContext.Default.LedPreviewLayoutResponse);
         });
+
 
         // LED map editor: clear all overlays
         app.MapDelete("/devices/lighting-devices/{id}/led-editor", (string id,
