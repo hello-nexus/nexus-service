@@ -372,7 +372,8 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     private List<DeviceStructure> BuildStructures(bool playsArgb)
     {
         var structures = new List<DeviceStructure>();
-        var chains = _store.Load().Devices.LianLiWireless.Chains;
+        var settings = _store.Load();
+        var chains = settings.Devices.LianLiWireless.Chains;
         foreach (var fan in _hub.State.Fans)
         {
             if (!fan.BoundToUs) continue;
@@ -390,7 +391,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
                 continue;
             }
             if (fan.FanCount <= 0) continue;
-            structures.Add(BuildStructure(fan));
+            structures.Add(BuildStructure(fan, settings.Devices.FlexUnits.TryGetValue(fan.Mac, out var look) && look.UpDownSwap));
         }
         return structures;
     }
@@ -565,10 +566,18 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         _ => null,
     };
 
-    /// <summary>Zones of a Flex chain in segment order: the zone id suffix, the wired-Flex zone key and its label. The first two ids are the ring ids the 50/50 split used.</summary>
-    internal static (string Suffix, string Key, string Label)[] FlexZonesOf(FlexFamily family) => family == FlexFamily.SlInfFlex
-        ? new[] { ("center", "center", "Center"), ("inner", "inner", "Inner"), ("outer", "outer", "Outer") }
-        : new[] { ("inner", "up", "Up"), ("outer", "down", "Down") };
+    /// <summary>Zones of a Flex chain in segment order: the zone id suffix, the wired-Flex zone key and its label. TL keeps the inner and outer ids.</summary>
+    internal static (string Suffix, string Key, string Label)[] FlexZonesOf(FlexFamily family)
+    {
+        var keys = FlexLightingDeviceProvider.ZonesOf(family);
+        var zones = new (string, string, string)[keys.Count];
+        for (var i = 0; i < zones.Length; i++)
+        {
+            var suffix = family == FlexFamily.TlFlex ? (i == 0 ? "inner" : "outer") : keys[i];
+            zones[i] = (suffix, keys[i], FlexLightingDeviceProvider.ZoneLabel(keys[i]));
+        }
+        return zones;
+    }
 
     /// <summary>Fans in a chain from its first segment's size; the segment layout depends on the family.</summary>
     internal static int FanCountOf(DeviceStructure structure, Slv3FanInfo fan)
@@ -582,7 +591,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         return structure.Segments[InnerSegment].LedCount / RingLedsFor(fan);
     }
 
-    private static DeviceStructure BuildFlexStructure(Slv3FanInfo fan, FlexFamily flex)
+    private static DeviceStructure BuildFlexStructure(Slv3FanInfo fan, FlexFamily flex, bool swap)
     {
         var deviceId = DeviceIdFor(fan.Mac);
         var deviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan");
@@ -592,7 +601,7 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         {
             var (suffix, key, label) = zones[i];
             var total = FlexProtocol.ZoneWireIndexes(flex, key).Count * fan.FanCount;
-            var (u, v) = FlexFanLayout.ZonePositions(flex, key, fan.FanCount, swap: false);
+            var (u, v) = FlexFanLayout.ZonePositions(flex, key, fan.FanCount, swap);
             structure.Segments.Add(new StructureSegment
             {
                 Index = i,
@@ -617,11 +626,11 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         return structure;
     }
 
-    private static DeviceStructure BuildStructure(Slv3FanInfo fan)
+    private static DeviceStructure BuildStructure(Slv3FanInfo fan, bool swap = false)
     {
         if (FlexFamilyOf(fan) is { } flexFamily)
         {
-            return BuildFlexStructure(fan, flexFamily);
+            return BuildFlexStructure(fan, flexFamily, swap && flexFamily == FlexFamily.TlFlex);
         }
         var deviceId = DeviceIdFor(fan.Mac);
         var deviceKey = DeviceKeyComputer.ForFirstParty(Slv3Protocol.TxVendorId, Slv3Protocol.TxProductId, "wireless-fan");

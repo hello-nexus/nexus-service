@@ -669,7 +669,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (fanInfo is null) return 0;
         if (Slv3LightingDeviceProvider.FlexFamilyOf(fanInfo) is { } flex)
         {
-            return FillFlexWireBuffer(structure, flex);
+            return FillFlexWireBuffer(macHex, structure, flex);
         }
         // Ring lengths must match the provider's structure for this chain or
         // the fan-major interleave misaligns.
@@ -699,7 +699,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     }
 
     // Zone-major segment buffers scattered into the fan-major wire buffer by the wired-Flex zone maps.
-    private int FillFlexWireBuffer(DeviceStructure structure, FlexFamily flex)
+    private int FillFlexWireBuffer(string macHex, DeviceStructure structure, FlexFamily flex)
     {
         var zones = Slv3LightingDeviceProvider.FlexZonesOf(flex);
         var first = FlexProtocol.ZoneWireIndexes(flex, zones[0].Key).Count;
@@ -709,26 +709,37 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (fanCount <= 0) return 0;
         var totalLeds = fanCount * perFan;
         EnsureWireBuffer(totalLeds);
-        ScatterFlexZones(flex, fanCount, _segmentBuffers, _wireBuffer);
-        return totalLeds;
+        var swap = flex == FlexFamily.TlFlex && _store.Load().Devices.FlexUnits.TryGetValue(macHex, out var look) && look.UpDownSwap;
+        return ScatterFlexZones(flex, fanCount, _segmentBuffers, _wireBuffer, swap) ? totalLeds : 0;
     }
 
-    internal static void ScatterFlexZones(FlexFamily flex, int fanCount, RgbColor[][] zoneBuffers, RgbColor[] wire)
+    // False when the buffers do not match the geometry: the structure and the fan list are read at different moments.
+    internal static bool ScatterFlexZones(FlexFamily flex, int fanCount, RgbColor[][] zoneBuffers, RgbColor[] wire, bool swap = false)
     {
         var zones = Slv3LightingDeviceProvider.FlexZonesOf(flex);
         var perFan = FlexProtocol.LedsPerFan(flex);
+        if (zoneBuffers.Length < zones.Length || wire.Length < fanCount * perFan)
+        {
+            return false;
+        }
         for (var z = 0; z < zones.Length; z++)
         {
             var map = FlexProtocol.ZoneWireIndexes(flex, zones[z].Key);
             var buffer = zoneBuffers[z];
+            if (buffer.Length < fanCount * map.Count)
+            {
+                return false;
+            }
             for (var f = 0; f < fanCount; f++)
             {
                 for (var k = 0; k < map.Count; k++)
                 {
-                    wire[(f * perFan) + map[k]] = buffer[(f * map.Count) + k];
+                    var idx = swap ? (map[k] + (perFan / 2)) % perFan : map[k];
+                    wire[(f * perFan) + idx] = buffer[(f * map.Count) + k];
                 }
             }
         }
+        return true;
     }
 
     // Retry spacing and cap for the motherboard ARGB switch: the hub already

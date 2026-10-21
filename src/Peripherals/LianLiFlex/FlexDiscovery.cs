@@ -22,9 +22,12 @@ public interface IFlexDiscovery
 {
     IReadOnlyList<FlexUnitPort> Discover();
 
-    /// <summary>Screens with no receiver on the bus: fans run over the radio and only the screen is on USB.</summary>
-    IReadOnlyList<FlexUnitPort> DiscoverScreenOnly() => Array.Empty<FlexUnitPort>();
+    /// <summary>Units and receiverless screens from one enumeration, so a screen never appears in both.</summary>
+    FlexDiscoverySnapshot Snapshot() => new(Discover(), Array.Empty<FlexUnitPort>());
 }
+
+/// <summary>Paired units, and the screens with no receiver on the bus (fans run over the radio, only the screen is on USB).</summary>
+public sealed record FlexDiscoverySnapshot(IReadOnlyList<FlexUnitPort> Units, IReadOnlyList<FlexUnitPort> ScreenOnly);
 
 public sealed class StubFlexDiscovery : IFlexDiscovery
 {
@@ -59,27 +62,26 @@ public static class FlexDiscoveryParser
         return true;
     }
 
-    /// <summary>
-    /// Keeps only the Flex receivers and screens and pairs them: by the resolved parent hub when
-    /// <paramref name="hubOf"/> knows it, else by family when exactly one of each is present.
-    /// </summary>
-    public static IReadOnlyList<FlexUnitPort> ScreenOnly(IEnumerable<string> paths, Func<string, string> hubOf)
+    /// <summary>Pairs once and lists every screen no receiver claimed; each screen is in exactly one of the two lists.</summary>
+    public static FlexDiscoverySnapshot Snapshot(IEnumerable<string> paths, Func<string, string> hubOf)
     {
         var list = paths as IReadOnlyCollection<string> ?? new List<string>(paths);
+        var units = Pair(list, hubOf);
         var paired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var u in Pair(list, hubOf))
+        foreach (var u in units)
         {
             if (u.ScreenPath.Length > 0)
             {
                 paired.Add(u.ScreenPath);
             }
         }
-        var result = new List<FlexUnitPort>();
+        var screenOnly = new List<FlexUnitPort>();
+        var seenSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var raw in list)
         {
-            if (TryParse(raw, out var p) && FlexProtocol.IsScreenProduct(p.Vid, p.Pid) && !paired.Contains(p.Path))
+            if (TryParse(raw, out var p) && FlexProtocol.IsScreenProduct(p.Vid, p.Pid) && !paired.Contains(p.Path) && seenSerials.Add(p.Serial))
             {
-                result.Add(new FlexUnitPort
+                screenOnly.Add(new FlexUnitPort
                 {
                     ReceiverPath = "",
                     ReceiverPid = 0,
@@ -90,9 +92,15 @@ public static class FlexDiscoveryParser
                 });
             }
         }
-        return result;
+        return new FlexDiscoverySnapshot(units, screenOnly);
     }
 
+    public static IReadOnlyList<FlexUnitPort> ScreenOnly(IEnumerable<string> paths, Func<string, string> hubOf) => Snapshot(paths, hubOf).ScreenOnly;
+
+    /// <summary>
+    /// Keeps only the Flex receivers and screens and pairs them: by the resolved parent hub when
+    /// <paramref name="hubOf"/> knows it, else by family when exactly one of each is present.
+    /// </summary>
     public static IReadOnlyList<FlexUnitPort> Pair(IEnumerable<string> paths, Func<string, string> hubOf)
     {
         var receivers = new List<FlexPath>();

@@ -408,7 +408,7 @@ public static partial class LianLiFlexRoutes
     };
 
     /// <summary>A serial of a screen on a unit the hub has seen or on the bus without a receiver; settings are only created for those.</summary>
-    private static bool IsKnownScreen(FlexHub hub, FlexLcdHub lcd, string serial) =>
+    internal static bool IsKnownScreen(FlexHub hub, FlexLcdHub lcd, string serial) =>
         hub.Units.Any(u => string.Equals(u.ScreenSerial, serial, StringComparison.OrdinalIgnoreCase))
         || lcd.Hub.Screens.Any(x => string.Equals(x.Serial, serial, StringComparison.OrdinalIgnoreCase));
 

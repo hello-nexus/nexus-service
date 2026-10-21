@@ -68,6 +68,9 @@ public static class Slv3Protocol
     public const int MinSlot = 1;
     public const int MaxSlot = 13;
 
+    /// <summary>A record's slot says bound; a stale master MAC with a cleared slot is unbound.</summary>
+    public static bool IsBoundSlot(int rxType) => rxType >= MinSlot && rxType <= MaxSlot;
+
     // Device-list record (42 bytes, from the RX GetDev reply).
     public const int RecordLength = 42;
     public const int RecordHeaderLength = 4;   // [0]=cmd echo [1]=count [2..3]=ver/flags

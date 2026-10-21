@@ -2166,8 +2166,7 @@ public sealed class Slv3Hub : IDisposable
 
     private static bool IsBoundTo(Slv3DeviceRecord record, byte[] masterMac) =>
         Slv3Protocol.MacEquals(record.MasterMac, masterMac)
-        && record.RxType >= Slv3Protocol.MinSlot
-        && record.RxType <= Slv3Protocol.MaxSlot;
+        && Slv3Protocol.IsBoundSlot(record.RxType);
 
     // A flapping record logs at most once per BindingLogIntervalMs per chain, so
     // it cannot push older lines out of the support bundle's log tail.

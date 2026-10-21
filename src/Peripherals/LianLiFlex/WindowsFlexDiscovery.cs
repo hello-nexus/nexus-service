@@ -14,9 +14,9 @@ public sealed partial class WindowsFlexDiscovery : IFlexDiscovery
 {
     private static readonly Guid FlexGuid = new(FlexProtocol.InterfaceGuid);
 
-    public IReadOnlyList<FlexUnitPort> Discover() => FlexDiscoveryParser.Pair(EnumeratePaths(), ParentHub);
+    public IReadOnlyList<FlexUnitPort> Discover() => Snapshot().Units;
 
-    public IReadOnlyList<FlexUnitPort> DiscoverScreenOnly() => FlexDiscoveryParser.ScreenOnly(EnumeratePaths(), ParentHub);
+    public FlexDiscoverySnapshot Snapshot() => FlexDiscoveryParser.Snapshot(EnumeratePaths(), ParentHub);
 
     private static List<string> EnumeratePaths()
     {

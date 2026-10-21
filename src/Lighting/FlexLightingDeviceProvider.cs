@@ -140,7 +140,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
 
     public static string ModelName(FlexFamily family) => family == FlexFamily.SlInfFlex ? "Lian Li SL-INF LCD Flex" : "Lian Li TL LCD Flex";
 
-    private static string ZoneLabel(string zone) => zone switch
+    internal static string ZoneLabel(string zone) => zone switch
     {
         "up" => "Up",
         "down" => "Down",

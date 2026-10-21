@@ -1178,16 +1178,21 @@ public static class NexusServiceCollectionExtensions
 #else
             _ => throw new System.PlatformNotSupportedException()));
 #endif
-        services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexLcdHub(
+        services.AddSingleton(sp =>
+        {
+            var flexScreenDiscovery = new Nexus.Service.Peripherals.LianLiFlex.FlexScreenDiscovery(
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.IFlexDiscovery>());
+            return new Nexus.Service.Peripherals.LianLiFlex.FlexLcdHub(
             new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdHub(
-                new Nexus.Service.Peripherals.LianLiFlex.FlexScreenDiscovery(
-                    sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.IFlexDiscovery>()),
+                flexScreenDiscovery,
 #if WINDOWS
                 port => new Nexus.Service.Peripherals.LianLiFlex.FlexLcdTransport(port.PortName),
 #else
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdTransport(port.PortName),
 #endif
-                sp.GetService<Nexus.Service.Lighting.LcdLockState>())));
+                sp.GetService<Nexus.Service.Lighting.LcdLockState>()),
+                flexScreenDiscovery);
+        });
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexConnectionWorker>();
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdConnectionWorker>();
         services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexScreens(

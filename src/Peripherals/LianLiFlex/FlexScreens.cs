@@ -22,20 +22,22 @@ public sealed class FlexScreenDiscovery : ISlv3LcdDiscovery
         _units = units;
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> ScreenPids = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _screenPids = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Family of a screen seen by discovery, from its product id; TL when never seen.</summary>
-    public static FlexFamily FamilyOfSerial(string serial) =>
-        ScreenPids.TryGetValue(serial, out var pid) ? FlexProtocol.FamilyOfScreen(pid) : FlexFamily.TlFlex;
+    public FlexFamily FamilyOfSerial(string serial) =>
+        _screenPids.TryGetValue(serial, out var pid) ? FlexProtocol.FamilyOfScreen(pid) : FlexFamily.TlFlex;
 
     public IReadOnlyList<Slv3LcdPortInfo> Discover()
     {
+        var snapshot = _units.Snapshot();
         var result = new List<Slv3LcdPortInfo>();
-        foreach (var u in _units.Discover().Concat(_units.DiscoverScreenOnly()))
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var u in snapshot.Units.Concat(snapshot.ScreenOnly))
         {
-            if (u.ScreenPath.Length > 0 && u.ScreenSerial.Length > 0)
+            if (u.ScreenPath.Length > 0 && u.ScreenSerial.Length > 0 && seen.Add(u.ScreenSerial))
             {
-                ScreenPids[u.ScreenSerial] = u.ScreenPid;
+                _screenPids[u.ScreenSerial] = u.ScreenPid;
                 result.Add(new Slv3LcdPortInfo { PortName = u.ScreenPath, Serial = u.ScreenSerial, ProductId = u.ScreenPid });
             }
         }
@@ -46,12 +48,16 @@ public sealed class FlexScreenDiscovery : ISlv3LcdDiscovery
 /// <summary>Owns the screen hub of the Flex fans; a second <see cref="Slv3LcdHub"/> next to the wireless one.</summary>
 public sealed class FlexLcdHub
 {
-    public FlexLcdHub(Slv3LcdHub hub)
+    public FlexLcdHub(Slv3LcdHub hub, FlexScreenDiscovery? discovery = null)
     {
         Hub = hub;
+        Discovery = discovery;
     }
 
     public Slv3LcdHub Hub { get; }
+
+    /// <summary>The discovery behind <see cref="Hub"/>, when it is the Flex one; knows each screen's family.</summary>
+    public FlexScreenDiscovery? Discovery { get; }
 }
 
 /// <summary>The Flex screens as an <see cref="IFanLcdScreens"/> family.</summary>
@@ -191,7 +197,10 @@ public sealed class FlexScreens : IFanLcdScreens
         return true;
     }
 
-    /// <summary>The value written to the panel for a stored rotation: a right-attached SL-INF turns it a half turn.</summary>
+    /// <summary>
+    /// The value written to the panel for a stored rotation: a right-attached SL-INF turns it a half turn.
+    /// A screen without a receiver has no link to its fan's radio record (only the receiver ties a screen to a MAC), so it gets the stored value.
+    /// </summary>
     public byte HardwareRotation(string serial, byte rotation)
     {
         foreach (var u in _flex.Units)
@@ -230,14 +239,22 @@ public sealed class FlexScreens : IFanLcdScreens
                 return FlexNames.UnitName(_flex.Units, u, mac => _sortIndexOf?.Invoke(mac) ?? 0);
             }
         }
-        var family = FlexScreenDiscovery.FamilyOfSerial(serial);
+        return ScreenOnlyName(serial);
+    }
+
+    // Numbered after the paired units of its family, in the order FlexNames.UnitName uses; screen-only ones go by serial so the order is stable.
+    private string ScreenOnlyName(string serial)
+    {
+        var family = _lcd.Discovery?.FamilyOfSerial(serial) ?? FlexFamily.TlFlex;
+        var paired = _flex.Units.Count(u => u.Family == family);
         var alone = _lcd.Hub.Screens
-            .Where(x => FlexScreenDiscovery.FamilyOfSerial(x.Serial) == family && !_flex.Units.Any(u => string.Equals(u.ScreenSerial, x.Serial, StringComparison.OrdinalIgnoreCase)))
+            .Where(x => (_lcd.Discovery?.FamilyOfSerial(x.Serial) ?? FlexFamily.TlFlex) == family
+                && !_flex.Units.Any(u => string.Equals(u.ScreenSerial, x.Serial, StringComparison.OrdinalIgnoreCase)))
             .Select(x => x.Serial)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.Ordinal)
             .ToList();
-        var position = alone.FindIndex(x => string.Equals(x, serial, StringComparison.OrdinalIgnoreCase));
-        return alone.Count > 1 && position > 0 ? $"{FlexNames.Short(family)} {position + 1}" : FlexNames.Short(family);
+        var position = paired + alone.FindIndex(x => string.Equals(x, serial, StringComparison.OrdinalIgnoreCase));
+        return position > 0 ? $"{FlexNames.Short(family)} {position + 1}" : FlexNames.Short(family);
     }
 
     /// <summary>
@@ -317,9 +334,8 @@ public sealed class FlexLcdConnectionWorker : BackgroundService
         var screens = new List<Slv3LcdScreenInfo>(ports.Count);
         foreach (var p in ports)
         {
-            if (!string.IsNullOrWhiteSpace(p.Serial))
+            if (!string.IsNullOrWhiteSpace(p.Serial) && seen.Add(p.Serial))
             {
-                seen.Add(p.Serial);
                 screens.Add(new Slv3LcdScreenInfo { Serial = p.Serial, Position = -1 });
             }
         }
