@@ -72,7 +72,7 @@ public class MystiqueSessionTests
         Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
         pipe.Writes.Clear();
 
-        Assert.True(session.Tick(new MystiqueReading(55, 3, 24, 5380, 1700, 3341), Now.AddSeconds(1)));
+        Assert.True(session.Tick(new MystiqueReading(55, 3, 240, 5380, 1700, 3341), Now.AddSeconds(1)));
 
         Assert.Equal(new[] { (MystiqueProtocol.CmdPoll, MystiqueProtocol.LiveWritePipe), (MystiqueProtocol.CmdSensors, MystiqueProtocol.LiveWritePipe) },
             pipe.Sent());
