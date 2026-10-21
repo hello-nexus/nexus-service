@@ -114,9 +114,28 @@ public class FlexCustomerTopologyTests
 
         var screens = new FlexScreens(lcd, hub, new FlexClock().Func);
         var names = new[] { "2B324029848A0703", "47449BCE76D28303", "331964888482C702", "5D30175F64A28700" }.Select(screens.PanelName).ToArray();
-        Assert.Equal(new[] { "TL Flex", "TL Flex 2", "TL Flex 3", "TL Flex 4" }, names.OrderBy(x => x, StringComparer.Ordinal).ToArray());
+        Assert.Equal(new[] { "TL Flex 1", "TL Flex 2", "TL Flex 3", "TL Flex 4" }, names.OrderBy(x => x, StringComparer.Ordinal).ToArray());
         Assert.Equal("TL Flex 3", screens.PanelName("331964888482C702"));
         Assert.Equal("TL Flex 4", screens.PanelName("5D30175F64A28700"));
+    }
+
+    [Fact]
+    public void Four_tl_screens_get_four_distinct_numbered_names()
+    {
+        var snapshot = FlexDiscoveryParser.Snapshot(new[] { Rx1, Rx2 }.Concat(Screens), ResolvedHub);
+        var discovery = new SnapshotDiscovery(snapshot);
+        var macs = new Dictionary<string, string> { [Rx1] = "210807F517E1", [Rx2] = "A41F07F517E1" };
+        var hub = new FlexHub(discovery, port => new FakeFlexTransport(macs[port.ReceiverPath]), new FlexClock().Func, null, _ => { });
+        hub.Refresh();
+        Assert.Equal(2, hub.Units.Length);
+
+        var screenDiscovery = new FlexScreenDiscovery(discovery);
+        var lcd = new FlexLcdHub(new Slv3LcdHub(screenDiscovery, _ => new NoLcd()), screenDiscovery);
+        lcd.Hub.UpdateScreens(lcd.Hub.Discover().Select(p => new Slv3LcdScreenInfo { Serial = p.Serial }).ToList());
+
+        var screens = new FlexScreens(lcd, hub, new FlexClock().Func);
+        var names = new[] { "2B324029848A0703", "47449BCE76D28303", "331964888482C702", "5D30175F64A28700" }.Select(screens.PanelName).ToArray();
+        Assert.Equal(new[] { "TL Flex 1", "TL Flex 2", "TL Flex 3", "TL Flex 4" }, names.OrderBy(x => x, StringComparer.Ordinal).ToArray());
     }
 
     [Theory]

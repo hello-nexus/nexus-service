@@ -16,11 +16,15 @@ public static class FlexNames
             .ThenBy(u => u.Mac, StringComparer.Ordinal)
             .ToList();
 
-    /// <summary>"TL Flex" for the only unit of its family, "TL Flex 2" for the second, in <see cref="Ordered"/> order.</summary>
+    /// <summary>"TL Flex" for the only unit of its family, "TL Flex 1", "TL Flex 2" and so on when several share it, in <see cref="Ordered"/> order.</summary>
     public static string UnitName(IEnumerable<FlexUnit> units, FlexUnit unit, Func<string, int> sortIndexOf)
     {
         var sameFamily = Ordered(units.Where(u => u.Family == unit.Family), sortIndexOf);
         var position = sameFamily.ToList().FindIndex(u => string.Equals(u.Mac, unit.Mac, StringComparison.OrdinalIgnoreCase));
-        return sameFamily.Count > 1 && position > 0 ? $"{Short(unit.Family)} {position + 1}" : Short(unit.Family);
+        return Numbered(unit.Family, position, sameFamily.Count);
     }
+
+    /// <summary>The family name, numbered from one only when the family has more than one screen or unit.</summary>
+    public static string Numbered(FlexFamily family, int position, int count) =>
+        count > 1 && position >= 0 ? $"{Short(family)} {position + 1}" : Short(family);
 }

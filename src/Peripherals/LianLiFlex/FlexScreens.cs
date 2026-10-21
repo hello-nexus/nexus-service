@@ -258,8 +258,7 @@ public sealed class FlexScreens : IFanLcdScreens
         {
             return FlexNames.Short(family);
         }
-        var position = paired + index;
-        return position > 0 ? $"{FlexNames.Short(family)} {position + 1}" : FlexNames.Short(family);
+        return FlexNames.Numbered(family, paired + index, paired + alone.Count);
     }
 
     /// <summary>
