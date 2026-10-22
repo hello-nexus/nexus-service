@@ -115,8 +115,10 @@ public sealed class MystiqueSession
     /// Nothing streams unless the screen answered the announce. True once a clean stream is finished,
     /// whether or not the source command is answered; an unanswered one is re-sent by the next <see cref="Apply"/>.
     /// </summary>
-    public bool Upload(MystiqueMediaPackage package, Func<string?>? source = null)
+    /// <param name="progress">Called after each packet with the stream bytes the screen has taken.</param>
+    public bool Upload(MystiqueMediaPackage package, Func<string?>? source = null, Action<long>? progress = null)
     {
+        long streamed = 0;
         string kind = package.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
         ServiceLog.Info($"[deepcool-mystique] upload {kind} {package.Id}, {package.Frames.Count} frames");
         if (!Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildUploadStart(), out _, out bool announced)
@@ -138,6 +140,8 @@ public sealed class MystiqueSession
                     return false;
                 }
                 sent += landed;
+                streamed += landed;
+                progress?.Invoke(streamed);
             }
         }
         var finish = MystiqueMedia.FinishPacket();

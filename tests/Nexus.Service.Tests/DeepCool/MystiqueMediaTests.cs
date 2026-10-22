@@ -142,6 +142,23 @@ public class MystiqueMediaTests
     }
 
     [Fact]
+    public void A_kept_gif_comes_back_under_another_id_with_its_frames_and_duration()
+    {
+        var jpegs = Enumerable.Range(0, 30).Select(i => Jpeg(200 + i, i)).ToList();
+        var kept = MystiqueMedia.SaveGif(MystiqueMedia.BuildGif(jpegs, GifId, 1234));
+
+        var loaded = MystiqueMedia.LoadGif(kept, "41c9bf307cba45a1aa3a1d92bbe93b96");
+
+        var expected = MystiqueMedia.BuildGif(jpegs, "41c9bf307cba45a1aa3a1d92bbe93b96", 1234);
+        Assert.NotNull(loaded);
+        Assert.Equal("41c9bf307cba45a1aa3a1d92bbe93b96", loaded!.Id);
+        Assert.Equal(expected.Frames.Select(Convert.ToHexString), loaded.Frames.Select(Convert.ToHexString));
+        Assert.Null(MystiqueMedia.LoadGif(kept.AsSpan(0, kept.Length - 1), GifId));
+        Assert.Null(MystiqueMedia.LoadGif(kept, "not-an-id"));
+        Assert.Null(MystiqueMedia.LoadGif(Array.Empty<byte>(), GifId));
+    }
+
+    [Fact]
     public void Ids_are_per_source_and_kind()
     {
         var a = new byte[] { 1, 2, 3 };

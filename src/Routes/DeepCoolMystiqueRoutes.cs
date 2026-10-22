@@ -148,6 +148,7 @@ public static partial class DevicesRoutes
         MediaSource = m.MediaSource,
         EdgePicking = m.EdgePicking,
         Media = m.Media.ConvertAll(i => new DeepCoolMystiqueMediaDto { Kind = i.Kind, Id = i.Id, Name = i.Name, Ext = i.Ext, Editable = MystiqueSourceExists(i) }).ToArray(),
+        ShownGif = m.ShownGif,
         RecordingChosen = m.RecordingEdited,
         DeviceChosen = m.DeviceEdited,
         Mode = m.Mode,
@@ -227,6 +228,9 @@ public sealed class DeepCoolMystiqueStateResponse
 
     public DeepCoolMystiqueMediaDto[] Media { get; set; } = Array.Empty<DeepCoolMystiqueMediaDto>();
 
+    /// <summary>Id of the GIF the screen plays, empty when unknown.</summary>
+    public string ShownGif { get; set; } = "";
+
     /// <summary>False until the user has changed a recording graph; the toggles shown are placeholders.</summary>
     public bool RecordingChosen { get; set; }
 
@@ -274,6 +278,16 @@ public sealed class DeepCoolMystiqueMediaResponse
     public bool Error { get; set; }
     public string Msg { get; set; } = "";
     public string Id { get; set; } = "";
+
+    /// <summary>The GIF's frames are not kept, so showing it takes an edit, which encodes them again.</summary>
+    public bool NeedsEdit { get; set; }
+}
+
+public sealed class DeepCoolMystiqueProgressResponse
+{
+    /// <summary>"converting", "sending", or empty when no upload runs.</summary>
+    public string Phase { get; set; } = "";
+    public int Percent { get; set; }
 }
 
 public sealed class DeepCoolMystiqueSettingsRequest
