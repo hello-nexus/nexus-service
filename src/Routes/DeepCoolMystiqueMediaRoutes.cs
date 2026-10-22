@@ -18,6 +18,34 @@ public static partial class DevicesRoutes
     // Bounds a kept source, so full slots of uploads up to MediaImporter.MaxFileSize never pile up gigabytes.
     internal const int MystiqueKeepMaxBytes = 8 * 1024 * 1024;
 
+    /// <summary>
+    /// Saves the source a finished stream leaves the screen on and returns the one to send (null for none). A new
+    /// item selects its kind, as the screen's own software does, unless the user chose a source during the stream.
+    /// An edit in place re-sends the stored source: inferred, the screen may redraw an edited item only on it.
+    /// </summary>
+    internal static string? MystiqueSourceAfterUpload(DeepCoolMystiqueSettings m, bool isGif, bool inPlace, string startSource, bool startChosen)
+    {
+        if (!inPlace && m.MediaSource == startSource && m.SourceEdited == startChosen)
+        {
+            m.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
+            m.SourceEdited = true;
+        }
+        return m.SourceEdited ? m.MediaSource : null;
+    }
+
+    /// <summary>Puts a failed upload's id in <see cref="DeepCoolMystiqueSettings.Freed"/>, so the next upload of its kind overwrites whatever part of it the screen kept.</summary>
+    internal static void FreeFailedMystiqueId(IConfigStore store, string kind, string id) =>
+        store.Update(s =>
+        {
+            var m = s.Devices.DeepCoolMystique;
+            m.Media ??= new();
+            m.Freed ??= new();
+            if (!m.Media.Exists(i => i.Id == id) && !m.Freed.Exists(i => i.Id == id))
+            {
+                m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = kind, Id = id });
+            }
+        });
+
     /// <summary>Whether uploads stream half a turn round: while the screen holds gyroscope byte 1, which is both its out-of-box value and what the session sends for Gyroscope off.</summary>
     internal static bool MystiqueRotatesMedia(DeepCoolMystiqueSettings m) => !m.Gyroscope;
 
@@ -90,14 +118,17 @@ public static partial class DevicesRoutes
                         ? "The screen holds its maximum number of GIFs; replace or remove one first."
                         : "The screen holds its maximum number of pictures; replace or remove one first.");
                 }
-                // An edit replaces the item in place: the recorded edits sent no source command after the stream.
                 bool inPlace = false;
                 bool rotate = false;
+                string startSource = "";
+                bool startChosen = false;
                 store.Read(s =>
                 {
                     var m = s.Devices.DeepCoolMystique;
                     inPlace = m.Media?.Exists(i => i.Id == id) == true;
                     rotate = MystiqueRotatesMedia(m);
+                    startSource = m.MediaSource;
+                    startChosen = m.SourceEdited;
                 });
                 var encoded = isGif
                     ? await MystiqueMediaEncoder.EncodeGifAsync(source, ext, crop, id, rotate, budget.Token)
@@ -108,8 +139,15 @@ public static partial class DevicesRoutes
                 }
                 var package = encoded.Package!;
                 // Once streaming starts this waits for the real result, so an item the screen took is always recorded.
-                if (!await worker.UploadAsync(package, selectSource: !inPlace, budget.Token))
+                string? SourceAfterStream()
                 {
+                    string? send = null;
+                    store.Update(s => send = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif, inPlace, startSource, startChosen));
+                    return send;
+                }
+                if (!await worker.UploadAsync(package, SourceAfterStream, budget.Token))
+                {
+                    FreeFailedMystiqueId(store, kind, package.Id);
                     return MystiqueMediaFailure("The screen did not take the upload");
                 }
                 SaveMystiqueThumbnail(package.Id, encoded.Thumbnail!);
@@ -130,11 +168,6 @@ public static partial class DevicesRoutes
                     else
                     {
                         m.Media.Add(item);
-                    }
-                    if (!inPlace)
-                    {
-                        m.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
-                        m.SourceEdited = true;
                     }
                 });
                 worker.RequestApply();

@@ -153,7 +153,7 @@ public static partial class MystiqueMediaEncoder
                     }
                     if (MystiqueMedia.StreamLength(jpegs) <= MystiqueMedia.MaxGifStreamBytes)
                     {
-                        int durationMs = still ? MystiqueMedia.GifDurationMs : spanMs;
+                        int durationMs = still ? MystiqueMedia.GifDurationMs : DecodedSpanMs(decoded, count, spanMs);
                         return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id, durationMs), rotate ? EncodeJpeg(upright!, q) : encoded[0]);
                     }
                 }
@@ -184,6 +184,13 @@ public static partial class MystiqueMediaEncoder
 
     [GeneratedRegex(@"frame=\s*(\d+)")]
     private static partial Regex FrameCount();
+
+    /// <summary>
+    /// The part of the span the decoded frames cover: the fps filter can stop short of the frames asked for
+    /// (the bundled Windows ffmpeg 7.1 decoded 29 of 30), and the screen spreads the duration over the frames sent.
+    /// </summary>
+    internal static int DecodedSpanMs(int decoded, int requested, int spanMs) =>
+        Math.Max(1, (int)Math.Round((double)spanMs * Math.Min(decoded, requested) / requested));
 
     /// <summary>The decoded frame a GIF slot shows: with fewer frames than slots, the repeats spread evenly across the loop.</summary>
     internal static int SlotSource(int slot, int frameCount, int slots) => slot * frameCount / slots;

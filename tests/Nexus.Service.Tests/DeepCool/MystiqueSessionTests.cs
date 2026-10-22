@@ -102,7 +102,7 @@ public class MystiqueSessionTests
     }
 
     [Fact]
-    public void An_edit_in_place_streams_without_the_source_command()
+    public void A_null_source_streams_without_the_source_command()
     {
         var pipe = new FakePipe();
         var session = new MystiqueSession(pipe);
@@ -110,10 +110,33 @@ public class MystiqueSessionTests
         Assert.True(session.Open(settings, Now));
         pipe.Writes.Clear();
 
-        Assert.True(session.Upload(MystiqueMedia.BuildGif(Enumerable.Repeat(new byte[100], MystiqueMedia.GifFrames).ToList(), "acd9325521f3493c86bfc0b0aa85658d"), selectSource: false));
+        Assert.True(session.Upload(MystiqueMedia.BuildGif(Enumerable.Repeat(new byte[100], MystiqueMedia.GifFrames).ToList(), "acd9325521f3493c86bfc0b0aa85658d"), source: () => null));
         Assert.Equal(MystiqueMedia.FinishLength, pipe.Writes[^1].Frame.Length);
         Assert.DoesNotContain(pipe.Writes, w => w.Frame.Length == MystiqueProtocol.FrameLength && w.Frame[2] == MystiqueProtocol.CmdMediaSource);
 
+        pipe.Writes.Clear();
+        Assert.True(session.Apply(settings.Copy()));
+        Assert.Empty(pipe.Writes);
+    }
+
+    [Fact]
+    public void The_source_is_chosen_after_the_finish_packet_and_sent_as_chosen()
+    {
+        var pipe = new FakePipe();
+        var session = new MystiqueSession(pipe);
+        var settings = new DeepCoolMystiqueSettings { SourceEdited = true, MediaSource = DeepCoolMystiqueSettings.SourceImages };
+        Assert.True(session.Open(settings, Now));
+        pipe.Writes.Clear();
+        int writesWhenChosen = -1;
+
+        Assert.True(session.Upload(MystiqueMedia.BuildGif(Enumerable.Repeat(new byte[100], MystiqueMedia.GifFrames).ToList(), "acd9325521f3493c86bfc0b0aa85658d"), source: () =>
+        {
+            writesWhenChosen = pipe.Writes.Count;
+            return DeepCoolMystiqueSettings.SourceImages;
+        }));
+
+        Assert.Equal(MystiqueMedia.FinishLength, pipe.Writes[writesWhenChosen - 1].Frame.Length);
+        Assert.Equal(Convert.ToHexString(MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceImages)), Convert.ToHexString(pipe.Writes[^1].Frame));
         pipe.Writes.Clear();
         Assert.True(session.Apply(settings.Copy()));
         Assert.Empty(pipe.Writes);
