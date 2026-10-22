@@ -457,7 +457,7 @@ public class CommanderCoreCoolingProviderTests
     }
 
     [Fact]
-    public async Task A_pump_command_replayed_before_the_first_contact_is_floored_when_stored()
+    public async Task A_pump_command_replayed_before_the_first_contact_is_stored_raw_and_floored_when_written()
     {
         var first = new Rig();
         first.Transport.Status = Aio();
@@ -469,8 +469,25 @@ public class CommanderCoreCoolingProviderTests
         var applied = restarted.Provider.SetFanSpeed(pump, 10);
         await restarted.Poll();
 
-        Assert.Equal(50, applied);
-        Assert.Equal(50, restarted.Provider.GetFanChannels()[0].DutyPercent);
+        Assert.Equal(10, applied);
+        Assert.Equal((0, 50), Assert.Single(restarted.Transport.Writes).Table[0]);
+    }
+
+    [Fact]
+    public async Task A_core_xt_port_zero_command_replayed_before_the_first_contact_stays_low()
+    {
+        var first = new Rig();
+        first.Transport.Status = Aio(CommanderCoreXt);
+        await first.Poll();
+        var fan1 = first.Provider.GetFanChannels()[0].Id;
+        var restarted = new Rig();
+        restarted.Transport.Status = Aio(CommanderCoreXt);
+
+        restarted.Provider.SetFanSpeed(fan1, 10);
+        await restarted.Poll();
+
+        Assert.Equal((0, 10), Assert.Single(restarted.Transport.Writes).Table[0]);
+        Assert.Equal(10, restarted.Provider.GetFanChannels()[0].DutyPercent);
     }
 
     [Theory]

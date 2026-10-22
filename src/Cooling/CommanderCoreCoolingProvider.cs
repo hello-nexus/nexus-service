@@ -505,11 +505,6 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
                 {
                     return duty;
                 }
-                // Port 0 is the pump on every model but one; the table build lifts it again where it is not.
-                if (channelId.EndsWith(":ch0", StringComparison.Ordinal))
-                {
-                    duty = Math.Max(duty, PumpFloor);
-                }
                 _desired[channelId] = duty;
                 if (TryFindDevice(channelId, out var known))
                 {
