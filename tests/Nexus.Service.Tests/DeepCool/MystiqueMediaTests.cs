@@ -288,6 +288,16 @@ public class MystiqueMediaTests
         }
     }
 
+    [Theory]
+    [InlineData(30, 30, 1000, 1000)]
+    [InlineData(29, 30, 1000, 967)]
+    [InlineData(149, 149, 4516, 4516)]
+    [InlineData(31, 30, 1000, 1000)]
+    public void The_duration_covers_only_the_frames_decoded(int decoded, int requested, int spanMs, int expected)
+    {
+        Assert.Equal(expected, MystiqueMediaEncoder.DecodedSpanMs(decoded, requested, spanMs));
+    }
+
     [Fact]
     public void A_half_turn_reverses_the_pixel_order()
     {
