@@ -70,8 +70,7 @@ public class MystiqueSessionTests
     public void Upload_announces_streams_finishes_then_selects_the_kind_like_the_screens_own_software()
     {
         var pipe = new FakePipe();
-        int writesAtSleep = -1;
-        var session = new MystiqueSession(pipe, sleep: ms => { Assert.Equal(410, ms); writesAtSleep = pipe.Writes.Count; });
+        var session = new MystiqueSession(pipe, monotonicMs: () => 0);
         var settings = new DeepCoolMystiqueSettings();
         Assert.True(session.Open(settings, Now));
         pipe.Writes.Clear();
@@ -93,7 +92,7 @@ public class MystiqueSessionTests
         expected.Add(MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceGif));
         Assert.All(pipe.Writes, w => Assert.Equal(MystiqueProtocol.SettingsWritePipe, w.Pipe));
         Assert.Equal(expected.ConvertAll(Convert.ToHexString), pipe.Writes.ConvertAll(w => Convert.ToHexString(w.Frame)));
-        Assert.Equal(expected.Count - 1, writesAtSleep);
+        Assert.Equal(2000, pipe.ReadTimeouts[^1]);
 
         pipe.Writes.Clear();
         settings.SourceEdited = true;
@@ -106,7 +105,7 @@ public class MystiqueSessionTests
     public void Nothing_streams_unless_the_screen_answers_the_announce()
     {
         var pipe = new FakePipe();
-        var session = new MystiqueSession(pipe, sleep: _ => { });
+        var session = new MystiqueSession(pipe);
         Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
         pipe.Writes.Clear();
         pipe.Silent.Add(MystiqueProtocol.CmdUploadStart);
@@ -117,15 +116,14 @@ public class MystiqueSessionTests
     }
 
     [Fact]
-    public void A_refused_packet_is_resent_as_is_and_the_stream_completes()
+    public void A_packet_known_to_have_sent_nothing_is_resent_as_is_and_the_stream_completes()
     {
         var pipe = new FakePipe();
-        var session = new MystiqueSession(pipe, sleep: _ => { });
+        var session = new MystiqueSession(pipe);
         Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
         pipe.Writes.Clear();
         var package = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
-        pipe.FailAttempts.Add(pipe.Attempts + 5);
-        pipe.FailAttempts.Add(pipe.Attempts + 6);
+        pipe.ZeroAttempts.Add(pipe.Attempts + 5);
 
         Assert.True(session.Upload(package));
 
@@ -137,7 +135,7 @@ public class MystiqueSessionTests
     public void An_unanswered_source_command_after_an_upload_is_sent_again_by_the_next_apply()
     {
         var pipe = new FakePipe();
-        var session = new MystiqueSession(pipe, sleep: _ => { });
+        var session = new MystiqueSession(pipe);
         var settings = new DeepCoolMystiqueSettings { SourceEdited = true };
         Assert.True(session.Open(settings, Now));
         pipe.Silent.Add(MystiqueProtocol.CmdMediaSource);
@@ -150,11 +148,45 @@ public class MystiqueSessionTests
         Assert.Equal(new[] { MystiqueProtocol.CmdMediaSource }, pipe.Commands());
     }
 
-    [Fact]
-    public void A_refused_stream_write_never_sends_the_finish_packet()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_failed_packet_ends_the_frame_with_zeros_then_the_finish_packet(bool knownZero)
     {
         var pipe = new FakePipe();
-        var session = new MystiqueSession(pipe, sleep: _ => { });
+        var session = new MystiqueSession(pipe);
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+        pipe.Writes.Clear();
+        var package = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
+        int failing = pipe.Attempts + 3;
+        if (knownZero)
+        {
+            // Both the packet and its one resend take nothing.
+            pipe.ZeroAttempts.Add(failing);
+            pipe.ZeroAttempts.Add(failing + 1);
+        }
+        else
+        {
+            pipe.FailAttempts.Add(failing);
+        }
+
+        Assert.False(session.Upload(package));
+
+        var stream = pipe.Writes.Skip(1).ToList();
+        Assert.Equal(MystiqueMedia.FinishLength, stream[^1].Frame.Length);
+        var body = stream.SkipLast(1).SelectMany(w => w.Frame).ToArray();
+        var frame = package.Frames[0];
+        Assert.Equal(frame.Length, body.Length);
+        Assert.Equal(frame[..(2 * MystiqueMedia.PacketLength)], body[..(2 * MystiqueMedia.PacketLength)]);
+        Assert.All(body[(2 * MystiqueMedia.PacketLength)..], b => Assert.Equal(0, b));
+        Assert.DoesNotContain(pipe.Writes, w => w.Frame.Length == MystiqueProtocol.FrameLength && w.Frame[2] == MystiqueProtocol.CmdMediaSource);
+    }
+
+    [Fact]
+    public void A_pipe_that_stops_taking_writes_gets_no_fill_and_no_finish()
+    {
+        var pipe = new FakePipe();
+        var session = new MystiqueSession(pipe);
         Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
         pipe.Writes.Clear();
         var package = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
@@ -164,6 +196,24 @@ public class MystiqueSessionTests
 
         Assert.Equal(3, pipe.Writes.Count);
         Assert.DoesNotContain(pipe.Writes, w => w.Frame.Length == MystiqueMedia.FinishLength);
+    }
+
+    [Fact]
+    public void Recovery_sends_nothing_once_the_failed_packet_is_past_its_budget()
+    {
+        var pipe = new FakePipe();
+        long now = 0;
+        var session = new MystiqueSession(pipe, monotonicMs: () => now);
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+        pipe.Writes.Clear();
+        var package = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
+        int failing = pipe.Attempts + 3;
+        pipe.ZeroAttempts.Add(failing);
+        pipe.BeforeWrite = attempt => { if (attempt == failing) { now += 5000; } };
+
+        Assert.False(session.Upload(package));
+
+        Assert.Equal(3, pipe.Writes.Count);
     }
 
     [Fact]
@@ -294,6 +344,9 @@ public class MystiqueSessionTests
         public int Attempts { get; private set; }
         public HashSet<int> FailAttempts { get; } = new();
         public HashSet<byte> Silent { get; } = new();
+        public HashSet<int> ZeroAttempts { get; } = new();
+        public List<int> ReadTimeouts { get; } = new();
+        public Action<int>? BeforeWrite { get; set; }
         public bool Answer { get; set; } = true;
         public int? ReadResult { get; set; }
 
@@ -311,8 +364,21 @@ public class MystiqueSessionTests
 
         public bool Write(ReadOnlySpan<byte> data) => Write(MystiqueProtocol.LiveWritePipe, data);
 
+        public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data)
+        {
+            if (ZeroAttempts.Contains(Attempts))
+            {
+                // Not BeforeWrite?.Invoke(Attempts++): a null delegate would skip the increment.
+                int attempt = Attempts++;
+                BeforeWrite?.Invoke(attempt);
+                return 0;
+            }
+            return Write(pipeId, data) ? data.Length : -1;
+        }
+
         public bool Write(byte pipeId, ReadOnlySpan<byte> data)
         {
+            BeforeWrite?.Invoke(Attempts);
             int attempt = Attempts++;
             if (FailWrites || Writes.Count >= FailAfter || FailAttempts.Contains(attempt))
             {
@@ -342,6 +408,7 @@ public class MystiqueSessionTests
 
         public int Read(byte pipeId, Span<byte> buffer, int timeoutMs)
         {
+            ReadTimeouts.Add(timeoutMs);
             if (ReadResult is { } forced)
             {
                 return forced;

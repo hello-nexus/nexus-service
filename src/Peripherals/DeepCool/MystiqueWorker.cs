@@ -71,6 +71,12 @@ public sealed class MystiqueWorker : BackgroundService
     private PendingUpload? _pendingUpload;
 
     /// <summary>
+    /// Held by the media route from the slot choice to the saved entry, so two pictures cannot both take
+    /// the last slot.
+    /// </summary>
+    public SemaphoreSlim UploadGate { get; } = new(1, 1);
+
+    /// <summary>
     /// Hands a picture or GIF to the worker, which streams it between ticks so nothing else touches the
     /// pipes. False when no screen is connected, another upload is waiting, the stream fails, or the
     /// caller gives up before the stream starts; once it has started, the real result is awaited.
