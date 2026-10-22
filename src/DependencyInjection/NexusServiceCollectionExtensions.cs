@@ -235,7 +235,8 @@ public static class NexusServiceCollectionExtensions
         // Windows only: Linux keeps its liquidctl path for this family.
         services.AddSingleton<Nexus.Service.Cooling.CommanderCoreCoolingProvider>(sp => new Nexus.Service.Cooling.CommanderCoreCoolingProvider(
             new Nexus.Service.Cooling.RgbBridgeCommanderCoreSource(() => sp.GetRequiredService<Nexus.Service.Lighting.Rgb.RgbBridge>()),
-            (Nexus.Service.Lighting.Rgb.INexusCoolingTransport)sp.GetRequiredService<Nexus.Service.Lighting.Rgb.IRgbController>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.Rgb.IRgbController>() as Nexus.Service.Lighting.Rgb.INexusCoolingTransport
+                ?? new Nexus.Service.Lighting.Rgb.NoNexusCoolingTransport(),
             sp.GetRequiredService<IConfigStore>()));
         services.AddHostedService<Nexus.Service.Cooling.CommanderCoreCoolingWorker>();
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(

@@ -22,3 +22,13 @@ public interface INexusCoolingTransport
 
     Task<NexusCoolingOutcome> SetCoolingDutiesAsync(int address, IReadOnlyList<(int Channel, int Duty)> duties, CancellationToken ct = default);
 }
+
+/// <summary>Stands in when the RGB controller has no cooling packets, so the provider reports nothing.</summary>
+public sealed class NoNexusCoolingTransport : INexusCoolingTransport
+{
+    public Task<NexusCoolingStatusResult> GetCoolingStatusAsync(int address, CancellationToken ct = default) =>
+        Task.FromResult(new NexusCoolingStatusResult(NexusCoolingOutcome.Unsupported, null));
+
+    public Task<NexusCoolingOutcome> SetCoolingDutiesAsync(int address, IReadOnlyList<(int Channel, int Duty)> duties, CancellationToken ct = default) =>
+        Task.FromResult(NexusCoolingOutcome.Unsupported);
+}

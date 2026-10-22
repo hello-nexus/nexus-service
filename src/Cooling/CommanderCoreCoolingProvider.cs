@@ -27,6 +27,7 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
     private const int PumpFloor = 50;
     private static readonly TimeSpan StatusStaleAfter = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RepushAfter = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan WarnEvery = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan UnsupportedRetry = TimeSpan.FromMinutes(1);
 
     public readonly record struct Endpoint(string StableId, string Name, int Address);
@@ -48,6 +49,9 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
         public bool Unsupported;
         public bool Dirty;
         public DateTime PushedAtUtc = DateTime.MinValue;
+        public DateTime WarnedAtUtc = DateTime.MinValue;
+        // The daemon holds a commanded table that has not been handed back yet.
+        public bool Commanded;
     }
 
     private readonly ISource _source;
@@ -113,6 +117,7 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
                     dev.Unsupported = false;
                     dev.Status = null;
                     dev.Dirty = true;
+                    dev.Commanded = false;
                 }
                 dev.Name = ep.Name;
                 next[ep.StableId] = dev;
@@ -171,11 +176,12 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
         }
     }
 
-    // A mismatch with the daemon's applied duty (restart, lost device) is re-sent at most every RepushAfter.
+    // The daemon rewrites an unchanged table on its own; a mismatch with its applied duty (restart, lost
+    // device) is re-sent here at most every RepushAfter.
     private async Task PushDutiesAsync(Device dev, CancellationToken ct)
     {
         List<(int Channel, int Duty)> table;
-        bool changed;
+        var handBack = false;
         lock (_lock)
         {
             if (dev.Status is not { } status)
@@ -183,35 +189,52 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
                 return;
             }
             table = BuildTable(dev, status, out var anyControlled);
+            var now = _now();
             if (!anyControlled)
             {
-                return;
-            }
-            var mismatch = false;
-            foreach (var (channel, duty) in table)
-            {
-                if (status.Channels[channel].AppliedDuty != duty)
+                // Nothing is commanded any more: an empty table hands the channels back to the daemon.
+                if (!dev.Commanded || !dev.Dirty)
                 {
-                    mismatch = true;
-                    break;
+                    return;
                 }
+                handBack = true;
             }
-            var now = _now();
-            changed = dev.Dirty || (mismatch && now - dev.PushedAtUtc >= RepushAfter);
-            if (!changed)
+            else
             {
-                return;
+                var mismatch = false;
+                foreach (var (channel, duty) in table)
+                {
+                    if (status.Channels[channel].AppliedDuty != duty)
+                    {
+                        mismatch = true;
+                        break;
+                    }
+                }
+                if (!dev.Dirty && !(mismatch && now - dev.PushedAtUtc >= RepushAfter))
+                {
+                    return;
+                }
             }
             dev.Dirty = false;
             dev.PushedAtUtc = now;
         }
 
-        var outcome = await _transport.SetCoolingDutiesAsync(dev.Address, table, ct).ConfigureAwait(false);
-        if (outcome != NexusCoolingOutcome.Ok)
+        var outcome = await _transport.SetCoolingDutiesAsync(dev.Address, handBack ? new List<(int Channel, int Duty)>() : table, ct).ConfigureAwait(false);
+        lock (_lock)
         {
-            lock (_lock) dev.Dirty = true;
-            ServiceLog.Warn($"[cmdcore-cooling] duty write to {dev.Id} not accepted ({outcome})");
+            if (outcome == NexusCoolingOutcome.Ok)
+            {
+                dev.Commanded = !handBack;
+                return;
+            }
+            dev.Dirty = true;
+            if (_now() - dev.WarnedAtUtc < WarnEvery)
+            {
+                return;
+            }
+            dev.WarnedAtUtc = _now();
         }
+        ServiceLog.Warn($"[cmdcore-cooling] duty write to {dev.Id} not accepted ({outcome})");
     }
 
     private List<(int Channel, int Duty)> BuildTable(Device dev, CommanderCoreStatus status, out bool anyControlled)
@@ -266,7 +289,7 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
                     {
                         Id = id,
                         Name = ChannelName(status, i),
-                        DutyPercent = commanded ? wanted : ch.AppliedDuty ?? 0,
+                        DutyPercent = commanded ? wanted : ch.AppliedDuty ?? (pump ? DefaultPumpDuty : DefaultFanDuty),
                         Rpm = ch.Rpm,
                         Mode = curveBound.Contains(id) ? FanModes.Curve : (commanded ? FanModes.Manual : FanModes.Auto),
                         Kind = pump ? FanKinds.Pump : FanKinds.Fan,

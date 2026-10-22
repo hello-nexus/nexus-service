@@ -304,6 +304,51 @@ public class CommanderCoreCoolingProviderTests
     }
 
     [Fact]
+    public async Task Releasing_every_channel_hands_the_device_back_with_an_empty_table_once()
+    {
+        var rig = new Rig();
+        rig.Transport.Status = Aio();
+        await rig.Poll();
+        var fan1 = rig.Provider.GetFanChannels()[1];
+        rig.Provider.DriveFanSpeed(fan1.Id, 90);
+        await rig.Poll();
+
+        rig.Provider.ReleaseFan(fan1.Id);
+        await rig.Poll();
+        await rig.Poll();
+
+        Assert.Equal(2, rig.Transport.Writes.Count);
+        Assert.Empty(rig.Transport.Writes[1].Table);
+        Assert.Equal(FanModes.Auto, rig.Provider.GetFanChannels()[1].Mode);
+    }
+
+    [Fact]
+    public async Task Release_all_hands_back_only_devices_that_were_commanded()
+    {
+        var rig = new Rig();
+        rig.Transport.Status = Aio();
+        await rig.Poll();
+
+        rig.Provider.ReleaseAll();
+        await rig.Poll();
+
+        Assert.Empty(rig.Transport.Writes);
+    }
+
+    [Fact]
+    public async Task A_channel_nobody_commanded_reports_the_default_duty_not_zero()
+    {
+        var rig = new Rig();
+        rig.Transport.Status = Aio();
+        await rig.Poll();
+
+        var channels = rig.Provider.GetFanChannels();
+
+        Assert.Equal(70, channels[0].DutyPercent);
+        Assert.Equal(50, channels[1].DutyPercent);
+    }
+
+    [Fact]
     public async Task A_daemon_without_cooling_support_surfaces_nothing_and_is_asked_again_later()
     {
         var rig = new Rig();
