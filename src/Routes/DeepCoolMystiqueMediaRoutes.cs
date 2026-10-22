@@ -15,7 +15,7 @@ public static partial class DevicesRoutes
     private static readonly TimeSpan MystiqueUploadBudget = TimeSpan.FromMinutes(3);
     private const int MystiqueNameMax = 64;
 
-    // Bounds a kept source, so eighteen slots of uploads up to MediaImporter.MaxFileSize never pile up gigabytes.
+    // Bounds a kept source, so full slots of uploads up to MediaImporter.MaxFileSize never pile up gigabytes.
     internal const int MystiqueKeepMaxBytes = 8 * 1024 * 1024;
 
     private static string MystiqueMediaDir() => MediaLibrary.DeviceStoreDir("deepcool-mystique");
