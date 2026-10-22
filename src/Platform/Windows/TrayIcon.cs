@@ -810,6 +810,27 @@ public static class TrayIcon
         });
     }
 
+    /// <summary>
+    /// Global hotkey entry: minimizes the dashboard window (the overlay-hosted one,
+    /// else a standalone Edge app window) when it is the foreground window, and
+    /// otherwise opens or focuses it exactly as the tray's Open item does.
+    /// </summary>
+    public static void ToggleLocalWindow()
+    {
+        try
+        {
+            var dash = FindWindow(OverlayDashboardClassName, null);
+            var target = dash != IntPtr.Zero ? dash : FindExistingNexusAppWindow();
+            if (target != IntPtr.Zero && IsWindowVisible(target) && !IsIconic(target) && GetForegroundWindow() == target)
+            {
+                ShowWindow(target, SW_MINIMIZE);
+                return;
+            }
+        }
+        catch { /* fall through to open */ }
+        OpenLocalWindow();
+    }
+
     public static void OpenLocalWindow(int servicePort = 0, string path = "/")
     {
         var port = ResolveDashboardPort(servicePort);
@@ -1753,6 +1774,8 @@ public static class TrayIcon
 
     // Single-instance window focus path
     private const int SW_RESTORE = 9;
+    private const int SW_MINIMIZE = 6;
+    [DllImport("user32")] private static extern IntPtr GetForegroundWindow();
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate bool EnumWindowsDelegate(IntPtr hwnd, IntPtr lParam);
     [DllImport("user32")] private static extern bool EnumWindows(EnumWindowsDelegate enumProc, IntPtr lParam);

@@ -120,6 +120,9 @@ public class InputterBody
 
 public class MacroStroke
 {
+    /// <summary>Stroke type that releases the flagged modifier keys and sends no key; used to drop the modifiers of a global hotkey's trigger before an action injects its own chord.</summary>
+    public const string ReleaseModifiersType = "releasemods";
+
     public string Key { get; set; } = "";
     public bool Meta { get; set; }
     public bool Ctrl { get; set; }

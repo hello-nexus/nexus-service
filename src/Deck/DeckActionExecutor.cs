@@ -214,7 +214,10 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
                 DispatchDeckBrightness(action, serial);
                 return DispatchOutcome.Ok;
             case "deckSleep":
-                _deckSurface.Value.PutAsleep(serial);
+                if (!string.IsNullOrEmpty(serial))
+                {
+                    _deckSurface.Value.PutAsleep(serial);
+                }
                 return DispatchOutcome.Ok;
             case "hotkeySwitch":
                 await DispatchHotkeySwitchAsync(action, latchKey).ConfigureAwait(false);
@@ -288,6 +291,11 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
     /// </summary>
     private void DispatchDeckBrightness(DeckAction action, string serial)
     {
+        // A global hotkey has no deck; without a serial there is nothing to dim.
+        if (string.IsNullOrEmpty(serial))
+        {
+            return;
+        }
         var settings = _store.Load().StreamDeck;
         var current = settings.Decks.TryGetValue(serial, out var deck) ? deck.Brightness : PhysicalDeckSettings.DefaultBrightness;
         int target;
@@ -539,6 +547,21 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
                     }
                 }
                 return;
+            case "toggleWindow":
+                _system.ToggleDashboard();
+                return;
+            case "lightingPowerToggle":
+                if (_gates.Lighting)
+                {
+                    ToggleLightingPower();
+                }
+                return;
+            case "lightingBrightnessStep":
+                if (_gates.Lighting)
+                {
+                    StepGlobalBrightness(na.Value ?? 0);
+                }
+                return;
             case "y70Power":
                 _y70.SetToggle(!(na.On ?? true));
                 return;
@@ -553,6 +576,41 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
                 }
                 return;
         }
+    }
+
+    /// <summary>
+    /// Turns every controlled lighting device off when any is on, else on, with
+    /// the same per-device call the lighting power route makes.
+    /// </summary>
+    private void ToggleLightingPower()
+    {
+        var devices = _lightingDevices.GetAll().Devices.Where(d => d.Controlled).ToList();
+        var target = !devices.Any(d => d.LedsOn);
+        foreach (var device in devices)
+        {
+            _lightingDevices.SetPower(device.Id, target);
+        }
+        Nexus.Service.Routes.DevicesRoutes.CaptureDeviceStateIntoActive(_store);
+        PanelTopics.BroadcastLighting(_hub);
+    }
+
+    /// <summary>
+    /// Moves the master brightness by a signed fraction of full scale and clamps
+    /// it, as POST /lighting/global-brightness does (including the capture into
+    /// the active look).
+    /// </summary>
+    private void StepGlobalBrightness(double delta)
+    {
+        if (!double.IsFinite(delta))
+        {
+            return;
+        }
+        _store.Update(s =>
+        {
+            s.Lighting.GlobalBrightness = (float)Math.Clamp(s.Lighting.GlobalBrightness + delta, 0, 1);
+            Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
+        });
+        PanelTopics.BroadcastLighting(_hub);
     }
 
     /// <summary>
