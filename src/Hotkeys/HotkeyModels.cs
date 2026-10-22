@@ -23,7 +23,7 @@ public class HotkeyBinding
     public HotkeyTarget Target { get; set; } = new();
 }
 
-/// <summary>What a hotkey runs. Kind "action" carries a DeckAction; kind "deck" points at a slot of an authored deck preset.</summary>
+/// <summary>What a hotkey runs. Kind "action" carries a DeckAction; kind "deck" names the key or dial event in a deck preset that carries Tag.</summary>
 public sealed class HotkeyTarget
 {
     public const string KindAction = "action";
@@ -32,32 +32,8 @@ public sealed class HotkeyTarget
     public string Kind { get; set; } = "";
     public DeckAction? Action { get; set; }
     public string? PresetId { get; set; }
-    public HotkeySlotAddress? Slot { get; set; }
-}
-
-/// <summary>
-/// Identifies a key, or a dial plus event, in the AUTHORED grid of a deck preset.
-/// Indices are positions in the authored lists, not physical positions after
-/// DeckConfigNavigation.FitToGrid.
-/// </summary>
-public sealed class HotkeySlotAddress
-{
-    public const string TypeKey = "key";
-    public const string TypeDial = "dial";
-
-    /// <summary>"key" or "dial".</summary>
-    public string Type { get; set; } = "";
-    public int Page { get; set; }
-    /// <summary>key: slot index at each depth; every entry but the last is a folder slot.</summary>
-    public List<int>? Path { get; set; }
-    /// <summary>dial: folder slot indices from the page root; empty or absent means the page's own dials.</summary>
-    public List<int>? FolderPath { get; set; }
-    /// <summary>dial: index in the resolved dials list.</summary>
-    public int? Dial { get; set; }
-    /// <summary>dial: index into the dial's stack when it is a stacked dial.</summary>
-    public int? Stack { get; set; }
-    /// <summary>dial: push | turnLeft | turnRight | touch.</summary>
-    public string? Event { get; set; }
+    /// <summary>The DeckSlot.HotkeyTag or DeckDialHotkeyTags value to find in the preset; equals the binding id.</summary>
+    public string? Tag { get; set; }
 }
 
 /// <summary>A binding as the API returns it: the stored fields plus its live registration status.</summary>
@@ -77,9 +53,28 @@ public sealed class HotkeysResponse
     public List<HotkeyBindingView> Bindings { get; set; } = new();
 }
 
+/// <summary>4xx body of the hotkey routes: the usual envelope plus a stable machine-readable code.</summary>
+public sealed class HotkeyErrorResponse
+{
+    public bool Error { get; set; } = true;
+    public string Msg { get; set; } = "";
+    /// <summary>invalidId | invalidCombo | invalidTarget | idMismatch | tooMany | notFound.</summary>
+    public string Code { get; set; } = "";
+}
+
 public sealed class HotkeySuspendBody
 {
     public bool Suspended { get; set; }
+}
+
+public static class HotkeyErrorCodes
+{
+    public const string InvalidId = "invalidId";
+    public const string InvalidCombo = "invalidCombo";
+    public const string InvalidTarget = "invalidTarget";
+    public const string IdMismatch = "idMismatch";
+    public const string TooMany = "tooMany";
+    public const string NotFound = "notFound";
 }
 
 public static class HotkeyStatus

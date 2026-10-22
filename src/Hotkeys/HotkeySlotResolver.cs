@@ -6,14 +6,17 @@ namespace Nexus.Service.Hotkeys;
 
 /// <summary>
 /// Resolves a "deck" hotkey target to the DeckAction currently stored in the
-/// authored preset, or null when the preset, page, folder, slot or dial no
-/// longer resolves to an action (the binding is then orphaned).
+/// preset slot or dial event that carries its tag, or null when the preset or
+/// tag is gone or the tagged item no longer holds an action (the binding is then
+/// orphaned). Search order is deterministic: per page, its slots in order with
+/// each folder searched in place (folder slots, then folder dials), then the
+/// page's dials in order with each stack entry after its dial; the first match wins.
 /// </summary>
 public static class HotkeySlotResolver
 {
     public static DeckAction? Resolve(HotkeyTarget target, StreamDeckSettings deck)
     {
-        if (target.Kind != HotkeyTarget.KindDeck || string.IsNullOrEmpty(target.PresetId) || target.Slot is null)
+        if (target.Kind != HotkeyTarget.KindDeck || string.IsNullOrEmpty(target.PresetId) || string.IsNullOrEmpty(target.Tag))
         {
             return null;
         }
@@ -22,76 +25,94 @@ public static class HotkeySlotResolver
         {
             return null;
         }
-        var slot = target.Slot;
-        return slot.Type switch
+        foreach (var page in preset.Deck.Pages)
         {
-            HotkeySlotAddress.TypeKey => ResolveKey(preset.Deck, slot),
-            HotkeySlotAddress.TypeDial => ResolveDial(preset.Deck, slot),
-            _ => null,
-        };
+            if (FindInSlots(page.Slots, target.Tag, out var found) || FindInDials(page.Dials, target.Tag, out found))
+            {
+                return found;
+            }
+        }
+        return null;
     }
 
-    private static DeckAction? ResolveKey(DeckConfig config, HotkeySlotAddress slot)
+    // True when the tag is present at all; `action` is then the item's current action or null when it holds none.
+    private static bool FindInSlots(List<DeckSlot> slots, string tag, out DeckAction? action)
     {
-        if (slot.Path is not { Count: > 0 } path)
+        foreach (var slot in slots)
         {
-            return null;
+            if (slot.HotkeyTag == tag)
+            {
+                action = slot.Folder is null && slot.Action is { Type.Length: > 0 } a ? a : null;
+                return true;
+            }
+            if (slot.Folder is { } folder
+                && (FindInSlots(folder.Slots, tag, out action) || FindInDials(folder.Dials, tag, out action)))
+            {
+                return true;
+            }
         }
-        var found = DeckConfigNavigation.ResolveSlot(config, slot.Page, path);
-        return found is { Folder: null, Action: { } action } && !string.IsNullOrEmpty(action.Type) ? action : null;
+        action = null;
+        return false;
     }
 
-    private static DeckAction? ResolveDial(DeckConfig config, HotkeySlotAddress slot)
+    private static bool FindInDials(List<DeckDial>? dials, string tag, out DeckAction? action)
     {
-        if (slot.Page < 0 || slot.Page >= config.Pages.Count || slot.Dial is not { } dialIndex)
+        action = null;
+        if (dials is null)
         {
-            return null;
+            return false;
         }
-        var page = config.Pages[slot.Page];
-        var dials = page.Dials;
-        var slots = page.Slots;
-        foreach (var idx in slot.FolderPath ?? new List<int>())
+        foreach (var dial in dials)
         {
-            if (idx < 0 || idx >= slots.Count || slots[idx].Folder is not { } folder)
+            if (FindInDial(dial, tag, out action))
             {
-                return null;
+                return true;
             }
-            slots = folder.Slots;
-            if (folder.Dials is not null)
+            if (dial.Stack is null)
             {
-                dials = folder.Dials;
+                continue;
             }
-        }
-        if (dials is null || dialIndex < 0 || dialIndex >= dials.Count)
-        {
-            return null;
-        }
-        var dial = dials[dialIndex];
-        if (slot.Stack is { } stackIndex)
-        {
-            if (dial.Stack is not { } stack || stackIndex < 0 || stackIndex >= stack.Count)
+            foreach (var entry in dial.Stack)
             {
-                return null;
+                if (FindInDial(entry, tag, out action))
+                {
+                    return true;
+                }
             }
-            dial = stack[stackIndex];
         }
-        else if (dial.Stack is { Count: >= 2 })
+        action = null;
+        return false;
+    }
+
+    private static bool FindInDial(DeckDial dial, string tag, out DeckAction? action)
+    {
+        action = null;
+        if (dial.Action is not { Type: "custom" } custom || custom.HotkeyTags is not { } tags)
         {
-            // A stacked dial ignores its own action; the address must name an entry.
-            return null;
+            return false;
         }
-        if (dial.Action is not { Type: "custom" } custom)
+        DeckAction? candidate;
+        if (tags.Push == tag)
         {
-            return null;
+            candidate = custom.Push;
         }
-        var action = slot.Event switch
+        else if (tags.TurnLeft == tag)
         {
-            "push" => custom.Push,
-            "turnLeft" => custom.TurnLeft,
-            "turnRight" => custom.TurnRight,
-            "touch" => custom.Touch ?? custom.Push,
-            _ => null,
-        };
-        return action is not null && !string.IsNullOrEmpty(action.Type) ? action : null;
+            candidate = custom.TurnLeft;
+        }
+        else if (tags.TurnRight == tag)
+        {
+            candidate = custom.TurnRight;
+        }
+        else if (tags.Touch == tag)
+        {
+            candidate = custom.Touch ?? custom.Push;
+        }
+        else
+        {
+            return false;
+        }
+        action = candidate is { Type.Length: > 0 } ? candidate : null;
+        return true;
     }
 }

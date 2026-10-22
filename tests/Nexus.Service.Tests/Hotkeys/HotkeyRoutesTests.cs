@@ -132,33 +132,56 @@ public sealed class HotkeyRoutesTests : IDisposable
     }
 
     [Fact]
-    public async Task Put_a_deck_target_round_trips_the_slot_address()
+    public async Task Put_a_deck_target_round_trips_the_tag_and_orphans_when_the_preset_is_missing()
     {
         var res = await DesktopClient().PutAsync("/hotkeys/custom:deck", Json(
-            "{\"combo\":\"ctrl+alt+d\",\"enabled\":true,\"target\":{\"kind\":\"deck\",\"presetId\":\"gone\",\"slot\":{\"type\":\"dial\",\"page\":1,\"folderPath\":[2],\"dial\":0,\"stack\":1,\"event\":\"turnLeft\"}}}"));
+            "{\"combo\":\"ctrl+alt+d\",\"enabled\":true,\"target\":{\"kind\":\"deck\",\"presetId\":\"gone\",\"tag\":\"custom:deck\"}}"));
         var binding = Binding(await Read(res), "custom:deck");
 
-        var slot = binding.GetProperty("target").GetProperty("slot");
-        Assert.Equal("dial", slot.GetProperty("type").GetString());
-        Assert.Equal(1, slot.GetProperty("page").GetInt32());
-        Assert.Equal(2, slot.GetProperty("folderPath")[0].GetInt32());
-        Assert.Equal(1, slot.GetProperty("stack").GetInt32());
-        Assert.Equal("turnLeft", slot.GetProperty("event").GetString());
-        // The preset does not exist, so the binding is kept but orphaned.
+        var target = binding.GetProperty("target");
+        Assert.Equal("gone", target.GetProperty("presetId").GetString());
+        Assert.Equal("custom:deck", target.GetProperty("tag").GetString());
+        Assert.False(target.TryGetProperty("slot", out _));
         Assert.Equal("orphaned", binding.GetProperty("status").GetString());
     }
 
     [Theory]
-    [InlineData("{\"combo\":\"n\",\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\"}}}")]
-    [InlineData("{\"combo\":\"ctrl+alt+nope\",\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\"}}}")]
-    [InlineData("{\"combo\":\"ctrl+alt+a\",\"enabled\":true,\"target\":{\"kind\":\"action\"}}")]
-    [InlineData("{\"combo\":\"ctrl+alt+a\",\"enabled\":true,\"target\":{\"kind\":\"deck\",\"presetId\":\"p\"}}")]
-    [InlineData("{\"id\":\"other\",\"combo\":\"ctrl+alt+a\",\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\"}}}")]
-    public async Task Put_rejects_invalid_bindings_with_400(string body)
+    [InlineData("{\"combo\":\"n\",\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\"}}}", "invalidCombo")]
+    [InlineData("{\"combo\":\"ctrl+alt+nope\",\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\"}}}", "invalidCombo")]
+    [InlineData("{\"combo\":\"ctrl+alt+a\",\"enabled\":true,\"target\":{\"kind\":\"action\"}}", "invalidTarget")]
+    [InlineData("{\"combo\":\"ctrl+alt+a\",\"enabled\":true,\"target\":{\"kind\":\"deck\",\"presetId\":\"p\"}}", "invalidTarget")]
+    [InlineData("{\"combo\":\"ctrl+alt+a\",\"enabled\":true,\"target\":null}", "invalidTarget")]
+    [InlineData("{\"id\":\"other\",\"combo\":\"ctrl+alt+a\",\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\"}}}", "idMismatch")]
+    public async Task Put_rejects_invalid_bindings_with_400_and_a_stable_code(string body, string code)
     {
         var res = await DesktopClient().PutAsync("/hotkeys/custom:bad", Json(body));
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        var json = JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement;
+        Assert.True(json.GetProperty("error").GetBoolean());
+        Assert.Equal(code, json.GetProperty("code").GetString());
+        Assert.False(string.IsNullOrEmpty(json.GetProperty("msg").GetString()));
         Assert.DoesNotContain(_factory.Services.GetRequiredService<IConfigStore>().Load().Hotkeys.Bindings, b => b.Id == "custom:bad");
+    }
+
+    [Fact]
+    public async Task Put_with_a_bad_id_is_invalidId_and_delete_of_an_unknown_one_is_notFound()
+    {
+        var client = DesktopClient();
+        var bad = await client.PutAsync("/hotkeys/has%20space", Json(
+            "{\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\"}}}"));
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        Assert.Equal("invalidId", JsonDocument.Parse(await bad.Content.ReadAsStringAsync()).RootElement.GetProperty("code").GetString());
+
+        var missing = await client.DeleteAsync("/hotkeys/never-existed");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        Assert.Equal("notFound", JsonDocument.Parse(await missing.Content.ReadAsStringAsync()).RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Put_with_a_null_target_is_a_400_not_a_500()
+    {
+        var res = await DesktopClient().PutAsync("/hotkeys/custom:nt", Json("{\"combo\":\"ctrl+alt+a\",\"enabled\":true,\"target\":null}"));
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
     }
 
     [Fact]

@@ -27,7 +27,7 @@ internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
     private static MacHotkeyRegistrar? s_instance;
 
     // Touched on the main thread only.
-    private readonly Dictionary<uint, (string Id, IntPtr Ref)> _registered = new();
+    private readonly Dictionary<uint, (string Id, string Combo, IntPtr Ref)> _registered = new();
     private uint _nextId = 1;
     private bool _handlerInstalled;
     private IntPtr _mainQueue;
@@ -39,23 +39,34 @@ internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
 
     public string Platform => "macos";
     public bool Supported => true;
+    public bool ReleaseOnStop => false;
 
-    public event Action<string>? Fired;
+    public event Action<string, string>? Fired;
 
 #pragma warning disable CS0067 // macOS registrations live in-process, so nothing ever needs a re-push
     public event Action? NeedsReapply;
 #pragma warning restore CS0067
 
-    // Registration waits for the AppKit run loop to drain the main queue. A process that never runs it (a bare test host) must not hang a caller.
+    // Registration waits for the AppKit run loop to drain the main queue. A process that never runs it (a bare test host, or a quit in progress) must not hang a caller.
     private static readonly TimeSpan MainQueueTimeout = TimeSpan.FromSeconds(10);
+
+    private const int WorkPending = 0;
+    private const int WorkRunning = 1;
+    private const int WorkAbandoned = 2;
 
     public async Task<IReadOnlyDictionary<string, bool>> ApplyAsync(IReadOnlyList<HotkeyRegistration> set, CancellationToken ct)
     {
         var tcs = new TaskCompletionSource<IReadOnlyDictionary<string, bool>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var state = WorkPending;
         try
         {
             RunOnMain(() =>
             {
+                // A caller that timed out has already reported these ids as failed; registering now would leave them live.
+                if (Interlocked.CompareExchange(ref state, WorkRunning, WorkPending) != WorkPending)
+                {
+                    return;
+                }
                 try
                 {
                     tcs.TrySetResult(ApplyOnMain(set));
@@ -65,11 +76,24 @@ internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
                     tcs.TrySetException(ex);
                 }
             });
-            return await tcs.Task.WaitAsync(MainQueueTimeout, ct).ConfigureAwait(false);
+            try
+            {
+                return await tcs.Task.WaitAsync(MainQueueTimeout, ct).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                if (Interlocked.CompareExchange(ref state, WorkAbandoned, WorkPending) == WorkPending)
+                {
+                    ServiceLog.Warn("[hotkeys] mac main queue did not run the registration in time");
+                    return set.ToDictionary(r => r.Id, _ => false);
+                }
+                // The work started just as the wait ended and finishes in moments on the main thread.
+                return await tcs.Task.ConfigureAwait(false);
+            }
         }
-        catch (TimeoutException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            ServiceLog.Warn("[hotkeys] mac main queue did not run the registration in time");
+            ServiceLog.Warn($"[hotkeys] mac apply failed: {ex.Message}");
             return set.ToDictionary(r => r.Id, _ => false);
         }
     }
@@ -117,7 +141,7 @@ internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
             ServiceLog.Info($"[hotkeys] mac register failed id={reg.Id} combo={reg.Combo} status={status}");
             return false;
         }
-        _registered[id] = (reg.Id, hotKeyRef);
+        _registered[id] = (reg.Id, reg.Combo.ToString(), hotKeyRef);
         return true;
     }
 
@@ -144,7 +168,7 @@ internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
         try
         {
             EventHotKeyId hotKeyId;
-            var status = GetEventParameter(theEvent, ParamDirectObject, TypeEventHotKeyId, IntPtr.Zero, (uint)sizeof(EventHotKeyId), IntPtr.Zero, &hotKeyId);
+            var status = GetEventParameter(theEvent, ParamDirectObject, TypeEventHotKeyId, IntPtr.Zero, (nuint)sizeof(EventHotKeyId), IntPtr.Zero, &hotKeyId);
             if (status == 0 && hotKeyId.Signature == Signature)
             {
                 s_instance?.OnPressedOnMain(hotKeyId.Id);
@@ -162,8 +186,8 @@ internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
     {
         if (_registered.TryGetValue(id, out var entry))
         {
-            var bindingId = entry.Id;
-            _ = Task.Run(() => Fired?.Invoke(bindingId));
+            var (bindingId, combo, _) = entry;
+            _ = Task.Run(() => Fired?.Invoke(bindingId, combo));
         }
     }
 
@@ -226,7 +250,7 @@ internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
     private static extern int UnregisterEventHotKey(IntPtr hotKeyRef);
 
     [DllImport(Carbon)]
-    private static extern unsafe int GetEventParameter(IntPtr theEvent, uint name, uint desiredType, IntPtr actualType, uint bufferSize, IntPtr actualSize, EventHotKeyId* data);
+    private static extern unsafe int GetEventParameter(IntPtr theEvent, uint name, uint desiredType, IntPtr actualType, nuint bufferSize, IntPtr actualSize, EventHotKeyId* data);
 
     [DllImport(LibSystem)]
     private static extern void dispatch_async_f(IntPtr queue, IntPtr context, IntPtr work);

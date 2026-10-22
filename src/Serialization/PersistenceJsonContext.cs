@@ -184,6 +184,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(DeckDial))]
 [JsonSerializable(typeof(List<DeckDial>))]
 [JsonSerializable(typeof(DeckDialAction))]
+[JsonSerializable(typeof(DeckDialHotkeyTags))]
 [JsonSerializable(typeof(List<DeckSequenceStep>))]
 // Metadata-only for the same reason as AppJsonContext: settings writes are
 // rare, so the generated fast-path writer is pure AOT size.

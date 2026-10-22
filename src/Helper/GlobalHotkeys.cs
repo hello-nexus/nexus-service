@@ -36,12 +36,12 @@ public sealed class GlobalHotkeys : IDisposable
     private volatile bool _ready;
 
     // Owned by the hotkey thread.
-    private readonly Dictionary<int, string> _byAtom = new();
+    private readonly Dictionary<int, HotkeyRegistration> _byAtom = new();
     private IntPtr _hwnd;
     private int _nextAtom = 1;
 
-    /// <summary>A registered combo was pressed; the argument is the binding id. Raised on the hotkey thread.</summary>
-    public event Action<string>? Fired;
+    /// <summary>A registered combo was pressed: the binding id and its canonical combo. Raised on the hotkey thread.</summary>
+    public event Action<string, string>? Fired;
 
     /// <summary>Makes exactly <paramref name="set"/> the registered set and reports per id whether Windows accepted it.</summary>
     public Task<IReadOnlyDictionary<string, bool>> ApplyAsync(IReadOnlyList<HotkeyRegistration> set)
@@ -129,9 +129,9 @@ public sealed class GlobalHotkeys : IDisposable
                 }
                 if (msg.message == WM_HOTKEY)
                 {
-                    if (_byAtom.TryGetValue((int)msg.wParam, out var id))
+                    if (_byAtom.TryGetValue((int)msg.wParam, out var reg))
                     {
-                        try { Fired?.Invoke(id); }
+                        try { Fired?.Invoke(reg.Id, reg.Combo.ToString()); }
                         catch { /* a bad subscriber must not stop the pump */ }
                     }
                     continue;
@@ -168,6 +168,8 @@ public sealed class GlobalHotkeys : IDisposable
     private Dictionary<string, bool> Register(IReadOnlyList<HotkeyRegistration> set)
     {
         UnregisterAll();
+        // Ids stay within the app-defined range RegisterHotKey allows (0x0000 to 0xBFFF); a full re-apply restarts them.
+        _nextAtom = 1;
         var results = new Dictionary<string, bool>(set.Count, StringComparer.Ordinal);
         foreach (var reg in set)
         {
@@ -178,9 +180,14 @@ public sealed class GlobalHotkeys : IDisposable
                 continue;
             }
             var atom = _nextAtom++;
+            if (atom > 0xBFFF)
+            {
+                results[reg.Id] = false;
+                continue;
+            }
             if (RegisterHotKey(_hwnd, atom, (uint)reg.Combo.WindowsModifiers, (uint)vk.Value))
             {
-                _byAtom[atom] = reg.Id;
+                _byAtom[atom] = reg;
                 results[reg.Id] = true;
             }
             else

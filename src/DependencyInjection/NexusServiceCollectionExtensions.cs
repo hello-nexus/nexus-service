@@ -957,7 +957,11 @@ public static class NexusServiceCollectionExtensions
         // Global hotkeys: OS-level registration only (Carbon on macOS, the user
         // helper's RegisterHotKey on Windows); Linux reports unsupported.
 #if MACOS
-        services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Platform.Mac.MacHotkeyRegistrar>();
+        // No AppKit run loop drains the main queue in a test host, so the Carbon registrar would only time out there.
+        if (Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1")
+            services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Hotkeys.UnsupportedHotkeyRegistrar>();
+        else
+            services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Platform.Mac.MacHotkeyRegistrar>();
 #elif WINDOWS
         services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar>(sp =>
             new Nexus.Service.Platform.Windows.HelperHotkeyRegistrar(sp.GetRequiredService<Nexus.Service.Helper.HelperRegistry>()));

@@ -578,7 +578,7 @@ public sealed class SystemActions
 #if MACOS
         if (OperatingSystem.IsMacOS())
         {
-            Nexus.Service.Platform.Mac.MacAppWindow.ToggleOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0));
+            Nexus.Service.Platform.Mac.MacAppWindow.ToggleOrFocus();
             return;
         }
 #endif

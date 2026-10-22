@@ -1,5 +1,4 @@
 using Nexus.Service.Hotkeys;
-using Nexus.Service.Models;
 using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Routes;
@@ -21,16 +20,16 @@ public static class HotkeyRoutes
         {
             if (!string.IsNullOrEmpty(body.Id) && body.Id != id)
             {
-                return Fail("id in body does not match path", 400);
+                return Fail(HotkeyErrorCodes.IdMismatch, "id in body does not match path", 400);
             }
             body.Id = id;
             if (HotkeyService.Validate(body) is { } error)
             {
-                return Fail(error, 400);
+                return Fail(error.Code, error.Msg, 400);
             }
             if (!await hotkeys.UpsertAsync(body).ConfigureAwait(false))
             {
-                return Fail("too many hotkeys", 409);
+                return Fail(HotkeyErrorCodes.TooMany, "too many hotkeys", 409);
             }
             return Results.Json(hotkeys.BuildResponse(), AppJsonContext.Default.HotkeysResponse);
         });
@@ -39,7 +38,7 @@ public static class HotkeyRoutes
         {
             if (!await hotkeys.DeleteAsync(id).ConfigureAwait(false))
             {
-                return Fail("hotkey not found", 404);
+                return Fail(HotkeyErrorCodes.NotFound, "hotkey not found", 404);
             }
             return Results.Json(hotkeys.BuildResponse(), AppJsonContext.Default.HotkeysResponse);
         });
@@ -57,6 +56,6 @@ public static class HotkeyRoutes
         });
     }
 
-    private static IResult Fail(string message, int status)
-        => Results.Json(ApiResponse.Fail(message), AppJsonContext.Default.ApiResponse, statusCode: status);
+    private static IResult Fail(string code, string message, int status)
+        => Results.Json(new HotkeyErrorResponse { Msg = message, Code = code }, AppJsonContext.Default.HotkeyErrorResponse, statusCode: status);
 }

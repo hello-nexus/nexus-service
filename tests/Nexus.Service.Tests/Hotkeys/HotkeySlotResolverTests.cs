@@ -9,109 +9,104 @@ public sealed class HotkeySlotResolverTests
 {
     private static DeckAction Keys(string combo) => new() { Type = "hotkey", Keys = combo };
 
+    private static DeckDial Custom(DeckDialHotkeyTags? tags, DeckAction? push = null, DeckAction? turnLeft = null, DeckAction? touch = null) => new()
+    {
+        Action = new DeckDialAction { Type = "custom", Push = push, TurnLeft = turnLeft, Touch = touch, HotkeyTags = tags },
+    };
+
     private static StreamDeckSettings Settings()
     {
-        var folderSlots = new List<DeckSlot>
+        var folder = new DeckFolder
         {
-            new() { Action = Keys("ctrl+1") },
-            new() { Action = Keys("ctrl+2") },
+            Slots =
+            {
+                new DeckSlot { Action = Keys("ctrl+1"), HotkeyTag = "in-folder" },
+                new DeckSlot { Folder = new DeckFolder { Slots = { new DeckSlot { Action = Keys("ctrl+deep"), HotkeyTag = "deep" } } } },
+            },
+            Dials = new List<DeckDial> { Custom(new DeckDialHotkeyTags { Push = "folder-dial" }, push: Keys("ctrl+fd")) },
         };
         var page0 = new DeckPage
         {
             Slots =
             {
-                new DeckSlot { Action = Keys("ctrl+a") },
-                new DeckSlot(),
-                new DeckSlot { Folder = new DeckFolder { Slots = folderSlots } },
+                new DeckSlot { Action = Keys("ctrl+a"), HotkeyTag = "key-a" },
+                new DeckSlot { HotkeyTag = "empty-slot" },
+                new DeckSlot { Folder = folder, HotkeyTag = "folder-itself" },
             },
             Dials = new List<DeckDial>
             {
-                new()
-                {
-                    Action = new DeckDialAction
-                    {
-                        Type = "custom",
-                        Push = Keys("ctrl+p"),
-                        TurnLeft = Keys("ctrl+l"),
-                        TurnRight = Keys("ctrl+r"),
-                    },
-                },
-                new() { Action = new DeckDialAction { Type = "volume" } },
-                new()
+                Custom(new DeckDialHotkeyTags { Push = "d-push", TurnLeft = "d-left", Touch = "d-touch" }, push: Keys("ctrl+p"), turnLeft: Keys("ctrl+l")),
+                new DeckDial
                 {
                     Stack = new List<DeckDial>
                     {
-                        new() { Action = new DeckDialAction { Type = "custom", Push = Keys("ctrl+s0") } },
-                        new() { Action = new DeckDialAction { Type = "custom", Push = Keys("ctrl+s1") } },
+                        Custom(new DeckDialHotkeyTags { Push = "stack-0" }, push: Keys("ctrl+s0")),
+                        Custom(new DeckDialHotkeyTags { TurnRight = "stack-1" }, push: Keys("ctrl+s1")),
                     },
                 },
             },
         };
-        // Page 0's folder at index 2 carries its own dials.
-        page0.Slots[2].Folder!.Dials = new List<DeckDial>
-        {
-            new() { Action = new DeckDialAction { Type = "custom", Push = Keys("ctrl+f"), Touch = Keys("ctrl+t") } },
-        };
-        var page1 = new DeckPage { Slots = { new DeckSlot { Action = Keys("ctrl+b") } } };
+        var page1 = new DeckPage { Slots = { new DeckSlot { Action = Keys("ctrl+b"), HotkeyTag = "key-b" } } };
         var settings = new StreamDeckSettings();
-        settings.Presets.Add(new DeckPreset
-        {
-            Id = "p1",
-            Name = "One",
-            Cols = 3,
-            Rows = 2,
-            Deck = new DeckConfig { Pages = { page0, page1 } },
-        });
+        settings.Presets.Add(new DeckPreset { Id = "p1", Name = "One", Cols = 3, Rows = 2, Deck = new DeckConfig { Pages = { page0, page1 } } });
         return settings;
     }
 
-    private static HotkeyTarget Key(int page, params int[] path) => new()
-    {
-        Kind = HotkeyTarget.KindDeck,
-        PresetId = "p1",
-        Slot = new HotkeySlotAddress { Type = HotkeySlotAddress.TypeKey, Page = page, Path = path.ToList() },
-    };
-
-    private static HotkeyTarget Dial(int page, int dial, string ev, int[]? folder = null, int? stack = null) => new()
-    {
-        Kind = HotkeyTarget.KindDeck,
-        PresetId = "p1",
-        Slot = new HotkeySlotAddress
-        {
-            Type = HotkeySlotAddress.TypeDial, Page = page, Dial = dial, Event = ev, Stack = stack, FolderPath = folder?.ToList(),
-        },
-    };
+    private static HotkeyTarget Tag(string tag, string preset = "p1") => new() { Kind = HotkeyTarget.KindDeck, PresetId = preset, Tag = tag };
 
     [Theory]
-    [InlineData(0, new[] { 0 }, "ctrl+a")]
-    [InlineData(0, new[] { 2, 0 }, "ctrl+1")]
-    [InlineData(0, new[] { 2, 1 }, "ctrl+2")]
-    [InlineData(1, new[] { 0 }, "ctrl+b")]
-    public void Key_slots_resolve_through_folders_and_pages(int page, int[] path, string keys)
+    [InlineData("key-a", "ctrl+a")]
+    [InlineData("in-folder", "ctrl+1")]
+    [InlineData("deep", "ctrl+deep")]
+    [InlineData("key-b", "ctrl+b")]
+    public void Key_tags_resolve_through_folders_and_pages(string tag, string keys)
     {
-        Assert.Equal(keys, HotkeySlotResolver.Resolve(Key(page, path), Settings())?.Keys);
+        Assert.Equal(keys, HotkeySlotResolver.Resolve(Tag(tag), Settings())?.Keys);
     }
 
     [Theory]
-    [InlineData(0, new[] { 1 })]        // empty slot
-    [InlineData(0, new[] { 2 })]        // a folder, not an action
-    [InlineData(0, new[] { 9 })]        // index past the list
-    [InlineData(0, new[] { 0, 0 })]     // a leaf action used as a folder
-    [InlineData(0, new[] { 2, 5 })]     // index past the folder
-    [InlineData(5, new[] { 0 })]        // page gone
-    public void Key_slots_that_no_longer_resolve_are_orphaned(int page, int[] path)
+    [InlineData("d-push", "ctrl+p")]
+    [InlineData("d-touch", "ctrl+p")] // touch falls back to push
+    [InlineData("stack-0", "ctrl+s0")]
+    [InlineData("folder-dial", "ctrl+fd")]
+    public void Dial_event_tags_resolve_to_the_event_action(string tag, string keys)
     {
-        Assert.Null(HotkeySlotResolver.Resolve(Key(page, path), Settings()));
+        Assert.Equal(keys, HotkeySlotResolver.Resolve(Tag(tag), Settings())?.Keys);
     }
 
     [Fact]
-    public void Missing_preset_or_empty_path_is_orphaned()
+    public void A_tag_on_a_dial_event_without_an_action_is_orphaned()
+    {
+        Assert.Null(HotkeySlotResolver.Resolve(Tag("stack-1"), Settings()));
+    }
+
+    [Theory]
+    [InlineData("empty-slot")]      // tagged slot holds no action
+    [InlineData("folder-itself")]   // tagged slot is a folder
+    [InlineData("nope")]            // tag not in the preset
+    [InlineData("")]
+    public void Tags_that_do_not_land_on_an_action_are_orphaned(string tag)
+    {
+        Assert.Null(HotkeySlotResolver.Resolve(Tag(tag), Settings()));
+    }
+
+    [Fact]
+    public void Missing_preset_is_orphaned()
+    {
+        Assert.Null(HotkeySlotResolver.Resolve(Tag("key-a", "gone"), Settings()));
+    }
+
+    [Fact]
+    public void The_tag_follows_its_slot_when_keys_are_swapped_and_pages_removed()
     {
         var settings = Settings();
-        var gone = Key(0, 0);
-        gone.PresetId = "nope";
-        Assert.Null(HotkeySlotResolver.Resolve(gone, settings));
-        Assert.Null(HotkeySlotResolver.Resolve(Key(0), settings));
+        var page0 = settings.Presets[0].Deck.Pages[0];
+        (page0.Slots[0], page0.Slots[1]) = (page0.Slots[1], page0.Slots[0]);
+        Assert.Equal("ctrl+a", HotkeySlotResolver.Resolve(Tag("key-a"), settings)?.Keys);
+
+        settings.Presets[0].Deck.Pages.RemoveAt(0);
+        Assert.Null(HotkeySlotResolver.Resolve(Tag("key-a"), settings));
+        Assert.Equal("ctrl+b", HotkeySlotResolver.Resolve(Tag("key-b"), settings)?.Keys);
     }
 
     [Fact]
@@ -119,58 +114,45 @@ public sealed class HotkeySlotResolverTests
     {
         var settings = Settings();
         settings.Presets[0].Deck.Pages[0].Slots[0].Action = Keys("ctrl+z");
-        Assert.Equal("ctrl+z", HotkeySlotResolver.Resolve(Key(0, 0), settings)?.Keys);
-    }
-
-    [Theory]
-    [InlineData("push", "ctrl+p")]
-    [InlineData("turnLeft", "ctrl+l")]
-    [InlineData("turnRight", "ctrl+r")]
-    [InlineData("touch", "ctrl+p")] // touch falls back to push
-    public void Dial_events_resolve_to_the_custom_action(string ev, string keys)
-    {
-        Assert.Equal(keys, HotkeySlotResolver.Resolve(Dial(0, 0, ev), Settings())?.Keys);
+        Assert.Equal("ctrl+z", HotkeySlotResolver.Resolve(Tag("key-a"), settings)?.Keys);
     }
 
     [Fact]
-    public void Dial_touch_prefers_its_own_action()
-    {
-        Assert.Equal("ctrl+t", HotkeySlotResolver.Resolve(Dial(0, 0, "touch", folder: new[] { 2 }), Settings())?.Keys);
-    }
-
-    [Fact]
-    public void Folder_dials_replace_the_page_dials()
-    {
-        Assert.Equal("ctrl+f", HotkeySlotResolver.Resolve(Dial(0, 0, "push", folder: new[] { 2 }), Settings())?.Keys);
-        // The folder lists one dial, so index 1 is gone there even though the page has it.
-        Assert.Null(HotkeySlotResolver.Resolve(Dial(0, 1, "push", folder: new[] { 2 }), Settings()));
-    }
-
-    [Fact]
-    public void Stacked_dials_need_an_entry_index()
+    public void A_duplicate_tag_resolves_to_the_first_match_in_page_slot_then_dial_order()
     {
         var settings = Settings();
-        Assert.Equal("ctrl+s1", HotkeySlotResolver.Resolve(Dial(0, 2, "push", stack: 1), settings)?.Keys);
-        Assert.Null(HotkeySlotResolver.Resolve(Dial(0, 2, "push"), settings));
-        Assert.Null(HotkeySlotResolver.Resolve(Dial(0, 2, "push", stack: 4), settings));
-    }
+        var page0 = settings.Presets[0].Deck.Pages[0];
+        // Same tag on a later key, in a folder before the page dials, and on a dial: the earliest slot wins.
+        page0.Slots[2].Folder!.Slots[0].HotkeyTag = "dup";
+        page0.Slots[0].HotkeyTag = "dup";
+        Assert.Equal("ctrl+a", HotkeySlotResolver.Resolve(Tag("dup"), settings)?.Keys);
 
-    [Theory]
-    [InlineData(1, "push")]      // a non-custom dial has no per-event action
-    [InlineData(7, "push")]      // dial gone
-    [InlineData(0, "bogus")]     // unknown event
-    public void Dials_without_an_action_for_the_event_are_orphaned(int dial, string ev)
-    {
-        Assert.Null(HotkeySlotResolver.Resolve(Dial(0, dial, ev), Settings()));
+        page0.Slots[0].HotkeyTag = "key-a";
+        Assert.Equal("ctrl+1", HotkeySlotResolver.Resolve(Tag("dup"), settings)?.Keys);
+
+        page0.Slots[2].Folder!.Slots[0].HotkeyTag = "in-folder";
+        page0.Dials![0].Action!.HotkeyTags!.Touch = "dup";
+        page0.Dials[1].Stack![0].Action!.HotkeyTags!.Push = "dup";
+        Assert.Equal("ctrl+p", HotkeySlotResolver.Resolve(Tag("dup"), settings)?.Keys);
     }
 
     [Fact]
-    public void Action_targets_and_unknown_slot_types_do_not_resolve_as_deck_slots()
+    public void Action_targets_do_not_resolve_as_deck_slots()
     {
-        var settings = Settings();
-        Assert.Null(HotkeySlotResolver.Resolve(new HotkeyTarget { Kind = HotkeyTarget.KindAction, Action = Keys("ctrl+a") }, settings));
-        var target = Key(0, 0);
-        target.Slot!.Type = "weird";
-        Assert.Null(HotkeySlotResolver.Resolve(target, settings));
+        Assert.Null(HotkeySlotResolver.Resolve(new HotkeyTarget { Kind = HotkeyTarget.KindAction, Action = Keys("ctrl+a") }, Settings()));
+    }
+
+    [Fact]
+    public void Tags_survive_a_json_round_trip_of_the_deck_config()
+    {
+        var deck = Settings().Presets[0].Deck;
+        var json = System.Text.Json.JsonSerializer.Serialize(deck, Nexus.Service.Serialization.PersistenceJsonContext.Default.DeckConfig);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.DeckConfig)!;
+        var settings = new StreamDeckSettings();
+        settings.Presets.Add(new DeckPreset { Id = "p1", Name = "One", Deck = back });
+        Assert.Equal("ctrl+deep", HotkeySlotResolver.Resolve(Tag("deep"), settings)?.Keys);
+        Assert.Equal("ctrl+s0", HotkeySlotResolver.Resolve(Tag("stack-0"), settings)?.Keys);
+        Assert.Contains("\"hotkeyTag\"", json);
+        Assert.Contains("\"hotkeyTags\"", json);
     }
 }

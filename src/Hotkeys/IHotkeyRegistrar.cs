@@ -28,8 +28,11 @@ public interface IHotkeyRegistrar
     /// </summary>
     Task<IReadOnlyDictionary<string, bool>> ApplyAsync(IReadOnlyList<HotkeyRegistration> set, CancellationToken ct);
 
-    /// <summary>A registered combo was pressed; the argument is the binding id. Raised on any thread.</summary>
-    event Action<string>? Fired;
+    /// <summary>True when the registrations outlive the process unless released explicitly (a helper process holds them); false when exiting releases them.</summary>
+    bool ReleaseOnStop { get; }
+
+    /// <summary>A registered combo was pressed: the binding id and the canonical combo that was registered for it. Raised on any thread.</summary>
+    event Action<string, string>? Fired;
 
     /// <summary>The registrar lost its registrations and wants the set pushed again (the Windows helper reconnected).</summary>
     event Action? NeedsReapply;
@@ -40,9 +43,10 @@ public sealed class UnsupportedHotkeyRegistrar : IHotkeyRegistrar
 {
     public string Platform => "linux";
     public bool Supported => false;
+    public bool ReleaseOnStop => false;
 
 #pragma warning disable CS0067 // never raised: nothing registers here
-    public event Action<string>? Fired;
+    public event Action<string, string>? Fired;
     public event Action? NeedsReapply;
 #pragma warning restore CS0067
 

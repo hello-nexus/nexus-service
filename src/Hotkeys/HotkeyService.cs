@@ -40,13 +40,19 @@ public sealed class HotkeyService : IHostedService, IDisposable
     private Timer? _resumeTimer;
     private int _reconcileQueued;
     private bool _disposed;
+    private bool _stopped;
+    private int _suspendGeneration;
 
     /// <summary>Test seam: how long a suspend lasts before it resumes on its own.</summary>
     internal TimeSpan SuspendTimeout { get; set; } = DefaultSuspendTimeout;
 
-    public HotkeyService(IConfigStore store, IHotkeyRegistrar registrar, IDeckActionExecutor executor, MultiplexHub hub)
+    /// <summary>Releases the combo's modifier keys before a keystroke action is injected; null skips it.</summary>
+    internal Func<HotkeyCombo, Task>? ReleaseModifiers { get; set; }
+
+    public HotkeyService(IConfigStore store, IHotkeyRegistrar registrar, IDeckActionExecutor executor, MultiplexHub hub, Nexus.Service.Actions.SystemActions system)
         : this(store, registrar, executor, hub, OperatingSystem.IsMacOS())
     {
+        ReleaseModifiers = combo => ReleaseModifiersAsync(system, combo);
     }
 
     internal HotkeyService(IConfigStore store, IHotkeyRegistrar registrar, IDeckActionExecutor executor, MultiplexHub hub, bool macos)
@@ -68,15 +74,32 @@ public sealed class HotkeyService : IHostedService, IDisposable
         return ReconcileAsync(force: true);
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         _store.OnChanged -= OnStoreChanged;
         _registrar.Fired -= OnFired;
         _registrar.NeedsReapply -= OnNeedsReapply;
-        _suspended = false;
-        return _registrar.Supported
-            ? SafeApplyAsync(Array.Empty<HotkeyRegistration>())
-            : Task.CompletedTask;
+        lock (_stateLock)
+        {
+            _suspendGeneration++;
+            _resumeTimer?.Dispose();
+            _resumeTimer = null;
+        }
+        // Holding the gate makes any in-flight reconcile finish first and stops later ones registering.
+        await _reconcileGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            _stopped = true;
+            _suspended = false;
+            if (_registrar.Supported && _registrar.ReleaseOnStop)
+            {
+                await SafeApplyAsync(Array.Empty<HotkeyRegistration>()).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _reconcileGate.Release();
+        }
     }
 
     public void Dispose()
@@ -93,23 +116,25 @@ public sealed class HotkeyService : IHostedService, IDisposable
 
     public HotkeysResponse BuildResponse()
     {
-        var settings = _store.Load();
-        var bindings = settings.Hotkeys.Bindings;
         var results = _results;
-        var eligible = EligibleCombos(bindings, settings.StreamDeck);
-        var views = new List<HotkeyBindingView>(bindings.Count);
-        foreach (var b in bindings)
+        var views = new List<HotkeyBindingView>();
+        _store.Read(settings =>
         {
-            views.Add(new HotkeyBindingView
+            var bindings = settings.Hotkeys.Bindings;
+            var eligible = EligibleCombos(bindings, settings.StreamDeck);
+            foreach (var b in bindings)
             {
-                Id = b.Id,
-                Combo = b.Combo,
-                Enabled = b.Enabled,
-                Label = b.Label,
-                Target = b.Target,
-                Status = StatusOf(b, settings.StreamDeck, eligible, results),
-            });
-        }
+                views.Add(new HotkeyBindingView
+                {
+                    Id = b.Id,
+                    Combo = b.Combo,
+                    Enabled = b.Enabled,
+                    Label = b.Label,
+                    Target = b.Target,
+                    Status = StatusOf(b, settings.StreamDeck, eligible, results),
+                });
+            }
+        });
         return new HotkeysResponse
         {
             Supported = _registrar.Supported,
@@ -121,12 +146,12 @@ public sealed class HotkeyService : IHostedService, IDisposable
 
     // ---- Mutations ---------------------------------------------------------
 
-    /// <summary>Why <paramref name="binding"/> cannot be stored, or null when it is valid. Normalizes Combo to canonical form.</summary>
-    public static string? Validate(HotkeyBinding binding)
+    /// <summary>The error code and message for why <paramref name="binding"/> cannot be stored, or null when it is valid. Normalizes Combo to canonical form.</summary>
+    public static (string Code, string Msg)? Validate(HotkeyBinding binding)
     {
-        if (string.IsNullOrEmpty(binding.Id) || binding.Id.Length > MaxIdLength || !binding.Id.All(IsIdChar))
+        if (!ValidId(binding.Id))
         {
-            return "invalid hotkey id";
+            return (HotkeyErrorCodes.InvalidId, "invalid hotkey id");
         }
         if (string.IsNullOrWhiteSpace(binding.Combo))
         {
@@ -137,34 +162,36 @@ public sealed class HotkeyService : IHostedService, IDisposable
             var canonical = HotkeyCombo.Canonicalize(binding.Combo);
             if (canonical is null)
             {
-                return "invalid combo";
+                return (HotkeyErrorCodes.InvalidCombo, "invalid combo");
             }
             binding.Combo = canonical;
         }
-        var target = binding.Target;
+        if (binding.Target is not { } target)
+        {
+            return (HotkeyErrorCodes.InvalidTarget, "target is required");
+        }
         switch (target.Kind)
         {
             case HotkeyTarget.KindAction:
                 if (target.Action is null || string.IsNullOrEmpty(target.Action.Type))
                 {
-                    return "action target needs an action";
+                    return (HotkeyErrorCodes.InvalidTarget, "action target needs an action");
                 }
                 break;
             case HotkeyTarget.KindDeck:
-                if (string.IsNullOrEmpty(target.PresetId) || target.Slot is null)
+                if (string.IsNullOrEmpty(target.PresetId) || !ValidId(target.Tag))
                 {
-                    return "deck target needs presetId and slot";
-                }
-                if (!ValidSlotShape(target.Slot))
-                {
-                    return "invalid slot address";
+                    return (HotkeyErrorCodes.InvalidTarget, "deck target needs presetId and a valid tag");
                 }
                 break;
             default:
-                return "unknown target kind";
+                return (HotkeyErrorCodes.InvalidTarget, "unknown target kind");
         }
         return null;
     }
+
+    private static bool ValidId(string? id)
+        => !string.IsNullOrEmpty(id) && id.Length <= MaxIdLength && id.All(IsIdChar);
 
     /// <summary>Stores the (already validated) binding, replacing one with the same id. False when the binding cap is hit.</summary>
     public async Task<bool> UpsertAsync(HotkeyBinding binding)
@@ -239,17 +266,42 @@ public sealed class HotkeyService : IHostedService, IDisposable
     {
         lock (_stateLock)
         {
-            if (_disposed)
+            if (_disposed || _stopped)
             {
                 return;
             }
+            var generation = ++_suspendGeneration;
             _suspended = suspended;
             _resumeTimer?.Dispose();
             _resumeTimer = suspended
-                ? new Timer(_ => _ = SetSuspendedAsync(false), null, SuspendTimeout, Timeout.InfiniteTimeSpan)
+                ? new Timer(_ => _ = ResumeAsync(generation), null, SuspendTimeout, Timeout.InfiniteTimeSpan)
                 : null;
         }
         await ReconcileAsync().ConfigureAwait(false);
+    }
+
+    // A timer callback already in flight when a newer suspend or resume lands must not undo it.
+    internal async Task ResumeAsync(int generation)
+    {
+        lock (_stateLock)
+        {
+            if (_disposed || _stopped || generation != _suspendGeneration)
+            {
+                return;
+            }
+            _suspendGeneration++;
+            _suspended = false;
+            _resumeTimer?.Dispose();
+            _resumeTimer = null;
+        }
+        try
+        {
+            await ReconcileAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[hotkeys] resume failed: {ex.Message}");
+        }
     }
 
     // ---- Reconciliation ----------------------------------------------------
@@ -263,10 +315,16 @@ public sealed class HotkeyService : IHostedService, IDisposable
         await _reconcileGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            var settings = _store.Load();
-            var wanted = _suspended || !_registrar.Supported
-                ? new List<HotkeyRegistration>()
-                : WantedRegistrations(settings.Hotkeys.Bindings, settings.StreamDeck);
+            if (_stopped)
+            {
+                return;
+            }
+            var suspended = _suspended;
+            List<HotkeyRegistration> wanted = new();
+            if (!suspended && _registrar.Supported)
+            {
+                _store.Read(settings => wanted = WantedRegistrations(settings.Hotkeys.Bindings, settings.StreamDeck));
+            }
             var key = string.Join('|', wanted.Select(r => r.Id + "=" + r.Combo));
             if (force || key != _appliedKey)
             {
@@ -274,7 +332,7 @@ public sealed class HotkeyService : IHostedService, IDisposable
                 {
                     var applied = await SafeApplyAsync(wanted).ConfigureAwait(false);
                     // While suspended nothing is registered; keep the last real results so statuses stay what they would be.
-                    if (!_suspended)
+                    if (!suspended)
                     {
                         _results = applied;
                     }
@@ -304,13 +362,14 @@ public sealed class HotkeyService : IHostedService, IDisposable
 
     private void OnStoreChanged()
     {
-        // Settings change constantly; only schedule one pass at a time and let it coalesce.
+        // One queued pass at a time; the flag clears before the pass reads settings, so a change during the pass queues the next.
         if (Interlocked.Exchange(ref _reconcileQueued, 1) == 1)
         {
             return;
         }
         _ = Task.Run(async () =>
         {
+            Interlocked.Exchange(ref _reconcileQueued, 0);
             try
             {
                 await ReconcileAsync().ConfigureAwait(false);
@@ -318,10 +377,6 @@ public sealed class HotkeyService : IHostedService, IDisposable
             catch (Exception ex)
             {
                 ServiceLog.Warn($"[hotkeys] reconcile failed: {ex.Message}");
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _reconcileQueued, 0);
             }
         });
     }
@@ -453,34 +508,54 @@ public sealed class HotkeyService : IHostedService, IDisposable
 
     // ---- Firing ------------------------------------------------------------
 
-    private void OnFired(string id)
+    private void OnFired(string id, string combo)
     {
         if (_suspended)
         {
             return;
         }
-        _ = Task.Run(() => FireAsync(id));
+        _ = Task.Run(() => FireAsync(id, combo));
     }
 
-    internal async Task FireAsync(string id)
+    /// <summary>Runs the binding named by <paramref name="id"/>; a press whose combo is not the binding's current one is stale and ignored.</summary>
+    internal async Task FireAsync(string id, string? firedCombo = null)
     {
         try
         {
-            var settings = _store.Load();
-            var binding = settings.Hotkeys.Bindings.FirstOrDefault(b => b.Id == id);
-            if (binding is null || !binding.Enabled)
+            HotkeyBinding? binding = null;
+            DeckAction? action = null;
+            _store.Read(settings =>
+            {
+                binding = settings.Hotkeys.Bindings.FirstOrDefault(b => b.Id == id);
+                if (binding is null || !binding.Enabled)
+                {
+                    binding = null;
+                    return;
+                }
+                action = binding.Target.Kind == HotkeyTarget.KindDeck
+                    ? HotkeySlotResolver.Resolve(binding.Target, settings.StreamDeck)
+                    : binding.Target.Action;
+            });
+            if (binding is null)
             {
                 return;
             }
-            var action = binding.Target.Kind == HotkeyTarget.KindDeck
-                ? HotkeySlotResolver.Resolve(binding.Target, settings.StreamDeck)
-                : binding.Target.Action;
+            if (firedCombo is not null && HotkeyCombo.Canonicalize(firedCombo) != HotkeyCombo.Canonicalize(binding.Combo))
+            {
+                ServiceLog.Info($"[hotkeys] ignored stale press id={id}");
+                return;
+            }
             if (action is null)
             {
                 ServiceLog.Info($"[hotkeys] fired id={id} target no longer resolves");
                 return;
             }
             ServiceLog.Info($"[hotkeys] fired id={id} type={action.Type}");
+            // The trigger's modifiers are still physically down; release them so an injected chord does not merge with them.
+            if (action.Type is "hotkey" or "hotkeySwitch" && ReleaseModifiers is { } release && HotkeyCombo.TryParse(binding.Combo) is { } combo)
+            {
+                await release(combo).ConfigureAwait(false);
+            }
             await _executor.ExecuteAsync(action, serial: "", keyIndex: -1, latchKey: "hotkey:" + id, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -489,18 +564,20 @@ public sealed class HotkeyService : IHostedService, IDisposable
         }
     }
 
+    private static Task ReleaseModifiersAsync(Nexus.Service.Actions.SystemActions system, HotkeyCombo combo)
+        => system.SendKeysAsync(new Nexus.Service.Models.Activity.SendKeysBody
+        {
+            Strokes =
+            {
+                new Nexus.Service.Models.Peripherals.Keeb.MacroStroke
+                {
+                    Type = Nexus.Service.Models.Peripherals.Keeb.MacroStroke.ReleaseModifiersType,
+                    Ctrl = combo.Ctrl, Alt = combo.Alt, Shift = combo.Shift, Meta = combo.Meta,
+                },
+            },
+        });
+
     // ---- Validation helpers ------------------------------------------------
 
     private static bool IsIdChar(char c) => char.IsAsciiLetterOrDigit(c) || c is ':' or '_' or '.' or '-';
-
-    private static bool ValidSlotShape(HotkeySlotAddress slot) => slot.Type switch
-    {
-        HotkeySlotAddress.TypeKey => slot.Page >= 0 && slot.Path is { Count: > 0 } && slot.Path.All(i => i >= 0),
-        HotkeySlotAddress.TypeDial => slot.Page >= 0
-            && slot.Dial is >= 0
-            && (slot.Stack is null || slot.Stack >= 0)
-            && (slot.FolderPath is null || slot.FolderPath.All(i => i >= 0))
-            && slot.Event is "push" or "turnLeft" or "turnRight" or "touch",
-        _ => false,
-    };
 }

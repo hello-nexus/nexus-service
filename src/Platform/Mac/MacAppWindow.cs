@@ -111,17 +111,18 @@ internal static class MacAppWindow
         }
     }
 
+    /// <summary>Port a window created by <see cref="ToggleOrFocus"/> loads from; set once at startup.</summary>
+    public static int ServicePort { get; set; } = Nexus.Service.Platform.ServiceLaunchIntent.DefaultServicePort;
+
     /// <summary>
     /// Hides the dashboard window when it is the frontmost window of the active
-    /// app, otherwise opens it (a minimized window is restored) and brings it to
-    /// the front. Safe to call from any thread - dispatches onto main.
+    /// app, otherwise opens it on the stored route (a minimized window is
+    /// restored) and brings it to the front. Safe to call from any thread -
+    /// dispatches onto main.
     /// </summary>
-    public static void ToggleOrFocus(string url)
+    public static void ToggleOrFocus()
     {
         if (!IsSupported) return;
-        if (string.IsNullOrWhiteSpace(url)) return;
-
-        lock (_sync) { _pendingUrl = url; _pendingNavigate = false; }
 
         try
         {
@@ -249,10 +250,9 @@ internal static class MacAppWindow
         {
             if (_window == IntPtr.Zero)
             {
-                string url;
-                lock (_sync) { url = _pendingUrl; }
+                // Its own URL: a pending OpenOrFocus deep link is not this call's to consume or replace.
                 CreateWindowOnMain();
-                NavigateToOnMain(url);
+                NavigateToOnMain(Nexus.Service.Routes.SessionRoutes.LastRouteUrl(ServicePort));
                 BringToFrontOnMain();
                 return;
             }

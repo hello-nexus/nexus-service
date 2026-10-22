@@ -41,6 +41,8 @@ public sealed class HotkeysSetResult
 public sealed class HotkeyFiredPayload
 {
     public string Id { get; set; } = "";
+    /// <summary>Canonical combo the helper registered for <see cref="Id"/>; the service ignores a press whose combo is no longer the binding's.</summary>
+    public string Combo { get; set; } = "";
 }
 
 /// <summary>Payload for <c>hotkeys.toggleWindow</c>. Service-to-helper: show the Nexus window, or hide it when it is frontmost.</summary>
@@ -59,15 +61,10 @@ public static class HotkeyCommands
 
     private const int SetTimeoutMs = 5000;
 
-    /// <summary>Sends the full combo set and returns per-id success; null when no helper is connected or the round trip failed.</summary>
+    /// <summary>Sends the full combo set to <paramref name="conn"/> and returns per-id success; null when the round trip failed.</summary>
     public static async Task<IReadOnlyDictionary<string, bool>?> SetAsync(
-        HelperRegistry registry, IReadOnlyList<HotkeyRegistration> set, CancellationToken ct = default)
+        HelperConnection conn, IReadOnlyList<HotkeyRegistration> set, CancellationToken ct = default)
     {
-        var conn = registry.GetAny();
-        if (conn is null)
-        {
-            return null;
-        }
         var payload = new HotkeysSetPayload();
         foreach (var reg in set)
         {
@@ -108,8 +105,8 @@ public static class HotkeyCommands
             ct: ct);
     }
 
-    /// <summary>The binding id named in a <c>hotkeys.fired</c> envelope; null when missing or malformed.</summary>
-    public static string? ParseFired(HelperEnvelope env)
+    /// <summary>The binding id and combo named in a <c>hotkeys.fired</c> envelope; null when missing or malformed.</summary>
+    public static (string Id, string Combo)? ParseFired(HelperEnvelope env)
     {
         if (env.Payload is null)
         {
@@ -117,8 +114,8 @@ public static class HotkeyCommands
         }
         try
         {
-            var id = JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.HotkeyFiredPayload)?.Id;
-            return string.IsNullOrEmpty(id) ? null : id;
+            var parsed = JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.HotkeyFiredPayload);
+            return parsed is null || string.IsNullOrEmpty(parsed.Id) ? null : (parsed.Id, parsed.Combo);
         }
         catch (JsonException)
         {

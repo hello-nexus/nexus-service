@@ -190,9 +190,9 @@ internal static class WindowsUserHelper
         using var keyPresses = new Helper.KeyPressWatcher(outbound);
         // Idle until the service pushes combos; registers specific combos only (RegisterHotKey), nothing else is observed.
         using var globalHotkeys = new Helper.GlobalHotkeys();
-        globalHotkeys.Fired += id => _ = outbound.SendAsync(
+        globalHotkeys.Fired += (id, combo) => _ = outbound.SendAsync(
             type: HotkeyCommands.FiredType,
-            payload: new HotkeyFiredPayload { Id = id },
+            payload: new HotkeyFiredPayload { Id = id, Combo = combo },
             payloadType: AppJsonContext.Default.HotkeyFiredPayload);
         var brightness = new Platform.Displays.WindowsDisplayBrightnessProvider();
         Platform.Windows.TrayIcon.SessionLockChanged += Platform.Displays.DdcGate.OnSessionLockChanged;

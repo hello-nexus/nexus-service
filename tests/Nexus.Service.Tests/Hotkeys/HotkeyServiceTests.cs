@@ -10,21 +10,28 @@ public sealed class FakeHotkeyRegistrar : IHotkeyRegistrar
 {
     public string Platform { get; set; } = "macos";
     public bool Supported { get; set; } = true;
+    public bool ReleaseOnStop { get; set; }
     public HashSet<string> RefuseIds { get; } = new();
     public List<List<HotkeyRegistration>> Applied { get; } = new();
-    public event Action<string>? Fired;
+    /// <summary>When set, ApplyAsync waits on it, holding the reconcile that called it.</summary>
+    public TaskCompletionSource? Block { get; set; }
+    public event Action<string, string>? Fired;
     public event Action? NeedsReapply;
 
     public List<HotkeyRegistration> Last => Applied[^1];
 
-    public Task<IReadOnlyDictionary<string, bool>> ApplyAsync(IReadOnlyList<HotkeyRegistration> set, CancellationToken ct)
+    public async Task<IReadOnlyDictionary<string, bool>> ApplyAsync(IReadOnlyList<HotkeyRegistration> set, CancellationToken ct)
     {
         Applied.Add(set.ToList());
         IReadOnlyDictionary<string, bool> result = set.ToDictionary(r => r.Id, r => !RefuseIds.Contains(r.Id));
-        return Task.FromResult(result);
+        if (Block is { } block)
+        {
+            await block.Task;
+        }
+        return result;
     }
 
-    public void Press(string id) => Fired?.Invoke(id);
+    public void Press(string id, string combo) => Fired?.Invoke(id, combo);
     public void RaiseReapply() => NeedsReapply?.Invoke();
 }
 
@@ -71,7 +78,7 @@ public sealed class HotkeyServiceTests : IDisposable
         Target = new HotkeyTarget { Kind = HotkeyTarget.KindAction, Action = new DeckAction { Type = "hotkey", Keys = "ctrl+c" } },
     };
 
-    private static HotkeyBinding DeckBinding(string id, string combo, string presetId, int slot) => new()
+    private static HotkeyBinding DeckBinding(string id, string combo, string presetId) => new()
     {
         Id = id,
         Combo = combo,
@@ -79,7 +86,7 @@ public sealed class HotkeyServiceTests : IDisposable
         {
             Kind = HotkeyTarget.KindDeck,
             PresetId = presetId,
-            Slot = new HotkeySlotAddress { Type = HotkeySlotAddress.TypeKey, Page = 0, Path = new List<int> { slot } },
+            Tag = id,
         },
     };
 
@@ -89,6 +96,10 @@ public sealed class HotkeyServiceTests : IDisposable
         {
             var page = new DeckPage();
             page.Slots.AddRange(slots);
+            if (page.Slots.Count > 0)
+            {
+                page.Slots[0].HotkeyTag = "d1";
+            }
             s.StreamDeck.Presets.Add(new DeckPreset { Id = id, Name = id, Cols = 3, Rows = 2, Deck = new DeckConfig { Pages = { page } } });
         });
     }
@@ -267,7 +278,7 @@ public sealed class HotkeyServiceTests : IDisposable
     {
         AddPreset("p1", new DeckSlot { Action = new DeckAction { Type = "hotkey", Keys = "ctrl+a" } });
         var service = Service();
-        await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1", 0));
+        await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1"));
         Assert.Equal(HotkeyStatus.Active, Statuses(service)["d1"]);
         Assert.Single(_registrar.Last);
 
@@ -284,7 +295,7 @@ public sealed class HotkeyServiceTests : IDisposable
     {
         AddPreset("p1", new DeckSlot { Action = new DeckAction { Type = "hotkey", Keys = "ctrl+a" } });
         var service = Service();
-        await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1", 0));
+        await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1"));
 
         _store.Update(s => s.StreamDeck.Presets[0].Deck.Pages[0].Slots[0] = new DeckSlot());
         await service.ReconcileAsync();
@@ -300,7 +311,7 @@ public sealed class HotkeyServiceTests : IDisposable
         await service.StartAsync(CancellationToken.None);
         try
         {
-            await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1", 0));
+            await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1"));
             Assert.Contains(_registrar.Last, r => r.Id == "d1");
 
             _store.Update(s => s.StreamDeck.Presets.Clear());
@@ -370,7 +381,7 @@ public sealed class HotkeyServiceTests : IDisposable
         var service = Service();
         await service.UpsertAsync(ActionBinding("a", "Ctrl+Alt+a"));
         await service.SetSuspendedAsync(true);
-        _registrar.Press("a");
+        _registrar.Press("a", "Ctrl+Alt+a");
         await Task.Delay(50);
         Assert.Empty(_executor.Calls);
         service.Dispose();
@@ -397,7 +408,7 @@ public sealed class HotkeyServiceTests : IDisposable
     {
         AddPreset("p1", new DeckSlot { Action = new DeckAction { Type = "hotkey", Keys = "ctrl+a" } });
         var service = Service();
-        await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1", 0));
+        await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1"));
 
         // Edit the slot after binding: the hotkey runs what is stored now, with no deck or window involved.
         _store.Update(s => s.StreamDeck.Presets[0].Deck.Pages[0].Slots[0].Action = new DeckAction { Type = "hotkey", Keys = "ctrl+z" });
@@ -411,7 +422,7 @@ public sealed class HotkeyServiceTests : IDisposable
     {
         AddPreset("p1", new DeckSlot { Action = new DeckAction { Type = "hotkey", Keys = "ctrl+a" } });
         var service = Service();
-        await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1", 0));
+        await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1"));
         await service.UpsertAsync(ActionBinding("off", "Ctrl+Alt+o", enabled: false));
         _store.Update(s => s.StreamDeck.Presets.Clear());
 
@@ -420,6 +431,128 @@ public sealed class HotkeyServiceTests : IDisposable
         await service.FireAsync("missing");
 
         Assert.Empty(_executor.Calls);
+    }
+
+    // ---- Coalescing, stop, timers, stale presses -----------------------------
+
+    [Fact]
+    public async Task A_store_change_during_a_reconcile_is_not_dropped()
+    {
+        AddPreset("p1", new DeckSlot { Action = new DeckAction { Type = "hotkey", Keys = "ctrl+a" } });
+        var service = Service();
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await service.UpsertAsync(DeckBinding("d1", "Ctrl+Alt+d", "p1"));
+            Assert.Contains(_registrar.Last, r => r.Id == "d1");
+
+            var gate = new TaskCompletionSource();
+            _registrar.Block = gate;
+            var applies = _registrar.Applied.Count;
+            _store.Update(s => s.Hotkeys.Bindings = s.Hotkeys.Bindings.Append(ActionBinding("extra", "Ctrl+Alt+x")).ToList());
+            await WaitUntil(() => _registrar.Applied.Count > applies);
+
+            // The first pass is parked inside the registrar having read d1 as live; this change must queue another pass.
+            _store.Update(s => s.StreamDeck.Presets.Clear());
+            _registrar.Block = null;
+            gate.SetResult();
+
+            await WaitUntil(() => Statuses(service)["d1"] == HotkeyStatus.Orphaned && !_registrar.Last.Any(r => r.Id == "d1"));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Stop_releases_an_out_of_process_registrar_and_blocks_later_registration()
+    {
+        _registrar.ReleaseOnStop = true;
+        var service = Service();
+        service.SeedDefaults();
+        await service.StartAsync(CancellationToken.None);
+        Assert.Equal(4, _registrar.Last.Count);
+
+        await service.StopAsync(CancellationToken.None);
+        Assert.Empty(_registrar.Last);
+
+        var applies = _registrar.Applied.Count;
+        await service.UpsertAsync(ActionBinding("late", "Ctrl+Alt+q"));
+        await service.SetSuspendedAsync(true);
+        await service.SetSuspendedAsync(false);
+        Assert.Equal(applies, _registrar.Applied.Count);
+    }
+
+    [Fact]
+    public async Task Stop_skips_the_release_for_an_in_process_registrar()
+    {
+        _registrar.ReleaseOnStop = false;
+        var service = Service();
+        service.SeedDefaults();
+        await service.StartAsync(CancellationToken.None);
+        var applies = _registrar.Applied.Count;
+
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.Equal(applies, _registrar.Applied.Count);
+    }
+
+    [Fact]
+    public async Task A_resume_from_an_older_suspend_cannot_cancel_a_newer_one()
+    {
+        var service = Service();
+        service.SuspendTimeout = TimeSpan.FromMinutes(5);
+        service.SeedDefaults();
+        await service.SetSuspendedAsync(true);
+        await service.SetSuspendedAsync(true);
+
+        await service.ResumeAsync(1);
+        Assert.True(service.BuildResponse().Suspended);
+
+        await service.ResumeAsync(2);
+        Assert.False(service.BuildResponse().Suspended);
+        service.Dispose();
+    }
+
+    [Fact]
+    public async Task A_press_whose_combo_is_no_longer_the_bindings_is_ignored()
+    {
+        var service = Service();
+        await service.UpsertAsync(ActionBinding("a", "Ctrl+Alt+a"));
+
+        await service.FireAsync("a", "Ctrl+Alt+b");
+        Assert.Empty(_executor.Calls);
+
+        await service.FireAsync("a", "alt+ctrl+A");
+        Assert.Single(_executor.Calls);
+    }
+
+    [Fact]
+    public async Task A_keystroke_action_releases_the_triggers_modifiers_first()
+    {
+        var service = Service();
+        HotkeyCombo? released = null;
+        service.ReleaseModifiers = combo =>
+        {
+            released = combo;
+            return Task.CompletedTask;
+        };
+        await service.UpsertAsync(ActionBinding("a", "Ctrl+Alt+a"));
+        await service.UpsertAsync(new HotkeyBinding
+        {
+            Id = "b", Combo = "Ctrl+Alt+b",
+            Target = new HotkeyTarget { Kind = HotkeyTarget.KindAction, Action = new DeckAction { Type = "launchApp", AppId = "x" } },
+        });
+
+        await service.FireAsync("a");
+        Assert.Equal("Ctrl+Alt+a", released.ToString());
+        Assert.Single(_executor.Calls);
+
+        released = null;
+        await service.FireAsync("b");
+        Assert.Null(released);
+        Assert.Equal(2, _executor.Calls.Count);
     }
 
     // ---- Validation -----------------------------------------------------------
@@ -451,6 +584,14 @@ public sealed class HotkeyServiceTests : IDisposable
     }
 
     [Fact]
+    public void Validate_rejects_a_null_target()
+    {
+        var binding = ActionBinding("ok", "Ctrl+Alt+a");
+        binding.Target = null!;
+        Assert.NotNull(HotkeyService.Validate(binding));
+    }
+
+    [Fact]
     public void Validate_rejects_malformed_targets()
     {
         var noAction = ActionBinding("ok", "Ctrl+Alt+a");
@@ -461,17 +602,15 @@ public sealed class HotkeyServiceTests : IDisposable
         unknownKind.Target.Kind = "other";
         Assert.NotNull(HotkeyService.Validate(unknownKind));
 
-        var noSlot = DeckBinding("ok", "Ctrl+Alt+a", "p1", 0);
-        noSlot.Target.Slot = null;
-        Assert.NotNull(HotkeyService.Validate(noSlot));
+        var noTag = DeckBinding("ok", "Ctrl+Alt+a", "p1");
+        noTag.Target.Tag = null;
+        Assert.Equal(HotkeyErrorCodes.InvalidTarget, HotkeyService.Validate(noTag)?.Code);
 
-        var badDial = DeckBinding("ok", "Ctrl+Alt+a", "p1", 0);
-        badDial.Target.Slot = new HotkeySlotAddress { Type = HotkeySlotAddress.TypeDial, Dial = 0, Event = "swipe" };
-        Assert.NotNull(HotkeyService.Validate(badDial));
+        var badTag = DeckBinding("ok", "Ctrl+Alt+a", "p1");
+        badTag.Target.Tag = "has space";
+        Assert.Equal(HotkeyErrorCodes.InvalidTarget, HotkeyService.Validate(badTag)?.Code);
 
-        var goodDial = DeckBinding("ok", "Ctrl+Alt+a", "p1", 0);
-        goodDial.Target.Slot = new HotkeySlotAddress { Type = HotkeySlotAddress.TypeDial, Dial = 0, Event = "turnLeft" };
-        Assert.Null(HotkeyService.Validate(goodDial));
+        Assert.Null(HotkeyService.Validate(DeckBinding("ok", "Ctrl+Alt+a", "p1")));
     }
 
     [Fact]

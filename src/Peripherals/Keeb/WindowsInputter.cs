@@ -27,6 +27,14 @@ public sealed class WindowsInputter : IInputterProvider
         var allOk = true;
         foreach (var stroke in body.Strokes)
         {
+            if (string.Equals(stroke.Type, MacroStroke.ReleaseModifiersType, StringComparison.Ordinal))
+            {
+                if (stroke.Meta) allOk &= SendKey(VK_LWIN, false);
+                if (stroke.Alt) allOk &= SendKey(VK_MENU, false);
+                if (stroke.Shift) allOk &= SendKey(VK_SHIFT, false);
+                if (stroke.Ctrl) allOk &= SendKey(VK_CONTROL, false);
+                continue;
+            }
             var vk = ParseKey(stroke.Key);
             if (vk == 0)
             {
