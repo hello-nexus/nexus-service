@@ -18,6 +18,10 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private const int SessionRetryMs = 5_000;
     private const int MaxRapidBrowserFailures = 5;
     private const int MissingBrowserRetryMs = 30_000;
+    private const int BrowserBackoffStepMs = 2_000;
+    private const int BrowserBackoffMaxMs = 60_000;
+    private const int RapidExitMs = 60_000;
+    private const int SessionStartTimeoutMs = 20_000;
     private const string Tag = "[panel-render]";
 
     private static int _servicePort = ServiceLaunchIntent.DefaultServicePort;
@@ -31,6 +35,7 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private HeadlessBrowser? _browser;
     private long _idleSince = -1;
     private int _rapidBrowserFailures;
+    private long _browserStartedAt;
     private long _browserRetryAfter;
 
     private sealed record Running(PanelRenderSession Render, RawFrameIngestClient Ingest);
@@ -123,9 +128,10 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         if (_browser is { HasExited: true })
         {
             ServiceLog.Warn($"{Tag} headless browser exited; restarting");
+            var lived = Environment.TickCount64 - _browserStartedAt;
             StopAll();
-            _rapidBrowserFailures++;
-            _browserRetryAfter = Environment.TickCount64 + Math.Min(60_000, 2_000 * _rapidBrowserFailures);
+            _rapidBrowserFailures = lived < RapidExitMs ? _rapidBrowserFailures + 1 : 1;
+            _browserRetryAfter = Environment.TickCount64 + BackoffMs();
         }
         if (_browser is null && !await EnsureBrowserAsync(ct).ConfigureAwait(false))
         {
@@ -159,6 +165,17 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             LogOnce("no-session", $"{Tag} panels are waiting for a desktop login to render");
             return false;
         }
+        if (RunsAsRootWithoutUserSwitch())
+        {
+            LogOnce("root", $"{Tag} running as root with no desktop user to switch to; refusing to start a browser as root");
+            return false;
+        }
+        var profileDir = ProfileDir();
+        if (profileDir is null)
+        {
+            LogOnce("no-home", $"{Tag} no home directory for the browser profile; panels cannot render");
+            return false;
+        }
         var browser = LinuxBrowsers.FindChromium();
         if (browser is null)
         {
@@ -172,18 +189,17 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             _browserRetryAfter = Environment.TickCount64 + MissingBrowserRetryMs;
             return false;
         }
-        var profileDir = ProfileDir();
         try
         {
             _browser = await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
                 line => ServiceLog.Info($"{Tag} {line}"), ct).ConfigureAwait(false);
-            _rapidBrowserFailures = 0;
+            _browserStartedAt = Environment.TickCount64;
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _rapidBrowserFailures++;
-            _browserRetryAfter = Environment.TickCount64 + Math.Min(60_000, 2_000 * _rapidBrowserFailures);
+            _browserRetryAfter = Environment.TickCount64 + BackoffMs();
             ServiceLog.Warn($"{Tag} could not start {browser} headless: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
@@ -193,14 +209,14 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     {
         var origin = $"http://localhost:{_servicePort}";
         var url = $"{origin}/panel/{Uri.EscapeDataString(a.PanelDeviceId)}?token={Uri.EscapeDataString(_tokens.Token)}"
-            + $"&streamFps={Math.Clamp(a.Fps, 1, 240)}";
+            + $"&streamFps={Math.Clamp(a.Fps, 1, PanelRenderSession.MaxFps)}";
         var render = new PanelRenderSession(_browser!.Cdp, a.SessionId, url, a.CssWidth, a.CssHeight, a.Dpr, a.Fps);
         var ingest = new RawFrameIngestClient(origin, a.SessionId, _tokens.Token);
         render.FrameSink = ingest.SendFrame;
         try
         {
             using var startTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            startTimeout.CancelAfter(20_000);
+            startTimeout.CancelAfter(SessionStartTimeoutMs);
             await render.StartAsync(startTimeout.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -250,14 +266,26 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         }
     }
 
-    private static string ProfileDir()
+    private int BackoffMs() => Math.Min(BrowserBackoffMaxMs, BrowserBackoffStepMs * _rapidBrowserFailures);
+
+    private static bool RunsAsRootWithoutUserSwitch()
+    {
+        try
+        {
+            return string.Equals(Environment.UserName, "root", StringComparison.Ordinal)
+                && LinuxSession.SessionUid is null;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    // Not hidden: a snap-confined browser may only use non-hidden paths under HOME.
+    // No fallback when HOME is unresolvable, since a shared temp path can be pre-created by any local user.
+    internal static string? ProfileDir()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrEmpty(home))
-        {
-            var runtimeDir = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
-            home = string.IsNullOrEmpty(runtimeDir) ? Path.GetTempPath() : runtimeDir;
-        }
-        return Path.Combine(home, ".cache", "nexus-panel-render");
+        return string.IsNullOrEmpty(home) ? null : Path.Combine(home, "nexus-panel-render");
     }
 }

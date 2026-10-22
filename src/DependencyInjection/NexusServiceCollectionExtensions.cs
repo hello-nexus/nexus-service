@@ -1139,8 +1139,8 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();
 
         // SL-LCD Wireless fan screens: independent wired USB devices (not the
-        // RF link). Windows and Linux; same discovery-stub pattern as the
-        // dongles above elsewhere.
+        // RF link). Discovered on Windows and Linux; other platforms use the
+        // same discovery stub as the dongles above.
 #if WINDOWS
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery,
                               Nexus.Service.Peripherals.LianLiWireless.WindowsSlv3LcdDiscovery>();
@@ -1355,8 +1355,8 @@ public static class NexusServiceCollectionExtensions
 
         // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices,
         // Lian Li HydroShift II). Their pixels ride a USB bulk endpoint rather than HID: Windows
-        // reaches them where WinUSB is bound, macOS through IOUSBHost, and on Linux the factory
-        // is a null object so the workers never find a panel. Ryujin, Thermalright and the Screen
+        // reaches them where WinUSB is bound, macOS through IOUSBHost, and on Linux through usbfs
+        // for the Screen 8.8 only; the other panels get no pipe there. Ryujin, Thermalright and the Screen
         // 8.8 are transcribed and untested and the Lian Li units contend with L-Connect, so
         // those default OFF.
         // Only the Windows host can create a monitor; elsewhere the setting is not offered.
