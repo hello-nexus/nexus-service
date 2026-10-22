@@ -55,14 +55,25 @@ public sealed class MystiqueWorker : BackgroundService
 
     public bool IsConnected => _connected;
 
-    private sealed record PendingUpload(MystiqueMediaPackage Package, TaskCompletionSource<bool> Done);
+    private sealed class PendingUpload(MystiqueMediaPackage package)
+    {
+        public MystiqueMediaPackage Package { get; } = package;
+        public TaskCompletionSource<bool> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Waiting, Streaming or Withdrawn; only one side wins the move out of Waiting.
+        public int State;
+    }
+
+    private const int UploadWaiting = 0;
+    private const int UploadStreaming = 1;
+    private const int UploadWithdrawn = -1;
 
     private PendingUpload? _pendingUpload;
 
     /// <summary>
     /// Hands a picture or GIF to the worker, which streams it between ticks so nothing else touches the
     /// pipes. False when no screen is connected, another upload is waiting, the stream fails, or the
-    /// caller gives up first.
+    /// caller gives up before the stream starts; once it has started, the real result is awaited.
     /// </summary>
     public async Task<bool> UploadAsync(MystiqueMediaPackage package, CancellationToken ct)
     {
@@ -70,7 +81,7 @@ public sealed class MystiqueWorker : BackgroundService
         {
             return false;
         }
-        var pending = new PendingUpload(package, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+        var pending = new PendingUpload(package);
         if (Interlocked.CompareExchange(ref _pendingUpload, pending, null) is not null)
         {
             return false;
@@ -78,7 +89,13 @@ public sealed class MystiqueWorker : BackgroundService
         RequestApply();
         try
         {
-            using var reg = ct.Register(() => pending.Done.TrySetResult(false));
+            using var reg = ct.Register(() =>
+            {
+                if (Interlocked.CompareExchange(ref pending.State, UploadWithdrawn, UploadWaiting) == UploadWaiting)
+                {
+                    pending.Done.TrySetResult(false);
+                }
+            });
             return await pending.Done.Task.ConfigureAwait(false);
         }
         finally
@@ -192,7 +209,7 @@ public sealed class MystiqueWorker : BackgroundService
                     break;
                 }
                 var upload = Volatile.Read(ref _pendingUpload);
-                if (upload is not null && !upload.Done.Task.IsCompleted)
+                if (upload is not null && Interlocked.CompareExchange(ref upload.State, UploadStreaming, UploadWaiting) == UploadWaiting)
                 {
                     bool sent = session.Upload(upload.Package);
                     upload.Done.TrySetResult(sent);
@@ -224,7 +241,12 @@ public sealed class MystiqueWorker : BackgroundService
         finally
         {
             _connected = false;
-            Volatile.Read(ref _pendingUpload)?.Done.TrySetResult(false);
+            // Also settles a stream an exception cut short, which never reported its own result.
+            if (Volatile.Read(ref _pendingUpload) is { } left)
+            {
+                Interlocked.CompareExchange(ref left.State, UploadWithdrawn, UploadWaiting);
+                left.Done.TrySetResult(false);
+            }
             ServiceLog.Info($"[{HandlerId}] disconnected");
         }
     }
