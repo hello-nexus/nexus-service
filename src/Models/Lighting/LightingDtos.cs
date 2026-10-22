@@ -12,6 +12,8 @@ public sealed class AudioStateSnapshot
     public float Beat { get; set; }
     public List<float> Spectrum { get; set; } = new();
     public List<float> Spectrum64 { get; set; } = new();
+    public List<float>? SpectrumLeft64 { get; set; }
+    public List<float>? SpectrumRight64 { get; set; }
 }
 
 public sealed class ShaderSourceResponse
