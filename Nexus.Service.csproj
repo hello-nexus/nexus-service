@@ -987,6 +987,9 @@
     <Compile Remove="src/Peripherals/Keeb/LinuxInputter.cs" />
     <Compile Remove="src/Peripherals/LianLiWireless/LinuxSlv3Discovery.cs" />
     <Compile Remove="src/Peripherals/LianLiWireless/LinuxSlv3Transport.cs" />
+    <Compile Remove="src/Peripherals/LianLiWireless/LinuxSlv3Lcd.cs" />
+    <Compile Remove="src/Peripherals/LinuxUsb/LinuxUsbfs.cs" />
+    <Compile Remove="src/Peripherals/BulkPanels/LinuxBulkUsbPipe.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayBrightnessProvider.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayOrientationProvider.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayTopologyProvider.cs" />
@@ -1001,6 +1004,11 @@
     <Compile Remove="src/Platform/Linux/LinuxPerformanceProvider.cs" />
     <Compile Remove="src/Platform/Linux/LinuxResumeListener.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSession.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxStreamRenderHost.cs" />
+    <Compile Remove="src/Platform/Linux/Render/CdpPipeClient.cs" />
+    <Compile Remove="src/Platform/Linux/Render/HeadlessBrowser.cs" />
+    <Compile Remove="src/Platform/Linux/Render/PanelRenderSession.cs" />
+    <Compile Remove="src/Platform/Linux/Render/RawFrameIngestClient.cs" />
     <Compile Remove="src/Platform/Linux/LinuxX11Outputs.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSysfs.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSystemAccentProvider.cs" />
