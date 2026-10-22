@@ -509,6 +509,8 @@ public static class ConflictAppCatalog
             Category = "cooling",
             DisplayHandlers = new[] { "deepcool-mystique" },
             ProcessNames = new[] { "DeepCool", "deep_service" },
+            // Unconfirmed as an SCM service; a missing one stops as NotFound and the process is still ended.
+            WindowsServiceNames = new[] { "deep_service" },
         },
 
         // ── Elgato ─────────────────────────────────────────────────────────

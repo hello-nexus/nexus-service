@@ -18,8 +18,8 @@ public static partial class DevicesRoutes
     // Bounds a kept source, so full slots of uploads up to MediaImporter.MaxFileSize never pile up gigabytes.
     internal const int MystiqueKeepMaxBytes = 8 * 1024 * 1024;
 
-    /// <summary>Whether uploads stream half a turn round: while the session sends the gyroscope byte 1, which it sends only once the device settings were edited.</summary>
-    internal static bool MystiqueRotatesMedia(DeepCoolMystiqueSettings m) => m.DeviceEdited && !m.Gyroscope;
+    /// <summary>Whether uploads stream half a turn round: while the screen holds gyroscope byte 1, which is both its out-of-box value and what the session sends for Gyroscope off.</summary>
+    internal static bool MystiqueRotatesMedia(DeepCoolMystiqueSettings m) => !m.Gyroscope;
 
     private static string MystiqueMediaDir() => MediaLibrary.DeviceStoreDir("deepcool-mystique");
 
