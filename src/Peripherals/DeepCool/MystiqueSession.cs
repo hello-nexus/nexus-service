@@ -61,8 +61,11 @@ public sealed class MystiqueSession
     public bool Apply(DeepCoolMystiqueSettings s)
     {
         var last = _applied;
-        if (s.DeviceEdited && (last is null || !last.DeviceEdited || last.Gyroscope != s.Gyroscope || last.RgbSync != s.RgbSync || last.Brightness != s.Brightness)
-            && !Settings(MystiqueProtocol.BuildSystem(s.Gyroscope, s.RgbSync, s.Brightness)))
+        byte rgb = MystiqueProtocol.RgbSourceCode(s.RgbSync, s.EdgePicking);
+        if (s.DeviceEdited
+            && (last is null || !last.DeviceEdited || last.Gyroscope != s.Gyroscope
+                || MystiqueProtocol.RgbSourceCode(last.RgbSync, last.EdgePicking) != rgb || last.Brightness != s.Brightness)
+            && !Settings(MystiqueProtocol.BuildSystem(s.Gyroscope, rgb, s.Brightness)))
         {
             return false;
         }
@@ -71,8 +74,19 @@ public sealed class MystiqueSession
         {
             return false;
         }
-        if (s.ReadoutEdited && (last is null || !last.ReadoutEdited || last.Readout != s.Readout)
-            && !Settings(MystiqueProtocol.BuildReadout(s.Readout)))
+        if (s.ReadoutEdited
+            && (last is null || !last.ReadoutEdited || last.Readout != s.Readout || last.ReadoutStyle != s.ReadoutStyle || last.AuxArea != s.AuxArea)
+            && !Settings(MystiqueProtocol.BuildReadout(s.Readout, s.ReadoutStyle, s.AuxArea)))
+        {
+            return false;
+        }
+        if (s.MediaEdited && (last is null || !last.MediaEdited || last.SwitchSeconds != s.SwitchSeconds || last.Animation != s.Animation)
+            && !Settings(MystiqueProtocol.BuildMediaPlayback(s.SwitchSeconds, s.Animation)))
+        {
+            return false;
+        }
+        if (s.SourceEdited && (last is null || !last.SourceEdited || last.MediaSource != s.MediaSource)
+            && !Settings(MystiqueProtocol.BuildMediaSource(s.MediaSource)))
         {
             return false;
         }
@@ -82,6 +96,45 @@ public sealed class MystiqueSession
             return false;
         }
         _applied = s.Copy();
+        return true;
+    }
+
+    /// <summary>
+    /// Streams a picture or GIF as the screen's own software does: the announce command, every frame as
+    /// 64-byte writes, the finish packet, then the source command for that kind. Only the announce and
+    /// the source command are answered, and the poll and sensor push stay silent meanwhile. False on any
+    /// refused write; the finish packet is then never sent.
+    /// </summary>
+    public bool Upload(MystiqueMediaPackage package)
+    {
+        if (!Settings(MystiqueProtocol.BuildUploadStart()))
+        {
+            return false;
+        }
+        foreach (var frame in package.Frames)
+        {
+            foreach (var packet in MystiqueMedia.Packets(frame))
+            {
+                if (!_pipe.Write(MystiqueProtocol.SettingsWritePipe, packet))
+                {
+                    return false;
+                }
+            }
+        }
+        if (!_pipe.Write(MystiqueProtocol.SettingsWritePipe, MystiqueMedia.FinishPacket()))
+        {
+            return false;
+        }
+        var source = package.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
+        if (!Settings(MystiqueProtocol.BuildMediaSource(source)))
+        {
+            return false;
+        }
+        if (_applied is not null)
+        {
+            _applied.MediaSource = source;
+            _applied.SourceEdited = true;
+        }
         return true;
     }
 

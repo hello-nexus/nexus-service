@@ -36,6 +36,52 @@ public class MystiqueProtocolTests
     }
 
     [Theory]
+    [InlineData(false, false, "AA2E02010002004600000000000000000000000000000000000000000000000000000000000000000000484944433B02")]
+    [InlineData(true, false, "AA2E02010002014600000000000000000000000000000000000000000000000000000000000000000000484944433C02")]
+    [InlineData(true, true, "AA2E02010002024600000000000000000000000000000000000000000000000000000000000000000000484944433D02")]
+    [InlineData(false, true, "AA2E02010002024600000000000000000000000000000000000000000000000000000000000000000000484944433D02")]
+    public void Edge_picking_takes_the_rgb_source_over_motherboard_sync(bool rgbSync, bool edgePicking, string expected)
+    {
+        Assert.Equal(expected, Hex(MystiqueProtocol.BuildSystem(false, MystiqueProtocol.RgbSourceCode(rgbSync, edgePicking), 70)));
+    }
+
+    [Theory]
+    [InlineData(DeepCoolMystiqueSettings.StyleNormal, DeepCoolMystiqueSettings.AuxSystemMonitor, "AA2E0400000001000000000000000000000000000000000000000000000000000000000000000000000048494443F501")]
+    [InlineData(DeepCoolMystiqueSettings.StyleRing, DeepCoolMystiqueSettings.AuxSystemMonitor, "AA2E0400010001000000000000000000000000000000000000000000000000000000000000000000000048494443F601")]
+    [InlineData(DeepCoolMystiqueSettings.StyleStopwatch, DeepCoolMystiqueSettings.AuxSystemMonitor, "AA2E0400020001000000000000000000000000000000000000000000000000000000000000000000000048494443F701")]
+    [InlineData(DeepCoolMystiqueSettings.StyleStopwatch, DeepCoolMystiqueSettings.AuxVoltage, "AA2E0400020000000000000000000000000000000000000000000000000000000000000000000000000048494443F601")]
+    [InlineData(DeepCoolMystiqueSettings.StyleStopwatch, DeepCoolMystiqueSettings.AuxCoreData, "AA2E0400020002000000000000000000000000000000000000000000000000000000000000000000000048494443F801")]
+    public void Readout_style_and_auxiliary_area_match_the_recorded_frames(string style, string aux, string expected)
+    {
+        Assert.Equal(expected, Hex(MystiqueProtocol.BuildReadout(DeepCoolMystiqueSettings.ReadoutFrequency, style, aux)));
+    }
+
+    [Theory]
+    [InlineData(3, DeepCoolMystiqueSettings.AnimationSplit, "AA2E0700000000000000000000000000000000000000000000000000000000000000000000000000000048494443F701")]
+    [InlineData(3, DeepCoolMystiqueSettings.AnimationScroll, "AA2E0700010000000000000000000000000000000000000000000000000000000000000000000000000048494443F801")]
+    [InlineData(3, DeepCoolMystiqueSettings.AnimationFade, "AA2E0700020000000000000000000000000000000000000000000000000000000000000000000000000048494443F901")]
+    [InlineData(5, DeepCoolMystiqueSettings.AnimationScroll, "AA2E0701010000000000000000000000000000000000000000000000000000000000000000000000000048494443F901")]
+    [InlineData(7, DeepCoolMystiqueSettings.AnimationScroll, "AA2E0702010000000000000000000000000000000000000000000000000000000000000000000000000048494443FA01")]
+    public void Media_playback_matches_the_recorded_frames(int seconds, string animation, string expected)
+    {
+        Assert.Equal(expected, Hex(MystiqueProtocol.BuildMediaPlayback(seconds, animation)));
+    }
+
+    [Theory]
+    [InlineData(DeepCoolMystiqueSettings.SourceImages, "AA2E0800010000000000000000000000000000000000000000000000000000000000000000000000000048494443F901")]
+    [InlineData(DeepCoolMystiqueSettings.SourceGif, "AA2E0801000000000000000000000000000000000000000000000000000000000000000000000000000048494443F901")]
+    public void Media_source_matches_the_frames_sent_after_each_upload(string source, string expected)
+    {
+        Assert.Equal(expected, Hex(MystiqueProtocol.BuildMediaSource(source)));
+    }
+
+    [Fact]
+    public void Upload_start_matches_the_recorded_frame()
+    {
+        Assert.Equal("AA2E0F00000000000000000000000000000000000000000000000000000000000000000000000000000048494443FF01", Hex(MystiqueProtocol.BuildUploadStart()));
+    }
+
+    [Theory]
     [InlineData(true, false, 70, SystemStart)]
     [InlineData(true, false, 21, SystemDim)]
     [InlineData(true, false, 0, SystemDark)]
@@ -43,7 +89,7 @@ public class MystiqueProtocolTests
     [InlineData(false, true, 0, SystemGyroOff)]
     public void System_frame_matches_the_recorded_frames(bool gyroscope, bool rgbSync, int brightness, string expected)
     {
-        Assert.Equal(expected, Hex(MystiqueProtocol.BuildSystem(gyroscope, rgbSync, brightness)));
+        Assert.Equal(expected, Hex(MystiqueProtocol.BuildSystem(gyroscope, MystiqueProtocol.RgbSourceCode(rgbSync, false), brightness)));
     }
 
     [Theory]
@@ -51,7 +97,7 @@ public class MystiqueProtocolTests
     [InlineData(250, 100)]
     public void System_brightness_is_clamped_to_a_percent(int given, int sent)
     {
-        Assert.Equal(sent, MystiqueProtocol.BuildSystem(true, false, given)[7]);
+        Assert.Equal(sent, MystiqueProtocol.BuildSystem(true, 0, given)[7]);
     }
 
     [Theory]
@@ -72,7 +118,7 @@ public class MystiqueProtocolTests
     [InlineData(DeepCoolMystiqueSettings.ReadoutTemperature, "AA2E0405000002000000000000000000000000000000000000000000000000000000000000000000000048494443FB01")]
     public void Readout_frame_matches_the_recorded_frames(string readout, string expected)
     {
-        Assert.Equal(expected, Hex(MystiqueProtocol.BuildReadout(readout)));
+        Assert.Equal(expected, Hex(MystiqueProtocol.BuildReadout(readout, DeepCoolMystiqueSettings.StyleNormal, DeepCoolMystiqueSettings.AuxCoreData)));
     }
 
     [Theory]
