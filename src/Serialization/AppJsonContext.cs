@@ -978,6 +978,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.IdleStatePayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.DisplayStatePayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ScreenOffTimeoutChangedPayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.HotkeysSetPayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.HotkeysSetResult))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.HotkeyFiredPayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.HotkeyToggleWindowPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.KeyWatchPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.KeyPressedPayload))]
 // Diagnostics
@@ -1438,6 +1442,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckDevModelsResponse))]
 // Stream Deck binding model - the shared DeckAction/DeckConfig tree that
 // rides the deck preset/instance wire contract (see Nexus.Service.Deck.DeckActionModel).
+[JsonSerializable(typeof(Nexus.Service.Hotkeys.HotkeyBinding))]
+[JsonSerializable(typeof(Nexus.Service.Hotkeys.HotkeysResponse))]
+[JsonSerializable(typeof(Nexus.Service.Hotkeys.HotkeySuspendBody))]
+[JsonSerializable(typeof(Nexus.Service.Hotkeys.HotkeyErrorResponse))]
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckConfig))]
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckFolder))]
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckSlot))]
@@ -1452,6 +1460,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckDial))]
 [JsonSerializable(typeof(List<Nexus.Service.Deck.DeckDial>))]
 [JsonSerializable(typeof(Nexus.Service.Deck.DeckDialAction))]
+[JsonSerializable(typeof(Nexus.Service.Deck.DeckDialHotkeyTags))]
 [JsonSerializable(typeof(List<Nexus.Service.Deck.DeckSequenceStep>))]
 // Deck key icon image store (POST/GET /deck/images)
 [JsonSerializable(typeof(Nexus.Service.Models.Deck.DeckImageUploadResponse))]

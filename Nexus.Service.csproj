@@ -938,6 +938,7 @@
     <Compile Remove="src/Platform/Displays/MacDisplayTopologyProvider.cs" />
     <Compile Remove="src/Platform/Mac/MacAppBootstrap.cs" />
     <Compile Remove="src/Platform/Mac/MacAppWindow.cs" />
+    <Compile Remove="src/Platform/Mac/MacHotkeyRegistrar.cs" />
     <Compile Remove="src/Platform/Mac/MachStats.cs" />
     <Compile Remove="src/Platform/Mac/MacNotify.cs" />
     <Compile Remove="src/Platform/Mac/MacOverlayHostLauncher.cs" />

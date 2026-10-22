@@ -104,7 +104,7 @@ public static partial class DevicesRoutes
         return group.Count > 0 ? group : [cardId];
     }
 
-    private static void CaptureDeviceStateIntoActive(Nexus.Service.Persistence.IConfigStore store)
+    internal static void CaptureDeviceStateIntoActive(Nexus.Service.Persistence.IConfigStore store)
     {
         store.Update(s =>
         {

@@ -194,6 +194,9 @@ public sealed class NexusSettings
     /// Same scoping as <see cref="FanControlImportOffered"/>.</summary>
     public bool FanControlImportCompleted { get; set; }
 
+    /// <summary>Global hotkeys (OS-registered key combos bound to a deck action or a deck slot). NOT profile-scoped: bindings follow the machine, so a profile switch never drops them. Additive, so it carries no schema migration; the defaults seed at service start.</summary>
+    public Nexus.Service.Hotkeys.HotkeySettings Hotkeys { get; set; } = new();
+
     /// <summary>Physical Stream Deck bindings, keyed by device serial. Profile-scoped via the <see cref="ProfileSharing.Device"/> sharing category (defaults to Shared, so it behaves like a workstation-global setting until the user opts a profile out).</summary>
     public StreamDeckSettings StreamDeck { get; set; } = new();
 
