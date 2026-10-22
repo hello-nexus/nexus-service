@@ -44,6 +44,9 @@ public sealed class HelperRegistry
     /// <summary>The helper of the session on the physical console; null when that session has none.</summary>
     public HelperConnection? GetForConsole() => GetForSession(ActiveConsoleSessionId());
 
+    /// <summary>The console session's helper, else whichever helper exists (an RDP user has no console helper).</summary>
+    public HelperConnection? GetForConsoleOrAny() => ConsolePreference.Pick(GetForConsole(), GetAny);
+
     /// <summary>
     /// Returns whichever connection exists. Single-session only: picks the
     /// only active helper, does not address multi-user.
