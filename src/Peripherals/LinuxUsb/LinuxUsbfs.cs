@@ -156,6 +156,7 @@ public sealed unsafe partial class LinuxUsbfsInterface : IDisposable
     private const int O_CLOEXEC = 0x80000;
 
     public const int ETIMEDOUT = 110;
+    public const int ENODEV = 19;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct BulkTransfer
@@ -210,7 +211,7 @@ public sealed unsafe partial class LinuxUsbfsInterface : IDisposable
         var fd = Volatile.Read(ref _fd);
         if (fd < 0)
         {
-            return 19;
+            return ENODEV;
         }
         uint ep = endpoint;
         return ioctl(fd, UsbdevfsClearHalt, (nint)(&ep)) < 0 ? Marshal.GetLastPInvokeError() : 0;
@@ -222,7 +223,7 @@ public sealed unsafe partial class LinuxUsbfsInterface : IDisposable
         var fd = Volatile.Read(ref _fd);
         if (fd < 0)
         {
-            errno = 19;
+            errno = ENODEV;
             return -1;
         }
         if (timeoutMs == 0)

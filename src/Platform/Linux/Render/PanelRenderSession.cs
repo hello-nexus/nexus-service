@@ -2,12 +2,15 @@ using System;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Panel.Streams;
 using SkiaSharp;
 
 namespace Nexus.Service.Platform.Linux.Render;
 
 public sealed class PanelRenderSession : IDisposable
 {
+    public const int MaxFps = 60;
+
     private readonly CdpPipeClient _cdp;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _frameReady = new(0, 1);
@@ -29,10 +32,10 @@ public sealed class PanelRenderSession : IDisposable
         CssWidth = Math.Max(1, cssWidth);
         CssHeight = Math.Max(1, cssHeight);
         Dpr = dpr > 0 ? dpr : 1.0;
-        Fps = Math.Clamp(fps, 1, 60);
+        Fps = Math.Clamp(fps, 1, MaxFps);
 
-        PixelWidth = MakeEven((int)Math.Round(CssWidth * Dpr));
-        PixelHeight = MakeEven((int)Math.Round(CssHeight * Dpr));
+        PixelWidth = StreamedPanelProfile.FramePixels(CssWidth, Dpr);
+        PixelHeight = StreamedPanelProfile.FramePixels(CssHeight, Dpr);
     }
 
     public string SessionId { get; }
@@ -50,8 +53,6 @@ public sealed class PanelRenderSession : IDisposable
     private long _framesDelivered;
 
     public bool Faulted { get; private set; }
-
-    internal static int MakeEven(int value) => Math.Max(2, value + (value & 1));
 
     public async Task StartAsync(CancellationToken ct)
     {

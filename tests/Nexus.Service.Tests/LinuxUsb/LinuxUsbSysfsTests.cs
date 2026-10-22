@@ -4,6 +4,7 @@ using System.Linq;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Peripherals.LinuxUsb;
+using Nexus.Service.Panel.Streams;
 using Nexus.Service.Platform.Linux.Render;
 using Xunit;
 
@@ -96,5 +97,29 @@ public sealed class LinuxUsbSysfsTests : IDisposable
         Assert.Contains("--user-data-dir=/tmp/p", args);
         Assert.DoesNotContain("--no-sandbox", args);
         Assert.Equal("about:blank", args.Last());
+    }
+
+    [Theory]
+    [InlineData(101, 1.0, 100)]
+    [InlineData(101, 1.5, 152)]
+    [InlineData(480, 1.0, 480)]
+    [InlineData(1, 1.0, 2)]
+    public void RenderSessionPixels_RoundDownLikeTheService(int css, double dpr, int expected)
+    {
+        var session = new PanelRenderSession(null!, "s", "http://x", css, css, dpr, 30);
+
+        Assert.Equal(expected, session.PixelWidth);
+        Assert.Equal(StreamedPanelProfile.FramePixels(css, dpr), session.PixelHeight);
+    }
+
+    [Theory]
+    [InlineData(0x1CBE, 0xA034)]
+    [InlineData(0x0416, 0xA088)]
+    [InlineData(0x0416, 0x5302)]
+    public void BulkFactory_OnlyOpensTheUniversalScreen(int vid, int pid)
+    {
+        AddDevice("1-2", vid.ToString("x4"), pid.ToString("x4"), 1, 7);
+
+        Assert.Null(new LinuxBulkUsbPipeFactory(_root).Open(vid, pid, 0x01, 0x81));
     }
 }
