@@ -12,12 +12,12 @@ namespace Nexus.Service.Platform.Mac;
 /// drains the main dispatch queue and delivers the Carbon events); the fired
 /// callback hands the binding id off the main thread immediately.
 /// </summary>
-internal sealed unsafe class MacHotkeyRegistrar : IHotkeyRegistrar
+internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
 {
     private const string Carbon = "/System/Library/Frameworks/Carbon.framework/Carbon";
     private const string LibSystem = "/usr/lib/libSystem.B.dylib";
 
-    // Four-char codes: 'keyb' event class, 'hkid' EventHotKeyID type, '----' direct object, 'NXHK' our signature.
+    // Carbon four-char codes: keyboard event class, hotkey id type, direct-object parameter, and this app's own signature.
     private const uint EventClassKeyboard = 0x6B657962;
     private const uint EventHotKeyPressed = 5;
     private const uint TypeEventHotKeyId = 0x686B6964;
@@ -46,7 +46,10 @@ internal sealed unsafe class MacHotkeyRegistrar : IHotkeyRegistrar
     public event Action? NeedsReapply;
 #pragma warning restore CS0067
 
-    public Task<IReadOnlyDictionary<string, bool>> ApplyAsync(IReadOnlyList<HotkeyRegistration> set, CancellationToken ct)
+    // Registration waits for the AppKit run loop to drain the main queue. A process that never runs it (a bare test host) must not hang a caller.
+    private static readonly TimeSpan MainQueueTimeout = TimeSpan.FromSeconds(10);
+
+    public async Task<IReadOnlyDictionary<string, bool>> ApplyAsync(IReadOnlyList<HotkeyRegistration> set, CancellationToken ct)
     {
         var tcs = new TaskCompletionSource<IReadOnlyDictionary<string, bool>>(TaskCreationOptions.RunContinuationsAsynchronously);
         try
@@ -62,12 +65,13 @@ internal sealed unsafe class MacHotkeyRegistrar : IHotkeyRegistrar
                     tcs.TrySetException(ex);
                 }
             });
+            return await tcs.Task.WaitAsync(MainQueueTimeout, ct).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (TimeoutException)
         {
-            tcs.TrySetException(ex);
+            ServiceLog.Warn("[hotkeys] mac main queue did not run the registration in time");
+            return set.ToDictionary(r => r.Id, _ => false);
         }
-        return tcs.Task;
     }
 
     private Dictionary<string, bool> ApplyOnMain(IReadOnlyList<HotkeyRegistration> set)
@@ -117,7 +121,7 @@ internal sealed unsafe class MacHotkeyRegistrar : IHotkeyRegistrar
         return true;
     }
 
-    private bool EnsureHandler(IntPtr target)
+    private unsafe bool EnsureHandler(IntPtr target)
     {
         if (_handlerInstalled)
         {
@@ -135,7 +139,7 @@ internal sealed unsafe class MacHotkeyRegistrar : IHotkeyRegistrar
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static int OnHotKeyEvent(IntPtr nextHandler, IntPtr theEvent, IntPtr userData)
+    private static unsafe int OnHotKeyEvent(IntPtr nextHandler, IntPtr theEvent, IntPtr userData)
     {
         try
         {
@@ -165,7 +169,7 @@ internal sealed unsafe class MacHotkeyRegistrar : IHotkeyRegistrar
 
     // ---- Main-thread dispatch ---------------------------------------------
 
-    private void RunOnMain(Action work)
+    private unsafe void RunOnMain(Action work)
     {
         if (_mainQueue == IntPtr.Zero)
         {
@@ -213,7 +217,7 @@ internal sealed unsafe class MacHotkeyRegistrar : IHotkeyRegistrar
     private static extern IntPtr GetApplicationEventTarget();
 
     [DllImport(Carbon)]
-    private static extern int InstallEventHandler(IntPtr target, IntPtr handler, nuint numTypes, EventTypeSpec* typeList, IntPtr userData, out IntPtr handlerRef);
+    private static extern unsafe int InstallEventHandler(IntPtr target, IntPtr handler, nuint numTypes, EventTypeSpec* typeList, IntPtr userData, out IntPtr handlerRef);
 
     [DllImport(Carbon)]
     private static extern int RegisterEventHotKey(uint keyCode, uint modifiers, EventHotKeyId hotKeyId, IntPtr target, uint options, out IntPtr hotKeyRef);
@@ -222,7 +226,7 @@ internal sealed unsafe class MacHotkeyRegistrar : IHotkeyRegistrar
     private static extern int UnregisterEventHotKey(IntPtr hotKeyRef);
 
     [DllImport(Carbon)]
-    private static extern int GetEventParameter(IntPtr theEvent, uint name, uint desiredType, IntPtr actualType, uint bufferSize, IntPtr actualSize, EventHotKeyId* data);
+    private static extern unsafe int GetEventParameter(IntPtr theEvent, uint name, uint desiredType, IntPtr actualType, uint bufferSize, IntPtr actualSize, EventHotKeyId* data);
 
     [DllImport(LibSystem)]
     private static extern void dispatch_async_f(IntPtr queue, IntPtr context, IntPtr work);
