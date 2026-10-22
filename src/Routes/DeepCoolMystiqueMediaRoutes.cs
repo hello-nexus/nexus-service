@@ -18,6 +18,9 @@ public static partial class DevicesRoutes
     // Bounds a kept source, so full slots of uploads up to MediaImporter.MaxFileSize never pile up gigabytes.
     internal const int MystiqueKeepMaxBytes = 8 * 1024 * 1024;
 
+    /// <summary>Whether uploads stream half a turn round: while the session sends the gyroscope byte 1, which it sends only once the device settings were edited.</summary>
+    internal static bool MystiqueRotatesMedia(DeepCoolMystiqueSettings m) => m.DeviceEdited && !m.Gyroscope;
+
     private static string MystiqueMediaDir() => MediaLibrary.DeviceStoreDir("deepcool-mystique");
 
     private static string MystiqueSourcePath(string id, string ext) => Path.Combine(MystiqueMediaDir(), "sources", id + ext);
@@ -89,10 +92,16 @@ public static partial class DevicesRoutes
                 }
                 // An edit replaces the item in place: the recorded edits sent no source command after the stream.
                 bool inPlace = false;
-                store.Read(s => inPlace = s.Devices.DeepCoolMystique.Media?.Exists(i => i.Id == id) == true);
+                bool rotate = false;
+                store.Read(s =>
+                {
+                    var m = s.Devices.DeepCoolMystique;
+                    inPlace = m.Media?.Exists(i => i.Id == id) == true;
+                    rotate = MystiqueRotatesMedia(m);
+                });
                 var encoded = isGif
-                    ? await MystiqueMediaEncoder.EncodeGifAsync(source, ext, crop, id, budget.Token)
-                    : await MystiqueMediaEncoder.EncodePictureAsync(source, ext, crop, id, budget.Token);
+                    ? await MystiqueMediaEncoder.EncodeGifAsync(source, ext, crop, id, rotate, budget.Token)
+                    : await MystiqueMediaEncoder.EncodePictureAsync(source, ext, crop, id, rotate, budget.Token);
                 if (!encoded.Ok)
                 {
                     return MystiqueMediaFailure(encoded.Error ?? "Encode failed");

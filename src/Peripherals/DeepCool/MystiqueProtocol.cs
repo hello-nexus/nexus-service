@@ -169,7 +169,8 @@ public static class MystiqueProtocol
     {
         Span<byte> p = stackalloc byte[5];
         p[0] = 0x01;
-        // Inverted: turning the gyroscope on in the screen's own software sends 0, and 1 holds the screen upside down.
+        // Inverted: turning the gyroscope on in the screen's own software sends 0. Under 1 the screen shows media half
+        // a turn round, so that software streams them pre-rotated (MystiqueMediaEncoder's rotate).
         p[1] = gyroscope ? (byte)0 : (byte)1;
         p[2] = 0x02;
         p[3] = rgbSource;

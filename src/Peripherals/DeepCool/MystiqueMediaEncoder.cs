@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Media;
@@ -24,7 +26,7 @@ public readonly record struct MystiqueEncodeResult(MystiqueMediaPackage? Package
 /// uploads. Quality steps down, then for a GIF detail is reduced, until the stream fits the recorded
 /// sizes; a source that never fits is refused.
 /// </summary>
-public static class MystiqueMediaEncoder
+public static partial class MystiqueMediaEncoder
 {
     // Starts at the quality whose quantization tables the recorded uploads carry.
     private static readonly int[] Qualities = { 95, 90, 85, 80, 70, 60, 50, 40, 30, 25, 20 };
@@ -44,15 +46,14 @@ public static class MystiqueMediaEncoder
     private const int TimeoutSeconds = 120;
     private const int FrameBytes = MystiqueMedia.Width * MystiqueMedia.Height * 4;
 
-    // A GIF's frames are spread evenly across the whole source, cut to this span for a longer video. Assumed from the
-    // one recorded GIF, whose frames form one whole loop of its unrecorded source.
+    // A GIF's frames are spread evenly across the whole source, cut to this span for a longer video.
     internal const int MaxGifSpanMs = 10_000;
 
-    // Assumed, not yet seen on the wire: the duration field is the span the frames cover. Until a capture shows a
-    // value other than the recorded one, every GIF sends the recorded value.
-    private const bool DurationIsSpan = false;
-
-    public static Task<MystiqueEncodeResult> EncodePictureAsync(byte[] source, string extension, CropRect? crop, string id, CancellationToken ct) =>
+    /// <summary>
+    /// <paramref name="rotate"/> turns the streamed frames half a turn, as the screen's own software does while it
+    /// sends the gyroscope byte 1; the thumbnail stays upright.
+    /// </summary>
+    public static Task<MystiqueEncodeResult> EncodePictureAsync(byte[] source, string extension, CropRect? crop, string id, bool rotate, CancellationToken ct) =>
         RunInWorkDir(source, extension, async (src, dir) =>
         {
             var frames = await DecodeFrames(src, dir, Filter(crop), 1, null, ct).ConfigureAwait(false);
@@ -60,29 +61,38 @@ public static class MystiqueMediaEncoder
             {
                 return MystiqueEncodeResult.Failure("ffmpeg produced no frame.");
             }
+            var upright = frames[0];
+            var sent = upright;
+            if (rotate)
+            {
+                sent = (byte[])upright.Clone();
+                Rotate180(sent);
+            }
             foreach (int q in Qualities)
             {
-                var jpeg = EncodeJpeg(frames[0], q);
+                var jpeg = EncodeJpeg(sent, q);
                 if (jpeg.Length == 0)
                 {
                     return MystiqueEncodeResult.Failure(NoEncoder);
                 }
                 if (jpeg.Length <= MystiqueMedia.MaxPictureJpegBytes)
                 {
-                    return MystiqueEncodeResult.Success(MystiqueMedia.BuildPicture(jpeg, id), jpeg);
+                    return MystiqueEncodeResult.Success(MystiqueMedia.BuildPicture(jpeg, id), rotate ? EncodeJpeg(upright, q) : jpeg);
                 }
             }
             return MystiqueEncodeResult.Failure("The picture is too detailed to fit the screen's limit.");
         });
 
-    public static Task<MystiqueEncodeResult> EncodeGifAsync(byte[] source, string extension, CropRect? crop, string id, CancellationToken ct) =>
+    /// <inheritdoc cref="EncodePictureAsync"/>
+    public static Task<MystiqueEncodeResult> EncodeGifAsync(byte[] source, string extension, CropRect? crop, string id, bool rotate, CancellationToken ct) =>
         RunInWorkDir(source, extension, async (src, dir) =>
         {
-            int spanMs = await SpanMs(src, ct).ConfigureAwait(false);
+            var (spanMs, sourceFrames) = await Probe(src, ct).ConfigureAwait(false);
+            int count = Math.Clamp(sourceFrames, MystiqueMedia.GifFrames, MystiqueMedia.MaxGifFrames);
             foreach (var detail in GifDetailSteps)
             {
-                var frames = await DecodeFrames(src, dir, $"{Filter(crop)}{detail},fps={MystiqueMedia.GifFrames * 1000}/{spanMs}:eof_action=pass",
-                    MystiqueMedia.GifFrames, Seconds(spanMs), ct).ConfigureAwait(false);
+                var frames = await DecodeFrames(src, dir, $"{Filter(crop)}{detail},fps={count * 1000}/{spanMs}:eof_action=pass",
+                    count, Seconds(spanMs), ct).ConfigureAwait(false);
                 if (frames.Count == 0)
                 {
                     // ffmpeg 7's fps filter drops a lone still frame; the still then repeats.
@@ -92,16 +102,22 @@ public static class MystiqueMediaEncoder
                 {
                     return MystiqueEncodeResult.Failure("ffmpeg produced no frames.");
                 }
-                // A still's span is one image's, so it keeps the recorded value either way.
+                // A still's span is one image's, so it sends the recorded still values.
                 bool still = frames.TrueForAll(f => f.AsSpan().SequenceEqual(frames[0]));
-                int durationMs = DurationIsSpan && !still ? spanMs : MystiqueMedia.GifDurationMs;
+                int slots = still ? MystiqueMedia.GifFrames : Math.Max(frames.Count, MystiqueMedia.GifFrames);
+                int durationMs = still ? MystiqueMedia.GifDurationMs : spanMs;
+                var upright = rotate ? (byte[])frames[0].Clone() : frames[0];
+                if (rotate)
+                {
+                    frames.ForEach(Rotate180);
+                }
                 foreach (int q in Qualities)
                 {
                     var encoded = new byte[frames.Count][];
-                    var jpegs = new List<byte[]>(MystiqueMedia.GifFrames);
-                    for (int i = 0; i < MystiqueMedia.GifFrames; i++)
+                    var jpegs = new List<byte[]>(slots);
+                    for (int i = 0; i < slots; i++)
                     {
-                        int k = SlotSource(i, frames.Count);
+                        int k = SlotSource(i, frames.Count, slots);
                         jpegs.Add(encoded[k] ??= EncodeJpeg(frames[k], q));
                     }
                     if (!jpegs.TrueForAll(j => j.Length > 0))
@@ -110,26 +126,42 @@ public static class MystiqueMediaEncoder
                     }
                     if (MystiqueMedia.StreamLength(jpegs) <= MystiqueMedia.MaxGifStreamBytes)
                     {
-                        return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id, durationMs), jpegs[0]);
+                        return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id, durationMs), rotate ? EncodeJpeg(upright, q) : jpegs[0]);
                     }
                 }
             }
             return MystiqueEncodeResult.Failure("The GIF is too detailed to fit the screen's limit.");
         });
 
-    /// <summary>The source's length up to <see cref="MaxGifSpanMs"/>, or the recorded GIF duration when ffmpeg reports none.</summary>
-    private static async Task<int> SpanMs(string src, CancellationToken ct)
+    /// <summary>
+    /// The source's length up to <see cref="MaxGifSpanMs"/> (the recorded still duration when ffmpeg reports none)
+    /// and how many frames that span decodes to.
+    /// </summary>
+    private static async Task<(int SpanMs, int Frames)> Probe(string src, CancellationToken ct)
     {
-        // rawvideo: the bundled ffmpeg has no encoder for the null muxer's default.
-        var stderr = await MediaImporter.RunFfmpeg(TimeoutSeconds, ct, new[] { "-i", src, "-frames:v", "1", "-c:v", "rawvideo", "-f", "null", "-" })
-            .ConfigureAwait(false);
-        return HydroShift2CurveMedia.ParseDuration(stderr) is double seconds and > 0
+        // rawvideo: the bundled ffmpeg has no encoder for the null muxer's default. The tiny scale keeps the count cheap.
+        var stderr = await MediaImporter.RunFfmpeg(TimeoutSeconds, ct, new[]
+        {
+            "-t", Seconds(MaxGifSpanMs), "-i", src, "-an", "-vf", "scale=16:16", "-c:v", "rawvideo", "-f", "null", "-",
+        }).ConfigureAwait(false);
+        int spanMs = HydroShift2CurveMedia.ParseDuration(stderr) is double seconds and > 0
             ? (int)Math.Clamp(Math.Round(seconds * 1000), 1, MaxGifSpanMs)
             : MystiqueMedia.GifDurationMs;
+        var counts = FrameCount().Matches(stderr);
+        int frames = counts.Count > 0 && int.TryParse(counts[^1].Groups[1].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out int n)
+            ? n
+            : MystiqueMedia.GifFrames;
+        return (spanMs, frames);
     }
 
+    [GeneratedRegex(@"frame=\s*(\d+)")]
+    private static partial Regex FrameCount();
+
     /// <summary>The decoded frame a GIF slot shows: with fewer frames than slots, the repeats spread evenly across the loop.</summary>
-    internal static int SlotSource(int slot, int frameCount) => slot * frameCount / MystiqueMedia.GifFrames;
+    internal static int SlotSource(int slot, int frameCount, int slots) => slot * frameCount / slots;
+
+    /// <summary>Turns an RGBX frame half a turn in place: the pixel order reversed.</summary>
+    internal static void Rotate180(byte[] rgbx) => MemoryMarshal.Cast<byte, uint>(rgbx.AsSpan()).Reverse();
 
     private static string Seconds(int ms) => (ms / 1000.0).ToString("0.###", CultureInfo.InvariantCulture);
 
@@ -226,10 +258,15 @@ public static class MystiqueMediaEncoder
         {
             return frames;
         }
-        var bytes = await File.ReadAllBytesAsync(raw, ct).ConfigureAwait(false);
-        for (int offset = 0; offset + FrameBytes <= bytes.Length && frames.Count < count; offset += FrameBytes)
+        await using var stream = File.OpenRead(raw);
+        while (frames.Count < count)
         {
-            frames.Add(bytes.AsSpan(offset, FrameBytes).ToArray());
+            var frame = new byte[FrameBytes];
+            if (await stream.ReadAtLeastAsync(frame, FrameBytes, throwOnEndOfStream: false, ct).ConfigureAwait(false) < FrameBytes)
+            {
+                break;
+            }
+            frames.Add(frame);
         }
         return frames;
     }
