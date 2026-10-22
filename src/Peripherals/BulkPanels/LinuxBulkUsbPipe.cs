@@ -125,9 +125,10 @@ public sealed class LinuxBulkUsbPipeFactory : IBulkUsbPipeFactory
 {
     // Only the Universal Screen 8.8 is claimed on Linux: the claim detaches the kernel driver
     // and the other bulk panels are not validated over usbfs, so they keep the null pipe.
-    private const int SupportedVendorId = 0x1CBE;
-
     private readonly string _sysfsRoot;
+
+    internal static bool Supports(int vendorId, int productId) =>
+        vendorId == UniversalScreen88Protocol.VendorId && productId == UniversalScreen88Protocol.ProductId;
 
     public LinuxBulkUsbPipeFactory() : this(LinuxUsbSysfs.SysfsRoot)
     {
@@ -144,7 +145,7 @@ public sealed class LinuxBulkUsbPipeFactory : IBulkUsbPipeFactory
     public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId, out bool accessDenied)
     {
         accessDenied = false;
-        if (vendorId != SupportedVendorId || productId != UniversalScreen88Protocol.ProductId)
+        if (!Supports(vendorId, productId))
         {
             return null;
         }
