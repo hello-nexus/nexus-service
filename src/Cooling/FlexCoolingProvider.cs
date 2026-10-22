@@ -49,7 +49,12 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private static string DeviceId(string mac) => $"{IdPrefix}{mac}";
 
 
-    private static int MinDuty(FlexFamily family) => family == FlexFamily.SlInfFlex ? 10 : 11;
+    private static int MinDuty(FlexFamily family) => family switch
+    {
+        FlexFamily.SlInfFlex => 10,
+        FlexFamily.P28V2 => FlexProtocol.P28MinDutyPercent,
+        _ => 11,
+    };
 
     private static bool Follows(FlexUnit unit) =>
         unit.Info.Pwm.Length > 0 && unit.Info.Pwm[0] == FlexProtocol.PwmFollowMotherboard;

@@ -227,7 +227,8 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             {
                 continue;
             }
-            if (look.Mode == LianLiWirelessChainLighting.ModeCustom)
+            // P28 has no stored effect tables, so it always streams the engine's frames.
+            if (look.Mode == LianLiWirelessChainLighting.ModeCustom || unit.Family == FlexFamily.P28V2)
             {
                 st.PendingSignature = "";
                 TickStream(unit, st, settings, now);

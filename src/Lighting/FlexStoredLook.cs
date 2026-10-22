@@ -163,6 +163,10 @@ public static class FlexStoredLook
 
     public static Package? Build(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null)
     {
+        if (unit.Family == FlexFamily.P28V2)
+        {
+            return null;
+        }
         try
         {
             if (InGroup(group, unit.Mac))

@@ -273,6 +273,7 @@ public static class LightingDevicesCatalog
         Native("Lian Li", "TL LCD Flex Fan",        "fan",      "0x43A8", "0x0102", screen: true),
         Native("Lian Li", "TL LCD Flex Fan Screen", "fan",      "0x1CBE", "0xA018", screen: true, rgb: false),
         Native("Lian Li", "SL-INF LCD Flex Fan",    "fan",      "0x43A8", "0x0104", screen: true),
+        Native("Lian Li", "P28 V2 Fan",             "fan",      "0x43A8", "0x0105"),
         Native("Lian Li", "SL-INF LCD Flex Fan Screen", "fan",  "0x1CBE", "0xA019", screen: true, rgb: false),
         Native("Lian Li", "Strimer",                "light",    "0x0CF2", "0xA200"),
         Native("Lian Li", "Galahad II Trinity",     "aio",      "0x0416", "0x7373"),

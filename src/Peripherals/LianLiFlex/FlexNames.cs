@@ -7,11 +7,16 @@ namespace Nexus.Service.Peripherals.LianLiFlex;
 /// <summary>Short display names for Flex units: the family, with a number when two units share one.</summary>
 public static class FlexNames
 {
-    public static string Short(FlexFamily family) => family == FlexFamily.SlInfFlex ? "SL-INF Flex" : "TL Flex";
+    public static string Short(FlexFamily family) => family switch
+    {
+        FlexFamily.SlInfFlex => "SL-INF Flex",
+        FlexFamily.P28V2 => "P28 V2",
+        _ => "TL Flex",
+    };
 
     /// <summary>TL units before SL-INF units, then by the user's sort index and MAC.</summary>
     public static IReadOnlyList<FlexUnit> Ordered(IEnumerable<FlexUnit> units, Func<string, int> sortIndexOf) =>
-        units.OrderBy(u => u.Family == FlexFamily.SlInfFlex ? 1 : 0)
+        units.OrderBy(u => u.Family == FlexFamily.SlInfFlex ? 1 : u.Family == FlexFamily.P28V2 ? 2 : 0)
             .ThenBy(u => sortIndexOf(u.Mac))
             .ThenBy(u => u.Mac, StringComparer.Ordinal)
             .ToList();

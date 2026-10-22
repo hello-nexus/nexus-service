@@ -13,6 +13,7 @@ public static class FlexProtocol
     public const int ReceiverVendorId = 0x43A8;
     public const int TlReceiverProductId = 0x0102;
     public const int SlInfReceiverProductId = 0x0104;
+    public const int P28ReceiverProductId = 0x0105;
     public const int TlScreenProductId = 0xA018;
     public const int SlInfScreenProductId = 0xA019;
     public const int ScreenVendorId = 0x1CBE;
@@ -43,18 +44,36 @@ public static class FlexProtocol
 
     public const int TlLedsPerFan = 26;
     public const int SlInfLedsPerFan = 44;
+    public const int P28LedsPerFan = 9;
+    public const int P28MaxFans = 4;
+
+    /// <summary>The first fan-type byte of a P28 unit in the 0x12 reply.</summary>
+    public const byte P28FansType = 63;
+
+    /// <summary>Lowest duty percent the vendor software sends to a P28 fan.</summary>
+    public const int P28MinDutyPercent = 8;
 
     public static bool IsReceiverProduct(int vid, int pid) =>
-        vid == ReceiverVendorId && (pid == TlReceiverProductId || pid == SlInfReceiverProductId);
+        vid == ReceiverVendorId && (pid == TlReceiverProductId || pid == SlInfReceiverProductId || pid == P28ReceiverProductId);
 
     public static bool IsScreenProduct(int vid, int pid) =>
         vid == ScreenVendorId && (pid == TlScreenProductId || pid == SlInfScreenProductId);
 
-    public static FlexFamily FamilyOfReceiver(int pid) => pid == SlInfReceiverProductId ? FlexFamily.SlInfFlex : FlexFamily.TlFlex;
+    public static FlexFamily FamilyOfReceiver(int pid) => pid switch
+    {
+        SlInfReceiverProductId => FlexFamily.SlInfFlex,
+        P28ReceiverProductId => FlexFamily.P28V2,
+        _ => FlexFamily.TlFlex,
+    };
 
     public static FlexFamily FamilyOfScreen(int pid) => pid == SlInfScreenProductId ? FlexFamily.SlInfFlex : FlexFamily.TlFlex;
 
-    public static int LedsPerFan(FlexFamily family) => family == FlexFamily.SlInfFlex ? SlInfLedsPerFan : TlLedsPerFan;
+    public static int LedsPerFan(FlexFamily family) => family switch
+    {
+        FlexFamily.SlInfFlex => SlInfLedsPerFan,
+        FlexFamily.P28V2 => P28LedsPerFan,
+        _ => TlLedsPerFan,
+    };
 
     /// <summary>
     /// First bytes this module may put on a receiver. Everything else (firmware and theme-data
@@ -125,6 +144,10 @@ public static class FlexProtocol
     /// <summary>The duty percent actually requested: each family has a floor, and zero maps to a low stand-in that parks the fan.</summary>
     public static int ClampDutyPercent(FlexFamily family, int percent)
     {
+        if (family == FlexFamily.P28V2)
+        {
+            return percent <= 0 ? 0 : Math.Max(percent, P28MinDutyPercent);
+        }
         if (percent <= 0)
         {
             return 5;
@@ -132,8 +155,16 @@ public static class FlexProtocol
         return Math.Max(percent, family == FlexFamily.SlInfFlex ? 10 : 11);
     }
 
-    public static byte EncodeDuty(FlexFamily family, int percent) =>
-        (byte)Math.Round(Math.Min(ClampDutyPercent(family, percent), 100) / 100.0 * 255.0, MidpointRounding.AwayFromZero);
+    public static byte EncodeDuty(FlexFamily family, int percent)
+    {
+        if (family == FlexFamily.P28V2 && percent <= 0)
+        {
+            return 1;
+        }
+        var wire = (byte)Math.Round(Math.Min(ClampDutyPercent(family, percent), 100) / 100.0 * 255.0, MidpointRounding.AwayFromZero);
+        // A computed duty must never read as the follow-motherboard marker.
+        return wire == PwmFollowMotherboard ? (byte)(PwmFollowMotherboard + 1) : wire;
+    }
 
     /// <summary>Decodes a reported duty byte to a percent.</summary>
     public static int DecodeDuty(int wire) =>
@@ -273,6 +304,7 @@ public static class FlexProtocol
             (FlexFamily.SlInfFlex, "center") => Range(0, 8),
             (FlexFamily.SlInfFlex, "inner") => Concat(Range(8, 10), Range(26, 10)),
             (FlexFamily.SlInfFlex, "outer") => Concat(Range(18, 8), Range(36, 8)),
+            (FlexFamily.P28V2, "fan") => Range(0, P28LedsPerFan),
             _ => Array.Empty<int>(),
         };
     }
@@ -321,4 +353,12 @@ public sealed class FlexReceiverInfo
     public bool PlayingMotherboardArgb => PortFlags.Length > 0 && (PortFlags[0] & 0x4) != 0;
 
     public bool PwmLinePresent => PortFlags.Length > 0 && (PortFlags[0] & 0x2) != 0;
+
+    public bool IsP28 => FansType == FlexProtocol.P28FansType;
+
+    /// <summary>P28 only: the sync line is on when bit 7 of byte 31 is clear. Its flag bits never reach <see cref="Rpm"/>.</summary>
+    public bool P28SyncLineOn => IsP28 && PortFlags.Length > 1 && (PortFlags[1] & 0x8) == 0;
+
+    /// <summary>P28 only: gear from bits 4 to 6 of byte 31.</summary>
+    public int P28Gear => IsP28 && PortFlags.Length > 1 ? PortFlags[1] & 0x7 : 0;
 }
