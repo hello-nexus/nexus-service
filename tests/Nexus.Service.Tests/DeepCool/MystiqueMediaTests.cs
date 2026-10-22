@@ -186,6 +186,45 @@ public class MystiqueMediaTests
         }
     }
 
+    [FfmpegFact]
+    public async Task An_oversized_source_is_kept_as_a_smaller_copy_the_encoder_still_takes()
+    {
+        var picture = await MystiqueMediaEncoder.ReduceForKeepingAsync(Png(4000, 3000), ".png", clip: false);
+
+        Assert.NotNull(picture);
+        Assert.Equal(".jpg", picture.Value.Ext);
+        using (var kept = SKBitmap.Decode(picture.Value.Bytes))
+        {
+            Assert.Equal((MystiqueMediaEncoder.KeepLongSide, MystiqueMediaEncoder.KeepLongSide * 3 / 4), (kept.Width, kept.Height));
+        }
+        var encoded = await MystiqueMediaEncoder.EncodePictureAsync(picture.Value.Bytes, picture.Value.Ext, null, PictureId, CancellationToken.None);
+        Assert.True(encoded.Ok, encoded.Error);
+
+        var dir = Path.Combine(Path.GetTempPath(), $"mystique-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            for (int i = 0; i < 30; i++)
+            {
+                await File.WriteAllBytesAsync(Path.Combine(dir, $"f{i:000}.png"), Png(320, 240, i * 4));
+            }
+            var gif = Path.Combine(dir, "clip.gif");
+            Run(FfmpegResolver.Path!, "-v", "error", "-y", "-framerate", "30", "-i", Path.Combine(dir, "f%03d.png"), "-f", "gif", gif);
+
+            var clip = await MystiqueMediaEncoder.ReduceForKeepingAsync(await File.ReadAllBytesAsync(gif), ".gif", clip: true);
+
+            Assert.NotNull(clip);
+            Assert.Equal(".mp4", clip.Value.Ext);
+            var moving = await MystiqueMediaEncoder.EncodeGifAsync(clip.Value.Bytes, clip.Value.Ext, null, GifId, CancellationToken.None);
+            Assert.True(moving.Ok, moving.Error);
+            Assert.True(moving.Package!.Frames.Select(f => Hex(f[MystiqueMedia.HeaderLength..])).Distinct().Count() > 1);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     /// <summary>SOI, JFIF 1.01 APP0, two DQT, SOF0 480x640 with 2x2 luma and 1x1 chroma, four DHT, SOS: as recorded.</summary>
     private static void AssertRecordedLayout(byte[] jpeg)
     {

@@ -110,11 +110,12 @@ public sealed class MystiqueSession
 
     /// <summary>
     /// Streams a picture or GIF as the screen's own software does: the announce command, every frame as
-    /// 64-byte writes, the finish packet, then the source command for that kind. Nothing streams unless the
-    /// screen answered the announce. True once a clean stream is finished, whether or not the source
-    /// command is answered; an unanswered one is re-sent by the next <see cref="Apply"/>.
+    /// 64-byte writes, the finish packet, then the source command for that kind unless
+    /// <paramref name="selectSource"/> is false, as for an edit that replaces an item in place. Nothing
+    /// streams unless the screen answered the announce. True once a clean stream is finished, whether or
+    /// not the source command is answered; an unanswered one is re-sent by the next <see cref="Apply"/>.
     /// </summary>
-    public bool Upload(MystiqueMediaPackage package)
+    public bool Upload(MystiqueMediaPackage package, bool selectSource = true)
     {
         if (!Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildUploadStart(), out _, out bool announced)
             || !announced)
@@ -140,6 +141,10 @@ public sealed class MystiqueSession
         if (_pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish) != finish.Length)
         {
             return false;
+        }
+        if (!selectSource)
+        {
+            return true;
         }
         var source = package.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
         bool delivered = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildMediaSource(source),

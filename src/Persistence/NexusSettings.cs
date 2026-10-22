@@ -2384,7 +2384,8 @@ public sealed class DeepCoolMystiqueSettings
     public bool RecordFrequency { get; set; } = true;
     public bool RecordTemperature { get; set; } = true;
     public int Brightness { get; set; } = 70;
-    public bool Gyroscope { get; set; } = true;
+    // Off as the screen ships (the recorded first start sends it off); no reply reports the current value.
+    public bool Gyroscope { get; set; }
     public bool RgbSync { get; set; }
 
     /// <summary>Sensor behind the CPU temperature readout; empty category picks the CPU package temperature.</summary>

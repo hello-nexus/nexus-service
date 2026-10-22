@@ -25,6 +25,7 @@ public sealed class MystiqueWorker : BackgroundService
     private const int LogEveryMs = 60_000;
     private const int MaxBackoffMs = 5 * 60 * 1000;
     private const int StableSessionMs = 30_000;
+    private const int FormatRetryWaitMs = 15_000;
 
     private readonly IBulkUsbPipeFactory _pipes;
     private readonly DeviceControlGate _gate;
@@ -70,6 +71,9 @@ public sealed class MystiqueWorker : BackgroundService
 
     private PendingUpload? _pendingUpload;
 
+    // Counts opened sessions, so a format retry waits for a fresh one rather than the one that failed.
+    private int _sessions;
+
     /// <summary>
     /// Held by the media route from the slot choice to the saved entry, so two pictures cannot both take
     /// the last slot.
@@ -81,10 +85,36 @@ public sealed class MystiqueWorker : BackgroundService
     /// pipes. False when no screen is connected, another upload is waiting, the stream fails, or the
     /// caller gives up before the stream starts; once it has started, the real result is awaited.
     /// </summary>
-    public Task<bool> UploadAsync(MystiqueMediaPackage package, CancellationToken ct) => RunMediaAsync(s => s.Upload(package), ct);
+    public Task<bool> UploadAsync(MystiqueMediaPackage package, bool selectSource, CancellationToken ct) =>
+        RunMediaAsync(s => s.Upload(package, selectSource), ct);
 
-    /// <summary>Erases every picture and GIF on the screen, between ticks like an upload.</summary>
-    public Task<bool> FormatAsync(CancellationToken ct) => RunMediaAsync(s => s.Format(), ct);
+    /// <summary>
+    /// Erases every picture and GIF on the screen, between ticks like an upload. A refused or unanswered
+    /// format reopens the session, and the format goes once more on the next one: the recorded screen
+    /// answered it within a millisecond, so a missed reply is a lost exchange, and erasing twice is harmless.
+    /// </summary>
+    public async Task<bool> FormatAsync(CancellationToken ct)
+    {
+        int session = Volatile.Read(ref _sessions);
+        if (await RunMediaAsync(s => s.Format(), ct).ConfigureAwait(false))
+        {
+            return true;
+        }
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        wait.CancelAfter(FormatRetryWaitMs);
+        try
+        {
+            while (!_connected || Volatile.Read(ref _sessions) == session)
+            {
+                await Task.Delay(Math.Min(_tickMs, 100), wait.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        return await RunMediaAsync(s => s.Format(), ct).ConfigureAwait(false);
+    }
 
     private async Task<bool> RunMediaAsync(Func<MystiqueSession, bool> run, CancellationToken ct)
     {
@@ -207,6 +237,7 @@ public sealed class MystiqueWorker : BackgroundService
             return false;
         }
         ServiceLog.Info($"[{HandlerId}] connected {session.Info}");
+        Interlocked.Increment(ref _sessions);
         _connected = true;
         try
         {
