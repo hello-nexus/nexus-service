@@ -92,6 +92,7 @@ src/
   Panel/               # panel pairing, kiosk launch, backgrounds; Streams/ = streamed-panel sessions + transports
   Sentry/              # lock alert: armed on a locked PC, the first input pushes to paired phones through the cloud API (reads no input itself)
   Deck/  Rendering/    # deck action model + headless executor; server-rendered tiles and key images
+  Hotkeys/             # global hotkeys: bindings, OS registration status, firing; registered with the OS only (Carbon on macOS, the user helper's RegisterHotKey on Windows), never by capturing keystrokes
   Widgets/  Store/     # nexus.app/1 app host and installer; cloud app-store proxy, entitlements
   Gallery/  Media/     # shared image/video sources; media import + library
   Activity/            # screen time, app detection, audio analysis
