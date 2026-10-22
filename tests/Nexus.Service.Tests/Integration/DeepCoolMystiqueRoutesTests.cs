@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Auth;
 using Nexus.Service.Devices;
+using Nexus.Service.Peripherals.DeepCool;
 using Nexus.Service.Persistence;
 using Nexus.Service.Routes;
 using Xunit;
@@ -57,6 +58,11 @@ public class DeepCoolMystiqueRoutesTests
     [Theory]
     [InlineData("{\"mode\":\"gaming\"}")]
     [InlineData("{\"readout\":\"voltage\"}")]
+    [InlineData("{\"style\":\"gauge\"}")]
+    [InlineData("{\"auxArea\":\"fps\"}")]
+    [InlineData("{\"switchSeconds\":4}")]
+    [InlineData("{\"animation\":\"wipe\"}")]
+    [InlineData("{\"mediaSource\":\"video\"}")]
     [InlineData("{\"cpuFan\":{\"category\":\"nonsense\",\"sensor\":\"x\"}}")]
     [InlineData("{\"pump\":{\"category\":\"\",\"sensor\":\"orphan\"}}")]
     public async Task Unknown_values_are_refused(string body)
@@ -146,6 +152,70 @@ public class DeepCoolMystiqueRoutesTests
         Assert.True(m.RecordingEdited);
         Assert.False(m.RecordFrequency);
         Assert.False(m.ModeEdited);
+    }
+
+    [Fact]
+    public void Media_and_style_settings_mark_the_group_of_the_command_that_carries_them()
+    {
+        var m = new DeepCoolMystiqueSettings();
+
+        DevicesRoutes.ApplyMystiqueRequest(m, new DeepCoolMystiqueSettingsRequest { Style = DeepCoolMystiqueSettings.StyleRing, AuxArea = DeepCoolMystiqueSettings.AuxVoltage });
+        Assert.True(m.ReadoutEdited);
+        Assert.False(m.MediaEdited || m.SourceEdited || m.DeviceEdited);
+
+        DevicesRoutes.ApplyMystiqueRequest(m, new DeepCoolMystiqueSettingsRequest { SwitchSeconds = 7, Animation = DeepCoolMystiqueSettings.AnimationFade });
+        Assert.True(m.MediaEdited);
+        Assert.False(m.SourceEdited || m.DeviceEdited);
+
+        DevicesRoutes.ApplyMystiqueRequest(m, new DeepCoolMystiqueSettingsRequest { MediaSource = DeepCoolMystiqueSettings.SourceGif });
+        Assert.True(m.SourceEdited);
+        Assert.False(m.DeviceEdited);
+
+        DevicesRoutes.ApplyMystiqueRequest(m, new DeepCoolMystiqueSettingsRequest { EdgePicking = true });
+        Assert.True(m.DeviceEdited && m.EdgePicking);
+    }
+
+    [Fact]
+    public void Uploads_reuse_the_gif_slot_and_stop_at_the_picture_slots()
+    {
+        using var factory = new NexusAppFactory();
+        var store = factory.Services.GetRequiredService<IConfigStore>();
+        var a = new byte[] { 1 };
+        var b = new byte[] { 2 };
+        var c = new byte[] { 3 };
+        string idA = MystiqueMedia.IdOf(MystiqueMedia.KindPicture, a);
+        string idB = MystiqueMedia.IdOf(MystiqueMedia.KindPicture, b);
+        const string gifId = "acd9325521f3493c86bfc0b0aa85658d";
+        store.Update(s => s.Devices.DeepCoolMystique.Media = new()
+        {
+            new DeepCoolMystiqueMediaItem { Kind = "picture", Id = idA },
+            new DeepCoolMystiqueMediaItem { Kind = "picture", Id = idB },
+            new DeepCoolMystiqueMediaItem { Kind = "gif", Id = gifId },
+        });
+
+        Assert.Equal(gifId, DevicesRoutes.MystiqueUploadId(store, "gif", c, ""));
+        Assert.Null(DevicesRoutes.MystiqueUploadId(store, "picture", c, ""));
+        Assert.Equal(idB, DevicesRoutes.MystiqueUploadId(store, "picture", c, idB));
+        Assert.Equal(idA, DevicesRoutes.MystiqueUploadId(store, "picture", a, ""));
+        Assert.Null(DevicesRoutes.MystiqueUploadId(store, "picture", c, gifId));
+    }
+
+    [Fact]
+    public async Task An_upload_with_no_screen_connected_is_refused_before_any_encode()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+        using var form = new MultipartFormDataContent
+        {
+            { new ByteArrayContent(new byte[] { 1, 2, 3 }), "file", "a.png" },
+            { new StringContent("picture"), "kind" },
+        };
+
+        var res = await client.PostAsync("/devices/deepcool-mystique/media", form);
+
+        using var body = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.True(body.RootElement.GetProperty("error").GetBoolean());
+        Assert.Empty(factory.Services.GetRequiredService<IConfigStore>().Load().Devices.DeepCoolMystique.Media);
     }
 
     [Fact]

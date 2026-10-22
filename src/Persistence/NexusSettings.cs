@@ -2146,6 +2146,20 @@ public sealed class HydroShift2CurveSettings
     public bool? OfflineMode { get; set; }
 }
 
+/// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>
+public sealed class DeepCoolMystiqueMediaItem
+{
+    /// <summary>"picture" or "gif".</summary>
+    public string Kind { get; set; } = "picture";
+
+    /// <summary>The identifier the screen stores the item under.</summary>
+    public string Id { get; set; } = "";
+
+    public string Name { get; set; } = "";
+
+    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? "picture", Id = Id ?? "", Name = Name ?? "" };
+}
+
 /// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
 public sealed class DeepCoolMystiqueSensorPick
 {
@@ -2175,11 +2189,32 @@ public sealed class DeepCoolMystiqueSettings
     public const string ReadoutFan = "fan";
     public const string ReadoutFanPump = "fanPump";
 
+    public const string StyleNormal = "normal";
+    public const string StyleRing = "ring";
+    public const string StyleStopwatch = "stopwatch";
+
+    public const string AuxVoltage = "voltage";
+    public const string AuxSystemMonitor = "systemMonitor";
+    public const string AuxCoreData = "coreData";
+
+    public const string AnimationSplit = "split";
+    public const string AnimationScroll = "scroll";
+    public const string AnimationFade = "fade";
+
+    public const string SourceImages = "images";
+    public const string SourceGif = "gif";
+
     /// <summary>The user picked a screen mode, so it is written on connect.</summary>
     public bool ModeEdited { get; set; }
 
-    /// <summary>The user picked a monitor readout.</summary>
+    /// <summary>The user changed the monitor readout, its style or the auxiliary area, which share one command.</summary>
     public bool ReadoutEdited { get; set; }
+
+    /// <summary>The user changed the image switch time or animation, which share one command.</summary>
+    public bool MediaEdited { get; set; }
+
+    /// <summary>The user picked whether the pictures or the GIF plays.</summary>
+    public bool SourceEdited { get; set; }
 
     /// <summary>The user changed a recording-tab readout.</summary>
     public bool RecordingEdited { get; set; }
@@ -2189,6 +2224,15 @@ public sealed class DeepCoolMystiqueSettings
 
     public string Mode { get; set; } = ModeMonitor;
     public string Readout { get; set; } = ReadoutTemperature;
+    public string ReadoutStyle { get; set; } = StyleNormal;
+    public string AuxArea { get; set; } = AuxCoreData;
+    public int SwitchSeconds { get; set; } = 3;
+    public string Animation { get; set; } = AnimationSplit;
+    public string MediaSource { get; set; } = SourceImages;
+    public bool EdgePicking { get; set; }
+
+    /// <summary>Pictures and the GIF this PC has put on the screen; the screen cannot be read back.</summary>
+    public List<DeepCoolMystiqueMediaItem> Media { get; set; } = new();
     public bool RecordFrequency { get; set; } = true;
     public bool RecordTemperature { get; set; } = true;
     public int Brightness { get; set; } = 70;
@@ -2219,6 +2263,11 @@ public sealed class DeepCoolMystiqueSettings
         var copy = (DeepCoolMystiqueSettings)MemberwiseClone();
         copy.Mode = Mode ?? ModeMonitor;
         copy.Readout = Readout ?? ReadoutTemperature;
+        copy.ReadoutStyle = ReadoutStyle ?? StyleNormal;
+        copy.AuxArea = AuxArea ?? AuxCoreData;
+        copy.Animation = Animation ?? AnimationSplit;
+        copy.MediaSource = MediaSource ?? SourceImages;
+        copy.Media = Media is null ? new List<DeepCoolMystiqueMediaItem>() : Media.ConvertAll(m => m.Copy());
         copy.CpuTemperature = CpuTemperature?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuFrequency = CpuFrequency?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuUsage = CpuUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();
