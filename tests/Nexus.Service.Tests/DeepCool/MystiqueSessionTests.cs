@@ -117,7 +117,7 @@ public class MystiqueSessionTests
     }
 
     [Fact]
-    public void A_picture_waits_the_recorded_gap_before_its_source_command_and_a_gif_does_not()
+    public void A_picture_waits_the_recorded_gap_before_the_next_command_and_a_gif_does_not()
     {
         var pipe = new FakePipe();
         var slept = new List<int>();
@@ -130,6 +130,9 @@ public class MystiqueSessionTests
         Assert.True(session.Upload(MystiqueMedia.BuildGif(Enumerable.Range(0, MystiqueMedia.GifFrames).Select(_ => new byte[100]).ToList(), "acd9325521f3493c86bfc0b0aa85658d")));
 
         Assert.Equal(new[] { 410 }, slept);
+        var picture = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
+        Assert.Equal(2, session.Upload(new[] { picture, picture }));
+        Assert.Equal(new[] { 410, 410, 410 }, slept);
     }
 
     [Fact]

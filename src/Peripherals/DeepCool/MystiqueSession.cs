@@ -24,12 +24,12 @@ public sealed class MystiqueSession
     // miss is resent by the next Apply.
     private const int SourceReplyTimeoutMs = 2000;
 
-    // The screen's own software waits 409 ms after a picture's finish packet before the source command
-    // (capture 2), and follows a GIF's within 160 ms.
-    private const int PictureSourceGapMs = 410;
+    // The screen sends no ready event after a picture, so the next command waits as long as the screen's own
+    // software does (capture 2), which follows a GIF far sooner.
+    private const int AfterPictureGapMs = 410;
 
-    // Stream write size, a whole number of packets: the transport splits each write into the 64-byte packets
-    // the screen's own software sends one by one, and WinUSB adds no zero-length packet without SHORT_PACKET_TERMINATE.
+    // A whole number of the endpoint's packets, which the transport splits each write into; WinUSB adds no
+    // zero-length packet without SHORT_PACKET_TERMINATE.
     private const int StreamChunkBytes = 16 * 1024;
 
     // Recovery writes stop this long after a failure, so a stalled screen frees the worker; a recorded
@@ -140,6 +140,10 @@ public sealed class MystiqueSession
         long started = _monotonicMs();
         for (int p = 0; p < packages.Count; p++)
         {
+            if (p > 0 && packages[p - 1].Kind == MystiqueMedia.KindPicture)
+            {
+                _sleep(AfterPictureGapMs);
+            }
             if (!Stream(packages[p], ref streamed, progress))
             {
                 return p;
@@ -153,7 +157,7 @@ public sealed class MystiqueSession
         {
             if (last.Kind == MystiqueMedia.KindPicture)
             {
-                _sleep(PictureSourceGapMs);
+                _sleep(AfterPictureGapMs);
             }
             SendSource(chosen);
         }

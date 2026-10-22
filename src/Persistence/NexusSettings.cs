@@ -2300,6 +2300,9 @@ public sealed class DeepCoolMystiqueMediaItem
     /// <summary>The id the screen holds a picture under when it differs from <see cref="Id"/>, as after a click swapped it into the first place; empty otherwise.</summary>
     public string ScreenId { get; set; } = "";
 
+    /// <summary>The screen's copy of this picture did not finish streaming; the next picture show sends it again.</summary>
+    public bool Unsent { get; set; }
+
     public string Name { get; set; } = "";
 
     /// <summary>Extension of the kept source file, for re-cropping; empty when none was kept.</summary>
@@ -2308,7 +2311,7 @@ public sealed class DeepCoolMystiqueMediaItem
     /// <summary>The crop the item was last encoded with, in <see cref="Nexus.Service.Media.CropRect"/> text form; empty for the whole frame.</summary>
     public string Crop { get; set; } = "";
 
-    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", ScreenId = ScreenId ?? "", Name = Name ?? "", Ext = Ext ?? "", Crop = Crop ?? "" };
+    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", ScreenId = ScreenId ?? "", Unsent = Unsent, Name = Name ?? "", Ext = Ext ?? "", Crop = Crop ?? "" };
 }
 
 /// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
