@@ -198,6 +198,21 @@ public class CorsairLinkHubHandleTests
     }
 
     [Fact]
+    public void SendColors_streams_zero_channels_unmodified()
+    {
+        var (hub, device) = Connected();
+        var before = device.Commands.Count;
+        var frame = new byte[34 * 3];
+        frame[0] = 0xFF;
+        frame[1] = 0x0E;
+
+        Assert.True(hub.SendColors(frame));
+
+        var sent = device.Commands.Skip(before).SelectMany(c => c).ToArray();
+        Assert.True(sent.AsSpan().IndexOf(frame) >= 0);
+    }
+
+    [Fact]
     public void Telemetry_poll_leaves_the_colour_handle_open()
     {
         var (hub, device) = Connected();
