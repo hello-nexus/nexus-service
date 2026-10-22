@@ -298,25 +298,30 @@ public class DeepCoolMystiqueRoutesTests
     }
 
     [Theory]
-    [InlineData(false, "images", true, "images", true, "gif")]
-    [InlineData(false, "images", true, "gif", true, "gif")]
-    [InlineData(false, "gif", true, "images", true, "images")]
-    [InlineData(false, "images", false, "images", true, "images")]
-    [InlineData(true, "images", true, "images", true, "images")]
-    [InlineData(true, "images", false, "images", false, null)]
-    public void After_a_stream_a_new_item_selects_its_kind_unless_the_user_chose_meanwhile(
-        bool inPlace, string startSource, bool startChosen, string nowSource, bool nowChosen, string? sent)
+    [InlineData(false, false, "images", true, "gif")]
+    [InlineData(false, false, "gif", true, "gif")]
+    [InlineData(false, false, "images", false, "gif")]
+    [InlineData(false, true, "images", true, "images")]
+    [InlineData(true, false, "images", true, null)]
+    [InlineData(true, true, "gif", true, null)]
+    public void After_a_stream_a_new_item_selects_its_kind_unless_the_user_chose_meanwhile_and_an_edit_sends_none(
+        bool inPlace, bool chosenDuringStream, string stored, bool storedChosen, string? sent)
     {
-        var m = new DeepCoolMystiqueSettings { MediaSource = nowSource, SourceEdited = nowChosen };
+        var m = new DeepCoolMystiqueSettings { MediaSource = stored, SourceEdited = storedChosen };
 
-        var result = DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: true, inPlace, startSource, startChosen);
+        Assert.Equal(sent, DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: true, inPlace, chosenDuringStream));
+        Assert.Equal(sent ?? stored, m.MediaSource);
+    }
 
-        Assert.Equal(sent, result);
-        if (sent is not null)
-        {
-            Assert.Equal(sent, m.MediaSource);
-            Assert.True(m.SourceEdited);
-        }
+    [Fact]
+    public void Picking_the_same_source_again_still_counts_as_a_choice()
+    {
+        var m = new DeepCoolMystiqueSettings { MediaSource = DeepCoolMystiqueSettings.SourceImages, SourceEdited = true };
+        int before = DevicesRoutes.MystiqueSourceChoices;
+
+        DevicesRoutes.ApplyMystiqueRequest(m, new DeepCoolMystiqueSettingsRequest { MediaSource = DeepCoolMystiqueSettings.SourceImages });
+
+        Assert.NotEqual(before, DevicesRoutes.MystiqueSourceChoices);
     }
 
     [Fact]

@@ -21,11 +21,15 @@ public static partial class DevicesRoutes
     /// <summary>
     /// Saves the source a finished stream leaves the screen on and returns the one to send (null for none). A new
     /// item selects its kind, as the screen's own software does, unless the user chose a source during the stream.
-    /// An edit in place re-sends the stored source: inferred, the screen may redraw an edited item only on it.
+    /// An edit in place sends none: the recorded edits sent no source command after the stream.
     /// </summary>
-    internal static string? MystiqueSourceAfterUpload(DeepCoolMystiqueSettings m, bool isGif, bool inPlace, string startSource, bool startChosen)
+    internal static string? MystiqueSourceAfterUpload(DeepCoolMystiqueSettings m, bool isGif, bool inPlace, bool chosenDuringStream)
     {
-        if (!inPlace && m.MediaSource == startSource && m.SourceEdited == startChosen)
+        if (inPlace)
+        {
+            return null;
+        }
+        if (!chosenDuringStream)
         {
             m.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
             m.SourceEdited = true;
@@ -120,15 +124,13 @@ public static partial class DevicesRoutes
                 }
                 bool inPlace = false;
                 bool rotate = false;
-                string startSource = "";
-                bool startChosen = false;
+                int startChoices = 0;
                 store.Read(s =>
                 {
                     var m = s.Devices.DeepCoolMystique;
                     inPlace = m.Media?.Exists(i => i.Id == id) == true;
                     rotate = MystiqueRotatesMedia(m);
-                    startSource = m.MediaSource;
-                    startChosen = m.SourceEdited;
+                    startChoices = MystiqueSourceChoices;
                 });
                 var encoded = isGif
                     ? await MystiqueMediaEncoder.EncodeGifAsync(source, ext, crop, id, rotate, budget.Token)
@@ -142,7 +144,7 @@ public static partial class DevicesRoutes
                 string? SourceAfterStream()
                 {
                     string? send = null;
-                    store.Update(s => send = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif, inPlace, startSource, startChosen));
+                    store.Update(s => send = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif, inPlace, MystiqueSourceChoices != startChoices));
                     return send;
                 }
                 if (!await worker.UploadAsync(package, SourceAfterStream, budget.Token))
