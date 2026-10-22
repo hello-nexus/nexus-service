@@ -64,6 +64,15 @@ internal static class TelemetryRoutes
             });
         }).LocalhostOnly();
 
+        // Dashboard-only: the SPA reports which page is open; AppUsageTracker dedupes to once per page per UTC day and consent gates the capture.
+        app.MapPost("/telemetry/page-viewed/{page}", (string page, AppUsageTracker usage) =>
+        {
+            if (!PageSlug.IsMatch(page))
+                return Results.Json(ApiResponse.Fail("invalid page"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            usage.NotePage(page);
+            return Results.NoContent();
+        }).LocalhostOnly();
+
         // nexus-web (dashboard and paired panels/phones) relays browser errors here; the same opt-out, scrubbing and caps as service errors apply.
         app.MapPost("/telemetry/client-errors", async (HttpContext ctx, ErrorReporter reporter) =>
         {
@@ -98,6 +107,9 @@ internal static class TelemetryRoutes
             return Results.NoContent();
         }).AllowPanel();
     }
+
+    private static readonly System.Text.RegularExpressions.Regex PageSlug = new(
+        "^[a-z0-9][a-z0-9-]{0,39}\\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     private const int MaxClientErrors = 10;
     private const int MaxClientErrorsBytes = 128 * 1024;

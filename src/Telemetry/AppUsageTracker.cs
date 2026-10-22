@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace Nexus.Service.Telemetry;
 
-/// <summary>Emits app_used at most once per app per UTC day. The day's set lives in a small file so a restart does not re-emit.</summary>
+/// <summary>Emits app_used (and page_viewed, keyed "page:" in the same set) at most once per key per UTC day. The day's set lives in a small file so a restart does not re-emit.</summary>
 public sealed class AppUsageTracker
 {
     private readonly ITelemetry _telemetry;
@@ -23,7 +23,23 @@ public sealed class AppUsageTracker
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
 
+    // Page keys come from caller-chosen slugs, so the day's set is capped; the per-day reset bounds it across days.
+    private const int MaxKeysPerDay = 512;
+    private const string PagePrefix = "page:";
+
     public void Note(string appId, string appVersion)
+    {
+        if (!TryMark(appId, isPage: false)) return;
+        _telemetry.Capture(TelemetryEvents.AppUsed, ("app_id", appId), ("app_version", appVersion));
+    }
+
+    public void NotePage(string page)
+    {
+        if (!TryMark(PagePrefix + page, isPage: true)) return;
+        _telemetry.Capture(TelemetryEvents.PageViewed, ("page", page));
+    }
+
+    private bool TryMark(string key, bool isPage)
     {
         lock (_lock)
         {
@@ -38,10 +54,11 @@ public sealed class AppUsageTracker
                 _day = today;
                 _seen.Clear();
             }
-            if (!_seen.Add(appId)) return;
+            if (isPage && _seen.Count >= MaxKeysPerDay) return false;
+            if (!_seen.Add(key)) return false;
             Save();
+            return true;
         }
-        _telemetry.Capture(TelemetryEvents.AppUsed, ("app_id", appId), ("app_version", appVersion));
     }
 
     private void Load()
