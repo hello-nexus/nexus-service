@@ -108,6 +108,47 @@ public static class MystiqueMediaEncoder
             return MystiqueEncodeResult.Failure("The GIF is too detailed to fit the screen's limit.");
         });
 
+    // Long side of a reduced kept source: a crop spanning a third of it still has the screen's 640 rows.
+    internal const int KeepLongSide = 1920;
+
+    /// <summary>
+    /// A smaller copy of a source for a later re-crop, null when ffmpeg made none: a picture as a JPEG, a GIF
+    /// or video as an H.264 MP4 of the span the encoder reads, both at most <see cref="KeepLongSide"/> on
+    /// the long side. Not cancellable: it runs after the screen took the upload, which is recorded regardless.
+    /// </summary>
+    public static async Task<(byte[] Bytes, string Ext)?> ReduceForKeepingAsync(byte[] source, string extension, bool clip)
+    {
+        if (source.Length == 0 || FfmpegResolver.Path is null)
+        {
+            return null;
+        }
+        var dir = Path.Combine(Path.GetTempPath(), "nexus-mystique-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var src = Path.Combine(dir, "source" + SafeExtension(extension));
+            await File.WriteAllBytesAsync(src, source).ConfigureAwait(false);
+            string ext = clip ? ".mp4" : ".jpg";
+            var kept = Path.Combine(dir, "kept" + ext);
+            var scale = $"scale=w='min(iw,{KeepLongSide})':h='min(ih,{KeepLongSide})':force_original_aspect_ratio=decrease:force_divisible_by=2";
+            string[] args = clip
+                ? new[] { "-y", "-t", GifReadSeconds, "-i", src, "-vf", scale, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", kept }
+                : new[] { "-y", "-i", src, "-vf", scale, "-frames:v", "1", "-q:v", "2", kept };
+            await MediaImporter.RunFfmpeg(TimeoutSeconds, CancellationToken.None, args).ConfigureAwait(false);
+            return File.Exists(kept) && new FileInfo(kept).Length > 0 ? (await File.ReadAllBytesAsync(kept).ConfigureAwait(false), ext) : null;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[deepcool-mystique] reduced source not made: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); }
+            catch { /* best effort */ }
+        }
+    }
+
     /// <summary>Optional cropper rectangle, then cover-fit to the screen size.</summary>
     internal static string Filter(CropRect? crop)
     {
