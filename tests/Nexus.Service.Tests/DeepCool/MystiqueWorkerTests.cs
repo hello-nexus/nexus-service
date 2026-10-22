@@ -304,14 +304,14 @@ public class MystiqueWorkerTests
 
         public bool Write(ReadOnlySpan<byte> data) => Write(MystiqueProtocol.LiveWritePipe, data);
 
-        /// <summary>When set, the first stream packet signals <see cref="Streaming"/> and waits for <see cref="Release"/>.</summary>
+        /// <summary>When set, the first stream write signals <see cref="Streaming"/> and waits for <see cref="Release"/>.</summary>
         public bool HoldStream { get; set; }
         public ManualResetEventSlim Streaming { get; } = new();
         public ManualResetEventSlim Release { get; } = new();
 
         public bool Write(byte pipeId, ReadOnlySpan<byte> data)
         {
-            if (HoldStream && data.Length == MystiqueMedia.PacketLength && !Streaming.IsSet)
+            if (HoldStream && data.Length > MystiqueMedia.FinishLength && !Streaming.IsSet)
             {
                 Streaming.Set();
                 Release.Wait(TimeSpan.FromSeconds(10));

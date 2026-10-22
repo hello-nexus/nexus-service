@@ -2294,8 +2294,11 @@ public sealed class DeepCoolMystiqueMediaItem
     /// <summary><see cref="KindPicture"/> or <see cref="KindGif"/>.</summary>
     public string Kind { get; set; } = KindPicture;
 
-    /// <summary>Names the item; a picture goes up on the screen under it, a GIF under <see cref="DeepCoolMystiqueSettings.GifSlot"/>.</summary>
+    /// <summary>Names the item; a picture goes up on the screen under it unless <see cref="ScreenId"/> is set, a GIF under <see cref="DeepCoolMystiqueSettings.GifSlot"/>.</summary>
     public string Id { get; set; } = "";
+
+    /// <summary>The id the screen holds a picture under when it differs from <see cref="Id"/>, as after a click swapped it into the first place; empty otherwise.</summary>
+    public string ScreenId { get; set; } = "";
 
     public string Name { get; set; } = "";
 
@@ -2305,7 +2308,7 @@ public sealed class DeepCoolMystiqueMediaItem
     /// <summary>The crop the item was last encoded with, in <see cref="Nexus.Service.Media.CropRect"/> text form; empty for the whole frame.</summary>
     public string Crop { get; set; } = "";
 
-    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", Name = Name ?? "", Ext = Ext ?? "", Crop = Crop ?? "" };
+    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", ScreenId = ScreenId ?? "", Name = Name ?? "", Ext = Ext ?? "", Crop = Crop ?? "" };
 }
 
 /// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
@@ -2388,8 +2391,11 @@ public sealed class DeepCoolMystiqueSettings
     /// <summary>The screen id every GIF goes up under, so showing another GIF replaces the one it holds. Empty until the first GIF after a format.</summary>
     public string GifSlot { get; set; } = "";
 
-    /// <summary>The screen may hold GIFs from before <see cref="GifSlot"/> in an unknown order, so the one it plays is unknown; a format clears it.</summary>
+    /// <summary>The screen may hold pictures and GIFs from before Nexus tracked their order, so the GIF it plays and the picture it shows first are guesses; a format clears it.</summary>
     public bool GifSlotUnsure { get; set; } = true;
+
+    /// <summary>The screen id of the picture the screen shows first when the pictures start; empty until known or guessed.</summary>
+    public string PictureSlot { get; set; } = "";
 
     /// <summary>The <see cref="Media"/> id of the GIF <see cref="GifSlot"/> holds, empty when unknown.</summary>
     public string ShownGif { get; set; } = "";
@@ -2432,6 +2438,7 @@ public sealed class DeepCoolMystiqueSettings
         copy.Freed = Freed is null ? new List<DeepCoolMystiqueMediaItem>() : Freed.ConvertAll(m => m.Copy());
         copy.GifSlot = GifSlot ?? "";
         copy.ShownGif = ShownGif ?? "";
+        copy.PictureSlot = PictureSlot ?? "";
         copy.CpuTemperature = CpuTemperature?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuFrequency = CpuFrequency?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuUsage = CpuUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();

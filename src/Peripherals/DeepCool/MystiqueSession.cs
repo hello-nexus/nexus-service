@@ -24,6 +24,14 @@ public sealed class MystiqueSession
     // miss is resent by the next Apply.
     private const int SourceReplyTimeoutMs = 2000;
 
+    // The screen's own software waits 409 ms after a picture's finish packet before the source command
+    // (capture 2), and follows a GIF's within 160 ms.
+    private const int PictureSourceGapMs = 410;
+
+    // Stream write size, a whole number of packets: the transport splits each write into the 64-byte packets
+    // the screen's own software sends one by one, and WinUSB adds no zero-length packet without SHORT_PACKET_TERMINATE.
+    private const int StreamChunkBytes = 16 * 1024;
+
     // Recovery writes stop this long after a failure, so a stalled screen frees the worker; a recorded
     // picture frame streamed in about half of it, the screen's stall included.
     private const int RecoveryBudgetMs = 2000;
@@ -31,6 +39,7 @@ public sealed class MystiqueSession
     private readonly IBulkUsbPipe _pipe;
     private readonly Func<long> _monotonicMs;
     private readonly Func<DateTime, TimeSpan> _utcOffset;
+    private readonly Action<int> _sleep;
     private DeepCoolMystiqueSettings? _applied;
     private long _clockSentMs;
     private TimeSpan _clockOffset;
@@ -38,11 +47,12 @@ public sealed class MystiqueSession
 
     /// <param name="monotonicMs">Clock for the resend schedule; wall-clock steps must not move it.</param>
     /// <param name="utcOffset">Local UTC offset at a given local time, to resend when a time zone or DST change shifts it.</param>
-    public MystiqueSession(IBulkUsbPipe pipe, Func<long>? monotonicMs = null, Func<DateTime, TimeSpan>? utcOffset = null)
+    public MystiqueSession(IBulkUsbPipe pipe, Func<long>? monotonicMs = null, Func<DateTime, TimeSpan>? utcOffset = null, Action<int>? sleep = null)
     {
         _pipe = pipe;
         _monotonicMs = monotonicMs ?? (() => Environment.TickCount64);
         _utcOffset = utcOffset ?? (t => TimeZoneInfo.Local.GetUtcOffset(t));
+        _sleep = sleep ?? System.Threading.Thread.Sleep;
     }
 
     /// <summary>The identity string the device returned to the opening query, or empty.</summary>
@@ -109,16 +119,64 @@ public sealed class MystiqueSession
     }
 
     /// <summary>
-    /// Streams a picture or GIF as the screen's own software does: the announce command, every frame as
-    /// 64-byte writes, the finish packet, then the source command. <paramref name="source"/> runs once the
-    /// stream is finished and names the source to send, null for none; without it the uploaded kind is sent.
+    /// Streams a picture or GIF as the screen's own software does: the announce command, every frame,
+    /// the finish packet, then the source command. <paramref name="source"/> runs once the stream is
+    /// finished and names the source to send, null for none; without it the uploaded kind is sent.
     /// Nothing streams unless the screen answered the announce. True once a clean stream is finished,
-    /// whether or not the source command is answered; an unanswered one is re-sent by the next <see cref="Apply"/>.
+    /// whether or not the source command was answered.
     /// </summary>
-    /// <param name="progress">Called after each packet with the stream bytes the screen has taken.</param>
-    public bool Upload(MystiqueMediaPackage package, Func<string?>? source = null, Action<long>? progress = null)
+    public bool Upload(MystiqueMediaPackage package, Func<string?>? source = null, Action<long>? progress = null) =>
+        Upload(new[] { package }, source, progress) == 1;
+
+    /// <summary>
+    /// Streams the packages in turn, each as <see cref="Upload(MystiqueMediaPackage, Func{string?}?, Action{long}?)"/>
+    /// does, and the source command once after the last. Returns how many were streamed cleanly, stopping at the
+    /// first that was not; the source command follows only when all were. <paramref name="progress"/> gets the
+    /// bytes streamed across all of them.
+    /// </summary>
+    public int Upload(IReadOnlyList<MystiqueMediaPackage> packages, Func<string?>? source = null, Action<long>? progress = null)
     {
         long streamed = 0;
+        long started = _monotonicMs();
+        for (int p = 0; p < packages.Count; p++)
+        {
+            if (!Stream(packages[p], ref streamed, progress))
+            {
+                return p;
+            }
+        }
+        ServiceLog.Info($"[deepcool-mystique] streamed {streamed} bytes in {_monotonicMs() - started} ms");
+        var last = packages[^1];
+        string kind = last.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
+        string? chosen = source is null ? kind : source();
+        if (chosen is not null)
+        {
+            if (last.Kind == MystiqueMedia.KindPicture)
+            {
+                _sleep(PictureSourceGapMs);
+            }
+            SendSource(chosen);
+        }
+        return packages.Count;
+    }
+
+    /// <summary>Sends the source command; true when the screen answered it.</summary>
+    public bool SendSource(string source)
+    {
+        var command = MystiqueProtocol.BuildMediaSource(source);
+        bool delivered = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, command,
+            out _, out bool answered, SourceReplyTimeoutMs);
+        LogSetting(command, delivered && answered);
+        if (_applied is not null)
+        {
+            _applied.MediaSource = source;
+            _applied.SourceEdited = delivered && answered;
+        }
+        return delivered && answered;
+    }
+
+    private bool Stream(MystiqueMediaPackage package, ref long streamed, Action<long>? progress)
+    {
         string kind = package.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
         ServiceLog.Info($"[deepcool-mystique] upload {kind} {package.Id}, {package.Frames.Count} frames");
         if (!Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildUploadStart(), out _, out bool announced)
@@ -131,10 +189,11 @@ public sealed class MystiqueSession
         {
             var frame = package.Frames[f];
             int sent = 0;
-            foreach (var packet in MystiqueMedia.Packets(frame))
+            while (sent < frame.Length)
             {
-                int landed = WritePacket(packet);
-                if (landed != packet.Length)
+                int length = Math.Min(StreamChunkBytes, frame.Length - sent);
+                int landed = WriteChunk(frame.AsSpan(sent, length));
+                if (landed != length)
                 {
                     AbandonStream(f, frame.Length - sent - Math.Max(landed, 0));
                     return false;
@@ -145,37 +204,19 @@ public sealed class MystiqueSession
             }
         }
         var finish = MystiqueMedia.FinishPacket();
-        if (_pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish) != finish.Length)
-        {
-            return false;
-        }
-        string? chosen = source is null ? kind : source();
-        if (chosen is null)
-        {
-            return true;
-        }
-        var command = MystiqueProtocol.BuildMediaSource(chosen);
-        bool delivered = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, command,
-            out _, out bool answered, SourceReplyTimeoutMs);
-        LogSetting(command, delivered && answered);
-        if (_applied is not null)
-        {
-            _applied.MediaSource = chosen;
-            _applied.SourceEdited = delivered && answered;
-        }
-        return true;
+        return _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish) == finish.Length;
     }
 
     /// <summary>
-    /// One stream packet, resent once only when the transport knows none of it went out, so the stream
+    /// One stream write, resent once only when the transport knows none of it went out, so the stream
     /// keeps matching its headers. Returns the bytes the screen took, or -1 when unknown.
     /// </summary>
-    private int WritePacket(byte[] packet)
+    private int WriteChunk(ReadOnlySpan<byte> chunk)
     {
-        int landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, packet);
+        int landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk);
         if (landed == 0)
         {
-            landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, packet);
+            landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk);
         }
         return landed;
     }

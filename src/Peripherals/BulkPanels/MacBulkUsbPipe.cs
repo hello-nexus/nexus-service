@@ -89,17 +89,20 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
 
     public bool Write(ReadOnlySpan<byte> data) => Write(_writePipeId, data);
 
-    public bool Write(byte pipeId, ReadOnlySpan<byte> data)
+    public bool Write(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data) == data.Length;
+
+    /// <summary>Bytes the device took, also when the transfer failed part way and IOUSBHost reports a count; -1 when it reports none.</summary>
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data)
     {
         if (_disposed || data.Length == 0)
         {
-            return false;
+            return -1;
         }
         lock (_ioLock)
         {
             if (_disposed)
             {
-                return false;
+                return -1;
             }
             // Pushed before PipeFor: a failed pipe copy leaves an autoreleased NSError.
             var pool = MacUsbHost.objc_autoreleasePoolPush();
@@ -108,7 +111,7 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 var pipe = PipeFor(pipeId);
                 if (pipe == IntPtr.Zero)
                 {
-                    return false;
+                    return -1;
                 }
                 IntPtr nsData;
                 fixed (byte* p = data)
@@ -117,7 +120,8 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 }
                 try
                 {
-                    return MacUsbHost.Transfer(pipe, nsData, TransferTimeoutSeconds, out _) == data.Length;
+                    int moved = MacUsbHost.Transfer(pipe, nsData, TransferTimeoutSeconds, out _, out int partial);
+                    return moved >= 0 ? moved : partial > 0 ? partial : -1;
                 }
                 finally
                 {
@@ -533,17 +537,23 @@ internal static unsafe class MacUsbHost
     /// One synchronous transfer of the whole <paramref name="data"/> length. Returns the byte
     /// count, or -1 with <paramref name="timedOut"/> set when the deadline was what ended it.
     /// </summary>
-    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut)
+    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut) =>
+        Transfer(pipe, data, timeoutSeconds, out timedOut, out _);
+
+    /// <param name="partial">On failure, the byte count IOUSBHost reported for the part that went through.</param>
+    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut, out int partial)
     {
         nuint transferred = 0;
         IntPtr error = IntPtr.Zero;
         if (MsgSendTransfer(pipe, SelSendRequest, data, &transferred, timeoutSeconds, &error) != 0)
         {
             timedOut = false;
+            partial = 0;
             return (int)transferred;
         }
         var code = error == IntPtr.Zero ? 0 : (int)MsgSendLong(error, SelCode);
         timedOut = code is KIOReturnTimeout or KIOUSBTransactionTimeout;
+        partial = (int)transferred;
         return -1;
     }
 
