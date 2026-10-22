@@ -21,16 +21,13 @@ public static class InputCommands
     public const string SendKeysType = "input.sendKeys";
     public const string InjectTouchType = "input.touch";
 
-    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-    private static extern uint WTSGetActiveConsoleSessionId();
-
     /// <summary>
     /// Blocks until the helper has injected, so contacts reach Windows in order. Goes to the
     /// console session's helper: the monitor belongs to the desktop on the console.
     /// </summary>
     public static bool InjectTouch(HelperRegistry registry, Nexus.Service.Models.Panel.TouchInjectBody body)
     {
-        var conn = registry.GetForSession((int)WTSGetActiveConsoleSessionId()) ?? registry.GetAny();
+        var conn = registry.GetForConsoleOrAny();
         if (conn is null)
         {
             return false;

@@ -103,7 +103,7 @@ public sealed class SystemActions
         if (OperatingSystem.IsWindows())
         {
             var registry = _sp.GetService<Nexus.Service.Helper.HelperRegistry>();
-            if (registry?.GetAny() is not null)
+            if (registry?.GetForConsoleOrAny() is not null)
             {
                 var ok = await Nexus.Service.Helper.Domains.ClipboardCommands
                     .SetTextAndPasteAsync(registry, text).ConfigureAwait(false);

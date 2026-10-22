@@ -68,7 +68,8 @@ public static class HotkeySlotResolver
             {
                 return true;
             }
-            if (dial.Stack is null)
+            // Entries only run while the stack is active (two or more).
+            if (dial.Stack is not { Count: >= 2 })
             {
                 continue;
             }

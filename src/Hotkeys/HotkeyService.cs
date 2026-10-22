@@ -24,6 +24,8 @@ public sealed class HotkeyService : IHostedService, IDisposable
     private const int MaxIdLength = 64;
     internal static readonly TimeSpan DefaultSuspendTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StopGateTimeout = TimeSpan.FromSeconds(1);
+    // The Windows helper round trip times out at five seconds; wait that long plus a margin.
+    private static readonly TimeSpan StopGateTimeoutWithRelease = TimeSpan.FromSeconds(7);
 
     private readonly IConfigStore _store;
     private readonly IHotkeyRegistrar _registrar;
@@ -86,14 +88,10 @@ public sealed class HotkeyService : IHostedService, IDisposable
             _resumeTimer?.Dispose();
             _resumeTimer = null;
         }
-        // Holding the gate makes an in-flight reconcile finish first, but a registrar stuck on a main queue that no longer runs must not hold up shutdown.
-        var gated = await _reconcileGate.WaitAsync(StopGateTimeout).ConfigureAwait(false);
+        // A registrar stuck on a main queue that no longer runs must not hold up shutdown; one that releases through a helper gets time for a normal in-flight apply.
+        var gated = await _reconcileGate.WaitAsync(_registrar.ReleaseOnStop ? StopGateTimeoutWithRelease : StopGateTimeout).ConfigureAwait(false);
         _stopped = true;
         _suspended = false;
-        if (!gated)
-        {
-            return;
-        }
         try
         {
             if (_registrar.Supported && _registrar.ReleaseOnStop)
@@ -103,7 +101,10 @@ public sealed class HotkeyService : IHostedService, IDisposable
         }
         finally
         {
-            _reconcileGate.Release();
+            if (gated)
+            {
+                _reconcileGate.Release();
+            }
         }
     }
 

@@ -75,7 +75,9 @@ public sealed class WindowsInputter : IInputterProvider
     {
         var input = new INPUT { type = INPUT_KEYBOARD };
         input.ki.wVk = vk;
-        input.ki.dwFlags = down ? 0u : KEYEVENTF_KEYUP;
+        // The right-hand Ctrl, Alt and Win are extended keys; without the flag Windows maps them to the left-hand keys.
+        var extended = vk is VK_RCONTROL or VK_RMENU or VK_RWIN ? KEYEVENTF_EXTENDEDKEY : 0u;
+        input.ki.dwFlags = extended | (down ? 0u : KEYEVENTF_KEYUP);
         return SendInput(1, ref input, Marshal.SizeOf<INPUT>()) == 1;
     }
 
@@ -145,6 +147,7 @@ public sealed class WindowsInputter : IInputterProvider
 
     // P/Invoke constants
     private const uint INPUT_KEYBOARD = 1;
+    private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const ushort VK_CONTROL = 0x11;
     private const ushort VK_SHIFT = 0x10;

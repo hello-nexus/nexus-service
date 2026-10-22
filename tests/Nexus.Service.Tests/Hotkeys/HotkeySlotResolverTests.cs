@@ -91,6 +91,7 @@ public sealed class HotkeySlotResolverTests
         // With a single entry the stack is not active and the dial's own action is what runs.
         stacked.Stack!.RemoveAt(1);
         Assert.Equal("ctrl+own", HotkeySlotResolver.Resolve(Tag("own-tag"), settings)?.Keys);
+        Assert.Null(HotkeySlotResolver.Resolve(Tag("stack-0"), settings));
     }
 
     [Fact]
