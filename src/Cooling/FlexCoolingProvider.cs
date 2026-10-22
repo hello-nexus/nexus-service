@@ -21,11 +21,17 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private readonly FlexHub _hub;
     private readonly Nexus.Service.Persistence.IConfigStore? _store;
 
-    public FlexCoolingProvider(FlexHub hub, Nexus.Service.Persistence.IConfigStore? store = null)
+    private readonly FlexScreens? _screens;
+
+    public FlexCoolingProvider(FlexHub hub, Nexus.Service.Persistence.IConfigStore? store = null, FlexScreens? screens = null)
     {
         _hub = hub;
         _store = store;
+        _screens = screens;
     }
+
+    private string NameOf(FlexUnit unit, Func<string, int> order) =>
+        FlexNames.UnitName(_hub.Units, unit, order, _screens?.ScreenOnlySerials(unit.Family).Count ?? 0);
 
     private Func<string, int> SortIndexOf()
     {
@@ -63,7 +69,7 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
             {
                 continue;
             }
-            var unitName = FlexNames.UnitName(_hub.Units, unit, order);
+            var unitName = NameOf(unit, order);
             var pending = _hub.PendingDuty(unit.Mac);
             result.Add(new FanChannel
             {
@@ -124,7 +130,7 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
             components.Add(new CoolingComponent
             {
                 Id = DeviceId(unit.Mac),
-                Name = FlexNames.UnitName(_hub.Units, unit, order),
+                Name = NameOf(unit, order),
                 Type = "LianLiFlex",
                 Devices = new List<CoolingDevice>
                 {

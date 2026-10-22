@@ -36,6 +36,24 @@ public static class TelemetryEvents
 
     public const string OnboardingCompleted = "onboarding_completed";
 
+    /// <summary>An SDK app was installed (reason: user, auto).</summary>
+    public const string AppInstalled = "app_installed";
+
+    /// <summary>An installed SDK app moved to a different version (reason: user, auto).</summary>
+    public const string AppUpdated = "app_updated";
+
+    /// <summary>An SDK app was removed (reason: user, yank).</summary>
+    public const string AppUninstalled = "app_uninstalled";
+
+    /// <summary>An app widget instance appeared in a panel layout.</summary>
+    public const string AppPlaced = "app_placed";
+
+    /// <summary>An app widget instance left a panel layout.</summary>
+    public const string AppRemoved = "app_removed";
+
+    /// <summary>An app was used on this install; at most once per app per UTC day.</summary>
+    public const string AppUsed = "app_used";
+
     /// <summary>An installed SDK app opened a link in the user's browser.</summary>
     public const string AppLinkOpened = "app_link_opened";
 
