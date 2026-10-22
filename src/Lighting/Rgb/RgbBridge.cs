@@ -108,6 +108,13 @@ public sealed class RgbBridge : IDisposable
     private Action? _deviceListHandler;
     private IReadOnlyList<RgbDevice> _devices = Array.Empty<RgbDevice>();
     private HashSet<int> _directModeApplied = new();
+
+    // StableIds the last refresh could not build frames for; replaced whole each refresh. The card path reads it
+    // so a device with no frame gets no card, keeping card slots and frame slots in step.
+    private volatile HashSet<string> _unframable = new(StringComparer.Ordinal);
+
+    /// <summary>False for a device the last refresh could not frame.</summary>
+    internal bool CanFrame(RgbDevice d) => !_unframable.Contains(d.StableId);
     private CancellationTokenSource? _refreshCts;
     private Task? _shutdownTask;
 
@@ -1315,60 +1322,7 @@ public sealed class RgbBridge : IDisposable
                 }
             }
 
-            // Apply direct mode to any device we haven't seen yet. A fully
-            // uncontrolled device is skipped (and left out of _directModeApplied)
-            // so its firmware/vendor lighting stays live; the next refresh
-            // tick retries, so re-enabling controlled claims it within one
-            // refresh interval without a service restart.
             var settingsSnapshot = _store.Load();
-            foreach (var dev in devices)
-            {
-                bool isNew;
-                lock (_lock)
-                {
-                    isNew = !_directModeApplied.Contains(dev.Address);
-                }
-
-                if (!isNew)
-                {
-                    continue;
-                }
-
-                if (OpenRgbZoneSupport.IsFullyUncontrolled(dev, settingsSnapshot))
-                {
-                    continue;
-                }
-
-                // A device whose shape cannot be framed is not claimed: the frame pass below
-                // skips it, so claiming would freeze its vendor lighting with nothing driving it.
-                // Left unclaimed, the next refresh retries it.
-                try
-                {
-                    IsOwnedByFirstParty(dev);
-                    foreach (var port in OpenRgbZoneSupport.BuildStructures(dev, settingsSnapshot))
-                    {
-                        Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(port, settingsSnapshot);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    OpenRgbZoneSupport.WarnBadDeviceOnce(dev, ex);
-                    continue;
-                }
-
-                try
-                {
-                    await _controller.SetDirectModeAsync(dev).ConfigureAwait(false);
-                    lock (_lock)
-                    {
-                        _directModeApplied.Add(dev.Address);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    ServiceLog.Warn($"[rgb-bridge] SetDirectMode controller {dev.Address} failed: {ex.Message}");
-                }
-            }
 
             IReadOnlyList<RgbDevice> finalList = devices;
             var inDetection = DetectionInProgress();
@@ -1431,8 +1385,10 @@ public sealed class RgbBridge : IDisposable
             int logicalOrdinal = 0;
             int cardSlot = 0;
             int stripSlot = 0;
+            var unframable = new HashSet<string>(StringComparer.Ordinal);
             for (int i = 0; i < devices.Count; i++)
             {
+                var failed = false;
                 var framesBefore = framesList.Count;
                 var ordinalBefore = logicalOrdinal;
                 var cardBefore = cardSlot;
@@ -1516,9 +1472,16 @@ public sealed class RgbBridge : IDisposable
                     logicalOrdinal = ordinalBefore;
                     cardSlot = cardBefore;
                     stripSlot = stripBefore;
+                    failed = true;
+                    unframable.Add(devices[i].StableId);
                     OpenRgbZoneSupport.WarnBadDeviceOnce(devices[i], ex);
                 }
+                if (!failed)
+                {
+                    OpenRgbZoneSupport.ClearBadDeviceWarning(devices[i]);
+                }
             }
+            _unframable = unframable;
 
             var bridgeFrameIds = new HashSet<string>(framesList.Count, StringComparer.Ordinal);
             foreach (var f in framesList)
@@ -1566,6 +1529,55 @@ public sealed class RgbBridge : IDisposable
                         _contributorLayouts.Refresh(extra[i], settingsSnapshot);
                     }
                     framesList.Add(extra[i]);
+                }
+            }
+
+            // Apply direct mode to any device we haven't seen yet. This runs after the
+            // frame pass and before the frames are published, so Direct mode is set
+            // before the first frame can be pushed, and a device whose frame build
+            // failed is never claimed: with nothing driving it, claiming would freeze
+            // its vendor lighting. It stays unclaimed, so the next refresh retries it.
+            // A fully uncontrolled device is skipped (and left out of
+            // _directModeApplied) so its firmware/vendor lighting stays live; the next
+            // refresh tick retries, so re-enabling controlled claims it within one
+            // refresh interval without a service restart.
+            foreach (var dev in devices)
+            {
+                bool isNew;
+                lock (_lock)
+                {
+                    isNew = !_directModeApplied.Contains(dev.Address);
+                }
+
+                if (!isNew || unframable.Contains(dev.StableId))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (OpenRgbZoneSupport.IsFullyUncontrolled(dev, settingsSnapshot))
+                    {
+                        continue;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OpenRgbZoneSupport.WarnBadDeviceOnce(dev, ex);
+                    continue;
+                }
+
+                try
+                {
+                    await _controller.SetDirectModeAsync(dev).ConfigureAwait(false);
+                    lock (_lock)
+                    {
+                        _directModeApplied.Add(dev.Address);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Warn($"[rgb-bridge] SetDirectMode controller {dev.Address} failed: {ex.Message}");
                 }
             }
 
@@ -1714,9 +1726,19 @@ public sealed class RgbBridge : IDisposable
 
     /// <summary>A device Nexus drives through OpenRGB: not claimed by a native provider, not detector-excluded and not left uncontrolled.</summary>
     internal bool IsSizableDevice(RgbDevice d, NexusSettings settings)
-        => !IsOwnedByFirstParty(d)
-            && !settings.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)
-            && !OpenRgbZoneSupport.IsFullyUncontrolled(d, settings);
+    {
+        try
+        {
+            return !IsOwnedByFirstParty(d)
+                && !settings.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)
+                && !OpenRgbZoneSupport.IsFullyUncontrolled(d, settings);
+        }
+        catch (Exception ex)
+        {
+            OpenRgbZoneSupport.WarnBadDeviceOnce(d, ex);
+            return false;
+        }
+    }
 
     internal bool IsOwnedByFirstParty(RgbDevice d)
     {
@@ -2090,30 +2112,37 @@ public sealed class RgbBridge : IDisposable
         // Apply user-configured counts.
         foreach (var d in devices)
         {
-            if (!OpenRgbZoneSupport.IsSplitMotherboard(d))
-                continue;
-            for (int z = 0; z < d.Zones.Count; z++)
+            try
             {
-                var zoneId = $"{d.StableId}-{z}";
-                if (!persisted.TryGetValue(zoneId, out var desired))
+                if (!OpenRgbZoneSupport.IsSplitMotherboard(d))
                     continue;
-                // Covers counts persisted before the cap or edited by hand.
-                desired = OpenRgbZoneSupport.ClampPortLedCount(d, z, desired);
-                if (desired == d.Zones[z].LedCount)
-                    continue;
-                // Resizing a zone the controller pins never holds, and this pass
-                // reruns every refresh, so an unsatisfiable count would retry forever.
-                if (d.Zones[z].IsFixedSize)
-                    continue;
-                try
+                for (int z = 0; z < d.Zones.Count; z++)
                 {
-                    await _controller.ResizeZoneAsync(d.Address, z, desired).ConfigureAwait(false);
-                    attempts.Add(new ZoneResizeAttempt(d.Address, z, ZoneName(d.Zones[z], z), d.Zones[z].LedCount, desired, "persisted"));
+                    var zoneId = $"{d.StableId}-{z}";
+                    if (!persisted.TryGetValue(zoneId, out var desired))
+                        continue;
+                    // Covers counts persisted before the cap or edited by hand.
+                    desired = OpenRgbZoneSupport.ClampPortLedCount(d, z, desired);
+                    if (desired == d.Zones[z].LedCount)
+                        continue;
+                    // Resizing a zone the controller pins never holds, and this pass
+                    // reruns every refresh, so an unsatisfiable count would retry forever.
+                    if (d.Zones[z].IsFixedSize)
+                        continue;
+                    try
+                    {
+                        await _controller.ResizeZoneAsync(d.Address, z, desired).ConfigureAwait(false);
+                        attempts.Add(new ZoneResizeAttempt(d.Address, z, ZoneName(d.Zones[z], z), d.Zones[z].LedCount, desired, "persisted"));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"[rgb-bridge] apply persisted size {zoneId} -> {desired} failed: {ex.Message}");
+                    }
                 }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[rgb-bridge] apply persisted size {zoneId} -> {desired} failed: {ex.Message}");
-                }
+            }
+            catch (Exception ex)
+            {
+                OpenRgbZoneSupport.WarnBadDeviceOnce(d, ex);
             }
         }
 
@@ -2128,17 +2157,24 @@ public sealed class RgbBridge : IDisposable
         var toDefault = new List<(int physIdx, int zoneIdx, string id)>();
         foreach (var d in devices)
         {
-            if (d.Type != 0 || d.Zones.Count < 2)
-                continue;
-            for (int z = 0; z < d.Zones.Count; z++)
+            try
             {
-                var zone = d.Zones[z];
-                var zoneId = $"{d.StableId}-{z}";
-                if (persisted.ContainsKey(zoneId))
+                if (d.Type != 0 || d.Zones.Count < 2)
                     continue;
-                if (!CanSeedDefaultZoneCount(zone))
-                    continue;
-                toDefault.Add((d.Address, z, zoneId));
+                for (int z = 0; z < d.Zones.Count; z++)
+                {
+                    var zone = d.Zones[z];
+                    var zoneId = $"{d.StableId}-{z}";
+                    if (persisted.ContainsKey(zoneId))
+                        continue;
+                    if (!CanSeedDefaultZoneCount(zone))
+                        continue;
+                    toDefault.Add((d.Address, z, zoneId));
+                }
+            }
+            catch (Exception ex)
+            {
+                OpenRgbZoneSupport.WarnBadDeviceOnce(d, ex);
             }
         }
         if (toDefault.Count > 0)

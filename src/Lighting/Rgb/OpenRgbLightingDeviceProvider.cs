@@ -62,7 +62,7 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
             }
             unowned ??= new List<RgbDevice>(devices.Take(i));
         }
-        return OpenRgbZoneSupport.BuildCards(unowned ?? devices, _store.Load(), _bridge.IsConnected);
+        return OpenRgbZoneSupport.BuildCards(unowned ?? devices, _store.Load(), _bridge.IsConnected, _bridge.CanFrame);
     }
 
     // ── IDeviceStructureSource ──
@@ -207,28 +207,35 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         var settings = _store.Load();
         foreach (var d in _bridge.Devices)
         {
-            if (!_bridge.IsSizableDevice(d, settings))
-                continue;
-            OpenRgbZoneDeviceDto? dto = null;
-            for (var z = 0; z < d.Zones.Count; z++)
+            try
             {
-                var zone = d.Zones[z];
-                if (!zone.IsConfigurableSize)
+                if (!_bridge.IsSizableDevice(d, settings))
                     continue;
-                dto ??= new OpenRgbZoneDeviceDto { DeviceId = d.StableId, Name = d.Name, SplitOwned = OpenRgbZoneSupport.IsSplitMotherboard(d) };
-                dto.Zones.Add(new OpenRgbZoneDto
+                OpenRgbZoneDeviceDto? dto = null;
+                for (var z = 0; z < d.Zones.Count; z++)
                 {
-                    Index = z,
-                    Name = string.IsNullOrWhiteSpace(zone.Name) ? $"Zone {z + 1}" : zone.Name,
-                    LedCount = zone.LedCount,
-                    LedsMin = (int)Math.Min(zone.LedsMin, int.MaxValue),
-                    LedsMax = (int)Math.Min(zone.LedsMax, int.MaxValue),
-                    Resizable = zone.IsResizable,
-                    NeedsSize = zone.NeedsSize,
-                });
+                    var zone = d.Zones[z];
+                    if (!zone.IsConfigurableSize)
+                        continue;
+                    dto ??= new OpenRgbZoneDeviceDto { DeviceId = d.StableId, Name = d.Name, SplitOwned = OpenRgbZoneSupport.IsSplitMotherboard(d) };
+                    dto.Zones.Add(new OpenRgbZoneDto
+                    {
+                        Index = z,
+                        Name = string.IsNullOrWhiteSpace(zone.Name) ? $"Zone {z + 1}" : zone.Name,
+                        LedCount = zone.LedCount,
+                        LedsMin = (int)Math.Min(zone.LedsMin, int.MaxValue),
+                        LedsMax = (int)Math.Min(zone.LedsMax, int.MaxValue),
+                        Resizable = zone.IsResizable,
+                        NeedsSize = zone.NeedsSize,
+                    });
+                }
+                if (dto is not null)
+                    result.Add(dto);
             }
-            if (dto is not null)
-                result.Add(dto);
+            catch (Exception ex)
+            {
+                OpenRgbZoneSupport.WarnBadDeviceOnce(d, ex);
+            }
         }
         return result;
     }
@@ -255,7 +262,17 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
             count = Math.Clamp(count, (int)Math.Min(zone.LedsMin, int.MaxValue), max);
             if (count > MaxZoneLedCount)
                 return "size is above the supported maximum";
-            if (OpenRgbZoneSupport.IsSplitMotherboard(d))
+            bool split;
+            try
+            {
+                split = OpenRgbZoneSupport.IsSplitMotherboard(d);
+            }
+            catch (Exception ex)
+            {
+                OpenRgbZoneSupport.WarnBadDeviceOnce(d, ex);
+                return "device could not be read";
+            }
+            if (split)
             {
                 if (!ApplyZoneLedCount($"{d.StableId}-{zoneIndex}", count))
                     return "size was not accepted";
@@ -368,7 +385,17 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         {
             if (!id.StartsWith(d.StableId, StringComparison.Ordinal))
                 continue;
-            foreach (var structure in OpenRgbZoneSupport.BuildStructures(d, settings))
+            List<DeviceStructure> structures;
+            try
+            {
+                structures = OpenRgbZoneSupport.BuildStructures(d, settings);
+            }
+            catch (Exception ex)
+            {
+                OpenRgbZoneSupport.WarnBadDeviceOnce(d, ex);
+                continue;
+            }
+            foreach (var structure in structures)
             {
                 foreach (var zone in ZoneResolution.Resolve(structure, settings))
                 {

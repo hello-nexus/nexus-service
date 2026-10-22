@@ -21,18 +21,26 @@ namespace Nexus.Service.Lighting.Rgb;
 /// </summary>
 public static class OpenRgbZoneSupport
 {
-    private static readonly ConcurrentDictionary<string, byte> BadDevicesWarned = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, byte> BadItemsWarned = new(StringComparer.Ordinal);
 
-    /// <summary>Logs a skipped malformed device once per device id, so a poll loop does not repeat the line. True when this call logged.</summary>
-    internal static bool WarnBadDeviceOnce(RgbDevice d, Exception ex)
+    /// <summary>Logs a skipped malformed item once per key, with the full exception, so a poll loop does not repeat the entry. True when this call logged.</summary>
+    internal static bool WarnBadOnce(string key, string label, Exception ex)
     {
-        if (!BadDevicesWarned.TryAdd(d.StableId, 0))
+        if (!BadItemsWarned.TryAdd(key, 0))
         {
             return false;
         }
-        Nexus.Service.Platform.ServiceLog.Warn($"[rgb] skipped malformed device '{d.Name}' ({d.StableId}): {ex.GetType().Name}: {ex.Message}");
+        Nexus.Service.Platform.ServiceLog.Warn($"[rgb] skipped malformed {label}: {ex}");
         return true;
     }
+
+    /// <summary>Forgets a key once its item works again, so a later break logs again.</summary>
+    internal static void ClearBadWarning(string key) => BadItemsWarned.TryRemove(key, out _);
+
+    internal static bool WarnBadDeviceOnce(RgbDevice d, Exception ex)
+        => WarnBadOnce(d.StableId, $"device '{d.Name}' ({d.StableId})", ex);
+
+    internal static void ClearBadDeviceWarning(RgbDevice d) => ClearBadWarning(d.StableId);
 
     /// <summary>A multi-header motherboard, or a <see cref="IsPortController"/> device, which needs the same one-device-per-header model.</summary>
     public static bool IsSplitMotherboard(RgbDevice d)
@@ -285,7 +293,7 @@ public static class OpenRgbZoneSupport
     private static int? MaxRateFor(Dictionary<string, int> rates, string id) => rates.TryGetValue(id, out var hz) ? hz : null;
 
     /// <summary>Full GetAll card emission; static and bridge-free so tests cover it with fake controller data.</summary>
-    public static GetLightingDevicesResponse BuildCards(IReadOnlyList<RgbDevice> devices, NexusSettings settings, bool isInit)
+    public static GetLightingDevicesResponse BuildCards(IReadOnlyList<RgbDevice> devices, NexusSettings settings, bool isInit, Func<RgbDevice, bool>? canFrame = null)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
@@ -307,6 +315,9 @@ public static class OpenRgbZoneSupport
         {
             var fromSnapshot = i >= devices.Count;
             var d = fromSnapshot ? snapshotBoards[i - devices.Count] : devices[i];
+            // The bridge's per-refresh verdict: a device it could not frame gets no card either, so card slots and frame slots stay in step.
+            if (!fromSnapshot && canFrame is not null && !canFrame(d))
+                continue;
             var resultBefore = result.Count;
             var cardBefore = cardSlot;
             var stripBefore = stripSlot;

@@ -24,7 +24,6 @@ public sealed class ZoneTopology
     private readonly LightingEngine _engine;
     private readonly ContributorFrameLayouts _contributorLayouts;
     private readonly RgbBridge? _bridge;
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> BadStructuresWarned = new(StringComparer.Ordinal);
 
     public ZoneTopology(
         IEnumerable<IDeviceStructureSource> sources,
@@ -84,12 +83,10 @@ public sealed class ZoneTopology
                 catch (Exception ex)
                 {
                     // One malformed structure must not hide the other devices' cards.
-                    if (BadStructuresWarned.TryAdd(structure.DeviceId, 0))
-                    {
-                        Nexus.Service.Platform.ServiceLog.Warn($"[zones] skipped structure '{structure.DeviceId}': {ex.GetType().Name}: {ex.Message}");
-                    }
+                    OpenRgbZoneSupport.WarnBadOnce("structure:" + structure.DeviceId, $"structure '{structure.DeviceId}'", ex);
                     continue;
                 }
+                OpenRgbZoneSupport.ClearBadWarning("structure:" + structure.DeviceId);
                 foreach (var zone in zones)
                 {
                     if (zone.Id == cardId)
