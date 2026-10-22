@@ -302,45 +302,92 @@ public class DeepCoolMystiqueRoutesTests
         Assert.Equal(b, DevicesRoutes.MystiquePictureSlot(m));
     }
 
-    [Theory]
-    [InlineData(2, true)]
-    [InlineData(1, true)]
-    [InlineData(1, false)]
-    [InlineData(0, true)]
-    public void A_picture_swap_records_what_streamed(int streamed, bool displacedListed)
+    private const string Clicked = "2101b6e6277841daa821e8d79a5c528b";
+    private const string First = "acd9325521f3493c86bfc0b0aa85658d";
+    private const string Other = "41c9bf307cba45a1aa3a1d92bbe93b96";
+
+    private static DeepCoolMystiqueSettings Pictures(bool displacedListed)
     {
-        const string clicked = "2101b6e6277841daa821e8d79a5c528b";
-        const string first = "acd9325521f3493c86bfc0b0aa85658d";
         var m = new DeepCoolMystiqueSettings();
-        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = clicked });
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
         if (displacedListed)
         {
-            m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = first });
+            m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First });
         }
         else
         {
-            m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = first });
+            m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First });
         }
+        return m;
+    }
 
-        DevicesRoutes.SetMystiquePictureSwap(m, clicked, first, clicked, displacedListed ? first : null, streamed);
+    private static (string, string, bool)[] Held(DeepCoolMystiqueSettings m) =>
+        m.Media.ConvertAll(i => (i.Id, DevicesRoutes.MystiqueScreenId(i), i.Unsent)).ToArray();
 
-        if (streamed == 0)
-        {
-            Assert.Equal("", m.PictureSlot);
-            Assert.All(m.Media, i => Assert.Equal("", i.ScreenId));
-            return;
-        }
-        Assert.Equal(first, m.PictureSlot);
-        Assert.Equal(first, DevicesRoutes.MystiqueScreenId(m.Media[0]));
-        if (displacedListed)
-        {
-            Assert.Equal(clicked, DevicesRoutes.MystiqueScreenId(m.Media[1]));
-            Assert.Empty(m.Freed);
-        }
-        else
-        {
-            Assert.Equal(new[] { clicked }, m.Freed.ConvertAll(i => i.Id));
-        }
+    [Fact]
+    public void A_whole_swap_moves_both_pictures()
+    {
+        var m = Pictures(displacedListed: true);
+
+        DevicesRoutes.RecordMystiquePictureStreams(m, new[] { (Clicked, First), (First, Clicked) }, 2);
+
+        Assert.Equal(new[] { (Clicked, First, false), (First, Clicked, false) }, Held(m));
+        Assert.Empty(m.Freed);
+    }
+
+    [Fact]
+    public void A_swap_whose_second_stream_failed_leaves_the_displaced_picture_unsent_until_it_streams()
+    {
+        var m = Pictures(displacedListed: true);
+
+        DevicesRoutes.RecordMystiquePictureStreams(m, new[] { (Clicked, First), (First, Clicked) }, 1);
+
+        Assert.Equal(new[] { (Clicked, First, false), (First, Clicked, true) }, Held(m));
+        Assert.Empty(m.Freed);
+        Assert.Equal(Clicked, DevicesRoutes.MystiqueShownPicture(m));
+
+        DevicesRoutes.RecordMystiquePictureStreams(m, new[] { (First, Clicked) }, 1);
+
+        Assert.Equal(new[] { (Clicked, First, false), (First, Clicked, false) }, Held(m));
+    }
+
+    [Fact]
+    public void A_swap_whose_first_stream_failed_keeps_the_clicked_picture_and_leaves_the_first_unsent()
+    {
+        var m = Pictures(displacedListed: true);
+        m.PictureSlot = First;
+
+        DevicesRoutes.RecordMystiquePictureStreams(m, new[] { (Clicked, First), (First, Clicked) }, 0);
+
+        Assert.Equal(new[] { (Clicked, Clicked, false), (First, First, true) }, Held(m));
+        Assert.Empty(m.Freed);
+        Assert.Equal("", DevicesRoutes.MystiqueShownPicture(m));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(0)]
+    public void A_move_into_a_freed_first_place_frees_the_old_id_only_once_it_lands(int streamed)
+    {
+        var m = Pictures(displacedListed: false);
+
+        DevicesRoutes.RecordMystiquePictureStreams(m, new[] { (Clicked, First) }, streamed);
+
+        Assert.Equal(new[] { (Clicked, streamed == 1 ? First : Clicked, false) }, Held(m));
+        Assert.Equal(new[] { streamed == 1 ? Clicked : First }, m.Freed.ConvertAll(i => i.Id));
+    }
+
+    [Fact]
+    public void A_resend_that_fails_keeps_its_picture_unsent_and_leaves_the_rest_alone()
+    {
+        var m = Pictures(displacedListed: true);
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Other, Unsent = true });
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "gif", Id = Other });
+
+        DevicesRoutes.RecordMystiquePictureStreams(m, new[] { (Clicked, First), (First, Clicked), (Other, Other) }, 2);
+
+        Assert.Equal(new[] { (Clicked, First, false), (First, Clicked, false), (Other, Other, true), (Other, Other, false) }, Held(m));
+        Assert.Empty(m.Freed);
     }
 
     [Fact]
@@ -539,6 +586,7 @@ public class DeepCoolMystiqueRoutesTests
         store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
         Assert.Equal(new[] { ("picture", "acd9325521f3493c86bfc0b0aa85658d") }, m.Freed.Select(i => (i.Kind, i.Id)));
         Assert.Single(m.Media);
+        Assert.True(m.Media[0].Unsent);
         Assert.Equal((MystiqueMedia.IdOf(MystiqueMedia.KindPicture, new byte[] { 7 }), "acd9325521f3493c86bfc0b0aa85658d"), DevicesRoutes.MystiqueUploadId(store, "picture", new byte[] { 7 }, ""));
     }
 
