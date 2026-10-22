@@ -44,7 +44,18 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         List<RgbDevice>? unowned = null;
         for (var i = 0; i < devices.Count; i++)
         {
-            if (!_bridge.IsOwnedByFirstParty(devices[i]))
+            var owned = false;
+            try
+            {
+                owned = _bridge.IsOwnedByFirstParty(devices[i]);
+            }
+            catch (Exception ex)
+            {
+                // A device that cannot be classified is left out of the list, not allowed to fail it.
+                OpenRgbZoneSupport.WarnBadDeviceOnce(devices[i], ex);
+                owned = true;
+            }
+            if (!owned)
             {
                 unowned?.Add(devices[i]);
                 continue;
@@ -70,7 +81,14 @@ public sealed class OpenRgbLightingDeviceProvider : ILightingDeviceProvider, IDe
         var structures = new List<DeviceStructure>(devices.Count);
         foreach (var d in devices)
         {
-            structures.AddRange(OpenRgbZoneSupport.BuildStructures(d, settings));
+            try
+            {
+                structures.AddRange(OpenRgbZoneSupport.BuildStructures(d, settings));
+            }
+            catch (Exception ex)
+            {
+                OpenRgbZoneSupport.WarnBadDeviceOnce(d, ex);
+            }
         }
         return structures;
     }

@@ -1339,6 +1339,23 @@ public sealed class RgbBridge : IDisposable
                     continue;
                 }
 
+                // A device whose shape cannot be framed is not claimed: the frame pass below
+                // skips it, so claiming would freeze its vendor lighting with nothing driving it.
+                // Left unclaimed, the next refresh retries it.
+                try
+                {
+                    IsOwnedByFirstParty(dev);
+                    foreach (var port in OpenRgbZoneSupport.BuildStructures(dev, settingsSnapshot))
+                    {
+                        Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(port, settingsSnapshot);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    OpenRgbZoneSupport.WarnBadDeviceOnce(dev, ex);
+                    continue;
+                }
+
                 try
                 {
                     await _controller.SetDirectModeAsync(dev).ConfigureAwait(false);
@@ -1499,7 +1516,7 @@ public sealed class RgbBridge : IDisposable
                     logicalOrdinal = ordinalBefore;
                     cardSlot = cardBefore;
                     stripSlot = stripBefore;
-                    ServiceLog.Warn($"[rgb-bridge] skipped device '{devices[i].Name}' ({devices[i].StableId}): {ex.GetType().Name}: {ex.Message}");
+                    OpenRgbZoneSupport.WarnBadDeviceOnce(devices[i], ex);
                 }
             }
 

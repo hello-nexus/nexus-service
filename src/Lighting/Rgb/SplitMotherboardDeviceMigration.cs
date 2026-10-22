@@ -19,6 +19,20 @@ namespace Nexus.Service.Lighting.Rgb;
 /// </summary>
 public static class SplitMotherboardDeviceMigration
 {
+    /// <summary>False for a device whose shape throws, so one malformed device cannot stop the sweep over the rest.</summary>
+    private static bool IsSplit(RgbDevice d)
+    {
+        try
+        {
+            return OpenRgbZoneSupport.IsSplitMotherboard(d);
+        }
+        catch (System.Exception ex)
+        {
+            OpenRgbZoneSupport.WarnBadDeviceOnce(d, ex);
+            return false;
+        }
+    }
+
     /// <summary>
     /// True when any split motherboard still has device-scoped state under the
     /// parent id. Read-only on purpose: <see cref="IConfigStore.Load"/> hands
@@ -30,7 +44,7 @@ public static class SplitMotherboardDeviceMigration
     {
         foreach (var d in devices)
         {
-            if (!OpenRgbZoneSupport.IsSplitMotherboard(d))
+            if (!IsSplit(d))
                 continue;
             if (settings.Devices.DeviceLedOverrides.ContainsKey(d.StableId)
                 || settings.Devices.DeviceAspectRatios.ContainsKey(d.StableId)
@@ -48,7 +62,7 @@ public static class SplitMotherboardDeviceMigration
         var changed = false;
         foreach (var d in devices)
         {
-            if (!OpenRgbZoneSupport.IsSplitMotherboard(d))
+            if (!IsSplit(d))
                 continue;
             changed |= MoveOverrides(settings, d);
             changed |= MoveAspectRatio(settings, d);

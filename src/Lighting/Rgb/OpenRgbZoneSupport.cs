@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Nexus.Service.Lighting.Mappings;
 using Nexus.Service.Lighting.Zones;
@@ -19,6 +21,19 @@ namespace Nexus.Service.Lighting.Rgb;
 /// </summary>
 public static class OpenRgbZoneSupport
 {
+    private static readonly ConcurrentDictionary<string, byte> BadDevicesWarned = new(StringComparer.Ordinal);
+
+    /// <summary>Logs a skipped malformed device once per device id, so a poll loop does not repeat the line. True when this call logged.</summary>
+    internal static bool WarnBadDeviceOnce(RgbDevice d, Exception ex)
+    {
+        if (!BadDevicesWarned.TryAdd(d.StableId, 0))
+        {
+            return false;
+        }
+        Nexus.Service.Platform.ServiceLog.Warn($"[rgb] skipped malformed device '{d.Name}' ({d.StableId}): {ex.GetType().Name}: {ex.Message}");
+        return true;
+    }
+
     /// <summary>A multi-header motherboard, or a <see cref="IsPortController"/> device, which needs the same one-device-per-header model.</summary>
     public static bool IsSplitMotherboard(RgbDevice d)
         => d.Type == 0 ? d.Zones.Count > 1 : IsPortController(d);
@@ -292,167 +307,181 @@ public static class OpenRgbZoneSupport
         {
             var fromSnapshot = i >= devices.Count;
             var d = fromSnapshot ? snapshotBoards[i - devices.Count] : devices[i];
-            var baseId = d.StableId;
-            // Detector-excluded devices render from their persisted snapshot
-            // instead; a live entry fetched before the exclusion's re-detect
-            // would duplicate or shadow that card.
-            if (!fromSnapshot && exclusions.Count > 0 && exclusions.ContainsKey(baseId))
-                continue;
-            var baseKey = DeviceKeyComputer.ForOpenRgbDevice(d);
-            var conflictAppIds = Conflicts.ConflictDeviceOwnership.AppIdsForVendor(d.Vendor);
-            var isSplitMotherboard = IsSplitMotherboard(d);
-            var structure = BuildStructure(d, settings);
-            var zones = ZoneResolution.Resolve(structure, settings);
-            var isDefault = zones.Count > 0 && zones[0].IsDefault;
-
-            if (isDefault && !isSplitMotherboard)
+            var resultBefore = result.Count;
+            var cardBefore = cardSlot;
+            var stripBefore = stripSlot;
+            try
             {
-                prefs.TryGetValue(baseId, out var pref);
-                layouts.TryGetValue(baseId, out var layout);
-                var (dx, dy, dw, dh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot, d);
-                result.Add(new LightingDevice
-                {
-                    Id = baseId,
-                    DeviceKey = baseKey,
-                    Name = d.Name,
-                    Type = OpenRgbTypeName(d.Type),
-                    IconType = OpenRgbTypeName(d.Type),
-                    LedsOn = !disabled.Contains(baseId),
-                    Brightness = pref?.Brightness ?? 100,
-                    Hue = pref?.Hue ?? 0,
-                    Saturation = pref?.Saturation ?? 1.0f,
-                    RateCapSupported = true,
-                    MaxRateHz = MaxRateFor(maxRates, baseId),
-                    LedCount = d.LedCount,
-                    EnabledLedCount = ZoneResolution.CountEnabled(structure, zones[0], baseId, d.LedCount, zones[0].LegacyZoneIndex, settings),
-                    CanvasX = layout?.X ?? dx,
-                    CanvasY = layout?.Y ?? dy,
-                    CanvasW = layout?.W ?? dw,
-                    CanvasH = layout?.H ?? dh,
-                    CanvasRotation = NormalizeRotation(layout?.Rotation ?? 0),
-                    DeviceId = baseId,
-                    ZoneCustomizable = d.LedCount > 1,
-                    ConflictAppIds = new List<string>(conflictAppIds),
-                });
-                cardSlot++;
-                continue;
-            }
+                var baseId = d.StableId;
+                // Detector-excluded devices render from their persisted snapshot
+                // instead; a live entry fetched before the exclusion's re-detect
+                // would duplicate or shadow that card.
+                if (!fromSnapshot && exclusions.Count > 0 && exclusions.ContainsKey(baseId))
+                    continue;
+                var baseKey = DeviceKeyComputer.ForOpenRgbDevice(d);
+                var conflictAppIds = Conflicts.ConflictDeviceOwnership.AppIdsForVendor(d.Vendor);
+                var isSplitMotherboard = IsSplitMotherboard(d);
+                var structure = BuildStructure(d, settings);
+                var zones = ZoneResolution.Resolve(structure, settings);
+                var isDefault = zones.Count > 0 && zones[0].IsDefault;
 
-            if (isSplitMotherboard)
-            {
-                // Every header is its own device, so the BOARD's own partition
-                // means nothing here - only each port's does. Keyed on the
-                // split alone rather than on isDefault so this never diverges
-                // from the engine-frame path, which resolves ports the same
-                // way; the two disagreeing lights the wrong LEDs silently.
-                var portStructures = BuildStructures(d, settings);
-                for (int z = 0; z < d.Zones.Count; z++)
+                if (isDefault && !isSplitMotherboard)
                 {
-                    var zone = d.Zones[z];
-                    var portId = $"{baseId}-{z}";
-                    // A port resolves to one card normally and to one card per
-                    // product once a chain is wired to it. They all report the
-                    // port as their device, which is what makes the chain read
-                    // as a single split card rather than unrelated siblings.
-                    var portZones = z < portStructures.Count
-                        ? ZoneResolution.Resolve(portStructures[z], settings)
-                        : System.Array.Empty<ResolvedZone>();
-                    foreach (var portZone in portZones)
-                    {
-                    var zoneId = portZone.Id;
-                    prefs.TryGetValue(zoneId, out var pref);
-                    layouts.TryGetValue(zoneId, out var layout);
-                    // Trust the user's persisted choice over OpenRGB's
-                    // reported count (12V headers ignore ResizeZone).
-                    var effectiveLedCount = portZone.IsDefault
-                        ? (zoneLedCounts.TryGetValue(zoneId, out var persistedCount) ? persistedCount : zone.LedCount)
-                        : portZone.LedCount;
-                    // Must be the hint the render path resolves this card with,
-                    // or the card's enabled count disagrees with what lights.
-                    var zoneHint = portZone.IsDefault ? portZone.LegacyZoneIndex : portZone.Ordinal;
-                    var (sx, sy, sw, sh) = OpenRgbLightingDeviceProvider.DefaultStripLayout(stripSlot);
+                    prefs.TryGetValue(baseId, out var pref);
+                    layouts.TryGetValue(baseId, out var layout);
+                    var (dx, dy, dw, dh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot, d);
                     result.Add(new LightingDevice
                     {
-                        Id = zoneId,
-                        DeviceKey = portZone.IsDefault ? DeviceKeyComputer.ForZone(baseKey, z) : portZone.DeviceKey,
-                        Name = portZone.IsDefault ? BuildZoneName(d.Name, zone.Name, z) : portZone.Name,
+                        Id = baseId,
+                        DeviceKey = baseKey,
+                        Name = d.Name,
                         Type = OpenRgbTypeName(d.Type),
                         IconType = OpenRgbTypeName(d.Type),
-                        LedsOn = !disabled.Contains(zoneId),
+                        LedsOn = !disabled.Contains(baseId),
                         Brightness = pref?.Brightness ?? 100,
                         Hue = pref?.Hue ?? 0,
                         Saturation = pref?.Saturation ?? 1.0f,
                         RateCapSupported = true,
                         MaxRateHz = MaxRateFor(maxRates, baseId),
-                        LedCount = effectiveLedCount,
-                        EnabledLedCount = ZoneResolution.CountEnabled(portStructures[z], portZone, zoneId, effectiveLedCount, zoneHint, settings),
-                        CanvasX = layout?.X ?? sx,
-                        CanvasY = layout?.Y ?? sy,
-                        CanvasW = layout?.W ?? sw,
-                        CanvasH = layout?.H ?? sh,
+                        LedCount = d.LedCount,
+                        EnabledLedCount = ZoneResolution.CountEnabled(structure, zones[0], baseId, d.LedCount, zones[0].LegacyZoneIndex, settings),
+                        CanvasX = layout?.X ?? dx,
+                        CanvasY = layout?.Y ?? dy,
+                        CanvasW = layout?.W ?? dw,
+                        CanvasH = layout?.H ?? dh,
+                        CanvasRotation = NormalizeRotation(layout?.Rotation ?? 0),
+                        DeviceId = baseId,
+                        ZoneCustomizable = d.LedCount > 1,
+                        ConflictAppIds = new List<string>(conflictAppIds),
+                    });
+                    cardSlot++;
+                    continue;
+                }
+
+                if (isSplitMotherboard)
+                {
+                    // Every header is its own device, so the BOARD's own partition
+                    // means nothing here - only each port's does. Keyed on the
+                    // split alone rather than on isDefault so this never diverges
+                    // from the engine-frame path, which resolves ports the same
+                    // way; the two disagreeing lights the wrong LEDs silently.
+                    var portStructures = BuildStructures(d, settings);
+                    for (int z = 0; z < d.Zones.Count; z++)
+                    {
+                        var zone = d.Zones[z];
+                        var portId = $"{baseId}-{z}";
+                        // A port resolves to one card normally and to one card per
+                        // product once a chain is wired to it. They all report the
+                        // port as their device, which is what makes the chain read
+                        // as a single split card rather than unrelated siblings.
+                        var portZones = z < portStructures.Count
+                            ? ZoneResolution.Resolve(portStructures[z], settings)
+                            : System.Array.Empty<ResolvedZone>();
+                        foreach (var portZone in portZones)
+                        {
+                        var zoneId = portZone.Id;
+                        prefs.TryGetValue(zoneId, out var pref);
+                        layouts.TryGetValue(zoneId, out var layout);
+                        // Trust the user's persisted choice over OpenRGB's
+                        // reported count (12V headers ignore ResizeZone).
+                        var effectiveLedCount = portZone.IsDefault
+                            ? (zoneLedCounts.TryGetValue(zoneId, out var persistedCount) ? persistedCount : zone.LedCount)
+                            : portZone.LedCount;
+                        // Must be the hint the render path resolves this card with,
+                        // or the card's enabled count disagrees with what lights.
+                        var zoneHint = portZone.IsDefault ? portZone.LegacyZoneIndex : portZone.Ordinal;
+                        var (sx, sy, sw, sh) = OpenRgbLightingDeviceProvider.DefaultStripLayout(stripSlot);
+                        result.Add(new LightingDevice
+                        {
+                            Id = zoneId,
+                            DeviceKey = portZone.IsDefault ? DeviceKeyComputer.ForZone(baseKey, z) : portZone.DeviceKey,
+                            Name = portZone.IsDefault ? BuildZoneName(d.Name, zone.Name, z) : portZone.Name,
+                            Type = OpenRgbTypeName(d.Type),
+                            IconType = OpenRgbTypeName(d.Type),
+                            LedsOn = !disabled.Contains(zoneId),
+                            Brightness = pref?.Brightness ?? 100,
+                            Hue = pref?.Hue ?? 0,
+                            Saturation = pref?.Saturation ?? 1.0f,
+                            RateCapSupported = true,
+                            MaxRateHz = MaxRateFor(maxRates, baseId),
+                            LedCount = effectiveLedCount,
+                            EnabledLedCount = ZoneResolution.CountEnabled(portStructures[z], portZone, zoneId, effectiveLedCount, zoneHint, settings),
+                            CanvasX = layout?.X ?? sx,
+                            CanvasY = layout?.Y ?? sy,
+                            CanvasW = layout?.W ?? sw,
+                            CanvasH = layout?.H ?? sh,
+                            CanvasRotation = NormalizeRotation(layout?.Rotation ?? 0),
+                            ParentDeviceId = baseId,
+                            // The hint, not the header: MappingApplyService reads
+                            // this to pick the artifact zone, and it has to pick
+                            // the one the render path resolved.
+                            ZoneIndex = zoneHint,
+                            ZoneType = ZoneTypeName(zone.ZoneType),
+                            // Only a zone owning the whole header may resize it. A
+                            // chain link starts at 0 like a whole-port zone does,
+                            // so without the count check every link would offer an
+                            // LED-count editor that the resize path then refuses.
+                            ZoneResizable = ZoneResolution.WholeResizableSegment(portStructures[z], portZone, settings) >= 0,
+                            // Each header is its own device now, so the card points
+                            // at the port structure rather than the controller. The
+                            // rail still groups it under the board through
+                            // ParentDeviceId, and the LED map editor resolves the
+                            // port instead of a device that owns every header.
+                            DeviceId = portId,
+                            ZoneCustomizable = true,
+                            ConflictAppIds = new List<string>(conflictAppIds),
+                        });
+                        stripSlot++;
+                        }
+                    }
+                    continue;
+                }
+
+                // Custom partition on a whole device - one card per user zone.
+                foreach (var zone in zones)
+                {
+                    prefs.TryGetValue(zone.Id, out var pref);
+                    layouts.TryGetValue(zone.Id, out var layout);
+                    var (zx, zy, zw, zh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot);
+                    var wholeResizable = ZoneResolution.WholeResizableSegment(structure, zone, settings);
+                    result.Add(new LightingDevice
+                    {
+                        Id = zone.Id,
+                        DeviceKey = "",
+                        Name = zone.Name,
+                        Type = OpenRgbTypeName(d.Type),
+                        IconType = OpenRgbTypeName(d.Type),
+                        LedsOn = !disabled.Contains(zone.Id),
+                        Brightness = pref?.Brightness ?? 100,
+                        Hue = pref?.Hue ?? 0,
+                        Saturation = pref?.Saturation ?? 1.0f,
+                        RateCapSupported = true,
+                        MaxRateHz = MaxRateFor(maxRates, baseId),
+                        LedCount = zone.LedCount,
+                        EnabledLedCount = ZoneResolution.CountEnabled(structure, zone, zone.Id, zone.LedCount, zone.Ordinal, settings),
+                        CanvasX = layout?.X ?? zx,
+                        CanvasY = layout?.Y ?? zy,
+                        CanvasW = layout?.W ?? zw,
+                        CanvasH = layout?.H ?? zh,
                         CanvasRotation = NormalizeRotation(layout?.Rotation ?? 0),
                         ParentDeviceId = baseId,
-                        // The hint, not the header: MappingApplyService reads
-                        // this to pick the artifact zone, and it has to pick
-                        // the one the render path resolved.
-                        ZoneIndex = zoneHint,
-                        ZoneType = ZoneTypeName(zone.ZoneType),
-                        // Only a zone owning the whole header may resize it. A
-                        // chain link starts at 0 like a whole-port zone does,
-                        // so without the count check every link would offer an
-                        // LED-count editor that the resize path then refuses.
-                        ZoneResizable = ZoneResolution.WholeResizableSegment(portStructures[z], portZone, settings) >= 0,
-                        // Each header is its own device now, so the card points
-                        // at the port structure rather than the controller. The
-                        // rail still groups it under the board through
-                        // ParentDeviceId, and the LED map editor resolves the
-                        // port instead of a device that owns every header.
-                        DeviceId = portId,
+                        ZoneIndex = zone.Ordinal,
+                        ZoneType = ZoneCardType(structure, zone),
+                        ZoneResizable = wholeResizable >= 0,
+                        DeviceId = baseId,
                         ZoneCustomizable = true,
                         ConflictAppIds = new List<string>(conflictAppIds),
                     });
-                    stripSlot++;
-                    }
+                    cardSlot++;
                 }
-                continue;
             }
-
-            // Custom partition on a whole device - one card per user zone.
-            foreach (var zone in zones)
+            catch (Exception ex)
             {
-                prefs.TryGetValue(zone.Id, out var pref);
-                layouts.TryGetValue(zone.Id, out var layout);
-                var (zx, zy, zw, zh) = OpenRgbLightingDeviceProvider.DefaultCardLayout(cardSlot);
-                var wholeResizable = ZoneResolution.WholeResizableSegment(structure, zone, settings);
-                result.Add(new LightingDevice
-                {
-                    Id = zone.Id,
-                    DeviceKey = "",
-                    Name = zone.Name,
-                    Type = OpenRgbTypeName(d.Type),
-                    IconType = OpenRgbTypeName(d.Type),
-                    LedsOn = !disabled.Contains(zone.Id),
-                    Brightness = pref?.Brightness ?? 100,
-                    Hue = pref?.Hue ?? 0,
-                    Saturation = pref?.Saturation ?? 1.0f,
-                    RateCapSupported = true,
-                    MaxRateHz = MaxRateFor(maxRates, baseId),
-                    LedCount = zone.LedCount,
-                    EnabledLedCount = ZoneResolution.CountEnabled(structure, zone, zone.Id, zone.LedCount, zone.Ordinal, settings),
-                    CanvasX = layout?.X ?? zx,
-                    CanvasY = layout?.Y ?? zy,
-                    CanvasW = layout?.W ?? zw,
-                    CanvasH = layout?.H ?? zh,
-                    CanvasRotation = NormalizeRotation(layout?.Rotation ?? 0),
-                    ParentDeviceId = baseId,
-                    ZoneIndex = zone.Ordinal,
-                    ZoneType = ZoneCardType(structure, zone),
-                    ZoneResizable = wholeResizable >= 0,
-                    DeviceId = baseId,
-                    ZoneCustomizable = true,
-                    ConflictAppIds = new List<string>(conflictAppIds),
-                });
-                cardSlot++;
+                // One malformed device must not fail the whole card list.
+                result.RemoveRange(resultBefore, result.Count - resultBefore);
+                cardSlot = cardBefore;
+                stripSlot = stripBefore;
+                WarnBadDeviceOnce(d, ex);
             }
         }
 

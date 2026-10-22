@@ -24,6 +24,7 @@ public sealed class ZoneTopology
     private readonly LightingEngine _engine;
     private readonly ContributorFrameLayouts _contributorLayouts;
     private readonly RgbBridge? _bridge;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> BadStructuresWarned = new(StringComparer.Ordinal);
 
     public ZoneTopology(
         IEnumerable<IDeviceStructureSource> sources,
@@ -75,7 +76,21 @@ public sealed class ZoneTopology
                 // except legacy keeb suffixes which also share the prefix.
                 if (!cardId.StartsWith(structure.DeviceId, StringComparison.Ordinal))
                     continue;
-                foreach (var zone in ZoneResolution.Resolve(structure, settings))
+                IReadOnlyList<ResolvedZone> zones;
+                try
+                {
+                    zones = ZoneResolution.Resolve(structure, settings);
+                }
+                catch (Exception ex)
+                {
+                    // One malformed structure must not hide the other devices' cards.
+                    if (BadStructuresWarned.TryAdd(structure.DeviceId, 0))
+                    {
+                        Nexus.Service.Platform.ServiceLog.Warn($"[zones] skipped structure '{structure.DeviceId}': {ex.GetType().Name}: {ex.Message}");
+                    }
+                    continue;
+                }
+                foreach (var zone in zones)
                 {
                     if (zone.Id == cardId)
                         return (structure, zone);
