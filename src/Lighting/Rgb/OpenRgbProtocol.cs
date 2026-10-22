@@ -433,7 +433,7 @@ public static class OpenRgbProtocol
                 ZoneType = zoneType,
                 LedsMin = ledsMin,
                 LedsMax = ledsMax,
-                LedCount = (int)zoneLeds,
+                LedCount = zoneLeds > int.MaxValue ? 0 : (int)zoneLeds,
                 MatrixWidth = matrixWidth,
                 MatrixHeight = matrixHeight,
                 MatrixMap = matrixMap,

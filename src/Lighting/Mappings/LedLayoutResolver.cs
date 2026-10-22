@@ -291,9 +291,10 @@ public static class LedLayoutResolver
         foreach (var z in device.Zones)
         {
             var typeName = ZoneTypeName(z.ZoneType);
-            for (int i = 0; i < z.LedCount && offset + i < result.Length; i++)
+            var count = Math.Max(0, z.LedCount);
+            for (int i = 0; i < count && offset + i < result.Length; i++)
                 result[offset + i] = typeName;
-            offset += z.LedCount;
+            offset += count;
         }
         for (int i = 0; i < result.Length; i++)
             result[i] ??= "unknown";
