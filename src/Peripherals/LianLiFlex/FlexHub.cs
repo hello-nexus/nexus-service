@@ -299,7 +299,7 @@ public sealed class FlexHub : IDisposable
     private void PollOnce(FlexUnitLink link)
     {
         var reply = Exchange(link, FlexProtocol.BuildGetInfo(), FlexProtocol.CmdGetInfo);
-        var info = reply is null ? null : FlexProtocol.ParseInfo(reply);
+        var info = reply is null ? null : FlexProtocol.ParseInfo(reply, link.Port.Family);
         link.LastPollMs = _nowMs();
         if (info is null)
         {

@@ -253,7 +253,8 @@ public static class FlexProtocol
     }
 
     /// <summary>Parses a 0x12 reply; null when the frame is not one.</summary>
-    public static FlexReceiverInfo? ParseInfo(ReadOnlySpan<byte> f)
+    /// <param name="family">The unit's family from its PID; null falls back to the reported fan type.</param>
+    public static FlexReceiverInfo? ParseInfo(ReadOnlySpan<byte> f, FlexFamily? family = null)
     {
         if (f.Length < 42 || f[0] != CmdGetInfo)
         {
@@ -278,6 +279,7 @@ public static class FlexProtocol
             FanNum = f[20],
             EffectIndex = Convert.ToHexString(f.Slice(21, 4)),
             FansType = f[25],
+            IsP28 = family is { } known ? known == FlexFamily.P28V2 : f[25] == P28FansType,
             PortFlags = flags,
             Rpm = rpm,
             Pwm = pwm,
@@ -354,7 +356,7 @@ public sealed class FlexReceiverInfo
 
     public bool PwmLinePresent => PortFlags.Length > 0 && (PortFlags[0] & 0x2) != 0;
 
-    public bool IsP28 => FansType == FlexProtocol.P28FansType;
+    public bool IsP28 { get; init; }
 
     /// <summary>P28 only: the sync line is on when bit 7 of byte 31 is clear. Its flag bits never reach <see cref="Rpm"/>.</summary>
     public bool P28SyncLineOn => IsP28 && PortFlags.Length > 1 && (PortFlags[1] & 0x8) == 0;

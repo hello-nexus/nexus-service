@@ -262,6 +262,48 @@ public class FlexP28Tests
     }
 
     [Fact]
+    public void P28_flag_decode_follows_the_family_not_the_reported_fan_type()
+    {
+        var f = FakeFlexTransport.InfoFrame(Mac, 0, FlexProtocol.UnboundRxType, 100, 0);
+        f[31] = 0x50;
+        Assert.True(FlexProtocol.ParseInfo(f, FlexFamily.P28V2)!.IsP28);
+        Assert.Equal(5, FlexProtocol.ParseInfo(f, FlexFamily.P28V2)!.P28Gear);
+        Assert.False(FlexProtocol.ParseInfo(f, FlexFamily.TlFlex)!.IsP28);
+        var p28Type = FakeFlexTransport.InfoFrame(Mac, FlexProtocol.P28FansType, FlexProtocol.UnboundRxType, 100, 0);
+        Assert.False(FlexProtocol.ParseInfo(p28Type, FlexFamily.SlInfFlex)!.IsP28);
+    }
+
+    [Fact]
+    public void Handler_name_is_p28_only_when_every_unit_is_p28()
+    {
+        var (hub, _, _) = P28Hub();
+        Assert.Equal("Lian Li P28 V2", new Nexus.Service.Devices.Handlers.LianLiFlexHandler(hub).Name);
+        var empty = new FlexHub(new FakeFlexDiscovery(), _ => new FakeFlexTransport());
+        Assert.Equal("Lian Li LCD Flex Fans", new Nexus.Service.Devices.Handlers.LianLiFlexHandler(empty).Name);
+        var mixed = new FakeFlexDiscovery();
+        mixed.Ports.Add(P28Discovery().Ports[0]);
+        mixed.Ports.Add(FakeFlexDiscovery.Tl());
+        var tl = new FakeFlexTransport("AA00000000AA", 0x33);
+        var p28 = new FakeFlexTransport(Mac, FlexProtocol.P28FansType);
+        var mixedHub = new FlexHub(mixed, port => port.ReceiverPid == FlexProtocol.P28ReceiverProductId ? p28 : tl);
+        mixedHub.Refresh();
+        Assert.Equal(2, mixedHub.Units.Length);
+        Assert.Equal("Lian Li LCD Flex Fans", new Nexus.Service.Devices.Handlers.LianLiFlexHandler(mixedHub).Name);
+    }
+
+    [Fact]
+    public void P28_state_reports_no_argb_cable_and_no_zone_support()
+    {
+        var (hub, tx, _) = P28Hub();
+        tx.Info[31] = 0x00;
+        hub.Tick();
+        var settings = new Nexus.Service.Persistence.NexusSettings();
+        var chain = Assert.Single(Nexus.Service.Routes.LianLiFlexRoutes.BuildLighting(hub, settings).Chains);
+        Assert.False(chain.ArgbCableConnected);
+        Assert.False(chain.SupportsZones);
+    }
+
+    [Fact]
     public void Catalog_lists_the_p28_v2_fan_without_a_screen()
     {
         var row = LightingDevicesCatalog.All.Single(d => d.Source == "nexus" && d.Model == "P28 V2 Fan");
