@@ -2378,6 +2378,12 @@ public sealed class DeepCoolMystiqueSettings
 
     /// <summary>Items removed from <see cref="Media"/> that the screen still holds: no delete command is known, so new uploads go up under these ids first.</summary>
     public List<DeepCoolMystiqueMediaItem> Freed { get; set; } = new();
+
+    /// <summary>The screen id every GIF goes up under: the screen plays one GIF, so showing another replaces it. Empty until the first GIF after a format.</summary>
+    public string GifSlot { get; set; } = "";
+
+    /// <summary>The <see cref="Media"/> id of the GIF <see cref="GifSlot"/> holds, empty when unknown.</summary>
+    public string ShownGif { get; set; } = "";
     public bool RecordFrequency { get; set; } = true;
     public bool RecordTemperature { get; set; } = true;
     public int Brightness { get; set; } = 70;
@@ -2415,6 +2421,8 @@ public sealed class DeepCoolMystiqueSettings
         copy.MediaSource = MediaSource ?? SourceImages;
         copy.Media = Media is null ? new List<DeepCoolMystiqueMediaItem>() : Media.ConvertAll(m => m.Copy());
         copy.Freed = Freed is null ? new List<DeepCoolMystiqueMediaItem>() : Freed.ConvertAll(m => m.Copy());
+        copy.GifSlot = GifSlot ?? "";
+        copy.ShownGif = ShownGif ?? "";
         copy.CpuTemperature = CpuTemperature?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuFrequency = CpuFrequency?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuUsage = CpuUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();

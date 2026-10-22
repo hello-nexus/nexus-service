@@ -89,7 +89,9 @@ public static partial class MystiqueMediaEncoder
         });
 
     /// <inheritdoc cref="EncodePictureAsync"/>
-    public static Task<MystiqueEncodeResult> EncodeGifAsync(byte[] source, string extension, CropRect? crop, string id, bool rotate, CancellationToken ct) =>
+    /// <param name="frameEncoded">Called with the frames encoded and decoded so far; a pass at a lower quality starts again from zero.</param>
+    public static Task<MystiqueEncodeResult> EncodeGifAsync(
+        byte[] source, string extension, CropRect? crop, string id, bool rotate, CancellationToken ct, Action<int, int>? frameEncoded = null) =>
         RunInWorkDir(source, extension, async (src, dir) =>
         {
             var (spanMs, sourceFrames) = await Probe(src, ct).ConfigureAwait(false);
@@ -133,6 +135,7 @@ public static partial class MystiqueMediaEncoder
                             return MystiqueEncodeResult.Failure(NoEncoder);
                         }
                         encoded.Add(jpeg);
+                        frameEncoded?.Invoke(encoded.Count, decoded);
                         streamBytes += MystiqueMedia.HeaderLength + jpeg.Length;
                         // A moving GIF streams every frame at least once, so it is already over the limit.
                         if (!still && streamBytes > MystiqueMedia.MaxGifStreamBytes)
