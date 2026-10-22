@@ -15,9 +15,6 @@ public static partial class DevicesRoutes
     private static readonly TimeSpan MystiqueUploadBudget = TimeSpan.FromMinutes(3);
     private const int MystiqueNameMax = 64;
 
-    // One upload at a time, from the slot check to the saved entry, so two pictures cannot both take the last slot.
-    private static readonly SemaphoreSlim MystiqueUploadGate = new(1, 1);
-
     private static string MystiqueMediaDir() => MediaLibrary.DeviceStoreDir("deepcool-mystique");
 
     private static IResult MystiqueMediaFailure(string msg, int status = 200) => Results.Json(
@@ -63,7 +60,7 @@ public static partial class DevicesRoutes
             budget.CancelAfter(MystiqueUploadBudget);
             try
             {
-                await MystiqueUploadGate.WaitAsync(budget.Token);
+                await worker.UploadGate.WaitAsync(budget.Token);
             }
             catch (OperationCanceledException)
             {
@@ -117,7 +114,7 @@ public static partial class DevicesRoutes
             }
             finally
             {
-                MystiqueUploadGate.Release();
+                worker.UploadGate.Release();
             }
         }).DisableAntiforgery();
 
