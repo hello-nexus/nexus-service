@@ -275,6 +275,25 @@ public sealed class CorsairLinkHub : IDisposable
     }
 
     /// <summary>
+    /// The firmware treats a per-LED (0,0,0) as "no change" and holds the LED's
+    /// prior color, so zero channels are floored to 1 (imperceptible) in frames that
+    /// mix black and lit pixels. A frame that is black end to end is sent as true
+    /// zeros so lock-screen blackout and brightness 0 do not leave a residual glow.
+    /// </summary>
+    public static void FloorChannels(ReadOnlySpan<byte> src, Span<byte> dst)
+    {
+        if (!src.ContainsAnyExcept((byte)0))
+        {
+            dst.Clear();
+            return;
+        }
+        for (var i = 0; i < src.Length; i++)
+        {
+            dst[i] = src[i] == 0 ? (byte)1 : src[i];
+        }
+    }
+
+    /// <summary>
     /// Stream one frame of per-LED color. <paramref name="rgb"/> is every RGB
     /// device's LEDs concatenated in channel order, 3 bytes (R,G,B) each.
     /// </summary>
@@ -305,15 +324,7 @@ public sealed class CorsairLinkHub : IDisposable
             _colorInner[3] = 0x00;
             _colorInner[4] = CorsairLinkProtocol.DataSetColor[0];
             _colorInner[5] = CorsairLinkProtocol.DataSetColor[1];
-            // The firmware treats a per-LED (0,0,0) as "no change" and holds the
-            // LED's prior/default color, so a black LED stays lit instead of going
-            // dark. Floor every channel to 1 (imperceptible) so each LED always
-            // receives a definite value and a black frame reads as off.
-            var dst = _colorInner.AsSpan(6, rgb.Length);
-            for (var i = 0; i < dst.Length; i++)
-            {
-                dst[i] = rgb[i] == 0 ? (byte)1 : rgb[i];
-            }
+            FloorChannels(rgb, _colorInner.AsSpan(6, rgb.Length));
 
             var offset = 0;
             var first = true;
@@ -407,10 +418,31 @@ public sealed class CorsairLinkHub : IDisposable
             };
             list.Add(dev);
         }
+        LogDevicesIfChanged(list);
         State.Devices = list;
         State.HasLcd = hasLcd;
         State.UnmappedChannels = unmapped;
         return true;
+    }
+
+    private string _loggedDevices = "";
+
+    // One line per device-list change (connect, hot-plug), never per refresh.
+    private void LogDevicesIfChanged(List<CorsairLinkDevice> list)
+    {
+        var sb = new System.Text.StringBuilder();
+        var totalLeds = 0;
+        foreach (var d in list)
+        {
+            if (sb.Length > 0) sb.Append("; ");
+            sb.Append("ch").Append(d.Channel).Append(" type=").Append(d.Type)
+                .Append(" model=").Append(d.Model).Append(" \"").Append(d.Name).Append("\" leds=").Append(d.LedCount);
+            totalLeds += d.LedCount;
+        }
+        var line = $"[corsair] hub devices ({list.Count}): {sb}; colour bytes per frame={totalLeds * 3}";
+        if (line == _loggedDevices) return;
+        _loggedDevices = line;
+        ServiceLog.Info(line);
     }
 
     // close -> open -> read without dataType validation; for endpoints whose response
