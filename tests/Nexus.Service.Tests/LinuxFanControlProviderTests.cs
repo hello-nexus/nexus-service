@@ -38,6 +38,21 @@ public class LinuxFanControlProviderTests
         Assert.Equal(FanModes.Manual, ch.Mode); // enable=1
     }
 
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(false, 1)]
+    public void NativeKrakenAttached_HidesKernelKrakenFanAndTemp(bool nativeAttached, int expected)
+    {
+        using var t = new TempDir();
+        t.Write("hwmon/hwmon0/name", "kraken3\n");
+        t.Write("hwmon/hwmon0/pwm1", "128\n");
+        t.Write("hwmon/hwmon0/pwm1_enable", "1\n");
+        t.Write("hwmon/hwmon0/temp1_input", "30000\n");
+        var p = new LinuxFanControlProvider(t.At("hwmon"), TimeSpan.FromMilliseconds(1), nativeKraken: () => nativeAttached);
+        Assert.Equal(expected, p.GetFanChannels().Count);
+        Assert.Equal(expected, p.GetTemperatureSources().Count);
+    }
+
     [Fact]
     public void GetFanChannels_SkipsFanWithoutEnableKnob()
     {

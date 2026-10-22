@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Cooling;
@@ -34,6 +35,7 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private readonly Func<string, string, int, bool> _setSpeed; // (address, channel, duty) -> applied?
     private readonly bool _forceAvailable;
     private readonly IConfigStore? _config;
+    private readonly Func<bool> _nativeKraken;
 
     private readonly object _lock = new();
     // Rebuilt wholesale and published atomically (assigned, never mutated in
@@ -48,9 +50,10 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private List<LiquidDevice>? _snapshot;
     private long _snapshotAtMs = long.MinValue;
 
-    public LinuxLiquidctlProvider(IConfigStore config)
+    public LinuxLiquidctlProvider(IConfigStore config, KrakenHub krakenHub)
     {
         _config = config;
+        _nativeKraken = () => krakenHub.IsConnected;
         _statusJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "status");
         // Verify the write landed (exit 0) instead of assuming it - a rejected
         // `set` (permissions, wrong channel) must not be reported as applied.
@@ -63,8 +66,9 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     }
 
     // Injected command seams for tests (no real liquidctl needed).
-    internal LinuxLiquidctlProvider(Func<string> statusJson, Func<string, string, int, bool> setSpeed, IConfigStore? config = null)
+    internal LinuxLiquidctlProvider(Func<string> statusJson, Func<string, string, int, bool> setSpeed, IConfigStore? config = null, Func<bool>? nativeKraken = null)
     {
+        _nativeKraken = nativeKraken ?? (() => false);
         _statusJson = statusJson;
         _setSpeed = setSpeed;
         _forceAvailable = true;
@@ -240,15 +244,21 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     {
         if (!Available())
             return new List<LiquidDevice>();
+        List<LiquidDevice> devices;
         lock (_lock)
         {
             var now = Environment.TickCount64;
-            if (_snapshot is not null && now - _snapshotAtMs < SnapshotTtlMs)
-                return _snapshot;
-            _snapshot = ParseStatus(_statusJson());
-            _snapshotAtMs = now;
-            return _snapshot;
+            if (_snapshot is null || now - _snapshotAtMs >= SnapshotTtlMs)
+            {
+                _snapshot = ParseStatus(_statusJson());
+                _snapshotAtMs = now;
+            }
+            devices = _snapshot;
         }
+        // The native driver owns the cooler once attached; a second card writes to the same hidraw node.
+        return _nativeKraken()
+            ? devices.Where(d => !d.Description.Contains("Kraken", StringComparison.OrdinalIgnoreCase)).ToList()
+            : devices;
     }
 
     public static bool IsLiquidctlId(string id)
