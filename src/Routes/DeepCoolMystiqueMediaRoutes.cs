@@ -279,16 +279,15 @@ public static partial class DevicesRoutes
                 }
                 var (slot, held) = MystiqueGifSlot(m, id);
                 bool rotate = MystiqueRotatesMedia(m);
-                var package = LoadMystiqueStream(id, slot, out bool rotated);
-                if (package is not null && rotated != rotate)
-                {
-                    // Kept frames carry the turn of the gyroscope setting they were encoded under.
-                    package = await ReencodeMystiqueGifAsync(m.Media.Find(i => i.Id == id)!, slot, rotate, worker, budget.Token);
-                }
+                var item = m.Media.Find(i => i.Id == id)!;
+                var package = await ResolveMystiqueGifAsync(item, slot, rotate,
+                    (done, total) => worker.ReportProgress(MystiqueWorker.ProgressConverting, done, total), budget.Token);
                 if (package is null)
                 {
-                    return Results.Json(new DeepCoolMystiqueMediaResponse { Error = true, NeedsEdit = true, Msg = "The GIF's frames are not kept; edit it to send it again." },
-                        AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
+                    return MystiqueSourceExists(item)
+                        ? MystiqueMediaFailure("The GIF could not be converted")
+                        : Results.Json(new DeepCoolMystiqueMediaResponse { Error = true, NotKept = true, Msg = "The GIF's original is not kept, so it cannot be sent again" },
+                            AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
                 }
                 int startChoices = MystiqueSourceChoices;
                 string? SourceAfterStream()
@@ -361,6 +360,7 @@ public static partial class DevicesRoutes
                     m.GifSlotUnsure = false;
                 });
                 gone.ForEach(DeleteMystiqueFiles);
+                DeleteMystiqueStreamLeftovers();
                 return Results.Json(new DeepCoolMystiqueMediaResponse(), AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
             }
             finally
@@ -471,6 +471,7 @@ public static partial class DevicesRoutes
         }
         DeleteMystiqueFile(Path.Combine(MystiqueMediaDir(), item.Id + ".jpg"));
         DeleteMystiqueFile(MystiqueStreamPath(item.Id));
+        DeleteMystiqueFile(MystiqueStreamPath(item.Id) + ".tmp");
         if (IsKeepableExt(item.Ext ?? ""))
         {
             DeleteMystiqueFile(MystiqueSourcePath(item.Id, item.Ext!));
@@ -551,7 +552,23 @@ public static partial class DevicesRoutes
         }
     }
 
-    private static string MystiqueStreamPath(string id) => Path.Combine(MystiqueMediaDir(), "streams", id + ".bin");
+    private static string MystiqueStreamDir() => Path.Combine(MystiqueMediaDir(), "streams");
+
+    private static string MystiqueStreamPath(string id) => Path.Combine(MystiqueStreamDir(), id + ".bin");
+
+    /// <summary>Deletes the temp files of stream writes a crash cut short.</summary>
+    private static void DeleteMystiqueStreamLeftovers()
+    {
+        var dir = MystiqueStreamDir();
+        if (!Directory.Exists(dir))
+        {
+            return;
+        }
+        foreach (var temp in Directory.GetFiles(dir, "*.tmp"))
+        {
+            DeleteMystiqueFile(temp);
+        }
+    }
 
     /// <summary>Keeps a GIF's encoded frames, so showing it again streams them without a new encode.</summary>
     private static void SaveMystiqueStream(string id, byte[] saved)
@@ -568,6 +585,19 @@ public static partial class DevicesRoutes
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[deepcool-mystique] GIF frames not kept: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// The GIF to stream for <paramref name="item"/> under <paramref name="screenId"/>: its kept frames when they load and match
+    /// <paramref name="rotate"/>, else a new encode of its kept source; null when neither is kept.
+    /// </summary>
+    internal static async Task<MystiqueMediaPackage?> ResolveMystiqueGifAsync(
+        DeepCoolMystiqueMediaItem item, string screenId, bool rotate, Action<int, int>? converting, CancellationToken ct)
+    {
+        var package = LoadMystiqueStream(item.Id, screenId, out bool rotated);
+        return package is not null && rotated == rotate
+            ? package
+            : await ReencodeMystiqueGifAsync(item, screenId, rotate, converting, ct);
     }
 
     /// <summary>The GIF kept under <paramref name="id"/>, rebuilt to go up under <paramref name="screenId"/>; null when none is kept.</summary>
@@ -588,7 +618,7 @@ public static partial class DevicesRoutes
 
     /// <summary>Encodes a GIF again from its kept source with its recorded crop and keeps the frames; null when no source is kept or the encode fails.</summary>
     private static async Task<MystiqueMediaPackage?> ReencodeMystiqueGifAsync(
-        DeepCoolMystiqueMediaItem item, string screenId, bool rotate, MystiqueWorker worker, CancellationToken ct)
+        DeepCoolMystiqueMediaItem item, string screenId, bool rotate, Action<int, int>? converting, CancellationToken ct)
     {
         if (!MystiqueSourceExists(item))
         {
@@ -596,9 +626,8 @@ public static partial class DevicesRoutes
         }
         CropRect.TryParse(item.Crop, out var parsed);
         var source = await File.ReadAllBytesAsync(MystiqueSourcePath(item.Id, item.Ext), ct);
-        worker.ReportProgress(MystiqueWorker.ProgressConverting, 0, 1);
-        var encoded = await MystiqueMediaEncoder.EncodeGifAsync(source, item.Ext, parsed.W > 0 ? parsed : null, screenId, rotate, ct,
-            (done, total) => worker.ReportProgress(MystiqueWorker.ProgressConverting, done, total));
+        converting?.Invoke(0, 1);
+        var encoded = await MystiqueMediaEncoder.EncodeGifAsync(source, item.Ext, parsed.W > 0 ? parsed : null, screenId, rotate, ct, converting);
         if (!encoded.Ok)
         {
             return null;

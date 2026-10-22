@@ -5,8 +5,11 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Media;
 using Nexus.Service.Peripherals.DeepCool;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using Nexus.Service.Routes;
 using SkiaSharp;
 using Xunit;
 
@@ -159,6 +162,10 @@ public class MystiqueMediaTests
         Assert.Null(MystiqueMedia.LoadGif(kept.AsSpan(0, kept.Length - 1), GifId, out _));
         Assert.Null(MystiqueMedia.LoadGif(kept, "not-an-id", out _));
         Assert.Null(MystiqueMedia.LoadGif(Array.Empty<byte>(), GifId, out _));
+        Assert.Null(MystiqueMedia.LoadGif(kept.AsSpan(5), GifId, out _));
+        var otherVersion = kept.ToArray();
+        otherVersion[4]++;
+        Assert.Null(MystiqueMedia.LoadGif(otherVersion, GifId, out _));
     }
 
     [Fact]
@@ -344,6 +351,52 @@ public class MystiqueMediaTests
         Assert.InRange(TopGreen(gif.Package!.Frames[0][MystiqueMedia.HeaderLength..]), 220, 255);
         Assert.InRange(TopGreen(picture.Thumbnail!), 0, 35);
         Assert.InRange(TopGreen(gif.Thumbnail!), 0, 35);
+    }
+
+    [FfmpegFact]
+    public async Task Showing_a_gif_encodes_its_kept_original_again_when_its_frames_are_missing_unreadable_or_turned()
+    {
+        // The route's own store, under an id no setting lists.
+        var item = new DeepCoolMystiqueMediaItem { Kind = DeepCoolMystiqueMediaItem.KindGif, Id = Guid.NewGuid().ToString("N"), Name = "test", Ext = ".png" };
+        var dir = MediaLibrary.DeviceStoreDir("deepcool-mystique");
+        var source = Path.Combine(dir, "sources", item.Id + ".png");
+        var stream = Path.Combine(dir, "streams", item.Id + ".bin");
+        int converted = 0;
+        Task<MystiqueMediaPackage?> Show(bool rotate)
+        {
+            converted = 0;
+            return DevicesRoutes.ResolveMystiqueGifAsync(item, GifId, rotate, (_, _) => converted++, CancellationToken.None);
+        }
+        try
+        {
+            Assert.Null(await Show(rotate: false));
+
+            Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+            await File.WriteAllBytesAsync(source, Png(300, 300));
+            Assert.NotNull(await Show(rotate: false));
+            Assert.True(converted > 0);
+            Assert.NotNull(MystiqueMedia.LoadGif(await File.ReadAllBytesAsync(stream), GifId, out bool turned));
+            Assert.False(turned);
+
+            Assert.NotNull(await Show(rotate: false));
+            Assert.Equal(0, converted);
+
+            Assert.NotNull(await Show(rotate: true));
+            Assert.True(converted > 0);
+            Assert.NotNull(MystiqueMedia.LoadGif(await File.ReadAllBytesAsync(stream), GifId, out turned));
+            Assert.True(turned);
+
+            // The layout before the magic and version prefix.
+            await File.WriteAllBytesAsync(stream, (await File.ReadAllBytesAsync(stream))[5..]);
+            Assert.NotNull(await Show(rotate: true));
+            Assert.True(converted > 0);
+            Assert.NotNull(MystiqueMedia.LoadGif(await File.ReadAllBytesAsync(stream), GifId, out _));
+        }
+        finally
+        {
+            File.Delete(source);
+            File.Delete(stream);
+        }
     }
 
     private static int TopGreen(byte[] jpeg)

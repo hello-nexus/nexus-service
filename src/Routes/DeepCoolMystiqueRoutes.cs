@@ -283,8 +283,8 @@ public sealed class DeepCoolMystiqueMediaResponse
     public string Msg { get; set; } = "";
     public string Id { get; set; } = "";
 
-    /// <summary>The GIF's frames are not kept, so showing it takes an edit, which encodes them again.</summary>
-    public bool NeedsEdit { get; set; }
+    /// <summary>Neither the GIF's frames nor its original are kept, so it cannot be sent again.</summary>
+    public bool NotKept { get; set; }
 }
 
 public sealed class DeepCoolMystiqueProgressResponse
