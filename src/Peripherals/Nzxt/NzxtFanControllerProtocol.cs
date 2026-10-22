@@ -7,8 +7,8 @@ namespace Nexus.Service.Peripherals.Nzxt;
 // leaves out the firmware and lighting-info queries.
 //
 // The first byte of every report is its HID report id. Status reports arrive on report 0x67
-// sub-command 0x02: fan mode per channel at 16 (0 = nothing connected, 1 = DC, 2 = PWM), tach
-// as little-endian rpm at 24 + 2n, commanded duty percent at 40 + n.
+// sub-command 0x02 carrying, per channel, a mode byte (0 = nothing connected, 1 = DC, 2 = PWM),
+// a little-endian tach and the commanded duty percent; the offsets are the constants below.
 internal static class NzxtFanControllerProtocol
 {
     public const int VendorId = 0x1E71;
@@ -24,7 +24,7 @@ internal static class NzxtFanControllerProtocol
     private const int RpmOffset = 24;
     private const int DutyOffset = 40;
 
-    /// <summary>Status cadence index sent with the interval command; one is the 500 ms setting.</summary>
+    /// <summary>Status cadence index sent with the interval command.</summary>
     private const byte StatusIntervalIndex = 0x01;
 
     /// <summary>Sets the status cadence for the fan channels (60 02).</summary>

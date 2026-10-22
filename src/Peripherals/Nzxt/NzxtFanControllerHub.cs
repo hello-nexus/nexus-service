@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 
 namespace Nexus.Service.Peripherals.Nzxt;
@@ -18,11 +19,15 @@ public sealed class NzxtFanControllerHub
     private IHidDevice? _device;
     private volatile NzxtFanReading[] _fans = Array.Empty<NzxtFanReading>();
     private volatile bool _isConnected;
+    private int _generation;
 
     /// <summary>Latest status per channel; empty while disconnected. The array is replaced whole, never mutated.</summary>
     public NzxtFanReading[] Fans => _fans;
 
     public bool IsConnected => _isConnected;
+
+    /// <summary>Changes on every successful connect, so a holder of per-connection state can tell a reconnect happened.</summary>
+    public int Generation => Volatile.Read(ref _generation);
 
     public void Attach(IHidDevice device)
     {
@@ -51,6 +56,7 @@ public sealed class NzxtFanControllerHub
         {
             return false;
         }
+        Interlocked.Increment(ref _generation);
         _isConnected = true;
         return true;
     }

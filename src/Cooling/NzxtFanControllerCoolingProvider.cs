@@ -22,11 +22,17 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
     // again, so a reading that lags a fresh write does not trigger a second one.
     private const int ReassertAfterPolls = 3;
 
+    // Resends allowed per commanded duty before the channel is left alone; a device that
+    // never settles on the value would otherwise take a write every few reports for good.
+    private const int MaxResends = 3;
+
     private readonly NzxtFanControllerHub _hub;
     private readonly object _ctrlLock = new();
     private readonly bool[] _softwareControlled = new bool[NzxtFanControllerProtocol.FanChannelCount];
     private readonly int[] _commanded = new int[NzxtFanControllerProtocol.FanChannelCount];
     private readonly int[] _offTarget = new int[NzxtFanControllerProtocol.FanChannelCount];
+    private readonly int[] _resends = new int[NzxtFanControllerProtocol.FanChannelCount];
+    private int _seenGeneration;
 
     public NzxtFanControllerCoolingProvider(NzxtFanControllerHub hub)
     {
@@ -51,6 +57,7 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
         var result = new List<FanChannel>(fans.Length);
         for (int i = 0; i < fans.Length; i++)
         {
+            if (!IsPopulated(fans[i])) continue;
             result.Add(new FanChannel
             {
                 Id = FanId(i),
@@ -117,6 +124,7 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
         var devices = new List<CoolingDevice>(fans.Length);
         for (int i = 0; i < fans.Length; i++)
         {
+            if (!IsPopulated(fans[i])) continue;
             devices.Add(new CoolingDevice
             {
                 Id = FanId(i),
@@ -125,6 +133,10 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
                 Rpm = fans[i].Rpm,
                 Pwm = fans[i].DutyPercent,
             });
+        }
+        if (devices.Count == 0)
+        {
+            return Array.Empty<CoolingComponent>();
         }
         return new[]
         {
@@ -150,13 +162,23 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
         {
             return;
         }
+        var generation = _hub.Generation;
+        lock (_ctrlLock)
+        {
+            if (generation != _seenGeneration)
+            {
+                Array.Clear(_resends);
+                Array.Clear(_offTarget);
+                _seenGeneration = generation;
+            }
+        }
         for (int i = 0; i < fans.Length; i++)
         {
             int want;
             bool resend = false;
             lock (_ctrlLock)
             {
-                if (!_softwareControlled[i])
+                if (!_softwareControlled[i] || fans[i].Mode == 0)
                 {
                     _offTarget[i] = 0;
                     continue;
@@ -165,10 +187,12 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
                 if (fans[i].DutyPercent == want)
                 {
                     _offTarget[i] = 0;
+                    _resends[i] = 0;
                 }
-                else if (++_offTarget[i] >= ReassertAfterPolls)
+                else if (_resends[i] < MaxResends && ++_offTarget[i] >= ReassertAfterPolls)
                 {
                     _offTarget[i] = 0;
+                    _resends[i]++;
                     resend = true;
                 }
             }
@@ -190,17 +214,27 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
             ServiceLog.Warn($"[nzxt-fan-controller-cooling] write to {channelId} dropped: not connected");
             return;
         }
+        var fans = _hub.Fans;
+        if (channel < fans.Length && !IsPopulated(fans[channel]))
+        {
+            return;
+        }
         lock (_ctrlLock)
         {
             _softwareControlled[channel] = true;
             _commanded[channel] = dutyPercent;
             _offTarget[channel] = 0;
+            _resends[channel] = 0;
         }
         if (!_hub.SetFanDuty(channel, dutyPercent))
         {
             ServiceLog.Warn($"[nzxt-fan-controller-cooling] write to {channelId} -> {dutyPercent}% failed");
         }
     }
+
+    // A header with nothing on it reports mode zero and no tach. A spinning fan is always
+    // listed, so a mode byte read wrong can never hide a real one.
+    private static bool IsPopulated(NzxtFanReading fan) => fan.Mode != 0 || fan.Rpm > 0;
 
     private bool IsSoftwareControlled(int channel)
     {
