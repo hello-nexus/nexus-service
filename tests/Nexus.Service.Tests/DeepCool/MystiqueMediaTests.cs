@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Nexus.Service.Media;
 using Nexus.Service.Peripherals.DeepCool;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -356,9 +355,9 @@ public class MystiqueMediaTests
     [FfmpegFact]
     public async Task Showing_a_gif_encodes_its_kept_original_again_when_its_frames_are_missing_unreadable_or_turned()
     {
-        // The route's own store, under an id no setting lists.
         var item = new DeepCoolMystiqueMediaItem { Kind = DeepCoolMystiqueMediaItem.KindGif, Id = Guid.NewGuid().ToString("N"), Name = "test", Ext = ".png" };
-        var dir = MediaLibrary.DeviceStoreDir("deepcool-mystique");
+        var dir = Path.Combine(Path.GetTempPath(), $"mystique-{Guid.NewGuid():N}");
+        DevicesRoutes.MystiqueMediaRootForTests.Value = dir;
         var source = Path.Combine(dir, "sources", item.Id + ".png");
         var stream = Path.Combine(dir, "streams", item.Id + ".bin");
         int converted = 0;
@@ -394,8 +393,11 @@ public class MystiqueMediaTests
         }
         finally
         {
-            File.Delete(source);
-            File.Delete(stream);
+            DevicesRoutes.MystiqueMediaRootForTests.Value = null;
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
         }
     }
 
