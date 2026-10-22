@@ -199,7 +199,28 @@ public class MystiqueSessionTests
     }
 
     [Fact]
-    public void Recovery_sends_nothing_once_the_failed_packet_is_past_its_budget()
+    public void Recovery_clears_the_halt_and_its_budget_starts_at_the_failure()
+    {
+        var pipe = new FakePipe();
+        long now = 0;
+        var session = new MystiqueSession(pipe, monotonicMs: () => now);
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+        pipe.Writes.Clear();
+        pipe.Halts.Clear();
+        var package = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
+        int failing = pipe.Attempts + 3;
+        pipe.FailAttempts.Add(failing);
+        // The failed write ran into the transport timeout.
+        pipe.BeforeWrite = attempt => { if (attempt == failing) { now += 5000; } };
+
+        Assert.False(session.Upload(package));
+
+        Assert.Equal(new[] { MystiqueProtocol.SettingsWritePipe }, pipe.Halts);
+        Assert.Equal(MystiqueMedia.FinishLength, pipe.Writes[^1].Frame.Length);
+    }
+
+    [Fact]
+    public void Recovery_stops_filling_once_its_budget_is_spent()
     {
         var pipe = new FakePipe();
         long now = 0;
@@ -208,12 +229,31 @@ public class MystiqueSessionTests
         pipe.Writes.Clear();
         var package = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
         int failing = pipe.Attempts + 3;
-        pipe.ZeroAttempts.Add(failing);
-        pipe.BeforeWrite = attempt => { if (attempt == failing) { now += 5000; } };
+        pipe.FailAttempts.Add(failing);
+        pipe.BeforeWrite = attempt => { if (attempt == failing + 2) { now += 5000; } };
 
         Assert.False(session.Upload(package));
 
-        Assert.Equal(3, pipe.Writes.Count);
+        Assert.Equal(5, pipe.Writes.Count);
+        Assert.DoesNotContain(pipe.Writes, w => w.Frame.Length == MystiqueMedia.FinishLength);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Format_counts_only_when_the_screen_answers(bool answers)
+    {
+        var pipe = new FakePipe();
+        var session = new MystiqueSession(pipe);
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+        pipe.Writes.Clear();
+        if (!answers)
+        {
+            pipe.Silent.Add(MystiqueProtocol.CmdFormat);
+        }
+
+        Assert.Equal(answers, session.Format());
+        Assert.Equal(new[] { MystiqueProtocol.CmdFormat }, pipe.Commands());
     }
 
     [Fact]

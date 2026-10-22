@@ -13,7 +13,7 @@ public class MystiqueProtocolTests
     private const string SystemDim = "AA2E02010102001500000000000000000000000000000000000000000000000000000000000000000000484944430B02";
     private const string SystemDark = "AA2E0201010200000000000000000000000000000000000000000000000000000000000000000000000048494443F601";
     private const string SystemSyncOn = "AA2E0201010201000000000000000000000000000000000000000000000000000000000000000000000048494443F701";
-    private const string SystemGyroOff = "AA2E0201000201000000000000000000000000000000000000000000000000000000000000000000000048494443F601";
+    private const string SystemGyroOn = "AA2E0201000201000000000000000000000000000000000000000000000000000000000000000000000048494443F601";
     private const string RecordApply = "AA2E0601000000000000000000000000000000000000000000000000000000000000000000000000000048494443F701";
     private const string Clock = "AA2E0AEA070A15101A3B0000000000000000000000000000000000000000000000000000000000000000484944436F03";
     private const string Poll = "AA2E10000000000000000000000000000000000000000000000000000000000000000000000000000000484944430002";
@@ -21,6 +21,12 @@ public class MystiqueProtocolTests
     private const string InfoReply = "552E12003033464630323130303445303035383439343036394230373030303830303039000000000000484944434F08";
 
     private static string Hex(byte[] b) => Convert.ToHexString(b);
+
+    [Fact]
+    public void Format_matches_the_screens_own_format_button()
+    {
+        Assert.Equal("AA2E14000000000000000000000000000000000000000000000000000000000000000000000000000000484944430402", Hex(MystiqueProtocol.BuildFormat()));
+    }
 
     [Fact]
     public void Poll_and_info_query_match_the_recorded_frames()
@@ -42,7 +48,7 @@ public class MystiqueProtocolTests
     [InlineData(false, true, "AA2E02010002024600000000000000000000000000000000000000000000000000000000000000000000484944433D02")]
     public void Edge_picking_takes_the_rgb_source_over_motherboard_sync(bool rgbSync, bool edgePicking, string expected)
     {
-        Assert.Equal(expected, Hex(MystiqueProtocol.BuildSystem(false, MystiqueProtocol.RgbSourceCode(rgbSync, edgePicking), 70)));
+        Assert.Equal(expected, Hex(MystiqueProtocol.BuildSystem(true, MystiqueProtocol.RgbSourceCode(rgbSync, edgePicking), 70)));
     }
 
     [Theory]
@@ -82,11 +88,11 @@ public class MystiqueProtocolTests
     }
 
     [Theory]
-    [InlineData(true, false, 70, SystemStart)]
-    [InlineData(true, false, 21, SystemDim)]
-    [InlineData(true, false, 0, SystemDark)]
-    [InlineData(true, true, 0, SystemSyncOn)]
-    [InlineData(false, true, 0, SystemGyroOff)]
+    [InlineData(false, false, 70, SystemStart)]
+    [InlineData(false, false, 21, SystemDim)]
+    [InlineData(false, false, 0, SystemDark)]
+    [InlineData(false, true, 0, SystemSyncOn)]
+    [InlineData(true, true, 0, SystemGyroOn)]
     public void System_frame_matches_the_recorded_frames(bool gyroscope, bool rgbSync, int brightness, string expected)
     {
         Assert.Equal(expected, Hex(MystiqueProtocol.BuildSystem(gyroscope, MystiqueProtocol.RgbSourceCode(rgbSync, false), brightness)));

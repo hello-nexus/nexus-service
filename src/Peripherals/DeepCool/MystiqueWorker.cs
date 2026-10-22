@@ -55,9 +55,9 @@ public sealed class MystiqueWorker : BackgroundService
 
     public bool IsConnected => _connected;
 
-    private sealed class PendingUpload(MystiqueMediaPackage package)
+    private sealed class PendingUpload(Func<MystiqueSession, bool> run)
     {
-        public MystiqueMediaPackage Package { get; } = package;
+        public Func<MystiqueSession, bool> Run { get; } = run;
         public TaskCompletionSource<bool> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Waiting, Streaming or Withdrawn; only one side wins the move out of Waiting.
@@ -81,13 +81,18 @@ public sealed class MystiqueWorker : BackgroundService
     /// pipes. False when no screen is connected, another upload is waiting, the stream fails, or the
     /// caller gives up before the stream starts; once it has started, the real result is awaited.
     /// </summary>
-    public async Task<bool> UploadAsync(MystiqueMediaPackage package, CancellationToken ct)
+    public Task<bool> UploadAsync(MystiqueMediaPackage package, CancellationToken ct) => RunMediaAsync(s => s.Upload(package), ct);
+
+    /// <summary>Erases every picture and GIF on the screen, between ticks like an upload.</summary>
+    public Task<bool> FormatAsync(CancellationToken ct) => RunMediaAsync(s => s.Format(), ct);
+
+    private async Task<bool> RunMediaAsync(Func<MystiqueSession, bool> run, CancellationToken ct)
     {
         if (!_connected)
         {
             return false;
         }
-        var pending = new PendingUpload(package);
+        var pending = new PendingUpload(run);
         if (Interlocked.CompareExchange(ref _pendingUpload, pending, null) is not null)
         {
             return false;
@@ -217,11 +222,11 @@ public sealed class MystiqueWorker : BackgroundService
                 var upload = Volatile.Read(ref _pendingUpload);
                 if (upload is not null && Interlocked.CompareExchange(ref upload.State, UploadStreaming, UploadWaiting) == UploadWaiting)
                 {
-                    bool sent = session.Upload(upload.Package);
+                    bool sent = upload.Run(session);
                     upload.Done.TrySetResult(sent);
                     if (!sent)
                     {
-                        Log("an upload was refused; reopening", error: false);
+                        Log("an upload or format was refused; reopening", error: false);
                         return false;
                     }
                     continue;
