@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Zones;
+using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
@@ -666,6 +667,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         var fanInfo = FindFanInfo(macHex);
         if (fanInfo is null) return 0;
+        if (Slv3LightingDeviceProvider.FlexFamilyOf(fanInfo) is { } flex)
+        {
+            return FillFlexWireBuffer(macHex, structure, flex);
+        }
         // Ring lengths must match the provider's structure for this chain or
         // the fan-major interleave misaligns.
         var innerLen = Slv3LightingDeviceProvider.RingLedsFor(fanInfo);
@@ -691,6 +696,50 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             }
         }
         return totalLeds;
+    }
+
+    // Zone-major segment buffers scattered into the fan-major wire buffer by the wired-Flex zone maps.
+    private int FillFlexWireBuffer(string macHex, DeviceStructure structure, FlexFamily flex)
+    {
+        var zones = Slv3LightingDeviceProvider.FlexZonesOf(flex);
+        var first = FlexProtocol.ZoneWireIndexes(flex, zones[0].Key).Count;
+        if (first <= 0) return 0;
+        var fanCount = structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / first;
+        var perFan = FlexProtocol.LedsPerFan(flex);
+        if (fanCount <= 0) return 0;
+        var totalLeds = fanCount * perFan;
+        EnsureWireBuffer(totalLeds);
+        var swap = flex == FlexFamily.TlFlex && _store.Load().Devices.FlexUnits.TryGetValue(macHex, out var look) && look.UpDownSwap;
+        return ScatterFlexZones(flex, fanCount, _segmentBuffers, _wireBuffer, swap) ? totalLeds : 0;
+    }
+
+    // False when the buffers do not match the geometry: the structure and the fan list are read at different moments.
+    internal static bool ScatterFlexZones(FlexFamily flex, int fanCount, RgbColor[][] zoneBuffers, RgbColor[] wire, bool swap = false)
+    {
+        var zones = Slv3LightingDeviceProvider.FlexZonesOf(flex);
+        var perFan = FlexProtocol.LedsPerFan(flex);
+        if (zoneBuffers.Length < zones.Length || wire.Length < fanCount * perFan)
+        {
+            return false;
+        }
+        for (var z = 0; z < zones.Length; z++)
+        {
+            var map = FlexProtocol.ZoneWireIndexes(flex, zones[z].Key);
+            var buffer = zoneBuffers[z];
+            if (buffer.Length < fanCount * map.Count)
+            {
+                return false;
+            }
+            for (var f = 0; f < fanCount; f++)
+            {
+                for (var k = 0; k < map.Count; k++)
+                {
+                    var idx = swap ? (map[k] + (perFan / 2)) % perFan : map[k];
+                    wire[(f * perFan) + idx] = buffer[(f * map.Count) + k];
+                }
+            }
+        }
+        return true;
     }
 
     // Retry spacing and cap for the motherboard ARGB switch: the hub already
@@ -779,7 +828,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
         var fanCount = isStrimer
             ? 0
-            : structure.Segments[Slv3LightingDeviceProvider.InnerSegment].LedCount / Slv3LightingDeviceProvider.RingLedsFor(fan);
+            : Slv3LightingDeviceProvider.FanCountOf(structure, fan);
         // A beacon with every port empty classifies the chain Unknown for one
         // poll; the uploaded loop keeps playing rather than being overwritten.
         if (!isStrimer && family == Slv3FanFamily.Unknown)

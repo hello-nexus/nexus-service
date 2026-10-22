@@ -51,6 +51,7 @@ public sealed class JpegPanelDiscovery : IStreamedPanelDiscovery
                     CssHeight = model.Height,
                     Dpr = 1.0,
                     Fps = model.Fps,
+                    MultiInstance = model.MultiInstance,
                     Codec = StreamCodec.RawBgra,
                 },
             },

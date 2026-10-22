@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Nexus.Service.Devices;
+using Nexus.Service.Devices.Detection;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Peripherals.Hyte.Np50;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
@@ -113,6 +115,115 @@ public class Y70ProviderTests
 
         Assert.Equal(1, orientation.ApplyCount);
         Assert.Equal("Landscape", orientation.LastApplied);
+    }
+
+    // ── Linux DDC scan limiting ──
+
+    private static Y70Provider BuildLimited(CountingDdcProvider ddc, params UsbDeviceEntry[] usb)
+        => new(
+            new Y70DisplayHub(
+                new StubY70DisplayPortDiscovery(),
+                _ => throw new InvalidOperationException("Y70 transport is not expected in these tests")),
+            new InMemoryY70ConfigStore(),
+            new FakeY70OrientationProvider(),
+            ddc,
+            new HardwarePresence(new FixedUsbEnumerator(usb)))
+        { LimitDdcScans = true };
+
+    [Fact]
+    public void IsConnected_with_y70_usb_present_does_not_scan_displays()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = null };
+        var provider = BuildLimited(ddc, new UsbDeviceEntry { VendorId = Y70DisplayProtocol.VendorId, ProductId = Y70DisplayProtocol.Y70TouchProductId });
+
+        Assert.True(provider.IsConnected());
+        Assert.Equal(0, ddc.FindCalls);
+    }
+
+    [Fact]
+    public void IsConnected_repeated_ticks_scan_displays_once()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = null };
+        var provider = BuildLimited(ddc);
+
+        for (var i = 0; i < 5; i++)
+            Assert.False(provider.IsConnected());
+
+        Assert.Equal(1, ddc.FindCalls);
+    }
+
+    [Fact]
+    public void IsConnected_caches_a_found_display()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = "display-rtk0004" };
+        var provider = BuildLimited(ddc);
+
+        Assert.True(provider.IsConnected());
+        Assert.True(provider.IsConnected());
+
+        Assert.Equal(1, ddc.FindCalls);
+    }
+
+    [Fact]
+    public void Write_after_cached_miss_rescans_so_a_new_display_is_reachable()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = null };
+        var provider = BuildLimited(ddc);
+        Assert.False(provider.IsConnected());
+
+        ddc.DisplayId = "display-rtk0004";
+        provider.SetToggle(true);
+
+        Assert.Equal(2, ddc.FindCalls);
+        Assert.Contains(ddc.Writes, w => w.Id == "display-rtk0004");
+    }
+
+    [Fact]
+    public void Failed_write_drops_the_cached_display_so_the_next_call_rescans()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = "display-rtk0004", SetVcpResult = false };
+        var provider = BuildLimited(ddc);
+        Assert.True(provider.IsConnected());
+
+        provider.SetToggle(true);
+        ddc.DisplayId = "display-rtk0005";
+        ddc.SetVcpResult = true;
+        provider.SetToggle(true);
+
+        Assert.Equal(2, ddc.FindCalls);
+        Assert.Contains(ddc.Writes, w => w.Id == "display-rtk0005");
+    }
+
+    [Fact]
+    public void Without_limit_every_check_scans()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = null };
+        var unlimited = new Y70Provider(
+            new Y70DisplayHub(new StubY70DisplayPortDiscovery(), _ => throw new InvalidOperationException()),
+            new InMemoryY70ConfigStore(), new FakeY70OrientationProvider(), ddc)
+        { LimitDdcScans = false };
+
+        unlimited.IsConnected();
+        unlimited.IsConnected();
+
+        Assert.Equal(2, ddc.FindCalls);
+    }
+
+    private sealed class CountingDdcProvider : IDisplayBrightnessProvider
+    {
+        public string? DisplayId;
+        public int FindCalls;
+        public bool SetVcpResult = true;
+        public List<(string Id, byte Code, int Value)> Writes { get; } = new();
+
+        public string Hint => "";
+        public IReadOnlyList<DisplayDto> Enumerate(IReadOnlyCollection<string>? excludedIds = null) => Array.Empty<DisplayDto>();
+        public int? GetBrightness(string id) => null;
+        public DisplayBrightnessDto SetBrightness(string id, int percent) => new() { Id = id };
+        public DisplayBrightnessWritePolicy GetBrightnessWritePolicy(string id) => new();
+        public DisplayVcpDto? GetVcp(string id, byte code) => null;
+        public bool SetVcp(string id, byte code, int value) { Writes.Add((id, code, value)); return SetVcpResult; }
+        public string? FindDisplayIdByHardwareName(IReadOnlyList<string> nameFragments) { FindCalls++; return DisplayId; }
     }
 
     // ── Brightness/power transport routing ──

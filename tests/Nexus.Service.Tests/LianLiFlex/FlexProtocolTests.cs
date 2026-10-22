@@ -1,5 +1,6 @@
 using System;
 using Nexus.Service.Peripherals.LianLiFlex;
+using Nexus.Service.Peripherals.LianLiWireless;
 using Xunit;
 
 namespace Nexus.Service.Tests.LianLiFlex;
@@ -122,7 +123,30 @@ public class FlexProtocolTests
         f[20] = 11;
         var info = FlexProtocol.ParseInfo(f)!;
         Assert.Equal(1, info.Fans);
-        Assert.True(info.RfBound);
+        Assert.False(info.RfBound);
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(FlexProtocol.UnboundRxType, false)]
+    [InlineData(1, true)]
+    [InlineData(13, true)]
+    [InlineData(14, false)]
+    public void RfBound_follows_the_slot_when_no_master_is_reported(int rxType, bool bound)
+    {
+        var f = FakeFlexTransport.InfoFrame("112233445566", 0x33, (byte)rxType, 100, 0);
+        Assert.Equal(bound, FlexProtocol.ParseInfo(f)!.RfBound);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(FlexProtocol.UnboundRxType)]
+    public void A_stale_master_with_a_cleared_slot_is_unbound_exactly_as_the_radio_reads_it(int rxType)
+    {
+        var f = FakeFlexTransport.InfoFrame("112233445566", 0x33, (byte)rxType, 100, 0);
+        Convert.FromHexString("82FBF3E566E4").CopyTo(f, 7);
+        Assert.False(FlexProtocol.ParseInfo(f)!.RfBound);
+        Assert.False(Slv3Protocol.IsBoundSlot(rxType));
     }
 
     [Fact]

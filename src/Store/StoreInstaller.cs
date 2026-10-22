@@ -30,6 +30,7 @@ public sealed class StoreInstaller
     private readonly AppRegistry _registry;
     private readonly Func<string?> _userRoot;
     private readonly string _publicKey;
+    private readonly Nexus.Service.Telemetry.ITelemetry? _telemetry;
 
     // One install per app at a time: two installs of one app share its staging paths and swap.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new(StringComparer.Ordinal);
@@ -37,14 +38,15 @@ public sealed class StoreInstaller
     /// <summary>Default asset host. NEXUS_STORE_ASSETS points it elsewhere for local testing.</summary>
     public const string DefaultAssetsBase = "https://assets.hellonexus.com";
 
-    public StoreInstaller(HttpClient http, AppRegistry registry)
-        : this(http, registry, DefaultUserRoot)
+    public StoreInstaller(HttpClient http, AppRegistry registry, Nexus.Service.Telemetry.ITelemetry? telemetry = null)
+        : this(http, registry, DefaultUserRoot, telemetry: telemetry)
     {
     }
 
     /// <summary>Test seam: supplies the user apps root and the store signing key.</summary>
-    public StoreInstaller(HttpClient http, AppRegistry registry, Func<string?> userRoot, string publicKeySpki = StoreSignature.PublicKeySpki)
+    public StoreInstaller(HttpClient http, AppRegistry registry, Func<string?> userRoot, string publicKeySpki = StoreSignature.PublicKeySpki, Nexus.Service.Telemetry.ITelemetry? telemetry = null)
     {
+        _telemetry = telemetry;
         _http = http;
         _registry = registry;
         _userRoot = userRoot;
@@ -81,12 +83,12 @@ public sealed class StoreInstaller
         return digits > 0 && dots == 2 && version[0] != '.' && version[^1] != '.';
     }
 
-    public Task<StoreInstallResponse> InstallAsync(StoreInstallRequest req, CancellationToken ct) =>
-        GatedAsync(req, replaceOnly: false, ct);
+    public Task<StoreInstallResponse> InstallAsync(StoreInstallRequest req, CancellationToken ct, string reason = Nexus.Service.Telemetry.AppLifecycleTelemetry.ReasonUser) =>
+        GatedAsync(req, replaceOnly: false, reason, ct);
 
     /// <summary>Installs over an app already on disk, and refuses (not_installed) once it is gone, so an uninstall that lands mid-download stays uninstalled.</summary>
     public Task<StoreInstallResponse> UpdateAsync(StoreInstallRequest req, CancellationToken ct) =>
-        GatedAsync(req, replaceOnly: true, ct);
+        GatedAsync(req, replaceOnly: true, Nexus.Service.Telemetry.AppLifecycleTelemetry.ReasonAuto, ct);
 
     /// <summary>Runs <paramref name="action"/> under the app's install gate, so it never overlaps a staging swap.</summary>
     public async Task<T> WithAppGateAsync<T>(string appId, Func<T> action, CancellationToken ct)
@@ -99,17 +101,17 @@ public sealed class StoreInstaller
         { gate.Release(); }
     }
 
-    private async Task<StoreInstallResponse> GatedAsync(StoreInstallRequest req, bool replaceOnly, CancellationToken ct)
+    private async Task<StoreInstallResponse> GatedAsync(StoreInstallRequest req, bool replaceOnly, string reason, CancellationToken ct)
     {
         var gate = _gates.GetOrAdd(req.AppId ?? "", _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct).ConfigureAwait(false);
         try
-        { return await InstallCoreAsync(req, replaceOnly, ct).ConfigureAwait(false); }
+        { return await InstallCoreAsync(req, replaceOnly, reason, ct).ConfigureAwait(false); }
         finally
         { gate.Release(); }
     }
 
-    private async Task<StoreInstallResponse> InstallCoreAsync(StoreInstallRequest req, bool replaceOnly, CancellationToken ct)
+    private async Task<StoreInstallResponse> InstallCoreAsync(StoreInstallRequest req, bool replaceOnly, string reason, CancellationToken ct)
     {
         var appId = req.AppId ?? "";
         var version = req.Version ?? "";
@@ -127,6 +129,7 @@ public sealed class StoreInstaller
         // volume, and a failed install never leaves a half-written app behind.
         var staging = Path.Combine(userRoot, $".{appId}.{version}.staging");
         var archive = staging + ".nexus-app";
+        string? installedOver = null;
         try
         {
             AppInstallPaths.SecureUserRoots();
@@ -163,6 +166,7 @@ public sealed class StoreInstaller
 
             var dest = Path.Combine(userRoot, appId);
             if (replaceOnly && !Directory.Exists(dest)) return fail("not_installed");
+            var previous = Directory.Exists(dest) ? Nexus.Service.Telemetry.AppLifecycleTelemetry.ReadVersion(dest) ?? "unknown" : null;
             // Moved aside, not deleted: a file the service is streaming from the app
             // (Windows) fails the rename and leaves the installed copy whole, where a
             // recursive delete would stop halfway.
@@ -180,6 +184,7 @@ public sealed class StoreInstaller
                 throw;
             }
             DeleteDir(aside);
+            installedOver = previous;
         }
         catch (OperationCanceledException)
         {
@@ -196,6 +201,10 @@ public sealed class StoreInstaller
         }
 
         _registry.Refresh();
+        if (installedOver is null)
+            Nexus.Service.Telemetry.AppLifecycleTelemetry.Installed(_telemetry, appId, version, reason);
+        else if (installedOver != version)
+            Nexus.Service.Telemetry.AppLifecycleTelemetry.Updated(_telemetry, appId, version, installedOver, reason);
         return new StoreInstallResponse { AppId = appId, Version = version, Ok = true };
     }
 

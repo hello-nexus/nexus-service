@@ -70,6 +70,7 @@ service runs as LocalSystem and cannot see user-scope variables):
 | `NEXUS_DISCORD_PRESENCE_CLIENT_ID` | Discord application used for Rich Presence, to test against a scratch application. |
 | `NEXUS_LED_SPACE` | Windows only. `0` closes the LED-space look-ahead window path so every window renders through the canvas path. |
 | `NEXUS_D3D_PREVENT_THREADING` | Windows only. `1` creates the ANGLE renderer's D3D11 device with the driver's internal threading off. |
+| `NEXUS_DISABLE_DDC` | Linux only. `1` skips DDC/CI display brightness probing over the I2C buses. |
 | `NEXUS_API_BASE`, `NEXUS_CLOUD_API` | Cloud API base override for the account and LED-mapping clients, and for the store catalog proxy respectively. |
 
 ## Source layout

@@ -137,6 +137,17 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
     }
 
     [Fact]
+    public void Process_manager_holds_gpu_i2c_detectors_off_only_on_linux()
+    {
+        var held = new OpenRgbProcessManager("missing-exe").ResolveNativeDisabledDetectors();
+
+        foreach (var name in OpenRgbGpuI2cDetectors.Names)
+        {
+            Assert.Equal(OperatingSystem.IsLinux(), held.Contains(name));
+        }
+    }
+
+    [Fact]
     public void Process_manager_holds_the_detector_off_with_control_on_or_off()
     {
         var store = new InMemoryConfigStore();

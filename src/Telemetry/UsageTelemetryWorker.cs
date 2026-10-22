@@ -15,20 +15,31 @@ internal sealed class UsageTelemetryWorker : BackgroundService
 
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan StopFlushTimeout = TimeSpan.FromSeconds(3);
-    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(5);
+    // Short enough that little is pending at an abrupt exit, long enough to stay well under nexus-api's per-IP request throttle with room for retries and a shared NAT.
+    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(2);
 
     private readonly UsageTelemetrySink _sink;
     private readonly IUsageTransport _transport;
     private readonly IConfigStore _store;
     private readonly Action<string> _log;
+    private readonly string _queuePath;
     private int _lastDropStatus;
 
-    public UsageTelemetryWorker(UsageTelemetrySink sink, IUsageTransport transport, IConfigStore store, Action<string>? log = null)
+    public UsageTelemetryWorker(UsageTelemetrySink sink, IUsageTransport transport, IConfigStore store, Action<string>? log = null, string? queuePath = null)
     {
+        _queuePath = queuePath ?? UsageQueueFile.DefaultPath();
         _log = log ?? Console.Error.WriteLine;
         _sink = sink;
         _transport = transport;
         _store = store;
+    }
+
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+        // Before the first capture can be flushed, so the restored tail goes out ahead of new events.
+        try { _sink.Restore(_queuePath); }
+        catch (Exception ex) { _log($"[usage] queue restore failed: {ex.GetType().Name}: {ex.Message}"); }
+        return base.StartAsync(cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -112,12 +123,15 @@ internal sealed class UsageTelemetryWorker : BackgroundService
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
-        if (Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
-            return;
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(StopFlushTimeout);
-        try { await FlushAsync(cts.Token).ConfigureAwait(false); }
-        catch (Exception ex) { Console.Error.WriteLine($"[usage] final flush failed: {ex.GetType().Name}: {ex.Message}"); }
+        if (!Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(StopFlushTimeout);
+            try { await FlushAsync(cts.Token).ConfigureAwait(false); }
+            catch (Exception ex) { Console.Error.WriteLine($"[usage] final flush failed: {ex.GetType().Name}: {ex.Message}"); }
+        }
+        // Whatever the flush could not deliver (offline, focus mode, timeout) survives to the next start.
+        _sink.Persist(_queuePath, !_store.Load().Telemetry.CollectAnonymousData);
     }
 
     private static async Task<bool> WaitAsync(PeriodicTimer timer, CancellationToken ct)

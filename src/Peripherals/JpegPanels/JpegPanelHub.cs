@@ -221,12 +221,14 @@ public sealed class JpegPanelHub : IDisposable
             }
             int offset = 0;
             int chunkIndex = 0;
+            int frameStamp = DateTime.UtcNow.Second;
             while (offset < jpeg.Length)
             {
                 int written = JpegPanelProtocol.FillChunk(
-                    _report, _model.HeaderStyle, _model.Selector, jpeg, offset, chunkIndex);
+                    _report, _model.HeaderStyle, _model.Selector, jpeg, offset, chunkIndex, frameStamp);
                 if (written <= 0)
                 {
+                    NoteFailureLocked($"frame of {jpeg.Length} bytes does not fit the panel's chunk counter");
                     return false;
                 }
                 if (!_device.Write(_report))

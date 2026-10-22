@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace Nexus.Service.Peripherals.LianLiFlex;
 
@@ -15,13 +16,19 @@ public sealed class FlexUnitPort
     /// <summary>Instance id of the hub both devices hang off; empty when it could not be resolved.</summary>
     public string HubId { get; init; } = "";
 
-    public FlexFamily Family => FlexProtocol.FamilyOfReceiver(ReceiverPid);
+    public FlexFamily Family => ReceiverPid == 0 ? FlexProtocol.FamilyOfScreen(ScreenPid) : FlexProtocol.FamilyOfReceiver(ReceiverPid);
 }
 
 public interface IFlexDiscovery
 {
     IReadOnlyList<FlexUnitPort> Discover();
+
+    /// <summary>Units and receiverless screens from one enumeration, so a screen never appears in both.</summary>
+    FlexDiscoverySnapshot Snapshot() => new(Discover(), Array.Empty<FlexUnitPort>());
 }
+
+/// <summary>Paired units, and the screens with no receiver on the bus (fans run over the radio, only the screen is on USB).</summary>
+public sealed record FlexDiscoverySnapshot(IReadOnlyList<FlexUnitPort> Units, IReadOnlyList<FlexUnitPort> ScreenOnly);
 
 public sealed class StubFlexDiscovery : IFlexDiscovery
 {
@@ -54,6 +61,66 @@ public static class FlexDiscoveryParser
         var instance = $"USB\\VID_{vid:X4}&PID_{pid:X4}\\{serial}";
         parsed = new FlexPath(path, vid, pid, serial, instance);
         return true;
+    }
+
+    /// <summary>Pairs once and lists every screen no receiver claimed; each screen is in exactly one of the two lists.</summary>
+    public static FlexDiscoverySnapshot Snapshot(IEnumerable<string> paths, Func<string, string> hubOf)
+    {
+        var list = paths as IReadOnlyCollection<string> ?? new List<string>(paths);
+        var units = Pair(list, hubOf);
+        var paired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var u in units)
+        {
+            if (u.ScreenPath.Length > 0)
+            {
+                paired.Add(u.ScreenPath);
+            }
+        }
+        var screenOnly = new List<FlexUnitPort>();
+        var seenSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in list)
+        {
+            if (TryParse(raw, out var p) && FlexProtocol.IsScreenProduct(p.Vid, p.Pid) && !paired.Contains(p.Path) && seenSerials.Add(p.Serial))
+            {
+                screenOnly.Add(new FlexUnitPort
+                {
+                    ReceiverPath = "",
+                    ReceiverPid = 0,
+                    ScreenPath = p.Path,
+                    ScreenPid = p.Pid,
+                    ScreenSerial = p.Serial,
+                    HubId = hubOf(p.InstanceId),
+                });
+            }
+        }
+        return new FlexDiscoverySnapshot(units, screenOnly);
+    }
+
+    /// <summary>One line naming every receiver and screen found with its parent hub, the pairing result and the screens no receiver claimed.</summary>
+    public static string Describe(IEnumerable<string> paths, Func<string, string> hubOf, FlexDiscoverySnapshot snapshot)
+    {
+        var receivers = new List<string>();
+        var screens = new List<string>();
+        foreach (var raw in paths)
+        {
+            if (!TryParse(raw, out var p))
+            {
+                continue;
+            }
+            var hub = hubOf(p.InstanceId);
+            var shown = hub.Length == 0 ? "?" : hub;
+            if (FlexProtocol.IsReceiverProduct(p.Vid, p.Pid))
+            {
+                receivers.Add($"{p.Pid:X4}:{p.Serial} hub={shown}");
+            }
+            else if (FlexProtocol.IsScreenProduct(p.Vid, p.Pid))
+            {
+                screens.Add($"{p.Pid:X4}:{p.Serial} hub={shown}");
+            }
+        }
+        var paired = snapshot.Units.Select(u => $"{u.ReceiverPid:X4}->{(u.ScreenSerial.Length == 0 ? "none" : u.ScreenSerial)}");
+        var alone = snapshot.ScreenOnly.Select(u => u.ScreenSerial);
+        return $"receivers=[{string.Join("; ", receivers)}] screens=[{string.Join("; ", screens)}] paired=[{string.Join("; ", paired)}] screenOnly=[{string.Join("; ", alone)}]";
     }
 
     /// <summary>

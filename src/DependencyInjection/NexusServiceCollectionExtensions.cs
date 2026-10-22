@@ -1114,6 +1114,9 @@ public static class NexusServiceCollectionExtensions
                     Nexus.Service.Sensors.SummarySensors.Value(sensors, Nexus.Service.Sensors.SummarySensorKind.GpuUsage));
             };
             var store = sp.GetRequiredService<IConfigStore>();
+            hub.FlexLcd = () => Nexus.Service.Routes.Slv3FlexLcdRoutes.BuildFrame(
+                store,
+                kind => Nexus.Service.Sensors.SummarySensors.Value(sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(), kind));
             hub.AioScreens = () =>
             {
                 var screens = new Dictionary<string, Nexus.Service.Peripherals.LianLiWireless.Slv3AioScreen>(StringComparer.Ordinal);
@@ -1181,16 +1184,21 @@ public static class NexusServiceCollectionExtensions
 #else
             _ => throw new System.PlatformNotSupportedException()));
 #endif
-        services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexLcdHub(
+        services.AddSingleton(sp =>
+        {
+            var flexScreenDiscovery = new Nexus.Service.Peripherals.LianLiFlex.FlexScreenDiscovery(
+                sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.IFlexDiscovery>());
+            return new Nexus.Service.Peripherals.LianLiFlex.FlexLcdHub(
             new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdHub(
-                new Nexus.Service.Peripherals.LianLiFlex.FlexScreenDiscovery(
-                    sp.GetRequiredService<Nexus.Service.Peripherals.LianLiFlex.IFlexDiscovery>()),
+                flexScreenDiscovery,
 #if WINDOWS
                 port => new Nexus.Service.Peripherals.LianLiFlex.FlexLcdTransport(port.PortName),
 #else
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdTransport(port.PortName),
 #endif
-                sp.GetService<Nexus.Service.Lighting.LcdLockState>())));
+                sp.GetService<Nexus.Service.Lighting.LcdLockState>()),
+                flexScreenDiscovery);
+        });
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexConnectionWorker>();
         services.AddHostedService<Nexus.Service.Peripherals.LianLiFlex.FlexLcdConnectionWorker>();
         services.AddSingleton(sp => new Nexus.Service.Peripherals.LianLiFlex.FlexScreens(
@@ -1420,6 +1428,85 @@ public static class NexusServiceCollectionExtensions
                 AddHydroShift2Curve(services, bulkPanelHub, curve);
             }
         }
+
+        // ROG Crosshair X870E Glacial LCD: native modes over HID, plus a streamed-panel path that
+        // uploads frames as the panel's stored custom picture. The two share one link so only one
+        // of them talks to the panel at a time. The device row is the native handler's; the stream
+        // driver adds no handler of its own, so the Nexus Control switch is the same one.
+        var glacialLink = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink();
+        services.AddSingleton(sp =>
+        {
+            bool nexusPanelOn = false;
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(s => nexusPanelOn = s.Devices.GlacialLcdNexusPanel);
+            glacialLink.NexusPanelEnabled = nexusPanelOn;
+            return glacialLink;
+        });
+        var glacialStreamDriver = new Nexus.Service.Peripherals.BulkPanels.GlacialLcdPanelDriver(glacialLink);
+        var glacialStreamHub = new Nexus.Service.Peripherals.BulkPanels.BulkPanelHub(glacialStreamDriver);
+        services.AddSingleton(glacialStreamHub);
+        // Hidden setting, read at start: off, the stream driver never connects and an install that
+        // had the Nexus panel mode is moved to the native modes before the coordinator starts.
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+        {
+            var cfg = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdLink>();
+            bool on = glacialLink.NexusPanelEnabled;
+            return new Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelMigrationService(() =>
+            {
+                if (!on)
+                {
+                    Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelMigration.Run(
+                        cfg,
+                        sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>(),
+                        sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>().Get,
+                        sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove);
+                }
+            });
+        });
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+        {
+            var gateStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            bool nexusPanel = false;
+            gateStore.Read(s => nexusPanel = s.Devices.GlacialLcdNexusPanel);
+            if (!nexusPanel)
+            {
+                return new Nexus.Service.Peripherals.BulkPanels.GlacialLcdNexusPanelMigrationService(() => { });
+            }
+            glacialStreamDriver.BindMemory(new Nexus.Service.Peripherals.BulkPanels.ConfigStoreLcdUploadMemory(
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+            // Hidden: percent of the captured vendor pacing, read at the start of each upload.
+            var paceStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            glacialStreamDriver.BindPaceScale(() =>
+            {
+                int stored = 0;
+                paceStore.Read(s => stored = s.Devices.GlacialLcdUploadPacePercent);
+                return Nexus.Service.Persistence.DevicesSettings.ResolveGlacialLcdUploadPace(stored);
+            });
+            return new Nexus.Service.Peripherals.BulkPanels.BulkPanelConnectionWorker(
+                sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
+                sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
+                glacialStreamHub,
+                sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+                sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+        });
+        services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
+            new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
+                glacialStreamHub,
+                sp.GetService<Nexus.Service.Panel.Streams.IVirtualMonitorHost>(),
+                // The display is the stream's only when the user has picked the Nexus Panel mode; until then it keeps its own modes.
+                withheld: () =>
+                {
+                    bool chosen = false;
+                    sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
+                        s => chosen = s.Devices.GlacialLcdNexusPanel
+                            && Nexus.Service.Persistence.GlacialLcdSettings.StreamChosen(s.Devices.GlacialLcd));
+                    return !chosen;
+                },
+                listedWhileWithheld: true));
+        services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>());
+        services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(
+            sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>()));
 
         // Corsair iCUE LINK System Hub: HID connection worker + lighting + cooling.
         // Auto-detects the daisy chain; no composition (each device is one fixed zone).
@@ -2267,6 +2354,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<ProfileManager>();
         services.AddSingleton<Nexus.Service.Media.MediaLibrary>();
         services.AddSingleton<Nexus.Service.Panel.PanelBgLibrary>();
+        services.AddSingleton<Nexus.Service.Panel.PanelDeviceRemover>();
         services.AddSingleton<Nexus.Service.Deck.DeckImageStore>();
         services.AddSingleton<Nexus.Service.Deck.ISiteIconResolver, Nexus.Service.Deck.SiteIconResolver>();
         services.AddSingleton<Nexus.Service.Rendering.DeckKeyRenderer>();
@@ -2298,7 +2386,10 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Widgets.AppInstaller>();
         services.AddSingleton<Nexus.Service.Store.StoreInstaller>(sp => new Nexus.Service.Store.StoreInstaller(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("StoreInstall"),
-            sp.GetRequiredService<Nexus.Service.Widgets.AppRegistry>()));
+            sp.GetRequiredService<Nexus.Service.Widgets.AppRegistry>(),
+            sp.GetRequiredService<Nexus.Service.Telemetry.ITelemetry>()));
+        services.AddSingleton<Nexus.Service.Telemetry.AppUsageTracker>(sp => new Nexus.Service.Telemetry.AppUsageTracker(
+            sp.GetRequiredService<Nexus.Service.Telemetry.ITelemetry>()));
         services.AddSingleton<Nexus.Service.Store.StoreCatalogProxy>(sp => new Nexus.Service.Store.StoreCatalogProxy(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("StoreCatalog")));
         services.AddSingleton<Nexus.Service.Store.StoreEntitlements>();
@@ -2495,7 +2586,9 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
                 notifyOverlay,
                 notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id),
-                lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>());
+                lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
+                removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
+                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());

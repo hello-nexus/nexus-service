@@ -7,6 +7,8 @@ namespace Nexus.Service.Telemetry;
 /// stamped later, at send time, so every event in a flush shares one id.</summary>
 internal sealed class TelemetryEvent
 {
+    /// <summary>Minted at capture so every sink, and a persisted snapshot taken mid-flush, names the same event the same way.</summary>
+    public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public DateTimeOffset Timestamp { get; init; }
     public IReadOnlyList<KeyValuePair<string, object?>> Properties { get; init; }

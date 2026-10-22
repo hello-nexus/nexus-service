@@ -213,7 +213,7 @@ public static class ConflictAppCatalog
             Vendors = new[] { "ASUS" },
             DisplayName = "ASUS Armoury Crate",
             Category = "lighting",
-            DisplayHandlers = new[] { "asus-ryujin-lcd" },
+            DisplayHandlers = new[] { "asus-ryujin-lcd", "asus-slc4-lcd" },
             AlsoCategory = "cooling",
             ProcessNames = new[] { "ArmouryCrate", "ArmouryCrate.Service", "ArmouryCrate.UserSessionHelper", "ArmourySocketServer", "Armoury Crate" },
         },

@@ -56,7 +56,15 @@ public static class GalleryRoutes
         });
 
         app.MapGet("/gallery/items", (GalleryLibrary lib) =>
-            new GalleryItemsResponse { Items = lib.EnumerateItems(), Playlists = lib.ListPlaylists() }).AllowPanel();
+        {
+            var e = lib.Enumerate();
+            return new GalleryItemsResponse
+            {
+                Items = e.Items,
+                Truncated = e.Truncated,
+                Playlists = lib.ListPlaylists(),
+            };
+        }).AllowPanel();
 
         // Playlist management is desktop-tier like source management. Reads
         // ride on /gallery/items, so no playlist route needs panel reach.
