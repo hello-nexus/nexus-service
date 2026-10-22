@@ -204,6 +204,34 @@ public static class MystiqueMedia
         return BuildGif(jpegs, id, durationMs);
     }
 
+    private static ReadOnlySpan<byte> SavedPicturePrefix => "NXMP\x01"u8;
+
+    /// <summary>A picture as kept on disk: <see cref="SavedPicturePrefix"/> (magic and layout version), 1 when it is turned half a turn else 0, then its JPEG.</summary>
+    public static byte[] SavePicture(MystiqueMediaPackage picture, bool rotated)
+    {
+        var frame = picture.Frames[0];
+        int head = SavedPicturePrefix.Length;
+        var saved = new byte[head + 1 + frame.Length - HeaderLength];
+        SavedPicturePrefix.CopyTo(saved);
+        saved[head] = rotated ? (byte)1 : (byte)0;
+        frame.AsSpan(HeaderLength).CopyTo(saved.AsSpan(head + 1));
+        return saved;
+    }
+
+    /// <summary>A picture kept by <see cref="SavePicture"/>, rebuilt under <paramref name="id"/>; null when the bytes do not hold one the screen takes or carry another layout.</summary>
+    public static MystiqueMediaPackage? LoadPicture(ReadOnlySpan<byte> saved, string id, out bool rotated)
+    {
+        rotated = false;
+        int head = SavedPicturePrefix.Length;
+        if (!saved.StartsWith(SavedPicturePrefix) || !IsId(id) || saved.Length < head + 2 || saved[head] > 1
+            || saved.Length - head - 1 > MaxPictureJpegBytes)
+        {
+            return null;
+        }
+        rotated = saved[head] == 1;
+        return BuildPicture(saved[(head + 1)..], id);
+    }
+
     public static long StreamLength(IReadOnlyList<byte[]> jpegs)
     {
         long total = 0;

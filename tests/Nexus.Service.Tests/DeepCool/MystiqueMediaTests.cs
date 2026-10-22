@@ -167,6 +167,27 @@ public class MystiqueMediaTests
         Assert.Null(MystiqueMedia.LoadGif(otherVersion, GifId, out _));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_kept_picture_comes_back_under_another_id_with_its_turn(bool rotated)
+    {
+        var jpeg = Jpeg(500, 3);
+        var kept = MystiqueMedia.SavePicture(MystiqueMedia.BuildPicture(jpeg, PictureId), rotated);
+
+        var loaded = MystiqueMedia.LoadPicture(kept, GifId, out bool turned);
+
+        Assert.NotNull(loaded);
+        Assert.Equal(rotated, turned);
+        Assert.Equal(Convert.ToHexString(MystiqueMedia.BuildPicture(jpeg, GifId).Frames[0]), Convert.ToHexString(loaded!.Frames.Single()));
+        Assert.Null(MystiqueMedia.LoadPicture(kept, "not-an-id", out _));
+        Assert.Null(MystiqueMedia.LoadPicture(kept.AsSpan(0, 6), PictureId, out _));
+        Assert.Null(MystiqueMedia.LoadPicture(MystiqueMedia.SaveGif(MystiqueMedia.BuildGif(Enumerable.Repeat(jpeg, 30).ToList(), GifId), rotated), PictureId, out _));
+        var otherVersion = kept.ToArray();
+        otherVersion[4]++;
+        Assert.Null(MystiqueMedia.LoadPicture(otherVersion, PictureId, out _));
+    }
+
     [Fact]
     public void Ids_are_per_source_and_kind()
     {
@@ -364,7 +385,7 @@ public class MystiqueMediaTests
         Task<MystiqueMediaPackage?> Show(bool rotate)
         {
             converted = 0;
-            return DevicesRoutes.ResolveMystiqueGifAsync(item, GifId, rotate, (_, _) => converted++, CancellationToken.None);
+            return DevicesRoutes.ResolveMystiqueMediaAsync(item, GifId, rotate, (_, _) => converted++, CancellationToken.None);
         }
         try
         {
@@ -390,6 +411,51 @@ public class MystiqueMediaTests
             Assert.NotNull(await Show(rotate: true));
             Assert.True(converted > 0);
             Assert.NotNull(MystiqueMedia.LoadGif(await File.ReadAllBytesAsync(stream), GifId, out _));
+        }
+        finally
+        {
+            DevicesRoutes.MystiqueMediaRootForTests.Value = null;
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
+    [FfmpegFact]
+    public async Task Showing_a_picture_encodes_its_kept_original_again_when_its_frame_is_missing_or_turned()
+    {
+        var item = new DeepCoolMystiqueMediaItem { Kind = DeepCoolMystiqueMediaItem.KindPicture, Id = Guid.NewGuid().ToString("N"), Name = "test", Ext = ".png" };
+        var dir = Path.Combine(Path.GetTempPath(), $"mystique-{Guid.NewGuid():N}");
+        DevicesRoutes.MystiqueMediaRootForTests.Value = dir;
+        var source = Path.Combine(dir, "sources", item.Id + ".png");
+        var stream = Path.Combine(dir, "streams", item.Id + ".bin");
+        int converted = 0;
+        Task<MystiqueMediaPackage?> Show(bool rotate)
+        {
+            converted = 0;
+            return DevicesRoutes.ResolveMystiqueMediaAsync(item, PictureId, rotate, (_, _) => converted++, CancellationToken.None);
+        }
+        try
+        {
+            Assert.Null(await Show(rotate: false));
+
+            Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+            await File.WriteAllBytesAsync(source, Png(300, 300));
+            var shown = await Show(rotate: false);
+            Assert.Equal(PictureId, shown!.Id);
+            Assert.Single(shown.Frames);
+            Assert.True(converted > 0);
+            Assert.NotNull(MystiqueMedia.LoadPicture(await File.ReadAllBytesAsync(stream), PictureId, out bool turned));
+            Assert.False(turned);
+
+            Assert.NotNull(await Show(rotate: false));
+            Assert.Equal(0, converted);
+
+            Assert.NotNull(await Show(rotate: true));
+            Assert.True(converted > 0);
+            Assert.NotNull(MystiqueMedia.LoadPicture(await File.ReadAllBytesAsync(stream), PictureId, out turned));
+            Assert.True(turned);
         }
         finally
         {

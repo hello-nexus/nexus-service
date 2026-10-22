@@ -89,15 +89,31 @@ public sealed class MystiqueWorker : BackgroundService
     /// caller gives up before the stream starts; once it has started, the real result is awaited.
     /// </summary>
     /// <param name="source">Runs on the worker once the stream is finished, before anything else is sent, and names the source command to follow it (null for none).</param>
-    public Task<bool> UploadAsync(MystiqueMediaPackage package, Func<string?> source, CancellationToken ct)
+    public async Task<bool> UploadAsync(MystiqueMediaPackage package, Func<string?> source, CancellationToken ct) =>
+        await UploadAsync(new[] { package }, source, ct).ConfigureAwait(false) == 1;
+
+    /// <summary>
+    /// Streams the packages in one turn of the worker, the source command once after the last; returns how many
+    /// were streamed cleanly, as <see cref="MystiqueSession.Upload(IReadOnlyList{MystiqueMediaPackage}, Func{string?}?, Action{long}?)"/>.
+    /// </summary>
+    public async Task<int> UploadAsync(IReadOnlyList<MystiqueMediaPackage> packages, Func<string?> source, CancellationToken ct)
     {
         long total = 0;
-        foreach (var frame in package.Frames)
+        foreach (var package in packages)
         {
-            total += frame.Length;
+            foreach (var frame in package.Frames)
+            {
+                total += frame.Length;
+            }
         }
-        return RunMediaAsync(s => s.Upload(package, source, sent => ReportProgress(ProgressSending, sent, total)), ct);
+        int streamed = 0;
+        await RunMediaAsync(s => (streamed = s.Upload(packages, source, sent => ReportProgress(ProgressSending, sent, total))) == packages.Count, ct)
+            .ConfigureAwait(false);
+        return streamed;
     }
+
+    /// <summary>Sends the source command between ticks; false when no screen is connected or it did not answer.</summary>
+    public Task<bool> SendSourceAsync(string source, CancellationToken ct) => RunMediaAsync(s => s.SendSource(source), ct);
 
     public const string ProgressConverting = "converting";
     public const string ProgressSending = "sending";
