@@ -104,11 +104,13 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
 
     public bool Write(ReadOnlySpan<byte> data) => Write(_writePipeId, data);
 
-    public bool Write(byte pipeId, ReadOnlySpan<byte> data)
+    public bool Write(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data) == data.Length;
+
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data)
     {
         if (_disposed || data.Length == 0)
         {
-            return false;
+            return -1;
         }
         lock (_ioLock)
         {
@@ -116,7 +118,7 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
             // an access violation, not an exception.
             fixed (byte* p = data)
             {
-                return !_disposed && TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, TransferTimeoutMs, write: true) == data.Length;
+                return _disposed ? -1 : TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, TransferTimeoutMs, write: true);
             }
         }
     }
@@ -150,7 +152,8 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
         }
     }
 
-    /// <summary>Bytes transferred, 0 on timeout, or -1 on failure. <paramref name="buffer"/>
+    /// <summary>Bytes transferred, or -1 on failure. A timed-out read gives 0; a timed-out write gives the
+    /// count the aborted transfer reports, or -1 when it reports none. <paramref name="buffer"/>
     /// must stay pinned until this returns; every path waits out the transfer first.</summary>
     private int TransferLocked(byte pipeId, IntPtr ioEvent, IntPtr buffer, int length, uint timeoutMs, bool write)
     {
@@ -170,9 +173,13 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
                 if (Slv3WinUsbInterop.WaitForSingleObject(ioEvent, timeoutMs) != WaitObject0)
                 {
                     Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId);
-                    Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out _, wait: true);
+                    bool settled = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out var moved, wait: true);
                     // A timed-out read is a quiet panel, not a broken one.
-                    return write ? -1 : 0;
+                    if (!write)
+                    {
+                        return 0;
+                    }
+                    return settled ? (int)moved : -1;
                 }
                 ok = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out transferred, wait: true);
             }

@@ -15,6 +15,12 @@ public interface IBulkUsbPipe : IDisposable
     bool Write(byte pipeId, ReadOnlySpan<byte> data);
 
     /// <summary>
+    /// Writes one bulk transfer and returns how many bytes the device took, also after a timeout when the
+    /// transport can tell; -1 when that is unknown.
+    /// </summary>
+    int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => Write(pipeId, data) ? data.Length : -1;
+
+    /// <summary>
     /// Reads one bulk transfer from the IN pipe. Returns the byte count, 0 on timeout,
     /// or -1 when the pipe is gone.
     /// </summary>
