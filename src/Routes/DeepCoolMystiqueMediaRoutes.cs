@@ -318,8 +318,8 @@ public static partial class DevicesRoutes
         string keptExt = ext.ToLowerInvariant();
         if (source.Length > MystiqueKeepMaxBytes)
         {
-            var reduced = await MystiqueMediaEncoder.ReduceForKeepingAsync(source, ext, isGif);
-            (source, keptExt) = reduced is { } r && r.Bytes.Length <= MystiqueKeepMaxBytes ? (r.Bytes, r.Ext) : (Array.Empty<byte>(), "");
+            var reduced = await MystiqueMediaEncoder.ReduceForKeepingAsync(source, ext, isGif, MystiqueKeepMaxBytes);
+            (source, keptExt) = reduced is { } r ? (r.Bytes, r.Ext) : (Array.Empty<byte>(), "");
         }
         if (IsKeepableExt(keptExt) && SaveMystiqueSource(id, keptExt, source))
         {
