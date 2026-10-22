@@ -178,7 +178,36 @@ public class MystiqueMediaTests
             Assert.True(moving.Package.Frames.Select(f => Hex(f[MystiqueMedia.HeaderLength..])).Distinct().Count() > 1);
             Assert.True(still.Ok, still.Error);
             Assert.Single(still.Package!.Frames.Select(f => Hex(f[MystiqueMedia.HeaderLength..])).Distinct());
+            Assert.All(still.Package.Frames, f => Assert.Equal(MystiqueMedia.GifDurationMs, f[15] | (f[16] << 8)));
             AssertRecordedLayout(moving.Package.Frames[0][MystiqueMedia.HeaderLength..]);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [FfmpegFact]
+    public async Task A_longer_clip_is_spread_across_its_whole_length_and_carries_that_length()
+    {
+        // Still for its first second, moving for its second: frames from the first second alone would barely differ.
+        var dir = Path.Combine(Path.GetTempPath(), $"mystique-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            for (int i = 0; i < 60; i++)
+            {
+                await File.WriteAllBytesAsync(Path.Combine(dir, $"f{i:000}.png"), Png(320, 240, Math.Max(0, i - 30) * 4));
+            }
+            var clip = Path.Combine(dir, "clip.gif");
+            Run(FfmpegResolver.Path!, "-v", "error", "-y", "-framerate", "30", "-i", Path.Combine(dir, "f%03d.png"), "-f", "gif", clip);
+
+            var result = await MystiqueMediaEncoder.EncodeGifAsync(await File.ReadAllBytesAsync(clip), ".gif", null, GifId, CancellationToken.None);
+
+            Assert.True(result.Ok, result.Error);
+            Assert.Equal(MystiqueMedia.GifFrames, result.Package!.Frames.Count);
+            Assert.All(result.Package.Frames, f => Assert.InRange(f[15] | (f[16] << 8), 1800, 2100));
+            Assert.InRange(result.Package.Frames.Select(f => Hex(f[MystiqueMedia.HeaderLength..])).Distinct().Count(), 10, MystiqueMedia.GifFrames);
         }
         finally
         {
