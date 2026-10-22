@@ -2288,15 +2288,18 @@ public sealed class GlacialLcdSettings
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>
 public sealed class DeepCoolMystiqueMediaItem
 {
-    /// <summary>"picture" or "gif".</summary>
-    public string Kind { get; set; } = "picture";
+    public const string KindPicture = "picture";
+    public const string KindGif = "gif";
+
+    /// <summary><see cref="KindPicture"/> or <see cref="KindGif"/>.</summary>
+    public string Kind { get; set; } = KindPicture;
 
     /// <summary>The identifier the screen stores the item under.</summary>
     public string Id { get; set; } = "";
 
     public string Name { get; set; } = "";
 
-    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? "picture", Id = Id ?? "", Name = Name ?? "" };
+    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", Name = Name ?? "" };
 }
 
 /// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
@@ -2358,7 +2361,7 @@ public sealed class DeepCoolMystiqueSettings
     /// <summary>The user changed a recording-tab readout.</summary>
     public bool RecordingEdited { get; set; }
 
-    /// <summary>The user changed brightness, rotation or RGB sync, which share one command.</summary>
+    /// <summary>The user changed brightness, rotation, RGB sync or edge picking, which share one command.</summary>
     public bool DeviceEdited { get; set; }
 
     public string Mode { get; set; } = ModeMonitor;

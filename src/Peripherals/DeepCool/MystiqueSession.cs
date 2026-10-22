@@ -18,10 +18,16 @@ public sealed class MystiqueSession
     private const int DrainTimeoutMs = 10;
     private const int MaxDrainReads = 16;
     private const long ClockEveryMs = 60L * 60 * 1000;
+    private const int PacketAttempts = 3;
+
+    // The screen's own software waited this long after the finish packet before its next command
+    // (0.41 s after a picture, 0.057 s after a GIF); no shorter gap is recorded.
+    private const int SourceAfterFinishMs = 410;
 
     private readonly IBulkUsbPipe _pipe;
     private readonly Func<long> _monotonicMs;
     private readonly Func<DateTime, TimeSpan> _utcOffset;
+    private readonly Action<int> _sleep;
     private DeepCoolMystiqueSettings? _applied;
     private long _clockSentMs;
     private TimeSpan _clockOffset;
@@ -29,11 +35,13 @@ public sealed class MystiqueSession
 
     /// <param name="monotonicMs">Clock for the resend schedule; wall-clock steps must not move it.</param>
     /// <param name="utcOffset">Local UTC offset at a given local time, to resend when a time zone or DST change shifts it.</param>
-    public MystiqueSession(IBulkUsbPipe pipe, Func<long>? monotonicMs = null, Func<DateTime, TimeSpan>? utcOffset = null)
+    /// <param name="sleep">Blocking wait in ms, for the gap after an upload.</param>
+    public MystiqueSession(IBulkUsbPipe pipe, Func<long>? monotonicMs = null, Func<DateTime, TimeSpan>? utcOffset = null, Action<int>? sleep = null)
     {
         _pipe = pipe;
         _monotonicMs = monotonicMs ?? (() => Environment.TickCount64);
         _utcOffset = utcOffset ?? (t => TimeZoneInfo.Local.GetUtcOffset(t));
+        _sleep = sleep ?? System.Threading.Thread.Sleep;
     }
 
     /// <summary>The identity string the device returned to the opening query, or empty.</summary>
@@ -101,13 +109,14 @@ public sealed class MystiqueSession
 
     /// <summary>
     /// Streams a picture or GIF as the screen's own software does: the announce command, every frame as
-    /// 64-byte writes, the finish packet, then the source command for that kind. Only the announce and
-    /// the source command are answered, and the poll and sensor push stay silent meanwhile. False on any
-    /// refused write; the finish packet is then never sent.
+    /// 64-byte writes, the finish packet, then the source command for that kind. Nothing streams unless the
+    /// screen answered the announce. True once the finish packet is out, whether or not the source command
+    /// is answered; an unanswered one is re-sent by the next <see cref="Apply"/>.
     /// </summary>
     public bool Upload(MystiqueMediaPackage package)
     {
-        if (!Settings(MystiqueProtocol.BuildUploadStart()))
+        if (!Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildUploadStart(), out _, out bool announced)
+            || !announced)
         {
             return false;
         }
@@ -115,27 +124,42 @@ public sealed class MystiqueSession
         {
             foreach (var packet in MystiqueMedia.Packets(frame))
             {
-                if (!_pipe.Write(MystiqueProtocol.SettingsWritePipe, packet))
+                if (!WritePacket(packet))
                 {
                     return false;
                 }
             }
         }
-        if (!_pipe.Write(MystiqueProtocol.SettingsWritePipe, MystiqueMedia.FinishPacket()))
+        if (!WritePacket(MystiqueMedia.FinishPacket()))
         {
             return false;
         }
+        _sleep(SourceAfterFinishMs);
         var source = package.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
-        if (!Settings(MystiqueProtocol.BuildMediaSource(source)))
-        {
-            return false;
-        }
+        bool sent = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildMediaSource(source), out _, out bool answered);
         if (_applied is not null)
         {
             _applied.MediaSource = source;
-            _applied.SourceEdited = true;
+            _applied.SourceEdited = sent && answered;
         }
         return true;
+    }
+
+    /// <summary>
+    /// One stream write, retried as is. Each write is a single USB packet (the endpoint's max packet
+    /// size), so a refused one delivered nothing and resending it keeps the stream matching its headers.
+    /// When the retries run out nothing more is sent: filler would break the header's byte sum.
+    /// </summary>
+    private bool WritePacket(byte[] packet)
+    {
+        for (int attempt = 0; attempt < PacketAttempts; attempt++)
+        {
+            if (_pipe.Write(MystiqueProtocol.SettingsWritePipe, packet))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     public bool SendClock(DateTime localNow)
@@ -164,8 +188,13 @@ public sealed class MystiqueSession
     private bool Settings(byte[] frame) =>
         Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, frame, out _);
 
-    private bool Exchange(byte writePipe, byte readPipe, byte[] frame, out byte[] reply)
+    private bool Exchange(byte writePipe, byte readPipe, byte[] frame, out byte[] reply) =>
+        Exchange(writePipe, readPipe, frame, out reply, out _);
+
+    /// <param name="answered">The screen replied, as opposed to a tolerated silence.</param>
+    private bool Exchange(byte writePipe, byte readPipe, byte[] frame, out byte[] reply, out bool answered)
     {
+        answered = false;
         reply = new byte[64];
         if (!_pipe.Write(writePipe, frame))
         {
@@ -187,6 +216,7 @@ public sealed class MystiqueSession
             if (n >= MystiqueProtocol.FrameLength && MystiqueProtocol.IsReply(reply, frame[2]))
             {
                 _unanswered = 0;
+                answered = true;
                 return true;
             }
             remaining = deadline - _monotonicMs();

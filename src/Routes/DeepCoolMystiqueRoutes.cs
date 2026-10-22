@@ -207,7 +207,7 @@ public sealed class DeepCoolMystiqueStateResponse
     /// <summary>"voltage", "systemMonitor" or "coreData".</summary>
     public string AuxArea { get; set; } = "";
 
-    /// <summary>3, 5 or 7.</summary>
+    /// <summary>Seconds each picture shows, one of the screen's switch times.</summary>
     public int SwitchSeconds { get; set; }
 
     /// <summary>"split", "scroll" or "fade".</summary>
@@ -251,7 +251,7 @@ public sealed class DeepCoolMystiqueStateResponse
 
 public sealed class DeepCoolMystiqueMediaDto
 {
-    /// <summary>"picture" or "gif".</summary>
+    /// <summary><see cref="DeepCoolMystiqueMediaItem.KindPicture"/> or <see cref="DeepCoolMystiqueMediaItem.KindGif"/>.</summary>
     public string Kind { get; set; } = "";
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
