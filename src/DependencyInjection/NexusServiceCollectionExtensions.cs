@@ -956,6 +956,22 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
         services.AddSingleton<Nexus.Service.Deck.IDeckActionExecutor>(sp =>
             sp.GetRequiredService<Nexus.Service.Deck.DeckActionExecutor>());
+        // Global hotkeys: OS-level registration only (Carbon on macOS, the user
+        // helper's RegisterHotKey on Windows); Linux reports unsupported.
+#if MACOS
+        // No AppKit run loop drains the main queue in a test host, so the Carbon registrar would only time out there.
+        if (Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1")
+            services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Hotkeys.UnsupportedHotkeyRegistrar>();
+        else
+            services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Platform.Mac.MacHotkeyRegistrar>();
+#elif WINDOWS
+        services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar>(sp =>
+            new Nexus.Service.Platform.Windows.HelperHotkeyRegistrar(sp.GetRequiredService<Nexus.Service.Helper.HelperRegistry>()));
+#else
+        services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Hotkeys.UnsupportedHotkeyRegistrar>();
+#endif
+        services.AddSingleton<Nexus.Service.Hotkeys.HotkeyService>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Hotkeys.HotkeyService>());
         services.AddSingleton<Nexus.Service.Deck.IDeckDialValues>(sp => new Nexus.Service.Deck.DeckDialValueService(
             sp.GetRequiredService<Nexus.Service.Activity.IVolumeProvider>(),
             sp.GetRequiredService<Nexus.Service.Activity.IAudioDeviceProvider>(),

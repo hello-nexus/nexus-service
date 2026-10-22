@@ -124,7 +124,8 @@ public sealed class DeckNexusAction
 {
     /// <summary>
     /// rgbEffect | lightingBrightness | lightingPreset | fanProfile |
-    /// coolingPreset | y70Power | y70Brightness | y70Rotation.
+    /// coolingPreset | y70Power | y70Brightness | y70Rotation | toggleWindow |
+    /// lightingPowerToggle | lightingBrightnessStep.
     /// Op ids are the stored wire contract; nexus-web labels rgbEffect
     /// "Lighting effect" and fanProfile "Cooling mode".
     /// </summary>
@@ -138,7 +139,7 @@ public sealed class DeckNexusAction
     public string? PresetId { get; set; }
     /// <summary>fanProfile: off | silent | balanced | turbo | max | custom.</summary>
     public string? Profile { get; set; }
-    /// <summary>lightingBrightness (0..1), y70Brightness (0..100).</summary>
+    /// <summary>lightingBrightness (0..1), y70Brightness (0..100), lightingBrightnessStep (signed fraction of full scale added to the master level).</summary>
     public double? Value { get; set; }
     /// <summary>y70Power.</summary>
     public bool? On { get; set; }
@@ -174,6 +175,8 @@ public sealed class DeckSlot
 {
     /// <summary>Unset falls back to an auto icon by action category.</summary>
     public DeckIcon? Icon { get; set; }
+    /// <summary>Id of the global hotkey binding that runs this key's action (see HotkeyTarget.Tag). Travels with the slot when it moves.</summary>
+    public string? HotkeyTag { get; set; }
     public string? Label { get; set; }
     /// <summary>Unset falls back to an auto color by action category.</summary>
     public string? Color { get; set; }
@@ -266,6 +269,17 @@ public sealed class DeckDialAction
     public DeckAction? Push { get; set; }
     /// <summary>custom: run on touch tap; falls back to <see cref="Push"/>.</summary>
     public DeckAction? Touch { get; set; }
+    /// <summary>custom: ids of the global hotkey bindings that run each event's action.</summary>
+    public DeckDialHotkeyTags? HotkeyTags { get; set; }
+}
+
+/// <summary>Global hotkey binding ids per custom dial event.</summary>
+public sealed class DeckDialHotkeyTags
+{
+    public string? Push { get; set; }
+    public string? TurnLeft { get; set; }
+    public string? TurnRight { get; set; }
+    public string? Touch { get; set; }
 }
 
 /// <summary>
