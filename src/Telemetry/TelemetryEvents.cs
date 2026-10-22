@@ -54,6 +54,9 @@ public static class TelemetryEvents
     /// <summary>An app was used on this install; at most once per app per UTC day.</summary>
     public const string AppUsed = "app_used";
 
+    /// <summary>A dashboard page was viewed on this install; at most once per page per UTC day.</summary>
+    public const string PageViewed = "page_viewed";
+
     /// <summary>An installed SDK app opened a link in the user's browser.</summary>
     public const string AppLinkOpened = "app_link_opened";
 

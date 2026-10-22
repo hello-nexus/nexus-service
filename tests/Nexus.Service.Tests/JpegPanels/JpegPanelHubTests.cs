@@ -220,6 +220,7 @@ public class JpegPanelHubTests
     [InlineData(0x1B1C, 0x0C42, "corsair-xc7-lcd")]
     [InlineData(0x1B1C, 0x0C39, "corsair-capellix-lcd")]
     [InlineData(0x1B1C, 0x0C33, "corsair-capellix-lcd")]
+    [InlineData(0x1B1C, 0x0C55, "corsair-nautilus-lcd")]
     [InlineData(0x2000, 0x3000, "idcooling-fx-lcd")]
     public void Find_resolves_each_supported_usb_id(int vid, int pid, string handlerId)
     {
@@ -242,7 +243,7 @@ public class JpegPanelHubTests
     [Fact]
     public void Every_model_defaults_to_nexus_control_off_and_only_lianli_and_corsair_read_as_experimental()
     {
-        var experimental = new[] { "lianli-galahad2-lcd", "lianli-hydroshift-lcd", "corsair-xc7-lcd", "corsair-capellix-lcd" };
+        var experimental = new[] { "lianli-galahad2-lcd", "lianli-hydroshift-lcd", "corsair-xc7-lcd", "corsair-capellix-lcd", "corsair-nautilus-lcd" };
         Assert.All(JpegPanelModel.All, m =>
         {
             Assert.False(DeviceControlPolicy.DefaultOn(m.HandlerId), $"{m.HandlerId} must default off");

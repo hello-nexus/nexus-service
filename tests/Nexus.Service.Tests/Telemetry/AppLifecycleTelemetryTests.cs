@@ -151,6 +151,50 @@ public sealed class AppLifecycleTelemetryTests : IDisposable
         Assert.Equal(2, t.Events.Count);
     }
 
+    [Fact]
+    public void Page_viewed_fires_once_per_page_per_utc_day_and_a_different_page_fires_again()
+    {
+        var t = new Recorder();
+        var now = Day(21);
+        var tracker = new AppUsageTracker(t, Path.Combine(_root, "p.json"), () => now);
+
+        tracker.NotePage("lighting");
+        tracker.NotePage("lighting");
+        Assert.Single(t.Events);
+        Assert.Equal(TelemetryEvents.PageViewed, t.Events[0].Event);
+        Assert.Equal("lighting", t.Events[0].Props["page"]);
+        Assert.Single(t.Events[0].Props);
+
+        tracker.NotePage("cooling");
+        Assert.Equal(2, t.Events.Count);
+
+        now = Day(22);
+        tracker.NotePage("lighting");
+        Assert.Equal(3, t.Events.Count);
+    }
+
+    [Fact]
+    public void Page_viewed_dedupe_survives_a_restart_and_does_not_collide_with_app_used()
+    {
+        var path = Path.Combine(_root, "p.json");
+        var t = new Recorder();
+        new AppUsageTracker(t, path, () => Day(21)).NotePage("lighting");
+        new AppUsageTracker(t, path, () => Day(21)).NotePage("lighting");
+        Assert.Single(t.Events);
+
+        new AppUsageTracker(t, path, () => Day(21)).Note("lighting", "1.0.0");
+        Assert.Equal(new[] { TelemetryEvents.PageViewed, TelemetryEvents.AppUsed }, t.Names);
+    }
+
+    [Fact]
+    public void Page_viewed_stops_emitting_new_pages_past_the_daily_cap()
+    {
+        var t = new Recorder();
+        var tracker = new AppUsageTracker(t, Path.Combine(_root, "p.json"), () => Day(21));
+        for (var i = 0; i < 600; i++) tracker.NotePage("p" + i);
+        Assert.Equal(512, t.Events.Count);
+    }
+
     private sealed class ByteHandler(byte[] body) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>

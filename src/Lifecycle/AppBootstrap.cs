@@ -339,6 +339,11 @@ internal static class AppBootstrap
                     Spectrum = new List<float>(AudioState.Spectrum),
                     Spectrum64 = new List<float>(AudioState.Spectrum64),
                 };
+                if (AudioState.StereoWanted)
+                {
+                    snap.SpectrumLeft64 = new List<float>(AudioState.SpectrumLeft64);
+                    snap.SpectrumRight64 = new List<float>(AudioState.SpectrumRight64);
+                }
                 var audioEnv = WsEnvelope.Build(PanelTopics.Audio, snap, AppJsonContext.Default.AudioStateSnapshot);
                 _ = muxHub.BroadcastTopicAsync(PanelTopics.Audio, audioEnv);
             }
