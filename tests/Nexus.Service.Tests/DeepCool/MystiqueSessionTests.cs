@@ -102,6 +102,24 @@ public class MystiqueSessionTests
     }
 
     [Fact]
+    public void An_edit_in_place_streams_without_the_source_command()
+    {
+        var pipe = new FakePipe();
+        var session = new MystiqueSession(pipe);
+        var settings = new DeepCoolMystiqueSettings { SourceEdited = true, MediaSource = DeepCoolMystiqueSettings.SourceImages };
+        Assert.True(session.Open(settings, Now));
+        pipe.Writes.Clear();
+
+        Assert.True(session.Upload(MystiqueMedia.BuildGif(Enumerable.Repeat(new byte[100], MystiqueMedia.GifFrames).ToList(), "acd9325521f3493c86bfc0b0aa85658d"), selectSource: false));
+        Assert.Equal(MystiqueMedia.FinishLength, pipe.Writes[^1].Frame.Length);
+        Assert.DoesNotContain(pipe.Writes, w => w.Frame.Length == MystiqueProtocol.FrameLength && w.Frame[2] == MystiqueProtocol.CmdMediaSource);
+
+        pipe.Writes.Clear();
+        Assert.True(session.Apply(settings.Copy()));
+        Assert.Empty(pipe.Writes);
+    }
+
+    [Fact]
     public void Nothing_streams_unless_the_screen_answers_the_announce()
     {
         var pipe = new FakePipe();

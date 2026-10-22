@@ -15,6 +15,9 @@ public static partial class DevicesRoutes
     private static readonly TimeSpan MystiqueUploadBudget = TimeSpan.FromMinutes(3);
     private const int MystiqueNameMax = 64;
 
+    // Bounds a kept source, so eighteen slots of uploads up to MediaImporter.MaxFileSize never pile up gigabytes.
+    internal const int MystiqueKeepMaxBytes = 8 * 1024 * 1024;
+
     private static string MystiqueMediaDir() => MediaLibrary.DeviceStoreDir("deepcool-mystique");
 
     private static string MystiqueSourcePath(string id, string ext) => Path.Combine(MystiqueMediaDir(), "sources", id + ext);
@@ -84,6 +87,9 @@ public static partial class DevicesRoutes
                         ? "The screen holds its maximum number of GIFs; replace or remove one first."
                         : "The screen holds its maximum number of pictures; replace or remove one first.");
                 }
+                // An edit replaces the item in place: the recorded edits sent no source command after the stream.
+                bool inPlace = false;
+                store.Read(s => inPlace = s.Devices.DeepCoolMystique.Media?.Exists(i => i.Id == id) == true);
                 var encoded = isGif
                     ? await MystiqueMediaEncoder.EncodeGifAsync(source, ext, crop, id, budget.Token)
                     : await MystiqueMediaEncoder.EncodePictureAsync(source, ext, crop, id, budget.Token);
@@ -93,16 +99,12 @@ public static partial class DevicesRoutes
                 }
                 var package = encoded.Package!;
                 // Once streaming starts this waits for the real result, so an item the screen took is always recorded.
-                if (!await worker.UploadAsync(package, budget.Token))
+                if (!await worker.UploadAsync(package, selectSource: !inPlace, budget.Token))
                 {
                     return MystiqueMediaFailure("The screen did not take the upload");
                 }
                 SaveMystiqueThumbnail(package.Id, encoded.Thumbnail!);
-                string keptExt = ext.ToLowerInvariant();
-                if (!IsKeepableExt(keptExt) || !SaveMystiqueSource(package.Id, keptExt, source))
-                {
-                    keptExt = "";
-                }
+                string keptExt = await KeepMystiqueSource(package.Id, ext, source, isGif);
                 string name = TruncateName(Path.GetFileNameWithoutExtension(file.FileName), MystiqueNameMax);
                 store.Update(s =>
                 {
@@ -120,8 +122,11 @@ public static partial class DevicesRoutes
                     {
                         m.Media.Add(item);
                     }
-                    m.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
-                    m.SourceEdited = true;
+                    if (!inPlace)
+                    {
+                        m.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
+                        m.SourceEdited = true;
+                    }
                 });
                 worker.RequestApply();
                 return Results.Json(new DeepCoolMystiqueMediaResponse { Id = package.Id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
@@ -303,16 +308,34 @@ public static partial class DevicesRoutes
         return name[..cut];
     }
 
+    /// <summary>
+    /// Keeps the source for a later re-crop, as is up to <see cref="MystiqueKeepMaxBytes"/> and otherwise as a
+    /// reduced copy within that bound. Returns the kept extension, empty when nothing is kept, in which case
+    /// any source an earlier upload under this id kept is deleted too.
+    /// </summary>
+    internal static async Task<string> KeepMystiqueSource(string id, string ext, byte[] source, bool isGif)
+    {
+        string keptExt = ext.ToLowerInvariant();
+        if (source.Length > MystiqueKeepMaxBytes)
+        {
+            var reduced = await MystiqueMediaEncoder.ReduceForKeepingAsync(source, ext, isGif);
+            (source, keptExt) = reduced is { } r && r.Bytes.Length <= MystiqueKeepMaxBytes ? (r.Bytes, r.Ext) : (Array.Empty<byte>(), "");
+        }
+        if (IsKeepableExt(keptExt) && SaveMystiqueSource(id, keptExt, source))
+        {
+            return keptExt;
+        }
+        DeleteMystiqueSources(id);
+        return "";
+    }
+
     private static bool SaveMystiqueSource(string id, string ext, byte[] source)
     {
         try
         {
             var path = MystiqueSourcePath(id, ext);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            foreach (var old in Directory.GetFiles(Path.GetDirectoryName(path)!, id + ".*"))
-            {
-                File.Delete(old);
-            }
+            DeleteMystiqueSources(id);
             File.WriteAllBytes(path, source);
             return true;
         }
@@ -320,6 +343,19 @@ public static partial class DevicesRoutes
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[deepcool-mystique] source not kept: {ex.GetType().Name}: {ex.Message}");
             return false;
+        }
+    }
+
+    private static void DeleteMystiqueSources(string id)
+    {
+        var dir = Path.Combine(MystiqueMediaDir(), "sources");
+        if (!MystiqueMedia.IsId(id) || !Directory.Exists(dir))
+        {
+            return;
+        }
+        foreach (var old in Directory.GetFiles(dir, id + ".*"))
+        {
+            DeleteMystiqueFile(old);
         }
     }
 

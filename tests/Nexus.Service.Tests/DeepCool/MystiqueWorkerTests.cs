@@ -57,7 +57,7 @@ public class MystiqueWorkerTests
         try
         {
             await WaitFor(() => worker.IsConnected);
-            Assert.True(await worker.UploadAsync(package, CancellationToken.None));
+            Assert.True(await worker.UploadAsync(package, selectSource: true, CancellationToken.None));
 
             var writes = pipes.Pipe!.Writes();
             int start = writes.FindIndex(w => w.Length == MystiqueProtocol.FrameLength && w[2] == MystiqueProtocol.CmdUploadStart);
@@ -86,7 +86,7 @@ public class MystiqueWorkerTests
             await WaitFor(() => worker.IsConnected);
             pipes.Pipe!.HoldStream = true;
             using var cts = new CancellationTokenSource();
-            var upload = worker.UploadAsync(package, cts.Token);
+            var upload = worker.UploadAsync(package, selectSource: true, cts.Token);
             Assert.True(pipes.Pipe.Streaming.Wait(TimeSpan.FromSeconds(10)));
             cts.Cancel();
             pipes.Pipe.Release.Set();
@@ -179,6 +179,30 @@ public class MystiqueWorkerTests
         }
     }
 
+    [Fact]
+    public async Task An_unanswered_format_reopens_and_goes_once_more_on_the_fresh_session()
+    {
+        var store = new InMemoryConfigStore();
+        int silenced = 0;
+        var pipes = new FakeFactory { Silence = cmd => cmd == MystiqueProtocol.CmdFormat && Interlocked.Increment(ref silenced) == 1 };
+        var worker = Build(store, pipes, present: true, gateOn: true);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitFor(() => worker.IsConnected);
+
+            Assert.True(await worker.FormatAsync(CancellationToken.None));
+
+            Assert.Equal(2, Volatile.Read(ref pipes.Formats));
+            Assert.Equal(2, Volatile.Read(ref pipes.Opens));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static MystiqueWorker Build(IConfigStore store, FakeFactory pipes, bool present, bool gateOn) =>
         Build(store, pipes, new FakeUsb(present), gateOn);
 
@@ -242,17 +266,21 @@ public class MystiqueWorkerTests
     private sealed class FakeFactory : IBulkUsbPipeFactory
     {
         public int Opens;
+        public int Formats;
         public RecordingPipe? Pipe;
+
+        /// <summary>Commands whose reply is withheld.</summary>
+        public Func<byte, bool>? Silence;
 
         public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId)
         {
             Interlocked.Increment(ref Opens);
-            Pipe = new RecordingPipe();
+            Pipe = new RecordingPipe(this);
             return Pipe;
         }
     }
 
-    private sealed class RecordingPipe : IBulkUsbPipe
+    private sealed class RecordingPipe(FakeFactory factory) : IBulkUsbPipe
     {
         private readonly object _lock = new();
         private readonly List<byte[]> _writes = new();
@@ -288,10 +316,16 @@ public class MystiqueWorkerTests
                 Streaming.Set();
                 Release.Wait(TimeSpan.FromSeconds(10));
             }
+            bool command = data.Length == MystiqueProtocol.FrameLength;
+            if (command && data[2] == MystiqueProtocol.CmdFormat)
+            {
+                Interlocked.Increment(ref factory.Formats);
+            }
+            bool silent = command && factory.Silence?.Invoke(data[2]) == true;
             lock (_lock)
             {
                 _writes.Add(data.ToArray());
-                _pending = MystiqueProtocol.BuildFrame(data[2], ReadOnlySpan<byte>.Empty, MystiqueProtocol.DeviceMagic);
+                _pending = silent ? null : MystiqueProtocol.BuildFrame(data[2], ReadOnlySpan<byte>.Empty, MystiqueProtocol.DeviceMagic);
             }
             return true;
         }

@@ -291,6 +291,12 @@ public class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
+    public void The_gyroscope_starts_off_as_the_screen_ships()
+    {
+        Assert.False(new DeepCoolMystiqueSettings().Gyroscope);
+    }
+
+    [Fact]
     public void The_screen_ships_with_nexus_control_off_until_the_user_turns_it_on()
     {
         Assert.False(DeviceControlPolicy.DefaultOn("deepcool-mystique"));
