@@ -115,23 +115,36 @@ public static partial class DevicesRoutes
         {
             screen[sent[i].ScreenId] = i < streamed ? sent[i].ItemId : null;
         }
-        var claimed = new HashSet<string>();
-        foreach (var p in pictures)
+        var olds = pictures.ConvertAll(MystiqueScreenId);
+        var ids = new string?[pictures.Count];
+        for (int n = 0; n < pictures.Count; n++)
         {
-            string old = MystiqueScreenId(p);
-            string? whole = null;
-            for (int i = Math.Min(streamed, sent.Count) - 1; i >= 0 && whole is null; i--)
+            for (int i = Math.Min(streamed, sent.Count) - 1; i >= 0 && ids[n] is null; i--)
             {
-                if (sent[i].ItemId == p.Id && screen[sent[i].ScreenId] == p.Id)
+                if (sent[i].ItemId == pictures[n].Id && screen[sent[i].ScreenId] == pictures[n].Id)
                 {
-                    whole = sent[i].ScreenId;
+                    ids[n] = sent[i].ScreenId;
                 }
             }
-            whole ??= screen.GetValueOrDefault(old) == p.Id ? old : null;
-            string id = whole ?? (streamed < sent.Count && sent[streamed].ItemId == p.Id ? sent[streamed].ScreenId : old);
-            p.Unsent = whole is null;
-            p.ScreenId = id == p.Id ? "" : id;
-            claimed.Add(id);
+            ids[n] ??= screen.GetValueOrDefault(olds[n]) == pictures[n].Id ? olds[n] : null;
+        }
+        var claimed = new HashSet<string>(ids.OfType<string>());
+        for (int n = 0; n < pictures.Count; n++)
+        {
+            var p = pictures[n];
+            p.Unsent = ids[n] is null;
+            if (ids[n] is null)
+            {
+                // A picture keeps its broken id unless a stream that landed took it, which only the next leg of a swap fills.
+                string old = olds[n];
+                bool taken = sent.Take(streamed).Any(x => x.ScreenId == old && x.ItemId != p.Id);
+                string? failed = streamed < sent.Count && sent[streamed].ItemId == p.Id ? sent[streamed].ScreenId : null;
+                ids[n] = new[] { taken ? failed : old, failed, old }.FirstOrDefault(c => c is not null && !claimed.Contains(c))
+                    ?? m.Freed.Find(i => !claimed.Contains(i.Id))?.Id
+                    ?? Guid.NewGuid().ToString("N");
+                claimed.Add(ids[n]!);
+            }
+            p.ScreenId = ids[n] == p.Id ? "" : ids[n]!;
         }
         m.Freed.RemoveAll(i => claimed.Contains(i.Id));
         foreach (var id in screen.Keys)
@@ -199,7 +212,6 @@ public static partial class DevicesRoutes
         IConfigStore store, MystiqueWorker worker, DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem item, CancellationToken ct)
     {
         string slot = MystiquePictureSlot(m)!;
-        string from = MystiqueScreenId(item);
         void Playing() => store.Update(s =>
         {
             var d = s.Devices.DeepCoolMystique;
@@ -207,25 +219,7 @@ public static partial class DevicesRoutes
             d.SourceEdited = true;
             d.PictureSlot = slot;
         });
-        var plan = new List<(DeepCoolMystiqueMediaItem Item, string ScreenId)>();
-        if (from != slot || item.Unsent)
-        {
-            plan.Add((item, slot));
-        }
-        var displaced = from == slot
-            ? null
-            : m.Media.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && i.Id != item.Id && MystiqueScreenId(i) == slot);
-        if (displaced is not null)
-        {
-            plan.Add((displaced, from));
-        }
-        foreach (var unsent in m.Media.FindAll(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && i.Unsent))
-        {
-            if (!plan.Exists(p => p.Item.Id == unsent.Id))
-            {
-                plan.Add((unsent, MystiqueScreenId(unsent)));
-            }
-        }
+        var plan = MystiquePicturePlan(m, item, slot);
         bool rotate = MystiqueRotatesMedia(m);
         void Converting(int done, int total) => worker.ReportProgress(MystiqueWorker.ProgressConverting, done, total);
         var packages = new List<MystiqueMediaPackage>();
@@ -269,6 +263,37 @@ public static partial class DevicesRoutes
         });
         worker.RequestApply();
         return streamed == packages.Count ? shown : MystiqueMediaFailure("The screen did not take the picture");
+    }
+
+    /// <summary>
+    /// The streams that show <paramref name="item"/> from <paramref name="slot"/>: it into the slot when it is elsewhere or
+    /// unsent, the picture there into its old id, then every other unsent picture under an id no other stream takes.
+    /// </summary>
+    internal static List<(DeepCoolMystiqueMediaItem Item, string ScreenId)> MystiquePicturePlan(
+        DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem item, string slot)
+    {
+        string from = MystiqueScreenId(item);
+        var plan = new List<(DeepCoolMystiqueMediaItem Item, string ScreenId)>();
+        if (from != slot || item.Unsent)
+        {
+            plan.Add((item, slot));
+        }
+        var displaced = from == slot
+            ? null
+            : m.Media.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && i.Id != item.Id && MystiqueScreenId(i) == slot);
+        if (displaced is not null)
+        {
+            plan.Add((displaced, from));
+        }
+        foreach (var unsent in m.Media.FindAll(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && i.Unsent))
+        {
+            string id = MystiqueScreenId(unsent);
+            if (!plan.Exists(p => p.Item.Id == unsent.Id || p.ScreenId == id))
+            {
+                plan.Add((unsent, id));
+            }
+        }
+        return plan;
     }
 
     /// <summary>Drops a picture from the list with its files, its screen id into <see cref="DeepCoolMystiqueSettings.Freed"/>; the caller holds the upload gate.</summary>
