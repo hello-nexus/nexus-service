@@ -100,20 +100,21 @@ public class LinuxLiquidctlProviderTests
     }
 
     [Theory]
-    [InlineData(true, 0)]
-    [InlineData(false, 1)]
-    public void NativeKrakenAttached_HidesLiquidctlKrakenEverywhere(bool nativeAttached, int expected)
+    [InlineData("/dev/hidraw3", 0)]
+    [InlineData("/dev/hidraw4", 1)]
+    [InlineData(null, 1)]
+    public void NativeKrakenOwnsHidraw_HidesOnlyThatNodeEverywhere(string? owned, int expected)
     {
-        var p = new LinuxLiquidctlProvider(() => KrakenJson, (_, _, _) => true, nativeKraken: () => nativeAttached);
+        var p = new LinuxLiquidctlProvider(() => KrakenJson, (_, _, _) => true, nativeHidPath: () => owned);
         Assert.Equal(expected, p.GetFanChannels().Count);
         Assert.Equal(expected, p.GetTemperatureSources().Count);
         Assert.Equal(expected, p.GetAll().Count);
     }
 
     [Fact]
-    public void NativeKrakenAttached_KeepsOtherLiquidctlDevices()
+    public void NativeKrakenOwnsHidraw_KeepsOtherLiquidctlDevices()
     {
-        var p = new LinuxLiquidctlProvider(() => CommanderJson, (_, _, _) => true, nativeKraken: () => true);
+        var p = new LinuxLiquidctlProvider(() => CommanderJson, (_, _, _) => true, nativeHidPath: () => "/dev/hidraw3");
         Assert.Equal(2, p.GetFanChannels().Count);
     }
 

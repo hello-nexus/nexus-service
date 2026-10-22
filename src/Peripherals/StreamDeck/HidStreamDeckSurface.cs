@@ -91,6 +91,7 @@ public sealed class HidStreamDeckSurface : IStreamDeckSurface
             _consecutiveWriteFailures = 0;
             if (Model.HasExpandedInput)
             {
+                // The descriptor-derived Linux length is unvalidated against this device; keep the protocol constant there.
                 _featureReportLength = !OperatingSystem.IsLinux() && info.FeatureReportByteLength > 0
                     ? info.FeatureReportByteLength
                     : StreamDeckProtocol.FeatureReportBufferLength;

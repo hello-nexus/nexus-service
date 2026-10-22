@@ -133,7 +133,7 @@ public sealed class IbpPeripheralHub : IDisposable
             if (info.VendorId != IbpPeripheralProtocol.VendorId) continue;
             var model = IbpPeripheralProtocol.ForProductId(info.ProductId);
             if (model is null || !allowed.Contains(model)) continue;
-            // The feature-length gate has never run on Linux; keep Linux units unmatched.
+            // Linux units stay unmatched until the feature-report length is validated there.
             if (OperatingSystem.IsLinux()) continue;
             if (info.FeatureReportByteLength != model.ReportLength) continue;
             var serial = !string.IsNullOrWhiteSpace(info.Serial) ? info.Serial! : StableIdFromPath(info.Path);
