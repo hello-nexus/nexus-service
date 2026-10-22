@@ -2299,7 +2299,10 @@ public sealed class DeepCoolMystiqueMediaItem
 
     public string Name { get; set; } = "";
 
-    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", Name = Name ?? "" };
+    /// <summary>Extension of the kept source file, for re-cropping; empty when none was kept.</summary>
+    public string Ext { get; set; } = "";
+
+    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", Name = Name ?? "", Ext = Ext ?? "" };
 }
 
 /// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
@@ -2373,8 +2376,11 @@ public sealed class DeepCoolMystiqueSettings
     public string MediaSource { get; set; } = SourceImages;
     public bool EdgePicking { get; set; }
 
-    /// <summary>Pictures and the GIF this PC has put on the screen; the screen cannot be read back.</summary>
+    /// <summary>Pictures and GIFs this PC has put on the screen; the screen cannot be read back.</summary>
     public List<DeepCoolMystiqueMediaItem> Media { get; set; } = new();
+
+    /// <summary>Items removed from <see cref="Media"/> that the screen still holds: no delete command is known, so new uploads go up under these ids first.</summary>
+    public List<DeepCoolMystiqueMediaItem> Freed { get; set; } = new();
     public bool RecordFrequency { get; set; } = true;
     public bool RecordTemperature { get; set; } = true;
     public int Brightness { get; set; } = 70;
@@ -2410,6 +2416,7 @@ public sealed class DeepCoolMystiqueSettings
         copy.Animation = Animation ?? AnimationSplit;
         copy.MediaSource = MediaSource ?? SourceImages;
         copy.Media = Media is null ? new List<DeepCoolMystiqueMediaItem>() : Media.ConvertAll(m => m.Copy());
+        copy.Freed = Freed is null ? new List<DeepCoolMystiqueMediaItem>() : Freed.ConvertAll(m => m.Copy());
         copy.CpuTemperature = CpuTemperature?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuFrequency = CpuFrequency?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuUsage = CpuUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();

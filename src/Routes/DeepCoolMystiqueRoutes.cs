@@ -141,7 +141,7 @@ public static partial class DevicesRoutes
         Animation = m.Animation,
         MediaSource = m.MediaSource,
         EdgePicking = m.EdgePicking,
-        Media = m.Media.ConvertAll(i => new DeepCoolMystiqueMediaDto { Kind = i.Kind, Id = i.Id, Name = i.Name }).ToArray(),
+        Media = m.Media.ConvertAll(i => new DeepCoolMystiqueMediaDto { Kind = i.Kind, Id = i.Id, Name = i.Name, Ext = i.Ext, Editable = MystiqueSourceExists(i) }).ToArray(),
         RecordingChosen = m.RecordingEdited,
         DeviceChosen = m.DeviceEdited,
         Mode = m.Mode,
@@ -255,6 +255,12 @@ public sealed class DeepCoolMystiqueMediaDto
     public string Kind { get; set; } = "";
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
+
+    /// <summary>Extension of the kept source, sent back with it for a re-crop.</summary>
+    public string Ext { get; set; } = "";
+
+    /// <summary>True when the source is kept, so the item can be re-cropped under its id.</summary>
+    public bool Editable { get; set; }
 }
 
 public sealed class DeepCoolMystiqueMediaResponse

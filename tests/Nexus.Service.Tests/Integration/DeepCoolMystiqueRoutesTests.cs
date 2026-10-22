@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -175,29 +176,77 @@ public class DeepCoolMystiqueRoutesTests
         Assert.True(m.DeviceEdited && m.EdgePicking);
     }
 
-    [Fact]
-    public void Uploads_reuse_the_gif_slot_and_stop_at_the_picture_slots()
+    [Theory]
+    [InlineData("picture", MystiqueMedia.KindPicture, MystiqueMedia.MaxPictures)]
+    [InlineData("gif", MystiqueMedia.KindGif, MystiqueMedia.MaxGifs)]
+    public void Uploads_take_a_new_slot_until_the_kind_is_full_then_only_replace(string kind, byte wireKind, int max)
     {
         using var factory = new NexusAppFactory();
         var store = factory.Services.GetRequiredService<IConfigStore>();
-        var a = new byte[] { 1 };
-        var b = new byte[] { 2 };
-        var c = new byte[] { 3 };
-        string idA = MystiqueMedia.IdOf(MystiqueMedia.KindPicture, a);
-        string idB = MystiqueMedia.IdOf(MystiqueMedia.KindPicture, b);
+        var held = new List<DeepCoolMystiqueMediaItem>();
+        for (byte i = 0; i < max; i++)
+        {
+            held.Add(new DeepCoolMystiqueMediaItem { Kind = kind, Id = MystiqueMedia.IdOf(wireKind, new[] { i }) });
+        }
+        var other = kind == "gif" ? "picture" : "gif";
+        held.Add(new DeepCoolMystiqueMediaItem { Kind = other, Id = "acd9325521f3493c86bfc0b0aa85658d" });
+        store.Update(s => s.Devices.DeepCoolMystique.Media = held.ConvertAll(i => i.Copy()));
+        var fresh = new byte[] { 200 };
+
+        Assert.Null(DevicesRoutes.MystiqueUploadId(store, kind, fresh, ""));
+        Assert.Null(DevicesRoutes.MystiqueUploadId(store, kind, fresh, "acd9325521f3493c86bfc0b0aa85658d"));
+        Assert.Equal(held[1].Id, DevicesRoutes.MystiqueUploadId(store, kind, fresh, held[1].Id));
+        Assert.Equal(held[0].Id, DevicesRoutes.MystiqueUploadId(store, kind, new byte[] { 0 }, ""));
+
+        store.Update(s => s.Devices.DeepCoolMystique.Media.RemoveAt(max - 1));
+        Assert.Equal(MystiqueMedia.IdOf(wireKind, fresh), DevicesRoutes.MystiqueUploadId(store, kind, fresh, ""));
+    }
+
+    [Fact]
+    public async Task Removing_media_frees_its_id_for_the_next_upload_of_that_kind()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+        var store = factory.Services.GetRequiredService<IConfigStore>();
+        const string pictureId = "2101b6e6277841daa821e8d79a5c528b";
         const string gifId = "acd9325521f3493c86bfc0b0aa85658d";
         store.Update(s => s.Devices.DeepCoolMystique.Media = new()
         {
-            new DeepCoolMystiqueMediaItem { Kind = "picture", Id = idA },
-            new DeepCoolMystiqueMediaItem { Kind = "picture", Id = idB },
+            new DeepCoolMystiqueMediaItem { Kind = "picture", Id = pictureId },
             new DeepCoolMystiqueMediaItem { Kind = "gif", Id = gifId },
         });
 
-        Assert.Equal(gifId, DevicesRoutes.MystiqueUploadId(store, "gif", c, ""));
-        Assert.Null(DevicesRoutes.MystiqueUploadId(store, "picture", c, ""));
-        Assert.Equal(idB, DevicesRoutes.MystiqueUploadId(store, "picture", c, idB));
-        Assert.Equal(idA, DevicesRoutes.MystiqueUploadId(store, "picture", a, ""));
-        Assert.Null(DevicesRoutes.MystiqueUploadId(store, "picture", c, gifId));
+        Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync($"/devices/deepcool-mystique/media/{pictureId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/devices/deepcool-mystique/media/{pictureId}")).StatusCode);
+        Assert.Equal(pictureId, DevicesRoutes.MystiqueUploadId(store, "picture", new byte[] { 9 }, ""));
+        Assert.NotEqual(pictureId, DevicesRoutes.MystiqueUploadId(store, "gif", new byte[] { 9 }, ""));
+
+        Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync($"/devices/deepcool-mystique/media/{gifId}")).StatusCode);
+        var m = new DeepCoolMystiqueSettings();
+        store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
+        Assert.Empty(m.Media);
+        Assert.Equal(new[] { pictureId, gifId }, m.Freed.ConvertAll(i => i.Id));
+        Assert.Equal(gifId, DevicesRoutes.MystiqueUploadId(store, "gif", new byte[] { 9 }, ""));
+    }
+
+    [Fact]
+    public async Task Removing_everything_needs_the_screen_and_keeps_the_list_without_it()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+        var store = factory.Services.GetRequiredService<IConfigStore>();
+        store.Update(s => s.Devices.DeepCoolMystique.Media = new()
+        {
+            new DeepCoolMystiqueMediaItem { Kind = "picture", Id = "2101b6e6277841daa821e8d79a5c528b" },
+        });
+
+        var res = await client.DeleteAsync("/devices/deepcool-mystique/media");
+
+        using var body = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        Assert.True(body.RootElement.GetProperty("error").GetBoolean());
+        var m = new DeepCoolMystiqueSettings();
+        store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
+        Assert.Single(m.Media);
     }
 
     [Theory]

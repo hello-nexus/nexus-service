@@ -35,8 +35,9 @@ public static class MystiqueMedia
     public const int MaxPictureJpegBytes = 145_654;
     public const int MaxGifStreamBytes = 691_503;
 
-    // The screen has held this many pictures at once; storage beyond it is unknown.
-    public const int MaxPictures = 2;
+    // The screen's own software offers this many slots of each kind.
+    public const int MaxPictures = 9;
+    public const int MaxGifs = 9;
 
     private static readonly byte[] FinishText = Encoding.ASCII.GetBytes("dcldfinish");
     public const int FinishLength = 55;
