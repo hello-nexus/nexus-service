@@ -33,6 +33,7 @@ public class ConflictAppCatalogTests
 
         Assert.Equal(new[] { "DeepCool", "deep_service" }, def.ProcessNames);
         Assert.Equal(new[] { "deepcool-mystique" }, def.DisplayHandlers);
+        Assert.Equal(new[] { "deep_service" }, def.WindowsServiceNames);
         Assert.Equal("deepcool", Nexus.Service.Devices.DeviceControlPolicy.ConflictAppFor("deepcool-mystique"));
     }
 }
