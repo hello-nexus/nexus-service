@@ -2,13 +2,13 @@ using System;
 
 namespace Nexus.Service.Peripherals.Nzxt;
 
-// Fan side of the NZXT RGB & Fan Controller (1E71:2011). Lighting on this device is owned by
-// OpenRGB, so nothing here encodes a lighting command, and the connect sequence deliberately
-// leaves out the firmware and lighting-info queries.
+// Fan side of the NZXT RGB & Fan Controller. Lighting on this device is owned by OpenRGB, so
+// nothing here encodes a lighting command, and the connect sequence deliberately leaves out the
+// firmware and lighting-info queries.
 //
-// The first byte of every report is its HID report id. Status reports arrive on report 0x67
-// sub-command 0x02 carrying, per channel, a mode byte (0 = nothing connected, 1 = DC, 2 = PWM),
-// a little-endian tach and the commanded duty percent; the offsets are the constants below.
+// The first byte of every report is its HID report id. A status report carries, per channel, a
+// mode byte (the Mode constants), a little-endian tach and the commanded duty percent, at the
+// offsets below.
 internal static class NzxtFanControllerProtocol
 {
     public const int VendorId = 0x1E71;
@@ -20,6 +20,18 @@ internal static class NzxtFanControllerProtocol
     private const byte ReportFanSet = 0x62;
     private const byte ReportFanStatus = 0x67;
 
+    /// <summary>Mode byte: nothing connected to the header.</summary>
+    public const int ModeNone = 0;
+    /// <summary>Mode byte: a voltage-controlled fan.</summary>
+    public const int ModeDc = 1;
+    /// <summary>Mode byte: a PWM fan.</summary>
+    public const int ModePwm = 2;
+
+    private const byte SubCommandSetInterval = 0x02;
+    private const byte SubCommandStartReporting = 0x03;
+    private const byte SubCommandStatus = 0x02;
+    private const byte SubCommandSetDuty = 0x01;
+
     private const int ModeOffset = 16;
     private const int RpmOffset = 24;
     private const int DutyOffset = 40;
@@ -27,10 +39,10 @@ internal static class NzxtFanControllerProtocol
     /// <summary>Status cadence index sent with the interval command.</summary>
     private const byte StatusIntervalIndex = 0x01;
 
-    /// <summary>Sets the status cadence for the fan channels (60 02).</summary>
+    /// <summary>Sets the status cadence for the fan channels.</summary>
     public static byte[] EncodeSetStatusInterval()
     {
-        var report = NewReport(ReportFanConfig, 0x02);
+        var report = NewReport(ReportFanConfig, SubCommandSetInterval);
         report[2] = 0x01;
         report[3] = 0xE8;
         report[4] = StatusIntervalIndex;
@@ -40,24 +52,24 @@ internal static class NzxtFanControllerProtocol
         return report;
     }
 
-    /// <summary>Starts the periodic status reports (60 03).</summary>
-    public static byte[] EncodeStartReporting() => NewReport(ReportFanConfig, 0x03);
+    /// <summary>Starts the periodic status reports.</summary>
+    public static byte[] EncodeStartReporting() => NewReport(ReportFanConfig, SubCommandStartReporting);
 
-    /// <summary>Fixed duty for one channel (62 01 mask d0 d1 d2); the other channels' bytes stay zero and are ignored through the mask.</summary>
+    /// <summary>Fixed duty for one channel: a channel mask, then one duty byte per channel; the other channels' bytes stay zero and are ignored through the mask.</summary>
     public static byte[] EncodeFixedDuty(int channel, int dutyPercent)
     {
         if ((uint)channel >= FanChannelCount)
         {
             throw new ArgumentOutOfRangeException(nameof(channel));
         }
-        var report = NewReport(ReportFanSet, 0x01);
+        var report = NewReport(ReportFanSet, SubCommandSetDuty);
         report[2] = (byte)(1 << channel);
         report[3 + channel] = (byte)Math.Clamp(dutyPercent, 0, 100);
         return report;
     }
 
     public static bool IsStatusReport(ReadOnlySpan<byte> report) =>
-        report.Length >= DutyOffset + FanChannelCount && report[0] == ReportFanStatus && report[1] == 0x02;
+        report.Length >= DutyOffset + FanChannelCount && report[0] == ReportFanStatus && report[1] == SubCommandStatus;
 
     /// <summary>Decodes a status report; false when it is some other report.</summary>
     public static bool TryDecodeStatus(ReadOnlySpan<byte> report, out NzxtFanReading[] fans)

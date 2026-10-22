@@ -385,24 +385,67 @@ public class NzxtFanControllerTests
         Assert.Single(again.Writes);
     }
 
-    [Fact]
-    public void Reassert_SkipsAChannelWhoseModeIsZero()
+    private static (NzxtFanControllerHub Hub, FakeHid Hid) ConnectedWith(params (int, int, int)[] fans)
     {
         var hid = new FakeHid();
-        hid.Incoming.Enqueue(Status(new[] { (2, 500, 50), (0, 500, 10), (0, 0, 0) }));
+        hid.Incoming.Enqueue(Status(fans));
         var hub = new NzxtFanControllerHub();
         hub.Attach(hid);
         Assert.True(hub.Connect());
+        return (hub, hid);
+    }
+
+    [Fact]
+    public void ANeverPopulatedModeZeroChannel_StaysHiddenAndUnreasserted()
+    {
+        var (hub, hid) = ConnectedWith((2, 500, 50), (0, 0, 0), (0, 0, 0));
         var provider = new NzxtFanControllerCoolingProvider(hub);
         provider.DriveFanSpeed("nzxt-fan-controller:fan1", 80);
-        hid.Writes.Clear();
 
         for (int i = 0; i < 12; i++)
         {
             provider.ReassertControl();
         }
 
-        Assert.Empty(hid.Writes);
+        Assert.Equal("nzxt-fan-controller:fan0", Assert.Single(provider.GetFanChannels()).Id);
+        Assert.Equal(2, hid.Writes.Count);
+    }
+
+    [Fact]
+    public void AModeZeroChannelThatSpunOnce_StaysListedWritableAndReassertedAfterItStops()
+    {
+        var (hub, hid) = ConnectedWith((0, 700, 40), (0, 0, 0), (0, 0, 0));
+        var provider = new NzxtFanControllerCoolingProvider(hub);
+        Assert.Single(provider.GetFanChannels());
+        hid.Incoming.Enqueue(Status(new[] { (0, 0, 0), (0, 0, 0), (0, 0, 0) }));
+        Assert.True(hub.Poll());
+        hid.Writes.Clear();
+
+        Assert.Equal("nzxt-fan-controller:fan0", Assert.Single(provider.GetFanChannels()).Id);
+        provider.DriveFanSpeed("nzxt-fan-controller:fan0", 60);
+        Assert.Single(hid.Writes);
+        hid.Writes.Clear();
+        for (int i = 0; i < 3; i++)
+        {
+            provider.ReassertControl();
+        }
+
+        Assert.Single(hid.Writes);
+    }
+
+    [Fact]
+    public void Reconnect_ClearsTheSetOfChannelsSeenPopulated()
+    {
+        var (hub, _) = ConnectedWith((0, 700, 40), (0, 0, 0), (0, 0, 0));
+        var provider = new NzxtFanControllerCoolingProvider(hub);
+        Assert.Single(provider.GetFanChannels());
+        hub.Detach();
+        var again = new FakeHid();
+        again.Incoming.Enqueue(Status(new[] { (0, 0, 0), (0, 0, 0), (0, 0, 0) }));
+        hub.Attach(again);
+        Assert.True(hub.Connect());
+
+        Assert.Empty(provider.GetFanChannels());
     }
 
     [Fact]
