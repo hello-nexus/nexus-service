@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lifecycle;
+using Nexus.Service.Lighting;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.Hyte.MiniHub;
@@ -23,17 +24,24 @@ public sealed class MiniHubHeartbeatWorker : BackgroundService
     private readonly HardwarePresence _presence;
     private readonly DeviceControlGate _gate;
     private readonly FeatureGates _gates;
+    private readonly MiniHubLightingDeviceProvider? _lighting;
     private bool _rgbModeAsserted;
     private bool _fanModeAsserted;
     private int _tickCount;
     private const int TraceEveryNTicks = 15; // every ~30 s with the 2 s timer
 
-    public MiniHubHeartbeatWorker(MiniHubHub hub, HardwarePresence presence, DeviceControlGate gate, FeatureGates? gates = null)
+    public MiniHubHeartbeatWorker(
+        MiniHubHub hub,
+        HardwarePresence presence,
+        DeviceControlGate gate,
+        FeatureGates? gates = null,
+        MiniHubLightingDeviceProvider? lighting = null)
     {
         _gates = gates ?? FeatureGates.AllEnabled;
         _hub = hub;
         _presence = presence;
         _gate = gate;
+        _lighting = lighting;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -53,7 +61,11 @@ public sealed class MiniHubHeartbeatWorker : BackgroundService
     {
         if (!_gate.IsEnabled("fan-hub"))
         {
-            if (_hub.IsConnected) _hub.Disconnect();
+            if (_hub.IsConnected)
+            {
+                _hub.Disconnect();
+                _lighting?.OnHubStateUpdated();
+            }
             return;
         }
 
@@ -64,7 +76,13 @@ public sealed class MiniHubHeartbeatWorker : BackgroundService
             return;
 
         var connectedBefore = _hub.IsConnected;
-        if (!_hub.EnsureConnected()) { _rgbModeAsserted = false; _fanModeAsserted = false; return; }
+        if (!_hub.EnsureConnected())
+        {
+            _rgbModeAsserted = false;
+            _fanModeAsserted = false;
+            _lighting?.OnHubStateUpdated();
+            return;
+        }
         // First connect ⇒ read FW version + assert software control modes so
         // lighting writes and fan-speed writes take effect. Re-asserted on each
         // reconnect; no-op in steady-state.
@@ -72,6 +90,7 @@ public sealed class MiniHubHeartbeatWorker : BackgroundService
         {
             _hub.PollFirmwareVersion();
         }
+        _lighting?.OnHubStateUpdated();
         // A pillar that is off keeps its mode unasserted, so a later switch-on asserts it on the next tick.
         if (!_gates.Lighting)
         {

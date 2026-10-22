@@ -34,8 +34,8 @@ public static class MiniHubProtocol
     // "off").
     public const int Port4MaxLedCount = 100;            // Port 4 = "big" output (100 LEDs)
     public const int OtherPortMaxLedCount = 50;         // Ports 1, 2, 3 (50 LEDs each)
-    private const int Port4PaddedLength = 7 + Port4MaxLedCount * 3;     // 307
-    private const int OtherPortPaddedLength = 7 + OtherPortMaxLedCount * 3; // 157
+    internal const int Port4PaddedLength = 7 + Port4MaxLedCount * 3;     // 307
+    internal const int OtherPortPaddedLength = 7 + OtherPortMaxLedCount * 3; // 157
 
     // ── Wire constants ──
 
@@ -159,6 +159,19 @@ public static class MiniHubProtocol
     private const byte LedCountMagicLow = 0x68;
 
     /// <summary>
+    /// Maximum byte value emitted for any LED colour channel (G, R, B) inside
+    /// a streaming payload. <c>0xFF</c> is reserved on the wire for
+    /// <see cref="Frame0"/> (command start); when <c>0xFF</c> lands in the
+    /// LED payload (especially at 64-byte USB Full-Speed bulk packet boundaries
+    /// <c>buf[64]</c> / <c>buf[128]</c>), firmware 1.0.1.1 treats it as a new
+    /// command header and resets its receive index mid-frame, shifting
+    /// subsequent GRB triples into wrong colour slots. Clamping 255 to 254
+    /// (99.6% duty, imperceptible to the eye) keeps <c>0xFF</c> strictly a
+    /// header sync byte.
+    /// </summary>
+    public const byte MaxLedChannelByte = 0xFE;
+
+    /// <summary>
     /// Build an LED streaming frame for one of the hub's four channels.
     /// Always emits a fixed-length padded buffer (307 bytes for channel 4,
     /// 157 bytes for channels 1-3) matching HYTE's reference
@@ -186,9 +199,9 @@ public static class MiniHubProtocol
         for (var i = 0; i < declaredCount; i++)
         {
             var off = 7 + i * 3;
-            buf[off + 0] = leds[i].G;
-            buf[off + 1] = leds[i].R;
-            buf[off + 2] = leds[i].B;
+            buf[off + 0] = Math.Min(leds[i].G, MaxLedChannelByte);
+            buf[off + 1] = Math.Min(leds[i].R, MaxLedChannelByte);
+            buf[off + 2] = Math.Min(leds[i].B, MaxLedChannelByte);
         }
         // Bytes from 7 + declaredCount*3 .. padded-1 stay zero (new-byte[]
         // default) to blank LEDs past N so firmware can't keep stale colors.
