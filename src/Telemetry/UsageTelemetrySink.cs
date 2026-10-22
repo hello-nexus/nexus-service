@@ -10,8 +10,9 @@ namespace Nexus.Service.Telemetry;
 /// Parallel sink next to PostHog: every event the flush service hands out is
 /// queued here for <see cref="UsageTelemetryWorker"/> to deliver to nexus-api.
 /// The <c>$identify</c> person update is not mirrored as such; its hardware and
-/// usage fields become one <c>profile</c> event instead. The queue is bounded
-/// and in memory only: oldest events shed first.
+/// usage fields become one <c>profile</c> event instead. The queue is bounded:
+/// oldest events shed first. It is snapshotted to disk at exit (<see cref="Persist"/>)
+/// and reloaded at start (<see cref="Restore"/>).
 /// </summary>
 internal sealed class UsageTelemetrySink : ITelemetrySink
 {
@@ -59,19 +60,19 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
             if (source is null)
                 return null;
             var props = source.Where(p => ProfileFields.Contains(p.Key)).ToArray();
-            return props.Length == 0 ? null : New(ProfileEvent, e.Timestamp, props);
+            return props.Length == 0 ? null : New(e.Id, ProfileEvent, e.Timestamp, props);
         }
-        return New(e.Name, e.Timestamp, e.Properties);
+        return New(e.Id, e.Name, e.Timestamp, e.Properties);
     }
 
     private const int EnvelopeBytes = 128;
 
-    private static UsageEvent New(string name, DateTimeOffset ts, IReadOnlyList<KeyValuePair<string, object?>> props)
+    private static UsageEvent New(string eventId, string name, DateTimeOffset ts, IReadOnlyList<KeyValuePair<string, object?>> props)
     {
         var fitted = FitProps(props);
         return new()
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = string.IsNullOrEmpty(eventId) ? Guid.NewGuid().ToString() : eventId,
             Name = name,
             Timestamp = ts,
             Props = fitted,
@@ -166,6 +167,70 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
     public void RetainOnlyOptOut()
     {
         lock (_lock) _queue.RemoveAll(e => e.Name != TelemetryEvents.OptOut);
+    }
+
+    /// <summary>Moves a snapshot left by <see cref="Persist"/> back to the head of the queue and deletes the file.</summary>
+    public int Restore(string path)
+    {
+        var events = UsageQueueFile.ReadAndDelete(path);
+        if (events.Count > 0)
+            Requeue(events);
+        return events.Count;
+    }
+
+    /// <summary>
+    /// Snapshots the queue plus <paramref name="undrained"/> (events the flush service has not handed over yet) to
+    /// <paramref name="path"/>. An opted-out install keeps only a pending opt_out. Never throws.
+    /// </summary>
+    public void Persist(string path, bool optedOut, IReadOnlyList<TelemetryEvent>? undrained = null)
+    {
+        try
+        {
+            List<UsageEvent> all;
+            lock (_lock) all = new List<UsageEvent>(_queue);
+            if (undrained is not null)
+            {
+                foreach (var e in undrained)
+                {
+                    // Its own try: one unmappable event (a non-finite number) must not drop the snapshot.
+                    try
+                    {
+                        if (Map(e) is { } mapped)
+                            all.Add(mapped);
+                    }
+                    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+                    {
+                        Console.Error.WriteLine($"[usage] skipped unmappable {e.Name} in snapshot: {ex.GetType().Name}");
+                    }
+                }
+            }
+            // A flush tick between the client snapshot and the queue copy puts the same event in both, under one id.
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            all.RemoveAll(e => !seen.Add(e.Id));
+            if (optedOut)
+                all.RemoveAll(e => e.Name != TelemetryEvents.OptOut);
+            if (all.Count > MaxQueued)
+                all.RemoveRange(0, all.Count - MaxQueued);
+            UsageQueueFile.Write(path, all);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[usage] queue persist failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The Windows service exits without running host StopAsync (Program.FastServiceShutdown), so the worker's final
+    /// flush never runs there. This is the network-free equivalent: snapshot everything pending, including events
+    /// still in the client queue.
+    /// </summary>
+    public void PersistForShutdown(Persistence.IConfigStore store, TelemetryClient client)
+    {
+        if (!Enabled)
+            return;
+        // Client queue first, then the sink: an event drained in between is then in both, and Persist collapses it by id.
+        var undrained = client.Snapshot();
+        Persist(UsageQueueFile.DefaultPath(), !store.Load().Telemetry.CollectAnonymousData, undrained);
     }
 
     public void Clear()

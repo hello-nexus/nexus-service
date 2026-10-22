@@ -40,6 +40,28 @@ public class OpenRgbProtocolFixtureTests
         AssertLogoZoneBounds(dev);
     }
 
+    [Theory]
+    [InlineData(0xFFFFFFD8u)]
+    [InlineData(0x80000000u)]
+    [InlineData(0xFFFFFFFFu)]
+    public void ParseControllerData_ZoneLedCountAboveIntMax_ParsesAsEmpty(uint wireCount)
+    {
+        var bytes = HexToBytes(Controller0HexV4);
+        var nameAt = FindZoneName(bytes);
+        var countAt = nameAt + 7 + 4 + 4 + 4;
+        BitConverter.GetBytes(wireCount).CopyTo(bytes, countAt);
+
+        var dev = OpenRgbProtocol.ParseControllerData(0, bytes, protocolVersion: 4);
+
+        Assert.Equal(0, dev.Zones[0].LedCount);
+    }
+
+    private static int FindZoneName(byte[] bytes)
+    {
+        var needle = new byte[] { 0x05, 0x00, 0x4C, 0x6F, 0x67, 0x6F };
+        return bytes.AsSpan().IndexOf(needle);
+    }
+
     /// <summary>leds_min/leds_max sit between zone type and leds_count, so only a real capture pins their offsets.</summary>
     private static void AssertLogoZoneBounds(RgbDevice dev)
     {

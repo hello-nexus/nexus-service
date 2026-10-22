@@ -966,6 +966,7 @@ static void FastServiceShutdown(WebApplication app)
             }
             catch { }
         }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Telemetry.UsageTelemetrySink>()?.PersistForShutdown(sp.GetRequiredService<IConfigStore>(), sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>()); } catch { } }),
         Task.Run(() =>
         {
             // The fast teardown skips the hubs' disconnect, so the remembered picture is written before the flush.
