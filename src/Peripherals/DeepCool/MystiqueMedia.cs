@@ -140,19 +140,23 @@ public static class MystiqueMedia
         return new MystiqueMediaPackage(KindGif, id, frames);
     }
 
-    /// <summary>A GIF's frames as kept on disk: 1 when they are turned half a turn else 0, its duration (LE16), then each JPEG as its length (LE32) and bytes.</summary>
+    private static ReadOnlySpan<byte> SavedGifPrefix => "NXMG\x01"u8;
+
+    /// <summary>A GIF's frames as kept on disk: <see cref="SavedGifPrefix"/> (magic and layout version), 1 when they are turned half a turn else 0, its duration (LE16), then each JPEG as its length (LE32) and bytes.</summary>
     public static byte[] SaveGif(MystiqueMediaPackage gif, bool rotated)
     {
-        int length = 3;
+        int head = SavedGifPrefix.Length;
+        int length = head + 3;
         foreach (var frame in gif.Frames)
         {
             length += 4 + frame.Length - HeaderLength;
         }
         var saved = new byte[length];
-        saved[0] = rotated ? (byte)1 : (byte)0;
-        saved[1] = gif.Frames[0][15];
-        saved[2] = gif.Frames[0][16];
-        int at = 3;
+        SavedGifPrefix.CopyTo(saved);
+        saved[head] = rotated ? (byte)1 : (byte)0;
+        saved[head + 1] = gif.Frames[0][15];
+        saved[head + 2] = gif.Frames[0][16];
+        int at = head + 3;
         foreach (var frame in gif.Frames)
         {
             BinaryPrimitives.WriteInt32LittleEndian(saved.AsSpan(at), frame.Length - HeaderLength);
@@ -162,14 +166,20 @@ public static class MystiqueMedia
         return saved;
     }
 
-    /// <summary>A GIF kept by <see cref="SaveGif"/>, rebuilt under <paramref name="id"/>; null when the bytes do not hold one the screen takes.</summary>
+    /// <summary>A GIF kept by <see cref="SaveGif"/>, rebuilt under <paramref name="id"/>; null when the bytes do not hold one the screen takes or carry another layout.</summary>
     public static MystiqueMediaPackage? LoadGif(ReadOnlySpan<byte> saved, string id, out bool rotated)
     {
-        rotated = saved.Length > 0 && saved[0] == 1;
-        if (saved.Length < 3 || saved[0] > 1 || !IsId(id))
+        rotated = false;
+        if (!saved.StartsWith(SavedGifPrefix) || !IsId(id))
         {
             return null;
         }
+        saved = saved[SavedGifPrefix.Length..];
+        if (saved.Length < 3 || saved[0] > 1)
+        {
+            return null;
+        }
+        rotated = saved[0] == 1;
         int durationMs = BinaryPrimitives.ReadUInt16LittleEndian(saved[1..]);
         var jpegs = new List<byte[]>();
         int at = 3;
