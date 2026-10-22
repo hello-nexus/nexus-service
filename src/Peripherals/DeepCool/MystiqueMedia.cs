@@ -27,13 +27,15 @@ public static class MystiqueMedia
     public const byte KindPicture = 1;
     public const byte KindGif = 2;
 
-    // The recorded GIFs all carry this count and duration; the count is kept for every GIF, the duration only for a still.
+    // A still GIF sends the count and duration of the first recorded GIFs. A moving one sends a frame per source
+    // frame, never fewer than a still's or more than the largest recorded, and the span they cover as its duration.
     public const int GifFrames = 25;
     public const int GifDurationMs = 1087;
+    public const int MaxGifFrames = 149;
 
     // The largest recorded uploads; nothing larger is sent.
     public const int MaxPictureJpegBytes = 145_654;
-    public const int MaxGifStreamBytes = 691_503;
+    public const int MaxGifStreamBytes = 10_982_436;
 
     // The screen's own software offers this many slots of each kind.
     public const int MaxPictures = 9;
@@ -115,9 +117,9 @@ public static class MystiqueMedia
 
     public static MystiqueMediaPackage BuildGif(IReadOnlyList<byte[]> jpegs, string id, int durationMs = GifDurationMs)
     {
-        if (jpegs.Count != GifFrames)
+        if (jpegs.Count is < GifFrames or > MaxGifFrames)
         {
-            throw new ArgumentException("a GIF has exactly the recorded frame count", nameof(jpegs));
+            throw new ArgumentException("GIF frame count outside the recorded range", nameof(jpegs));
         }
         if (durationMs is < 1 or > ushort.MaxValue)
         {
@@ -127,7 +129,7 @@ public static class MystiqueMedia
         long total = 0;
         for (int i = 0; i < jpegs.Count; i++)
         {
-            frames.Add(BuildFrame(KindGif, jpegs[i], id, GifFrames, durationMs, i));
+            frames.Add(BuildFrame(KindGif, jpegs[i], id, jpegs.Count, durationMs, i));
             total += frames[^1].Length;
         }
         if (total > MaxGifStreamBytes)
