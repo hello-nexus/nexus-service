@@ -312,6 +312,8 @@ public class CommanderCoreCoolingProviderTests
         var fan1 = rig.Provider.GetFanChannels()[1];
         rig.Provider.DriveFanSpeed(fan1.Id, 90);
         await rig.Poll();
+        rig.Transport.Status = Aio(CommanderCore, 70, 90, 50, 50);
+        await rig.Poll();
 
         rig.Provider.ReleaseFan(fan1.Id);
         await rig.Poll();
@@ -346,6 +348,125 @@ public class CommanderCoreCoolingProviderTests
 
         Assert.Equal(70, channels[0].DutyPercent);
         Assert.Equal(50, channels[1].DutyPercent);
+    }
+
+    [Fact]
+    public async Task A_release_during_a_bridge_blip_still_hands_the_device_back()
+    {
+        var rig = new Rig();
+        rig.Transport.Status = Aio();
+        await rig.Poll();
+        var fan1 = rig.Provider.GetFanChannels()[1];
+        rig.Provider.DriveFanSpeed(fan1.Id, 0);
+        await rig.Poll();
+        var listed = rig.Source.Listed[0];
+
+        rig.Source.Listed.Clear();
+        await rig.Poll();
+        rig.Provider.ReleaseFan(fan1.Id);
+        rig.Source.Listed.Add(listed);
+        rig.Transport.Status = Aio(CommanderCore, 70, 0, 50, 50);
+        await rig.Poll();
+
+        Assert.Equal(2, rig.Transport.Writes.Count);
+        Assert.Empty(rig.Transport.Writes[1].Table);
+    }
+
+    [Fact]
+    public async Task A_release_on_a_controller_at_address_zero_hands_back_too()
+    {
+        var rig = new Rig(address: 0);
+        rig.Transport.Status = Aio();
+        await rig.Poll();
+        var fan1 = rig.Provider.GetFanChannels()[1];
+        rig.Provider.DriveFanSpeed(fan1.Id, 40);
+        await rig.Poll();
+        rig.Transport.Status = Aio(CommanderCore, 70, 40, 50, 50);
+        await rig.Poll();
+
+        rig.Provider.ReleaseFan(fan1.Id);
+        await rig.Poll();
+
+        Assert.Equal(2, rig.Transport.Writes.Count);
+        Assert.Empty(rig.Transport.Writes[1].Table);
+    }
+
+    [Fact]
+    public async Task A_duty_the_daemon_holds_that_nobody_commands_is_handed_back_once_and_not_every_poll()
+    {
+        var rig = new Rig();
+        rig.Transport.Status = Aio(CommanderCore, 70, 0, 50, 50);
+
+        await rig.Poll();
+        await rig.Poll();
+
+        var write = Assert.Single(rig.Transport.Writes);
+        Assert.Empty(write.Table);
+    }
+
+    [Fact]
+    public async Task The_hand_back_duties_are_not_mistaken_for_a_command_to_undo()
+    {
+        var rig = new Rig();
+        rig.Transport.Status = Aio(CommanderCore, 70, 50, 50, 50);
+
+        await rig.Poll();
+
+        Assert.Empty(rig.Transport.Writes);
+    }
+
+    [Fact]
+    public async Task A_daemon_that_restarted_and_forgot_the_table_is_not_handed_back_to()
+    {
+        var rig = new Rig(address: 3);
+        rig.Transport.Status = Aio();
+        await rig.Poll();
+        var fan1 = rig.Provider.GetFanChannels()[1];
+        rig.Provider.DriveFanSpeed(fan1.Id, 90);
+        await rig.Poll();
+        rig.Provider.ReleaseFan(fan1.Id);
+        rig.Source.Listed[0] = rig.Source.Listed[0] with { Address = 0 };
+        rig.Transport.Status = Aio();
+
+        await rig.Poll();
+        rig.Now += TimeSpan.FromSeconds(4);
+        await rig.Poll();
+        await rig.Poll();
+
+        Assert.Single(rig.Transport.Writes);
+    }
+
+    [Fact]
+    public async Task A_command_replayed_before_the_first_contact_is_sent_when_the_device_shows_up()
+    {
+        var first = new Rig();
+        first.Transport.Status = Aio();
+        await first.Poll();
+        var channels = first.Provider.GetFanChannels();
+        var pump = channels[0].Id;
+        var fan2 = channels[2].Id;
+
+        var restarted = new Rig();
+        restarted.Transport.Status = Aio();
+        restarted.Provider.DriveFanSpeed(fan2, 65);
+        restarted.Provider.DriveFanSpeed(pump, 10);
+        await restarted.Poll();
+
+        var write = Assert.Single(restarted.Transport.Writes);
+        Assert.Equal(new[] { (0, 50), (1, 50), (2, 65), (3, 50) }, write.Table);
+    }
+
+    [Fact]
+    public async Task A_replayed_command_for_an_id_that_is_not_a_channel_id_is_ignored()
+    {
+        var rig = new Rig();
+        rig.Transport.Status = Aio();
+
+        rig.Provider.DriveFanSpeed("cmdcore:zz:ch1", 65);
+        rig.Provider.DriveFanSpeed("cmdcore:0123abcd:ch9", 65);
+        await rig.Poll();
+
+        Assert.Empty(rig.Transport.Writes);
     }
 
     [Fact]

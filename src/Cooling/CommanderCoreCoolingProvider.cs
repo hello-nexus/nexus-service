@@ -27,6 +27,7 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
     private const int PumpFloor = 50;
     private static readonly TimeSpan StatusStaleAfter = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RepushAfter = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ApplySettle = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan WarnEvery = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan UnsupportedRetry = TimeSpan.FromMinutes(1);
 
@@ -42,7 +43,7 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
         public required string Key { get; init; }
         public required string Id { get; init; }
         public string Name = "";
-        public int Address;
+        public int Address = -1;
         public CommanderCoreStatus? Status;
         public DateTime StatusAtUtc = DateTime.MinValue;
         public DateTime UnsupportedAtUtc = DateTime.MinValue;
@@ -50,8 +51,6 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
         public bool Dirty;
         public DateTime PushedAtUtc = DateTime.MinValue;
         public DateTime WarnedAtUtc = DateTime.MinValue;
-        // The daemon holds a commanded table that has not been handed back yet.
-        public bool Commanded;
     }
 
     private readonly ISource _source;
@@ -64,6 +63,8 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
     private Dictionary<string, Device> _devices = new(StringComparer.Ordinal);
     // Keyed by channel id so a duty survives a daemon restart that renumbers the controller.
     private readonly Dictionary<string, int> _desired = new(StringComparer.Ordinal);
+    // Devices (by StableId) whose daemon holds a commanded table not yet handed back; outlives a device dropping out of the list.
+    private readonly HashSet<string> _commanded = new(StringComparer.Ordinal);
 
     public CommanderCoreCoolingProvider(ISource source, INexusCoolingTransport transport, IConfigStore? config = null, Func<DateTime>? now = null)
     {
@@ -117,7 +118,6 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
                     dev.Unsupported = false;
                     dev.Status = null;
                     dev.Dirty = true;
-                    dev.Commanded = false;
                 }
                 dev.Name = ep.Name;
                 next[ep.StableId] = dev;
@@ -192,8 +192,31 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
             var now = _now();
             if (!anyControlled)
             {
-                // Nothing is commanded any more: an empty table hands the channels back to the daemon.
-                if (!dev.Commanded || !dev.Dirty)
+                // Nothing is commanded: an empty table hands back whatever the daemon still holds, whether this
+                // service commanded it or the daemon reports a duty that is not the hand-back one.
+                var owed = _commanded.Contains(dev.Key);
+                var anyApplied = false;
+                var stray = false;
+                for (var i = 0; i < status.Channels.Count; i++)
+                {
+                    if (!status.Channels[i].Connected || status.Channels[i].AppliedDuty is not { } applied)
+                    {
+                        continue;
+                    }
+                    anyApplied = true;
+                    stray |= applied != (IsPump(status, i) ? DefaultPumpDuty : DefaultFanDuty);
+                }
+                if (owed && !anyApplied)
+                {
+                    // Once the daemon has had time to apply the table, nothing applied means it restarted and
+                    // forgot it; the device runs its own configuration.
+                    if (now - dev.PushedAtUtc >= ApplySettle)
+                    {
+                        _commanded.Remove(dev.Key);
+                    }
+                    return;
+                }
+                if (!(owed && dev.Dirty) && !(stray && now - dev.PushedAtUtc >= RepushAfter))
                 {
                     return;
                 }
@@ -224,7 +247,14 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
         {
             if (outcome == NexusCoolingOutcome.Ok)
             {
-                dev.Commanded = !handBack;
+                if (handBack)
+                {
+                    _commanded.Remove(dev.Key);
+                }
+                else
+                {
+                    _commanded.Add(dev.Key);
+                }
                 return;
             }
             dev.Dirty = true;
@@ -251,6 +281,10 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
             if (_desired.TryGetValue(ChannelId(dev, i), out var duty))
             {
                 anyControlled = true;
+                if (pump)
+                {
+                    duty = Math.Max(duty, PumpFloor);
+                }
             }
             else
             {
@@ -464,7 +498,21 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
         }
         lock (_lock)
         {
-            if (!TryFindDevice(channelId, out var dev) || dev.Status is not { } status || !TryChannelIndex(dev, channelId, out var index))
+            if (!TryFindDevice(channelId, out var dev) || dev.Status is not { } status)
+            {
+                // Not listed yet (service start, a bridge blip): keep the command for the first contact.
+                if (!IsChannelId(channelId))
+                {
+                    return duty;
+                }
+                _desired[channelId] = duty;
+                if (TryFindDevice(channelId, out var known))
+                {
+                    known.Dirty = true;
+                }
+                return duty;
+            }
+            if (!TryChannelIndex(dev, channelId, out var index))
             {
                 ServiceLog.Warn($"[cmdcore-cooling] write to {channelId} dropped: no such connected channel");
                 return duty;
@@ -492,6 +540,16 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
     }
 
     private bool Stale(Device dev) => _now() - dev.StatusAtUtc > StatusStaleAfter;
+
+    // "cmdcore:{8 hex}:ch{N}" with N inside the daemon's channel cap.
+    private static bool IsChannelId(string id)
+    {
+        var parts = id.Split(':');
+        return parts.Length == 3 && parts[0] + ":" == IdPrefix && parts[1].Length == 8
+            && parts[2].StartsWith("ch", StringComparison.Ordinal)
+            && int.TryParse(parts[2].AsSpan(2), NumberStyles.None, CultureInfo.InvariantCulture, out var n)
+            && n < NexusCoolingProtocol.MaxChannels;
+    }
 
     private bool TryFindDevice(string channelId, out Device dev)
     {
