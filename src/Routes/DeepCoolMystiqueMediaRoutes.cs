@@ -42,9 +42,11 @@ public static partial class DevicesRoutes
     }
 
     /// <summary>
-    /// The screen id a GIF goes up under, and whether the screen already holds it. Every GIF shares one id: the
-    /// screen kept playing its first stored GIF while later ones were added, so showing another replaces it in place.
-    /// Before a slot is recorded the oldest listed GIF is taken, the likeliest to be that first one.
+    /// The screen id a GIF goes up under, and whether the screen already holds it. Every GIF shares one id, so showing
+    /// another replaces it in place; this assumes, from a customer report that the screen kept playing its first
+    /// stored GIF while later ones were added, that the screen plays the oldest GIF it holds. Before a slot is recorded
+    /// a GIF id the screen may hold is taken, freed ones first, then listed ones; no upload times are kept, so this is
+    /// a guess that <see cref="DeepCoolMystiqueSettings.GifSlotUnsure"/> reports until a format.
     /// </summary>
     internal static (string Id, bool Held) MystiqueGifSlot(DeepCoolMystiqueSettings m, string itemId)
     {
@@ -52,19 +54,20 @@ public static partial class DevicesRoutes
         {
             return (m.GifSlot, true);
         }
-        var oldest = m.Media?.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindGif);
-        return oldest is not null ? (oldest.Id, true) : (itemId, false);
+        var held = m.Freed?.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindGif) ?? m.Media?.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindGif);
+        return held is not null ? (held.Id, true) : (itemId, false);
     }
 
-    /// <summary>Records what a finished or failed GIF stream left in the slot: the shown item, or none when the stream failed.</summary>
-    internal static void SetMystiqueGifSlot(IConfigStore store, string slot, string shown) =>
-        store.Update(s =>
-        {
-            var m = s.Devices.DeepCoolMystique;
-            m.GifSlot = slot;
-            m.ShownGif = shown;
-            m.Freed?.RemoveAll(i => i.Id == slot);
-        });
+    /// <summary>
+    /// Records what a finished or failed GIF stream left in the slot: the shown item, or none when the stream failed.
+    /// Freed GIF ids are dropped: GIFs never go up under them once a slot is recorded.
+    /// </summary>
+    internal static void SetMystiqueGifSlot(DeepCoolMystiqueSettings m, string slot, string shown)
+    {
+        m.GifSlot = slot;
+        m.ShownGif = shown;
+        m.Freed?.RemoveAll(i => i.Id == slot || i.Kind == DeepCoolMystiqueMediaItem.KindGif);
+    }
 
     /// <summary>Puts a failed upload's id in <see cref="DeepCoolMystiqueSettings.Freed"/>, so the next upload of its kind overwrites whatever part of it the screen kept.</summary>
     internal static void FreeFailedMystiqueId(IConfigStore store, string kind, string id) =>
@@ -151,7 +154,6 @@ public static partial class DevicesRoutes
                         ? "The screen holds its maximum number of GIFs; replace or remove one first."
                         : "The screen holds its maximum number of pictures; replace or remove one first.");
                 }
-                // A picture goes up under its own id; a GIF under the one slot the screen plays.
                 string screenId = id;
                 bool inPlace = false;
                 bool rotate = false;
@@ -185,7 +187,7 @@ public static partial class DevicesRoutes
                 {
                     if (isGif)
                     {
-                        SetMystiqueGifSlot(store, screenId, "");
+                        store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, screenId, ""));
                     }
                     else
                     {
@@ -197,7 +199,7 @@ public static partial class DevicesRoutes
                 string keptExt = await KeepMystiqueSource(id, ext, source, isGif);
                 if (isGif)
                 {
-                    SaveMystiqueStream(id, MystiqueMedia.SaveGif(package));
+                    SaveMystiqueStream(id, MystiqueMedia.SaveGif(package, rotate));
                 }
                 string name = TruncateName(Path.GetFileNameWithoutExtension(file.FileName), MystiqueNameMax);
                 store.Update(s =>
@@ -206,7 +208,7 @@ public static partial class DevicesRoutes
                     m.Media ??= new();
                     m.Freed ??= new();
                     m.Freed.RemoveAll(i => i.Id == screenId);
-                    var item = new DeepCoolMystiqueMediaItem { Kind = kind, Id = id, Name = name, Ext = keptExt };
+                    var item = new DeepCoolMystiqueMediaItem { Kind = kind, Id = id, Name = name, Ext = keptExt, Crop = crop is null ? "" : form["crop"].ToString() };
                     int at = m.Media.FindIndex(i => i.Id == id);
                     if (at >= 0)
                     {
@@ -218,8 +220,7 @@ public static partial class DevicesRoutes
                     }
                     if (isGif)
                     {
-                        m.GifSlot = screenId;
-                        m.ShownGif = id;
+                        SetMystiqueGifSlot(m, screenId, id);
                     }
                 });
                 worker.RequestApply();
@@ -277,7 +278,13 @@ public static partial class DevicesRoutes
                     return Results.Json(new DeepCoolMystiqueMediaResponse { Id = id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
                 }
                 var (slot, held) = MystiqueGifSlot(m, id);
-                var package = LoadMystiqueStream(id, slot);
+                bool rotate = MystiqueRotatesMedia(m);
+                var package = LoadMystiqueStream(id, slot, out bool rotated);
+                if (package is not null && rotated != rotate)
+                {
+                    // Kept frames carry the turn of the gyroscope setting they were encoded under.
+                    package = await ReencodeMystiqueGifAsync(m.Media.Find(i => i.Id == id)!, slot, rotate, worker, budget.Token);
+                }
                 if (package is null)
                 {
                     return Results.Json(new DeepCoolMystiqueMediaResponse { Error = true, NeedsEdit = true, Msg = "The GIF's frames are not kept; edit it to send it again." },
@@ -293,10 +300,10 @@ public static partial class DevicesRoutes
                 worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
                 if (!await worker.UploadAsync(package, SourceAfterStream, budget.Token))
                 {
-                    SetMystiqueGifSlot(store, slot, "");
+                    store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, slot, ""));
                     return MystiqueMediaFailure("The screen did not take the GIF");
                 }
-                SetMystiqueGifSlot(store, slot, id);
+                store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, slot, id));
                 worker.RequestApply();
                 return Results.Json(new DeepCoolMystiqueMediaResponse { Id = id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
             }
@@ -351,6 +358,7 @@ public static partial class DevicesRoutes
                     m.Freed = new();
                     m.GifSlot = "";
                     m.ShownGif = "";
+                    m.GifSlotUnsure = false;
                 });
                 gone.ForEach(DeleteMystiqueFiles);
                 return Results.Json(new DeepCoolMystiqueMediaResponse(), AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
@@ -552,7 +560,9 @@ public static partial class DevicesRoutes
         {
             var path = MystiqueStreamPath(id);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllBytes(path, saved);
+            var temp = path + ".tmp";
+            File.WriteAllBytes(temp, saved);
+            File.Move(temp, path, overwrite: true);
         }
         catch (Exception ex)
         {
@@ -561,18 +571,40 @@ public static partial class DevicesRoutes
     }
 
     /// <summary>The GIF kept under <paramref name="id"/>, rebuilt to go up under <paramref name="screenId"/>; null when none is kept.</summary>
-    private static MystiqueMediaPackage? LoadMystiqueStream(string id, string screenId)
+    private static MystiqueMediaPackage? LoadMystiqueStream(string id, string screenId, out bool rotated)
     {
+        rotated = false;
         try
         {
             var path = MystiqueStreamPath(id);
-            return File.Exists(path) ? MystiqueMedia.LoadGif(File.ReadAllBytes(path), screenId) : null;
+            return File.Exists(path) ? MystiqueMedia.LoadGif(File.ReadAllBytes(path), screenId, out rotated) : null;
         }
         catch (Exception ex)
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[deepcool-mystique] kept GIF frames not read: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>Encodes a GIF again from its kept source with its recorded crop and keeps the frames; null when no source is kept or the encode fails.</summary>
+    private static async Task<MystiqueMediaPackage?> ReencodeMystiqueGifAsync(
+        DeepCoolMystiqueMediaItem item, string screenId, bool rotate, MystiqueWorker worker, CancellationToken ct)
+    {
+        if (!MystiqueSourceExists(item))
+        {
+            return null;
+        }
+        CropRect.TryParse(item.Crop, out var parsed);
+        var source = await File.ReadAllBytesAsync(MystiqueSourcePath(item.Id, item.Ext), ct);
+        worker.ReportProgress(MystiqueWorker.ProgressConverting, 0, 1);
+        var encoded = await MystiqueMediaEncoder.EncodeGifAsync(source, item.Ext, parsed.W > 0 ? parsed : null, screenId, rotate, ct,
+            (done, total) => worker.ReportProgress(MystiqueWorker.ProgressConverting, done, total));
+        if (!encoded.Ok)
+        {
+            return null;
+        }
+        SaveMystiqueStream(item.Id, MystiqueMedia.SaveGif(encoded.Package!, rotate));
+        return encoded.Package;
     }
 
     private static void SaveMystiqueThumbnail(string id, byte[] jpeg)
