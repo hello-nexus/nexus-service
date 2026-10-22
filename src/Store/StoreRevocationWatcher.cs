@@ -40,7 +40,7 @@ public sealed class StoreRevocationWatcher : BackgroundService
             () => registry.All().ToList(),
             (id, ct) => storeInstaller.WithAppGateAsync(id, () =>
             {
-                if (installer.Uninstall(id).Error is not null) return false;
+                if (installer.Uninstall(id, Nexus.Service.Telemetry.AppLifecycleTelemetry.ReasonYank).Error is not null) return false;
                 // Same as the uninstall route: placements die only when no bundled copy remains.
                 if (!registry.TryGet(id, out _))
                 {

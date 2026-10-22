@@ -418,6 +418,207 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Contains(panelId, _panelChanges);
     }
 
+    private static StreamedPanelDeviceInfo SingleUnit(string serial) => new()
+    {
+        Serial = serial,
+        AdoptsFamilyRecords = true,
+        Profile = new StreamedPanelProfile { Kind = "fake-fs", Family = "fake-fs", DisplayName = "Fake Panel", Surface = "monitor", CssWidth = 640, CssHeight = 480, Fps = 30 },
+    };
+
+    private PanelDeviceRecord FamilyRecord(string name, long lastSeenAt)
+    {
+        var record = _registry.Allocate(name, new PanelDeviceCapabilities { Surface = "monitor", Family = "fake-fs" });
+        _config.Update(s => s.PanelDevices[record.Id].LastSeenAt = lastSeenAt);
+        return record;
+    }
+
+    [Fact]
+    public void A_single_unit_panel_keeps_the_most_recently_seen_family_record_and_removes_the_rest_through_the_shared_cleanup()
+    {
+        var older = FamilyRecord("older", 1_000);
+        var newer = FamilyRecord("newer", 2_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["365233833333"] = new() { PanelDeviceId = older.Id },
+            ["AsusTek Computer Inc."] = new() { PanelDeviceId = newer.Id },
+        });
+        var removed = new List<string>();
+        _coordinator = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate, notifyOverlay: null, nowMs: () => _nowMs,
+            notifyPanelChanged: _panelChanges.Add, removePanel: id => { removed.Add(id); return _registry.Remove(id); });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        _coordinator.TickOnce();
+
+        Assert.Equal(newer.Id, Assert.Single(_coordinator.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Equal(new[] { older.Id }, removed);
+        Assert.Equal(new[] { "fixed-key" }, _store.Load().Keys);
+    }
+
+    private void Touch(string id) => _config.Update(s => s.PanelDevices[id].Flip180 = false);
+
+    [Fact]
+    public void The_customers_two_record_shape_keeps_the_record_with_a_stored_setting()
+    {
+        // Seen in the alpha.2 bundle: the older record carries an explicit setting and the later-seen one is bare.
+        var touched = FamilyRecord("touched", 2_000);
+        Touch(touched.Id);
+        var bare = FamilyRecord("bare", 1_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["365233833333"] = new() { PanelDeviceId = touched.Id },
+            ["AsusTek Computer Inc."] = new() { PanelDeviceId = bare.Id },
+        });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        Coordinator().TickOnce();
+
+        Assert.Equal(touched.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(bare.Id));
+    }
+
+    [Fact]
+    public void A_customized_record_outranks_a_bare_one_that_was_streamed_to_last()
+    {
+        var customized = FamilyRecord("customized", 1_000);
+        _config.Update(s => s.PanelDevices[customized.Id].ThemeMode = "dark");
+        var bareLater = FamilyRecord("bare", 9_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["a"] = new() { PanelDeviceId = customized.Id },
+            ["b"] = new() { PanelDeviceId = bareLater.Id },
+        });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        Coordinator().TickOnce();
+
+        Assert.Equal(customized.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(bareLater.Id));
+    }
+
+    [Fact]
+    public void A_record_whose_device_folder_holds_uploaded_media_counts_as_customized()
+    {
+        // Media files live outside the record, so the check is injected the way the service wires it.
+        var withMedia = FamilyRecord("media", 1_000);
+        var bareLater = FamilyRecord("bare", 9_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["a"] = new() { PanelDeviceId = withMedia.Id },
+            ["b"] = new() { PanelDeviceId = bareLater.Id },
+        });
+        _coordinator = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate, notifyOverlay: null, nowMs: () => _nowMs,
+            notifyPanelChanged: _panelChanges.Add,
+            isCustomized: id => id == withMedia.Id || _registry.IsCustomized(id));
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        _coordinator.TickOnce();
+
+        Assert.Equal(withMedia.Id, Assert.Single(_coordinator.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(bareLater.Id));
+    }
+
+    [Fact]
+    public void Two_customized_records_are_both_kept_and_only_one_takes_the_fixed_key()
+    {
+        var first = FamilyRecord("first", 1_000);
+        Touch(first.Id);
+        var second = FamilyRecord("second", 2_000);
+        _config.Update(s => s.PanelDevices[second.Id].ThemeMode = "dark");
+        var bare = FamilyRecord("bare", 3_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["fixed-key"] = new() { PanelDeviceId = first.Id },
+            ["serial-b"] = new() { PanelDeviceId = second.Id },
+            ["serial-c"] = new() { PanelDeviceId = bare.Id },
+        });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        Coordinator().TickOnce();
+
+        // The most recently seen customized record streams; nothing the user changed is deleted.
+        Assert.Equal(second.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.NotNull(_registry.Get(first.Id));
+        Assert.NotNull(_registry.Get(second.Id));
+        Assert.Null(_registry.Get(bare.Id));
+        var stored = _store.Load();
+        Assert.Equal(second.Id, stored["fixed-key"].PanelDeviceId);
+        Assert.Contains(stored.Values, r => r.PanelDeviceId == first.Id);
+        Assert.DoesNotContain(stored.Values, r => r.PanelDeviceId == bare.Id);
+    }
+
+    [Fact]
+    public void A_customized_check_that_fails_keeps_every_record_and_does_not_escape()
+    {
+        var a = FamilyRecord("a", 1_000);
+        var b = FamilyRecord("b", 2_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["a"] = new() { PanelDeviceId = a.Id },
+            ["b"] = new() { PanelDeviceId = b.Id },
+        });
+        _coordinator = new StreamedPanelCoordinator(
+            new[] { _discovery }, _store, _registry, _gate, notifyOverlay: null, nowMs: () => _nowMs,
+            notifyPanelChanged: _panelChanges.Add, isCustomized: _ => throw new IOException("listing failed"));
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        _coordinator.TickOnce();
+
+        Assert.Single(_coordinator.GetAssignments().Assignments);
+        Assert.NotNull(_registry.Get(a.Id));
+        Assert.NotNull(_registry.Get(b.Id));
+    }
+
+    [Fact]
+    public void The_customized_check_looks_at_the_stored_record_including_presets_a_clone_leaves_out()
+    {
+        var record = FamilyRecord("presets", 1_000);
+        _config.Update(s => s.PanelDevices[record.Id].ActivePresetId = "preset-1");
+
+        Assert.True(_registry.IsCustomized(record.Id));
+        Assert.False(PanelDeviceRegistry.IsCustomized(_registry.Get(record.Id)!));
+    }
+
+    [Fact]
+    public void A_stored_layout_makes_a_record_customized()
+    {
+        var record = FamilyRecord("calendar", 1_000);
+        _config.Update(s => s.PanelDevices[record.Id].Layout = new PanelLayoutDto { Surface = "lcd-square" });
+
+        Assert.True(PanelDeviceRegistry.IsCustomized(_registry.Get(record.Id)!));
+    }
+
+    [Fact]
+    public void A_fresh_record_is_not_customized_and_each_stored_field_makes_it_so()
+    {
+        var record = FamilyRecord("fresh", 1_000);
+        Assert.False(PanelDeviceRegistry.IsCustomized(_registry.Get(record.Id)!));
+
+        _config.Update(s => s.PanelDevices[record.Id].AccentColor = "#ff0000");
+
+        Assert.True(PanelDeviceRegistry.IsCustomized(_registry.Get(record.Id)!));
+    }
+
+    [Fact]
+    public void Adoption_runs_every_time_so_a_mix_of_fixed_and_serial_keys_is_merged()
+    {
+        var onFixedKey = FamilyRecord("fixed", 1_000);
+        var onSerial = FamilyRecord("serial", 3_000);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>
+        {
+            ["fixed-key"] = new() { PanelDeviceId = onFixedKey.Id },
+            ["365233833333"] = new() { PanelDeviceId = onSerial.Id },
+        });
+        _discovery.Devices.Add(SingleUnit("fixed-key"));
+
+        Coordinator().TickOnce();
+
+        Assert.Equal(onSerial.Id, Assert.Single(_coordinator!.GetAssignments().Assignments).PanelDeviceId);
+        Assert.Null(_registry.Get(onFixedKey.Id));
+        Assert.Equal(new[] { "fixed-key" }, _store.Load().Keys);
+    }
+
     [Fact]
     public void Gate_off_closes_immediately_without_linger()
     {

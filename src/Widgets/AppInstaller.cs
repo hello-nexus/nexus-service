@@ -17,11 +17,25 @@ public sealed class AppInstaller
 {
     private readonly AppRegistry _registry;
     private readonly OemInfo _oemInfo;
+    private readonly Nexus.Service.Telemetry.ITelemetry? _telemetry;
+    private readonly Func<string?>? _userRootOverride;
 
-    public AppInstaller(AppRegistry registry, OemInfo oemInfo)
+    public AppInstaller(AppRegistry registry, OemInfo oemInfo, Nexus.Service.Telemetry.ITelemetry? telemetry = null, Func<string?>? userRootOverride = null)
     {
         _registry = registry;
         _oemInfo = oemInfo;
+        _telemetry = telemetry;
+        _userRootOverride = userRootOverride;
+    }
+
+    private string? UserRoot()
+    {
+        if (_userRootOverride is not null) return _userRootOverride();
+        foreach (var root in AppInstallPaths.Enumerate())
+        {
+            if (root.Source == AppInstallPaths.Source.User) return root.Path;
+        }
+        return null;
     }
 
     /// <summary>
@@ -90,26 +104,20 @@ public sealed class AppInstaller
         // Compute the user widgets dir from the install paths enumerator;
         // it's the entry whose Source is User. (Windows: %ProgramData%\Nexus\apps;
         // the per-user data dir on macOS/Linux.)
-        string? userRoot = null;
-        foreach (var root in AppInstallPaths.Enumerate())
-        {
-            if (root.Source == AppInstallPaths.Source.User)
-            {
-                userRoot = root.Path;
-                break;
-            }
-        }
+        var userRoot = UserRoot();
         if (userRoot is null)
         {
             return new AppInstallResponse { Id = id, Installed = false, Error = "no user widgets directory" };
         }
 
+        string? previousVersion = null;
         try
         {
             // Lock the root ACL before writing into it (prod / LocalSystem only).
             AppInstallPaths.SecureUserRoots();
             Directory.CreateDirectory(userRoot);
             var dest = Path.Combine(userRoot, id);
+            previousVersion = Directory.Exists(dest) ? Nexus.Service.Telemetry.AppLifecycleTelemetry.ReadVersion(dest) : null;
             // Wipe existing dest so the copy is atomic-ish (only one widget
             // dir per id).
             if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true);
@@ -121,34 +129,39 @@ public sealed class AppInstaller
         }
 
         _registry.Refresh();
+        if (_registry.TryGet(id, out var installed) && installed.Manifest.Version != previousVersion)
+            Nexus.Service.Telemetry.AppLifecycleTelemetry.Installed(_telemetry, id, installed.Manifest.Version, Nexus.Service.Telemetry.AppLifecycleTelemetry.ReasonUser);
         return new AppInstallResponse { Id = id, Installed = true };
     }
 
-    public AppInstallResponse Uninstall(string id)
+    public AppInstallResponse Uninstall(string id, string reason = Nexus.Service.Telemetry.AppLifecycleTelemetry.ReasonUser)
     {
         if (!AppIds.IsValid(id))
         {
             return new AppInstallResponse { Id = id, Installed = false, Error = "invalid widget id" };
         }
-        string? userRoot = null;
-        foreach (var root in AppInstallPaths.Enumerate())
-        {
-            if (root.Source == AppInstallPaths.Source.User) { userRoot = root.Path; break; }
-        }
+        var userRoot = UserRoot();
         if (userRoot is null)
         {
             return new AppInstallResponse { Id = id, Installed = false, Error = "no user widgets directory" };
         }
         var path = Path.Combine(userRoot, id);
+        string? removedVersion = null;
         try
         {
-            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+            if (Directory.Exists(path))
+            {
+                removedVersion = Nexus.Service.Telemetry.AppLifecycleTelemetry.ReadVersion(path) ?? "unknown";
+                Directory.Delete(path, recursive: true);
+            }
         }
         catch (Exception ex)
         {
             return new AppInstallResponse { Id = id, Installed = false, Error = ex.Message };
         }
         _registry.Refresh();
+        if (removedVersion is not null)
+            Nexus.Service.Telemetry.AppLifecycleTelemetry.Uninstalled(_telemetry, id, removedVersion, reason);
         // Bundled widgets remain visible after uninstall (the user copy
         // shadowed nothing). Mark Installed=false so the dashboard updates.
         return new AppInstallResponse { Id = id, Installed = false };

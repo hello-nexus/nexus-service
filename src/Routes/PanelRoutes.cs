@@ -341,7 +341,7 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams, Nexus.Service.Deck.ListedAppIds listed) =>
+        app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams, Nexus.Service.Deck.ListedAppIds listed, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
             // A panel session may rearrange or remove the deck keys it has, but
             // authoring a key that opens a file, sends a key chord, types text or
@@ -352,6 +352,7 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
+            var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
             var updated = registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
@@ -365,6 +366,8 @@ public static class PanelRoutes
             if (body.HighResolution.HasValue)
                 streams.Wake();
             BroadcastDeviceChanged(hub, id);
+            if (body.Layout is not null)
+                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, layoutBefore, updated.Layout);
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
@@ -625,17 +628,12 @@ public static class PanelRoutes
                 : Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         });
 
-        app.MapDelete("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRegistry registry, PanelBgLibrary bgLibrary, MultiplexHub hub, TokenService tokens) =>
+        app.MapDelete("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRemover remover, TokenService tokens) =>
         {
             if (!HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
-            if (!registry.Remove(id))
+            if (!remover.Remove(id))
                 return Results.NotFound(ApiResponse.Fail("device not found"));
-            // Single-instance surfaces mint a fresh id on the next allocate,
-            // so a removed device's media dir would be orphaned forever.
-            if (!bgLibrary.DeleteDeviceMedia(id))
-                ServiceLog.Warn($"[panel] remove: media dir for '{id}' could not be fully removed");
-            BroadcastDeviceChanged(hub, id);
             return Results.Ok(ApiResponse.Ok("removed"));
         });
     }

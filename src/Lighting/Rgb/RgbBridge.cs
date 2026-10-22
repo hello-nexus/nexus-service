@@ -1416,73 +1416,90 @@ public sealed class RgbBridge : IDisposable
             int stripSlot = 0;
             for (int i = 0; i < devices.Count; i++)
             {
-                var d = devices[i];
-                if (IsOwnedByFirstParty(d)) continue;
-                // Excluded devices render from their persisted snapshot; a live
-                // entry fetched before the exclusion's re-detect must not occupy
-                // an engine frame or a canvas slot.
-                if (settingsSnapshot.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)) continue;
-                var baseId = d.StableId;
-
-                // A split motherboard is one device per ARGB header, so each
-                // port resolves its OWN partition: a chain wired to one header
-                // emits a frame per product while the others keep their single
-                // frame. Resolving the board instead would find no partition
-                // (chains are stored under the port id) and every chained card
-                // would go frameless - visible as cards that never light.
-                if (OpenRgbZoneSupport.IsSplitMotherboard(d))
+                var framesBefore = framesList.Count;
+                var ordinalBefore = logicalOrdinal;
+                var cardBefore = cardSlot;
+                var stripBefore = stripSlot;
+                try
                 {
-                    foreach (var port in OpenRgbZoneSupport.BuildStructures(d, settingsSnapshot))
+                    var d = devices[i];
+                    if (IsOwnedByFirstParty(d)) continue;
+                    // Excluded devices render from their persisted snapshot; a live
+                    // entry fetched before the exclusion's re-detect must not occupy
+                    // an engine frame or a canvas slot.
+                    if (settingsSnapshot.Devices.OpenRgbDetectorExclusions.ContainsKey(d.StableId)) continue;
+                    var baseId = d.StableId;
+
+                    // A split motherboard is one device per ARGB header, so each
+                    // port resolves its OWN partition: a chain wired to one header
+                    // emits a frame per product while the others keep their single
+                    // frame. Resolving the board instead would find no partition
+                    // (chains are stored under the port id) and every chained card
+                    // would go frameless - visible as cards that never light.
+                    if (OpenRgbZoneSupport.IsSplitMotherboard(d))
                     {
-                        // A chain's slices are in the port's EFFECTIVE count,
-                        // which only equals the hardware count once the header
-                        // accepted the RESIZEZONE. On one that ignores it (the
-                        // 12V case) the later links would otherwise resolve
-                        // past this header and write the next one's LEDs, so
-                        // the port's own region is a hard wall.
-                        var portEnd = port.FrameBaseOffset + port.Segments[0].FrameLedCount;
-                        foreach (var portZone in Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(port, settingsSnapshot))
+                        foreach (var port in OpenRgbZoneSupport.BuildStructures(d, settingsSnapshot))
                         {
-                            var frameOffset = Nexus.Service.Lighting.Zones.ZoneResolution.FrameOffset(port, portZone);
-                            BuildOrReuseFrame(portZone.Id, d, physicalIndex: d.Address,
-                                zoneIndex: portZone.IsDefault
-                                    ? portZone.LegacyZoneIndex
-                                    : Nexus.Service.Lighting.Zones.ZoneResolution.WholeResizableSegment(port, portZone, settingsSnapshot),
-                                zoneOffset: Math.Min(frameOffset, portEnd),
-                                zoneLedCount: Math.Max(0, Math.Min(portZone.FrameLedCount, portEnd - frameOffset)),
-                                existingFrames, layouts, stripSlot, logicalOrdinal, framesList,
-                                isStrip: true, settingsSnapshot, port, portZone);
-                            stripSlot++;
-                            logicalOrdinal++;
+                            // A chain's slices are in the port's EFFECTIVE count,
+                            // which only equals the hardware count once the header
+                            // accepted the RESIZEZONE. On one that ignores it (the
+                            // 12V case) the later links would otherwise resolve
+                            // past this header and write the next one's LEDs, so
+                            // the port's own region is a hard wall.
+                            var portEnd = port.FrameBaseOffset + port.Segments[0].FrameLedCount;
+                            foreach (var portZone in Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(port, settingsSnapshot))
+                            {
+                                var frameOffset = Nexus.Service.Lighting.Zones.ZoneResolution.FrameOffset(port, portZone);
+                                BuildOrReuseFrame(portZone.Id, d, physicalIndex: d.Address,
+                                    zoneIndex: portZone.IsDefault
+                                        ? portZone.LegacyZoneIndex
+                                        : Nexus.Service.Lighting.Zones.ZoneResolution.WholeResizableSegment(port, portZone, settingsSnapshot),
+                                    zoneOffset: Math.Min(frameOffset, portEnd),
+                                    zoneLedCount: Math.Max(0, Math.Min(portZone.FrameLedCount, portEnd - frameOffset)),
+                                    existingFrames, layouts, stripSlot, logicalOrdinal, framesList,
+                                    isStrip: true, settingsSnapshot, port, portZone);
+                                stripSlot++;
+                                logicalOrdinal++;
+                            }
                         }
+                        continue;
                     }
-                    continue;
+
+                    var structure = OpenRgbZoneSupport.BuildStructure(d, settingsSnapshot);
+                    var zones = Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(structure, settingsSnapshot);
+                    var isDefault = zones.Count > 0 && zones[0].IsDefault;
+
+                    if (isDefault)
+                    {
+                        BuildOrReuseFrame(baseId, d, physicalIndex: d.Address, zoneIndex: -1, zoneOffset: 0, zoneLedCount: d.LedCount,
+                            existingFrames, layouts, cardSlot, logicalOrdinal, framesList, isStrip: false, settingsSnapshot,
+                            structure, zones[0]);
+                        cardSlot++;
+                        logicalOrdinal++;
+                        continue;
+                    }
+
+                    foreach (var zone in zones)
+                    {
+                        var frameOffset = Nexus.Service.Lighting.Zones.ZoneResolution.FrameOffset(structure, zone);
+                        var wholeSegment = Nexus.Service.Lighting.Zones.ZoneResolution.WholeResizableSegment(structure, zone, settingsSnapshot);
+                        BuildOrReuseFrame(zone.Id, d, physicalIndex: d.Address, zoneIndex: wholeSegment, zoneOffset: frameOffset,
+                            zoneLedCount: zone.FrameLedCount, existingFrames, layouts,
+                            cardSlot, logicalOrdinal, framesList,
+                            isStrip: false, settingsSnapshot, structure, zone);
+                        cardSlot++;
+                        logicalOrdinal++;
+                    }
                 }
-
-                var structure = OpenRgbZoneSupport.BuildStructure(d, settingsSnapshot);
-                var zones = Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(structure, settingsSnapshot);
-                var isDefault = zones.Count > 0 && zones[0].IsDefault;
-
-                if (isDefault)
+                catch (Exception ex)
                 {
-                    BuildOrReuseFrame(baseId, d, physicalIndex: d.Address, zoneIndex: -1, zoneOffset: 0, zoneLedCount: d.LedCount,
-                        existingFrames, layouts, cardSlot, logicalOrdinal, framesList, isStrip: false, settingsSnapshot,
-                        structure, zones[0]);
-                    cardSlot++;
-                    logicalOrdinal++;
-                    continue;
-                }
-
-                foreach (var zone in zones)
-                {
-                    var frameOffset = Nexus.Service.Lighting.Zones.ZoneResolution.FrameOffset(structure, zone);
-                    var wholeSegment = Nexus.Service.Lighting.Zones.ZoneResolution.WholeResizableSegment(structure, zone, settingsSnapshot);
-                    BuildOrReuseFrame(zone.Id, d, physicalIndex: d.Address, zoneIndex: wholeSegment, zoneOffset: frameOffset,
-                        zoneLedCount: zone.FrameLedCount, existingFrames, layouts,
-                        cardSlot, logicalOrdinal, framesList,
-                        isStrip: false, settingsSnapshot, structure, zone);
-                    cardSlot++;
-                    logicalOrdinal++;
+                    // One device with a malformed shape (a keyboard reporting a garbage zone size) must not
+                    // abort the pass: every other OpenRGB and first-party frame would stay unseeded.
+                    framesList.RemoveRange(framesBefore, framesList.Count - framesBefore);
+                    logicalOrdinal = ordinalBefore;
+                    cardSlot = cardBefore;
+                    stripSlot = stripBefore;
+                    ServiceLog.Warn($"[rgb-bridge] skipped device '{devices[i].Name}' ({devices[i].StableId}): {ex.GetType().Name}: {ex.Message}");
                 }
             }
 
