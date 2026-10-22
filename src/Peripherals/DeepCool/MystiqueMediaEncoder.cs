@@ -44,9 +44,13 @@ public static class MystiqueMediaEncoder
     private const int TimeoutSeconds = 120;
     private const int FrameBytes = MystiqueMedia.Width * MystiqueMedia.Height * 4;
 
-    // A GIF's frames are spread evenly across the whole source, as the screen's own software covers a whole loop;
-    // a longer video is cut to this span.
+    // A GIF's frames are spread evenly across the whole source, cut to this span for a longer video. Assumed from the
+    // one recorded GIF, whose frames form one whole loop of its unrecorded source.
     internal const int MaxGifSpanMs = 10_000;
+
+    // Assumed, not yet seen on the wire: the duration field is the span the frames cover. Until a capture shows a
+    // value other than the recorded one, every GIF sends the recorded value.
+    private const bool DurationIsSpan = false;
 
     public static Task<MystiqueEncodeResult> EncodePictureAsync(byte[] source, string extension, CropRect? crop, string id, CancellationToken ct) =>
         RunInWorkDir(source, extension, async (src, dir) =>
@@ -88,16 +92,16 @@ public static class MystiqueMediaEncoder
                 {
                     return MystiqueEncodeResult.Failure("ffmpeg produced no frames.");
                 }
-                // The duration field is assumed to be the span the frames cover; a still, whose span is one image's, keeps the recorded value.
+                // A still's span is one image's, so it keeps the recorded value either way.
                 bool still = frames.TrueForAll(f => f.AsSpan().SequenceEqual(frames[0]));
-                int durationMs = still ? MystiqueMedia.GifDurationMs : spanMs;
+                int durationMs = DurationIsSpan && !still ? spanMs : MystiqueMedia.GifDurationMs;
                 foreach (int q in Qualities)
                 {
                     var encoded = new byte[frames.Count][];
                     var jpegs = new List<byte[]>(MystiqueMedia.GifFrames);
                     for (int i = 0; i < MystiqueMedia.GifFrames; i++)
                     {
-                        int k = i % frames.Count;
+                        int k = SlotSource(i, frames.Count);
                         jpegs.Add(encoded[k] ??= EncodeJpeg(frames[k], q));
                     }
                     if (!jpegs.TrueForAll(j => j.Length > 0))
@@ -124,17 +128,24 @@ public static class MystiqueMediaEncoder
             : MystiqueMedia.GifDurationMs;
     }
 
+    /// <summary>The decoded frame a GIF slot shows: with fewer frames than slots, the repeats spread evenly across the loop.</summary>
+    internal static int SlotSource(int slot, int frameCount) => slot * frameCount / MystiqueMedia.GifFrames;
+
     private static string Seconds(int ms) => (ms / 1000.0).ToString("0.###", CultureInfo.InvariantCulture);
 
-    // Long side of a reduced kept source: several times the screen's long side, so a tight crop still fills it.
+    // Long side of a reduced kept picture: several times the screen's long side, so a tight crop still fills it.
     internal const int KeepLongSide = 1920;
 
+    // Long side and CRF of a reduced kept clip, tried in turn until one fits: a clip's bytes grow with its length.
+    private static readonly (int LongSide, int Crf)[] ClipKeepSteps = { (1280, 23), (854, 30) };
+
     /// <summary>
-    /// A smaller copy of a source for a later re-crop, null when ffmpeg made none: a picture as a JPEG, a GIF
-    /// or video as an H.264 MP4 of the span the encoder reads, both at most <see cref="KeepLongSide"/> on
-    /// the long side. Not cancellable: it runs after the screen took the upload, which is recorded regardless.
+    /// A smaller copy of a source for a later re-crop, at most <paramref name="maxBytes"/>, null when ffmpeg made
+    /// none that fits: a picture as a JPEG at most <see cref="KeepLongSide"/> on the long side, a GIF or video as
+    /// an H.264 MP4 of the span the encoder reads at the first of <see cref="ClipKeepSteps"/> that fits. Not
+    /// cancellable: it runs after the screen took the upload, which is recorded regardless.
     /// </summary>
-    public static async Task<(byte[] Bytes, string Ext)?> ReduceForKeepingAsync(byte[] source, string extension, bool clip)
+    public static async Task<(byte[] Bytes, string Ext)?> ReduceForKeepingAsync(byte[] source, string extension, bool clip, long maxBytes)
     {
         if (source.Length == 0 || FfmpegResolver.Path is null)
         {
@@ -148,12 +159,24 @@ public static class MystiqueMediaEncoder
             await File.WriteAllBytesAsync(src, source).ConfigureAwait(false);
             string ext = clip ? ".mp4" : ".jpg";
             var kept = Path.Combine(dir, "kept" + ext);
-            var scale = $"scale=w='min(iw,{KeepLongSide})':h='min(ih,{KeepLongSide})':force_original_aspect_ratio=decrease:force_divisible_by=2";
-            string[] args = clip
-                ? new[] { "-y", "-t", Seconds(MaxGifSpanMs), "-i", src, "-vf", scale, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", kept }
-                : new[] { "-y", "-i", src, "-vf", scale, "-frames:v", "1", "-q:v", "2", kept };
-            await MediaImporter.RunFfmpeg(TimeoutSeconds, CancellationToken.None, args).ConfigureAwait(false);
-            return File.Exists(kept) && new FileInfo(kept).Length > 0 ? (await File.ReadAllBytesAsync(kept).ConfigureAwait(false), ext) : null;
+            var steps = clip ? ClipKeepSteps : new[] { (KeepLongSide, 0) };
+            foreach (var (longSide, crf) in steps)
+            {
+                var scale = $"scale=w='min(iw,{longSide})':h='min(ih,{longSide})':force_original_aspect_ratio=decrease:force_divisible_by=2";
+                string[] args = clip
+                    ? new[]
+                    {
+                        "-y", "-t", Seconds(MaxGifSpanMs), "-i", src, "-vf", scale, "-an",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", crf.ToString(CultureInfo.InvariantCulture), "-pix_fmt", "yuv420p", kept,
+                    }
+                    : new[] { "-y", "-i", src, "-vf", scale, "-frames:v", "1", "-q:v", "2", kept };
+                await MediaImporter.RunFfmpeg(TimeoutSeconds, CancellationToken.None, args).ConfigureAwait(false);
+                if (File.Exists(kept) && new FileInfo(kept).Length is > 0 and var length && length <= maxBytes)
+                {
+                    return (await File.ReadAllBytesAsync(kept).ConfigureAwait(false), ext);
+                }
+            }
+            return null;
         }
         catch (Exception ex)
         {
