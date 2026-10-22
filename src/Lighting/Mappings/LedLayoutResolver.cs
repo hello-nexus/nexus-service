@@ -37,10 +37,10 @@ public static class LedLayoutResolver
             // editor's count field then stays in sync with the device card.
             layout.LedCount = settings.Devices.ZoneLedCounts.TryGetValue(id, out var persisted)
                 ? persisted
-                : zone.LedCount;
+                : Math.Max(0, zone.LedCount);
             layout.GlobalOffset = 0;
             for (int z = 0; z < zoneIndex; z++)
-                layout.GlobalOffset += device.Zones[z].LedCount;
+                layout.GlobalOffset += Math.Max(0, device.Zones[z].LedCount);
             FillLinearDefaults(layout);
             var zoneType = ZoneTypeName(zone.ZoneType);
             layout.ZoneTypes = new string[layout.LedCount];

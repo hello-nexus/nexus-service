@@ -11,7 +11,7 @@ using Nexus.Service.Lighting.Rgb;
 
 namespace Nexus.Service.Tests.Lighting.Rgb;
 
-/// <summary>One device reporting a garbage zone size (a Roccat keyboard that never became ready) must not stop the refresh from seeding the other devices.</summary>
+/// <summary>One device reporting a garbage zone size (a missing layout entry produced a keyboard zone of size minus 40) must not stop the refresh from seeding the other devices.</summary>
 public class RgbBridgeBadDeviceTests : IDisposable
 {
     private sealed class FakeController : IRgbController
@@ -152,5 +152,6 @@ public class RgbBridgeBadDeviceTests : IDisposable
 
         AssertNeighborsSeeded(ids);
         Assert.DoesNotContain(ids, id => id.StartsWith("openrgb-l-HID__bad", StringComparison.Ordinal));
+        Assert.Equal(Enumerable.Range(0, _engine.Devices.Length), _engine.Devices.Select(f => f.Index).OrderBy(i => i));
     }
 }
