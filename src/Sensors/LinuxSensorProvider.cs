@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Sensors;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Platform;
 using Nexus.Service.Platform.Linux;
 
@@ -25,6 +26,13 @@ public sealed class LinuxSensorProvider : ISensorProvider
 {
     private static readonly IReadOnlyList<HardwareSensor> EmptySensors = Array.Empty<HardwareSensor>();
     private static readonly IReadOnlyList<string> EmptyStrings = Array.Empty<string>();
+
+    private readonly KrakenHub? _krakenHub;
+
+    public LinuxSensorProvider(KrakenHub? krakenHub = null)
+    {
+        _krakenHub = krakenHub;
+    }
 
     // Linux hardware reads are shell / sysfs-driven and synchronous - Get*
     // methods cache lazily on first call. No async warmup window to wait on.
@@ -583,18 +591,21 @@ public sealed class LinuxSensorProvider : ISensorProvider
             sensors.Add(MakeSensor("mobo/model", "Model Identifier", "Factor", 0, "", model));
         }
 
-        foreach (var (name, idFrag, rpm) in EnumerateHwmonFans())
+        var hideKraken = _krakenHub?.IsConnected == true;
+        foreach (var (name, idFrag, rpm) in EnumerateHwmonFans(hideKraken))
         {
             sensors.Add(MakeSensor($"mobo/fan/{idFrag}", name, "Fan", rpm, "RPM", model));
         }
 
-        foreach (var (name, idFrag, millivolts) in EnumerateHwmonVoltages())
+        foreach (var (name, idFrag, millivolts) in EnumerateHwmonVoltages(hideKraken))
         {
             sensors.Add(MakeSensor($"mobo/voltage/{idFrag}", name, "Voltage", millivolts / 1000f, "V", model));
         }
 
         // Non-CPU/non-GPU temps from hwmon (e.g. nct6687 VRM temps, chipset temps).
-        foreach (var (name, idFrag, tempC) in EnumerateHwmonTemps(excludedNames: new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu" }))
+        foreach (var (name, idFrag, tempC) in EnumerateHwmonTemps(excludedNames: hideKraken
+            ? new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu", "kraken2", "kraken3" }
+            : new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu" }))
         {
             sensors.Add(MakeSensor($"mobo/temp/{idFrag}", name, "Temperature", tempC, "°C", model));
         }
@@ -1121,7 +1132,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
     }
 
-    private static IEnumerable<(string Name, string IdFrag, float Rpm)> EnumerateHwmonFans()
+    private static IEnumerable<(string Name, string IdFrag, float Rpm)> EnumerateHwmonFans(bool hideKraken)
     {
         IEnumerable<string> dirs;
         try
@@ -1137,6 +1148,10 @@ public sealed class LinuxSensorProvider : ISensorProvider
         {
             var hwmonName = TryRead(Path.Combine(dir, "name"));
             if (string.IsNullOrEmpty(hwmonName))
+            {
+                continue;
+            }
+            if (hideKraken && KrakenHub.IsKernelHwmonChip(hwmonName))
             {
                 continue;
             }
@@ -1172,7 +1187,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
     }
 
-    private static IEnumerable<(string Name, string IdFrag, float MilliVolts)> EnumerateHwmonVoltages()
+    private static IEnumerable<(string Name, string IdFrag, float MilliVolts)> EnumerateHwmonVoltages(bool hideKraken)
     {
         IEnumerable<string> dirs;
         try
@@ -1188,6 +1203,10 @@ public sealed class LinuxSensorProvider : ISensorProvider
         {
             var hwmonName = TryRead(Path.Combine(dir, "name"));
             if (string.IsNullOrEmpty(hwmonName))
+            {
+                continue;
+            }
+            if (hideKraken && KrakenHub.IsKernelHwmonChip(hwmonName))
             {
                 continue;
             }

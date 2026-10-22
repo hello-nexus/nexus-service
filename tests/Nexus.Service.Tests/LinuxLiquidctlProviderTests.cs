@@ -99,6 +99,24 @@ public class LinuxLiquidctlProviderTests
         Assert.Equal(1890, ch.Rpm);
     }
 
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(false, 1)]
+    public void NativeKrakenAttached_HidesLiquidctlKrakenEverywhere(bool nativeAttached, int expected)
+    {
+        var p = new LinuxLiquidctlProvider(() => KrakenJson, (_, _, _) => true, nativeKraken: () => nativeAttached);
+        Assert.Equal(expected, p.GetFanChannels().Count);
+        Assert.Equal(expected, p.GetTemperatureSources().Count);
+        Assert.Equal(expected, p.GetAll().Count);
+    }
+
+    [Fact]
+    public void NativeKrakenAttached_KeepsOtherLiquidctlDevices()
+    {
+        var p = new LinuxLiquidctlProvider(() => CommanderJson, (_, _, _) => true, nativeKraken: () => true);
+        Assert.Equal(2, p.GetFanChannels().Count);
+    }
+
     [Fact]
     public void SetFanSpeed_SendsAddressChannelDutyToCli()
     {

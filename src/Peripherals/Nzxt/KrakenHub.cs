@@ -381,6 +381,9 @@ public sealed class KrakenHub : IDisposable
 
     public bool IsConnected => _isConnected;
 
+    /// <summary>hwmon chip names of the in-kernel NZXT Kraken drivers, which duplicate this hub once it is attached.</summary>
+    public static bool IsKernelHwmonChip(string name) => name is "kraken2" or "kraken3";
+
     /// <summary>The attached model, or the Elite V2 row while nothing is attached.</summary>
     public KrakenModel Model
     {
