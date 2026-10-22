@@ -152,8 +152,9 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
         }
     }
 
-    /// <summary>Bytes transferred, or -1 on failure. A timed-out read gives 0; a write that times out or fails
-    /// once under way gives the count the transfer reports, or -1 when it reports none. <paramref name="buffer"/>
+    /// <summary>Bytes transferred, or -1 on failure. A timed-out read gives 0. A write that times out or fails once
+    /// under way gives the count the transfer reports, 0 when nothing went out, or -1 when an aborted write reports
+    /// no count it settled, so how much went out is unknown. <paramref name="buffer"/>
     /// must stay pinned until this returns; every path waits out the transfer first.</summary>
     private int TransferLocked(byte pipeId, IntPtr ioEvent, IntPtr buffer, int length, uint timeoutMs, bool write)
     {
