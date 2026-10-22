@@ -85,7 +85,10 @@ public static partial class DevicesRoutes
     /// <summary>Whether uploads stream half a turn round: while the screen holds gyroscope byte 1, which is both its out-of-box value and what the session sends for Gyroscope off.</summary>
     internal static bool MystiqueRotatesMedia(DeepCoolMystiqueSettings m) => !m.Gyroscope;
 
-    private static string MystiqueMediaDir() => MediaLibrary.DeviceStoreDir("deepcool-mystique");
+    /// <summary>Test seam: a media root for the current async flow only, so parallel tests never share it.</summary>
+    internal static readonly AsyncLocal<string?> MystiqueMediaRootForTests = new();
+
+    private static string MystiqueMediaDir() => MystiqueMediaRootForTests.Value ?? MediaLibrary.DeviceStoreDir("deepcool-mystique");
 
     private static string MystiqueSourcePath(string id, string ext) => Path.Combine(MystiqueMediaDir(), "sources", id + ext);
 
