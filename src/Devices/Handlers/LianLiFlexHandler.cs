@@ -24,9 +24,14 @@ public sealed class LianLiFlexHandler : IDeviceHandler
 
     public string Id => "lianli-flex";
 
-    public string Name => _hub.Units.Length > 0 && _hub.Units.All(u => u.Family == FlexFamily.P28V2)
-        ? "Lian Li P28 V2"
-        : "Lian Li LCD Flex Fans";
+    public string Name
+    {
+        get
+        {
+            var units = _hub.Units;
+            return units.Length > 0 && units.All(u => u.Family == FlexFamily.P28V2) ? "Lian Li P28 V2" : "Lian Li LCD Flex Fans";
+        }
+    }
 
     public string Category => "cooler";
 

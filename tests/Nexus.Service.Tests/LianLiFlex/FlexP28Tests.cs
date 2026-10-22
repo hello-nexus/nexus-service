@@ -301,6 +301,10 @@ public class FlexP28Tests
         var chain = Assert.Single(Nexus.Service.Routes.LianLiFlexRoutes.BuildLighting(hub, settings).Chains);
         Assert.False(chain.ArgbCableConnected);
         Assert.False(chain.SupportsZones);
+        Assert.Equal("p28v2", chain.Family);
+        Assert.Equal("slInfFlex", Nexus.Service.Routes.LianLiFlexRoutes.FamilyKey(FlexFamily.SlInfFlex));
+        Assert.Equal("tlFlex", Nexus.Service.Routes.LianLiFlexRoutes.FamilyKey(FlexFamily.TlFlex));
+        Assert.Contains("\"family\":\"p28v2\"", System.Text.Json.JsonSerializer.Serialize(chain, Nexus.Service.Serialization.AppJsonContext.Default.LianLiFlexChainLightingDto));
     }
 
     [Fact]
