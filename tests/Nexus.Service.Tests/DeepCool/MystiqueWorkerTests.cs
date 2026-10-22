@@ -73,6 +73,34 @@ public class MystiqueWorkerTests
     }
 
     [Fact]
+    public async Task A_caller_giving_up_after_the_stream_started_still_gets_the_real_result()
+    {
+        var store = new InMemoryConfigStore();
+        var pipes = new FakeFactory();
+        var worker = Build(store, pipes, present: true, gateOn: true);
+        var package = MystiqueMedia.BuildPicture(new byte[5000], "2101b6e6277841daa821e8d79a5c528b");
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitFor(() => worker.IsConnected);
+            pipes.Pipe!.HoldStream = true;
+            using var cts = new CancellationTokenSource();
+            var upload = worker.UploadAsync(package, cts.Token);
+            Assert.True(pipes.Pipe.Streaming.Wait(TimeSpan.FromSeconds(10)));
+            cts.Cancel();
+            pipes.Pipe.Release.Set();
+
+            Assert.True(await upload);
+            Assert.Contains(pipes.Pipe.Writes(), w => w.Length == MystiqueMedia.FinishLength);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task Nothing_reaches_the_screen_after_nexus_control_is_switched_off()
     {
         var store = new InMemoryConfigStore();
@@ -248,8 +276,18 @@ public class MystiqueWorkerTests
 
         public bool Write(ReadOnlySpan<byte> data) => Write(MystiqueProtocol.LiveWritePipe, data);
 
+        /// <summary>When set, the first stream packet signals <see cref="Streaming"/> and waits for <see cref="Release"/>.</summary>
+        public bool HoldStream { get; set; }
+        public ManualResetEventSlim Streaming { get; } = new();
+        public ManualResetEventSlim Release { get; } = new();
+
         public bool Write(byte pipeId, ReadOnlySpan<byte> data)
         {
+            if (HoldStream && data.Length == MystiqueMedia.PacketLength && !Streaming.IsSet)
+            {
+                Streaming.Set();
+                Release.Wait(TimeSpan.FromSeconds(10));
+            }
             lock (_lock)
             {
                 _writes.Add(data.ToArray());

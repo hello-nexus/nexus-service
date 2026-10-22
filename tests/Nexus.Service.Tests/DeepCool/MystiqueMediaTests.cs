@@ -38,6 +38,13 @@ public class MystiqueMediaTests
 
     private static readonly int[] GifShortPackets = { 62, 30, 23, 16, 16, 33, 43, 39, 47, 14, 45, 62, 59, 43, 34, 52, 9, 13, 4, 24, 55, 30, 62 };
 
+    // The four DHT segments of the recorded uploads: the standard tables of the JPEG specification, Annex K.3.
+    private const string StandardHuffmanTables =
+        "FFC4001F0000010501010101010100000000000000000102030405060708090A0B"
+        + "FFC400B5100002010303020403050504040000017D01020300041105122131410613516107227114328191A1082342B1C11552D1F02433627282090A161718191A25262728292A3435363738393A434445464748494A535455565758595A636465666768696A737475767778797A838485868788898A92939495969798999AA2A3A4A5A6A7A8A9AAB2B3B4B5B6B7B8B9BAC2C3C4C5C6C7C8C9CAD2D3D4D5D6D7D8D9DAE1E2E3E4E5E6E7E8E9EAF1F2F3F4F5F6F7F8F9FA"
+        + "FFC4001F0100030101010101010101010000000000000102030405060708090A0B"
+        + "FFC400B51100020102040403040705040400010277000102031104052131061241510761711322328108144291A1B1C109233352F0156272D10A162434E125F11718191A262728292A35363738393A434445464748494A535455565758595A636465666768696A737475767778797A82838485868788898A92939495969798999AA2A3A4A5A6A7A8A9AAB2B3B4B5B6B7B8B9BAC2C3C4C5C6C7C8C9CAD2D3D4D5D6D7D8D9DAE2E3E4E5E6E7E8E9EAF2F3F4F5F6F7F8F9FA";
+
     private static string Hex(byte[] b) => Convert.ToHexString(b);
 
     /// <summary>A stand-in JPEG of the recorded length and byte sum, the only inputs the header takes from it.</summary>
@@ -152,11 +159,18 @@ public class MystiqueMediaTests
     [FfmpegFact]
     public async Task A_clip_encodes_to_the_recorded_frame_count_and_a_still_repeats()
     {
-        var clip = Path.Combine(Path.GetTempPath(), $"mystique-{Guid.NewGuid():N}.mp4");
+        // Built from PNG frames rather than a lavfi source, which the bundled ffmpeg lacks.
+        var dir = Path.Combine(Path.GetTempPath(), $"mystique-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
         try
         {
-            Run(FfmpegResolver.Path!, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-t", "2", "-pix_fmt", "yuv420p", clip);
-            var moving = await MystiqueMediaEncoder.EncodeGifAsync(await File.ReadAllBytesAsync(clip), ".mp4", null, GifId, CancellationToken.None);
+            for (int i = 0; i < 30; i++)
+            {
+                await File.WriteAllBytesAsync(Path.Combine(dir, $"f{i:000}.png"), Png(320, 240, i * 4));
+            }
+            var clip = Path.Combine(dir, "clip.gif");
+            Run(FfmpegResolver.Path!, "-v", "error", "-y", "-framerate", "30", "-i", Path.Combine(dir, "f%03d.png"), "-f", "gif", clip);
+            var moving = await MystiqueMediaEncoder.EncodeGifAsync(await File.ReadAllBytesAsync(clip), ".gif", null, GifId, CancellationToken.None);
             var still = await MystiqueMediaEncoder.EncodeGifAsync(Png(300, 300), ".png", null, GifId, CancellationToken.None);
 
             Assert.True(moving.Ok, moving.Error);
@@ -168,7 +182,7 @@ public class MystiqueMediaTests
         }
         finally
         {
-            File.Delete(clip);
+            Directory.Delete(dir, recursive: true);
         }
     }
 
@@ -177,6 +191,7 @@ public class MystiqueMediaTests
     {
         Assert.Equal(new byte[] { 0xFF, 0xD8 }, jpeg[..2]);
         var markers = new List<byte>();
+        var huffman = new List<byte>();
         int i = 2;
         while (true)
         {
@@ -192,6 +207,10 @@ public class MystiqueMediaTests
             {
                 Assert.Equal("08028001E003012200021101031101", Hex(jpeg[(i + 4)..(i + 19)]));
             }
+            if (marker == 0xC4)
+            {
+                huffman.AddRange(jpeg[i..(i + 2 + length)]);
+            }
             if (marker == 0xDA)
             {
                 break;
@@ -199,10 +218,11 @@ public class MystiqueMediaTests
             i += 2 + length;
         }
         Assert.Equal(new byte[] { 0xE0, 0xDB, 0xDB, 0xC0, 0xC4, 0xC4, 0xC4, 0xC4, 0xDA }, markers);
+        Assert.Equal(StandardHuffmanTables, Hex(huffman.ToArray()));
         Assert.Equal(new byte[] { 0xFF, 0xD9 }, jpeg[^2..]);
     }
 
-    private static byte[] Png(int width, int height)
+    private static byte[] Png(int width, int height, int shift = 0)
     {
         using var bitmap = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Opaque));
         var pixels = bitmap.GetPixelSpan();
@@ -211,7 +231,7 @@ public class MystiqueMediaTests
             for (int x = 0; x < width; x++)
             {
                 int o = (y * width + x) * 4;
-                bool inner = Math.Abs(x - width / 2) < width / 4 && Math.Abs(y - height / 2) < height / 4;
+                bool inner = Math.Abs(x - width / 2 - shift) < width / 4 && Math.Abs(y - height / 2) < height / 4;
                 pixels[o] = inner ? (byte)255 : (byte)(x * 255 / width);
                 pixels[o + 1] = inner ? (byte)255 : (byte)(y * 255 / height);
                 pixels[o + 2] = inner ? (byte)255 : (byte)64;

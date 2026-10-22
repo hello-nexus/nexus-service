@@ -13,6 +13,10 @@ namespace Nexus.Service.Routes;
 public static partial class DevicesRoutes
 {
     private static readonly TimeSpan MystiqueUploadBudget = TimeSpan.FromMinutes(3);
+    private const int MystiqueNameMax = 64;
+
+    // One upload at a time, from the slot check to the saved entry, so two pictures cannot both take the last slot.
+    private static readonly SemaphoreSlim MystiqueUploadGate = new(1, 1);
 
     private static string MystiqueMediaDir() => MediaLibrary.DeviceStoreDir("deepcool-mystique");
 
@@ -38,7 +42,7 @@ public static partial class DevicesRoutes
                 return MystiqueMediaFailure($"File too large (max {MediaImporter.MaxFileSize / 1024 / 1024} MB)", 400);
             }
             string kind = form["kind"].ToString();
-            if (kind is not ("picture" or "gif"))
+            if (kind is not (DeepCoolMystiqueMediaItem.KindPicture or DeepCoolMystiqueMediaItem.KindGif))
             {
                 return MystiqueMediaFailure("Unknown kind", 400);
             }
@@ -53,17 +57,26 @@ public static partial class DevicesRoutes
             await file.CopyToAsync(ms, ctx.RequestAborted);
             var source = ms.ToArray();
             var ext = Path.GetExtension(file.FileName);
-            var id = MystiqueUploadId(store, kind, source, form["replace"].ToString());
-            if (id is null)
-            {
-                return MystiqueMediaFailure("The screen holds its maximum number of pictures; replace one instead.");
-            }
+            bool isGif = kind == DeepCoolMystiqueMediaItem.KindGif;
 
             using var budget = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
             budget.CancelAfter(MystiqueUploadBudget);
             try
             {
-                var encoded = kind == "gif"
+                await MystiqueUploadGate.WaitAsync(budget.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return MystiqueMediaFailure("The upload took too long");
+            }
+            try
+            {
+                var id = MystiqueUploadId(store, kind, source, form["replace"].ToString());
+                if (id is null)
+                {
+                    return MystiqueMediaFailure("The screen holds its maximum number of pictures; replace one instead.");
+                }
+                var encoded = isGif
                     ? await MystiqueMediaEncoder.EncodeGifAsync(source, ext, crop, id, budget.Token)
                     : await MystiqueMediaEncoder.EncodePictureAsync(source, ext, crop, id, budget.Token);
                 if (!encoded.Ok)
@@ -71,17 +84,18 @@ public static partial class DevicesRoutes
                     return MystiqueMediaFailure(encoded.Error ?? "Encode failed");
                 }
                 var package = encoded.Package!;
+                // Once streaming starts this waits for the real result, so an item the screen took is always recorded.
                 if (!await worker.UploadAsync(package, budget.Token))
                 {
                     return MystiqueMediaFailure("The screen did not take the upload");
                 }
                 SaveMystiqueThumbnail(package.Id, encoded.Thumbnail!);
-                string name = Path.GetFileNameWithoutExtension(file.FileName);
+                string name = TruncateName(Path.GetFileNameWithoutExtension(file.FileName), MystiqueNameMax);
                 store.Update(s =>
                 {
                     var m = s.Devices.DeepCoolMystique;
                     m.Media ??= new();
-                    var item = new DeepCoolMystiqueMediaItem { Kind = kind, Id = package.Id, Name = name.Length > 64 ? name[..64] : name };
+                    var item = new DeepCoolMystiqueMediaItem { Kind = kind, Id = package.Id, Name = name };
                     int at = m.Media.FindIndex(i => i.Id == package.Id);
                     if (at >= 0)
                     {
@@ -91,7 +105,7 @@ public static partial class DevicesRoutes
                     {
                         m.Media.Add(item);
                     }
-                    m.MediaSource = kind == "gif" ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
+                    m.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
                     m.SourceEdited = true;
                 });
                 worker.RequestApply();
@@ -100,6 +114,10 @@ public static partial class DevicesRoutes
             catch (OperationCanceledException)
             {
                 return MystiqueMediaFailure("The upload took too long");
+            }
+            finally
+            {
+                MystiqueUploadGate.Release();
             }
         }).DisableAntiforgery();
 
@@ -123,12 +141,13 @@ public static partial class DevicesRoutes
     {
         var media = new System.Collections.Generic.List<DeepCoolMystiqueMediaItem>();
         store.Read(s => media = s.Devices.DeepCoolMystique.Copy().Media);
-        string sourceId = MystiqueMedia.IdOf(kind == "gif" ? MystiqueMedia.KindGif : MystiqueMedia.KindPicture, source);
-        if (kind == "gif")
+        bool isGif = kind == DeepCoolMystiqueMediaItem.KindGif;
+        string sourceId = MystiqueMedia.IdOf(isGif ? MystiqueMedia.KindGif : MystiqueMedia.KindPicture, source);
+        if (isGif)
         {
-            return media.Find(i => i.Kind == "gif")?.Id ?? sourceId;
+            return media.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindGif)?.Id ?? sourceId;
         }
-        var pictures = media.FindAll(i => i.Kind == "picture");
+        var pictures = media.FindAll(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture);
         if (pictures.Exists(i => i.Id == replace))
         {
             return replace;
@@ -138,6 +157,17 @@ public static partial class DevicesRoutes
             return sourceId;
         }
         return null;
+    }
+
+    /// <summary>At most <paramref name="max"/> UTF-16 units, never splitting a surrogate pair.</summary>
+    internal static string TruncateName(string name, int max)
+    {
+        if (name.Length <= max)
+        {
+            return name;
+        }
+        int cut = char.IsHighSurrogate(name[max - 1]) ? max - 1 : max;
+        return name[..cut];
     }
 
     private static void SaveMystiqueThumbnail(string id, byte[] jpeg)

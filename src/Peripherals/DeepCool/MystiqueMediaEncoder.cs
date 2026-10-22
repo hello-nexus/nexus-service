@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using Nexus.Service.Media;
 using Nexus.Service.Platform;
 using Nexus.Service.Rendering;
-using SkiaSharp;
 
 namespace Nexus.Service.Peripherals.DeepCool;
 
@@ -20,13 +19,26 @@ public readonly record struct MystiqueEncodeResult(MystiqueMediaPackage? Package
 
 /// <summary>
 /// Converts an image, GIF or video to the screen's stream: ffmpeg crops and scales to raw frames, then
-/// libjpeg (turbojpeg, else Skia) encodes each one, giving the segment layout of the recorded uploads.
-/// Quality steps down until the stream fits the recorded sizes; a source that never fits is refused.
+/// turbojpeg encodes each one with the segment layout and standard Huffman tables of the recorded
+/// uploads. Quality steps down, then for a GIF detail is reduced, until the stream fits the recorded
+/// sizes; a source that never fits is refused.
 /// </summary>
 public static class MystiqueMediaEncoder
 {
-    // The recorded uploads' quantization tables match libjpeg quality 95.
-    private static readonly int[] Qualities = { 95, 90, 85, 80, 70, 60, 50, 40 };
+    // Starts at the quality whose quantization tables the recorded uploads carry.
+    private static readonly int[] Qualities = { 95, 90, 85, 80, 70, 60, 50, 40, 30, 25, 20 };
+
+    // Tried in turn when no quality fits a GIF, each softer than the last by a round trip through a
+    // smaller size: the bundled ffmpeg has scale but no denoise or blur filter.
+    private static readonly string[] GifDetailSteps =
+    {
+        "",
+        Soften(MystiqueMedia.Width * 3 / 4, MystiqueMedia.Height * 3 / 4),
+        Soften(MystiqueMedia.Width / 2, MystiqueMedia.Height / 2),
+    };
+
+    private static string Soften(int width, int height) =>
+        $",scale={width}:{height}:flags=area,scale={MystiqueMedia.Width}:{MystiqueMedia.Height}:flags=bicubic";
 
     private const int TimeoutSeconds = 120;
     private const int FrameBytes = MystiqueMedia.Width * MystiqueMedia.Height * 4;
@@ -46,7 +58,11 @@ public static class MystiqueMediaEncoder
             foreach (int q in Qualities)
             {
                 var jpeg = EncodeJpeg(frames[0], q);
-                if (jpeg.Length > 0 && jpeg.Length <= MystiqueMedia.MaxPictureJpegBytes)
+                if (jpeg.Length == 0)
+                {
+                    return MystiqueEncodeResult.Failure(NoEncoder);
+                }
+                if (jpeg.Length <= MystiqueMedia.MaxPictureJpegBytes)
                 {
                     return MystiqueEncodeResult.Success(MystiqueMedia.BuildPicture(jpeg, id), jpeg);
                 }
@@ -57,24 +73,36 @@ public static class MystiqueMediaEncoder
     public static Task<MystiqueEncodeResult> EncodeGifAsync(byte[] source, string extension, CropRect? crop, string id, CancellationToken ct) =>
         RunInWorkDir(source, extension, async (src, dir) =>
         {
-            var frames = await DecodeFrames(src, dir, $"{Filter(crop)},fps={GifRate}", MystiqueMedia.GifFrames, GifReadSeconds, ct)
-                .ConfigureAwait(false);
-            if (frames.Count == 0)
+            foreach (var detail in GifDetailSteps)
             {
-                return MystiqueEncodeResult.Failure("ffmpeg produced no frames.");
-            }
-            foreach (int q in Qualities)
-            {
-                var encoded = new byte[frames.Count][];
-                var jpegs = new List<byte[]>(MystiqueMedia.GifFrames);
-                for (int i = 0; i < MystiqueMedia.GifFrames; i++)
+                var frames = await DecodeFrames(src, dir, $"{Filter(crop)}{detail},fps={GifRate}", MystiqueMedia.GifFrames, GifReadSeconds, ct)
+                    .ConfigureAwait(false);
+                if (frames.Count == 0)
                 {
-                    int k = i % frames.Count;
-                    jpegs.Add(encoded[k] ??= EncodeJpeg(frames[k], q));
+                    // ffmpeg 7's fps filter drops a lone still frame; the still then repeats.
+                    frames = await DecodeFrames(src, dir, $"{Filter(crop)}{detail}", 1, null, ct).ConfigureAwait(false);
                 }
-                if (jpegs.TrueForAll(j => j.Length > 0) && MystiqueMedia.StreamLength(jpegs) <= MystiqueMedia.MaxGifStreamBytes)
+                if (frames.Count == 0)
                 {
-                    return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id), jpegs[0]);
+                    return MystiqueEncodeResult.Failure("ffmpeg produced no frames.");
+                }
+                foreach (int q in Qualities)
+                {
+                    var encoded = new byte[frames.Count][];
+                    var jpegs = new List<byte[]>(MystiqueMedia.GifFrames);
+                    for (int i = 0; i < MystiqueMedia.GifFrames; i++)
+                    {
+                        int k = i % frames.Count;
+                        jpegs.Add(encoded[k] ??= EncodeJpeg(frames[k], q));
+                    }
+                    if (!jpegs.TrueForAll(j => j.Length > 0))
+                    {
+                        return MystiqueEncodeResult.Failure(NoEncoder);
+                    }
+                    if (MystiqueMedia.StreamLength(jpegs) <= MystiqueMedia.MaxGifStreamBytes)
+                    {
+                        return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id), jpegs[0]);
+                    }
                 }
             }
             return MystiqueEncodeResult.Failure("The GIF is too detailed to fit the screen's limit.");
@@ -88,21 +116,14 @@ public static class MystiqueMediaEncoder
         return crop is { IsIdentity: false } c ? $"{c.ToFfmpegCrop()},{fit}" : fit;
     }
 
-    /// <summary>Baseline 4:2:0 JPEG of one RGBX frame at the screen size, or empty when both encoders fail.</summary>
-    internal static unsafe byte[] EncodeJpeg(byte[] rgbx, int quality)
-    {
-        if (TurboJpegOneShot.TryCompress(rgbx, MystiqueMedia.Width, MystiqueMedia.Height, TurboJpeg.PixelFormatRgbx, quality) is { } native)
-        {
-            return native;
-        }
-        var info = new SKImageInfo(MystiqueMedia.Width, MystiqueMedia.Height, SKColorType.Rgba8888, SKAlphaType.Opaque);
-        fixed (byte* p = rgbx)
-        {
-            using var pixmap = new SKPixmap(info, (IntPtr)p, MystiqueMedia.Width * 4);
-            using var data = pixmap.Encode(new SKJpegEncoderOptions(quality, SKJpegEncoderDownsample.Downsample420, SKJpegEncoderAlphaOption.Ignore));
-            return data?.ToArray() ?? Array.Empty<byte>();
-        }
-    }
+    private const string NoEncoder = "The JPEG encoder is unavailable.";
+
+    /// <summary>
+    /// Baseline 4:2:0 JPEG of one RGBX frame at the screen size, or empty without turbojpeg. Skia's encoder
+    /// is not a fallback: it optimizes the Huffman tables, a layout the screen has never been seen to take.
+    /// </summary>
+    internal static byte[] EncodeJpeg(byte[] rgbx, int quality) =>
+        TurboJpegOneShot.TryCompress(rgbx, MystiqueMedia.Width, MystiqueMedia.Height, TurboJpeg.PixelFormatRgbx, quality) ?? Array.Empty<byte>();
 
     private static async Task<List<byte[]>> DecodeFrames(string src, string dir, string filter, int count, string? readSeconds, CancellationToken ct)
     {

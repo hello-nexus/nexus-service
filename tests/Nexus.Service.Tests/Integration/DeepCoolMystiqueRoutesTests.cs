@@ -200,6 +200,15 @@ public class DeepCoolMystiqueRoutesTests
         Assert.Null(DevicesRoutes.MystiqueUploadId(store, "picture", c, gifId));
     }
 
+    [Theory]
+    [InlineData("short", 64, "short")]
+    [InlineData("abc\U0001F600", 4, "abc")]
+    [InlineData("abc\U0001F600", 5, "abc\U0001F600")]
+    public void Names_are_cut_without_splitting_a_surrogate_pair(string name, int max, string expected)
+    {
+        Assert.Equal(expected, DevicesRoutes.TruncateName(name, max));
+    }
+
     [Fact]
     public async Task An_upload_with_no_screen_connected_is_refused_before_any_encode()
     {
