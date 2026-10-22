@@ -6,7 +6,7 @@ namespace Nexus.Service.Tests;
 /// <summary>A <see cref="FactAttribute"/> skipped unless an ffmpeg that can encode h264 resolves on this box, so the extraction path is asserted where it can run and never passes vacuously.</summary>
 public sealed class FfmpegFactAttribute : FactAttribute
 {
-    private static readonly Lazy<string?> SkipReason = new(Probe);
+    internal static readonly Lazy<string?> SkipReason = new(Probe);
 
     public FfmpegFactAttribute()
     {
@@ -37,5 +37,14 @@ public sealed class FfmpegFactAttribute : FactAttribute
         {
             return "ffmpeg could not be probed: " + ex.Message;
         }
+    }
+}
+
+/// <summary>The <see cref="FfmpegFactAttribute"/> skip for a theory.</summary>
+public sealed class FfmpegTheoryAttribute : TheoryAttribute
+{
+    public FfmpegTheoryAttribute()
+    {
+        Skip = FfmpegFactAttribute.SkipReason.Value;
     }
 }

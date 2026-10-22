@@ -69,6 +69,7 @@ public static class DeviceControlPolicy
         ["zmatrices-lcd"] = "zmatrices",
         ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
         ["asiahorse-umbra"] = "asiahorse-umbra",
+        ["deepcool-mystique"] = "deepcool",
     };
 
     /// <summary>Waits while its app runs, whitelisted or not: the LINK hub shares its file handles across hosts, so Nexus frames land in iCUE's open profile files and are stored (fw 4.1.656).</summary>

@@ -296,6 +296,18 @@ public class DeepCoolMystiqueRoutesTests
         Assert.False(new DeepCoolMystiqueSettings().Gyroscope);
     }
 
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    public void Media_stream_half_a_turn_round_only_while_the_gyroscope_byte_sent_is_one(bool deviceEdited, bool gyroscope, bool rotates)
+    {
+        var m = new DeepCoolMystiqueSettings { DeviceEdited = deviceEdited, Gyroscope = gyroscope };
+
+        Assert.Equal(rotates, DevicesRoutes.MystiqueRotatesMedia(m));
+    }
+
     [Fact]
     public void The_screen_ships_with_nexus_control_off_until_the_user_turns_it_on()
     {
