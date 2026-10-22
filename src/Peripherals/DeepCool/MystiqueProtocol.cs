@@ -44,6 +44,7 @@ public static class MystiqueProtocol
     public const byte CmdMediaSource = 0x08;
     public const byte CmdClock = 0x0A;
     public const byte CmdUploadStart = 0x0F;
+    public const byte CmdFormat = 0x14;
     public const byte CmdPoll = 0x10;
     public const byte CmdInfo = 0x12;
 
@@ -168,7 +169,8 @@ public static class MystiqueProtocol
     {
         Span<byte> p = stackalloc byte[5];
         p[0] = 0x01;
-        p[1] = gyroscope ? (byte)1 : (byte)0;
+        // Inverted: turning the gyroscope on in the screen's own software sends 0, and 1 holds the screen upside down.
+        p[1] = gyroscope ? (byte)0 : (byte)1;
         p[2] = 0x02;
         p[3] = rgbSource;
         p[4] = (byte)Math.Clamp(brightness, 0, 100);
@@ -215,6 +217,9 @@ public static class MystiqueProtocol
         }
         return BuildFrame(CmdMediaSource, p);
     }
+
+    /// <summary>The screen's own format button: erases every stored picture and GIF.</summary>
+    public static byte[] BuildFormat() => BuildFrame(CmdFormat, ReadOnlySpan<byte>.Empty);
 
     /// <summary>Announces a picture or GIF stream on the settings channel.</summary>
     public static byte[] BuildUploadStart() => BuildFrame(CmdUploadStart, ReadOnlySpan<byte>.Empty);
