@@ -5,6 +5,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Media;
+using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Platform;
 using Nexus.Service.Rendering;
 
@@ -43,9 +44,9 @@ public static class MystiqueMediaEncoder
     private const int TimeoutSeconds = 120;
     private const int FrameBytes = MystiqueMedia.Width * MystiqueMedia.Height * 4;
 
-    // A GIF is the first GifDurationMs of the clip at GifFrames over that span; a shorter clip repeats.
-    private static readonly string GifRate = $"{MystiqueMedia.GifFrames * 1000}/{MystiqueMedia.GifDurationMs}";
-    private const string GifReadSeconds = "3";
+    // A GIF's frames are spread evenly across the whole source, as the screen's own software covers a whole loop;
+    // a longer video is cut to this span.
+    internal const int MaxGifSpanMs = 10_000;
 
     public static Task<MystiqueEncodeResult> EncodePictureAsync(byte[] source, string extension, CropRect? crop, string id, CancellationToken ct) =>
         RunInWorkDir(source, extension, async (src, dir) =>
@@ -73,10 +74,11 @@ public static class MystiqueMediaEncoder
     public static Task<MystiqueEncodeResult> EncodeGifAsync(byte[] source, string extension, CropRect? crop, string id, CancellationToken ct) =>
         RunInWorkDir(source, extension, async (src, dir) =>
         {
+            int spanMs = await SpanMs(src, ct).ConfigureAwait(false);
             foreach (var detail in GifDetailSteps)
             {
-                var frames = await DecodeFrames(src, dir, $"{Filter(crop)}{detail},fps={GifRate}", MystiqueMedia.GifFrames, GifReadSeconds, ct)
-                    .ConfigureAwait(false);
+                var frames = await DecodeFrames(src, dir, $"{Filter(crop)}{detail},fps={MystiqueMedia.GifFrames * 1000}/{spanMs}:eof_action=pass",
+                    MystiqueMedia.GifFrames, Seconds(spanMs), ct).ConfigureAwait(false);
                 if (frames.Count == 0)
                 {
                     // ffmpeg 7's fps filter drops a lone still frame; the still then repeats.
@@ -86,6 +88,9 @@ public static class MystiqueMediaEncoder
                 {
                     return MystiqueEncodeResult.Failure("ffmpeg produced no frames.");
                 }
+                // The duration field is assumed to be the span the frames cover; a still, whose span is one image's, keeps the recorded value.
+                bool still = frames.TrueForAll(f => f.AsSpan().SequenceEqual(frames[0]));
+                int durationMs = still ? MystiqueMedia.GifDurationMs : spanMs;
                 foreach (int q in Qualities)
                 {
                     var encoded = new byte[frames.Count][];
@@ -101,12 +106,25 @@ public static class MystiqueMediaEncoder
                     }
                     if (MystiqueMedia.StreamLength(jpegs) <= MystiqueMedia.MaxGifStreamBytes)
                     {
-                        return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id), jpegs[0]);
+                        return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id, durationMs), jpegs[0]);
                     }
                 }
             }
             return MystiqueEncodeResult.Failure("The GIF is too detailed to fit the screen's limit.");
         });
+
+    /// <summary>The source's length up to <see cref="MaxGifSpanMs"/>, or the recorded GIF duration when ffmpeg reports none.</summary>
+    private static async Task<int> SpanMs(string src, CancellationToken ct)
+    {
+        // rawvideo: the bundled ffmpeg has no encoder for the null muxer's default.
+        var stderr = await MediaImporter.RunFfmpeg(TimeoutSeconds, ct, new[] { "-i", src, "-frames:v", "1", "-c:v", "rawvideo", "-f", "null", "-" })
+            .ConfigureAwait(false);
+        return HydroShift2CurveMedia.ParseDuration(stderr) is double seconds and > 0
+            ? (int)Math.Clamp(Math.Round(seconds * 1000), 1, MaxGifSpanMs)
+            : MystiqueMedia.GifDurationMs;
+    }
+
+    private static string Seconds(int ms) => (ms / 1000.0).ToString("0.###", CultureInfo.InvariantCulture);
 
     // Long side of a reduced kept source: several times the screen's long side, so a tight crop still fills it.
     internal const int KeepLongSide = 1920;
@@ -132,7 +150,7 @@ public static class MystiqueMediaEncoder
             var kept = Path.Combine(dir, "kept" + ext);
             var scale = $"scale=w='min(iw,{KeepLongSide})':h='min(ih,{KeepLongSide})':force_original_aspect_ratio=decrease:force_divisible_by=2";
             string[] args = clip
-                ? new[] { "-y", "-t", GifReadSeconds, "-i", src, "-vf", scale, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", kept }
+                ? new[] { "-y", "-t", Seconds(MaxGifSpanMs), "-i", src, "-vf", scale, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", kept }
                 : new[] { "-y", "-i", src, "-vf", scale, "-frames:v", "1", "-q:v", "2", kept };
             await MediaImporter.RunFfmpeg(TimeoutSeconds, CancellationToken.None, args).ConfigureAwait(false);
             return File.Exists(kept) && new FileInfo(kept).Length > 0 ? (await File.ReadAllBytesAsync(kept).ConfigureAwait(false), ext) : null;

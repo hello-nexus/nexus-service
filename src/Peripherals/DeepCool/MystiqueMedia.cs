@@ -27,7 +27,7 @@ public static class MystiqueMedia
     public const byte KindPicture = 1;
     public const byte KindGif = 2;
 
-    // The one recorded GIF; no other count or duration has been seen on the wire, so every GIF uses both.
+    // The recorded GIFs all carry this count and duration; the count is kept for every GIF, the duration only for a still.
     public const int GifFrames = 25;
     public const int GifDurationMs = 1087;
 
@@ -113,17 +113,21 @@ public static class MystiqueMedia
         return new(KindPicture, id, new[] { BuildFrame(KindPicture, jpeg, id, 0, 0, 0) });
     }
 
-    public static MystiqueMediaPackage BuildGif(IReadOnlyList<byte[]> jpegs, string id)
+    public static MystiqueMediaPackage BuildGif(IReadOnlyList<byte[]> jpegs, string id, int durationMs = GifDurationMs)
     {
         if (jpegs.Count != GifFrames)
         {
             throw new ArgumentException("a GIF has exactly the recorded frame count", nameof(jpegs));
         }
+        if (durationMs is < 1 or > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(durationMs));
+        }
         var frames = new List<byte[]>(jpegs.Count);
         long total = 0;
         for (int i = 0; i < jpegs.Count; i++)
         {
-            frames.Add(BuildFrame(KindGif, jpegs[i], id, GifFrames, GifDurationMs, i));
+            frames.Add(BuildFrame(KindGif, jpegs[i], id, GifFrames, durationMs, i));
             total += frames[^1].Length;
         }
         if (total > MaxGifStreamBytes)
