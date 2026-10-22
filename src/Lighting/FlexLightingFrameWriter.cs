@@ -214,7 +214,10 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             }
             settings.Devices.FlexUnits.TryGetValue(unit.Mac, out var look);
             look ??= new LianLiFlexUnitSettings();
-            ReconcileMotherboardArgb(unit, look, now);
+            if (unit.Family != FlexFamily.P28V2)
+            {
+                ReconcileMotherboardArgb(unit, look, now);
+            }
             if (FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, settings.Devices.FlexUnits))
             {
                 // The unit shows its ARGB input: it takes no stored uploads, no live frames and no identify flash.

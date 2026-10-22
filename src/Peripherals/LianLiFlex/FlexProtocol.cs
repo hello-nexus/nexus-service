@@ -347,10 +347,10 @@ public sealed class FlexReceiverInfo
     public bool RfBound => Slv3Protocol.IsBoundSlot(RxType);
 
     /// <summary>The ARGB sync cable to a motherboard header is plugged in.</summary>
-    public bool ArgbCableConnected => PortFlags.Length > 0 && (PortFlags[0] & 0x8) != 0;
+    public bool ArgbCableConnected => IsP28 ? P28SyncLineOn : PortFlags.Length > 0 && (PortFlags[0] & 0x8) != 0;
 
-    /// <summary>The unit is playing the motherboard ARGB input instead of the host's lighting.</summary>
-    public bool PlayingMotherboardArgb => PortFlags.Length > 0 && (PortFlags[0] & 0x4) != 0;
+    /// <summary>The unit is playing the motherboard ARGB input (never for P28, which has no sync-board command) instead of the host's lighting.</summary>
+    public bool PlayingMotherboardArgb => !IsP28 && PortFlags.Length > 0 && (PortFlags[0] & 0x4) != 0;
 
     public bool PwmLinePresent => PortFlags.Length > 0 && (PortFlags[0] & 0x2) != 0;
 

@@ -362,7 +362,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
 
     /// <summary>The unit plays its motherboard ARGB input: the saved choice, or with none saved, what the unit reports.</summary>
     internal static bool PlaysMotherboardArgb(FlexUnit unit, IReadOnlyDictionary<string, LianLiFlexUnitSettings> stored) =>
-        (stored.TryGetValue(unit.Mac, out var look) ? look.MotherboardArgb : null) ?? unit.Info.PlayingMotherboardArgb;
+        unit.Family != FlexFamily.P28V2 && ((stored.TryGetValue(unit.Mac, out var look) ? look.MotherboardArgb : null) ?? unit.Info.PlayingMotherboardArgb);
 
     private List<DeviceStructure> BuildStructures(bool playsArgb)
     {

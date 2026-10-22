@@ -187,6 +187,81 @@ public class FlexP28Tests
     }
 
     [Fact]
+    public void P28_release_sends_follow_motherboard_six_and_a_computed_duty_never_does()
+    {
+        var (hub, tx, clock) = P28Hub();
+        var provider = new FlexCoolingProvider(hub);
+        var id = provider.GetFanChannels().Single().Id;
+        provider.SetFanSpeed(id, 1);
+        clock.Now += 1000;
+        hub.Tick();
+        provider.ReleaseFan(id);
+        clock.Now += 1000;
+        hub.Tick();
+        var sent = tx.Of(FlexProtocol.CmdSetPwm).ToList();
+        Assert.Equal(2, sent.Count);
+        Assert.Equal(20, sent[0][1]);
+        Assert.Equal(new byte[] { 6, 6, 6, 6 }, sent[1][1..5]);
+    }
+
+    [Fact]
+    public void P28_cooling_reads_rpm_from_the_first_slot_and_ignores_byte_31_flags()
+    {
+        var (hub, tx, _) = P28Hub(2);
+        tx.Info[29] = 0x20 | 0x04;
+        tx.Info[30] = 0xB0;
+        tx.Info[31] = 0x70 | 0x02;
+        tx.Info[32] = 0x10;
+        hub.Tick();
+        var provider = new FlexCoolingProvider(hub);
+        Assert.Equal((0x04 << 8) | 0xB0, provider.GetFanChannels().Single().Rpm);
+    }
+
+    [Fact]
+    public void P28_never_plays_or_requests_the_motherboard_input()
+    {
+        var f = FakeFlexTransport.InfoFrame(Mac, FlexProtocol.P28FansType, FlexProtocol.UnboundRxType, 100, 0);
+        f[29] |= 0x40;
+        f[31] = 0x00;
+        var info = FlexProtocol.ParseInfo(f)!;
+        Assert.False(info.PlayingMotherboardArgb);
+        Assert.True(info.ArgbCableConnected);
+        f[31] = 0x80;
+        Assert.False(FlexProtocol.ParseInfo(f)!.ArgbCableConnected);
+
+        var (hub, tx, _) = P28Hub();
+        tx.Info[29] |= 0x40;
+        hub.Tick();
+        var unit = hub.Units.Single();
+        var stored = new System.Collections.Generic.Dictionary<string, Nexus.Service.Persistence.LianLiFlexUnitSettings>
+        {
+            [unit.Mac] = new() { MotherboardArgb = true },
+        };
+        Assert.False(FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, stored));
+        Assert.False(hub.SetMotherboardArgb(unit.Mac, true));
+        Assert.Empty(tx.Of(FlexProtocol.CmdSyncBoard));
+    }
+
+    [Theory]
+    [InlineData(5, 4)]
+    [InlineData(9, 4)]
+    [InlineData(3, 3)]
+    public void P28_fan_count_is_capped_at_four(int reported, int expected)
+    {
+        var (hub, _, _) = P28Hub(reported);
+        Assert.Equal(expected, hub.Units.Single().Fans);
+    }
+
+    [Fact]
+    public void P28_lighting_validation_rejects_per_zone_merge_and_effect_modes()
+    {
+        var family = FlexFamily.P28V2;
+        Assert.NotNull(Nexus.Service.Routes.LianLiFlexRoutes.ValidateLighting(new() { Mode = Nexus.Service.Persistence.LianLiFlexUnitSettings.ModePerZone }, family));
+        Assert.NotNull(Nexus.Service.Routes.LianLiFlexRoutes.ValidateLighting(new() { Merge = true }, family));
+        Assert.NotNull(Nexus.Service.Routes.LianLiFlexRoutes.ValidateLighting(new() { Mode = "rainbow" }, family));
+    }
+
+    [Fact]
     public void Catalog_lists_the_p28_v2_fan_without_a_screen()
     {
         var row = LightingDevicesCatalog.All.Single(d => d.Source == "nexus" && d.Model == "P28 V2 Fan");

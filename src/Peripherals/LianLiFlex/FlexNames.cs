@@ -14,7 +14,7 @@ public static class FlexNames
         _ => "TL Flex",
     };
 
-    /// <summary>TL units before SL-INF units, then by the user's sort index and MAC.</summary>
+    /// <summary>TL units before SL-INF units before P28 units, then by the user's sort index and MAC.</summary>
     public static IReadOnlyList<FlexUnit> Ordered(IEnumerable<FlexUnit> units, Func<string, int> sortIndexOf) =>
         units.OrderBy(u => u.Family == FlexFamily.SlInfFlex ? 1 : u.Family == FlexFamily.P28V2 ? 2 : 0)
             .ThenBy(u => sortIndexOf(u.Mac))

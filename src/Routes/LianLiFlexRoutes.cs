@@ -573,7 +573,7 @@ public static partial class LianLiFlexRoutes
                 FanCount = u.Fans,
                 Modes = modes,
                 Mode = u.Family == FlexFamily.P28V2 ? LianLiWirelessChainLighting.ModeCustom : ls.Mode,
-                EffectMode = ls.Mode != LianLiWirelessChainLighting.ModeCustom && u.Family != FlexFamily.P28V2 ? ls.Mode : ls.EffectMode ?? DefaultEffect,
+                EffectMode = u.Family == FlexFamily.P28V2 ? LianLiWirelessChainLighting.ModeCustom : ls.Mode != LianLiWirelessChainLighting.ModeCustom ? ls.Mode : ls.EffectMode ?? DefaultEffect,
                 Speed = ls.Speed,
                 Direction = ls.Direction,
                 Brightness = ls.Brightness,
@@ -613,6 +613,11 @@ public static partial class LianLiFlexRoutes
         if (body.SortIndex is < 0)
         {
             return "sortIndex must not be negative";
+        }
+        if (family == FlexFamily.P28V2
+            && (body.Mode == LianLiFlexUnitSettings.ModePerZone || body.Merge == true || body.MotherboardArgb == true))
+        {
+            return "not supported for this fan";
         }
         if (body.UpDownSwap is not null && family != FlexFamily.TlFlex)
         {

@@ -20,7 +20,7 @@ public sealed class FlexUnit
     /// <summary>Wired control applies only while the receiver is not bound to an RF master.</summary>
     public bool Controllable => !Info.RfBound;
 
-    public int Fans => Math.Max(1, Info.Fans);
+    public int Fans => Family == FlexFamily.P28V2 ? Math.Clamp(Info.Fans, 1, FlexProtocol.P28MaxFans) : Math.Max(1, Info.Fans);
 
     public int LedCount => Fans * FlexProtocol.LedsPerFan(Family);
 }
@@ -513,7 +513,7 @@ public sealed class FlexHub : IDisposable
     /// <summary>Hands the receiver's lighting to the motherboard ARGB input (true) or back to USB. Never sent to an RF-bound receiver.</summary>
     public bool SetMotherboardArgb(string mac, bool on)
     {
-        if (LinkOf(mac) is not { } link || link.Info is not { RfBound: false })
+        if (LinkOf(mac) is not { } link || link.Info is not { RfBound: false } || link.Port.Family == FlexFamily.P28V2)
         {
             return false;
         }
