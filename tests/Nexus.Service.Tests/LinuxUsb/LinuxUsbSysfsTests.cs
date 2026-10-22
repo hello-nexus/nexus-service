@@ -5,6 +5,7 @@ using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Peripherals.LinuxUsb;
 using Nexus.Service.Panel.Streams;
+using Nexus.Service.Platform.Linux;
 using Nexus.Service.Platform.Linux.Render;
 using Xunit;
 
@@ -113,13 +114,22 @@ public sealed class LinuxUsbSysfsTests : IDisposable
     }
 
     [Theory]
-    [InlineData(0x1CBE, 0xA034)]
-    [InlineData(0x0416, 0xA088)]
-    [InlineData(0x0416, 0x5302)]
-    public void BulkFactory_OnlyOpensTheUniversalScreen(int vid, int pid)
+    [InlineData(0x1CBE, 0xA088, true)]
+    [InlineData(0x1CBE, 0xA034, false)]
+    [InlineData(0x0416, 0xA088, false)]
+    [InlineData(0x0416, 0x5302, false)]
+    public void BulkFactory_OnlyClaimsTheUniversalScreen(int vid, int pid, bool expected)
     {
-        AddDevice("1-2", vid.ToString("x4"), pid.ToString("x4"), 1, 7);
+        Assert.Equal(expected, LinuxBulkUsbPipeFactory.Supports(vid, pid));
+    }
 
-        Assert.Null(new LinuxBulkUsbPipeFactory(_root).Open(vid, pid, 0x01, 0x81));
+    [Theory]
+    [InlineData(null, "/home/u", "/root", "/root/nexus-panel-render")]
+    [InlineData(1000u, "/home/u", "/root", "/home/u/nexus-panel-render")]
+    [InlineData(1000u, null, "/root", null)]
+    [InlineData(null, null, "", null)]
+    public void RenderProfileDir_UsesTheAdoptedSessionHome(uint? uid, string? sessionHome, string userProfile, string? expected)
+    {
+        Assert.Equal(expected, LinuxStreamRenderHost.ProfileDir(uid, sessionHome, userProfile));
     }
 }

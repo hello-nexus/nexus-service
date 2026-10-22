@@ -95,6 +95,10 @@ public sealed class LinuxStreamRenderHost : BackgroundService
 
         foreach (var (id, running) in new List<KeyValuePair<string, Running>>(_sessions))
         {
+            if (running.Render.FramesDelivered > 0)
+            {
+                _rapidBrowserFailures = 0;
+            }
             var gone = !wanted.ContainsKey(id);
             if (gone || running.Render.Faulted || running.Ingest.IsFaulted)
             {
@@ -170,7 +174,8 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             LogOnce("root", $"{Tag} running as root with no desktop user to switch to; refusing to start a browser as root");
             return false;
         }
-        var profileDir = ProfileDir();
+        var profileDir = ProfileDir(LinuxSession.SessionUid, LinuxSession.SessionHome,
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
         if (profileDir is null)
         {
             LogOnce("no-home", $"{Tag} no home directory for the browser profile; panels cannot render");
@@ -282,10 +287,12 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     }
 
     // Not hidden: a snap-confined browser may only use non-hidden paths under HOME.
-    // No fallback when HOME is unresolvable, since a shared temp path can be pre-created by any local user.
-    internal static string? ProfileDir()
+    // No fallback when no home is known, since a shared temp path can be pre-created by any local user.
+    // A root daemon that adopted a session runs the browser as that user, so only the adopted
+    // home is usable; the process HOME may still be root's.
+    internal static string? ProfileDir(uint? sessionUid, string? sessionHome, string? userProfile)
     {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var home = sessionUid is null ? userProfile : sessionHome;
         return string.IsNullOrEmpty(home) ? null : Path.Combine(home, "nexus-panel-render");
     }
 }

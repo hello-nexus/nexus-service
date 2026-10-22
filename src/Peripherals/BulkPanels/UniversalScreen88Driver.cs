@@ -37,7 +37,7 @@ public sealed class UniversalScreen88Driver : IBulkPanelDriver
 
     public string HandlerId => Id;
     public string Name => "Lian Li Universal Screen 8.8";
-    public int VendorId => 0x1CBE;
+    public int VendorId => UniversalScreen88Protocol.VendorId;
     public IReadOnlyList<int> ProductIds { get; } = new[] { UniversalScreen88Protocol.ProductId };
 
     /// <summary>A 4:1 strip carries a page of widgets like a promoted monitor, not one cooler tile.</summary>
