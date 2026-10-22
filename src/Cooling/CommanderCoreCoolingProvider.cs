@@ -505,6 +505,11 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
                 {
                     return duty;
                 }
+                // Port 0 is the pump on every model but one; the table build lifts it again where it is not.
+                if (channelId.EndsWith(":ch0", StringComparison.Ordinal))
+                {
+                    duty = Math.Max(duty, PumpFloor);
+                }
                 _desired[channelId] = duty;
                 if (TryFindDevice(channelId, out var known))
                 {
@@ -545,9 +550,20 @@ public sealed class CommanderCoreCoolingProvider : IFanControlProvider, ICooling
     private static bool IsChannelId(string id)
     {
         var parts = id.Split(':');
-        return parts.Length == 3 && parts[0] + ":" == IdPrefix && parts[1].Length == 8
-            && parts[2].StartsWith("ch", StringComparison.Ordinal)
-            && int.TryParse(parts[2].AsSpan(2), NumberStyles.None, CultureInfo.InvariantCulture, out var n)
+        if (parts.Length != 3 || parts[0] + ":" != IdPrefix || parts[1].Length != 8 || !parts[2].StartsWith("ch", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        foreach (var c in parts[1])
+        {
+            if (!(c is >= '0' and <= '9' or >= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+        var number = parts[2].AsSpan(2);
+        return number.Length > 0 && (number.Length == 1 || number[0] != '0')
+            && int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out var n)
             && n < NexusCoolingProtocol.MaxChannels;
     }
 

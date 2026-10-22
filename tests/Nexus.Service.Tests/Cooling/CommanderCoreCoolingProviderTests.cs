@@ -457,6 +457,40 @@ public class CommanderCoreCoolingProviderTests
     }
 
     [Fact]
+    public async Task A_pump_command_replayed_before_the_first_contact_is_floored_when_stored()
+    {
+        var first = new Rig();
+        first.Transport.Status = Aio();
+        await first.Poll();
+        var pump = first.Provider.GetFanChannels()[0].Id;
+        var restarted = new Rig();
+        restarted.Transport.Status = Aio();
+
+        var applied = restarted.Provider.SetFanSpeed(pump, 10);
+        await restarted.Poll();
+
+        Assert.Equal(50, applied);
+        Assert.Equal(50, restarted.Provider.GetFanChannels()[0].DutyPercent);
+    }
+
+    [Theory]
+    [InlineData("cmdcore:0123ABCD:ch1")]
+    [InlineData("cmdcore:0123abcg:ch1")]
+    [InlineData("cmdcore:0123abcd:ch01")]
+    [InlineData("cmdcore:0123abcd:ch")]
+    [InlineData("cmdcore:0123abcd:ch+1")]
+    public async Task A_replayed_command_for_a_malformed_channel_id_is_ignored(string id)
+    {
+        var rig = new Rig();
+        rig.Transport.Status = Aio();
+
+        rig.Provider.DriveFanSpeed(id, 65);
+        await rig.Poll();
+
+        Assert.Empty(rig.Transport.Writes);
+    }
+
+    [Fact]
     public async Task A_replayed_command_for_an_id_that_is_not_a_channel_id_is_ignored()
     {
         var rig = new Rig();
