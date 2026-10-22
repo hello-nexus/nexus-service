@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -56,12 +57,16 @@ public static partial class MystiqueMediaEncoder
     public static Task<MystiqueEncodeResult> EncodePictureAsync(byte[] source, string extension, CropRect? crop, string id, bool rotate, CancellationToken ct) =>
         RunInWorkDir(source, extension, async (src, dir) =>
         {
-            var frames = await DecodeFrames(src, dir, Filter(crop), 1, null, ct).ConfigureAwait(false);
-            if (frames.Count == 0)
+            var (raw, decoded) = await DecodeFrames(src, dir, Filter(crop), 1, null, ct).ConfigureAwait(false);
+            if (decoded == 0)
             {
                 return MystiqueEncodeResult.Failure("ffmpeg produced no frame.");
             }
-            var upright = frames[0];
+            var upright = new byte[FrameBytes];
+            await using (var stream = File.OpenRead(raw))
+            {
+                await stream.ReadExactlyAsync(upright, ct).ConfigureAwait(false);
+            }
             var sent = upright;
             if (rotate)
             {
@@ -91,42 +96,65 @@ public static partial class MystiqueMediaEncoder
             int count = Math.Clamp(sourceFrames, MystiqueMedia.GifFrames, MystiqueMedia.MaxGifFrames);
             foreach (var detail in GifDetailSteps)
             {
-                var frames = await DecodeFrames(src, dir, $"{Filter(crop)}{detail},fps={count * 1000}/{spanMs}:eof_action=pass",
+                var (raw, decoded) = await DecodeFrames(src, dir, $"{Filter(crop)}{detail},fps={count * 1000}/{spanMs}:eof_action=pass",
                     count, Seconds(spanMs), ct).ConfigureAwait(false);
-                if (frames.Count == 0)
+                if (decoded == 0)
                 {
                     // ffmpeg 7's fps filter drops a lone still frame; the still then repeats.
-                    frames = await DecodeFrames(src, dir, $"{Filter(crop)}{detail}", 1, null, ct).ConfigureAwait(false);
+                    (raw, decoded) = await DecodeFrames(src, dir, $"{Filter(crop)}{detail}", 1, null, ct).ConfigureAwait(false);
                 }
-                if (frames.Count == 0)
+                if (decoded == 0)
                 {
                     return MystiqueEncodeResult.Failure("ffmpeg produced no frames.");
                 }
-                // A still's span is one image's, so it sends the recorded still values.
-                bool still = frames.TrueForAll(f => f.AsSpan().SequenceEqual(frames[0]));
-                int slots = still ? MystiqueMedia.GifFrames : Math.Max(frames.Count, MystiqueMedia.GifFrames);
-                int durationMs = still ? MystiqueMedia.GifDurationMs : spanMs;
-                var upright = rotate ? (byte[])frames[0].Clone() : frames[0];
-                if (rotate)
-                {
-                    frames.ForEach(Rotate180);
-                }
                 foreach (int q in Qualities)
                 {
-                    var encoded = new byte[frames.Count][];
+                    var encoded = new List<byte[]>(decoded);
+                    byte[]? upright = null;
+                    bool still = true;
+                    long streamBytes = 0;
+                    await foreach (var frame in ReadFrames(raw, decoded, ct).ConfigureAwait(false))
+                    {
+                        if (upright is null)
+                        {
+                            upright = (byte[])frame.Clone();
+                        }
+                        else if (still)
+                        {
+                            still = frame.AsSpan().SequenceEqual(upright);
+                        }
+                        if (rotate)
+                        {
+                            Rotate180(frame);
+                        }
+                        var jpeg = EncodeJpeg(frame, q);
+                        if (jpeg.Length == 0)
+                        {
+                            return MystiqueEncodeResult.Failure(NoEncoder);
+                        }
+                        encoded.Add(jpeg);
+                        streamBytes += MystiqueMedia.HeaderLength + jpeg.Length;
+                        // A moving GIF streams every frame at least once, so it is already over the limit.
+                        if (!still && streamBytes > MystiqueMedia.MaxGifStreamBytes)
+                        {
+                            break;
+                        }
+                    }
+                    if (!still && streamBytes > MystiqueMedia.MaxGifStreamBytes)
+                    {
+                        continue;
+                    }
+                    // A still's span is one image's, so it sends the recorded still values.
+                    int slots = still ? MystiqueMedia.GifFrames : Math.Max(decoded, MystiqueMedia.GifFrames);
                     var jpegs = new List<byte[]>(slots);
                     for (int i = 0; i < slots; i++)
                     {
-                        int k = SlotSource(i, frames.Count, slots);
-                        jpegs.Add(encoded[k] ??= EncodeJpeg(frames[k], q));
-                    }
-                    if (!jpegs.TrueForAll(j => j.Length > 0))
-                    {
-                        return MystiqueEncodeResult.Failure(NoEncoder);
+                        jpegs.Add(encoded[still ? 0 : SlotSource(i, decoded, slots)]);
                     }
                     if (MystiqueMedia.StreamLength(jpegs) <= MystiqueMedia.MaxGifStreamBytes)
                     {
-                        return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id, durationMs), rotate ? EncodeJpeg(upright, q) : jpegs[0]);
+                        int durationMs = still ? MystiqueMedia.GifDurationMs : spanMs;
+                        return MystiqueEncodeResult.Success(MystiqueMedia.BuildGif(jpegs, id, durationMs), rotate ? EncodeJpeg(upright!, q) : encoded[0]);
                     }
                 }
             }
@@ -239,7 +267,8 @@ public static partial class MystiqueMediaEncoder
     internal static byte[] EncodeJpeg(byte[] rgbx, int quality) =>
         TurboJpegOneShot.TryCompress(rgbx, MystiqueMedia.Width, MystiqueMedia.Height, TurboJpeg.PixelFormatRgbx, quality) ?? Array.Empty<byte>();
 
-    private static async Task<List<byte[]>> DecodeFrames(string src, string dir, string filter, int count, string? readSeconds, CancellationToken ct)
+    /// <summary>Decodes up to <paramref name="count"/> RGBX frames to a raw file in <paramref name="dir"/>: its path and how many whole frames it holds.</summary>
+    private static async Task<(string Raw, int Frames)> DecodeFrames(string src, string dir, string filter, int count, string? readSeconds, CancellationToken ct)
     {
         var raw = Path.Combine(dir, "frames.raw");
         var args = new List<string> { "-y" };
@@ -253,22 +282,20 @@ public static partial class MystiqueMediaEncoder
             "-f", "rawvideo", "-pix_fmt", "rgb0", raw,
         });
         await MediaImporter.RunFfmpeg(TimeoutSeconds, ct, args.ToArray()).ConfigureAwait(false);
-        var frames = new List<byte[]>();
-        if (!File.Exists(raw))
-        {
-            return frames;
-        }
+        long length = File.Exists(raw) ? new FileInfo(raw).Length : 0;
+        return (raw, (int)Math.Min(count, length / FrameBytes));
+    }
+
+    /// <summary>The decoded frames in order, each read into one buffer that the next read overwrites.</summary>
+    private static async IAsyncEnumerable<byte[]> ReadFrames(string raw, int count, [EnumeratorCancellation] CancellationToken ct)
+    {
         await using var stream = File.OpenRead(raw);
-        while (frames.Count < count)
+        var frame = new byte[FrameBytes];
+        for (int i = 0; i < count; i++)
         {
-            var frame = new byte[FrameBytes];
-            if (await stream.ReadAtLeastAsync(frame, FrameBytes, throwOnEndOfStream: false, ct).ConfigureAwait(false) < FrameBytes)
-            {
-                break;
-            }
-            frames.Add(frame);
+            await stream.ReadExactlyAsync(frame, ct).ConfigureAwait(false);
+            yield return frame;
         }
-        return frames;
     }
 
     private static async Task<MystiqueEncodeResult> RunInWorkDir(
