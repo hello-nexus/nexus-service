@@ -33,6 +33,7 @@ public static partial class DevicesRoutes
         MapGalahad2Endpoints(app);
         MapGlacialLcdEndpoints(app);
         MapDeepCoolMystiqueEndpoints(app);
+        MapDeepCoolMystiqueMediaEndpoints(app);
         MapHydroShift2Endpoints(app);
         MapHydroShift2CurveEndpoints(app);
         MapKrakenEndpoints(app);

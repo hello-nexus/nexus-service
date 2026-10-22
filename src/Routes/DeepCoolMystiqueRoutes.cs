@@ -34,6 +34,30 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("unknown readout"));
             }
+            if (body.Style is not null
+                && body.Style is not (DeepCoolMystiqueSettings.StyleNormal or DeepCoolMystiqueSettings.StyleRing or DeepCoolMystiqueSettings.StyleStopwatch))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown style"));
+            }
+            if (body.AuxArea is not null
+                && body.AuxArea is not (DeepCoolMystiqueSettings.AuxVoltage or DeepCoolMystiqueSettings.AuxSystemMonitor or DeepCoolMystiqueSettings.AuxCoreData))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown auxiliary area"));
+            }
+            if (body.SwitchSeconds is int seconds && seconds is not (3 or 5 or 7))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown switch time"));
+            }
+            if (body.Animation is not null
+                && body.Animation is not (DeepCoolMystiqueSettings.AnimationSplit or DeepCoolMystiqueSettings.AnimationScroll or DeepCoolMystiqueSettings.AnimationFade))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown animation"));
+            }
+            if (body.MediaSource is not null
+                && body.MediaSource is not (DeepCoolMystiqueSettings.SourceImages or DeepCoolMystiqueSettings.SourceGif))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown media source"));
+            }
             DeepCoolMystiqueSettings stored = new();
             store.Read(s => stored = s.Devices.DeepCoolMystique.Copy());
             var fanNames = MystiqueSensors.FanNames(store, fans);
@@ -84,6 +108,12 @@ public static partial class DevicesRoutes
         if (body.Readout is not null) { m.Readout = body.Readout; m.ReadoutEdited = true; }
         if (body.RecordFrequency.HasValue) { m.RecordFrequency = body.RecordFrequency.Value; m.RecordingEdited = true; }
         if (body.RecordTemperature.HasValue) { m.RecordTemperature = body.RecordTemperature.Value; m.RecordingEdited = true; }
+        if (body.Style is not null) { m.ReadoutStyle = body.Style; m.ReadoutEdited = true; }
+        if (body.AuxArea is not null) { m.AuxArea = body.AuxArea; m.ReadoutEdited = true; }
+        if (body.SwitchSeconds.HasValue) { m.SwitchSeconds = body.SwitchSeconds.Value; m.MediaEdited = true; }
+        if (body.Animation is not null) { m.Animation = body.Animation; m.MediaEdited = true; }
+        if (body.MediaSource is not null) { m.MediaSource = body.MediaSource; m.SourceEdited = true; }
+        if (body.EdgePicking.HasValue) { m.EdgePicking = body.EdgePicking.Value; m.DeviceEdited = true; }
         if (body.Brightness.HasValue) { m.Brightness = Math.Clamp(body.Brightness.Value, 0, 100); m.DeviceEdited = true; }
         if (body.Gyroscope.HasValue) { m.Gyroscope = body.Gyroscope.Value; m.DeviceEdited = true; }
         if (body.RgbSync.HasValue) { m.RgbSync = body.RgbSync.Value; m.DeviceEdited = true; }
@@ -103,6 +133,15 @@ public static partial class DevicesRoutes
         IsConnected = connected,
         ModeChosen = m.ModeEdited,
         ReadoutChosen = m.ReadoutEdited,
+        MediaChosen = m.MediaEdited,
+        SourceChosen = m.SourceEdited,
+        ReadoutStyle = m.ReadoutStyle,
+        AuxArea = m.AuxArea,
+        SwitchSeconds = m.SwitchSeconds,
+        Animation = m.Animation,
+        MediaSource = m.MediaSource,
+        EdgePicking = m.EdgePicking,
+        Media = m.Media.ConvertAll(i => new DeepCoolMystiqueMediaDto { Kind = i.Kind, Id = i.Id, Name = i.Name }).ToArray(),
         RecordingChosen = m.RecordingEdited,
         DeviceChosen = m.DeviceEdited,
         Mode = m.Mode,
@@ -153,8 +192,34 @@ public sealed class DeepCoolMystiqueStateResponse
     /// <summary>False until the user has picked a mode, when the screen's actual mode is unknown.</summary>
     public bool ModeChosen { get; set; }
 
-    /// <summary>False until the user has picked a readout; the readout shown is then a placeholder.</summary>
+    /// <summary>False until the user has picked a readout, style or auxiliary area; those values are then placeholders.</summary>
     public bool ReadoutChosen { get; set; }
+
+    /// <summary>False until the user has changed the switch time or animation.</summary>
+    public bool MediaChosen { get; set; }
+
+    /// <summary>False until the user has picked pictures or the GIF to play.</summary>
+    public bool SourceChosen { get; set; }
+
+    /// <summary>"normal", "ring" or "stopwatch".</summary>
+    public string ReadoutStyle { get; set; } = "";
+
+    /// <summary>"voltage", "systemMonitor" or "coreData".</summary>
+    public string AuxArea { get; set; } = "";
+
+    /// <summary>3, 5 or 7.</summary>
+    public int SwitchSeconds { get; set; }
+
+    /// <summary>"split", "scroll" or "fade".</summary>
+    public string Animation { get; set; } = "";
+
+    /// <summary>"images" or "gif".</summary>
+    public string MediaSource { get; set; } = "";
+
+    /// <summary>The RGB follows the picture or GIF's edge colors.</summary>
+    public bool EdgePicking { get; set; }
+
+    public DeepCoolMystiqueMediaDto[] Media { get; set; } = Array.Empty<DeepCoolMystiqueMediaDto>();
 
     /// <summary>False until the user has changed a recording graph; the toggles shown are placeholders.</summary>
     public bool RecordingChosen { get; set; }
@@ -184,8 +249,29 @@ public sealed class DeepCoolMystiqueStateResponse
     public DeepCoolMystiqueSensorDto Pump { get; set; } = new();
 }
 
+public sealed class DeepCoolMystiqueMediaDto
+{
+    /// <summary>"picture" or "gif".</summary>
+    public string Kind { get; set; } = "";
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+}
+
+public sealed class DeepCoolMystiqueMediaResponse
+{
+    public bool Error { get; set; }
+    public string Msg { get; set; } = "";
+    public string Id { get; set; } = "";
+}
+
 public sealed class DeepCoolMystiqueSettingsRequest
 {
+    public string? Style { get; set; }
+    public string? AuxArea { get; set; }
+    public int? SwitchSeconds { get; set; }
+    public string? Animation { get; set; }
+    public string? MediaSource { get; set; }
+    public bool? EdgePicking { get; set; }
     public string? Mode { get; set; }
     public string? Readout { get; set; }
     public bool? RecordFrequency { get; set; }

@@ -40,7 +40,10 @@ public static class MystiqueProtocol
     public const byte CmdReadout = 0x04;
     public const byte CmdRecording = 0x05;
     public const byte CmdRecordingApply = 0x06;
+    public const byte CmdMediaPlayback = 0x07;
+    public const byte CmdMediaSource = 0x08;
     public const byte CmdClock = 0x0A;
+    public const byte CmdUploadStart = 0x0F;
     public const byte CmdPoll = 0x10;
     public const byte CmdInfo = 0x12;
 
@@ -61,6 +64,41 @@ public static class MystiqueProtocol
         DeepCoolMystiqueSettings.ReadoutFan => 3,
         DeepCoolMystiqueSettings.ReadoutFanPump => 4,
         _ => 5,
+    };
+
+    /// <summary>Second byte of <see cref="CmdReadout"/>: the main readout's style.</summary>
+    public static byte StyleCode(string style) => style switch
+    {
+        DeepCoolMystiqueSettings.StyleRing => 1,
+        DeepCoolMystiqueSettings.StyleStopwatch => 2,
+        _ => 0,
+    };
+
+    /// <summary>Fourth byte of <see cref="CmdReadout"/>: what the auxiliary area shows.</summary>
+    public static byte AuxCode(string aux) => aux switch
+    {
+        DeepCoolMystiqueSettings.AuxVoltage => 0,
+        DeepCoolMystiqueSettings.AuxSystemMonitor => 1,
+        _ => 2,
+    };
+
+    /// <summary>Fourth byte of <see cref="CmdSystem"/>: 0 off, 1 follows the motherboard's RGB effect, 2 follows the picture or GIF's edge colors.</summary>
+    public static byte RgbSourceCode(bool motherboardSync, bool edgePicking) => edgePicking ? (byte)2 : motherboardSync ? (byte)1 : (byte)0;
+
+    /// <summary>First byte of <see cref="CmdMediaPlayback"/>: how long each picture shows.</summary>
+    public static byte SwitchTimeCode(int seconds) => seconds switch
+    {
+        7 => 2,
+        5 => 1,
+        _ => 0,
+    };
+
+    /// <summary>Second byte of <see cref="CmdMediaPlayback"/>: the transition between pictures.</summary>
+    public static byte AnimationCode(string animation) => animation switch
+    {
+        DeepCoolMystiqueSettings.AnimationScroll => 1,
+        DeepCoolMystiqueSettings.AnimationFade => 2,
+        _ => 0,
     };
 
     public static byte[] BuildFrame(byte cmd, ReadOnlySpan<byte> payload, byte magic = HostMagic)
@@ -125,14 +163,14 @@ public static class MystiqueProtocol
         return BuildFrame(CmdClock, p);
     }
 
-    /// <summary>Gyroscope rotation, RGB sync and brightness in one frame; the two constant bytes are sent as the screen's own software does.</summary>
-    public static byte[] BuildSystem(bool gyroscope, bool rgbSync, int brightness)
+    /// <summary>Gyroscope rotation, RGB source (<see cref="RgbSourceCode"/>) and brightness in one frame; the two constant bytes are sent as the screen's own software does.</summary>
+    public static byte[] BuildSystem(bool gyroscope, byte rgbSource, int brightness)
     {
         Span<byte> p = stackalloc byte[5];
         p[0] = 0x01;
         p[1] = gyroscope ? (byte)1 : (byte)0;
         p[2] = 0x02;
-        p[3] = rgbSync ? (byte)1 : (byte)0;
+        p[3] = rgbSource;
         p[4] = (byte)Math.Clamp(brightness, 0, 100);
         return BuildFrame(CmdSystem, p);
     }
@@ -144,14 +182,42 @@ public static class MystiqueProtocol
         return BuildFrame(CmdMode, p);
     }
 
-    /// <summary>Monitor-mode main readout; the last byte is the auxiliary area, which only ever carried the core data value.</summary>
-    public static byte[] BuildReadout(string readout)
+    /// <summary>Monitor-mode main readout with its style and the auxiliary area.</summary>
+    public static byte[] BuildReadout(string readout, string style, string aux)
     {
         Span<byte> p = stackalloc byte[4];
         p[0] = ReadoutCode(readout);
-        p[3] = 0x02;
+        p[1] = StyleCode(style);
+        p[3] = AuxCode(aux);
         return BuildFrame(CmdReadout, p);
     }
+
+    /// <summary>Picture switch time and transition.</summary>
+    public static byte[] BuildMediaPlayback(int switchSeconds, string animation)
+    {
+        Span<byte> p = stackalloc byte[2];
+        p[0] = SwitchTimeCode(switchSeconds);
+        p[1] = AnimationCode(animation);
+        return BuildFrame(CmdMediaPlayback, p);
+    }
+
+    /// <summary>Whether the screen plays its pictures or its GIF; sent after an upload of that kind.</summary>
+    public static byte[] BuildMediaSource(string source)
+    {
+        Span<byte> p = stackalloc byte[2];
+        if (source == DeepCoolMystiqueSettings.SourceGif)
+        {
+            p[0] = 1;
+        }
+        else
+        {
+            p[1] = 1;
+        }
+        return BuildFrame(CmdMediaSource, p);
+    }
+
+    /// <summary>Announces a picture or GIF stream on the settings channel.</summary>
+    public static byte[] BuildUploadStart() => BuildFrame(CmdUploadStart, ReadOnlySpan<byte>.Empty);
 
     /// <summary>Recording-tab graphs: frequency flag then temperature flag.</summary>
     public static byte[] BuildRecording(bool frequency, bool temperature)

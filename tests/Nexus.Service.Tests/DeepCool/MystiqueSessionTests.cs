@@ -30,7 +30,7 @@ public class MystiqueSessionTests
         var pipe = new FakePipe();
         var settings = new DeepCoolMystiqueSettings
         {
-            DeviceEdited = true, ModeEdited = true, ReadoutEdited = true, RecordingEdited = true,
+            DeviceEdited = true, ModeEdited = true, ReadoutEdited = true, RecordingEdited = true, MediaEdited = true, SourceEdited = true,
             Mode = DeepCoolMystiqueSettings.ModeRecording,
         };
 
@@ -40,6 +40,7 @@ public class MystiqueSessionTests
             new byte[]
             {
                 MystiqueProtocol.CmdInfo, MystiqueProtocol.CmdSystem, MystiqueProtocol.CmdMode, MystiqueProtocol.CmdReadout,
+                MystiqueProtocol.CmdMediaPlayback, MystiqueProtocol.CmdMediaSource,
                 MystiqueProtocol.CmdRecording, MystiqueProtocol.CmdRecordingApply, MystiqueProtocol.CmdClock,
             },
             pipe.Commands());
@@ -62,6 +63,56 @@ public class MystiqueSessionTests
         Assert.True(session.Apply(settings.Copy()));
         Assert.Equal(new[] { MystiqueProtocol.CmdSystem }, pipe.Commands());
         Assert.Equal(30, pipe.Last(MystiqueProtocol.CmdSystem)[7]);
+    }
+
+    [Fact]
+    public void Upload_announces_streams_finishes_then_selects_the_kind_like_the_screens_own_software()
+    {
+        var pipe = new FakePipe();
+        var session = new MystiqueSession(pipe);
+        var settings = new DeepCoolMystiqueSettings();
+        Assert.True(session.Open(settings, Now));
+        pipe.Writes.Clear();
+        var jpegs = new List<byte[]>();
+        for (int i = 0; i < MystiqueMedia.GifFrames; i++)
+        {
+            jpegs.Add(new byte[100 + i]);
+        }
+        var package = MystiqueMedia.BuildGif(jpegs, "acd9325521f3493c86bfc0b0aa85658d");
+
+        Assert.True(session.Upload(package));
+
+        var expected = new List<byte[]> { MystiqueProtocol.BuildUploadStart() };
+        foreach (var frame in package.Frames)
+        {
+            expected.AddRange(MystiqueMedia.Packets(frame));
+        }
+        expected.Add(MystiqueMedia.FinishPacket());
+        expected.Add(MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceGif));
+        Assert.All(pipe.Writes, w => Assert.Equal(MystiqueProtocol.SettingsWritePipe, w.Pipe));
+        Assert.Equal(expected.ConvertAll(Convert.ToHexString), pipe.Writes.ConvertAll(w => Convert.ToHexString(w.Frame)));
+
+        pipe.Writes.Clear();
+        settings.SourceEdited = true;
+        settings.MediaSource = DeepCoolMystiqueSettings.SourceGif;
+        Assert.True(session.Apply(settings.Copy()));
+        Assert.Empty(pipe.Writes);
+    }
+
+    [Fact]
+    public void A_refused_stream_write_never_sends_the_finish_packet()
+    {
+        var pipe = new FakePipe();
+        var session = new MystiqueSession(pipe);
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+        pipe.Writes.Clear();
+        var package = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
+        pipe.FailAfter = 3;
+
+        Assert.False(session.Upload(package));
+
+        Assert.Equal(3, pipe.Writes.Count);
+        Assert.DoesNotContain(pipe.Writes, w => w.Frame.Length == MystiqueMedia.FinishLength);
     }
 
     [Fact]
@@ -188,6 +239,7 @@ public class MystiqueSessionTests
         public List<byte> Halts { get; } = new();
         public List<(byte Pipe, byte[] Frame)> Writes { get; } = new();
         public bool FailWrites { get; set; }
+        public int FailAfter { get; set; } = int.MaxValue;
         public bool Answer { get; set; } = true;
         public int? ReadResult { get; set; }
 
@@ -207,13 +259,13 @@ public class MystiqueSessionTests
 
         public bool Write(byte pipeId, ReadOnlySpan<byte> data)
         {
-            if (FailWrites)
+            if (FailWrites || Writes.Count >= FailAfter)
             {
                 return false;
             }
             var frame = data.ToArray();
             Writes.Add((pipeId, frame));
-            if (Answer)
+            if (Answer && frame.Length == MystiqueProtocol.FrameLength)
             {
                 byte[] reply;
                 if (frame[2] == MystiqueProtocol.CmdInfo)

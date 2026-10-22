@@ -55,6 +55,38 @@ public sealed class MystiqueWorker : BackgroundService
 
     public bool IsConnected => _connected;
 
+    private sealed record PendingUpload(MystiqueMediaPackage Package, TaskCompletionSource<bool> Done);
+
+    private PendingUpload? _pendingUpload;
+
+    /// <summary>
+    /// Hands a picture or GIF to the worker, which streams it between ticks so nothing else touches the
+    /// pipes. False when no screen is connected, another upload is waiting, the stream fails, or the
+    /// caller gives up first.
+    /// </summary>
+    public async Task<bool> UploadAsync(MystiqueMediaPackage package, CancellationToken ct)
+    {
+        if (!_connected)
+        {
+            return false;
+        }
+        var pending = new PendingUpload(package, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+        if (Interlocked.CompareExchange(ref _pendingUpload, pending, null) is not null)
+        {
+            return false;
+        }
+        RequestApply();
+        try
+        {
+            using var reg = ct.Register(() => pending.Done.TrySetResult(false));
+            return await pending.Done.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _pendingUpload, null, pending);
+        }
+    }
+
     /// <summary>Tells the worker the saved settings changed; it sends the difference on its next pass.</summary>
     public void RequestApply()
     {
@@ -159,6 +191,18 @@ public sealed class MystiqueWorker : BackgroundService
                 {
                     break;
                 }
+                var upload = Volatile.Read(ref _pendingUpload);
+                if (upload is not null && !upload.Done.Task.IsCompleted)
+                {
+                    bool sent = session.Upload(upload.Package);
+                    upload.Done.TrySetResult(sent);
+                    if (!sent)
+                    {
+                        Log("an upload was refused; reopening", error: false);
+                        return false;
+                    }
+                    continue;
+                }
                 var settings = ReadSettings();
                 if (!session.Apply(settings) || !session.Tick(MystiqueSensors.Read(_sensors, settings, MystiqueSensors.FanNames(_store, _fans)), DateTime.Now))
                 {
@@ -180,6 +224,7 @@ public sealed class MystiqueWorker : BackgroundService
         finally
         {
             _connected = false;
+            Volatile.Read(ref _pendingUpload)?.Done.TrySetResult(false);
             ServiceLog.Info($"[{HandlerId}] disconnected");
         }
     }

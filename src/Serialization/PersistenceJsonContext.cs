@@ -145,6 +145,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<GlacialLcdSlot>))]
 [JsonSerializable(typeof(DeepCoolMystiqueSettings))]
 [JsonSerializable(typeof(DeepCoolMystiqueSensorPick))]
+[JsonSerializable(typeof(DeepCoolMystiqueMediaItem))]
+[JsonSerializable(typeof(List<DeepCoolMystiqueMediaItem>))]
 [JsonSerializable(typeof(AsiahorseUmbraSettings))]
 [JsonSerializable(typeof(UmbraEffectGroupSettings))]
 [JsonSerializable(typeof(UmbraEffectValues))]

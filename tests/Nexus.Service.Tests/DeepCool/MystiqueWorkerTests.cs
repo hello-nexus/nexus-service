@@ -46,6 +46,33 @@ public class MystiqueWorkerTests
     }
 
     [Fact]
+    public async Task An_upload_streams_between_ticks_with_no_live_traffic_inside_it()
+    {
+        var store = new InMemoryConfigStore();
+        var pipes = new FakeFactory();
+        var worker = Build(store, pipes, present: true, gateOn: true);
+        var package = MystiqueMedia.BuildPicture(new byte[5000], "2101b6e6277841daa821e8d79a5c528b");
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitFor(() => worker.IsConnected);
+            Assert.True(await worker.UploadAsync(package, CancellationToken.None));
+
+            var writes = pipes.Pipe!.Writes();
+            int start = writes.FindIndex(w => w.Length == MystiqueProtocol.FrameLength && w[2] == MystiqueProtocol.CmdUploadStart);
+            int finish = writes.FindIndex(w => w.Length == MystiqueMedia.FinishLength);
+            Assert.InRange(start, 0, finish - 1);
+            Assert.Equal(package.Frames[0].Length, writes.Skip(start + 1).Take(finish - start - 1).Sum(w => w.Length));
+            Assert.Equal(MystiqueProtocol.CmdMediaSource, writes[finish + 1][2]);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task Nothing_reaches_the_screen_after_nexus_control_is_switched_off()
     {
         var store = new InMemoryConfigStore();
@@ -208,6 +235,14 @@ public class MystiqueWorkerTests
             lock (_lock)
             {
                 return _writes.Select(w => w[2]).ToArray();
+            }
+        }
+
+        public List<byte[]> Writes()
+        {
+            lock (_lock)
+            {
+                return _writes.ToList();
             }
         }
 
