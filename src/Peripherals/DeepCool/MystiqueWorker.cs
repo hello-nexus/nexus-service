@@ -85,8 +85,9 @@ public sealed class MystiqueWorker : BackgroundService
     /// pipes. False when no screen is connected, another upload is waiting, the stream fails, or the
     /// caller gives up before the stream starts; once it has started, the real result is awaited.
     /// </summary>
-    public Task<bool> UploadAsync(MystiqueMediaPackage package, bool selectSource, CancellationToken ct) =>
-        RunMediaAsync(s => s.Upload(package, selectSource), ct);
+    /// <param name="source">Runs on the worker once the stream is finished, before anything else is sent, and names the source command to follow it (null for none).</param>
+    public Task<bool> UploadAsync(MystiqueMediaPackage package, Func<string?> source, CancellationToken ct) =>
+        RunMediaAsync(s => s.Upload(package, source), ct);
 
     /// <summary>
     /// Erases every picture and GIF on the screen, between ticks like an upload. A refused or unanswered

@@ -110,16 +110,19 @@ public sealed class MystiqueSession
 
     /// <summary>
     /// Streams a picture or GIF as the screen's own software does: the announce command, every frame as
-    /// 64-byte writes, the finish packet, then the source command for that kind unless
-    /// <paramref name="selectSource"/> is false, as for an edit that replaces an item in place. Nothing
-    /// streams unless the screen answered the announce. True once a clean stream is finished, whether or
-    /// not the source command is answered; an unanswered one is re-sent by the next <see cref="Apply"/>.
+    /// 64-byte writes, the finish packet, then the source command. <paramref name="source"/> runs once the
+    /// stream is finished and names the source to send, null for none; without it the uploaded kind is sent.
+    /// Nothing streams unless the screen answered the announce. True once a clean stream is finished,
+    /// whether or not the source command is answered; an unanswered one is re-sent by the next <see cref="Apply"/>.
     /// </summary>
-    public bool Upload(MystiqueMediaPackage package, bool selectSource = true)
+    public bool Upload(MystiqueMediaPackage package, Func<string?>? source = null)
     {
+        string kind = package.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
+        ServiceLog.Info($"[deepcool-mystique] upload {kind} {package.Id}, {package.Frames.Count} frames");
         if (!Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildUploadStart(), out _, out bool announced)
             || !announced)
         {
+            ServiceLog.Warn("[deepcool-mystique] upload refused: the screen did not answer the announce");
             return false;
         }
         for (int f = 0; f < package.Frames.Count; f++)
@@ -142,16 +145,18 @@ public sealed class MystiqueSession
         {
             return false;
         }
-        if (!selectSource)
+        string? chosen = source is null ? kind : source();
+        if (chosen is null)
         {
             return true;
         }
-        var source = package.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
-        bool delivered = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildMediaSource(source),
+        var command = MystiqueProtocol.BuildMediaSource(chosen);
+        bool delivered = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, command,
             out _, out bool answered, SourceReplyTimeoutMs);
+        LogSetting(command, delivered && answered);
         if (_applied is not null)
         {
-            _applied.MediaSource = source;
+            _applied.MediaSource = chosen;
             _applied.SourceEdited = delivered && answered;
         }
         return true;
@@ -229,8 +234,21 @@ public sealed class MystiqueSession
         return !due || SendClock(localNow);
     }
 
-    private bool Settings(byte[] frame) =>
-        Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, frame, out _);
+    private bool Settings(byte[] frame)
+    {
+        bool ok = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, frame, out _, out bool answered);
+        LogSetting(frame, ok && answered);
+        return ok;
+    }
+
+    /// <summary>Logs the rarely sent commands that decide what the screen shows, for support bundles.</summary>
+    private static void LogSetting(byte[] frame, bool answered)
+    {
+        if (frame[2] is MystiqueProtocol.CmdSystem or MystiqueProtocol.CmdMode or MystiqueProtocol.CmdMediaPlayback or MystiqueProtocol.CmdMediaSource)
+        {
+            ServiceLog.Info($"[deepcool-mystique] sent 0x{frame[2]:X2} {Convert.ToHexString(frame, 3, 5)}, {(answered ? "answered" : "no reply")}");
+        }
+    }
 
     private bool Exchange(byte writePipe, byte readPipe, byte[] frame, out byte[] reply) =>
         Exchange(writePipe, readPipe, frame, out reply, out _);

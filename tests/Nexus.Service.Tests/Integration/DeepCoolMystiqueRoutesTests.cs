@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -294,6 +295,46 @@ public class DeepCoolMystiqueRoutesTests
     public void The_gyroscope_starts_off_as_the_screen_ships()
     {
         Assert.False(new DeepCoolMystiqueSettings().Gyroscope);
+    }
+
+    [Theory]
+    [InlineData(false, "images", true, "images", true, "gif")]
+    [InlineData(false, "images", true, "gif", true, "gif")]
+    [InlineData(false, "gif", true, "images", true, "images")]
+    [InlineData(false, "images", false, "images", true, "images")]
+    [InlineData(true, "images", true, "images", true, "images")]
+    [InlineData(true, "images", false, "images", false, null)]
+    public void After_a_stream_a_new_item_selects_its_kind_unless_the_user_chose_meanwhile(
+        bool inPlace, string startSource, bool startChosen, string nowSource, bool nowChosen, string? sent)
+    {
+        var m = new DeepCoolMystiqueSettings { MediaSource = nowSource, SourceEdited = nowChosen };
+
+        var result = DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: true, inPlace, startSource, startChosen);
+
+        Assert.Equal(sent, result);
+        if (sent is not null)
+        {
+            Assert.Equal(sent, m.MediaSource);
+            Assert.True(m.SourceEdited);
+        }
+    }
+
+    [Fact]
+    public void A_failed_upload_frees_its_id_once_and_leaves_listed_items_alone()
+    {
+        using var factory = new NexusAppFactory();
+        var store = factory.Services.GetRequiredService<IConfigStore>();
+        store.Update(s => s.Devices.DeepCoolMystique.Media = new() { new DeepCoolMystiqueMediaItem { Kind = "picture", Id = "2101b6e6277841daa821e8d79a5c528b" } });
+
+        DevicesRoutes.FreeFailedMystiqueId(store, "gif", "acd9325521f3493c86bfc0b0aa85658d");
+        DevicesRoutes.FreeFailedMystiqueId(store, "gif", "acd9325521f3493c86bfc0b0aa85658d");
+        DevicesRoutes.FreeFailedMystiqueId(store, "picture", "2101b6e6277841daa821e8d79a5c528b");
+
+        var m = new DeepCoolMystiqueSettings();
+        store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
+        Assert.Equal(new[] { ("gif", "acd9325521f3493c86bfc0b0aa85658d") }, m.Freed.Select(i => (i.Kind, i.Id)));
+        Assert.Single(m.Media);
+        Assert.Equal("acd9325521f3493c86bfc0b0aa85658d", DevicesRoutes.MystiqueUploadId(store, "gif", new byte[] { 7 }, ""));
     }
 
     [Theory]
