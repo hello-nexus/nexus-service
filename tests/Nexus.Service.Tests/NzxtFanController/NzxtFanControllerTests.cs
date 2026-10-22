@@ -334,7 +334,7 @@ public class NzxtFanControllerTests
         var provider = new NzxtFanControllerCoolingProvider(hub);
         provider.DriveFanSpeed("nzxt-fan-controller:fan0", 80);
 
-        // Three resends take three lags; the cap is only reported after one more lag.
+        // Every allowed resend takes one lag; the cap is only reported after one more lag.
         Reassert(provider, 9);
         Assert.Equal(0, provider.CapWarnings);
         Reassert(provider, 2);

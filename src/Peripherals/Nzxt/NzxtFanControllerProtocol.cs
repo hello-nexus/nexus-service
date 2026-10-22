@@ -32,9 +32,9 @@ internal static class NzxtFanControllerProtocol
     private const byte SubCommandStatus = 0x02;
     private const byte SubCommandSetDuty = 0x01;
 
-    // Bytes of the interval command that sit around the cadence index, once per fan group.
-    private const byte IntervalGroupFlag = 0x01;
-    private const byte IntervalGroupScale = 0xE8;
+    // The two fixed bytes that precede the cadence index in the interval command, sent twice.
+    private const byte IntervalByteA = 0x01;
+    private const byte IntervalByteB = 0xE8;
 
     private const int ModeOffset = 16;
     private const int RpmOffset = 24;
@@ -47,11 +47,11 @@ internal static class NzxtFanControllerProtocol
     public static byte[] EncodeSetStatusInterval()
     {
         var report = NewReport(ReportFanConfig, SubCommandSetInterval);
-        report[2] = IntervalGroupFlag;
-        report[3] = IntervalGroupScale;
+        report[2] = IntervalByteA;
+        report[3] = IntervalByteB;
         report[4] = StatusIntervalIndex;
-        report[5] = IntervalGroupFlag;
-        report[6] = IntervalGroupScale;
+        report[5] = IntervalByteA;
+        report[6] = IntervalByteB;
         report[7] = StatusIntervalIndex;
         return report;
     }

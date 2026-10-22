@@ -163,9 +163,13 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
         SyncGeneration();
         for (int i = 0; i < fans.Length; i++)
         {
-            int want;
+            int want = 0;
             bool resend = false;
+            bool resendFailed = false;
             bool capped = false;
+            // Decision and write share one hold of the lock, so the commanded duty cannot
+            // change between reading it and sending it: a reassert never lands a stale duty
+            // after a fresh write. The hub takes only its own write lock, never this one.
             lock (_ctrlLock)
             {
                 if (!_softwareControlled[i])
@@ -192,6 +196,7 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
                         _offTarget[i] = 0;
                         _resends[i]++;
                         resend = true;
+                        resendFailed = !_hub.SetFanDuty(i, want);
                     }
                 }
             }
@@ -200,7 +205,7 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
                 CapWarnings++;
                 ServiceLog.Warn($"[nzxt-fan-controller-cooling] fan {i} stays off its commanded duty {want}% (reports {fans[i].DutyPercent}%) after {MaxResends} resends; reasserting stopped until the duty changes or the device reconnects");
             }
-            if (resend && !_hub.SetFanDuty(i, want))
+            if (resend && resendFailed)
             {
                 ServiceLog.Warn($"[nzxt-fan-controller-cooling] reassert fan {i} duty {want} failed");
             }
