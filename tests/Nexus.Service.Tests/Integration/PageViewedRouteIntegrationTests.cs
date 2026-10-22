@@ -8,28 +8,34 @@ using Nexus.Service.Telemetry;
 
 namespace Nexus.Service.Tests.Integration;
 
-public sealed class PageViewedRouteIntegrationTests : IClassFixture<NexusAppFactory>, IDisposable
+public sealed class PageViewedFactory : NexusAppFactory
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "page-viewed-" + Guid.NewGuid().ToString("N"));
-    private readonly Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> _factory;
-    private readonly List<(string Event, object? Page)> _events = new();
 
-    public PageViewedRouteIntegrationTests(NexusAppFactory factory)
+    public List<(string Event, object? Page)> Events { get; } = new();
+    public DateTime Now = new(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+
+    protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
     {
+        base.ConfigureWebHost(builder);
         Directory.CreateDirectory(_root);
-        var recorder = new Recorder(_events);
-        _factory = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        var recorder = new Recorder(Events);
+        builder.ConfigureTestServices(s =>
         {
             s.RemoveAll<ITelemetry>();
             s.AddSingleton<ITelemetry>(recorder);
             s.RemoveAll<AppUsageTracker>();
-            s.AddSingleton(new AppUsageTracker(recorder, Path.Combine(_root, "u.json")));
-        }));
+            s.AddSingleton(new AppUsageTracker(recorder, Path.Combine(_root, "u.json"), () => Now));
+        });
     }
 
-    public void Dispose()
+    protected override void Dispose(bool disposing)
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            try { Directory.Delete(_root, recursive: true); } catch { }
+        }
     }
 
     private sealed class Recorder(List<(string Event, object? Page)> sink) : ITelemetry
@@ -38,14 +44,28 @@ public sealed class PageViewedRouteIntegrationTests : IClassFixture<NexusAppFact
             sink.Add((@event, properties.FirstOrDefault(p => p.Key == "page").Value));
         public void Identify(params (string Key, object? Value)[] properties) { }
     }
+}
 
-    private async Task<int> Post(string page, bool withToken = true)
+public sealed class PageViewedRouteIntegrationTests : IClassFixture<PageViewedFactory>
+{
+    private readonly PageViewedFactory _factory;
+    private List<(string Event, object? Page)> _events => _factory.Events;
+
+    // One host serves the class; a new UTC day per test clears the tracker's dedupe set.
+    public PageViewedRouteIntegrationTests(PageViewedFactory factory)
+    {
+        _factory = factory;
+        _factory.Events.Clear();
+        _factory.Now = _factory.Now.AddDays(1);
+    }
+
+    private async Task<int> Post(string page, bool withToken = true, IPAddress? from = null)
     {
         var ctx = await _factory.Server.SendAsync(c =>
         {
             c.Request.Method = "POST";
             c.Request.Path = "/telemetry/page-viewed/" + page;
-            c.Connection.RemoteIpAddress = IPAddress.Loopback;
+            c.Connection.RemoteIpAddress = from ?? IPAddress.Loopback;
             if (withToken)
                 c.Request.Headers.Authorization = "Bearer " + _factory.Services.GetRequiredService<TokenService>().Token;
         });
@@ -84,6 +104,13 @@ public sealed class PageViewedRouteIntegrationTests : IClassFixture<NexusAppFact
     public async Task Route_requires_a_token()
     {
         Assert.Equal(401, await Post("lighting", withToken: false));
+        Assert.Empty(_events);
+    }
+
+    [Fact]
+    public async Task Non_loopback_caller_gets_404_and_emits_nothing()
+    {
+        Assert.Equal(404, await Post("lighting", from: IPAddress.Parse("192.168.1.50")));
         Assert.Empty(_events);
     }
 }
