@@ -108,7 +108,7 @@ public static class MystiqueMediaEncoder
             return MystiqueEncodeResult.Failure("The GIF is too detailed to fit the screen's limit.");
         });
 
-    // Long side of a reduced kept source: a crop spanning a third of it still has the screen's 640 rows.
+    // Long side of a reduced kept source: several times the screen's long side, so a tight crop still fills it.
     internal const int KeepLongSide = 1920;
 
     /// <summary>

@@ -106,6 +106,8 @@ public sealed class MystiqueWorker : BackgroundService
         {
             while (!_connected || Volatile.Read(ref _sessions) == session)
             {
+                // Cuts short a reconnect backoff, which can outlast the wait.
+                RequestApply();
                 await Task.Delay(Math.Min(_tickMs, 100), wait.Token).ConfigureAwait(false);
             }
         }
