@@ -35,7 +35,7 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private readonly Func<string, string, int, bool> _setSpeed; // (address, channel, duty) -> applied?
     private readonly bool _forceAvailable;
     private readonly IConfigStore? _config;
-    private readonly Func<bool> _nativeKraken;
+    private readonly Func<string?> _nativeHidPath;
 
     private readonly object _lock = new();
     // Rebuilt wholesale and published atomically (assigned, never mutated in
@@ -53,7 +53,7 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     public LinuxLiquidctlProvider(IConfigStore config, KrakenHub krakenHub)
     {
         _config = config;
-        _nativeKraken = () => krakenHub.IsConnected;
+        _nativeHidPath = () => krakenHub.ClaimedHidPath;
         _statusJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "status");
         // Verify the write landed (exit 0) instead of assuming it - a rejected
         // `set` (permissions, wrong channel) must not be reported as applied.
@@ -66,9 +66,9 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     }
 
     // Injected command seams for tests (no real liquidctl needed).
-    internal LinuxLiquidctlProvider(Func<string> statusJson, Func<string, string, int, bool> setSpeed, IConfigStore? config = null, Func<bool>? nativeKraken = null)
+    internal LinuxLiquidctlProvider(Func<string> statusJson, Func<string, string, int, bool> setSpeed, IConfigStore? config = null, Func<string?>? nativeHidPath = null)
     {
-        _nativeKraken = nativeKraken ?? (() => false);
+        _nativeHidPath = nativeHidPath ?? (() => null);
         _statusJson = statusJson;
         _setSpeed = setSpeed;
         _forceAvailable = true;
@@ -255,9 +255,9 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
             }
             devices = _snapshot;
         }
-        // The native driver owns the cooler once attached; a second card writes to the same hidraw node.
-        return _nativeKraken()
-            ? devices.Where(d => !d.Description.Contains("Kraken", StringComparison.OrdinalIgnoreCase)).ToList()
+        // The native driver owns this hidraw node; a second card would write to the same cooler.
+        return _nativeHidPath() is { } owned
+            ? devices.Where(d => d.Address != owned).ToList()
             : devices;
     }
 

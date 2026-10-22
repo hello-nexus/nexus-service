@@ -39,18 +39,44 @@ public class LinuxFanControlProviderTests
     }
 
     [Theory]
-    [InlineData(true, 0)]
-    [InlineData(false, 1)]
-    public void NativeKrakenAttached_HidesKernelKrakenFanAndTemp(bool nativeAttached, int expected)
+    [InlineData("kraken2024elite", 0)]
+    [InlineData("z53", 1)]
+    [InlineData(null, 1)]
+    public void NativeKrakenClaimsChip_HidesOnlyThatChipFanAndTemp(string? hidden, int expected)
     {
         using var t = new TempDir();
-        t.Write("hwmon/hwmon0/name", "kraken3\n");
+        t.Write("hwmon/hwmon0/name", "kraken2024elite\n");
         t.Write("hwmon/hwmon0/pwm1", "128\n");
         t.Write("hwmon/hwmon0/pwm1_enable", "1\n");
         t.Write("hwmon/hwmon0/temp1_input", "30000\n");
-        var p = new LinuxFanControlProvider(t.At("hwmon"), TimeSpan.FromMilliseconds(1), nativeKraken: () => nativeAttached);
+        var p = new LinuxFanControlProvider(t.At("hwmon"), TimeSpan.FromMilliseconds(1), nativeHwmon: () => hidden);
         Assert.Equal(expected, p.GetFanChannels().Count);
         Assert.Equal(expected, p.GetTemperatureSources().Count);
+    }
+
+    [Theory]
+    [InlineData(0x2007, "x53")]
+    [InlineData(0x2014, "x53")]
+    [InlineData(0x3008, "z53")]
+    [InlineData(0x300E, "kraken2023")]
+    [InlineData(0x300C, "kraken2023elite")]
+    [InlineData(0x3012, "kraken2024elite")]
+    [InlineData(0x3014, null)]
+    public void KernelHwmonName_FollowsTheKernelDriverPerProductId(int productId, string? expected)
+        => Assert.Equal(expected, Nexus.Service.Peripherals.Nzxt.KrakenModel.KernelHwmonName(productId));
+
+    [Fact]
+    public void KrakenHubClaim_SurvivesDetachAndClearsOnRelease()
+    {
+        var hub = new Nexus.Service.Peripherals.Nzxt.KrakenHub(null);
+        Assert.Null(hub.ClaimedHidPath);
+        hub.Claim("/dev/hidraw12", Nexus.Service.Peripherals.Nzxt.KrakenModel.Find(0x3012)!);
+        hub.Detach();
+        Assert.Equal("/dev/hidraw12", hub.ClaimedHidPath);
+        Assert.Equal("kraken2024elite", hub.ClaimedHwmonName);
+        hub.ReleaseClaim();
+        Assert.Null(hub.ClaimedHidPath);
+        Assert.Null(hub.ClaimedHwmonName);
     }
 
     [Fact]

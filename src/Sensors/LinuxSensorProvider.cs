@@ -591,21 +591,21 @@ public sealed class LinuxSensorProvider : ISensorProvider
             sensors.Add(MakeSensor("mobo/model", "Model Identifier", "Factor", 0, "", model));
         }
 
-        var hideKraken = _krakenHub?.IsConnected == true;
-        foreach (var (name, idFrag, rpm) in EnumerateHwmonFans(hideKraken))
+        var hidden = _krakenHub?.ClaimedHwmonName;
+        foreach (var (name, idFrag, rpm) in EnumerateHwmonFans(hidden))
         {
             sensors.Add(MakeSensor($"mobo/fan/{idFrag}", name, "Fan", rpm, "RPM", model));
         }
 
-        foreach (var (name, idFrag, millivolts) in EnumerateHwmonVoltages(hideKraken))
+        foreach (var (name, idFrag, millivolts) in EnumerateHwmonVoltages(hidden))
         {
             sensors.Add(MakeSensor($"mobo/voltage/{idFrag}", name, "Voltage", millivolts / 1000f, "V", model));
         }
 
         // Non-CPU/non-GPU temps from hwmon (e.g. nct6687 VRM temps, chipset temps).
-        foreach (var (name, idFrag, tempC) in EnumerateHwmonTemps(excludedNames: hideKraken
-            ? new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu", "kraken2", "kraken3" }
-            : new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu" }))
+        foreach (var (name, idFrag, tempC) in EnumerateHwmonTemps(excludedNames: hidden is null
+            ? new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu" }
+            : new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu", hidden }))
         {
             sensors.Add(MakeSensor($"mobo/temp/{idFrag}", name, "Temperature", tempC, "°C", model));
         }
@@ -1132,7 +1132,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
     }
 
-    private static IEnumerable<(string Name, string IdFrag, float Rpm)> EnumerateHwmonFans(bool hideKraken)
+    private static IEnumerable<(string Name, string IdFrag, float Rpm)> EnumerateHwmonFans(string? hidden)
     {
         IEnumerable<string> dirs;
         try
@@ -1151,7 +1151,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
             {
                 continue;
             }
-            if (hideKraken && KrakenHub.IsKernelHwmonChip(hwmonName))
+            if (hwmonName == hidden)
             {
                 continue;
             }
@@ -1187,7 +1187,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
     }
 
-    private static IEnumerable<(string Name, string IdFrag, float MilliVolts)> EnumerateHwmonVoltages(bool hideKraken)
+    private static IEnumerable<(string Name, string IdFrag, float MilliVolts)> EnumerateHwmonVoltages(string? hidden)
     {
         IEnumerable<string> dirs;
         try
@@ -1206,7 +1206,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
             {
                 continue;
             }
-            if (hideKraken && KrakenHub.IsKernelHwmonChip(hwmonName))
+            if (hwmonName == hidden)
             {
                 continue;
             }
