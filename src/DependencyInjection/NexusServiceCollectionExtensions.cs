@@ -1139,11 +1139,14 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();
 
         // SL-LCD Wireless fan screens: independent wired USB devices (not the
-        // RF link). Windows-only for v1, same discovery-stub pattern as the
-        // dongles above.
+        // RF link). Windows and Linux; same discovery-stub pattern as the
+        // dongles above elsewhere.
 #if WINDOWS
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery,
                               Nexus.Service.Peripherals.LianLiWireless.WindowsSlv3LcdDiscovery>();
+#elif LINUX
+        services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery,
+                              Nexus.Service.Peripherals.LianLiWireless.LinuxSlv3LcdDiscovery>();
 #else
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery,
                               Nexus.Service.Peripherals.LianLiWireless.StubSlv3LcdDiscovery>();
@@ -1151,7 +1154,11 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdHub>(sp =>
             new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdHub(
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery>(),
+#if LINUX
+                port => new Nexus.Service.Peripherals.LianLiWireless.LinuxSlv3LcdTransport(port.PortName),
+#else
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdTransport(port.PortName),
+#endif
                 sp.GetService<Nexus.Service.Lighting.LcdLockState>()));
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdConnectionWorker>();
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaLibrary>();
@@ -1363,6 +1370,8 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.WindowsBulkUsbPipeFactory()
 #elif MACOS
             new Nexus.Service.Peripherals.BulkPanels.MacBulkUsbPipeFactory()
+#elif LINUX
+            new Nexus.Service.Peripherals.BulkPanels.LinuxBulkUsbPipeFactory()
 #else
             new Nexus.Service.Peripherals.BulkPanels.NullBulkUsbPipeFactory()
 #endif
@@ -2414,6 +2423,10 @@ public static class NexusServiceCollectionExtensions
 #if LINUX
         Nexus.Service.Platform.Linux.LinuxPanelKioskHost.Configure(servicePort);
         services.AddSingleton<Nexus.Service.Platform.Linux.LinuxPanelKioskHost>();
+        Nexus.Service.Platform.Linux.LinuxStreamRenderHost.Configure(servicePort);
+        services.AddHostedService(sp => new Nexus.Service.Platform.Linux.LinuxStreamRenderHost(
+            sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(),
+            sp.GetRequiredService<Nexus.Service.Auth.TokenService>()));
 #endif
         services.AddHostedService(sp => new Nexus.Service.Panel.OverlaySupervisor(
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
