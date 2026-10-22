@@ -62,6 +62,7 @@ internal static class WindowsServiceHost
     // WTS session-change event types. The lock pair drives the blackout;
     // logon re-arms the user-session helper spawn. Console connect and the
     // rest describe a session appearing, which is neither.
+    private const uint WTS_CONSOLE_CONNECT = 0x1;
     private const uint WTS_SESSION_LOGON = 0x5;
     private const uint WTS_SESSION_LOCK = 0x7;
     private const uint WTS_SESSION_UNLOCK = 0x8;
@@ -219,6 +220,9 @@ internal static class WindowsServiceHost
     /// wake it.</summary>
     internal static event Action? SessionLogon;
 
+    /// <summary>A session took over the physical console (fast user switching); per-session state keyed to the console must follow it.</summary>
+    internal static event Action? ConsoleSessionChanged;
+
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvStdcall) })]
     private static uint ControlHandler(uint dwControl, uint dwEventType, IntPtr lpEventData, IntPtr lpContext)
     {
@@ -250,6 +254,13 @@ internal static class WindowsServiceHost
                 else if (dwEventType == WTS_SESSION_LOGON)
                 {
                     try { SessionLogon?.Invoke(); }
+                    catch { }
+                    try { ConsoleSessionChanged?.Invoke(); }
+                    catch { }
+                }
+                else if (dwEventType == WTS_CONSOLE_CONNECT)
+                {
+                    try { ConsoleSessionChanged?.Invoke(); }
                     catch { }
                 }
                 return NO_ERROR;

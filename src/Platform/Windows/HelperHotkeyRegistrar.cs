@@ -2,7 +2,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,12 +25,24 @@ namespace Nexus.Service.Platform.Windows;
 public sealed class HelperHotkeyRegistrar : IHotkeyRegistrar
 {
     private readonly HelperRegistry _registry;
+    private readonly ConsoleSessionTracker _console = new();
 
     public HelperHotkeyRegistrar(HelperRegistry registry)
     {
         _registry = registry;
         _registry.Connected += _ => NeedsReapply?.Invoke();
         _registry.InboundEnvelope += OnInbound;
+        // Switching users moves the console without any helper connecting, so the set must follow it.
+        _console.HasChanged(HelperRegistry.ActiveConsoleSessionId());
+        Nexus.Service.Lifecycle.WindowsServiceHost.ConsoleSessionChanged += OnConsoleMaybeChanged;
+    }
+
+    private void OnConsoleMaybeChanged()
+    {
+        if (_console.HasChanged(HelperRegistry.ActiveConsoleSessionId()))
+        {
+            NeedsReapply?.Invoke();
+        }
     }
 
     public string Platform => "windows";
@@ -71,13 +82,12 @@ public sealed class HelperHotkeyRegistrar : IHotkeyRegistrar
 
     private HelperConnection? ActiveConnection()
     {
-        var console = (int)WTSGetActiveConsoleSessionId();
-        return _registry.GetForSession(console);
+        return _registry.GetForConsole();
     }
 
     private void OnInbound(HelperConnection conn, HelperEnvelope env)
     {
-        if (env.Type != HotkeyCommands.FiredType || conn.SessionId != (int)WTSGetActiveConsoleSessionId())
+        if (env.Type != HotkeyCommands.FiredType || conn.SessionId != HelperRegistry.ActiveConsoleSessionId())
         {
             return;
         }
@@ -86,8 +96,5 @@ public sealed class HelperHotkeyRegistrar : IHotkeyRegistrar
             Fired?.Invoke(fired.Id, fired.Combo);
         }
     }
-
-    [DllImport("kernel32.dll")]
-    private static extern uint WTSGetActiveConsoleSessionId();
 }
 #endif

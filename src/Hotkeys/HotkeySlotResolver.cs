@@ -87,7 +87,8 @@ public static class HotkeySlotResolver
     private static bool FindInDial(DeckDial dial, string tag, out DeckAction? action)
     {
         action = null;
-        if (dial.Action is not { Type: "custom" } custom || custom.HotkeyTags is not { } tags)
+        // A stacked dial runs its entries and ignores its own action.
+        if (dial.Stack is { Count: >= 2 } || dial.Action is not { Type: "custom" } custom || custom.HotkeyTags is not { } tags)
         {
             return false;
         }

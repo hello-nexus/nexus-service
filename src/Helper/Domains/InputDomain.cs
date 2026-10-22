@@ -43,9 +43,10 @@ public static class InputCommands
         return result.Ok;
     }
 
+    /// <summary>Injects through the console session's helper: a chord sent to another session's desktop would land in the wrong place.</summary>
     public static async Task<bool> SendKeysAsync(HelperRegistry registry, InputterBody body, CancellationToken ct = default)
     {
-        var conn = registry.GetAny();
+        var conn = registry.GetForConsole();
         if (conn is null)
         {
             return false;

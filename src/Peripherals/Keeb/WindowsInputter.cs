@@ -29,10 +29,16 @@ public sealed class WindowsInputter : IInputterProvider
         {
             if (string.Equals(stroke.Type, MacroStroke.ReleaseModifiersType, StringComparison.Ordinal))
             {
-                if (stroke.Meta) allOk &= SendKey(VK_LWIN, false);
-                if (stroke.Alt) allOk &= SendKey(VK_MENU, false);
-                if (stroke.Shift) allOk &= SendKey(VK_SHIFT, false);
-                if (stroke.Ctrl) allOk &= SendKey(VK_CONTROL, false);
+                // Releasing Win or Alt with no other key between would open the Start menu or the menu bar; a no-op key tap first cancels that.
+                if (stroke.Meta || stroke.Alt)
+                {
+                    allOk &= SendKey(VK_NOOP, true);
+                    allOk &= SendKey(VK_NOOP, false);
+                }
+                if (stroke.Meta) allOk &= SendKey(VK_LWIN, false) & SendKey(VK_RWIN, false);
+                if (stroke.Alt) allOk &= SendKey(VK_MENU, false) & SendKey(VK_RMENU, false);
+                if (stroke.Shift) allOk &= SendKey(VK_SHIFT, false) & SendKey(VK_RSHIFT, false);
+                if (stroke.Ctrl) allOk &= SendKey(VK_CONTROL, false) & SendKey(VK_RCONTROL, false);
                 continue;
             }
             var vk = ParseKey(stroke.Key);
@@ -144,6 +150,11 @@ public sealed class WindowsInputter : IInputterProvider
     private const ushort VK_SHIFT = 0x10;
     private const ushort VK_MENU = 0x12;
     private const ushort VK_LWIN = 0x5B;
+    private const ushort VK_RWIN = 0x5C;
+    private const ushort VK_RSHIFT = 0xA1;
+    private const ushort VK_RCONTROL = 0xA3;
+    private const ushort VK_RMENU = 0xA5;
+    private const ushort VK_NOOP = 0xE8;
 
     // SendInput validates cbSize against the OS INPUT layout: 40 bytes on
     // x64 (4-byte type, 4 alignment, 32-byte union sized by MOUSEINPUT).

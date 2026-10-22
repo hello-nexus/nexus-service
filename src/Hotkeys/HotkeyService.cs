@@ -23,6 +23,7 @@ public sealed class HotkeyService : IHostedService, IDisposable
     public const int MaxBindings = 100;
     private const int MaxIdLength = 64;
     internal static readonly TimeSpan DefaultSuspendTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan StopGateTimeout = TimeSpan.FromSeconds(1);
 
     private readonly IConfigStore _store;
     private readonly IHotkeyRegistrar _registrar;
@@ -40,7 +41,7 @@ public sealed class HotkeyService : IHostedService, IDisposable
     private Timer? _resumeTimer;
     private int _reconcileQueued;
     private bool _disposed;
-    private bool _stopped;
+    private volatile bool _stopped;
     private int _suspendGeneration;
 
     /// <summary>Test seam: how long a suspend lasts before it resumes on its own.</summary>
@@ -85,12 +86,16 @@ public sealed class HotkeyService : IHostedService, IDisposable
             _resumeTimer?.Dispose();
             _resumeTimer = null;
         }
-        // Holding the gate makes any in-flight reconcile finish first and stops later ones registering.
-        await _reconcileGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        // Holding the gate makes an in-flight reconcile finish first, but a registrar stuck on a main queue that no longer runs must not hold up shutdown.
+        var gated = await _reconcileGate.WaitAsync(StopGateTimeout).ConfigureAwait(false);
+        _stopped = true;
+        _suspended = false;
+        if (!gated)
+        {
+            return;
+        }
         try
         {
-            _stopped = true;
-            _suspended = false;
             if (_registrar.Supported && _registrar.ReleaseOnStop)
             {
                 await SafeApplyAsync(Array.Empty<HotkeyRegistration>()).ConfigureAwait(false);
@@ -121,7 +126,7 @@ public sealed class HotkeyService : IHostedService, IDisposable
         _store.Read(settings =>
         {
             var bindings = settings.Hotkeys.Bindings;
-            var eligible = EligibleCombos(bindings, settings.StreamDeck);
+            var analysis = Analyze(bindings, settings.StreamDeck);
             foreach (var b in bindings)
             {
                 views.Add(new HotkeyBindingView
@@ -131,7 +136,7 @@ public sealed class HotkeyService : IHostedService, IDisposable
                     Enabled = b.Enabled,
                     Label = b.Label,
                     Target = b.Target,
-                    Status = StatusOf(b, settings.StreamDeck, eligible, results),
+                    Status = StatusOf(b, analysis, results),
                 });
             }
         });
@@ -437,13 +442,42 @@ public sealed class HotkeyService : IHostedService, IDisposable
 
     // ---- Eligibility and status --------------------------------------------
 
-    private static List<HotkeyRegistration> WantedRegistrations(IReadOnlyList<HotkeyBinding> bindings, StreamDeckSettings deck)
+    // One pass over the bindings per reconcile or response: each deck target is resolved once.
+    private sealed class Analysis
     {
-        var eligible = EligibleCombos(bindings, deck);
-        var wanted = new List<HotkeyRegistration>();
+        public readonly List<(HotkeyBinding Binding, HotkeyCombo Combo)> Eligible = new();
+        public readonly Dictionary<string, int> ComboCounts = new(StringComparer.Ordinal);
+        public readonly HashSet<string> Orphaned = new(StringComparer.Ordinal);
+    }
+
+    private static Analysis Analyze(IReadOnlyList<HotkeyBinding> bindings, StreamDeckSettings deck)
+    {
+        var analysis = new Analysis();
         foreach (var b in bindings)
         {
-            if (IsEligible(b, deck, out var combo) && eligible[combo.ToString()] == 1)
+            if (!b.Enabled || HotkeyCombo.TryParse(b.Combo) is not { } combo)
+            {
+                continue;
+            }
+            if (b.Target.Kind == HotkeyTarget.KindDeck && HotkeySlotResolver.Resolve(b.Target, deck) is null)
+            {
+                analysis.Orphaned.Add(b.Id);
+                continue;
+            }
+            analysis.Eligible.Add((b, combo));
+            var text = combo.ToString();
+            analysis.ComboCounts[text] = analysis.ComboCounts.GetValueOrDefault(text) + 1;
+        }
+        return analysis;
+    }
+
+    private static List<HotkeyRegistration> WantedRegistrations(IReadOnlyList<HotkeyBinding> bindings, StreamDeckSettings deck)
+    {
+        var analysis = Analyze(bindings, deck);
+        var wanted = new List<HotkeyRegistration>();
+        foreach (var (b, combo) in analysis.Eligible)
+        {
+            if (analysis.ComboCounts[combo.ToString()] == 1)
             {
                 wanted.Add(new HotkeyRegistration(b.Id, combo));
             }
@@ -451,37 +485,7 @@ public sealed class HotkeyService : IHostedService, IDisposable
         return wanted;
     }
 
-    /// <summary>Count of eligible bindings per canonical combo; a count above one is a duplicate conflict.</summary>
-    private static Dictionary<string, int> EligibleCombos(IReadOnlyList<HotkeyBinding> bindings, StreamDeckSettings deck)
-    {
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var b in bindings)
-        {
-            if (IsEligible(b, deck, out var combo))
-            {
-                var text = combo.ToString();
-                counts[text] = counts.GetValueOrDefault(text) + 1;
-            }
-        }
-        return counts;
-    }
-
-    private static bool IsEligible(HotkeyBinding b, StreamDeckSettings deck, out HotkeyCombo combo)
-    {
-        combo = default;
-        if (!b.Enabled || HotkeyCombo.TryParse(b.Combo) is not { } parsed || IsOrphaned(b, deck))
-        {
-            return false;
-        }
-        combo = parsed;
-        return true;
-    }
-
-    private static bool IsOrphaned(HotkeyBinding b, StreamDeckSettings deck)
-        => b.Target.Kind == HotkeyTarget.KindDeck && HotkeySlotResolver.Resolve(b.Target, deck) is null;
-
-    private string StatusOf(
-        HotkeyBinding b, StreamDeckSettings deck, Dictionary<string, int> eligible, IReadOnlyDictionary<string, bool> results)
+    private string StatusOf(HotkeyBinding b, Analysis analysis, IReadOnlyDictionary<string, bool> results)
     {
         if (!_registrar.Supported)
         {
@@ -495,11 +499,11 @@ public sealed class HotkeyService : IHostedService, IDisposable
         {
             return HotkeyStatus.Unbound;
         }
-        if (IsOrphaned(b, deck))
+        if (analysis.Orphaned.Contains(b.Id))
         {
             return HotkeyStatus.Orphaned;
         }
-        if (eligible.GetValueOrDefault(combo.ToString()) > 1)
+        if (analysis.ComboCounts.GetValueOrDefault(combo.ToString()) > 1)
         {
             return HotkeyStatus.Conflict;
         }

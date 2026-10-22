@@ -168,7 +168,7 @@ public sealed class GlobalHotkeys : IDisposable
     private Dictionary<string, bool> Register(IReadOnlyList<HotkeyRegistration> set)
     {
         UnregisterAll();
-        // Ids stay within the app-defined range RegisterHotKey allows (0x0000 to 0xBFFF); a full re-apply restarts them.
+        // Ids stay within the app-defined id range RegisterHotKey allows; a full re-apply restarts them.
         _nextAtom = 1;
         var results = new Dictionary<string, bool>(set.Count, StringComparer.Ordinal);
         foreach (var reg in set)

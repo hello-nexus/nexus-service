@@ -75,6 +75,25 @@ public sealed class HotkeySlotResolverTests
     }
 
     [Fact]
+    public void A_stacked_dials_own_action_tags_do_not_match_only_its_entries_do()
+    {
+        var settings = Settings();
+        var stacked = settings.Presets[0].Deck.Pages[0].Dials![1];
+        stacked.Action = new DeckDialAction
+        {
+            Type = "custom",
+            Push = Keys("ctrl+own"),
+            HotkeyTags = new DeckDialHotkeyTags { Push = "own-tag" },
+        };
+        Assert.Null(HotkeySlotResolver.Resolve(Tag("own-tag"), settings));
+        Assert.Equal("ctrl+s0", HotkeySlotResolver.Resolve(Tag("stack-0"), settings)?.Keys);
+
+        // With a single entry the stack is not active and the dial's own action is what runs.
+        stacked.Stack!.RemoveAt(1);
+        Assert.Equal("ctrl+own", HotkeySlotResolver.Resolve(Tag("own-tag"), settings)?.Keys);
+    }
+
+    [Fact]
     public void A_tag_on_a_dial_event_without_an_action_is_orphaned()
     {
         Assert.Null(HotkeySlotResolver.Resolve(Tag("stack-1"), Settings()));

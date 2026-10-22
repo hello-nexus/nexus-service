@@ -499,6 +499,25 @@ public sealed class HotkeyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Stop_does_not_wait_for_a_registrar_that_never_returns()
+    {
+        _registrar.ReleaseOnStop = false;
+        var service = Service();
+        service.SeedDefaults();
+        await service.StartAsync(CancellationToken.None);
+        var stuck = new TaskCompletionSource();
+        _registrar.Block = stuck;
+        var reconcile = service.ReconcileAsync(force: true);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        await service.StopAsync(CancellationToken.None);
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"stop took {watch.Elapsed}");
+        stuck.SetResult();
+        await reconcile;
+    }
+
+    [Fact]
     public async Task A_resume_from_an_older_suspend_cannot_cancel_a_newer_one()
     {
         var service = Service();
