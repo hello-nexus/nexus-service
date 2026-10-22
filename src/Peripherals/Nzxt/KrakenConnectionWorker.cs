@@ -107,6 +107,7 @@ public sealed class KrakenConnectionWorker : BackgroundService
                     }
                     else
                     {
+                        _hub.ReleaseClaim();
                         await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     }
                 }
