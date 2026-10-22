@@ -86,8 +86,36 @@ public sealed class MystiqueWorker : BackgroundService
     /// caller gives up before the stream starts; once it has started, the real result is awaited.
     /// </summary>
     /// <param name="source">Runs on the worker once the stream is finished, before anything else is sent, and names the source command to follow it (null for none).</param>
-    public Task<bool> UploadAsync(MystiqueMediaPackage package, Func<string?> source, CancellationToken ct) =>
-        RunMediaAsync(s => s.Upload(package, source), ct);
+    public Task<bool> UploadAsync(MystiqueMediaPackage package, Func<string?> source, CancellationToken ct)
+    {
+        long total = 0;
+        foreach (var frame in package.Frames)
+        {
+            total += frame.Length;
+        }
+        return RunMediaAsync(s => s.Upload(package, source, sent => ReportProgress(ProgressSending, sent, total)), ct);
+    }
+
+    public const string ProgressConverting = "converting";
+    public const string ProgressSending = "sending";
+
+    // Phase and percent of the media job in hand; the page reads them while its upload request waits.
+    private volatile string _progressPhase = "";
+    private int _progressPercent;
+
+    public (string Phase, int Percent) Progress => (_progressPhase, Volatile.Read(ref _progressPercent));
+
+    public void ReportProgress(string phase, long done, long total)
+    {
+        Volatile.Write(ref _progressPercent, total > 0 ? (int)Math.Clamp(done * 100 / total, 0, 100) : 0);
+        _progressPhase = phase;
+    }
+
+    public void ClearProgress()
+    {
+        _progressPhase = "";
+        Volatile.Write(ref _progressPercent, 0);
+    }
 
     /// <summary>
     /// Erases every picture and GIF on the screen, between ticks like an upload. A refused or unanswered

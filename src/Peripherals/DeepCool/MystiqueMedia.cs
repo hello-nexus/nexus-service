@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
@@ -137,6 +138,58 @@ public static class MystiqueMedia
             throw new ArgumentException("GIF outside the recorded size", nameof(jpegs));
         }
         return new MystiqueMediaPackage(KindGif, id, frames);
+    }
+
+    /// <summary>A GIF's frames as kept on disk: its duration (LE16), then each JPEG as its length (LE32) and bytes.</summary>
+    public static byte[] SaveGif(MystiqueMediaPackage gif)
+    {
+        int length = 2;
+        foreach (var frame in gif.Frames)
+        {
+            length += 4 + frame.Length - HeaderLength;
+        }
+        var saved = new byte[length];
+        saved[0] = gif.Frames[0][15];
+        saved[1] = gif.Frames[0][16];
+        int at = 2;
+        foreach (var frame in gif.Frames)
+        {
+            BinaryPrimitives.WriteInt32LittleEndian(saved.AsSpan(at), frame.Length - HeaderLength);
+            frame.AsSpan(HeaderLength).CopyTo(saved.AsSpan(at + 4));
+            at += 4 + frame.Length - HeaderLength;
+        }
+        return saved;
+    }
+
+    /// <summary>A GIF kept by <see cref="SaveGif"/>, rebuilt under <paramref name="id"/>; null when the bytes do not hold one the screen takes.</summary>
+    public static MystiqueMediaPackage? LoadGif(ReadOnlySpan<byte> saved, string id)
+    {
+        if (saved.Length < 2 || !IsId(id))
+        {
+            return null;
+        }
+        int durationMs = BinaryPrimitives.ReadUInt16LittleEndian(saved);
+        var jpegs = new List<byte[]>();
+        int at = 2;
+        while (at < saved.Length)
+        {
+            if (saved.Length - at < 4)
+            {
+                return null;
+            }
+            int length = BinaryPrimitives.ReadInt32LittleEndian(saved[at..]);
+            if (length <= 0 || length > saved.Length - at - 4 || jpegs.Count == MaxGifFrames)
+            {
+                return null;
+            }
+            jpegs.Add(saved.Slice(at + 4, length).ToArray());
+            at += 4 + length;
+        }
+        if (jpegs.Count < GifFrames || durationMs < 1 || StreamLength(jpegs) > MaxGifStreamBytes)
+        {
+            return null;
+        }
+        return BuildGif(jpegs, id, durationMs);
     }
 
     public static long StreamLength(IReadOnlyList<byte[]> jpegs)

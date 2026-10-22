@@ -102,6 +102,22 @@ public class MystiqueSessionTests
     }
 
     [Fact]
+    public void Upload_reports_the_stream_bytes_the_screen_took_after_each_packet()
+    {
+        var pipe = new FakePipe();
+        var session = new MystiqueSession(pipe);
+        Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
+        var package = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
+        var reported = new List<long>();
+
+        Assert.True(session.Upload(package, progress: reported.Add));
+
+        Assert.Equal(MystiqueMedia.Packets(package.Frames[0]).Count(), reported.Count);
+        Assert.Equal(package.Frames[0].Length, reported[^1]);
+        Assert.Equal(reported.OrderBy(v => v), reported);
+    }
+
+    [Fact]
     public void A_null_source_streams_without_the_source_command()
     {
         var pipe = new FakePipe();
