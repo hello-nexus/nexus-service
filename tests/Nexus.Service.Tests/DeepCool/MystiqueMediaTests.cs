@@ -289,13 +289,14 @@ public class MystiqueMediaTests
     }
 
     [Theory]
-    [InlineData(30, 30, 1000, 1000)]
-    [InlineData(29, 30, 1000, 967)]
-    [InlineData(149, 149, 4516, 4516)]
-    [InlineData(31, 30, 1000, 1000)]
-    public void The_duration_covers_only_the_frames_decoded(int decoded, int requested, int spanMs, int expected)
+    [InlineData(30, 30, 30, 1000, 1000)]
+    [InlineData(29, 30, 29, 1000, 967)]
+    [InlineData(149, 149, 149, 4516, 4516)]
+    [InlineData(24, 25, 25, 1000, 1000)]
+    [InlineData(1, 25, 25, 1000, 1000)]
+    public void The_duration_covers_the_decoded_frames_sent_once_or_the_whole_span_when_repeated(int decoded, int requested, int slots, int spanMs, int expected)
     {
-        Assert.Equal(expected, MystiqueMediaEncoder.DecodedSpanMs(decoded, requested, spanMs));
+        Assert.Equal(expected, MystiqueMediaEncoder.DecodedSpanMs(decoded, requested, slots, spanMs));
     }
 
     [Fact]
