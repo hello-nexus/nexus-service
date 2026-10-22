@@ -32,6 +32,10 @@ internal static class NzxtFanControllerProtocol
     private const byte SubCommandStatus = 0x02;
     private const byte SubCommandSetDuty = 0x01;
 
+    // Bytes of the interval command that sit around the cadence index, once per fan group.
+    private const byte IntervalGroupFlag = 0x01;
+    private const byte IntervalGroupScale = 0xE8;
+
     private const int ModeOffset = 16;
     private const int RpmOffset = 24;
     private const int DutyOffset = 40;
@@ -43,11 +47,11 @@ internal static class NzxtFanControllerProtocol
     public static byte[] EncodeSetStatusInterval()
     {
         var report = NewReport(ReportFanConfig, SubCommandSetInterval);
-        report[2] = 0x01;
-        report[3] = 0xE8;
+        report[2] = IntervalGroupFlag;
+        report[3] = IntervalGroupScale;
         report[4] = StatusIntervalIndex;
-        report[5] = 0x01;
-        report[6] = 0xE8;
+        report[5] = IntervalGroupFlag;
+        report[6] = IntervalGroupScale;
         report[7] = StatusIntervalIndex;
         return report;
     }
@@ -100,5 +104,5 @@ internal static class NzxtFanControllerProtocol
     }
 }
 
-/// <summary>One fan channel as the status report states it. <paramref name="Mode"/> is zero when nothing is plugged in.</summary>
+/// <summary>One fan channel as the status report states it. <paramref name="Mode"/> is <see cref="NzxtFanControllerProtocol.ModeNone"/> when nothing is plugged in.</summary>
 public readonly record struct NzxtFanReading(int Mode, int Rpm, int DutyPercent);

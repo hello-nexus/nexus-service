@@ -69,6 +69,13 @@ public class NzxtFanControllerTests
 
     private static readonly (int, int, int)[] ThreeFans = { (2, 1200, 50), (1, 300, 20), (0, 0, 0) };
 
+    /// <summary>Duties written to one channel through fixed-duty reports, in order.</summary>
+    private static List<int> DutyWrites(FakeHid hid, int channel) =>
+        hid.Writes
+            .Where(w => w[0] == 0x62 && (w[2] & (1 << channel)) != 0)
+            .Select(w => (int)w[3 + channel])
+            .ToList();
+
     private static (NzxtFanControllerHub Hub, FakeHid Hid) Connected()
     {
         var hid = new FakeHid();
@@ -200,14 +207,14 @@ public class NzxtFanControllerTests
     }
 
     [Fact]
-    public void Provider_ListsPopulatedChannelsUnderOneDevice()
+    public void Provider_ListsEveryHeaderUnderOneDevice()
     {
         var (hub, _) = Connected();
         var provider = new NzxtFanControllerCoolingProvider(hub);
 
         var channels = provider.GetFanChannels();
 
-        Assert.Equal(new[] { "nzxt-fan-controller:fan0", "nzxt-fan-controller:fan1" },
+        Assert.Equal(new[] { "nzxt-fan-controller:fan0", "nzxt-fan-controller:fan1", "nzxt-fan-controller:fan2" },
             channels.Select(c => c.Id).ToArray());
         Assert.All(channels, c =>
         {
@@ -219,46 +226,7 @@ public class NzxtFanControllerTests
         Assert.Equal(1200, channels[0].Rpm);
         Assert.Equal(50, channels[0].DutyPercent);
         var component = Assert.Single(provider.GetAll());
-        Assert.Equal(2, component.Devices.Count);
-    }
-
-    [Fact]
-    public void Provider_ShowsASpinningFanEvenWhenItsModeByteReadsZero()
-    {
-        var hid = new FakeHid();
-        hid.Incoming.Enqueue(Status(new[] { (0, 800, 30), (0, 0, 0), (0, 0, 0) }));
-        var hub = new NzxtFanControllerHub();
-        hub.Attach(hid);
-        Assert.True(hub.Connect());
-        var provider = new NzxtFanControllerCoolingProvider(hub);
-
-        Assert.Equal("nzxt-fan-controller:fan0", Assert.Single(provider.GetFanChannels()).Id);
-    }
-
-    [Fact]
-    public void Provider_ListsNothingWhenNoHeaderIsPopulated()
-    {
-        var hid = new FakeHid();
-        hid.Incoming.Enqueue(Status(new[] { (0, 0, 0), (0, 0, 0), (0, 0, 0) }));
-        var hub = new NzxtFanControllerHub();
-        hub.Attach(hid);
-        Assert.True(hub.Connect());
-        var provider = new NzxtFanControllerCoolingProvider(hub);
-
-        Assert.Empty(provider.GetFanChannels());
-        Assert.Empty(provider.GetAll());
-    }
-
-    [Fact]
-    public void WriteToAnEmptyHeader_IsDropped()
-    {
-        var (hub, hid) = Connected();
-        var provider = new NzxtFanControllerCoolingProvider(hub);
-        hid.Writes.Clear();
-
-        provider.DriveFanSpeed("nzxt-fan-controller:fan2", 50);
-
-        Assert.Empty(hid.Writes);
+        Assert.Equal(NzxtFanControllerProtocol.FanChannelCount, component.Devices.Count);
     }
 
     [Fact]
@@ -283,6 +251,7 @@ public class NzxtFanControllerTests
         Assert.Equal(100, applied);
         var write = Assert.Single(hid.Writes);
         Assert.Equal(new byte[] { 0x62, 0x01, 0x02, 0, 100, 0 }, write.Take(6).ToArray());
+        Assert.Equal(new[] { 100 }, DutyWrites(hid, 1));
         var channels = provider.GetFanChannels();
         Assert.Equal(FanModes.Manual, channels[1].Mode);
         Assert.Equal(FanModes.Auto, channels[0].Mode);
@@ -302,7 +271,10 @@ public class NzxtFanControllerTests
 
         provider.DriveFanSpeed(id, 50);
 
-        Assert.Empty(hid.Writes);
+        for (int ch = 0; ch < NzxtFanControllerProtocol.FanChannelCount; ch++)
+        {
+            Assert.Empty(DutyWrites(hid, ch));
+        }
     }
 
     [Fact]
@@ -315,8 +287,16 @@ public class NzxtFanControllerTests
 
         provider.ReleaseFan("nzxt-fan-controller:fan0");
 
-        Assert.Empty(hid.Writes);
+        Assert.Empty(DutyWrites(hid, 0));
         Assert.Equal(FanModes.Auto, provider.GetFanChannels()[0].Mode);
+    }
+
+    private static void Reassert(NzxtFanControllerCoolingProvider provider, int times)
+    {
+        for (int i = 0; i < times; i++)
+        {
+            provider.ReassertControl();
+        }
     }
 
     [Fact]
@@ -327,13 +307,11 @@ public class NzxtFanControllerTests
         provider.DriveFanSpeed("nzxt-fan-controller:fan0", 80);
         hid.Writes.Clear();
 
-        provider.ReassertControl();
-        provider.ReassertControl();
-        Assert.Empty(hid.Writes);
+        Reassert(provider, 2);
+        Assert.Empty(DutyWrites(hid, 0));
 
-        provider.ReassertControl();
-        var write = Assert.Single(hid.Writes);
-        Assert.Equal(new byte[] { 0x62, 0x01, 0x01, 80 }, write.Take(4).ToArray());
+        Reassert(provider, 1);
+        Assert.Equal(new[] { 80 }, DutyWrites(hid, 0));
     }
 
     [Fact]
@@ -344,32 +322,61 @@ public class NzxtFanControllerTests
         provider.DriveFanSpeed("nzxt-fan-controller:fan0", 80);
         hid.Writes.Clear();
 
-        for (int i = 0; i < 60; i++)
-        {
-            provider.ReassertControl();
-        }
+        Reassert(provider, 60);
 
-        Assert.Equal(3, hid.Writes.Count);
+        Assert.Equal(new[] { 80, 80, 80 }, DutyWrites(hid, 0));
+    }
+
+    [Fact]
+    public void CapWarning_FiresOnceAfterTheLagAndRearmsOnANewDuty()
+    {
+        var (hub, hid) = Connected();
+        var provider = new NzxtFanControllerCoolingProvider(hub);
+        provider.DriveFanSpeed("nzxt-fan-controller:fan0", 80);
+
+        // Three resends take three lags; the cap is only reported after one more lag.
+        Reassert(provider, 9);
+        Assert.Equal(0, provider.CapWarnings);
+        Reassert(provider, 2);
+        Assert.Equal(0, provider.CapWarnings);
+        Reassert(provider, 1);
+        Assert.Equal(1, provider.CapWarnings);
+        Reassert(provider, 30);
+        Assert.Equal(1, provider.CapWarnings);
 
         provider.DriveFanSpeed("nzxt-fan-controller:fan0", 70);
-        hid.Writes.Clear();
-        for (int i = 0; i < 6; i++)
-        {
-            provider.ReassertControl();
-        }
-        Assert.Equal(2, hid.Writes.Count);
+        Reassert(provider, 12);
+        Assert.Equal(2, provider.CapWarnings);
+        Assert.Equal(new[] { 70, 70, 70, 70 }, DutyWrites(hid, 0).Skip(4).ToList());
+    }
+
+    [Fact]
+    public void CapWarning_RearmsAfterTheChannelConverges()
+    {
+        var (hub, hid) = Connected();
+        var provider = new NzxtFanControllerCoolingProvider(hub);
+        provider.DriveFanSpeed("nzxt-fan-controller:fan0", 80);
+        Reassert(provider, 12);
+        Assert.Equal(1, provider.CapWarnings);
+
+        hid.Incoming.Enqueue(Status(new[] { (2, 1200, 80), (1, 300, 20), (0, 0, 0) }));
+        Assert.True(hub.Poll());
+        Reassert(provider, 1);
+        hid.Incoming.Enqueue(Status(ThreeFans));
+        Assert.True(hub.Poll());
+        Reassert(provider, 12);
+
+        Assert.Equal(2, provider.CapWarnings);
     }
 
     [Fact]
     public void Reassert_StartsOverAfterAReconnect()
     {
-        var (hub, hid) = Connected();
+        var (hub, _) = Connected();
         var provider = new NzxtFanControllerCoolingProvider(hub);
         provider.DriveFanSpeed("nzxt-fan-controller:fan0", 80);
-        for (int i = 0; i < 60; i++)
-        {
-            provider.ReassertControl();
-        }
+        Reassert(provider, 60);
+        Assert.Equal(1, provider.CapWarnings);
         hub.Detach();
         var again = new FakeHid();
         again.Incoming.Enqueue(Status(ThreeFans));
@@ -377,75 +384,24 @@ public class NzxtFanControllerTests
         Assert.True(hub.Connect());
         again.Writes.Clear();
 
-        for (int i = 0; i < 3; i++)
-        {
-            provider.ReassertControl();
-        }
+        Reassert(provider, 3);
+        Assert.Equal(new[] { 80 }, DutyWrites(again, 0));
 
-        Assert.Single(again.Writes);
-    }
-
-    private static (NzxtFanControllerHub Hub, FakeHid Hid) ConnectedWith(params (int, int, int)[] fans)
-    {
-        var hid = new FakeHid();
-        hid.Incoming.Enqueue(Status(fans));
-        var hub = new NzxtFanControllerHub();
-        hub.Attach(hid);
-        Assert.True(hub.Connect());
-        return (hub, hid);
+        Reassert(provider, 9);
+        Assert.Equal(2, provider.CapWarnings);
     }
 
     [Fact]
-    public void ANeverPopulatedModeZeroChannel_StaysHiddenAndUnreasserted()
+    public void Reassert_StillWritesAChannelWhoseModeByteReadsNone()
     {
-        var (hub, hid) = ConnectedWith((2, 500, 50), (0, 0, 0), (0, 0, 0));
+        var (hub, hid) = Connected();
         var provider = new NzxtFanControllerCoolingProvider(hub);
-        provider.DriveFanSpeed("nzxt-fan-controller:fan1", 80);
-
-        for (int i = 0; i < 12; i++)
-        {
-            provider.ReassertControl();
-        }
-
-        Assert.Equal("nzxt-fan-controller:fan0", Assert.Single(provider.GetFanChannels()).Id);
-        Assert.Equal(2, hid.Writes.Count);
-    }
-
-    [Fact]
-    public void AModeZeroChannelThatSpunOnce_StaysListedWritableAndReassertedAfterItStops()
-    {
-        var (hub, hid) = ConnectedWith((0, 700, 40), (0, 0, 0), (0, 0, 0));
-        var provider = new NzxtFanControllerCoolingProvider(hub);
-        Assert.Single(provider.GetFanChannels());
-        hid.Incoming.Enqueue(Status(new[] { (0, 0, 0), (0, 0, 0), (0, 0, 0) }));
-        Assert.True(hub.Poll());
+        provider.DriveFanSpeed("nzxt-fan-controller:fan2", 60);
         hid.Writes.Clear();
 
-        Assert.Equal("nzxt-fan-controller:fan0", Assert.Single(provider.GetFanChannels()).Id);
-        provider.DriveFanSpeed("nzxt-fan-controller:fan0", 60);
-        Assert.Single(hid.Writes);
-        hid.Writes.Clear();
-        for (int i = 0; i < 3; i++)
-        {
-            provider.ReassertControl();
-        }
+        Reassert(provider, 3);
 
-        Assert.Single(hid.Writes);
-    }
-
-    [Fact]
-    public void Reconnect_ClearsTheSetOfChannelsSeenPopulated()
-    {
-        var (hub, _) = ConnectedWith((0, 700, 40), (0, 0, 0), (0, 0, 0));
-        var provider = new NzxtFanControllerCoolingProvider(hub);
-        Assert.Single(provider.GetFanChannels());
-        hub.Detach();
-        var again = new FakeHid();
-        again.Incoming.Enqueue(Status(new[] { (0, 0, 0), (0, 0, 0), (0, 0, 0) }));
-        hub.Attach(again);
-        Assert.True(hub.Connect());
-
-        Assert.Empty(provider.GetFanChannels());
+        Assert.Equal(new[] { 60 }, DutyWrites(hid, 2));
     }
 
     [Fact]
@@ -456,12 +412,9 @@ public class NzxtFanControllerTests
         provider.DriveFanSpeed("nzxt-fan-controller:fan0", 50);
         hid.Writes.Clear();
 
-        for (int i = 0; i < 6; i++)
-        {
-            provider.ReassertControl();
-        }
+        Reassert(provider, 6);
 
-        Assert.Empty(hid.Writes);
+        Assert.Empty(DutyWrites(hid, 0));
     }
 
     [Fact]

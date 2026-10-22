@@ -11,7 +11,7 @@ namespace Nexus.Service.Cooling;
 
 /// <summary>
 /// Bridges the NZXT RGB & Fan Controller's three fan headers into the fan-control
-/// subsystem. Channel ids: <c>nzxt-fan-controller:fan&lt;0..2&gt;</c>.
+/// subsystem, one channel id per header (<c>nzxt-fan-controller:fan</c> plus the zero-based index).
 /// </summary>
 public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoolingProvider
 {
@@ -32,9 +32,11 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
     private readonly int[] _commanded = new int[NzxtFanControllerProtocol.FanChannelCount];
     private readonly int[] _offTarget = new int[NzxtFanControllerProtocol.FanChannelCount];
     private readonly int[] _resends = new int[NzxtFanControllerProtocol.FanChannelCount];
-    private readonly bool[] _seen = new bool[NzxtFanControllerProtocol.FanChannelCount];
     private readonly bool[] _capLogged = new bool[NzxtFanControllerProtocol.FanChannelCount];
-    private int _seenGeneration;
+    private int _syncedGeneration;
+
+    /// <summary>Times the resend cap was reported; tests read it.</summary>
+    internal int CapWarnings { get; private set; }
 
     public NzxtFanControllerCoolingProvider(NzxtFanControllerHub hub)
     {
@@ -57,10 +59,8 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
             return Array.Empty<FanChannel>();
         }
         var result = new List<FanChannel>(fans.Length);
-        var populated = SyncPopulated(fans);
         for (int i = 0; i < fans.Length; i++)
         {
-            if (!populated[i]) continue;
             result.Add(new FanChannel
             {
                 Id = FanId(i),
@@ -125,10 +125,8 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
             return Array.Empty<CoolingComponent>();
         }
         var devices = new List<CoolingDevice>(fans.Length);
-        var populated = SyncPopulated(fans);
         for (int i = 0; i < fans.Length; i++)
         {
-            if (!populated[i]) continue;
             devices.Add(new CoolingDevice
             {
                 Id = FanId(i),
@@ -137,10 +135,6 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
                 Rpm = fans[i].Rpm,
                 Pwm = fans[i].DutyPercent,
             });
-        }
-        if (devices.Count == 0)
-        {
-            return Array.Empty<CoolingComponent>();
         }
         return new[]
         {
@@ -166,7 +160,7 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
         {
             return;
         }
-        var populated = SyncPopulated(fans);
+        SyncGeneration();
         for (int i = 0; i < fans.Length; i++)
         {
             int want;
@@ -174,7 +168,7 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
             bool capped = false;
             lock (_ctrlLock)
             {
-                if (!_softwareControlled[i] || !populated[i])
+                if (!_softwareControlled[i])
                 {
                     _offTarget[i] = 0;
                     continue;
@@ -186,20 +180,24 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
                     _resends[i] = 0;
                     _capLogged[i] = false;
                 }
-                else if (_resends[i] >= MaxResends)
-                {
-                    capped = !_capLogged[i];
-                    _capLogged[i] = true;
-                }
                 else if (++_offTarget[i] >= ReassertAfterPolls)
                 {
-                    _offTarget[i] = 0;
-                    _resends[i]++;
-                    resend = true;
+                    if (_resends[i] >= MaxResends)
+                    {
+                        capped = !_capLogged[i];
+                        _capLogged[i] = true;
+                    }
+                    else
+                    {
+                        _offTarget[i] = 0;
+                        _resends[i]++;
+                        resend = true;
+                    }
                 }
             }
             if (capped)
             {
+                CapWarnings++;
                 ServiceLog.Warn($"[nzxt-fan-controller-cooling] fan {i} stays off its commanded duty {want}% (reports {fans[i].DutyPercent}%) after {MaxResends} resends; reasserting stopped until the duty changes or the device reconnects");
             }
             if (resend && !_hub.SetFanDuty(i, want))
@@ -220,12 +218,7 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
             ServiceLog.Warn($"[nzxt-fan-controller-cooling] write to {channelId} dropped: not connected");
             return;
         }
-        var fans = _hub.Fans;
-        if (channel >= fans.Length || !SyncPopulated(fans)[channel])
-        {
-            ServiceLog.Warn($"[nzxt-fan-controller-cooling] write to {channelId} dropped: nothing on that header");
-            return;
-        }
+        SyncGeneration();
         lock (_ctrlLock)
         {
             _softwareControlled[channel] = true;
@@ -240,31 +233,20 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
         }
     }
 
-    // A header is populated once its mode is set or its tach turns, and stays so for the rest
-    // of the connection: a fan stopped by a curve or a manual duty reads no tach, and it must
-    // stay listed and writable or nothing could spin it back up. A mode byte read wrong can
-    // never hide a spinning fan. Returns this connection's populated set, reset on reconnect.
-    private bool[] SyncPopulated(NzxtFanReading[] fans)
+    // Resend bookkeeping belongs to one connection; a reconnect starts it over.
+    private void SyncGeneration()
     {
         var generation = _hub.Generation;
         lock (_ctrlLock)
         {
-            if (generation != _seenGeneration)
+            if (generation == _syncedGeneration)
             {
-                Array.Clear(_seen);
-                Array.Clear(_resends);
-                Array.Clear(_offTarget);
-                Array.Clear(_capLogged);
-                _seenGeneration = generation;
+                return;
             }
-            for (int i = 0; i < fans.Length && i < _seen.Length; i++)
-            {
-                if (fans[i].Mode != NzxtFanControllerProtocol.ModeNone || fans[i].Rpm > 0)
-                {
-                    _seen[i] = true;
-                }
-            }
-            return (bool[])_seen.Clone();
+            Array.Clear(_resends);
+            Array.Clear(_offTarget);
+            Array.Clear(_capLogged);
+            _syncedGeneration = generation;
         }
     }
 
