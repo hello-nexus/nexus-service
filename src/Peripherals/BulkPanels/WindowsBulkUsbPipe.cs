@@ -179,7 +179,7 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
                     {
                         return 0;
                     }
-                    return settled ? (int)moved : -1;
+                    return settled || moved > 0 ? (int)moved : -1;
                 }
                 ok = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out transferred, wait: true);
                 if (!ok && write)
