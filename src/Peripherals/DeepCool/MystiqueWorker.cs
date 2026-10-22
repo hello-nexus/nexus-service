@@ -11,6 +11,9 @@ using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Peripherals.DeepCool;
 
+/// <summary>The media job in hand: <see cref="MystiqueWorker.ProgressConverting"/> or <see cref="MystiqueWorker.ProgressSending"/> and its percent, or an empty phase.</summary>
+public sealed record MystiqueProgress(string Phase, int Percent);
+
 /// <summary>
 /// Keeps a Mystique screen on live data while it is present and Nexus Control is on: opens its
 /// bulk pipes, writes the settings groups the user has changed, then pushes Nexus's sensors
@@ -99,23 +102,24 @@ public sealed class MystiqueWorker : BackgroundService
     public const string ProgressConverting = "converting";
     public const string ProgressSending = "sending";
 
-    // Phase and percent of the media job in hand; the page reads them while its upload request waits.
-    private volatile string _progressPhase = "";
-    private int _progressPercent;
+    private static readonly MystiqueProgress Idle = new("", 0);
 
-    public (string Phase, int Percent) Progress => (_progressPhase, Volatile.Read(ref _progressPercent));
+    // The page reads it while its upload request waits.
+    private volatile MystiqueProgress _progress = Idle;
+
+    public MystiqueProgress Progress => _progress;
 
     public void ReportProgress(string phase, long done, long total)
     {
-        Volatile.Write(ref _progressPercent, total > 0 ? (int)Math.Clamp(done * 100 / total, 0, 100) : 0);
-        _progressPhase = phase;
+        int percent = total > 0 ? (int)Math.Clamp(done * 100 / total, 0, 100) : 0;
+        var current = _progress;
+        if (current.Phase != phase || current.Percent != percent)
+        {
+            _progress = new MystiqueProgress(phase, percent);
+        }
     }
 
-    public void ClearProgress()
-    {
-        _progressPhase = "";
-        Volatile.Write(ref _progressPercent, 0);
-    }
+    public void ClearProgress() => _progress = Idle;
 
     /// <summary>
     /// Erases every picture and GIF on the screen, between ticks like an upload. A refused or unanswered

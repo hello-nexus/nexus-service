@@ -149,6 +149,7 @@ public static partial class DevicesRoutes
         EdgePicking = m.EdgePicking,
         Media = m.Media.ConvertAll(i => new DeepCoolMystiqueMediaDto { Kind = i.Kind, Id = i.Id, Name = i.Name, Ext = i.Ext, Editable = MystiqueSourceExists(i) }).ToArray(),
         ShownGif = m.ShownGif,
+        GifSlotUnsure = m.GifSlotUnsure,
         RecordingChosen = m.RecordingEdited,
         DeviceChosen = m.DeviceEdited,
         Mode = m.Mode,
@@ -230,6 +231,9 @@ public sealed class DeepCoolMystiqueStateResponse
 
     /// <summary>Id of the GIF the screen plays, empty when unknown.</summary>
     public string ShownGif { get; set; } = "";
+
+    /// <summary>The screen may hold GIFs from before Nexus's slot, so a picked GIF may not be the one it plays until Remove all is used.</summary>
+    public bool GifSlotUnsure { get; set; }
 
     /// <summary>False until the user has changed a recording graph; the toggles shown are placeholders.</summary>
     public bool RecordingChosen { get; set; }

@@ -2155,7 +2155,7 @@ public sealed class DeepCoolMystiqueMediaItem
     /// <summary><see cref="KindPicture"/> or <see cref="KindGif"/>.</summary>
     public string Kind { get; set; } = KindPicture;
 
-    /// <summary>The identifier the screen stores the item under.</summary>
+    /// <summary>Names the item; a picture goes up on the screen under it, a GIF under <see cref="DeepCoolMystiqueSettings.GifSlot"/>.</summary>
     public string Id { get; set; } = "";
 
     public string Name { get; set; } = "";
@@ -2163,7 +2163,10 @@ public sealed class DeepCoolMystiqueMediaItem
     /// <summary>Extension of the kept source file, for re-cropping; empty when none was kept.</summary>
     public string Ext { get; set; } = "";
 
-    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", Name = Name ?? "", Ext = Ext ?? "" };
+    /// <summary>The crop the item was last encoded with, in <see cref="Nexus.Service.Media.CropRect"/> text form; empty for the whole frame.</summary>
+    public string Crop { get; set; } = "";
+
+    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", Name = Name ?? "", Ext = Ext ?? "", Crop = Crop ?? "" };
 }
 
 /// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
@@ -2243,8 +2246,11 @@ public sealed class DeepCoolMystiqueSettings
     /// <summary>Items removed from <see cref="Media"/> that the screen still holds: no delete command is known, so new uploads go up under these ids first.</summary>
     public List<DeepCoolMystiqueMediaItem> Freed { get; set; } = new();
 
-    /// <summary>The screen id every GIF goes up under: the screen plays one GIF, so showing another replaces it. Empty until the first GIF after a format.</summary>
+    /// <summary>The screen id every GIF goes up under, so showing another GIF replaces the one it holds. Empty until the first GIF after a format.</summary>
     public string GifSlot { get; set; } = "";
+
+    /// <summary>The screen may hold GIFs from before <see cref="GifSlot"/> in an unknown order, so the one it plays is unknown; a format clears it.</summary>
+    public bool GifSlotUnsure { get; set; } = true;
 
     /// <summary>The <see cref="Media"/> id of the GIF <see cref="GifSlot"/> holds, empty when unknown.</summary>
     public string ShownGif { get; set; } = "";
