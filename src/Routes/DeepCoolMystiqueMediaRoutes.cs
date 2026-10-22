@@ -140,7 +140,7 @@ public static partial class DevicesRoutes
                 bool taken = sent.Take(streamed).Any(x => x.ScreenId == old && x.ItemId != p.Id);
                 string? failed = streamed < sent.Count && sent[streamed].ItemId == p.Id ? sent[streamed].ScreenId : null;
                 ids[n] = new[] { taken ? failed : old, failed, old }.FirstOrDefault(c => c is not null && !claimed.Contains(c))
-                    ?? m.Freed.Find(i => !claimed.Contains(i.Id))?.Id
+                    ?? m.Freed.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && !claimed.Contains(i.Id))?.Id
                     ?? Guid.NewGuid().ToString("N");
                 claimed.Add(ids[n]!);
             }
