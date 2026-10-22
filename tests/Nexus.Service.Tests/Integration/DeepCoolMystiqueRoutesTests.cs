@@ -377,6 +377,74 @@ public class DeepCoolMystiqueRoutesTests
         Assert.Equal(new[] { streamed == 1 ? Clicked : First }, m.Freed.ConvertAll(i => i.Id));
     }
 
+    /// <summary>Records a show of <paramref name="clicked"/> whose first <paramref name="streamed"/> streams landed; returns how many it planned.</summary>
+    private static int Show(DeepCoolMystiqueSettings m, string clicked, int streamed)
+    {
+        string slot = DevicesRoutes.MystiquePictureSlot(m)!;
+        var plan = DevicesRoutes.MystiquePicturePlan(m, m.Media.Find(i => i.Id == clicked)!, slot);
+        DevicesRoutes.RecordMystiquePictureStreams(m, plan.ConvertAll(p => (p.Item.Id, p.ScreenId)), Math.Min(streamed, plan.Count));
+        m.PictureSlot = slot;
+        return plan.Count;
+    }
+
+    [Fact]
+    public void Two_failed_shows_in_a_row_keep_each_picture_under_its_own_id_and_the_next_whole_show_repairs_both()
+    {
+        var m = Pictures(displacedListed: true);
+        m.PictureSlot = First;
+
+        Show(m, Clicked, 1);
+        Assert.Equal(new[] { (Clicked, First, false), (First, Clicked, true) }, Held(m));
+        Show(m, First, 0);
+        Assert.Equal(new[] { (Clicked, First, true), (First, Clicked, true) }, Held(m));
+        Assert.Empty(m.Freed);
+
+        Show(m, First, int.MaxValue);
+        Assert.Equal(new[] { (Clicked, Clicked, false), (First, First, false) }, Held(m));
+        Assert.Equal(First, DevicesRoutes.MystiqueShownPicture(m));
+    }
+
+    [Fact]
+    public void No_two_pictures_share_a_screen_id_after_any_one_or_two_shows_and_a_whole_show_leaves_none_unsent()
+    {
+        var ids = new[] { Clicked, First, Other };
+        var start = new DeepCoolMystiqueSettings { PictureSlot = First };
+        foreach (var id in ids)
+        {
+            start.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = id });
+        }
+        void AssertDistinct(DeepCoolMystiqueSettings m, string path)
+        {
+            var held = m.Media.ConvertAll(DevicesRoutes.MystiqueScreenId);
+            Assert.True(held.Distinct().Count() == held.Count, path);
+            Assert.DoesNotContain(m.Freed, f => held.Contains(f.Id));
+        }
+        foreach (var first in ids)
+        {
+            for (int s1 = 0; s1 <= 3; s1++)
+            {
+                var once = start.Copy();
+                Show(once, first, s1);
+                AssertDistinct(once, $"{first}/{s1}");
+                foreach (var second in ids)
+                {
+                    for (int s2 = 0; s2 <= 3; s2++)
+                    {
+                        var twice = once.Copy();
+                        int planned = Show(twice, second, s2);
+                        string path = $"{first}/{s1} then {second}/{s2}";
+                        AssertDistinct(twice, path);
+                        if (s2 >= planned)
+                        {
+                            Assert.True(twice.Media.TrueForAll(i => !i.Unsent), path);
+                            Assert.Equal(second, DevicesRoutes.MystiqueShownPicture(twice));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     [Fact]
     public void A_resend_that_fails_keeps_its_picture_unsent_and_leaves_the_rest_alone()
     {
