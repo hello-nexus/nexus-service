@@ -555,6 +555,37 @@ public sealed class SystemActions
     }
 
     /// <summary>
+    /// Shows the Nexus window, or hides it when it is already frontmost. The
+    /// global hotkey for it fires here; the window lives in the user session, so
+    /// on Windows the helper does the work and, without one, this falls back to
+    /// opening the app.
+    /// </summary>
+    public void ToggleDashboard()
+    {
+#if WINDOWS
+        if (OperatingSystem.IsWindows())
+        {
+            var registry = _sp.GetService<Nexus.Service.Helper.HelperRegistry>();
+            if (registry?.GetAny() is not null)
+            {
+                Nexus.Service.Helper.TaskObserve.ObserveFaults(Nexus.Service.Helper.Domains.HotkeyCommands.ToggleWindowAsync(registry));
+                return;
+            }
+            Nexus.Service.Lifecycle.UserHelperBootstrapper.LaunchOpenApp();
+            return;
+        }
+#endif
+#if MACOS
+        if (OperatingSystem.IsMacOS())
+        {
+            Nexus.Service.Platform.Mac.MacAppWindow.ToggleOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0));
+            return;
+        }
+#endif
+        OpenDashboard();
+    }
+
+    /// <summary>
     /// Builds the inputter strokes for a key request. An explicit Strokes list
     /// wins; otherwise a single chord is expanded to a key-down then key-up
     /// (both carrying the modifier flags) so the combo presses and releases.

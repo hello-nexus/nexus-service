@@ -111,6 +111,31 @@ internal static class MacAppWindow
         }
     }
 
+    /// <summary>
+    /// Hides the dashboard window when it is the frontmost window of the active
+    /// app, otherwise opens it (a minimized window is restored) and brings it to
+    /// the front. Safe to call from any thread - dispatches onto main.
+    /// </summary>
+    public static void ToggleOrFocus(string url)
+    {
+        if (!IsSupported) return;
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        lock (_sync) { _pendingUrl = url; _pendingNavigate = false; }
+
+        try
+        {
+            EnsureClassRegistered();
+            IntPtr selPerform = SelRegister("performSelectorOnMainThread:withObject:waitUntilDone:");
+            IntPtr selToggle = SelRegister("toggleOrFocus:");
+            MsgSend_Perform(_targetObj, selPerform, selToggle, IntPtr.Zero, false);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[mac-app-window] ToggleOrFocus failed: {ex.Message}");
+        }
+    }
+
     private static unsafe void EnsureClassRegistered()
     {
         lock (_classRegistrationSync)
@@ -139,6 +164,7 @@ internal static class MacAppWindow
             else
             {
                 AddMethod(targetClass, "openOrFocus:", (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, void>)&OpenOrFocusImpl, "v@:@");
+                AddMethod(targetClass, "toggleOrFocus:", (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, void>)&ToggleOrFocusImpl, "v@:@");
                 AddMethod(targetClass, "windowWillClose:", (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, void>)&WindowWillCloseImpl, "v@:@");
                 AddMethod(targetClass, "windowDidResize:", (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, void>)&WindowDidResizeImpl, "v@:@");
                 // WKScriptMessageHandler callback for the page's request-system-accent.
@@ -213,6 +239,45 @@ internal static class MacAppWindow
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[mac-app-window] OpenOrFocusImpl failed: {ex.Message}");
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void ToggleOrFocusImpl(IntPtr self, IntPtr cmd, IntPtr arg)
+    {
+        try
+        {
+            if (_window == IntPtr.Zero)
+            {
+                string url;
+                lock (_sync) { url = _pendingUrl; }
+                CreateWindowOnMain();
+                NavigateToOnMain(url);
+                BringToFrontOnMain();
+                return;
+            }
+
+            IntPtr nsApp = MsgSend(ClassGet("NSApplication"), SelRegister("sharedApplication"));
+            bool frontmost = MsgSend_RetBool(_window, SelRegister("isVisible"))
+                && !MsgSend_RetBool(_window, SelRegister("isMiniaturized"))
+                && MsgSend_RetBool(_window, SelRegister("isKeyWindow"))
+                && MsgSend_RetBool(nsApp, SelRegister("isActive"));
+            if (frontmost)
+            {
+                // orderOut keeps the page alive, so the next toggle shows it as it was.
+                MsgSend(_window, SelRegister("orderOut:"), IntPtr.Zero);
+                RestoreAccessoryPolicyOnMain();
+                return;
+            }
+            if (MsgSend_RetBool(_window, SelRegister("isMiniaturized")))
+            {
+                MsgSend(_window, SelRegister("deminiaturize:"), IntPtr.Zero);
+            }
+            BringToFrontOnMain();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[mac-app-window] ToggleOrFocusImpl failed: {ex.Message}");
         }
     }
 

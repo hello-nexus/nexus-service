@@ -1,0 +1,506 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Nexus.Service.Deck;
+using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
+using Nexus.Service.Serialization;
+using Nexus.Service.Sockets;
+
+namespace Nexus.Service.Hotkeys;
+
+/// <summary>
+/// Owns the global hotkey bindings: seeds the defaults once, keeps the OS
+/// registrations in step with the stored bindings (enabled, parseable, not
+/// orphaned, not duplicated), runs a binding's target when its combo fires, and
+/// broadcasts the status payload on the "hotkeys" topic.
+/// </summary>
+public sealed class HotkeyService : IHostedService, IDisposable
+{
+    public const int MaxBindings = 100;
+    private const int MaxIdLength = 64;
+    internal static readonly TimeSpan DefaultSuspendTimeout = TimeSpan.FromSeconds(30);
+
+    private readonly IConfigStore _store;
+    private readonly IHotkeyRegistrar _registrar;
+    private readonly IDeckActionExecutor _executor;
+    private readonly MultiplexHub _hub;
+    private readonly bool _macos;
+    private readonly SemaphoreSlim _reconcileGate = new(1, 1);
+    private readonly object _stateLock = new();
+
+    // Registration results of the last apply, by binding id. Replaced whole.
+    private IReadOnlyDictionary<string, bool> _results = new Dictionary<string, bool>();
+    private string? _appliedKey;
+    private byte[]? _lastEnvelope;
+    private volatile bool _suspended;
+    private Timer? _resumeTimer;
+    private int _reconcileQueued;
+    private bool _disposed;
+
+    /// <summary>Test seam: how long a suspend lasts before it resumes on its own.</summary>
+    internal TimeSpan SuspendTimeout { get; set; } = DefaultSuspendTimeout;
+
+    public HotkeyService(IConfigStore store, IHotkeyRegistrar registrar, IDeckActionExecutor executor, MultiplexHub hub)
+        : this(store, registrar, executor, hub, OperatingSystem.IsMacOS())
+    {
+    }
+
+    internal HotkeyService(IConfigStore store, IHotkeyRegistrar registrar, IDeckActionExecutor executor, MultiplexHub hub, bool macos)
+    {
+        _store = store;
+        _registrar = registrar;
+        _executor = executor;
+        _hub = hub;
+        _macos = macos;
+        _hub.RegisterSnapshotProvider(PanelTopics.Hotkeys, () => BuildEnvelope(BuildResponse()));
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        SeedDefaults();
+        _registrar.Fired += OnFired;
+        _registrar.NeedsReapply += OnNeedsReapply;
+        _store.OnChanged += OnStoreChanged;
+        return ReconcileAsync(force: true);
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        _store.OnChanged -= OnStoreChanged;
+        _registrar.Fired -= OnFired;
+        _registrar.NeedsReapply -= OnNeedsReapply;
+        _suspended = false;
+        return _registrar.Supported
+            ? SafeApplyAsync(Array.Empty<HotkeyRegistration>())
+            : Task.CompletedTask;
+    }
+
+    public void Dispose()
+    {
+        lock (_stateLock)
+        {
+            _disposed = true;
+            _resumeTimer?.Dispose();
+            _resumeTimer = null;
+        }
+    }
+
+    // ---- Queries -----------------------------------------------------------
+
+    public HotkeysResponse BuildResponse()
+    {
+        var settings = _store.Load();
+        var bindings = settings.Hotkeys.Bindings;
+        var results = _results;
+        var eligible = EligibleCombos(bindings, settings.StreamDeck);
+        var views = new List<HotkeyBindingView>(bindings.Count);
+        foreach (var b in bindings)
+        {
+            views.Add(new HotkeyBindingView
+            {
+                Id = b.Id,
+                Combo = b.Combo,
+                Enabled = b.Enabled,
+                Label = b.Label,
+                Target = b.Target,
+                Status = StatusOf(b, settings.StreamDeck, eligible, results),
+            });
+        }
+        return new HotkeysResponse
+        {
+            Supported = _registrar.Supported,
+            Platform = _registrar.Platform,
+            Suspended = _suspended,
+            Bindings = views,
+        };
+    }
+
+    // ---- Mutations ---------------------------------------------------------
+
+    /// <summary>Why <paramref name="binding"/> cannot be stored, or null when it is valid. Normalizes Combo to canonical form.</summary>
+    public static string? Validate(HotkeyBinding binding)
+    {
+        if (string.IsNullOrEmpty(binding.Id) || binding.Id.Length > MaxIdLength || !binding.Id.All(IsIdChar))
+        {
+            return "invalid hotkey id";
+        }
+        if (string.IsNullOrWhiteSpace(binding.Combo))
+        {
+            binding.Combo = null;
+        }
+        else
+        {
+            var canonical = HotkeyCombo.Canonicalize(binding.Combo);
+            if (canonical is null)
+            {
+                return "invalid combo";
+            }
+            binding.Combo = canonical;
+        }
+        var target = binding.Target;
+        switch (target.Kind)
+        {
+            case HotkeyTarget.KindAction:
+                if (target.Action is null || string.IsNullOrEmpty(target.Action.Type))
+                {
+                    return "action target needs an action";
+                }
+                break;
+            case HotkeyTarget.KindDeck:
+                if (string.IsNullOrEmpty(target.PresetId) || target.Slot is null)
+                {
+                    return "deck target needs presetId and slot";
+                }
+                if (!ValidSlotShape(target.Slot))
+                {
+                    return "invalid slot address";
+                }
+                break;
+            default:
+                return "unknown target kind";
+        }
+        return null;
+    }
+
+    /// <summary>Stores the (already validated) binding, replacing one with the same id. False when the binding cap is hit.</summary>
+    public async Task<bool> UpsertAsync(HotkeyBinding binding)
+    {
+        var stored = true;
+        _store.Update(s =>
+        {
+            var list = s.Hotkeys.Bindings.ToList();
+            var index = list.FindIndex(b => b.Id == binding.Id);
+            if (index >= 0)
+            {
+                list[index] = binding;
+            }
+            else if (list.Count >= MaxBindings)
+            {
+                stored = false;
+                return;
+            }
+            else
+            {
+                list.Add(binding);
+            }
+            s.Hotkeys.Bindings = list;
+        });
+        await ReconcileAsync().ConfigureAwait(false);
+        return stored;
+    }
+
+    public async Task<bool> DeleteAsync(string id)
+    {
+        var removed = false;
+        _store.Update(s =>
+        {
+            var list = s.Hotkeys.Bindings.ToList();
+            removed = list.RemoveAll(b => b.Id == id) > 0;
+            if (removed)
+            {
+                s.Hotkeys.Bindings = list;
+            }
+        });
+        await ReconcileAsync().ConfigureAwait(false);
+        return removed;
+    }
+
+    /// <summary>Re-creates or overwrites the built-in bindings with their defaults; custom bindings are untouched.</summary>
+    public async Task ResetDefaultsAsync()
+    {
+        var defaults = HotkeyDefaults.Build(_macos);
+        _store.Update(s =>
+        {
+            var list = s.Hotkeys.Bindings.ToList();
+            foreach (var d in defaults)
+            {
+                var index = list.FindIndex(b => b.Id == d.Id);
+                if (index >= 0)
+                {
+                    list[index] = d;
+                }
+                else
+                {
+                    list.Add(d);
+                }
+            }
+            s.Hotkeys.Bindings = list;
+            s.Hotkeys.DefaultsSeeded = true;
+        });
+        await ReconcileAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Unregisters every hotkey (true) or registers them again (false). A suspend resumes on its own after the timeout.</summary>
+    public async Task SetSuspendedAsync(bool suspended)
+    {
+        lock (_stateLock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            _suspended = suspended;
+            _resumeTimer?.Dispose();
+            _resumeTimer = suspended
+                ? new Timer(_ => _ = SetSuspendedAsync(false), null, SuspendTimeout, Timeout.InfiniteTimeSpan)
+                : null;
+        }
+        await ReconcileAsync().ConfigureAwait(false);
+    }
+
+    // ---- Reconciliation ----------------------------------------------------
+
+    /// <summary>
+    /// Brings the OS registrations in step with the stored bindings and
+    /// broadcasts the payload when anything a client sees changed. Serialized.
+    /// </summary>
+    public async Task ReconcileAsync(bool force = false)
+    {
+        await _reconcileGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var settings = _store.Load();
+            var wanted = _suspended || !_registrar.Supported
+                ? new List<HotkeyRegistration>()
+                : WantedRegistrations(settings.Hotkeys.Bindings, settings.StreamDeck);
+            var key = string.Join('|', wanted.Select(r => r.Id + "=" + r.Combo));
+            if (force || key != _appliedKey)
+            {
+                if (_registrar.Supported)
+                {
+                    var applied = await SafeApplyAsync(wanted).ConfigureAwait(false);
+                    // While suspended nothing is registered; keep the last real results so statuses stay what they would be.
+                    if (!_suspended)
+                    {
+                        _results = applied;
+                    }
+                }
+                _appliedKey = key;
+            }
+            Broadcast();
+        }
+        finally
+        {
+            _reconcileGate.Release();
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<string, bool>> SafeApplyAsync(IReadOnlyList<HotkeyRegistration> set)
+    {
+        try
+        {
+            return await _registrar.ApplyAsync(set, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[hotkeys] apply failed: {ex.Message}");
+            return set.ToDictionary(r => r.Id, _ => false);
+        }
+    }
+
+    private void OnStoreChanged()
+    {
+        // Settings change constantly; only schedule one pass at a time and let it coalesce.
+        if (Interlocked.Exchange(ref _reconcileQueued, 1) == 1)
+        {
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReconcileAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[hotkeys] reconcile failed: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _reconcileQueued, 0);
+            }
+        });
+    }
+
+    private void OnNeedsReapply()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReconcileAsync(force: true).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[hotkeys] reapply failed: {ex.Message}");
+            }
+        });
+    }
+
+    private void SeedDefaults()
+    {
+        _store.Update(s =>
+        {
+            if (s.Hotkeys.DefaultsSeeded)
+            {
+                return;
+            }
+            var list = s.Hotkeys.Bindings.ToList();
+            foreach (var d in HotkeyDefaults.Build(_macos))
+            {
+                if (!list.Any(b => b.Id == d.Id))
+                {
+                    list.Add(d);
+                }
+            }
+            s.Hotkeys.Bindings = list;
+            s.Hotkeys.DefaultsSeeded = true;
+        });
+    }
+
+    private void Broadcast()
+    {
+        var envelope = BuildEnvelope(BuildResponse());
+        var previous = _lastEnvelope;
+        if (previous is not null && previous.AsSpan().SequenceEqual(envelope.Span))
+        {
+            return;
+        }
+        _lastEnvelope = envelope.ToArray();
+        if (_hub.TopicHasSubscribers(PanelTopics.Hotkeys))
+        {
+            _ = _hub.BroadcastTopicAsync(PanelTopics.Hotkeys, envelope);
+        }
+    }
+
+    private static ReadOnlyMemory<byte> BuildEnvelope(HotkeysResponse response)
+        => WsEnvelope.Build(PanelTopics.Hotkeys, response, AppJsonContext.Default.HotkeysResponse);
+
+    // ---- Eligibility and status --------------------------------------------
+
+    private static List<HotkeyRegistration> WantedRegistrations(IReadOnlyList<HotkeyBinding> bindings, StreamDeckSettings deck)
+    {
+        var eligible = EligibleCombos(bindings, deck);
+        var wanted = new List<HotkeyRegistration>();
+        foreach (var b in bindings)
+        {
+            if (IsEligible(b, deck, out var combo) && eligible[combo.ToString()] == 1)
+            {
+                wanted.Add(new HotkeyRegistration(b.Id, combo));
+            }
+        }
+        return wanted;
+    }
+
+    /// <summary>Count of eligible bindings per canonical combo; a count above one is a duplicate conflict.</summary>
+    private static Dictionary<string, int> EligibleCombos(IReadOnlyList<HotkeyBinding> bindings, StreamDeckSettings deck)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var b in bindings)
+        {
+            if (IsEligible(b, deck, out var combo))
+            {
+                var text = combo.ToString();
+                counts[text] = counts.GetValueOrDefault(text) + 1;
+            }
+        }
+        return counts;
+    }
+
+    private static bool IsEligible(HotkeyBinding b, StreamDeckSettings deck, out HotkeyCombo combo)
+    {
+        combo = default;
+        if (!b.Enabled || HotkeyCombo.TryParse(b.Combo) is not { } parsed || IsOrphaned(b, deck))
+        {
+            return false;
+        }
+        combo = parsed;
+        return true;
+    }
+
+    private static bool IsOrphaned(HotkeyBinding b, StreamDeckSettings deck)
+        => b.Target.Kind == HotkeyTarget.KindDeck && HotkeySlotResolver.Resolve(b.Target, deck) is null;
+
+    private string StatusOf(
+        HotkeyBinding b, StreamDeckSettings deck, Dictionary<string, int> eligible, IReadOnlyDictionary<string, bool> results)
+    {
+        if (!_registrar.Supported)
+        {
+            return HotkeyStatus.Unsupported;
+        }
+        if (!b.Enabled)
+        {
+            return HotkeyStatus.Disabled;
+        }
+        if (HotkeyCombo.TryParse(b.Combo) is not { } combo)
+        {
+            return HotkeyStatus.Unbound;
+        }
+        if (IsOrphaned(b, deck))
+        {
+            return HotkeyStatus.Orphaned;
+        }
+        if (eligible.GetValueOrDefault(combo.ToString()) > 1)
+        {
+            return HotkeyStatus.Conflict;
+        }
+        return results.TryGetValue(b.Id, out var ok) && !ok ? HotkeyStatus.Conflict : HotkeyStatus.Active;
+    }
+
+    // ---- Firing ------------------------------------------------------------
+
+    private void OnFired(string id)
+    {
+        if (_suspended)
+        {
+            return;
+        }
+        _ = Task.Run(() => FireAsync(id));
+    }
+
+    internal async Task FireAsync(string id)
+    {
+        try
+        {
+            var settings = _store.Load();
+            var binding = settings.Hotkeys.Bindings.FirstOrDefault(b => b.Id == id);
+            if (binding is null || !binding.Enabled)
+            {
+                return;
+            }
+            var action = binding.Target.Kind == HotkeyTarget.KindDeck
+                ? HotkeySlotResolver.Resolve(binding.Target, settings.StreamDeck)
+                : binding.Target.Action;
+            if (action is null)
+            {
+                ServiceLog.Info($"[hotkeys] fired id={id} target no longer resolves");
+                return;
+            }
+            ServiceLog.Info($"[hotkeys] fired id={id} type={action.Type}");
+            await _executor.ExecuteAsync(action, serial: "", keyIndex: -1, latchKey: "hotkey:" + id, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[hotkeys] fire failed id={id}: {ex.Message}");
+        }
+    }
+
+    // ---- Validation helpers ------------------------------------------------
+
+    private static bool IsIdChar(char c) => char.IsAsciiLetterOrDigit(c) || c is ':' or '_' or '.' or '-';
+
+    private static bool ValidSlotShape(HotkeySlotAddress slot) => slot.Type switch
+    {
+        HotkeySlotAddress.TypeKey => slot.Page >= 0 && slot.Path is { Count: > 0 } && slot.Path.All(i => i >= 0),
+        HotkeySlotAddress.TypeDial => slot.Page >= 0
+            && slot.Dial is >= 0
+            && (slot.Stack is null || slot.Stack >= 0)
+            && (slot.FolderPath is null || slot.FolderPath.All(i => i >= 0))
+            && slot.Event is "push" or "turnLeft" or "turnRight" or "touch",
+        _ => false,
+    };
+}

@@ -710,6 +710,7 @@ app.MapKeebEndpoints();
 app.MapStreamDeckEndpoints();
 app.MapDeckImageEndpoints();
 app.MapDeckEndpoints();
+app.MapHotkeyEndpoints();
 app.MapDisplayEndpoints();
 app.MapActivityEndpoints();
 app.MapLifecycleEndpoints();
