@@ -507,7 +507,7 @@ public sealed class HotkeyServiceTests : IDisposable
         Assert.Equal("action", toggle.GetProperty("target").GetProperty("kind").GetString());
         Assert.Equal("toggleWindow", toggle.GetProperty("target").GetProperty("action").GetProperty("action").GetProperty("op").GetString());
         var unbound = root.GetProperty("bindings").EnumerateArray().First(b => b.GetProperty("id").GetString() == "custom:x");
-        Assert.False(unbound.TryGetProperty("combo", out _));
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, unbound.GetProperty("combo").ValueKind);
         Assert.Equal("unbound", unbound.GetProperty("status").GetString());
     }
 

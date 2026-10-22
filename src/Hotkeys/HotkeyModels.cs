@@ -16,6 +16,7 @@ public class HotkeyBinding
 {
     public string Id { get; set; } = "";
     /// <summary>Canonical combo text (see <see cref="HotkeyCombo"/>); null when unbound.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     public string? Combo { get; set; }
     public bool Enabled { get; set; } = true;
     public string? Label { get; set; }
