@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Models;
 using Nexus.Service.Peripherals.DeepCool;
@@ -101,6 +102,11 @@ public static partial class DevicesRoutes
             && found.Type == MystiqueSensors.RequiredType(value);
     }
 
+    // Counts source choices, so an upload tells one made during its stream from its own even when the same source is picked again.
+    private static int s_mystiqueSourceChoices;
+
+    internal static int MystiqueSourceChoices => Volatile.Read(ref s_mystiqueSourceChoices);
+
     /// <summary>Applies a settings request to the saved state; separate from the route so it can be tested.</summary>
     internal static void ApplyMystiqueRequest(DeepCoolMystiqueSettings m, DeepCoolMystiqueSettingsRequest body)
     {
@@ -112,7 +118,7 @@ public static partial class DevicesRoutes
         if (body.AuxArea is not null) { m.AuxArea = body.AuxArea; m.ReadoutEdited = true; }
         if (body.SwitchSeconds.HasValue) { m.SwitchSeconds = body.SwitchSeconds.Value; m.MediaEdited = true; }
         if (body.Animation is not null) { m.Animation = body.Animation; m.MediaEdited = true; }
-        if (body.MediaSource is not null) { m.MediaSource = body.MediaSource; m.SourceEdited = true; }
+        if (body.MediaSource is not null) { m.MediaSource = body.MediaSource; m.SourceEdited = true; Interlocked.Increment(ref s_mystiqueSourceChoices); }
         if (body.EdgePicking.HasValue) { m.EdgePicking = body.EdgePicking.Value; m.DeviceEdited = true; }
         if (body.Brightness.HasValue) { m.Brightness = Math.Clamp(body.Brightness.Value, 0, 100); m.DeviceEdited = true; }
         if (body.Gyroscope.HasValue) { m.Gyroscope = body.Gyroscope.Value; m.DeviceEdited = true; }
