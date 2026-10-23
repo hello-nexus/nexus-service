@@ -270,36 +270,90 @@ public class DeepCoolMystiqueRoutesTests
             new DeepCoolMystiqueMediaItem { Kind = "picture", Id = first, ScreenId = second },
             new DeepCoolMystiqueMediaItem { Kind = "picture", Id = second, ScreenId = first },
         });
-        store.Update(s => s.Devices.DeepCoolMystique.PictureSlot = first);
+        store.Update(s => s.Devices.DeepCoolMystique.PictureIds = new() { second, first });
 
         Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync($"/devices/deepcool-mystique/media/{second}")).StatusCode);
 
         var m = new DeepCoolMystiqueSettings();
         store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
         Assert.Equal(new[] { first }, m.Freed.ConvertAll(i => i.Id));
-        Assert.Equal(first, m.PictureSlot);
+        Assert.Equal(new[] { second, first }, m.PictureIds);
+        Assert.Equal(first, DevicesRoutes.MystiquePictureSlot(m));
         Assert.Equal(second, DevicesRoutes.MystiqueScreenId(m.Media.Single()));
     }
 
+    private const string Third = "83182dc7830844c89ca5f01e57f63ad9";
+
     [Fact]
-    public void The_first_picture_place_is_the_recorded_one_else_the_first_listed_else_a_freed_one()
+    public void Without_a_recorded_order_the_newest_place_is_the_last_listed_pictures_own_id_while_the_screen_holds_it()
     {
-        const string a = "2101b6e6277841daa821e8d79a5c528b";
-        const string b = "acd9325521f3493c86bfc0b0aa85658d";
         var m = new DeepCoolMystiqueSettings();
         Assert.Null(DevicesRoutes.MystiquePictureSlot(m));
+        m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third });
+        Assert.Equal(Third, DevicesRoutes.MystiquePictureSlot(m));
 
-        m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = b });
-        Assert.Equal(b, DevicesRoutes.MystiquePictureSlot(m));
+        // Three pictures added in order, after the three swaps of the alpha.9 build.
+        m.Freed.Clear();
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "gif", Id = Other });
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First, ScreenId = Third });
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third, ScreenId = First });
 
-        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "gif", Id = a });
-        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = a, ScreenId = b });
-        Assert.Equal(b, DevicesRoutes.MystiquePictureSlot(m));
-        m.Media[1].ScreenId = "";
-        Assert.Equal(a, DevicesRoutes.MystiquePictureSlot(m));
+        Assert.Equal(new[] { Clicked, First, Third }, DevicesRoutes.MystiquePictureOrder(m));
+        Assert.Equal(First, DevicesRoutes.MystiqueShownPicture(m));
 
-        m.PictureSlot = b;
-        Assert.Equal(b, DevicesRoutes.MystiquePictureSlot(m));
+        // A picture that went up under a reused id adds no place; the id it holds goes first.
+        m.Media[3].Id = Other;
+        Assert.Equal(new[] { Third, Clicked, First }, DevicesRoutes.MystiquePictureOrder(m));
+    }
+
+    [Fact]
+    public void A_recorded_order_wins_and_keeps_only_ids_the_screen_holds()
+    {
+        var m = new DeepCoolMystiqueSettings { PictureIds = new() { Other, First, Clicked } };
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
+        m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First });
+        m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third });
+
+        Assert.Equal(new[] { Third, First, Clicked }, DevicesRoutes.MystiquePictureOrder(m));
+        Assert.Equal(Clicked, DevicesRoutes.MystiquePictureSlot(m));
+    }
+
+    [Fact]
+    public void Only_an_id_the_screen_did_not_hold_becomes_the_newest_place()
+    {
+        var m = new DeepCoolMystiqueSettings();
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
+        m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First });
+
+        DevicesRoutes.NoteMystiquePictureStored(m, Clicked);
+        DevicesRoutes.NoteMystiquePictureStored(m, First);
+        Assert.Equal(new[] { First, Clicked }, m.PictureIds);
+
+        DevicesRoutes.NoteMystiquePictureStored(m, Third);
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third });
+        Assert.Equal(new[] { First, Clicked, Third }, m.PictureIds);
+        Assert.Equal(Third, DevicesRoutes.MystiquePictureSlot(m));
+    }
+
+    [Fact]
+    public void Three_pictures_each_show_from_the_newest_place_and_swaps_keep_it_there()
+    {
+        var m = new DeepCoolMystiqueSettings();
+        foreach (var id in new[] { Clicked, First, Third })
+        {
+            DevicesRoutes.NoteMystiquePictureStored(m, id);
+            m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = id });
+        }
+
+        Assert.Equal(0, Show(m, Third, int.MaxValue));
+        Assert.Equal(Third, DevicesRoutes.MystiqueShownPicture(m));
+        foreach (var clicked in new[] { Clicked, First, Third, First })
+        {
+            Show(m, clicked, int.MaxValue);
+            Assert.Equal(clicked, DevicesRoutes.MystiqueShownPicture(m));
+            Assert.Equal(new[] { Clicked, First, Third }, m.PictureIds);
+        }
     }
 
     private const string Clicked = "2101b6e6277841daa821e8d79a5c528b";
@@ -355,7 +409,7 @@ public class DeepCoolMystiqueRoutesTests
     public void A_swap_whose_first_stream_failed_keeps_the_clicked_picture_and_leaves_the_first_unsent()
     {
         var m = Pictures(displacedListed: true);
-        m.PictureSlot = First;
+        m.PictureIds = new() { Clicked, First };
 
         DevicesRoutes.RecordMystiquePictureStreams(m, new[] { (Clicked, First), (First, Clicked) }, 0);
 
@@ -383,7 +437,6 @@ public class DeepCoolMystiqueRoutesTests
         string slot = DevicesRoutes.MystiquePictureSlot(m)!;
         var plan = DevicesRoutes.MystiquePicturePlan(m, m.Media.Find(i => i.Id == clicked)!, slot);
         DevicesRoutes.RecordMystiquePictureStreams(m, plan.ConvertAll(p => (p.Item.Id, p.ScreenId)), Math.Min(streamed, plan.Count));
-        m.PictureSlot = slot;
         return plan.Count;
     }
 
@@ -391,7 +444,7 @@ public class DeepCoolMystiqueRoutesTests
     public void Two_failed_shows_in_a_row_keep_each_picture_under_its_own_id_and_the_next_whole_show_repairs_both()
     {
         var m = Pictures(displacedListed: true);
-        m.PictureSlot = First;
+        m.PictureIds = new() { Clicked, First };
 
         Show(m, Clicked, 1);
         Assert.Equal(new[] { (Clicked, First, false), (First, Clicked, true) }, Held(m));
@@ -408,7 +461,7 @@ public class DeepCoolMystiqueRoutesTests
     public void No_two_pictures_share_a_screen_id_after_any_one_or_two_shows_and_a_whole_show_leaves_none_unsent()
     {
         var ids = new[] { Clicked, First, Other };
-        var start = new DeepCoolMystiqueSettings { PictureSlot = First };
+        var start = new DeepCoolMystiqueSettings { PictureIds = new() { Clicked, Other, First } };
         foreach (var id in ids)
         {
             start.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = id });
@@ -628,6 +681,30 @@ public class DeepCoolMystiqueRoutesTests
         Assert.Equal(sent ?? stored, m.MediaSource);
     }
 
+    [Theory]
+    [InlineData(false, null, "images")]
+    [InlineData(true, "gif", "images")]
+    public void After_a_format_the_first_new_picture_sends_no_source_and_the_next_new_item_does(bool gifFirst, string? first, string second)
+    {
+        var m = new DeepCoolMystiqueSettings { MediaSource = "gif", SourceEdited = true, QuietSinceFormat = true };
+
+        Assert.Null(DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, inPlace: true, chosenDuringStream: false));
+        Assert.True(m.QuietSinceFormat);
+        Assert.Equal(first, DevicesRoutes.MystiqueSourceAfterUpload(m, gifFirst, inPlace: false, chosenDuringStream: false));
+        Assert.False(m.QuietSinceFormat);
+        Assert.Equal(second, DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, inPlace: false, chosenDuringStream: false));
+    }
+
+    [Fact]
+    public void Choosing_a_source_ends_the_quiet_after_a_format()
+    {
+        var m = new DeepCoolMystiqueSettings { QuietSinceFormat = true };
+
+        DevicesRoutes.ApplyMystiqueRequest(m, new DeepCoolMystiqueSettingsRequest { MediaSource = DeepCoolMystiqueSettings.SourceImages });
+
+        Assert.False(m.QuietSinceFormat);
+    }
+
     [Fact]
     public void Picking_the_same_source_again_still_counts_as_a_choice()
     {
@@ -655,6 +732,7 @@ public class DeepCoolMystiqueRoutesTests
         Assert.Equal(new[] { ("picture", "acd9325521f3493c86bfc0b0aa85658d") }, m.Freed.Select(i => (i.Kind, i.Id)));
         Assert.Single(m.Media);
         Assert.True(m.Media[0].Unsent);
+        Assert.Equal("acd9325521f3493c86bfc0b0aa85658d", DevicesRoutes.MystiquePictureSlot(m));
         Assert.Equal((MystiqueMedia.IdOf(MystiqueMedia.KindPicture, new byte[] { 7 }), "acd9325521f3493c86bfc0b0aa85658d"), DevicesRoutes.MystiqueUploadId(store, "picture", new byte[] { 7 }, ""));
     }
 

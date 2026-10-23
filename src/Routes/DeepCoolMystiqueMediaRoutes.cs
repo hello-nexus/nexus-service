@@ -21,12 +21,23 @@ public static partial class DevicesRoutes
 
     /// <summary>
     /// Saves the source a finished stream leaves the screen on and returns the one to send (null for none). A new
-    /// item selects its kind, as the screen's own software does, and so does a GIF sent while the pictures play,
+    /// item selects its kind, as the screen's own software does, except the first new picture after a format (see
+    /// <see cref="DeepCoolMystiqueSettings.QuietSinceFormat"/>), and so does a GIF sent while the pictures play,
     /// unless the user chose a source during the stream. Otherwise an upload under an id the screen holds sends
     /// none: the recorded edits sent no source command after the stream.
     /// </summary>
     internal static string? MystiqueSourceAfterUpload(DeepCoolMystiqueSettings m, bool isGif, bool inPlace, bool chosenDuringStream)
     {
+        bool quiet = m.QuietSinceFormat && !isGif && !inPlace && !chosenDuringStream;
+        if (!inPlace)
+        {
+            m.QuietSinceFormat = false;
+        }
+        if (quiet)
+        {
+            Nexus.Service.Platform.ServiceLog.Info("[deepcool-mystique] no source command after the first picture since the format");
+            return null;
+        }
         bool gifNotPlaying = isGif && (!m.SourceEdited || m.MediaSource != DeepCoolMystiqueSettings.SourceGif);
         if (!chosenDuringStream && (!inPlace || gifNotPlaying))
         {
@@ -74,18 +85,42 @@ public static partial class DevicesRoutes
 
     /// <summary>
     /// The screen id of the picture the screen shows first when the pictures start, which a click swaps the chosen
-    /// picture into; null with no picture. From a customer report that picking the pictures always started at the
-    /// first one added, this is the oldest id the screen holds: the recorded one, else the first listed picture, a
-    /// guess before a format that <see cref="DeepCoolMystiqueSettings.GifSlotUnsure"/> reports.
+    /// picture into; null with no picture. From a customer report that three pictures through three swaps always
+    /// started from what the third one added went up under, this is the newest id the screen stored: a swap or a
+    /// reused freed id rewrites an id in place. A guess before a format, which <see cref="DeepCoolMystiqueSettings.GifSlotUnsure"/> reports.
     /// </summary>
     internal static string? MystiquePictureSlot(DeepCoolMystiqueSettings m)
     {
-        if (MystiqueMedia.IsId(m.PictureSlot))
+        var order = MystiquePictureOrder(m);
+        return order.Count > 0 ? order[^1] : null;
+    }
+
+    /// <summary>
+    /// The picture screen ids the screen holds, oldest first by when it first stored each: the recorded order, else the
+    /// list order taking each picture's own id while the screen still holds it, as a swap leaves it in place. Held ids
+    /// outside either go first.
+    /// </summary>
+    internal static List<string> MystiquePictureOrder(DeepCoolMystiqueSettings m)
+    {
+        var pictures = m.Media?.FindAll(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture) ?? new();
+        var held = pictures.ConvertAll(MystiqueScreenId);
+        held.AddRange(m.Freed?.FindAll(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture).ConvertAll(i => i.Id) ?? new());
+        held = held.Distinct().ToList();
+        var order = m.PictureIds is { Count: > 0 }
+            ? m.PictureIds.FindAll(held.Contains)
+            : pictures.ConvertAll(i => held.Contains(i.Id) ? i.Id : MystiqueScreenId(i)).Distinct().ToList();
+        return held.FindAll(id => !order.Contains(id)).Concat(order).ToList();
+    }
+
+    /// <summary>Records the order, adding <paramref name="screenId"/> as the newest when the screen did not hold it.</summary>
+    internal static void NoteMystiquePictureStored(DeepCoolMystiqueSettings m, string screenId)
+    {
+        var order = MystiquePictureOrder(m);
+        if (!order.Contains(screenId))
         {
-            return m.PictureSlot;
+            order.Add(screenId);
         }
-        var first = m.Media?.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture);
-        return first is not null ? MystiqueScreenId(first) : m.Freed?.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture)?.Id;
+        m.PictureIds = order;
     }
 
     /// <summary>The listed picture whose whole copy holds <see cref="MystiquePictureSlot"/>, empty when none does.</summary>
@@ -104,6 +139,7 @@ public static partial class DevicesRoutes
     {
         m.Media ??= new();
         m.Freed ??= new();
+        m.PictureIds = MystiquePictureOrder(m);
         var pictures = m.Media.FindAll(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture);
         // Screen id to the picture whose whole copy it holds, null for a broken copy.
         var screen = new Dictionary<string, string?>();
@@ -173,6 +209,11 @@ public static partial class DevicesRoutes
             }
             else if (!m.Freed.Exists(i => i.Id == id))
             {
+                // The screen may have stored part of it, and a show into an id it lacks stores it there anyway.
+                if (kind == DeepCoolMystiqueMediaItem.KindPicture)
+                {
+                    NoteMystiquePictureStored(m, id);
+                }
                 m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = kind, Id = id });
             }
         });
@@ -211,13 +252,18 @@ public static partial class DevicesRoutes
     private static async Task<IResult> ShowMystiquePictureAsync(
         IConfigStore store, MystiqueWorker worker, DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem item, CancellationToken ct)
     {
-        string slot = MystiquePictureSlot(m)!;
+        var order = MystiquePictureOrder(m);
+        string slot = order[^1];
+        Nexus.Service.Platform.ServiceLog.Info("[deepcool-mystique] picture ids oldest first: "
+            + string.Join(", ", order.Select(id => $"{id}={m.Media.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && MystiqueScreenId(i) == id)?.Id ?? "freed"}"))
+            + $"; recorded {m.PictureIds.Count > 0}, highest {order.Max(StringComparer.Ordinal)}");
         void Playing() => store.Update(s =>
         {
             var d = s.Devices.DeepCoolMystique;
             d.MediaSource = DeepCoolMystiqueSettings.SourceImages;
             d.SourceEdited = true;
-            d.PictureSlot = slot;
+            d.QuietSinceFormat = false;
+            d.PictureIds = MystiquePictureOrder(d);
         });
         var plan = MystiquePicturePlan(m, item, slot);
         bool rotate = MystiqueRotatesMedia(m);
@@ -234,7 +280,7 @@ public static partial class DevicesRoutes
             if (package is null)
             {
                 // Its screen copy is being overwritten or is already broken, and cannot be rebuilt.
-                ForgetMystiquePicture(store, target.Id, slot);
+                ForgetMystiquePicture(store, target.Id);
                 continue;
             }
             packages.Add(package);
@@ -256,11 +302,7 @@ public static partial class DevicesRoutes
             Playing();
             return DeepCoolMystiqueSettings.SourceImages;
         }, ct);
-        store.Update(s =>
-        {
-            RecordMystiquePictureStreams(s.Devices.DeepCoolMystique, sent, streamed);
-            s.Devices.DeepCoolMystique.PictureSlot = slot;
-        });
+        store.Update(s => RecordMystiquePictureStreams(s.Devices.DeepCoolMystique, sent, streamed));
         worker.RequestApply();
         return streamed == packages.Count ? shown : MystiqueMediaFailure("The screen did not take the picture");
     }
@@ -297,7 +339,7 @@ public static partial class DevicesRoutes
     }
 
     /// <summary>Drops a picture from the list with its files, its screen id into <see cref="DeepCoolMystiqueSettings.Freed"/>; the caller holds the upload gate.</summary>
-    private static void ForgetMystiquePicture(IConfigStore store, string id, string slot)
+    private static void ForgetMystiquePicture(IConfigStore store, string id)
     {
         DeepCoolMystiqueMediaItem? gone = null;
         store.Update(s =>
@@ -305,7 +347,7 @@ public static partial class DevicesRoutes
             var m = s.Devices.DeepCoolMystique;
             m.Media ??= new();
             m.Freed ??= new();
-            m.PictureSlot = slot;
+            m.PictureIds = MystiquePictureOrder(m);
             gone = m.Media.Find(i => i.Id == id);
             if (gone is null)
             {
@@ -431,7 +473,7 @@ public static partial class DevicesRoutes
                     m.Freed ??= new();
                     if (!isGif)
                     {
-                        m.PictureSlot = MystiquePictureSlot(m) ?? screenId;
+                        NoteMystiquePictureStored(m, screenId);
                     }
                     m.Freed.RemoveAll(i => i.Id == screenId);
                     var item = new DeepCoolMystiqueMediaItem
@@ -589,8 +631,9 @@ public static partial class DevicesRoutes
                     m.Freed = new();
                     m.GifSlot = "";
                     m.ShownGif = "";
-                    m.PictureSlot = "";
+                    m.PictureIds = new();
                     m.GifSlotUnsure = false;
+                    m.QuietSinceFormat = true;
                 });
                 gone.ForEach(DeleteMystiqueFiles);
                 DeleteMystiqueStreamLeftovers();
@@ -678,7 +721,7 @@ public static partial class DevicesRoutes
                 gone = m.Media.FindAll(match);
                 if (gone.Exists(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture))
                 {
-                    m.PictureSlot = MystiquePictureSlot(m) ?? "";
+                    m.PictureIds = MystiquePictureOrder(m);
                 }
                 m.Media.RemoveAll(match);
                 foreach (var item in gone)

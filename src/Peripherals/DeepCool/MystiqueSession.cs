@@ -153,6 +153,7 @@ public sealed class MystiqueSession
         var last = packages[^1];
         string kind = last.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
         string? chosen = source is null ? kind : source();
+        ServiceLog.Info($"[deepcool-mystique] finish sent; source after it: {chosen ?? "none"}");
         if (chosen is not null)
         {
             if (last.Kind == MystiqueMedia.KindPicture)
@@ -169,8 +170,12 @@ public sealed class MystiqueSession
     {
         var command = MystiqueProtocol.BuildMediaSource(source);
         bool delivered = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, command,
-            out _, out bool answered, SourceReplyTimeoutMs);
+            out var reply, out bool answered, SourceReplyTimeoutMs);
         LogSetting(command, delivered && answered);
+        if (delivered && answered)
+        {
+            ServiceLog.Info($"[deepcool-mystique] source reply {Convert.ToHexString(reply, 0, 9)}");
+        }
         if (_applied is not null)
         {
             _applied.MediaSource = source;
