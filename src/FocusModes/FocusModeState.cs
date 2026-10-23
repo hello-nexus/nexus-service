@@ -264,11 +264,17 @@ public sealed class FocusModeState : BackgroundService
 
     private static bool AnyAppRunning(FocusModeSettings mode, IReadOnlyList<ProcessInfo> processes)
     {
+        // Exact process key only. The display-name fallback of the lighting
+        // matcher is built for a single focused window; against the whole
+        // running list a background helper would match and hold the mode on.
+        // PATCH never stores a binding without a processName, so nothing needs the fallback.
         foreach (var app in mode.Apps)
         {
+            var key = AppPresetMatching.ProcessKey(app.ProcessName);
+            if (key.Length == 0) continue;
             foreach (var proc in processes)
             {
-                if (AppPresetMatching.Matches(app.ProcessName, app.Name, proc.Name)) return true;
+                if (AppPresetMatching.ProcessKey(proc.Name) == key) return true;
             }
         }
         return false;

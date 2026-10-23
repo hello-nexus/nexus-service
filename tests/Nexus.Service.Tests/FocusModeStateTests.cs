@@ -431,6 +431,20 @@ public class FocusModeStateTests
     }
 
     [Fact]
+    public void ASubstringProcessOfTheDisplayNameDoesNotFireTheMode()
+    {
+        var (state, _, procs) = BuildApp(processName: "steamlink", displayName: "Steam Link");
+        procs.Add(new ProcessInfo { Pid = 1, Name = "steam" });
+        procs.Add(new ProcessInfo { Pid = 2, Name = "link" });
+        state.SweepForTests();
+        Assert.False(state.IsActive);
+
+        procs.Add(new ProcessInfo { Pid = 3, Name = "SteamLink.exe" });
+        state.SweepForTests();
+        Assert.True(state.IsActive);
+    }
+
+    [Fact]
     public void AnAppModeWithNoAppsNeverFires()
     {
         var (state, store, procs) = BuildApp();
