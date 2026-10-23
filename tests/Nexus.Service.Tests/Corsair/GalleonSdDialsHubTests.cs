@@ -204,4 +204,20 @@ public class GalleonSdDialsHubTests
         using var hub = NewHub(hid);
         Assert.True(hub.Reconcile(true));
     }
+
+    [Fact]
+    public void Dispose_for_shutdown_restores_autonomous_mode_and_blocks_a_reconnect()
+    {
+        var hid = new FakeLampArrayHid();
+        var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hub.WriteFrame(Solid(5));
+
+        hub.Dispose();
+
+        Assert.Equal(new byte[] { 6, 1 }, hid.Device.Sets[^1]);
+        Assert.False(hub.Reconcile(true));
+        Assert.False(hub.WriteFrame(Solid(9)));
+        Assert.Equal(1, hid.Opens);
+    }
 }

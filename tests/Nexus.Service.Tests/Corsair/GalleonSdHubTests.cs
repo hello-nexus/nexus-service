@@ -436,4 +436,23 @@ public class GalleonSdHubTests
         Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdBlockFirst));
         Assert.Equal(GalleonSdProtocol.ModeSoftware, Commands(hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
     }
+
+    [Fact]
+    public void Dispose_for_shutdown_hands_back_hardware_mode_and_blocks_a_reconnect()
+    {
+        _clock = 14_000_000_000;
+        var hid = new ScriptedHid();
+        var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hub.WriteFrame(Frame);
+
+        hub.Dispose();
+
+        Assert.Equal(GalleonSdProtocol.ModeHardware, hid.Device.Writes[^1][6]);
+        Assert.True(hid.Device.Disposed);
+        hid.Device.Writes.Clear();
+        Assert.False(hub.Reconcile(true));
+        Assert.False(hub.WriteFrame(Frame));
+        Assert.Empty(hid.Device.Writes);
+    }
 }
