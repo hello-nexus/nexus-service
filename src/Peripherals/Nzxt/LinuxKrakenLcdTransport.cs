@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Nexus.Service.Peripherals.LinuxUsb;
 using Nexus.Service.Platform;
 
@@ -166,7 +167,7 @@ public sealed class LinuxKrakenLcdTransportFactory : IKrakenLcdTransportFactory
                 }
                 var classFile = Path.Combine(dir, "bInterfaceClass");
                 var isHid = File.Exists(classFile) && File.ReadAllText(classFile).Trim() == "03";
-                if (isHid || Directory.EnumerateDirectories(dir, "0003:*").GetEnumerator().MoveNext())
+                if (isHid || Directory.EnumerateDirectories(dir, "0003:*").Any())
                 {
                     return null;
                 }

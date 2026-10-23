@@ -96,6 +96,22 @@ public sealed class LinuxKrakenLcdTransportFactoryTests : IDisposable
         Assert.Empty(new LinuxKrakenLcdTransportFactory(_root).Candidates("AAA"));
     }
 
+    [Theory]
+    [InlineData("03", true)]
+    [InlineData("ff", false)]
+    public void Candidates_SerialMatchWithRefusedInterfaceDoesNotFallBack(string cls, bool endpoint02)
+    {
+        AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
+        AddInterface("1-2", 0, cls, endpoint02);
+        AddDevice("1-3", "1e71", "3012", 1, 6, "BBB");
+        AddInterface("1-3", 0, "ff", true);
+
+        var factory = new LinuxKrakenLcdTransportFactory(_root);
+
+        Assert.Empty(factory.Candidates("AAA"));
+        Assert.Null(factory.Open("AAA"));
+    }
+
     [Fact]
     public void Open_ReturnsNullWhenNoKrakenIsPresent()
     {
