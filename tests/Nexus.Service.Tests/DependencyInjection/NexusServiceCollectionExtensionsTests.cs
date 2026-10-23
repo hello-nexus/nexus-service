@@ -114,7 +114,7 @@ public class NexusServiceCollectionExtensionsTests
         // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8,
         // ZMatrices, HydroShift II, HydroShift II OLED Curved), plus the Glacial LCD handler.
         Assert.Equal(
-            24 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 7,
+            25 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 7,
             handlers.Length);
     }
 
