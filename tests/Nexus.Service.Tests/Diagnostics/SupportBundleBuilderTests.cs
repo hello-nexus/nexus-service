@@ -119,10 +119,6 @@ public class SupportBundleBuilderTests : IDisposable
     [Fact]
     public void Per_user_logs_behind_a_junction_or_linked_files_are_not_bundled()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // symlink creation needs a privilege on Windows; the reparse check is the same attribute test
-        }
         var secret = Path.Combine(_root, "secret");
         Directory.CreateDirectory(secret);
         File.WriteAllText(Path.Combine(secret, "stolen.log"), "private");
@@ -130,13 +126,17 @@ public class SupportBundleBuilderTests : IDisposable
         var carol = Path.Combine(_root, "Users", "carol");
         var carolNexus = Path.Combine(carol, "AppData", "Local", "Nexus");
         Directory.CreateDirectory(Path.GetDirectoryName(carolNexus)!);
-        Directory.CreateSymbolicLink(carolNexus, secret);
+        Nexus.Service.Tests.Lifecycle.TestLinks.CreateDirLink(carolNexus, secret);
 
         var dave = Path.Combine(_root, "Users", "dave");
         var daveLogs = Path.Combine(dave, "AppData", "Local", "Nexus", "logs");
         Directory.CreateDirectory(daveLogs);
         File.WriteAllText(Path.Combine(daveLogs, "ok.log"), "fine");
-        File.CreateSymbolicLink(Path.Combine(daveLogs, "linked.log"), Path.Combine(secret, "stolen.log"));
+        if (!OperatingSystem.IsWindows())
+        {
+            // A file symlink needs a privilege on Windows; the dir junction above covers the Windows path.
+            File.CreateSymbolicLink(Path.Combine(daveLogs, "linked.log"), Path.Combine(secret, "stolen.log"));
+        }
 
         var entries = Entries(SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
         {

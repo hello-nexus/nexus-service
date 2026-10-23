@@ -61,12 +61,20 @@ public static class SupportBundleBuilder
             AddLogs(zip, "logs/", src.LogsDirectory, "*.log");
             foreach (var (label, dir) in src.UserLogDirectories)
             {
-                // SYSTEM reads user-controlled folders here: refuse junctioned dirs and skip linked files.
-                if (Lifecycle.UserDataSafety.ChainHasReparsePoint(dir, 3))
+                // SYSTEM reads user-controlled folders here: one user's folder must never break the export
+                // for everyone, so any failure skips that user. Junctioned dirs and linked files are
+                // refused, and each opened file must still resolve under the expected dir.
+                try
                 {
-                    continue;
+                    if (Lifecycle.UserDataSafety.ChainHasReparsePoint(dir, 4))
+                    {
+                        continue;
+                    }
+                    AddLogs(zip, $"logs/user-{label}/", dir, "*.log", mustBeUnder: dir);
                 }
-                AddLogs(zip, $"logs/user-{label}/", dir, "*.log", skipReparsePoints: true);
+                catch (Exception)
+                {
+                }
             }
             AddLogs(zip, "updates/", src.UpdatesDirectory, Update.UpdateInstaller.InstallLogGlob);
             AddFile(zip, "updates/" + Update.StagedInstallMarkerStore.MarkerFileName, Path.Combine(src.UpdatesDirectory, Update.StagedInstallMarkerStore.MarkerFileName));
@@ -139,7 +147,7 @@ public static class SupportBundleBuilder
         return result;
     }
 
-    private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern, bool skipReparsePoints = false)
+    private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern, string? mustBeUnder = null)
     {
         if (!Directory.Exists(dir))
         {
@@ -147,16 +155,16 @@ public static class SupportBundleBuilder
         }
         foreach (var path in Directory.EnumerateFiles(dir, pattern).OrderBy(p => p, StringComparer.Ordinal))
         {
-            if (skipReparsePoints && Lifecycle.UserDataSafety.IsReparsePoint(path))
+            if (mustBeUnder is not null && Lifecycle.UserDataSafety.IsReparsePoint(path))
             {
                 continue;
             }
-            AddFile(zip, prefix + Path.GetFileName(path), path);
+            AddFile(zip, prefix + Path.GetFileName(path), path, mustBeUnder);
         }
     }
 
     /// <summary>Copies a file that the service may still be writing; a file past <see cref="MaxLogBytes"/> ships as its tail behind one header line.</summary>
-    private static void AddFile(ZipArchive zip, string name, string path)
+    private static void AddFile(ZipArchive zip, string name, string path, string? mustBeUnder = null)
     {
         if (!File.Exists(path))
         {
@@ -165,6 +173,10 @@ public static class SupportBundleBuilder
         try
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (mustBeUnder is not null && !Lifecycle.UserDataSafety.HandleIsUnder(stream.SafeFileHandle, mustBeUnder))
+            {
+                return;
+            }
             var entry = zip.CreateEntry(name);
             using var output = entry.Open();
             if (stream.Length > MaxLogBytes)

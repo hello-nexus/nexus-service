@@ -40,7 +40,7 @@ internal static class FactoryReset
     public const string RestartFlag = "--restart-finalize";
 
     // A data tree to wipe, plus the names of any immediate children to skip.
-    private sealed record Root(string Path, string[] Preserve);
+    private sealed record Root(string Path, string[] Preserve, bool PerUser = false);
 
     /// Entries under %ProgramData%\Nexus a wipe leaves alone: the kernel driver,
     /// and the remembered render GPU (see Roots).
@@ -87,9 +87,9 @@ internal static class FactoryReset
             // gets wiped.
             foreach (var profile in WindowsUserProfiles())
             {
-                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "Local", "Nexus"), Array.Empty<string>()));
-                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "Roaming", "Nexus"), Array.Empty<string>()));
-                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "LocalLow", "Nexus"), Array.Empty<string>()));
+                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "Local", "Nexus"), Array.Empty<string>(), PerUser: true));
+                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "Roaming", "Nexus"), Array.Empty<string>(), PerUser: true));
+                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "LocalLow", "Nexus"), Array.Empty<string>(), PerUser: true));
             }
         }
         else if (OperatingSystem.IsMacOS())
@@ -352,6 +352,16 @@ internal static class FactoryReset
         foreach (var root in Roots())
         {
             if (!Directory.Exists(root.Path)) continue;
+            if (root.PerUser)
+            {
+                // The finalizer runs as SYSTEM on folders a user controls: a junction in the way would
+                // redirect the delete, so such roots are skipped (static junctions only; see UserDataSafety).
+                if (!UserDataSafety.IsSafeUserTree(root.Path))
+                {
+                    Console.Error.WriteLine($"[factory-reset] skipping {root.Path}: contains or sits behind a reparse point");
+                    continue;
+                }
+            }
             DeleteSettingsFiles(root.Path);
             try
             {
