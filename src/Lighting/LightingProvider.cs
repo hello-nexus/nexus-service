@@ -1413,7 +1413,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "pulse" => new(0.55f, 0.45f, 60f, 1.00f, 1.00f, 1f),
         "watercolor" => new(0.50f, 0.30f, 40f, 1.00f, 1.00f, 1f),
         "jellyfish" => new(0.48f, 0.35f, 45f, 1.00f, 1.00f, 1f),
-        "aurora" => new(0.50f, 0.00f, 40f, 1.00f, 1.00f, 1f),
+        "aurora" => new(0.00f, 0.00f, 40f, 1.00f, 1.00f, 1f),
         "lavalamp" => new(0.85f, 0.50f, 35f, 1.00f, 1.00f, 1f),
         "starfield" => new(0.60f, 0.25f, 55f, 1.00f, 1.00f, 1f),
         "voronoi" => new(0.40f, 0.50f, 40f, 1.05f, 1.00f, 1f),

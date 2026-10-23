@@ -1,15 +1,21 @@
 uniform float u_curtains; // hint_range(1.0, 8.0, 1.0) = 4.0  number of overlapping curtain bands
 uniform float u_height; // hint_range(0.2, 1.0, 0.02) = 0.55  how much of the frame the curtains cover
 uniform float u_shimmer; // hint_range(0.0, 1.0, 0.02) = 0.5  high-freq flicker intensity
-uniform float u_spread; // hint_range(0.0, 1.0, 0.01) = 0.55  hue spread from the bright lower edge to the top of each curtain
+uniform float u_aHue;  // hint_range(0.0, 1.0, 0.01) = 0.67  center hue of the color range
+uniform float u_aSpan; // hint_range(0.0, 1.0, 0.01) = 0.33  share of the wheel the curtains step through
+uniform float u_aSat;  // hint_range(0.0, 1.0, 0.01) = 1.0
+uniform float u_aVal;  // hint_range(0.0, 1.0, 0.01) = 1.0
 uniform float u_bgLevel; // hint_range(0.0, 1.0, 0.01) = 0.6  sky brightness, always tinted
 uniform float u_rays; // hint_range(0.0, 1.0, 0.01) = 0.7  how far and how strongly vertical rays stream down
 
-// Palette color at offset h, rescaled to full value so the hue stays vivid
-// before the post-process.
-vec3 curtainColor(float h) {
-    vec3 c = tintedPalette(h);
-    return 1.25 * c / max(max(c.r, max(c.g, c.b)), 0.001);
+// Hue of the nth curtain counted from the lowest one. The wheel's range runs
+// from its first end at the lowest curtain to its far end at the highest, both
+// ends included; the full wheel steps evenly and does not repeat the start.
+float bandHueAt(float n, float count) {
+    float start = u_aHue - u_aSpan * 0.5;
+    if (u_aSpan > 0.99) return u_aHue + n / count;
+    if (count < 1.5) return start;
+    return start + u_aSpan * n / (count - 1.0);
 }
 
 void main() {
@@ -18,23 +24,22 @@ void main() {
     int bands = int(clamp(u_curtains, 1.0, 8.0));
     float h = clamp(u_height, 0.1, 1.0);
     float shim = clamp(u_shimmer, 0.0, 1.0);
-    float spread = clamp(u_spread, 0.0, 1.0);
     float rays = clamp(u_rays, 0.0, 1.0);
     float aspect = u_resolution.x / max(u_resolution.y, 1.0);
 
     // Sky: a darker palette color nudged toward its neighbor hue, so every
     // preset gets a colored backdrop that is never black. It brightens a little
     // toward the bottom so the lower frame carries color.
-    vec3 sky = curtainColor(0.06) * 0.2 * mix(0.12, 0.9, clamp(u_bgLevel, 0.0, 1.0));
+    vec3 sky = hsv2rgb(vec3(u_aHue - u_aSpan * 0.5 - 0.04, u_aSat, 1.0)) * 0.4 * mix(0.15, 0.9, clamp(u_bgLevel, 0.0, 1.0));
     vec3 col = sky * (0.75 + 0.5 * uv.y);
 
     // Pixel-size guards: ray frequency never goes finer than about three pixels.
     float rayFreq = min(26.0, u_resolution.x * 0.3);
     float shimFreq = min(30.0, u_resolution.x * 0.4);
     float span = 0.2 + 0.62 * h;
-    float width = 0.06 + 0.04 * h;
-    float invUp = 1.0 / (width * 2.4);
-    float invDn = 1.0 / (width * 0.6);
+    float width = 0.05 + 0.03 * h;
+    float invUp = 1.0 / (width * 1.7);
+    float invDn = 1.0 / (width * 0.5);
 
     for (int i = 0; i < 8; i++) {
         if (i >= bands) break;
@@ -64,17 +69,27 @@ void main() {
         // Ray texture inside the curtain body.
         float body = band * flicker * mix(1.0, 0.55 + 0.9 * ray, rays * 0.6);
 
-        // Hue runs from the main color at the hem toward the spread end above it.
-        float k = clamp(-dy * invUp / 1.2, 0.0, 1.0);
-        vec3 lc = curtainColor(-spread * 0.6 * k - fi * 0.01 * spread);
+        // Hue comes from the wheel range, not the global tint.
+        // Each band takes its own hue from the wheel's range (the lowest band the
+        // first end); a gentle gradient inside the band keeps it soft.
+        float k = clamp(-dy * invUp / 1.7, 0.0, 1.0);
+        float n = float(bands - 1) - fi;
+        float stepHue = (u_aSpan > 0.99) ? 1.0 / float(bands) : u_aSpan / max(float(bands), 2.0);
+        float bandHue = bandHueAt(n, float(bands)) + stepHue * 0.5 * k;
+        vec3 lc = 1.25 * hsv2rgb(vec3(bandHue, u_aSat, u_aVal));
 
         // Rays stream down from the hem, fading with distance.
-        float len = 0.06 + 0.26 * rays;
+        float len = 0.05 + 0.2 * rays;
         float below = smoothstep(-0.01, 0.03, dy);
         float rayI = rays * ray * exp(-max(dy, 0.0) / len) * below;
 
-        col += lc * (body * 0.7 + rayI * 0.6);
-        col += mix(lc, vec3(1.0), 0.2) * hem * (0.2 + 0.9 * ray) * (0.6 + 0.4 * flicker) * 0.6;
+        // Alpha-over instead of additive, so a front band keeps its own hue where
+        // bands overlap and the colored sky shows through the gaps. Rays carry
+        // their own band's color.
+        float a = clamp(body * 0.95 + rayI * 0.7, 0.0, 1.0);
+        float hemI = hem * (0.2 + 0.9 * ray) * (0.6 + 0.4 * flicker);
+        vec3 lit = lc * (0.75 + 0.5 * body) + mix(lc, vec3(1.0), 0.25) * hemI * 0.6;
+        col = mix(col, lit, clamp(a + hemI * 0.5, 0.0, 1.0));
     }
 
     // Background star field: one star per grid cell, placed at a hashed point
