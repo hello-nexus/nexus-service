@@ -1221,7 +1221,8 @@ public class GlacialLcdDriverTests
 
         driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 8));
         Assert.True(WaitUntil(() => driver.UploadsCompleted == 8, 30_000));
-        Assert.Equal(4, tuning.Stats().Acks.Timeouts);
+        // The probe asks each step on its own: two prelude waits, one chunk wait, one commit wait.
+        Assert.Equal(6, tuning.Stats().Acks.Timeouts);
         driver.Disconnect(pipe, hid);
     }
 
@@ -1421,6 +1422,62 @@ public class GlacialLcdDriverTests
         hid.Echo = true;
         driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 9));
         Assert.True(WaitUntilTicking(clock, () => hid.Writes.Any(w => w[1] == 0x71) && driver.UploadsCompleted >= 2));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public async Task A_shutdown_during_a_raw_frame_waits_for_the_panel_to_be_put_back()
+    {
+        var clock = new FakeClock();
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { RawStream = true });
+        var driver = Fast(clock: clock, disconnectWaitMs: 10_000);
+        driver.BindTuning(tuning);
+        var gate = new ManualResetEventSlim(false);
+        int writing = 0;
+        var pipe = new FakePipe
+        {
+            OnWrite = () =>
+            {
+                Interlocked.Exchange(ref writing, 1);
+                gate.Wait(10_000);
+            },
+        };
+        var hid = new FakeHid { Echo = false };
+        ScriptRawAcks(hid);
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 2));
+        Assert.True(WaitUntilTicking(clock, () => Volatile.Read(ref writing) == 1));
+
+        var detach = Task.Run(driver.PrepareDetach);
+        await Task.Delay(200);
+        Assert.False(detach.IsCompleted, "the wait must not end while the frame is still being written");
+        gate.Set();
+
+        await detach.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Contains(hid.Writes, w => w[1] == 0x51 && w[2] == 0x11 && w[3] == 0x00 && w[4] == 0x00);
+        Assert.False(tuning.Stats().RawActive);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Turning_raw_streaming_on_again_starts_the_failure_count_afresh()
+    {
+        var clock = new FakeClock();
+        var driver = RawDriver(clock, out var tuning, out var pipe, out var hid, ack: false);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 2, seed: 1));
+        Assert.True(WaitUntilTicking(clock, () => tuning.Stats().RawFramesFailed >= 2, advanceMs: 200, timeoutMs: 60_000));
+        Assert.True(tuning.Current().RawStream);
+
+        tuning.Apply(new GlacialLcdTuningChange { RawStream = false });
+        Assert.True(WaitUntilTicking(clock, () => !tuning.Stats().RawActive, advanceMs: 200));
+        tuning.Apply(new GlacialLcdTuningChange { RawStream = true });
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 2, seed: 2));
+        int before = tuning.Stats().RawFramesFailed;
+        Assert.True(WaitUntilTicking(clock, () => tuning.Stats().RawFramesFailed >= before + 2, advanceMs: 200, timeoutMs: 60_000));
+
+        // Four failures in all, but only two since the knob came back on: still on.
+        Assert.True(tuning.Current().RawStream);
         driver.Disconnect(pipe, hid);
     }
 
