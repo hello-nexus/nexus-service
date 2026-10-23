@@ -102,7 +102,7 @@ media uploads via `POST /tryx/media`.
   elgato-streamdeck references.
 - Dials, touch strip and screens: Plus and Plus XL (dials under an
   800x100 / 1200x100 touch strip), Neo (info screen and two touch keys),
-  Studio (two dials with LED rings) and the Corsair Galleon K100 SD (screen
+  Studio (two dials with LED rings) and the Corsair Galleon 100 SD (screen
   and two dials). A `DeckPage` or folder carries `dials`; the connection
   worker dispatches turns, presses and touches (`StreamDeckConnectionWorker.
   Dials.cs`), `Rendering/DeckStripRenderer.cs` draws the segments, and
