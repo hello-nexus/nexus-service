@@ -25,15 +25,18 @@ internal sealed class AstralGpuSupplement
     private readonly IAstralNvApiClient _client;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _probeInterval;
+    private readonly AstralMonitor? _monitor;
     private readonly object _lock = new();
     private readonly Dictionary<int, GpuState> _states = new();
 
-    public AstralGpuSupplement(IAstralNvApiClient client) : this(client, TimeProvider.System, TimeSpan.FromSeconds(1))
+    public AstralGpuSupplement(IAstralNvApiClient client, AstralMonitor? monitor = null)
+        : this(client, TimeProvider.System, TimeSpan.FromSeconds(1), monitor)
     {
     }
 
-    internal AstralGpuSupplement(IAstralNvApiClient client, TimeProvider timeProvider, TimeSpan probeInterval)
+    internal AstralGpuSupplement(IAstralNvApiClient client, TimeProvider timeProvider, TimeSpan probeInterval, AstralMonitor? monitor = null)
     {
+        _monitor = monitor;
         _client = client;
         _timeProvider = timeProvider;
         _probeInterval = probeInterval;
@@ -46,6 +49,9 @@ internal sealed class AstralGpuSupplement
         public uint SubSystemId;
         public DateTimeOffset NextProbeUtc;
         public bool LoggedFirstAttempt;
+        public bool LoggedFirstGSensor;
+        public int GSensorMisses;
+        public DateTimeOffset NextGSensorUtc;
         public AstralTelemetryParser.AstralReadout? LastReadout;
     }
 
@@ -93,14 +99,56 @@ internal sealed class AstralGpuSupplement
             {
                 state.NextProbeUtc = now + _probeInterval;
                 Probe(state, state.AdapterIndex);
+                Feed(state, hwId, hwName, now);
             }
 
             if (state.LastReadout is { } readout)
             {
                 AstralSensorBuilder.Append(hwId, hwName, readout, result);
+                _monitor?.AppendLevelSensors(hwId, hwName, result);
             }
         }
     }
+
+    // Hands the fresh readings to the monitor: pin currents, then the G-sensor with
+    // backoff (1 s doubling to 60 s) so a card without one is not hammered.
+    private void Feed(GpuState state, string hwId, string hwName, DateTimeOffset now)
+    {
+        if (_monitor is null || state.LastReadout is not { } readout)
+        {
+            return;
+        }
+
+        var name = AstralAibVendors.EnrichName(hwName, state.SubSystemId, true);
+        Span<float> amps = stackalloc float[AstralTelemetryParser.PinCount];
+        for (var i = 0; i < amps.Length; i++)
+        {
+            amps[i] = readout.Pins[i].CurrentAmps;
+        }
+        _monitor.Feed(hwId, name, CalibrationKey(state.AdapterIndex, state.SubSystemId), amps);
+
+        if (now < state.NextGSensorUtc)
+        {
+            return;
+        }
+        var ok = _client.TryReadGSensorBlock(state.AdapterIndex, out var block);
+        var angles = ok ? AstralGSensorParser.Parse(block) : null;
+        if (!state.LoggedFirstGSensor)
+        {
+            state.LoggedFirstGSensor = true;
+            ServiceLog.Info($"[astral] gpu{state.AdapterIndex} first G-sensor read {(angles is null ? "failed" : "ok")}, raw={Convert.ToHexString(block)}");
+        }
+        if (angles is { } a)
+        {
+            state.GSensorMisses = 0;
+            _monitor.FeedAngles(hwId, a);
+            return;
+        }
+        state.GSensorMisses = Math.Min(state.GSensorMisses + 1, 6);
+        state.NextGSensorUtc = now + TimeSpan.FromSeconds(1 << state.GSensorMisses);
+    }
+
+    internal static string CalibrationKey(int adapterIndex, uint subSystemId) => $"gpu{adapterIndex}:{subSystemId:X8}";
 
     private bool TryGetState(string hwIdentifier, out GpuState state)
     {

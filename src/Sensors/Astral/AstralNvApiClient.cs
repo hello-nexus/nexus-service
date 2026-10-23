@@ -182,7 +182,13 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
         return _getPciIdentifiers!(handle, out _, out subSystemId, out _, out _) == NvStatus.Ok;
     }
 
-    public bool TryReadAstralBlock(int adapterIndex, out byte[] block)
+    public bool TryReadAstralBlock(int adapterIndex, out byte[] block) =>
+        TryReadRegisters(adapterIndex, AstralRegisterAddress, AstralTelemetryParser.BlockSize, out block);
+
+    public bool TryReadGSensorBlock(int adapterIndex, out byte[] block) =>
+        TryReadRegisters(adapterIndex, AstralGSensorParser.RegisterAddress, AstralGSensorParser.BlockSize, out block);
+
+    private bool TryReadRegisters(int adapterIndex, byte register, int size, out byte[] block)
     {
         block = Array.Empty<byte>();
         if (!TryGetHandle(adapterIndex, out var handle))
@@ -190,8 +196,8 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
             return false;
         }
 
-        var buffer = new byte[AstralTelemetryParser.BlockSize];
-        var regAddress = new byte[] { AstralRegisterAddress };
+        var buffer = new byte[size];
+        var regAddress = new byte[] { register };
         NvStatus status;
 
         unsafe
@@ -208,7 +214,7 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
                     I2CRegAddress = (IntPtr)pRegAddr,
                     RegAddrSize = 1,
                     Data = (IntPtr)pData,
-                    Size = AstralTelemetryParser.BlockSize,
+                    Size = (uint)size,
                     I2CSpeed = I2CSpeedDeprecated,
                     I2CSpeedKhz = NvI2CSpeed.Speed100Khz,
                     PortId = 1,

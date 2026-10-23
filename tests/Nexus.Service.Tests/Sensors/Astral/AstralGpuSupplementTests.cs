@@ -37,6 +37,12 @@ public class AstralGpuSupplementTests
             return HasSubSystemId;
         }
 
+        public bool TryReadGSensorBlock(int adapterIndex, out byte[] block)
+        {
+            block = Array.Empty<byte>();
+            return false;
+        }
+
         public bool TryReadAstralBlock(int adapterIndex, out byte[] block)
         {
             ReadCalls++;

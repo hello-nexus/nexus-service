@@ -57,6 +57,10 @@ public sealed class NexusSettings
     public SentrySettings Sentry { get; set; } = new();
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
+    /// <summary>ROG Astral Power Detector choices. NOT profile-scoped: they protect this PC's hardware.</summary>
+    public AstralSettings Astral { get; set; } = new();
+    /// <summary>ROG Astral Level Sense calibrations keyed by AstralGpuSupplement.CalibrationKey. NOT profile-scoped: it describes how the card sits in this case.</summary>
+    public Dictionary<string, AstralCalibration> AstralLevelSense { get; set; } = new();
 
     /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
     public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();
@@ -2589,4 +2593,35 @@ public sealed class UpdateSettings
     /// </summary>
     [System.Text.Json.Serialization.JsonPropertyName("autoUpdateDisabled")]
     public bool? LegacyAutoUpdateDisabled { get; set; }
+}
+
+/// <summary>ROG Astral Power Detector settings; also the wire shape of the Astral state's settings. Limits are fixed, a ROG Equalizer cable raises them. Both shutdowns are off until the user turns them on.</summary>
+public sealed class AstralSettings
+{
+    public bool Alerts { get; set; } = true;
+    public bool Equalizer { get; set; }
+    public bool OvercurrentShutdown { get; set; }
+    public int OvercurrentSeconds { get; set; } = 60;
+    public int CountdownSeconds { get; set; } = 60;
+    public bool CriticalShutdown { get; set; }
+}
+
+/// <summary>Body of POST /astral/settings: only the fields present change.</summary>
+public sealed class AstralSettingsPatch
+{
+    public bool? Alerts { get; set; }
+    public bool? Equalizer { get; set; }
+    public bool? OvercurrentShutdown { get; set; }
+    public int? OvercurrentSeconds { get; set; }
+    public int? CountdownSeconds { get; set; }
+    public bool? CriticalShutdown { get; set; }
+}
+
+/// <summary>One card's Level Sense calibration: smoothed X, Y and Z angles in degrees and when it was taken (Unix ms).</summary>
+public sealed class AstralCalibration
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Z { get; set; }
+    public long CalibratedAtMs { get; set; }
 }
