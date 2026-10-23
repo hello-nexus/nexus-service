@@ -59,6 +59,7 @@ public class OpenRgbDetectorOverridesTests : IDisposable
     {
         Assert.Contains("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
         Assert.DoesNotContain("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
+        Assert.DoesNotContain(OpenRgbAmdGpuI2cDetectors.Names, n => n.Contains("GeForce", StringComparison.Ordinal));
         Assert.Contains("HYTE Keeb TKL", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
@@ -73,7 +74,8 @@ public class OpenRgbDetectorOverridesTests : IDisposable
     [InlineData("ASUS ROG STRIX Radeon RX 6600 XT Gaming OC")]
     [InlineData("ASUS TUF Radeon RX 9070 XT Gaming OC")]
     [InlineData("Sapphire Radeon RX 9070 XT Nitro+")]
-    public void Gpu_i2c_detectors_disabled_on_linux_only(string detector)
+    [InlineData("PowerColor Red Devil RX9070XT")]
+    public void Amd_gpu_i2c_detectors_disabled_on_linux_only(string detector)
     {
         Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
         Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
@@ -81,10 +83,22 @@ public class OpenRgbDetectorOverridesTests : IDisposable
     }
 
     [Fact]
-    public void Gpu_i2c_detector_names_are_unique_and_keep_first_party_entries()
+    public void Amd_gpu_i2c_detector_names_are_unique_and_keep_first_party_entries()
     {
-        Assert.Equal(OpenRgbGpuI2cDetectors.Names.Length, OpenRgbGpuI2cDetectors.Names.Distinct().Count());
+        Assert.Equal(OpenRgbAmdGpuI2cDetectors.Names.Length, OpenRgbAmdGpuI2cDetectors.Names.Distinct().Count());
+        Assert.DoesNotContain(OpenRgbAmdGpuI2cDetectors.Names, n => n.Contains("GeForce", StringComparison.Ordinal));
         Assert.Contains("HYTE Keeb TKL", OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
+    }
+
+    [Theory]
+    [InlineData("ASUS ROG STRIX GeForce RTX 4090 Gaming OC")]
+    [InlineData("Gigabyte GeForce RTX 3080 Gaming OC")]
+    [InlineData("MSI GeForce RTX 3070 Gaming Trio")]
+    public void Nvidia_gpu_i2c_detectors_are_not_disabled_on_any_os(string detector)
+    {
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
     [Theory]

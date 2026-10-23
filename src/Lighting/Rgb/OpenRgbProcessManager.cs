@@ -205,7 +205,7 @@ public sealed class OpenRgbProcessManager : IDisposable
         var list = NativeDetectorClaims.ResolveDisabled(_ => true, macOS);
         if (linux)
         {
-            list.AddRange(OpenRgbGpuI2cDetectors.Names);
+            list.AddRange(OpenRgbAmdGpuI2cDetectors.Names);
         }
         return list.ToArray();
     }
@@ -216,8 +216,8 @@ public sealed class OpenRgbProcessManager : IDisposable
         var list = NativeDetectorClaims.ResolveDisabled(handler => _gate?.IsChosenOn(handler) == true, OperatingSystem.IsMacOS());
         if (OperatingSystem.IsLinux())
         {
-            // Probing the card's I2C buses can hang the amdgpu SMU, so every GPU I2C detector stays off on Linux.
-            list.AddRange(OpenRgbGpuI2cDetectors.Names);
+            // Probing a Radeon's I2C buses can hang the amdgpu SMU, so the AMD GPU I2C detectors stay off on Linux. NVIDIA cards are not affected.
+            list.AddRange(OpenRgbAmdGpuI2cDetectors.Names);
         }
         return list;
     }
@@ -246,7 +246,7 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// DDR5, and each Patriot file defines its own PATRIOT_CONTROLLER_NAME.
     /// Motherboard I2C detectors share the bus and stay enabled. GPU I2C
     /// detectors stay enabled too, except on Linux where
-    /// <see cref="OpenRgbGpuI2cDetectors"/> holds them off in
+    /// <see cref="OpenRgbAmdGpuI2cDetectors"/> holds the AMD ones off in
     /// <see cref="ResolveNativeDisabledDetectors"/>.
     /// </summary>
     internal static readonly string[] SmbusDramDetectors =
