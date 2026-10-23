@@ -271,18 +271,10 @@ public sealed class LinuxSensorProvider : ISensorProvider
             {
                 // Fallback: parse lspci for VGA/3D controllers
                 var lspci = ShellOut("/usr/bin/lspci", 2000, "-mm");
-                foreach (var line in lspci.Split('\n'))
+                foreach (var (name, slot) in LinuxPciSubsystem.ParseLspciGpus(lspci))
                 {
-                    if (line.Contains("\"VGA compatible controller\"") || line.Contains("\"3D controller\""))
-                    {
-                        var parts = line.Split('"');
-                        if (parts.Length >= 6)
-                        {
-                            var name = $"{parts[3]} {parts[5]}".Trim();
-                            models.Add(name);
-                            AddBoard(boards, name, parts[0]);
-                        }
-                    }
+                    models.Add(name);
+                    AddBoard(boards, name, slot);
                 }
             }
         }
@@ -299,10 +291,10 @@ public sealed class LinuxSensorProvider : ISensorProvider
         return _gpuBoards ?? new List<GpuBoard>();
     }
 
-    // Integrated adapters carry the motherboard's subsystem, not a card maker's, so only discrete ones are kept.
+    // An integrated adapter carries the motherboard's subsystem, not a card maker's; only functions proven discrete are kept.
     private static void AddBoard(List<GpuBoard> boards, string name, string? busId)
     {
-        if (GpuClassifier.FromName(name).Integrated)
+        if (!LinuxPciSubsystem.IsDiscrete(LinuxPciSubsystem.DevicesRoot, busId, name))
         {
             return;
         }

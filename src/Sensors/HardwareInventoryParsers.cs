@@ -166,21 +166,33 @@ internal static partial class HardwareInventoryParsers
     /// <summary>Bus name for a Windows STORAGE_BUS_TYPE; null for buses that are not a physical drive transport.</summary>
     public static string? WindowsBus(uint busType) => busType switch
     {
-        1 => "scsi",
-        3 => "ata",
-        8 => "raid",
-        10 => "sas",
-        11 => "sata",
-        17 => "nvme",
+        BusTypeScsi => "scsi",
+        BusTypeAta => "ata",
+        BusTypeRaid => "raid",
+        BusTypeSas => "sas",
+        BusTypeSata => "sata",
+        BusTypeNvme => "nvme",
         _ => null,
     };
+
+    // Windows STORAGE_BUS_TYPE values.
+    private const uint BusTypeScsi = 1;
+    private const uint BusTypeAta = 3;
+    private const uint BusTypeUsb = 7;
+    private const uint BusTypeRaid = 8;
+    private const uint BusTypeSas = 10;
+    private const uint BusTypeSata = 11;
+    private const uint BusTypeVirtual = 14;
+    private const uint BusTypeFileBackedVirtual = 15;
+    private const uint BusTypeSpaces = 16;
+    private const uint BusTypeNvme = 17;
 
     /// <summary>A Windows internal physical drive, or null when it is USB-attached, virtual, pooled or otherwise not a physical disk.</summary>
     public static FleetEventDrive? FromWindows(string vendor, string product, uint busType, string mediaType, long size)
     {
         // Virtual, file-backed virtual and Storage Spaces pool buses are not physical disks.
         // USB-attached: only internal drives are reported, so plugging in an external disk never changes the specs.
-        if (busType is 7 or 14 or 15 or 16)
+        if (busType is BusTypeUsb or BusTypeVirtual or BusTypeFileBackedVirtual or BusTypeSpaces)
             return null;
         var model = CleanText(product);
         var vend = TransportTagToNull(vendor);

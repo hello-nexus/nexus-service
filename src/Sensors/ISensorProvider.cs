@@ -49,6 +49,9 @@ public interface ISensorProvider
     /// </summary>
     IReadOnlyList<GpuBoard> GetGpuBoards() => System.Array.Empty<GpuBoard>();
 
+    /// <summary>Each GPU model paired with its board maker where one could be read; a provider that already holds both reads overrides this to read once.</summary>
+    IReadOnlyList<GpuCard> GetGpuCards() => Nexus.Service.Sensors.GpuBoardPartners.Resolve(GetGpuModels(), GetGpuBoards());
+
     IReadOnlyList<HardwareSensor> GetMemorySensors();
     string GetMemoryTotalFormatted();
     /// <summary>

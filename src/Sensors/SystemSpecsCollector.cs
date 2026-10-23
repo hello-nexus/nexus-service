@@ -70,7 +70,7 @@ public sealed class SystemSpecsCollector
 
     private SystemSpecsResponse Build(HardwareInventory inventory)
     {
-        var cards = GpuBoardPartners.Resolve(_sensors.GetGpuModels(), _sensors.GetGpuBoards());
+        var cards = _sensors.GetGpuCards();
         var s = new SystemSpecsResponse
         {
             PcName = SafeMachineName(),
@@ -79,7 +79,7 @@ public sealed class SystemSpecsCollector
             Motherboard = _sensors.GetMotherboardModel(),
             Memory = _sensors.GetMemoryTotalFormatted(),
             GraphicsCard = string.Join(" + ", cards.Select(c => c.Display)),
-            GpuCards = cards,
+            GpuCards = cards.ToList(),
             PrimaryGpu = BenchmarkRunner.SelectReportedGpus(_sensors.GetGpus()).FirstOrDefault()
                 ?? _sensors.GetGpuModels().FirstOrDefault() ?? "",
         };

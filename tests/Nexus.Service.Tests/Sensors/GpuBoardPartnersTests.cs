@@ -109,6 +109,26 @@ public class GpuBoardPartnersTests
         Assert.Equal(expected, new GpuCard(chip, "NVIDIA", 0x10DE, 0x2095).Display);
     }
 
+    [Theory]
+    [InlineData("NVIDIA RTX A4000")]
+    [InlineData("NVIDIA Quadro RTX 5000")]
+    [InlineData("NVIDIA Tesla T4")]
+    [InlineData("NVIDIA L4")]
+    [InlineData("NVIDIA Corporation AD103 [GeForce RTX 4080]")]
+    public void An_nvidia_reference_board_without_a_clean_geforce_name_keeps_the_chip(string chip)
+    {
+        Assert.Equal(chip, new GpuCard(chip, "NVIDIA", 0x10DE, 0x1234).Display);
+    }
+
+    [Fact]
+    public void The_profile_gpu_property_stays_chip_only()
+    {
+        var specs = new SystemSpecsResponse { GraphicsCard = "MSI NVIDIA GeForce RTX 3090" };
+        specs.GpuCards.Add(new GpuCard("NVIDIA GeForce RTX 3090", "MSI", 0x1462, 0x3881));
+        Assert.Equal("NVIDIA GeForce RTX 3090", Nexus.Service.Telemetry.SystemProfileService.ChipOnlyGraphics(specs));
+        Assert.Equal("legacy", Nexus.Service.Telemetry.SystemProfileService.ChipOnlyGraphics(new SystemSpecsResponse { GraphicsCard = "legacy" }));
+    }
+
     [Fact]
     public void An_amd_reference_board_keeps_the_bare_chip()
     {
@@ -185,10 +205,14 @@ public sealed class LinuxPciSubsystemTests : IDisposable
 
     public void Dispose() => Directory.Delete(_root, true);
 
-    private void Device(string busId, string vendor, string device)
+    private void Device(string busId, string vendor, string device, string? chipVendor = null, long? vram = null)
     {
         var dir = Path.Combine(_root, busId);
         Directory.CreateDirectory(dir);
+        if (chipVendor is not null)
+            File.WriteAllText(Path.Combine(dir, "vendor"), chipVendor + "\n");
+        if (vram is not null)
+            File.WriteAllText(Path.Combine(dir, "mem_info_vram_total"), vram + "\n");
         File.WriteAllText(Path.Combine(dir, "subsystem_vendor"), vendor + "\n");
         File.WriteAllText(Path.Combine(dir, "subsystem_device"), device + "\n");
     }
@@ -232,5 +256,47 @@ public sealed class LinuxPciSubsystemTests : IDisposable
     public void Splits_a_name_and_bus_id_row(string row, string name, string? busId)
     {
         Assert.Equal((name, busId), LinuxPciSubsystem.ParseSmiRow(row));
+    }
+
+    // lspci -mm lines in the format the provider parses; the sysfs ids are the pci.ids entries for each device and a board with the Gigabyte subsystem.
+    private const string LspciMm =
+        "6e:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Raphael\" -rc1 \"Gigabyte Technology Co., Ltd.\" \"Device d000\"\n" +
+        "65:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Phoenix1\" -rc1 \"Gigabyte Technology Co., Ltd.\" \"Device d000\"\n" +
+        "05:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]\" -rc8 \"ASUSTeK Computer Inc.\" \"Device 16c2\"\n" +
+        "03:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Navi 31 [Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M]\" -rc8 \"Sapphire Technology Limited\" \"Device 471e\"\n" +
+        "00:1f.3 \"Audio device\" \"Intel Corporation\" \"Cannon Lake PCH cAVS\"\n";
+
+    [Fact]
+    public void An_amd_igpu_without_graphics_in_its_name_is_not_discrete_and_a_discrete_radeon_is()
+    {
+        Device("0000:6e:00.0", "0x1458", "0xd000", chipVendor: "0x1002", vram: 536870912);
+        Device("0000:65:00.0", "0x1458", "0xd000", chipVendor: "0x1002", vram: 536870912);
+        Device("0000:05:00.0", "0x1043", "0x16c2", chipVendor: "0x1002", vram: 536870912);
+        Device("0000:03:00.0", "0x1da2", "0x471e", chipVendor: "0x1002", vram: 25753026560);
+
+        var gpus = LinuxPciSubsystem.ParseLspciGpus(LspciMm);
+
+        Assert.Equal(new[] { "6e:00.0", "65:00.0", "05:00.0", "03:00.0" }, gpus.Select(g => g.Slot));
+        Assert.Equal(new[] { false, false, false, true }, gpus.Select(g => LinuxPciSubsystem.IsDiscrete(_root, g.Slot, g.Name)));
+        Assert.Contains("Raphael", gpus[0].Name);
+    }
+
+    [Fact]
+    public void An_amd_function_with_unreadable_memory_is_not_given_a_maker()
+    {
+        Device("0000:03:00.0", "0x1da2", "0x471e", chipVendor: "0x1002");
+
+        Assert.False(LinuxPciSubsystem.IsDiscrete(_root, "03:00.0", "Navi 31"));
+    }
+
+    [Fact]
+    public void An_nvidia_function_is_discrete_and_only_an_arc_intel_function_is()
+    {
+        Device("0000:01:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
+        Device("0000:00:02.0", "0x1458", "0xd000", chipVendor: "0x8086");
+
+        Assert.True(LinuxPciSubsystem.IsDiscrete(_root, "00000000:01:00.0", "NVIDIA GeForce RTX 3090"));
+        Assert.False(LinuxPciSubsystem.IsDiscrete(_root, "00:02.0", "Intel Corporation Raptor Lake-S GT1 [UHD Graphics 770]"));
+        Assert.True(LinuxPciSubsystem.IsDiscrete(_root, "00:02.0", "Intel Corporation DG2 [Arc A770]"));
     }
 }

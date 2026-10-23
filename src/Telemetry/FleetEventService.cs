@@ -277,7 +277,7 @@ internal sealed class FleetEventService
             var read = _inventorySource();
             var now = _clock.GetUtcNow();
             _inventory = ResolveInventory(read, persisted, now);
-            PersistInventory(_inventory, persisted, read.RamModules.Count > 0 || read.Drives.Count > 0 ? now : null);
+            PersistInventory(_inventory, persisted, read.RamModules.Count > 0 ? now : null, read.Drives.Count > 0 ? now : null);
         }
         var inventory = _inventory;
         // After a Bad Request the specs go without the inventory keys, and the hash must not claim they were delivered.
@@ -355,20 +355,23 @@ internal sealed class FleetEventService
     }
 
     /// <summary>
-    /// A non-empty read wins; an empty list reuses the last persisted one, list by list, until the persisted inventory is older than
-    /// <see cref="PersistedInventoryMaxAge"/> since the last read that returned data.
+    /// A non-empty read wins; an empty list reuses the last persisted one, list by list, until that list is older than
+    /// <see cref="PersistedInventoryMaxAge"/> since the last read that returned it.
     /// </summary>
     internal static HardwareInventory ResolveInventory(HardwareInventory current, TelemetrySettings persisted, DateTimeOffset now)
     {
-        var usable = DateTimeOffset.TryParse(persisted.FleetInventoryReadAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var readAt)
-            && now - readAt < PersistedInventoryMaxAge;
-        var ram = current.RamModules.Count > 0 ? current.RamModules : usable ? persisted.FleetRamModules : current.RamModules;
-        var total = current.RamModules.Count > 0 ? current.PopulatedModules : usable ? persisted.FleetRamModuleTotal : 0;
-        var drives = current.Drives.Count > 0 ? current.Drives : usable ? persisted.FleetDrives : current.Drives;
+        var ramUsable = Fresh(persisted.FleetRamReadAt, now);
+        var drivesUsable = Fresh(persisted.FleetDrivesReadAt, now);
+        var ram = current.RamModules.Count > 0 ? current.RamModules : ramUsable ? persisted.FleetRamModules : current.RamModules;
+        var total = current.RamModules.Count > 0 ? current.PopulatedModules : ramUsable ? persisted.FleetRamModuleTotal : 0;
+        var drives = current.Drives.Count > 0 ? current.Drives : drivesUsable ? persisted.FleetDrives : current.Drives;
         return new HardwareInventory(ram, drives, total);
     }
 
-    private void PersistInventory(HardwareInventory inventory, TelemetrySettings persisted, DateTimeOffset? readAt)
+    private static bool Fresh(string stamp, DateTimeOffset now) =>
+        DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var readAt) && now - readAt < PersistedInventoryMaxAge;
+
+    private void PersistInventory(HardwareInventory inventory, TelemetrySettings persisted, DateTimeOffset? ramReadAt, DateTimeOffset? drivesReadAt)
     {
         var none = Array.Empty<FleetEventDrive>();
         var noModules = Array.Empty<FleetEventRamModule>();
@@ -377,12 +380,14 @@ internal sealed class FleetEventService
                 != InventorySignature(new HardwareInventory(persisted.FleetRamModules, none, persisted.FleetRamModuleTotal));
         var drivesChanged = inventory.Drives.Count > 0
             && InventorySignature(new HardwareInventory(noModules, inventory.Drives)) != InventorySignature(new HardwareInventory(noModules, persisted.FleetDrives));
-        if (!ramChanged && !drivesChanged && readAt is null)
+        if (!ramChanged && !drivesChanged && ramReadAt is null && drivesReadAt is null)
             return;
         _store.Update(s =>
         {
-            if (readAt is not null)
-                s.Telemetry.FleetInventoryReadAt = readAt.Value.ToString("O", CultureInfo.InvariantCulture);
+            if (ramReadAt is not null)
+                s.Telemetry.FleetRamReadAt = ramReadAt.Value.ToString("O", CultureInfo.InvariantCulture);
+            if (drivesReadAt is not null)
+                s.Telemetry.FleetDrivesReadAt = drivesReadAt.Value.ToString("O", CultureInfo.InvariantCulture);
             if (ramChanged)
             {
                 s.Telemetry.FleetRamModules = inventory.RamModules.ToList();

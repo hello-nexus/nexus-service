@@ -333,8 +333,11 @@ public sealed class TelemetrySettings
     /// <summary>Last non-empty physical drive list sent in fleet specs; same role as <see cref="FleetRamModules"/>.</summary>
     public List<Nexus.Service.Telemetry.FleetEventDrive> FleetDrives { get; set; } = new();
 
-    /// <summary>Round-trip UTC timestamp of the last process whose inventory read returned data; the persisted lists stop being reused once this is older than the fleet service's expiry.</summary>
-    public string FleetInventoryReadAt { get; set; } = "";
+    /// <summary>Round-trip UTC timestamp of the last process whose read returned RAM modules; <see cref="FleetRamModules"/> stops being reused once this is older than the fleet service's expiry.</summary>
+    public string FleetRamReadAt { get; set; } = "";
+
+    /// <summary>Same role as <see cref="FleetRamReadAt"/> for <see cref="FleetDrives"/>; the two lists expire independently.</summary>
+    public string FleetDrivesReadAt { get; set; } = "";
 
     /// <summary>Latched true by SystemProfileService the first time the Y70 handler reports connected; sent in fleet specs as y70Seen.</summary>
     public bool FleetY70Seen { get; set; }

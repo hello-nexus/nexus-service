@@ -43,12 +43,12 @@ public sealed class FleetEventSpecs
     /// <summary>One entry per physical drive, never volumes or partitions; capped at <see cref="Nexus.Service.Sensors.HardwareInventoryCollector.MaxDrives"/>; null when unavailable.</summary>
     public System.Collections.Generic.List<FleetEventDrive>? StorageDrives { get; set; }
 
-    /// <summary>Board-level identity of each discrete GPU whose PCI subsystem could be read, capped at <see cref="FleetEventGpuCard.MaxCards"/>; <see cref="Gpu"/> keeps the bare chip names. Null when none could be read.</summary>
+    /// <summary>Board-level identity of each discrete GPU whose PCI subsystem could be read, capped at <see cref="FleetEventGpuCard.MaxCards"/>; <see cref="Gpu"/> keeps the adapter names as reported, without the maker prefix. Null when none could be read.</summary>
     public System.Collections.Generic.List<FleetEventGpuCard>? GpuCards { get; set; }
 }
 
 /// <summary>
-/// One discrete GPU as its board partner built it. Chip equals the matching <see cref="FleetEventSpecs.Gpu"/> entry.
+/// One discrete GPU as its board partner built it. Chip is the matching <see cref="FleetEventSpecs.Gpu"/> entry, which on Windows may already lead with a partner name.
 /// The ids are the PCI subsystem vendor and device as lowercase four-digit hex; Maker is this client's name for the
 /// vendor id and is absent when the id is not in its table. No serial number.
 /// </summary>

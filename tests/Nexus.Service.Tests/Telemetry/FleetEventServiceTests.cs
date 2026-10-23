@@ -519,7 +519,8 @@ public class FleetEventServiceTests
             s.Telemetry.FleetRamModules = SampleInventory().RamModules.ToList();
             s.Telemetry.FleetRamModuleTotal = 2;
             s.Telemetry.FleetDrives = SampleInventory().Drives.ToList();
-            s.Telemetry.FleetInventoryReadAt = stamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+            s.Telemetry.FleetRamReadAt = stamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+            s.Telemetry.FleetDrivesReadAt = stamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
         });
         var transport = new FakeFleetEventTransport();
 
@@ -532,6 +533,31 @@ public class FleetEventServiceTests
     }
 
     [Fact]
+    public async Task Ram_and_drives_expire_independently()
+    {
+        var store = OptedInStore();
+        var clock = new ManualClock();
+        var fresh = (clock.GetUtcNow() - TimeSpan.FromDays(1)).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        var stale = (clock.GetUtcNow() - TimeSpan.FromDays(40)).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        store.Update(s =>
+        {
+            s.Telemetry.FleetRamModules = SampleInventory().RamModules.ToList();
+            s.Telemetry.FleetRamModuleTotal = 2;
+            s.Telemetry.FleetDrives = SampleInventory().Drives.ToList();
+            s.Telemetry.FleetRamReadAt = fresh;
+            s.Telemetry.FleetDrivesReadAt = stale;
+        });
+        var transport = new FakeFleetEventTransport();
+
+        await MakeService(store, transport, sensors: DefaultSensors(), clock: clock, inventory: HardwareInventory.Empty)
+            .RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.NotNull(specs.RamModules);
+        Assert.Null(specs.StorageDrives);
+    }
+
+    [Fact]
     public async Task A_good_read_refreshes_the_expiry_stamp()
     {
         var store = OptedInStore();
@@ -540,7 +566,8 @@ public class FleetEventServiceTests
         await MakeService(store, new FakeFleetEventTransport(), sensors: DefaultSensors(), clock: clock, inventory: SampleInventory())
             .RunPendingRetriesAsync(CancellationToken.None);
 
-        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(store.Load().Telemetry.FleetInventoryReadAt, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(store.Load().Telemetry.FleetRamReadAt, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(store.Load().Telemetry.FleetDrivesReadAt, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     [Fact]
