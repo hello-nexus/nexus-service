@@ -1,85 +1,99 @@
-uniform float u_curtains; // hint_range(1.0, 8.0, 1.0) = 4.0  curtain column density
-uniform float u_height; // hint_range(0.2, 1.0, 0.02) = 0.55  how far the curtains hang
-uniform float u_shimmer; // hint_range(0.0, 1.0, 0.02) = 0.5  ray flicker and hem shimmer
-uniform float u_spread; // hint_range(0.0, 1.0, 0.01) = 0.55  hue spread from hem to top of each curtain
-uniform float u_bgLevel; // hint_range(0.0, 1.0, 0.01) = 0.6  background brightness, always tinted
-uniform float u_jagged; // hint_range(0.0, 1.0, 0.01) = 0.9  soft rays to hard jagged blocks
+uniform float u_curtains; // hint_range(1.0, 8.0, 1.0) = 4.0  number of overlapping curtain bands
+uniform float u_height; // hint_range(0.2, 1.0, 0.02) = 0.55  how much of the frame the curtains cover
+uniform float u_shimmer; // hint_range(0.0, 1.0, 0.02) = 0.5  high-freq flicker intensity
+uniform float u_spread; // hint_range(0.0, 1.0, 0.01) = 0.55  hue spread from the bright lower edge to the top of each curtain
+uniform float u_bgLevel; // hint_range(0.0, 1.0, 0.01) = 0.6  sky brightness, always tinted
+uniform float u_rays; // hint_range(0.0, 1.0, 0.01) = 0.7  how far and how strongly vertical rays stream down
 
-// Palette color at offset h, rescaled to full value so the hue reads vivid
+// Palette color at offset h, rescaled to full value so the hue stays vivid
 // before the post-process.
 vec3 curtainColor(float h) {
     vec3 c = tintedPalette(h);
-    return 2.1 * c / max(max(c.r, max(c.g, c.b)), 0.001);
+    return 1.25 * c / max(max(c.r, max(c.g, c.b)), 0.001);
 }
 
 void main() {
     vec2 uv = uv01();
-    float t = mod(u_time * u_speed * 0.25, 1000.0);
-    float dens = clamp((u_curtains - 1.0) / 7.0, 0.0, 1.0);
-    float hgt = clamp(u_height, 0.0, 1.0);
-    float sway = 0.6;
+    float t = mod(u_time * u_speed * 0.4, 1000.0);
+    int bands = int(clamp(u_curtains, 1.0, 8.0));
+    float h = clamp(u_height, 0.1, 1.0);
     float shim = clamp(u_shimmer, 0.0, 1.0);
-    float soft = 1.0 - clamp(u_jagged, 0.0, 1.0);
-    float glow = 0.55;
     float spread = clamp(u_spread, 0.0, 1.0);
+    float rays = clamp(u_rays, 0.0, 1.0);
+    float aspect = u_resolution.x / max(u_resolution.y, 1.0);
 
-    // Pixel-size guard: column counts are capped so a column never spans fewer
-    // than about two pixels, and edges are never thinner than a pixel and a half.
-    float pxW = max(u_resolution.x, 1.0);
-    float pxH = max(u_resolution.y, 1.0);
-    float edgeW = max(mix(0.004, 0.22, soft), 1.5 / pxH);
+    // Sky: a darker palette color nudged toward its neighbor hue, so every
+    // preset gets a colored backdrop that is never black. It brightens a little
+    // toward the bottom so the lower frame carries color.
+    vec3 sky = curtainColor(0.06) * 0.2 * mix(0.12, 0.9, clamp(u_bgLevel, 0.0, 1.0));
+    vec3 col = sky * (0.75 + 0.5 * uv.y);
 
-    float cyc = 0.0;
-    
-    // Background: the palette shifted toward its neighbor hue and darkened, so
-    // every preset gets a fitting colored backdrop that is never black.
-    vec3 bgc = curtainColor(cyc + 0.06) * 0.476;
-    vec3 bg = bgc * mix(0.1, 0.9, clamp(u_bgLevel, 0.0, 1.0));
-    vec3 col = bg;
+    // Pixel-size guards: ray frequency never goes finer than about three pixels.
+    float rayFreq = min(26.0, u_resolution.x * 0.3);
+    float shimFreq = min(30.0, u_resolution.x * 0.4);
+    float span = 0.2 + 0.62 * h;
+    float width = 0.06 + 0.04 * h;
+    float invUp = 1.0 / (width * 2.4);
+    float invDn = 1.0 / (width * 0.6);
 
-    // Back layer first; each later layer sits in front of the last.
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 8; i++) {
+        if (i >= bands) break;
         float fi = float(i);
-        float seed = fi * 23.7;
-        float dir = (mod(fi, 2.0) < 0.5) ? 1.0 : -1.0;
-        // Drift: the whole layer slides, each layer at its own pace and
-        // direction, so columns pass in front of and behind each other.
-        float xs = uv.x + sway * (dir * t * (0.05 + fi * 0.03) + 0.06 * sin(t * (0.4 + fi * 0.17) + fi * 2.0));
-        float ncols = min(mix(1.4, 5.0, dens) * (1.0 + fi * 0.5), pxW * 0.45);
-        float p = xs * ncols;
-        // Warp makes columns different widths while staying monotonic.
-        p += 0.32 * sin(p * 0.55 + seed);
-        float cx = mix(floor(p) + 0.5, p, soft);
-        // Fine step columns hang off the coarse ones, giving the stepped edge.
-        float nf = min(ncols * 2.2, pxW * 0.6);
-        float pf = xs * nf + 0.3 * sin(xs * nf * 0.6 + seed * 1.3);
-        float cf = mix(floor(pf) + 0.5, pf, soft);
+        float f01 = (bands > 1) ? fi / float(bands - 1) : 0.0;
+        // Ripple: layered sine waves warp each curtain like fabric.
+        float freq1 = 2.0 + fi * 0.7;
+        float freq2 = 5.0 + fi * 1.3;
+        float warp = sin(uv.x * freq1 + t * (0.5 + fi * 0.15) + fi * 0.9) * 0.10
+                   + sin(uv.x * freq2 - t * (0.3 + fi * 0.1) + fi * 1.7) * 0.05;
+        // Curtain hems are spread over the frame height so no region stays empty.
+        float cy = 0.14 + f01 * span + warp;
+        float dy = uv.y - cy;
+        // Bright lower edge: fast falloff below, long soft fade above.
+        float s = (dy < 0.0) ? dy * invUp : dy * invDn;
+        float band = exp(-(s * s));
+        float hem = exp(-(dy * dy) / (width * width * 0.02));
 
-        float dc = vnoise(vec2(cx * 1.9 + seed, t * 0.22 + fi * 3.0));
-        dc = smoothstep(0.12, 0.88, dc);
-        float df = vnoise(vec2(cf * 1.3 + seed * 0.7, t * 0.3 + fi));
-        float yb = hgt * 1.15 * (0.4 + 0.6 * dc) * (1.0 - fi * 0.06) + (df - 0.5) * 0.16 * hgt;
-        yb = clamp(yb, 0.0, 1.0);
+        // Vertical ray pattern along x, drifting slowly.
+        float rn = vnoise(vec2(uv.x * rayFreq + fi * 7.3 + warp * 6.0, t * 0.5 + fi * 2.0));
+        float ray = smoothstep(0.3, 0.85, rn);
 
-        float d = yb - uv.y;
-        float inside = smoothstep(-edgeW * 0.25, edgeW, d);
-        float g = clamp(uv.y / max(yb, 0.02), 0.0, 1.0);
+        float flicker = 1.0;
+        if (band > 0.004) {
+            flicker = 1.0 + shim * (vnoise(vec2(uv.x * shimFreq + fi * 7.0, t * 4.0 + fi)) - 0.5) * 0.9;
+        }
+        // Ray texture inside the curtain body.
+        float body = band * flicker * mix(1.0, 0.55 + 0.9 * ray, rays * 0.6);
 
-        // Per-column brightness, plus a little vertical ray texture inside.
-        float cb = 0.8 + 0.2 * hash21(vec2(floor(p), seed));
-        float rayN = vnoise(vec2(xs * min(ncols * 6.0, pxW * 0.5) + seed, t * 0.3 + uv.y * 0.6));
-        float flick = vnoise(vec2(xs * min(ncols * 8.0, pxW * 0.5) + seed, t * 2.4 + fi * 5.0));
-        float tex = 0.82 + 0.3 * (rayN - 0.5) + shim * 0.45 * (flick - 0.5);
-        float lum = cb * tex * (0.75 + 0.25 * g) * (0.9 + 0.06 * fi);
+        // Hue runs from the main color at the hem toward the spread end above it.
+        float k = clamp(-dy * invUp / 1.2, 0.0, 1.0);
+        vec3 lc = curtainColor(-spread * 0.6 * k - fi * 0.01 * spread);
 
-        vec3 lc = curtainColor(cyc - spread * 0.6 * (1.0 - g) - fi * 0.012 * spread);
-        col = mix(col, lc * lum, clamp(inside * 0.96, 0.0, 1.0));
+        // Rays stream down from the hem, fading with distance.
+        float len = 0.06 + 0.26 * rays;
+        float below = smoothstep(-0.01, 0.03, dy);
+        float rayI = rays * ray * exp(-max(dy, 0.0) / len) * below;
 
-        // Subtle glow along the hem, inside the column.
-        float hw = edgeW * 1.2 + 0.012;
-        float hem = exp(-(d * d) / (hw * hw)) * smoothstep(-edgeW, 0.0, d);
-        col += mix(lc, vec3(1.0), 0.12) * hem * (0.5 + 0.5 * tex) * glow * 0.6;
+        col += lc * (body * 0.7 + rayI * 0.6);
+        col += mix(lc, vec3(1.0), 0.2) * hem * (0.2 + 0.9 * ray) * (0.6 + 0.4 * flicker) * 0.6;
     }
 
+    // Background star field: one star per grid cell, placed at a hashed point
+    // inside it and drawn as a round core whose radius is set in pixels, so a
+    // star stays a pinpoint on a panel and still covers a whole pixel on the
+    // small canvas the LED path renders into, where a cell is about one pixel.
+    float cellRows = 90.0;
+    vec2 cells = vec2(cellRows * aspect, cellRows);
+    vec2 sp = uv * cells;
+    vec2 cellId = floor(sp);
+    float sh = hash21(cellId);
+    float bright = pow(sh, 18.0);
+    if (bright > 0.002) {
+        vec2 jitter = vec2(hash21(cellId + 7.3), hash21(cellId + 19.1)) * 0.6 + 0.2;
+        float cellPx = max(u_resolution.y / cellRows, 1.0);
+        float d = length(fract(sp) - jitter) * cellPx;
+        float core = max(cellPx * 0.16, 0.7);
+        float twinkle = 0.75 + 0.25 * sin(t * 6.0 + sh * 90.0);
+        col += vec3(bright * exp(-(d * d) / (core * core)) * twinkle * 0.4) * (1.0 - uv.y * 0.6);
+    }
     fragColor = vec4(finalize(col), 1.0);
 }
