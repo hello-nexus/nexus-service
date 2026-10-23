@@ -716,6 +716,7 @@ app.MapActivityEndpoints();
 app.MapLifecycleEndpoints();
 app.MapDiagnosticsEndpoints();
 app.MapDiagnosticsHealthEndpoints();
+app.MapAstralEndpoints();
 app.MapMonitoringHistoryEndpoints();
 app.MapFpsEndpoints();
 app.MapFocusEndpoints();

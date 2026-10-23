@@ -355,6 +355,9 @@ public sealed class MacSensorProvider : ISensorProvider, IDisposable
             });
         }
 
+#if DEV_TOOLS
+        Nexus.Service.Dev.AstralSim.AppendGpu(gpus);
+#endif
         return gpus;
     }
 

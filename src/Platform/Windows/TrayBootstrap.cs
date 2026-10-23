@@ -231,8 +231,32 @@ internal static class TrayBootstrap
         var diagAlerts = app.Services.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
         diagAlerts.AlertNeedsAttention += notice =>
         {
-            try { TrayCommands.NoticeAsync(helperRegistry, notice.Title, notice.Text, null, Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind)).ObserveFaults(); }
+            try
+            {
+                var path = Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind);
+                if (notice.Kind == Nexus.Service.Sensors.Astral.AstralMonitor.CountdownKind)
+                {
+                    AstralNoticeCommands.NoticeAsync(helperRegistry, new AstralNoticePayload
+                    {
+                        Title = notice.Title,
+                        Text = notice.Text,
+                        CancelLabel = "Cancel shutdown",
+                        WindowPath = path ?? "",
+                    }).ObserveFaults();
+                }
+                else
+                {
+                    TrayCommands.NoticeAsync(helperRegistry, notice.Title, notice.Text, null, path).ObserveFaults();
+                }
+            }
             catch (Exception ex) { Console.Error.WriteLine($"[diagnostics-notify] show failed: {ex.Message}"); }
+        };
+
+        // Cancel on an Astral countdown notice.
+        var astral = app.Services.GetRequiredService<Nexus.Service.Sensors.Astral.AstralMonitor>();
+        helperRegistry.InboundEnvelope += (_, env) =>
+        {
+            if (env.Type == AstralNoticeCommands.CancelType) astral.Cancel();
         };
 
         // Startup conflict shutdown - a native notification listing what it

@@ -55,10 +55,10 @@ public sealed class DiagnosticsAlertService : BackgroundService
         _gates = gates ?? FeatureGates.AllEnabled;
     }
 
-    /// <summary>Raises a notice outside the health poll (the thermal guard trip), still honoring the master notifications switch.</summary>
-    public void Raise(DiagnosticsAlertNotice notice)
+    /// <summary>Raises a notice outside the health poll (the thermal guard trip), still honoring the master notifications switch unless <paramref name="ignoreMaster"/> (a shutdown countdown the user opted into must always show).</summary>
+    public void Raise(DiagnosticsAlertNotice notice, bool ignoreMaster = false)
     {
-        if (!_store.Load().Diagnostics.Notifications.Enabled)
+        if (!ignoreMaster && !_store.Load().Diagnostics.Notifications.Enabled)
         {
             return;
         }
@@ -204,6 +204,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
         "system" => "/system/diagnostics/system",
         // GPU throttling is reported on the cooling tab.
         "cooling" or "gpu" or "thermalGuard" => "/system/diagnostics/cooling",
+        "astral" or "astralCountdown" => "/system/devices",
         _ => null,
     };
 
