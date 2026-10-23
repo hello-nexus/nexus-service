@@ -53,4 +53,39 @@ internal static class AdlxInitGuard
         try { File.Delete(Path.Combine(dir, MarkFile)); }
         catch (Exception) { }
     }
+
+    private static string? _scopeDir;
+    private static string? _scopeKey;
+    private static int _scopeDepth;
+
+    public static void Configure(string dir, string key)
+    {
+        _scopeDir = dir;
+        _scopeKey = key;
+    }
+
+    /// <summary>
+    /// Marks every ADLX call after init the way init is marked: a C++ exception escaping amdadlx64.dll aborts
+    /// the process, so the next start finds the mark and keeps ADLX off. Callers hold <c>AdlxGpuFans.Sync</c>;
+    /// nested scopes keep the outer mark until the outermost one ends.
+    /// </summary>
+    public static MarkScope Scope() => new();
+
+    public readonly struct MarkScope : IDisposable
+    {
+        public MarkScope()
+        {
+            if (_scopeDir is null || _scopeKey is null) return;
+            if (_scopeDepth++ == 0) Arm(_scopeDir, _scopeKey);
+        }
+
+        public void Dispose()
+        {
+            if (_scopeDir is null || _scopeKey is null) return;
+            if (--_scopeDepth == 0) Disarm(_scopeDir);
+        }
+    }
+
+    /// <summary>Test seam: a simulated death leaves the depth raised, which a real death resets with the process.</summary>
+    internal static void ResetScopes() => _scopeDepth = 0;
 }

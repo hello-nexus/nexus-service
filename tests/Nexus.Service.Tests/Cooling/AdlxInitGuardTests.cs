@@ -47,4 +47,38 @@ public sealed class AdlxInitGuardTests : IDisposable
         Assert.False(AdlxInitGuard.Latched(_dir, next));
         Assert.False(AdlxInitGuard.Latched(_dir, "1.5.0.124@157"));
     }
+
+    [Fact]
+    public void A_write_that_returned_leaves_no_latch()
+    {
+        AdlxInitGuard.Configure(_dir, "1.4.0.121@9");
+        using (AdlxInitGuard.Scope()) { }
+
+        Assert.False(AdlxInitGuard.Latched(_dir, "1.4.0.121@9"));
+    }
+
+    [Fact]
+    public void A_run_that_died_inside_a_write_latches_the_same_key_and_not_a_new_one()
+    {
+        AdlxInitGuard.Configure(_dir, "1.4.0.121@9");
+        // The scope is never disposed: the process died inside it.
+        _ = AdlxInitGuard.Scope();
+        Assert.True(File.Exists(Path.Combine(_dir, "adlx-init-crashguard")));
+        AdlxInitGuard.ResetScopes();
+
+        Assert.True(AdlxInitGuard.Latched(_dir, "1.4.0.121@9"));
+        Assert.False(AdlxInitGuard.Latched(_dir, "1.4.0.121@10"));
+    }
+
+    [Fact]
+    public void A_nested_scope_keeps_the_outer_mark()
+    {
+        AdlxInitGuard.Configure(_dir, "1.4.0.121@9");
+        using (AdlxInitGuard.Scope())
+        {
+            using (AdlxInitGuard.Scope()) { }
+            Assert.True(File.Exists(Path.Combine(_dir, "adlx-init-crashguard")));
+        }
+        Assert.False(File.Exists(Path.Combine(_dir, "adlx-init-crashguard")));
+    }
 }
