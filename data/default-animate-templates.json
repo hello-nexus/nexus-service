@@ -64,16 +64,19 @@
   "selected": 0,
   "slots": [
    {
-    "speed": 45,
+    "speed": 40,
     "intensity": 1,
-    "hue": 0.33,
-    "colorize": 0.35,
-    "saturation": 1.05,
+    "hue": 0.5,
+    "colorize": 0,
+    "saturation": 1,
     "contrast": 1,
     "params": {
      "u_curtains": 4,
-     "u_height": 0.55,
-     "u_shimmer": 0.5
+     "u_height": 0.75,
+     "u_shimmer": 0.4,
+     "u_spread": 0.55,
+     "u_bgLevel": 0.6,
+     "u_jagged": 0.9
     }
    },
    {
@@ -81,38 +84,47 @@
     "intensity": 1,
     "hue": 0,
     "colorize": 0,
-    "saturation": 1,
+    "saturation": 1.4,
     "contrast": 1,
     "params": {
      "u_curtains": 8,
      "u_height": 0.9,
-     "u_shimmer": 1
+     "u_shimmer": 1,
+     "u_spread": 0.75,
+     "u_bgLevel": 0.7,
+     "u_jagged": 0.6
     }
    },
    {
-    "speed": 85,
+    "speed": 70,
     "intensity": 1,
-    "hue": 0.08,
-    "colorize": 0.75,
-    "saturation": 1.1,
+    "hue": 0.17,
+    "colorize": 0,
+    "saturation": 1.2,
     "contrast": 1.05,
     "params": {
-     "u_curtains": 2,
-     "u_height": 0.3,
-     "u_shimmer": 0.15
+     "u_curtains": 6,
+     "u_height": 0.85,
+     "u_shimmer": 0.3,
+     "u_spread": 0.55,
+     "u_bgLevel": 0.55,
+     "u_jagged": 1
     }
    },
    {
-    "speed": 30,
+    "speed": 25,
     "intensity": 1,
-    "hue": 0.62,
-    "colorize": 0.75,
-    "saturation": 1,
+    "hue": 0.6,
+    "colorize": 0,
+    "saturation": 1.1,
     "contrast": 1,
     "params": {
-     "u_curtains": 6,
+     "u_curtains": 3,
      "u_height": 0.7,
-     "u_shimmer": 0.75
+     "u_shimmer": 0.6,
+     "u_spread": 0.8,
+     "u_bgLevel": 0.5,
+     "u_jagged": 0.3
     }
    }
   ]
