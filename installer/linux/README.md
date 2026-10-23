@@ -51,9 +51,9 @@ warning naming the package if any is missing:
   `brave`, `edge`, `vivaldi` and the ungoogled-chromium forks), otherwise
   Firefox in `--kiosk` mode; any of them installed by package, flatpak or
   snap. Nexus searches the system, flatpak, snap and `~/.local/bin` prefixes.
-  Streamed LCD panels (such as the Universal Screen 8.8 and the Kraken Elite)
-  render in a headless Chromium-family browser instead, so they need a native
-  package of one; a Flatpak browser cannot render them and Firefox is not used.
+  Streamed LCD panels (such as the Universal Screen 8.8) render in a headless
+  Chromium-family browser instead, so they need a native package of one; a
+  Flatpak browser cannot render them and Firefox is not used.
 
 Open the dashboard at <http://localhost:9400>.
 
