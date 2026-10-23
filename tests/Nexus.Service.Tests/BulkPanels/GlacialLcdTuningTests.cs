@@ -35,7 +35,9 @@ public sealed class GlacialLcdTuningTests : IDisposable
         Assert.Equal(65, v.JpegQuality);
         Assert.Equal(100, v.ScalePercent);
         Assert.Equal("send", v.ScaleMode);
-        Assert.False(v.ReplyDriven);
+        Assert.True(v.ReplyDriven);
+        Assert.True(v.CloseWriteMode);
+        Assert.False(v.RawStream);
         Assert.Equal(30, v.MaxFps);
     }
 
@@ -100,14 +102,14 @@ public sealed class GlacialLcdTuningTests : IDisposable
             var tuning = new GlacialLcdTuning(_store);
             int before = tuning.Current().Id;
 
-            var after = tuning.Apply(new GlacialLcdTuningChange { ChunkKb = 8, ReplyDriven = true });
+            var after = tuning.Apply(new GlacialLcdTuningChange { ChunkKb = 8, ReplyDriven = false });
 
             Assert.True(after.Id > before);
             Assert.Equal(8, _store.Load().Devices.GlacialLcdTuning!.ChunkKb);
             GlacialLcdLog.Flush();
             string text = File.ReadAllText(Path.Combine(logs, GlacialLcdLog.FileName));
             Assert.Contains("chunkKb 4 -> 8", text);
-            Assert.Contains("replyDriven False -> True", text);
+            Assert.Contains("replyDriven True -> False", text);
         }
         finally
         {

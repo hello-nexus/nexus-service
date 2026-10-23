@@ -71,10 +71,12 @@ public class GlacialLcdRoutesTests
         Assert.Equal(100, settings.GetProperty("scalePercent").GetInt32());
         Assert.Equal("send", settings.GetProperty("scaleMode").GetString());
         Assert.False(settings.GetProperty("doubleBuffer").GetBoolean());
-        Assert.False(settings.GetProperty("replyDriven").GetBoolean());
+        Assert.True(settings.GetProperty("replyDriven").GetBoolean());
+        Assert.True(settings.GetProperty("closeWriteMode").GetBoolean());
+        Assert.False(settings.GetProperty("rawStream").GetBoolean());
         Assert.Equal(30, settings.GetProperty("maxFps").GetDouble());
         var stats = doc.RootElement.GetProperty("stats");
-        foreach (string name in new[] { "uploadsOk", "uploadsFailed", "lastUploadMs", "uploadsPerSec", "lastFrameBytes", "lastEncodeMs", "stalled" })
+        foreach (string name in new[] { "uploadsOk", "uploadsFailed", "lastUploadMs", "uploadsPerSec", "lastFrameBytes", "lastEncodeMs", "stalled", "ackReplies", "ackTimeouts", "lastUploadAckWaitMs", "lastCommitWaitMs", "rawFramesOk", "rawFramesFailed", "rawActive" })
         {
             Assert.True(stats.TryGetProperty(name, out _), name);
         }

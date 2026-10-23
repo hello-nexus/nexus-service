@@ -166,4 +166,45 @@ public class GlacialLcdTests
         Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeCustomImagePrelude(0, 1));
         Assert.Throws<ArgumentOutOfRangeException>(() => GlacialLcdProtocol.EncodeCustomImagePrelude(0x1000000, 1));
     }
+
+    [Fact]
+    public void The_close_write_mode_report_is_the_write_mode_command_with_the_enable_byte_cleared()
+    {
+        Assert.Equal(Report("EC 72 01 00"), GlacialLcdProtocol.EncodeCloseWriteMode());
+    }
+
+    [Fact]
+    public void The_raw_stream_reports_are_the_frame_stream_mode_and_a_little_endian_frame_announce()
+    {
+        Assert.Equal(3_686_400, GlacialLcdProtocol.RawFrameBytes);
+        Assert.Equal(Report("EC 51 20"), GlacialLcdProtocol.EncodeFrameStreamMode());
+        Assert.Equal(Report("EC 7F 03 00 40 38 00"), GlacialLcdProtocol.EncodeFrameAnnounce(GlacialLcdProtocol.RawFrameBytes));
+    }
+
+    [Theory]
+    [InlineData("EE 12", true, false, false, false)]
+    [InlineData("EE 13 00 01", false, true, false, false)]
+    [InlineData("EE 13 00 FF", false, false, false, true)]
+    [InlineData("EE 13 00 03", false, false, false, false)]
+    [InlineData("EE 14 00 00 10", false, false, true, false)]
+    [InlineData("EC 5C 00", false, false, false, false)]
+    [InlineData("EE", false, false, false, false)]
+    public void Each_progress_report_matches_only_its_own_step(string hex, bool begin, bool stage, bool chunk, bool commit)
+    {
+        var bytes = Convert.FromHexString(hex.Replace(" ", string.Empty));
+        Assert.Equal(begin, GlacialLcdProtocol.IsBeginAck(bytes));
+        Assert.Equal(stage, GlacialLcdProtocol.IsStageAck(bytes));
+        Assert.Equal(chunk, GlacialLcdProtocol.IsChunkAck(bytes));
+        Assert.Equal(commit, GlacialLcdProtocol.IsCommitAck(bytes));
+    }
+
+    [Theory]
+    [InlineData("EC 7F 00", true)]
+    [InlineData("EC 7F 01", false)]
+    [InlineData("EC 7F", false)]
+    [InlineData("EE 7F 00", false)]
+    public void Only_a_zero_status_frame_announce_reply_accepts_the_frame(string hex, bool accepted)
+    {
+        Assert.Equal(accepted, GlacialLcdProtocol.IsFrameAnnounceAck(Convert.FromHexString(hex.Replace(" ", string.Empty))));
+    }
 }

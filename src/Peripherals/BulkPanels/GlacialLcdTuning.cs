@@ -7,7 +7,7 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>The effective upload knobs for one upload, with the id of the settings version they came from.</summary>
 public sealed record GlacialLcdTuningValues(
-    int Id, double MaxFps, int PacePercent, bool ReplyDriven, int ScalePercent, string ScaleMode, int JpegQuality, int ChunkKb, bool DoubleBuffer);
+    int Id, double MaxFps, int PacePercent, bool ReplyDriven, int ScalePercent, string ScaleMode, int JpegQuality, int ChunkKb, bool DoubleBuffer, bool CloseWriteMode, bool RawStream);
 
 /// <summary>A partial change to the knobs; only the fields set are applied.</summary>
 public sealed class GlacialLcdTuningChange
@@ -20,11 +20,17 @@ public sealed class GlacialLcdTuningChange
     public int? JpegQuality { get; set; }
     public int? ChunkKb { get; set; }
     public bool? DoubleBuffer { get; set; }
+    public bool? CloseWriteMode { get; set; }
+    public bool? RawStream { get; set; }
 }
+
+/// <summary>Counters of the display's replies: how many arrived, how many waits ran out, and how long the last upload spent waiting.</summary>
+public sealed record GlacialLcdAckStats(
+    int Replies, int Timeouts, long LastUploadAckWaitMs, long LastCommitWaitMs, int LastUploadReplies, int LastUploadTimeouts);
 
 public sealed record GlacialLcdTuningStats(
     int UploadsOk, int UploadsFailed, long LastUploadMs, double UploadsPerSec, int LastFrameBytes, long LastEncodeMs,
-    string? LastError, DateTimeOffset? LastErrorAt, bool Stalled);
+    string? LastError, DateTimeOffset? LastErrorAt, bool Stalled, GlacialLcdAckStats Acks, int RawFramesOk, int RawFramesFailed, bool RawActive);
 
 /// <summary>Settings and counters of the Glacial LCD Nexus panel upload, read by the driver at the start of each upload.</summary>
 public sealed class GlacialLcdTuning
@@ -60,6 +66,15 @@ public sealed class GlacialLcdTuning
     private string? _lastError;
     private DateTimeOffset? _lastErrorAt;
     private volatile bool _stalled;
+    private int _ackReplies;
+    private int _ackTimeouts;
+    private long _lastAckWaitMs;
+    private long _lastCommitWaitMs;
+    private int _lastUploadReplies;
+    private int _lastUploadTimeouts;
+    private int _rawOk;
+    private int _rawFailed;
+    private volatile bool _rawActive;
 
     public GlacialLcdTuning(IConfigStore store, Func<long>? clock = null)
     {
@@ -73,7 +88,7 @@ public sealed class GlacialLcdTuning
     {
         double? maxFps = null;
         int? pace = null, scale = null, quality = null, chunk = null;
-        bool? replyDriven = null, doubleBuffer = null;
+        bool? replyDriven = null, doubleBuffer = null, closeWriteMode = null, rawStream = null;
         string? scaleMode = null;
         int legacyPace = 0;
         _store.Read(s =>
@@ -86,6 +101,8 @@ public sealed class GlacialLcdTuning
             chunk = t?.ChunkKb;
             replyDriven = t?.ReplyDriven;
             doubleBuffer = t?.DoubleBuffer;
+            closeWriteMode = t?.CloseWriteMode;
+            rawStream = t?.RawStream;
             scaleMode = t?.ScaleMode;
             legacyPace = s.Devices.GlacialLcdUploadPacePercent;
         });
@@ -98,12 +115,14 @@ public sealed class GlacialLcdTuning
             version,
             Math.Clamp(maxFps ?? MaxMaxFps, MinMaxFps, MaxMaxFps),
             Math.Clamp(pace ?? (legacyPace > 0 ? legacyPace : DefaultPacePercent), 0, MaxPace),
-            replyDriven ?? false,
+            replyDriven ?? true,
             Math.Clamp(scale ?? DefaultScalePercent, MinScale, 100),
             scaleMode == ScaleUpscale ? ScaleUpscale : ScaleSend,
             Math.Clamp(quality ?? DefaultJpegQuality, MinQuality, MaxQuality),
             Math.Clamp(chunk ?? DefaultChunkKb, 1, MaxChunkKb),
-            doubleBuffer ?? false);
+            doubleBuffer ?? false,
+            closeWriteMode ?? true,
+            rawStream ?? false);
     }
 
     /// <summary>The message for the first field out of range, or null when the change is valid.</summary>
@@ -151,6 +170,8 @@ public sealed class GlacialLcdTuning
             if (c.JpegQuality.HasValue) { t.JpegQuality = c.JpegQuality; }
             if (c.ChunkKb.HasValue) { t.ChunkKb = c.ChunkKb; }
             if (c.DoubleBuffer.HasValue) { t.DoubleBuffer = c.DoubleBuffer; }
+            if (c.CloseWriteMode.HasValue) { t.CloseWriteMode = c.CloseWriteMode; }
+            if (c.RawStream.HasValue) { t.RawStream = c.RawStream; }
         });
         int version;
         lock (_lock)
@@ -167,6 +188,8 @@ public sealed class GlacialLcdTuning
         Diff(changes, "jpegQuality", before.JpegQuality, after.JpegQuality);
         Diff(changes, "chunkKb", before.ChunkKb, after.ChunkKb);
         Diff(changes, "doubleBuffer", before.DoubleBuffer, after.DoubleBuffer);
+        Diff(changes, "closeWriteMode", before.CloseWriteMode, after.CloseWriteMode);
+        Diff(changes, "rawStream", before.RawStream, after.RawStream);
         GlacialLcdLog.Write($"settings id={version} changed: {(changes.Count == 0 ? "nothing" : string.Join(", ", changes))}");
         return after;
     }
@@ -190,6 +213,37 @@ public sealed class GlacialLcdTuning
             _completions.Enqueue(_clock());
         }
     }
+
+    /// <summary>Adds one upload's reply counts and wait times; the last-upload figures are replaced.</summary>
+    public void RecordAcks(int replies, int timeouts, long ackWaitMs, long commitWaitMs)
+    {
+        lock (_lock)
+        {
+            _ackReplies += replies;
+            _ackTimeouts += timeouts;
+            _lastUploadReplies = replies;
+            _lastUploadTimeouts = timeouts;
+            _lastAckWaitMs = ackWaitMs;
+            _lastCommitWaitMs = commitWaitMs;
+        }
+    }
+
+    public void RawFrame(bool ok)
+    {
+        lock (_lock)
+        {
+            if (ok)
+            {
+                _rawOk++;
+            }
+            else
+            {
+                _rawFailed++;
+            }
+        }
+    }
+
+    public void SetRawActive(bool active) => _rawActive = active;
 
     public void UploadFailed(string error)
     {
@@ -228,6 +282,14 @@ public sealed class GlacialLcdTuning
             _lastEncodeMs = 0;
             _lastError = null;
             _lastErrorAt = null;
+            _ackReplies = 0;
+            _ackTimeouts = 0;
+            _lastAckWaitMs = 0;
+            _lastCommitWaitMs = 0;
+            _lastUploadReplies = 0;
+            _lastUploadTimeouts = 0;
+            _rawOk = 0;
+            _rawFailed = 0;
             _completions.Clear();
         }
         GlacialLcdLog.Write("stats reset");
@@ -243,7 +305,9 @@ public sealed class GlacialLcdTuning
                 _completions.Dequeue();
             }
             return new GlacialLcdTuningStats(
-                _ok, _failed, _lastUploadMs, _completions.Count * 1000.0 / RateWindowMs, _lastBytes, _lastEncodeMs, _lastError, _lastErrorAt, _stalled);
+                _ok, _failed, _lastUploadMs, _completions.Count * 1000.0 / RateWindowMs, _lastBytes, _lastEncodeMs, _lastError, _lastErrorAt, _stalled,
+                new GlacialLcdAckStats(_ackReplies, _ackTimeouts, _lastAckWaitMs, _lastCommitWaitMs, _lastUploadReplies, _lastUploadTimeouts),
+                _rawOk, _rawFailed, _rawActive);
         }
     }
 }

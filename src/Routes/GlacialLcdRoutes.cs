@@ -34,6 +34,8 @@ public static partial class DevicesRoutes
                 JpegQuality = body.JpegQuality,
                 ChunkKb = body.ChunkKb,
                 DoubleBuffer = body.DoubleBuffer,
+                CloseWriteMode = body.CloseWriteMode,
+                RawStream = body.RawStream,
             };
             if (GlacialLcdTuning.Validate(change) is { } error)
             {
@@ -195,6 +197,8 @@ public static partial class DevicesRoutes
                 JpegQuality = v.JpegQuality,
                 ChunkKb = v.ChunkKb,
                 DoubleBuffer = v.DoubleBuffer,
+                CloseWriteMode = v.CloseWriteMode,
+                RawStream = v.RawStream,
             },
             Stats = new GlacialLcdTuningStatsDto
             {
@@ -207,6 +211,15 @@ public static partial class DevicesRoutes
                 LastError = st.LastError,
                 LastErrorAt = st.LastErrorAt?.ToString("o", System.Globalization.CultureInfo.InvariantCulture),
                 Stalled = st.Stalled,
+                AckReplies = st.Acks.Replies,
+                AckTimeouts = st.Acks.Timeouts,
+                LastUploadAckReplies = st.Acks.LastUploadReplies,
+                LastUploadAckTimeouts = st.Acks.LastUploadTimeouts,
+                LastUploadAckWaitMs = st.Acks.LastUploadAckWaitMs,
+                LastCommitWaitMs = st.Acks.LastCommitWaitMs,
+                RawFramesOk = st.RawFramesOk,
+                RawFramesFailed = st.RawFramesFailed,
+                RawActive = st.RawActive,
             },
         };
     }
@@ -295,6 +308,8 @@ public sealed class GlacialLcdTuningSettingsDto
     public int JpegQuality { get; set; }
     public int ChunkKb { get; set; }
     public bool DoubleBuffer { get; set; }
+    public bool CloseWriteMode { get; set; }
+    public bool RawStream { get; set; }
 }
 
 public sealed class GlacialLcdTuningStatsDto
@@ -310,6 +325,15 @@ public sealed class GlacialLcdTuningStatsDto
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     public string? LastErrorAt { get; set; }
     public bool Stalled { get; set; }
+    public int AckReplies { get; set; }
+    public int AckTimeouts { get; set; }
+    public int LastUploadAckReplies { get; set; }
+    public int LastUploadAckTimeouts { get; set; }
+    public long LastUploadAckWaitMs { get; set; }
+    public long LastCommitWaitMs { get; set; }
+    public int RawFramesOk { get; set; }
+    public int RawFramesFailed { get; set; }
+    public bool RawActive { get; set; }
 }
 
 public sealed class GlacialLcdTuningResponse
@@ -328,4 +352,6 @@ public sealed class GlacialLcdTuningRequest
     public int? JpegQuality { get; set; }
     public int? ChunkKb { get; set; }
     public bool? DoubleBuffer { get; set; }
+    public bool? CloseWriteMode { get; set; }
+    public bool? RawStream { get; set; }
 }

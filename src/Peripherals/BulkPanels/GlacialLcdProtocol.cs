@@ -53,6 +53,21 @@ public static class GlacialLcdProtocol
     public const byte ModeAnimatedAsset = 0x14;
     public const byte ModeHardwareMonitor = 0x21;
 
+    /// <summary>Mode of the raw frame stream: the panel takes whole uncompressed frames on the bulk pipe.</summary>
+    public const byte ModeFrameStream = 0x20;
+
+    /// <summary>One uncompressed frame of the raw stream: 32-bit pixels, blue first, rows top to bottom, no row padding.</summary>
+    public const int RawFrameBytes = PanelWidth * PanelHeight * 4;
+
+    /// <summary>Longest wait for the report that follows a prelude command.</summary>
+    public const int AckPreludeTimeoutMs = 1000;
+
+    /// <summary>Shortest wait for a report after one bulk transfer.</summary>
+    public const int AckChunkMinTimeoutMs = 2000;
+
+    /// <summary>Longest wait for the panel to accept a raw frame announce.</summary>
+    public const int AckFrameAnnounceTimeoutMs = 500;
+
     /// <summary>Predefined static picture ids the vendor app was seen selecting.</summary>
     public static readonly int[] StaticAssets = { 0, 1, 2, 3, 4, 5 };
 
@@ -219,5 +234,42 @@ public static class GlacialLcdProtocol
         report[3] = 0x01;
         return report;
     }
-}
 
+    /// <summary>Leaves the write mode the begin report opened; sent after the end report and before the last state query.</summary>
+    public static byte[] EncodeCloseWriteMode()
+    {
+        var report = Report(0x72);
+        report[2] = 0x01;
+        return report;
+    }
+
+    /// <summary>Announces one raw frame of <paramref name="length"/> bytes; the frame follows on the bulk pipe once the panel accepts.</summary>
+    public static byte[] EncodeFrameAnnounce(int length)
+    {
+        var report = Report(0x7F);
+        report[2] = 0x03;
+        report[3] = (byte)length;
+        report[4] = (byte)(length >> 8);
+        report[5] = (byte)(length >> 16);
+        report[6] = (byte)(length >> 24);
+        return report;
+    }
+
+    /// <summary>Selects the raw frame stream.</summary>
+    public static byte[] EncodeFrameStreamMode() => EncodeMode(ModeFrameStream);
+
+    /// <summary>Reply to the begin report.</summary>
+    public static bool IsBeginAck(ReadOnlySpan<byte> r) => r.Length >= 2 && r[0] == 0xEE && r[1] == 0x12;
+
+    /// <summary>Reply to the stage report.</summary>
+    public static bool IsStageAck(ReadOnlySpan<byte> r) => r.Length >= 4 && r[0] == 0xEE && r[1] == 0x13 && r[3] == 0x01;
+
+    /// <summary>Reply to one bulk transfer.</summary>
+    public static bool IsChunkAck(ReadOnlySpan<byte> r) => r.Length >= 2 && r[0] == 0xEE && r[1] == 0x14;
+
+    /// <summary>Reply to the end report, once the picture is stored.</summary>
+    public static bool IsCommitAck(ReadOnlySpan<byte> r) => r.Length >= 4 && r[0] == 0xEE && r[1] == 0x13 && r[3] == 0xFF;
+
+    /// <summary>Reply that accepts a raw frame announce.</summary>
+    public static bool IsFrameAnnounceAck(ReadOnlySpan<byte> r) => r.Length >= 3 && r[0] == ReportId && r[1] == 0x7F && r[2] == 0x00;
+}
