@@ -70,6 +70,10 @@ public sealed class HotkeyRoutesTests : IDisposable
         return client;
     }
 
+    // The DI-built service picks its defaults from the host OS, so derive the expectation the same way.
+    private static readonly string ToggleWindowCombo =
+        HotkeyDefaults.Build(OperatingSystem.IsMacOS()).Single(b => b.Id == HotkeyDefaults.ToggleWindow).Combo!;
+
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
 
     private static async Task<JsonElement> Read(HttpResponseMessage res)
@@ -189,7 +193,7 @@ public sealed class HotkeyRoutesTests : IDisposable
     {
         var client = DesktopClient();
         var res = await client.PutAsync("/hotkeys/custom:dup", Json(
-            "{\"combo\":\"alt+meta+n\",\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\",\"keys\":\"ctrl+c\"}}}"));
+            "{\"combo\":\"" + ToggleWindowCombo + "\",\"enabled\":true,\"target\":{\"kind\":\"action\",\"action\":{\"type\":\"hotkey\",\"keys\":\"ctrl+c\"}}}"));
         var body = await Read(res);
         Assert.Equal("conflict", Binding(body, "custom:dup").GetProperty("status").GetString());
         Assert.Equal("conflict", Binding(body, HotkeyDefaults.ToggleWindow).GetProperty("status").GetString());
@@ -218,7 +222,7 @@ public sealed class HotkeyRoutesTests : IDisposable
 
         Assert.Equal(4, body.GetProperty("bindings").GetArrayLength());
         var toggle = Binding(body, HotkeyDefaults.ToggleWindow);
-        Assert.Equal("Alt+Meta+n", toggle.GetProperty("combo").GetString());
+        Assert.Equal(ToggleWindowCombo, toggle.GetProperty("combo").GetString());
         Assert.True(toggle.GetProperty("enabled").GetBoolean());
         Assert.Equal("toggleWindow", toggle.GetProperty("target").GetProperty("action").GetProperty("action").GetProperty("op").GetString());
     }

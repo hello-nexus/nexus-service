@@ -966,6 +966,7 @@
     <Compile Remove="src/Activity/LinuxVolumeProvider.cs" />
     <Compile Remove="src/Cooling/LinuxFanControlProvider.cs" />
     <Compile Remove="src/Cooling/LinuxLiquidctlProvider.cs" />
+    <Compile Remove="src/Cooling/LiquidctlOwnership.cs" />
     <Compile Remove="src/Cooling/LinuxNvidiaFanProvider.cs" />
     <Compile Remove="src/Cooling/Nvml.cs" />
     <Compile Remove="src/Devices/Detection/LinuxUsbEnumerator.cs" />
