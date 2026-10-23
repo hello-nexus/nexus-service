@@ -48,7 +48,8 @@ public sealed class KrakenPanelDiscovery : IStreamedPanelDiscovery
                     Kind = ProfileKind,
                     DisplayName = $"{_hub.ModelName} LCD",
                     // Persisted as the legacy value so an older build still finds the record by its
-                    // surface; every reader treats it as lcd-round (PanelSurfaces.Canonical).
+                    // surface. Comparisons go through PanelSurfaces.Canonical; the profile-file key
+                    // and capability equality read it raw on purpose.
                     Surface = PanelSurfaces.LegacyKraken,
                     Family = KrakenHub.DeviceId,
                     CssWidth = _hub.LcdWidth,

@@ -54,7 +54,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var legacy = _registry.Allocate(null, Caps(PanelSurfaces.LegacyKraken));
         _registry.Patch(legacy.Id, new PanelDevicePatch { AccentColor = "#abc" });
 
-        var folded = _registry.Allocate(null, Caps(PanelSurfaces.LcdRound));
+        var folded = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound, Family = "nzxt-kraken" });
 
         Assert.Equal(legacy.Id, folded.Id);
         Assert.Equal("#abc", folded.AccentColor);
@@ -71,6 +71,42 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     {
         Assert.Equal(expected, PanelSurfaces.Canonical(stored));
         Assert.Equal(expected is not null && PanelSurfaces.IsSingleInstance(expected), PanelSurfaces.IsSingleInstance(stored));
+    }
+
+    [Fact]
+    public void Allocate_LcdRoundWithoutAFamily_DoesNotAdoptAKrakenRecord()
+    {
+        var kraken = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken", Dpi = 240 });
+
+        var other = _registry.Allocate(null, Caps(PanelSurfaces.LcdRound));
+
+        Assert.NotEqual(kraken.Id, other.Id);
+        var kept = _registry.Get(kraken.Id)!.Capabilities!;
+        Assert.Equal("nzxt-kraken", kept.Family);
+        Assert.Equal(240, kept.Dpi);
+    }
+
+    [Fact]
+    public void Allocate_Kraken_DoesNotAdoptAnotherRoundCoolersRecord_AndReusesItsOwn()
+    {
+        var cooler = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound, Family = "corsair-link-lcd" });
+        var kraken = new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken" };
+
+        var first = _registry.Allocate(null, kraken);
+        var second = _registry.Allocate(null, kraken);
+
+        Assert.NotEqual(cooler.Id, first.Id);
+        Assert.Equal(first.Id, second.Id);
+    }
+
+    [Fact]
+    public void Allocate_KrakenRecordStoredWithoutAFamily_IsStillTheKrakens()
+    {
+        var legacy = _registry.Allocate(null, Caps(PanelSurfaces.LegacyKraken));
+
+        var again = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken" });
+
+        Assert.Equal(legacy.Id, again.Id);
     }
 
     [Fact]

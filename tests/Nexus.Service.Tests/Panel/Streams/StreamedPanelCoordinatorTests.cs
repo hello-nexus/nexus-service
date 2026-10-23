@@ -282,6 +282,25 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void A_cooler_of_another_vendor_without_a_stored_entry_still_inherits_the_newest_round_record()
+    {
+        var old = _registry.Allocate("Old cooler", new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound, Family = "lianli-galahad2-lcd" });
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "fan",
+            Profile = new StreamedPanelProfile
+            {
+                Kind = "fan-lcd", DisplayName = "fan", Surface = PanelSurfaces.LcdRound, Family = "corsair-link-lcd", CssWidth = 400, CssHeight = 400,
+            },
+        });
+
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        Assert.Equal(old.Id, Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId);
+    }
+
+    [Fact]
     public void The_kraken_without_a_stored_entry_reuses_its_own_record_even_when_that_has_no_family()
     {
         _config.Update(st =>

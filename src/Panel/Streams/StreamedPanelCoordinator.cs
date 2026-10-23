@@ -818,10 +818,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         var record = _registry.Allocate(
             info.Profile.DisplayName,
             info.Profile.BuildCapabilities(),
-            info.Profile.MultiInstance
-                ? _ => false
-                : candidate => !multiInstanceIds.Contains(candidate.Id)
-                    && string.Equals(PanelDeviceRegistry.ReuseFamily(candidate.Capabilities), info.Profile.Family, StringComparison.Ordinal));
+            info.Profile.MultiInstance ? _ => false : candidate => !multiInstanceIds.Contains(candidate.Id));
         if (IsStrip(info.Profile) && _registry.Get(record.Id)?.Layout is null)
         {
             _registry.Patch(record.Id, new PanelDevicePatch { Layout = PanelLayoutDefaults.ForStrip(info.Profile.Surface) });
