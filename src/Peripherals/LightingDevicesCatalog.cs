@@ -315,6 +315,7 @@ public static class LightingDevicesCatalog
 
         // Corsair Galleon 100 SD keyboard - IDs from src/Peripherals/Corsair/Galleon.
         Native("Corsair", "Galleon 100 SD Keyboard", "keyboard", "0x1B1C", "0x2B0C"),
+        Native("Corsair", "Galleon 100 SD Dials", "keyboard", "0x1B1C", "0x2B18"),
 
         // Corsair iCUE LINK - PIDs from src/Peripherals/CorsairLink. The LCD/XD5 pumps
         // carry a screen.

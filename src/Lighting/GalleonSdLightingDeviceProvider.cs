@@ -15,22 +15,25 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
 {
     public const string LedsSuffix = ":leds";
     public const int LedsSegment = 0;
+    public const int DialsSegment = 0;
 
     private static readonly Lazy<(float[] U, float[] V)> Uv = new(GalleonSdProtocol.ComputeUv);
 
     private readonly GalleonSdHub _hub;
+    private readonly GalleonSdDialsHub? _dials;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private readonly Dictionary<string, DeviceFrame> _frameCache = new();
 
-    public GalleonSdLightingDeviceProvider(GalleonSdHub hub, IConfigStore store, Np50IdentifyTracker identify)
+    public GalleonSdLightingDeviceProvider(GalleonSdHub hub, IConfigStore store, Np50IdentifyTracker identify, GalleonSdDialsHub? dials = null)
     {
         _hub = hub;
+        _dials = dials;
         _store = store;
         _identify = identify;
     }
 
-    public bool IsConnected => _hub.IsConnected;
+    public bool IsConnected => _hub.IsConnected || (_dials?.IsConnected ?? false);
 
     public event Action? DevicesChanged;
 
@@ -46,8 +49,11 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
         var unit = _hub.Attached;
-        if (unit is null) return resp;
-        resp.Devices.AddRange(BuildCards(unit, _store.Load()));
+        var dials = _dials?.Attached;
+        if (unit is null && dials is null) return resp;
+        var settings = _store.Load();
+        if (unit is not null) resp.Devices.AddRange(BuildCards(unit, settings));
+        if (dials is not null) resp.Devices.AddRange(BuildDialsCards(dials, settings));
         return resp;
     }
 
@@ -57,16 +63,26 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
         var zones = ZoneResolution.Resolve(structure, settings);
         var cards = new List<LightingDevice>(zones.Count);
         var slot = 0;
-        foreach (var zone in zones) cards.Add(BuildCard(unit, structure, zone, slot++, settings));
+        foreach (var zone in zones) cards.Add(BuildCard(unit.DeviceId, structure, zone, slot++, settings, dials: false));
         return cards;
     }
 
-    private static LightingDevice BuildCard(GalleonSdAttached unit, DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings)
+    internal static List<LightingDevice> BuildDialsCards(GalleonSdDialsAttached unit, NexusSettings settings)
+    {
+        var structure = BuildDialsStructure(unit);
+        var zones = ZoneResolution.Resolve(structure, settings);
+        var cards = new List<LightingDevice>(zones.Count);
+        var slot = 0;
+        foreach (var zone in zones) cards.Add(BuildCard(unit.DeviceId, structure, zone, slot++, settings, dials: true));
+        return cards;
+    }
+
+    private static LightingDevice BuildCard(string deviceId, DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings, bool dials)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var isOn = !disabled.Contains(zone.Id);
         settings.Devices.LightingDevicePrefs.TryGetValue(zone.Id, out var pref);
-        var (defX, defY, defW, defH) = DefaultLayout(slot);
+        var (defX, defY, defW, defH) = DefaultLayout(slot, dials);
         settings.Lighting.DeviceLayouts.TryGetValue(zone.Id, out var layout);
 
         return new LightingDevice
@@ -87,11 +103,11 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
             CanvasW = layout?.W ?? defW,
             CanvasH = layout?.H ?? defH,
             CanvasRotation = ((((layout?.Rotation ?? 0) % 360) + 360) % 360),
-            ParentDeviceId = unit.DeviceId,
+            ParentDeviceId = deviceId,
             ZoneIndex = zone.Ordinal,
             ZoneType = "linear",
             ZoneResizable = false,
-            DeviceId = unit.DeviceId,
+            DeviceId = deviceId,
             ControlHandlerId = GalleonSdProtocol.HandlerId,
             ZoneCustomizable = true,
         };
@@ -100,7 +116,47 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
     public IReadOnlyList<DeviceStructure> GetStructures()
     {
         var unit = _hub.Attached;
-        return unit is null ? Array.Empty<DeviceStructure>() : new[] { BuildStructure(unit) };
+        var dials = _dials?.Attached;
+        if (unit is null && dials is null) return Array.Empty<DeviceStructure>();
+        var list = new List<DeviceStructure>(2);
+        if (unit is not null) list.Add(BuildStructure(unit));
+        if (dials is not null) list.Add(BuildDialsStructure(dials));
+        return list;
+    }
+
+    /// <summary>One linear zone over the lamps in id order; positions from the lamp attributes drive the stock layout when they have any spread.</summary>
+    internal static DeviceStructure BuildDialsStructure(GalleonSdDialsAttached unit)
+    {
+        var deviceKey = DeviceKeyComputer.ForFirstParty(GalleonSdProtocol.VendorId, GalleonSdProtocol.StreamDeckProductId);
+        var count = unit.LampCount;
+        var uv = Nexus.Service.Peripherals.Hid.LampArray.LampArrayProtocol.ComputeUv(unit.Lamps);
+        var structure = new DeviceStructure
+        {
+            DeviceId = unit.DeviceId,
+            Name = GalleonSdProtocol.DialsProductName,
+            DeviceKey = deviceKey,
+        };
+        structure.Segments.Add(new StructureSegment
+        {
+            Index = DialsSegment,
+            Name = "Dials",
+            LedCount = count,
+            FrameLedCount = count,
+            Resizable = false,
+            ZoneType = "linear",
+            DefaultU = uv?.U,
+            DefaultV = uv?.V,
+        });
+        structure.DefaultZones.Add(new DefaultZoneDef
+        {
+            Id = unit.DeviceId + LedsSuffix,
+            Name = GalleonSdProtocol.DialsProductName,
+            RawName = structure.Segments[DialsSegment].Name,
+            DeviceKey = deviceKey,
+            LegacyZoneIndex = -1,
+            Slices = { new ZoneSlice { Segment = DialsSegment, Start = 0, Count = count } },
+        });
+        return structure;
     }
 
     internal static DeviceStructure BuildStructure(GalleonSdAttached unit)
@@ -188,7 +244,8 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
     public IReadOnlyList<DeviceFrame> BuildFrames(int startingIndex)
     {
         var unit = _hub.Attached;
-        if (unit is null)
+        var dials = _dials?.Attached;
+        if (unit is null && dials is null)
         {
             _frameCache.Clear();
             return Array.Empty<DeviceFrame>();
@@ -196,14 +253,9 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
         var settings = _store.Load();
         var layouts = settings.Lighting.DeviceLayouts;
         var idx = startingIndex;
-        var structure = BuildStructure(unit);
         var frames = new List<DeviceFrame>();
-        foreach (var zone in ZoneResolution.Resolve(structure, settings))
-        {
-            var frame = BuildOrReuseFrame(zone.Id, zone.FrameLedCount, zone.Ordinal, layouts, ref idx);
-            frame.DeviceId = structure.DeviceId;
-            frames.Add(frame);
-        }
+        if (unit is not null) AddFrames(BuildStructure(unit), dialsStructure: false, settings, layouts, frames, ref idx);
+        if (dials is not null) AddFrames(BuildDialsStructure(dials), dialsStructure: true, settings, layouts, frames, ref idx);
         if (_frameCache.Count > frames.Count)
         {
             var live = new HashSet<string>(frames.Count);
@@ -215,10 +267,20 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
         return frames;
     }
 
-    // The frame instance survives refreshes so the writer never sees a zero-filled frame for a tick.
-    private DeviceFrame BuildOrReuseFrame(string id, int ledCount, int slot, IReadOnlyDictionary<string, DeviceLayout> layouts, ref int idx)
+    private void AddFrames(DeviceStructure structure, bool dialsStructure, NexusSettings settings, IReadOnlyDictionary<string, DeviceLayout> layouts, List<DeviceFrame> frames, ref int idx)
     {
-        var (defX, defY, defW, defH) = DefaultLayout(slot);
+        foreach (var zone in ZoneResolution.Resolve(structure, settings))
+        {
+            var frame = BuildOrReuseFrame(zone.Id, zone.FrameLedCount, zone.Ordinal, dialsStructure, layouts, ref idx);
+            frame.DeviceId = structure.DeviceId;
+            frames.Add(frame);
+        }
+    }
+
+    // The frame instance survives refreshes so the writer never sees a zero-filled frame for a tick.
+    private DeviceFrame BuildOrReuseFrame(string id, int ledCount, int slot, bool dials, IReadOnlyDictionary<string, DeviceLayout> layouts, ref int idx)
+    {
+        var (defX, defY, defW, defH) = DefaultLayout(slot, dials);
         layouts.TryGetValue(id, out var layout);
         var rot = ((((layout?.Rotation ?? 0) % 360) + 360) % 360);
         var thisIdx = idx++;
@@ -229,16 +291,16 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
             existing.W = layout?.W ?? defW;
             existing.H = layout?.H ?? defH;
             existing.Rotation = rot;
-            existing.Archetype = "keyboard";
+            existing.Archetype = dials ? null : "keyboard";
             return existing;
         }
         var frame = new DeviceFrame(thisIdx, id, ledCount,
             layout?.X ?? defX, layout?.Y ?? defY, layout?.W ?? defW, layout?.H ?? defH, rot);
-        frame.Archetype = "keyboard";
+        frame.Archetype = dials ? null : "keyboard";
         _frameCache[id] = frame;
         return frame;
     }
 
-    internal static (float x, float y, float w, float h) DefaultLayout(int slot) =>
-        slot % 2 == 0 ? (120f, 150f, 760f, 140f) : (120f, 300f, 760f, 50f);
+    internal static (float x, float y, float w, float h) DefaultLayout(int slot, bool dials = false) =>
+        dials ? (120f, 380f, 240f, 60f) : slot % 2 == 0 ? (120f, 150f, 760f, 140f) : (120f, 300f, 760f, 50f);
 }

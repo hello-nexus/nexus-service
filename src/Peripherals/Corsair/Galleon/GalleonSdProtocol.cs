@@ -27,6 +27,10 @@ public static class GalleonSdProtocol
 
     public const string HandlerId = "corsair-galleon-keyboard";
     public const string DeviceIdPrefix = "corsair-galleon:";
+    public const string DialsDeviceIdPrefix = DeviceIdPrefix + "dials:";
+    public const string DialsProductName = "Corsair Galleon 100 SD Dials";
+    /// <summary>The Stream Deck half; its LampArray collection carries the dial lamps.</summary>
+    public const int StreamDeckProductId = 0x2B18;
     public const string ProductName = "Corsair Galleon 100 SD";
 
     /// <summary>Vendor usage page of the command interface, as OpenRGB matches it.</summary>

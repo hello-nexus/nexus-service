@@ -924,19 +924,29 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>()));
 
         // Corsair Galleon 100 SD keyboard (1B1C:2B0C): native direct lighting; the bundled OpenRGB has no detector for this PID.
+        // Its dial lamps (1B1C:2B18, HID LampArray collection) ride on the same lighting provider as a second device.
         services.AddSingleton<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdHub>();
         services.AddSingleton<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>();
         services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
             sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>());
         services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
             sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>();
         services.AddSingleton<Nexus.Service.Lighting.GalleonSdLightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingFrameWriter>());
+        services.AddSingleton<Nexus.Service.Lighting.GalleonSdDialsFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdDialsFrameWriter>());
         services.AddHostedService(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
             sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdHub>(),
             sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
             sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>()));
+        services.AddHostedService(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>(),
+            sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
+            productId: Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.StreamDeckProductId));
 
         // Stream Deck: gen1-protocol button decks (Mini bench-verified
         // 2026-07-10). Peripheral, not lighting - no frame contributor, no

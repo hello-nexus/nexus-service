@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using NativeApi = Nexus.Service.Peripherals.Hid.WindowsHidEnumerator.Native;
@@ -12,7 +13,7 @@ namespace Nexus.Service.Peripherals.Hid;
 /// so <see cref="Read"/> honors its timeout (waits on the completion event, cancels
 /// on timeout) instead of returning instantly and letting the caller spin a core.
 /// </summary>
-public sealed class WindowsHidDevice : IHidDevice
+public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
 {
     private const int ERROR_IO_PENDING = 997;
     private const uint WAIT_OBJECT_0 = 0x0;
@@ -81,6 +82,40 @@ public sealed class WindowsHidDevice : IHidDevice
             buf.AsSpan(0, buffer.Length).CopyTo(buffer);
         }
         return ok;
+    }
+
+    /// <summary>Feature value caps via HidP_GetValueCaps; HIDP_VALUE_CAPS fields are read at their fixed offsets.</summary>
+    public IReadOnlyList<HidValueCap>? ReadFeatureValueCaps()
+    {
+        if (_handle == IntPtr.Zero) return null;
+        if (!NativeApi.HidD_GetPreparsedData(_handle, out var preparsed)) return null;
+        try
+        {
+            var caps = new NativeApi.HIDP_CAPS();
+            if (NativeApi.HidP_GetCaps(preparsed, ref caps) != NativeApi.HIDP_STATUS_SUCCESS) return null;
+            var count = caps.NumberFeatureValueCaps;
+            if (count == 0) return Array.Empty<HidValueCap>();
+            var raw = new byte[count * NativeApi.ValueCapsSize];
+            if (NativeApi.HidP_GetValueCaps(NativeApi.HidP_Feature, raw, ref count, preparsed) != NativeApi.HIDP_STATUS_SUCCESS) return null;
+            var list = new List<HidValueCap>(count);
+            for (var i = 0; i < count; i++)
+            {
+                var o = i * NativeApi.ValueCapsSize;
+                list.Add(new HidValueCap(
+                    ReportId: raw[o + 2],
+                    UsagePage: BitConverter.ToUInt16(raw, o),
+                    Usage: BitConverter.ToUInt16(raw, o + 56),
+                    LinkUsagePage: BitConverter.ToUInt16(raw, o + 10),
+                    LinkUsage: BitConverter.ToUInt16(raw, o + 8),
+                    BitSize: BitConverter.ToUInt16(raw, o + 18),
+                    ReportCount: BitConverter.ToUInt16(raw, o + 20)));
+            }
+            return list;
+        }
+        finally
+        {
+            NativeApi.HidD_FreePreparsedData(preparsed);
+        }
     }
 
     public bool GetInputReport(Span<byte> buffer)
