@@ -204,7 +204,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
         "system" => "/system/diagnostics/system",
         // GPU throttling is reported on the cooling tab.
         "cooling" or "gpu" or "thermalGuard" => "/system/diagnostics/cooling",
-        "astral" or "astralCountdown" => "/system/devices",
+        "astral" or "astralCountdown" => "/system/device/curated-asus-astral",
         _ => null,
     };
 
