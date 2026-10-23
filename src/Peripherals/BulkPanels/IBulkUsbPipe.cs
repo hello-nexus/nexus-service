@@ -69,7 +69,7 @@ public sealed class BulkPipeOpenException : IOException
         errorCode is ErrorAccessDenied or ErrorSharingViolation;
 }
 
-/// <summary>Stands in on Linux, which has no bulk-pipe transport, so the rest of the graph still resolves.</summary>
+/// <summary>Stands in where no bulk-pipe transport exists, so the rest of the graph still resolves.</summary>
 public sealed class NullBulkUsbPipeFactory : IBulkUsbPipeFactory
 {
     public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId) => null;

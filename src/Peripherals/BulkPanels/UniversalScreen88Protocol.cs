@@ -17,6 +17,7 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// </summary>
 public static class UniversalScreen88Protocol
 {
+    public const int VendorId = 0x1CBE;
     public const int ProductId = 0xA088;
 
     /// <summary>Native framebuffer: the glass shows a landscape frame only once it is turned a quarter clockwise into this.</summary>
