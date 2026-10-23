@@ -29,6 +29,28 @@ public class FleetEventServiceTests
         }
     }
 
+    /// <summary>An older nexus-api: answers 400 to any specs body that carries the inventory keys.</summary>
+    private sealed class OldApiTransport : IFleetEventTransport
+    {
+        public List<FleetEventPayload> Sent { get; } = new();
+
+        /// <summary>Whether each specs body carried inventory keys when it was posted (the payload object is reused across the retry).</summary>
+        public List<bool> SpecsHadInventory { get; } = new();
+        public Task<bool> SendAsync(FleetEventPayload payload, CancellationToken ct) =>
+            Task.FromResult(PostAsyncCore(payload) == FleetSendResult.Delivered);
+        public Task<FleetSendResult> PostAsync(FleetEventPayload payload, CancellationToken ct) =>
+            Task.FromResult(PostAsyncCore(payload));
+        private FleetSendResult PostAsyncCore(FleetEventPayload payload)
+        {
+            Sent.Add(payload);
+            var s = payload.Specs;
+            var had = s is { RamModules: not null } or { StorageDrives: not null } or { RamModuleCount: not null };
+            if (payload.Type == TelemetryEvents.Specs)
+                SpecsHadInventory.Add(had);
+            return had ? FleetSendResult.Rejected : FleetSendResult.Delivered;
+        }
+    }
+
     private sealed class FakeTelemetrySink : ITelemetrySink
     {
         public bool Enabled { get; set; } = true;
@@ -459,6 +481,93 @@ public class FleetEventServiceTests
         Assert.Equal("CMK32GX5M2B6000C36", specs.RamModules![0].PartNumber);
         Assert.Equal("Samsung SSD 990 PRO 2TB", specs.StorageDrives!.Single().Model);
         Assert.Equal(34359738368, specs.RamBytes);
+    }
+
+    private static StubSensors DefaultSensors() =>
+        new() { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+
+    [Fact]
+    public async Task An_empty_inventory_read_reuses_the_last_good_one_instead_of_erasing_it()
+    {
+        var store = OptedInStore();
+        var first = new FakeFleetEventTransport();
+        await MakeService(store, first, sensors: DefaultSensors(), inventory: SampleInventory()).RunPendingRetriesAsync(CancellationToken.None);
+
+        // New process, platform read fails, and an unrelated field changed so specs go out again.
+        var second = new FakeFleetEventTransport();
+        var changed = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU B" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        await MakeService(store, second, sensors: changed, inventory: HardwareInventory.Empty).RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = second.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(2, specs.RamModuleCount);
+        Assert.Equal(2, specs.RamModules!.Count);
+        Assert.Equal("Samsung SSD 990 PRO 2TB", specs.StorageDrives!.Single().Model);
+    }
+
+    [Fact]
+    public async Task An_empty_read_with_nothing_remembered_is_not_hashed_as_a_change()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: DefaultSensors(), inventory: HardwareInventory.Empty).RunPendingRetriesAsync(CancellationToken.None);
+        var before = store.Load().Telemetry.FleetSpecsHash;
+
+        await MakeService(store, transport, sensors: DefaultSensors()).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(before, store.Load().Telemetry.FleetSpecsHash);
+        Assert.Equal(1, SpecsSent(transport));
+    }
+
+    [Fact]
+    public async Task Persisted_inventory_survives_a_settings_round_trip()
+    {
+        var store = OptedInStore();
+        await MakeService(store, new FakeFleetEventTransport(), sensors: DefaultSensors(), inventory: SampleInventory()).RunPendingRetriesAsync(CancellationToken.None);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(store.Load(), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+
+        Assert.Equal(2, back.Telemetry.FleetRamModules.Count);
+        Assert.Equal(2, back.Telemetry.FleetRamModuleTotal);
+        Assert.Equal("nvme", back.Telemetry.FleetDrives.Single().Bus);
+    }
+
+    [Fact]
+    public async Task Ram_module_count_is_the_populated_count_not_the_capped_list_length()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var capped = new HardwareInventory(SampleInventory().RamModules, SampleInventory().Drives, RamModuleTotal: 20);
+
+        await MakeService(store, transport, sensors: DefaultSensors(), inventory: capped).RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(20, specs.RamModuleCount);
+        Assert.Equal(2, specs.RamModules!.Count);
+    }
+
+    [Fact]
+    public async Task A_400_on_the_inventory_keys_resends_without_them_so_cpu_and_gpu_still_update()
+    {
+        var store = OptedInStore();
+        var transport = new OldApiTransport();
+        var direct = new FleetEventService(store, transport, new TelemetryClient(store), Array.Empty<ITelemetrySink>(),
+            new SystemSpecsCollector(DefaultSensors()), new StubUsbEnumerator(), () => false, TimeProvider.System, TimeSpan.Zero,
+            () => SampleInventory());
+
+        await direct.RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { true, false }, transport.SpecsHadInventory);
+        var last = transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Null(last.RamModules);
+        Assert.Null(last.StorageDrives);
+        Assert.Null(last.RamModuleCount);
+        Assert.Equal("CPU A", last.Cpu);
+        Assert.NotEqual("", store.Load().Telemetry.FleetSpecsHash);
+
+        // Later passes in the same process do not retry the rejected keys or resend an unchanged summary.
+        await direct.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
     }
 
     [Fact]

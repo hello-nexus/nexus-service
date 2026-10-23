@@ -57,15 +57,18 @@ public sealed class SystemSpecsCollector
         // lock would serialise unrelated concurrent callers behind it.
         await _sensors.ReadyAsync(ct).ConfigureAwait(false);
 
+        // Also outside the lock: macOS shells out to system_profiler for this, which takes seconds.
+        var inventory = await Task.Run(HardwareInventoryCollector.GetCached, ct).ConfigureAwait(false);
+
         lock (_lock)
         {
             if (_cached is not null) return _cached;
-            _cached = Build();
+            _cached = Build(inventory);
             return _cached;
         }
     }
 
-    private SystemSpecsResponse Build()
+    private SystemSpecsResponse Build(HardwareInventory inventory)
     {
         var s = new SystemSpecsResponse
         {
@@ -85,7 +88,6 @@ public sealed class SystemSpecsCollector
             EnrichMac(s);
 
         // Physical drives only: volume labels and mount points ("C:", "/boot") are never a storage description.
-        var inventory = HardwareInventoryCollector.GetCached();
         if (string.IsNullOrWhiteSpace(s.Storage))
         {
             if (inventory.Drives.Count > 0)
@@ -98,10 +100,8 @@ public sealed class SystemSpecsCollector
         if (!OperatingSystem.IsWindows() && inventory.RamModules.Count > 0 && !s.Memory.Contains('('))
         {
             var sticks = inventory.RamModules.Where(m => m.CapacityBytes is > 0).Select(m => m.CapacityBytes!.Value).ToList();
-            var brands = inventory.RamModules
-                .Select(m => JoinBrandPart(m.Manufacturer ?? "", m.PartNumber ?? ""))
-                .Where(b => b.Length > 0).Distinct().ToList();
-            var detail = StickLayout(sticks, string.Join(" + ", brands));
+            var detail = StickLayout(sticks, PrimaryFirst(inventory.RamModules.Select(m =>
+                JoinBrandPart(m.Manufacturer is null ? "" : HardwareInventoryParsers.BrandLabel(m.Manufacturer), m.PartNumber ?? ""))));
             if (detail.Length > 0 && s.Memory.Length > 0) s.Memory = $"{s.Memory} ({detail})";
         }
 
@@ -170,7 +170,7 @@ public sealed class SystemSpecsCollector
                 speed = configured > 0 ? configured : rated;
             }
             var brand = BrandOf(JsonString(row["Manufacturer"]), JsonString(row["PartNumber"]));
-            if (!string.IsNullOrEmpty(brand) && !brands.Contains(brand)) brands.Add(brand);
+            if (!string.IsNullOrEmpty(brand)) brands.Add(brand);
             if (memType == 0) memType = JsonInt(row["SMBIOSMemoryType"]);
         }
 
@@ -183,7 +183,7 @@ public sealed class SystemSpecsCollector
         else if (speed > 0)
             head += $" @ {speed} MT/s";
 
-        var detail = StickLayout(perStick, string.Join(" + ", brands));
+        var detail = StickLayout(perStick, PrimaryFirst(brands));
         s.Memory = string.IsNullOrEmpty(detail) ? head : $"{head} ({detail})";
     }
 
@@ -191,7 +191,14 @@ public sealed class SystemSpecsCollector
     private static string BrandOf(string manufacturer, string partNumber)
     {
         var (name, _) = HardwareInventoryParsers.ResolveManufacturer(Clean(manufacturer), null);
-        return JoinBrandPart(name ?? "", HardwareInventoryParsers.CleanText(Clean(partNumber)) ?? "");
+        return JoinBrandPart(name is null ? "" : HardwareInventoryParsers.BrandLabel(name), HardwareInventoryParsers.CleanPartNumber(Clean(partNumber)) ?? "");
+    }
+
+    // Most common kit first (ties by first slot): the catalog matcher reads only the text before the first "+" as the kit's brand and part number.
+    internal static string PrimaryFirst(IEnumerable<string> brands)
+    {
+        var all = brands.Where(b => b.Length > 0).ToList();
+        return string.Join(" + ", all.Distinct().OrderByDescending(b => all.Count(x => x == b)));
     }
 
     private static string StickLayout(List<long> sticks, string brand)

@@ -16,7 +16,10 @@ internal sealed class FleetEventTransport : IFleetEventTransport
 
     public FleetEventTransport(IHttpClientFactory http) => _http = http;
 
-    public async Task<bool> SendAsync(FleetEventPayload payload, CancellationToken ct)
+    public async Task<bool> SendAsync(FleetEventPayload payload, CancellationToken ct) =>
+        await PostAsync(payload, ct).ConfigureAwait(false) == FleetSendResult.Delivered;
+
+    public async Task<FleetSendResult> PostAsync(FleetEventPayload payload, CancellationToken ct)
     {
         try
         {
@@ -28,14 +31,14 @@ internal sealed class FleetEventTransport : IFleetEventTransport
             if (!res.IsSuccessStatusCode)
             {
                 Console.Error.WriteLine($"[fleet-event] {(int)res.StatusCode} from {Endpoint}");
-                return false;
+                return res.StatusCode == System.Net.HttpStatusCode.BadRequest ? FleetSendResult.Rejected : FleetSendResult.Failed;
             }
-            return true;
+            return FleetSendResult.Delivered;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[fleet-event] send failed: {ex.GetType().Name}: {ex.Message}");
-            return false;
+            return FleetSendResult.Failed;
         }
     }
 }

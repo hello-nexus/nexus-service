@@ -131,15 +131,92 @@ public class HardwareInventoryParsersTests
     }
 
     [Fact]
-    public void Windows_sata_hdd_keeps_a_separate_vendor_and_flags_usb_as_a_bus()
+    public void Windows_sata_hdd_keeps_a_separate_vendor()
     {
         var hdd = HardwareInventoryParsers.FromWindows("Seagate", "ST4000DM004-2CV104", 11, "HDD", 4000787030016)!;
         Assert.Equal("Seagate", hdd.Vendor);
         Assert.Equal("hdd", hdd.Media);
         Assert.Equal("sata", hdd.Bus);
+    }
 
-        var external = HardwareInventoryParsers.FromWindows("Samsung", "PSSD T7", 7, "SSD", 1000204886016)!;
-        Assert.Equal("usb", external.Bus);
+    [Fact]
+    public void Windows_usb_attached_drive_is_not_reported() =>
+        Assert.Null(HardwareInventoryParsers.FromWindows("Samsung", "PSSD T7", 7, "SSD", 1000204886016));
+
+    [Fact]
+    public void Linux_usb_attached_drive_is_not_reported() =>
+        Assert.Null(HardwareInventoryParsers.FromLinux("sdb", "/sys/devices/pci0000:00/0000:00:14.0/usb2/2-1/host6/target6:0:0/6:0:0:0/block/sdb",
+            "Samsung", "PSSD T7", 1_953_525_168, "0", "0"));
+
+    [Fact]
+    public void Over_long_strings_are_clamped_to_the_shared_cap()
+    {
+        var long66 = new string('x', 66);
+        var drive = HardwareInventoryParsers.FromWindows("", long66, 17, "SSD", 1)!;
+        Assert.Equal(HardwareInventoryParsers.MaxText, drive.Model!.Length);
+        var module = HardwareInventoryParsers.FromSmbios(new MemoryModuleInfo("A", 1, null, null, long66, long66), null);
+        Assert.Equal(HardwareInventoryParsers.MaxText, module.Manufacturer!.Length);
+        Assert.Equal(HardwareInventoryParsers.MaxText, module.PartNumber!.Length);
+    }
+
+    [Fact]
+    public void Every_jedec_table_name_fits_the_cap_once_resolved()
+    {
+        foreach (var bank in JedecVendorTable.Banks)
+        {
+            foreach (var name in bank)
+            {
+                Assert.True(HardwareInventoryParsers.Clamp(name).Length <= HardwareInventoryParsers.MaxText);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("0x802C000000000000", "Micron Technology", "802C")] // 16-digit id with a zero tail
+    [InlineData("0x80CE", "Samsung", "80CE")]
+    [InlineData("0x436F7273616972", "Corsair", null)] // hex-encoded ASCII
+    public void Hex_manufacturer_strings_are_decoded_never_sent_as_names(string raw, string expectedName, string? expectedId)
+    {
+        var (name, id) = HardwareInventoryParsers.ResolveManufacturer(raw, null);
+        Assert.Equal(expectedName, name);
+        Assert.Equal(expectedId, id);
+    }
+
+    [Theory]
+    [InlineData("0x1234567890ABCDEF")] // 16 digits, non-zero tail, not text
+    [InlineData("DEADBEEF")]
+    [InlineData("0x00FF00FF")]
+    public void Undecodable_hex_manufacturer_strings_are_dropped(string raw)
+    {
+        var (name, id) = HardwareInventoryParsers.ResolveManufacturer(raw, null);
+        Assert.Null(name);
+        Assert.Null(id);
+    }
+
+    [Fact]
+    public void Hex_encoded_part_number_is_decoded_and_an_undecodable_one_dropped()
+    {
+        Assert.Equal("HMA81GU6", HardwareInventoryParsers.CleanPartNumber("0x484D413831475536"));
+        Assert.Null(HardwareInventoryParsers.CleanPartNumber("0xFFFFFFFF"));
+        Assert.Equal("CMK32GX5M2B6000C36", HardwareInventoryParsers.CleanPartNumber("CMK32GX5M2B6000C36"));
+    }
+
+    [Theory]
+    [InlineData("Lexar Co Limited", "Lexar")]
+    [InlineData("Team Group Inc.", "Team Group")]
+    [InlineData("Patriot Memory (PDP Systems)", "Patriot")]
+    [InlineData("Netac Technology Co Ltd", "Netac")]
+    [InlineData("Kingston", "Kingston")]
+    [InlineData("G Skill Intl", "G Skill Intl")]
+    [InlineData("Mavrix Technology, Inc.", "Mavrix")]
+    public void Brand_label_drops_corporate_suffixes_the_catalog_matcher_would_read_as_part_number(string name, string expected) =>
+        Assert.Equal(expected, HardwareInventoryParsers.BrandLabel(name));
+
+    [Fact]
+    public void Memory_string_lists_the_most_common_kit_first()
+    {
+        var brands = new[] { "Kingston KF560C36-16", "Corsair CMH32GX5M2E6000C36", "Corsair CMH32GX5M2E6000C36", "Kingston KF560C36-16", "Corsair CMH32GX5M2E6000C36" };
+        Assert.Equal("Corsair CMH32GX5M2E6000C36 + Kingston KF560C36-16", SystemSpecsCollector.PrimaryFirst(brands));
     }
 
     [Fact]

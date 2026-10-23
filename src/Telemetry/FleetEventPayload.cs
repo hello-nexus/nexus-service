@@ -80,7 +80,7 @@ public sealed class FleetEventDrive
     public string? Vendor { get; set; }
     public long? CapacityBytes { get; set; }
 
-    /// <summary>Lowercase transport: nvme, sata, ata, usb, sas, scsi, raid. A usb drive is how an external disk is flagged.</summary>
+    /// <summary>Lowercase transport: nvme, sata, ata, sas, scsi, raid. USB-attached and removable drives are not reported.</summary>
     public string? Bus { get; set; }
 
     /// <summary>ssd or hdd.</summary>

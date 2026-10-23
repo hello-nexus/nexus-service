@@ -39,6 +39,9 @@ internal sealed class FleetEventService
 
     // Not persisted: RAM module and drive identity read once per process, so a flaky re-read can never flip the hash.
     private HardwareInventory? _inventory;
+
+    // Not persisted: set when nexus-api answered 400 to the inventory keys; later passes in this process skip them, a restart tries again.
+    private bool _inventoryRejected;
     private readonly DateTimeOffset _startedAt;
     private readonly TimeSpan _usbSettle;
 
@@ -259,10 +262,13 @@ internal sealed class FleetEventService
         var devices = _bootDevices;
         var y70Seen = _store.Load().Telemetry.FleetY70Seen;
         var ibuypowerSystem = _ibuypowerSystem();
-        // Off the gate thread: macOS shells out to system_profiler, which takes seconds.
-        _inventory ??= await Task.Run(_inventorySource, ct).ConfigureAwait(false);
+        // The platform read happens once per process; an empty one falls back to the last good inventory instead of erasing it server-side.
+        _inventory ??= ResolveInventory(_inventorySource(), persisted);
         var inventory = _inventory;
-        var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, inventory);
+        PersistInventory(inventory, persisted);
+        // After a 400 the specs go without the inventory keys, and the hash must not claim they were delivered.
+        var hashedInventory = _inventoryRejected ? HardwareInventory.Empty : inventory;
+        var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, hashedInventory);
         if (hash == _store.Load().Telemetry.FleetSpecsHash)
             return; // unchanged since the last successful send.
 
@@ -276,18 +282,65 @@ internal sealed class FleetEventService
             Devices = devices,
             Y70Seen = y70Seen,
             IbuypowerSystem = ibuypowerSystem,
-            RamModuleCount = inventory.RamModules.Count > 0 ? inventory.RamModules.Count : null,
-            RamModules = inventory.RamModules.Count > 0 ? inventory.RamModules.ToList() : null,
-            StorageDrives = inventory.Drives.Count > 0 ? inventory.Drives.ToList() : null,
         };
+        if (!_inventoryRejected)
+            AttachInventory(payload.Specs, inventory);
 
-        if (!await _transport.SendAsync(payload, ct).ConfigureAwait(false))
+        var result = await _transport.PostAsync(payload, ct).ConfigureAwait(false);
+        if (result == FleetSendResult.Rejected && !_inventoryRejected && inventory.PopulatedModules + inventory.Drives.Count > 0)
+        {
+            // An older nexus-api refuses the unknown keys with a 400; resend once without them so cpu, gpu and devices still update.
+            _inventoryRejected = true;
+            AttachInventory(payload.Specs, HardwareInventory.Empty);
+            hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, HardwareInventory.Empty);
+            result = await _transport.PostAsync(payload, ct).ConfigureAwait(false);
+        }
+        if (result != FleetSendResult.Delivered)
             return;
 
         _store.Update(s => s.Telemetry.FleetSpecsHash = hash);
         _telemetry.Capture(TelemetryEvents.Specs,
             ("cpu", specs.Processor), ("gpu", gpu), ("ram_bytes", ramBytes), ("motherboard", specs.Motherboard));
     }
+
+    private static void AttachInventory(FleetEventSpecs specs, HardwareInventory inventory)
+    {
+        specs.RamModuleCount = inventory.PopulatedModules > 0 ? inventory.PopulatedModules : null;
+        specs.RamModules = inventory.RamModules.Count > 0 ? inventory.RamModules.ToList() : null;
+        specs.StorageDrives = inventory.Drives.Count > 0 ? inventory.Drives.ToList() : null;
+    }
+
+    /// <summary>A non-empty read wins; an empty list reuses the last persisted one, list by list.</summary>
+    internal static HardwareInventory ResolveInventory(HardwareInventory current, TelemetrySettings persisted)
+    {
+        var ram = current.RamModules.Count > 0 ? current.RamModules : persisted.FleetRamModules;
+        var total = current.RamModules.Count > 0 ? current.PopulatedModules : persisted.FleetRamModuleTotal;
+        var drives = current.Drives.Count > 0 ? current.Drives : persisted.FleetDrives;
+        return new HardwareInventory(ram, drives, total);
+    }
+
+    private void PersistInventory(HardwareInventory inventory, TelemetrySettings persisted)
+    {
+        var ramChanged = inventory.RamModules.Count > 0 && InventorySignature(inventory) != InventorySignature(new HardwareInventory(persisted.FleetRamModules, Array.Empty<FleetEventDrive>(), persisted.FleetRamModuleTotal));
+        var drivesChanged = inventory.Drives.Count > 0 && InventorySignature(new HardwareInventory(Array.Empty<FleetEventRamModule>(), inventory.Drives)) != InventorySignature(new HardwareInventory(Array.Empty<FleetEventRamModule>(), persisted.FleetDrives));
+        if (!ramChanged && !drivesChanged)
+            return;
+        _store.Update(s =>
+        {
+            if (ramChanged)
+            {
+                s.Telemetry.FleetRamModules = inventory.RamModules.ToList();
+                s.Telemetry.FleetRamModuleTotal = inventory.PopulatedModules;
+            }
+            if (drivesChanged)
+                s.Telemetry.FleetDrives = inventory.Drives.ToList();
+        });
+    }
+
+    private static string InventorySignature(HardwareInventory inventory) =>
+        string.Join('~', inventory.PopulatedModules,
+            string.Join(';', inventory.RamModules.Select(m => string.Join('|', m.Manufacturer, m.ManufacturerId, m.PartNumber, m.CapacityBytes, m.ConfiguredSpeedMts, m.RatedSpeedMts, m.Generation)).OrderBy(x => x, StringComparer.Ordinal)),
+            string.Join(';', inventory.Drives.Select(d => string.Join('|', d.Model, d.Vendor, d.CapacityBytes, d.Bus, d.Media)).OrderBy(x => x, StringComparer.Ordinal)));
 
     // On Windows the DIMM query appends a parenthesized stick layout; without it the string is the OS-usable total from the sensor fallback. Other platforms accept any figure.
     internal static bool HasDimmDetail(string memory, bool requireDimmDetail) =>
@@ -337,13 +390,13 @@ internal sealed class FleetEventService
         var input = string.Join((char)0x1F, cpu, string.Join((char)0x1F, gpu), ramBytes.ToString(), motherboard, deviceIds,
             y70Seen ? "y70" : "", ibuypowerSystem ? "ibp" : "");
         // Appended only when present so an install without inventory keeps the hash it already delivered and is not re-sent.
-        if (inventory is not null && (inventory.RamModules.Count > 0 || inventory.Drives.Count > 0))
+        if (inventory is not null && (inventory.PopulatedModules > 0 || inventory.Drives.Count > 0))
         {
             var ram = inventory.RamModules.Select(m => string.Join('|', m.Manufacturer, m.ManufacturerId, m.PartNumber,
                 m.CapacityBytes, m.ConfiguredSpeedMts, m.RatedSpeedMts, m.Generation)).OrderBy(x => x, StringComparer.Ordinal);
             var drives = inventory.Drives.Select(d => string.Join('|', d.Model, d.Vendor, d.CapacityBytes, d.Bus, d.Media))
                 .OrderBy(x => x, StringComparer.Ordinal);
-            input = string.Join((char)0x1F, input, "ram:" + string.Join(';', ram), "drv:" + string.Join(';', drives));
+            input = string.Join((char)0x1F, input, "ram:" + inventory.PopulatedModules + string.Join(';', ram), "drv:" + string.Join(';', drives));
         }
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes);

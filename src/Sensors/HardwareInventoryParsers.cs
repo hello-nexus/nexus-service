@@ -25,7 +25,10 @@ internal static partial class HardwareInventoryParsers
         "virtual", "vbox", "qemu", "vmware", "parallels", "xen ", "msft", "hyper-v", "ramdisk",
     };
 
-    /// <summary>The trimmed text, or null for blanks and the OEM placeholder strings boards write into unpopulated SPD fields.</summary>
+    /// <summary>Longest hardware string sent; nexus-api truncates to the same length, and a longer value here would otherwise cost the whole specs event.</summary>
+    public const int MaxText = 64;
+
+    /// <summary>The trimmed, length-clamped text, or null for blanks and the OEM placeholder strings boards write into unpopulated SPD fields.</summary>
     public static string? CleanText(string? value)
     {
         var t = (value ?? "").Trim();
@@ -35,8 +38,67 @@ internal static partial class HardwareInventoryParsers
             return null;
         if (PlaceholderIndexed().IsMatch(t))
             return null;
-        return t;
+        return Clamp(t);
     }
+
+    public static string Clamp(string value) => value.Length <= MaxText ? value : value[..MaxText].TrimEnd();
+
+    /// <summary>The digits of a 0x-prefixed or bare even-length hex literal, or null when the text is anything else.</summary>
+    private static string? HexBody(string text)
+    {
+        var t = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text[2..] : text;
+        return t.Length >= 4 && t.Length % 2 == 0 && t.All(Uri.IsHexDigit) ? t : null;
+    }
+
+    /// <summary>Printable ASCII behind a hex literal (Intel-Mac system_profiler hex-encodes some strings), or null when it is not text.</summary>
+    private static string? DecodeHexAscii(string hexBody)
+    {
+        var chars = new List<char>();
+        for (var i = 0; i < hexBody.Length; i += 2)
+        {
+            var b = Convert.ToByte(hexBody.Substring(i, 2), 16);
+            if (b == 0)
+                break;
+            if (b is < 0x20 or > 0x7E)
+                return null;
+            chars.Add((char)b);
+        }
+        var text = new string(chars.ToArray()).Trim();
+        return text.Length >= 2 ? text : null;
+    }
+
+    /// <summary>A part number with Intel-Mac hex encoding decoded; an undecodable 0x literal is dropped rather than sent as if it were a part number.</summary>
+    public static string? CleanPartNumber(string? value)
+    {
+        var t = CleanText(value);
+        if (t is null || !t.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return t;
+        var body = HexBody(t);
+        var decoded = body is null ? null : DecodeHexAscii(body);
+        return decoded is null ? null : CleanText(decoded);
+    }
+
+    /// <summary>
+    /// Memory vendor label for the account-device memory string: corporate suffixes and parenthesized notes removed, because the catalog
+    /// matcher reads the text after its known brand prefixes as the part number and would fold "Co Limited" into it.
+    /// </summary>
+    public static string BrandLabel(string name)
+    {
+        var t = ParenthesizedNote().Replace(name, " ").Replace(",", " ").Trim();
+        string prev;
+        do
+        {
+            prev = t;
+            t = CorporateSuffix().Replace(t, "").Trim();
+        } while (t != prev && t.Length > 0);
+        return t.Length == 0 ? name.Trim() : t;
+    }
+
+    [GeneratedRegex(@"\([^)]*\)")]
+    private static partial Regex ParenthesizedNote();
+
+    [GeneratedRegex(@"\s+(co|ltd|limited|inc|corp|corporation|company|technology|technologies|memory|media)\.?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CorporateSuffix();
 
     [GeneratedRegex(@"^(manufacturer|partnum(ber)?|partno|array\d+_\w+)\d*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PlaceholderIndexed();
@@ -60,27 +122,43 @@ internal static partial class HardwareInventoryParsers
         return t is "DDR3" or "DDR4" or "DDR5" or "LPDDR3" or "LPDDR4" or "LPDDR4X" or "LPDDR5" or "LPDDR5X" ? t : null;
     }
 
-    /// <summary>Vendor name and raw id for an SMBIOS manufacturer string, falling back to the Module Manufacturer ID field.</summary>
+    /// <summary>
+    /// Vendor name and raw id for an SMBIOS manufacturer string, falling back to the Module Manufacturer ID field. A hex literal is
+    /// never returned as a name: four digits are a JEDEC id, sixteen digits with a zero tail are that id padded, and anything else is
+    /// decoded as hex-encoded ASCII or dropped.
+    /// </summary>
     public static (string? Name, string? Id) ResolveManufacturer(string? smbiosString, string? moduleManufacturerId)
     {
         var text = CleanText(smbiosString);
-        if (text is not null && !JedecManufacturers.LooksLikeId(text))
+        string? id = null;
+        if (text is not null && HexBody(text) is { } body)
+        {
+            if (body.Length == 4)
+            {
+                id = body.ToUpperInvariant();
+                text = null;
+            }
+            else if (body.Length == 16 && body[4..].All(c => c == '0'))
+            {
+                id = body[..4].ToUpperInvariant();
+                text = null;
+            }
+            else
+            {
+                text = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? CleanText(DecodeHexAscii(body)) : null;
+            }
+        }
+
+        if (text is not null)
             return (text, moduleManufacturerId);
 
-        var id = text is not null ? NormalizeId(text) : moduleManufacturerId;
         var name = id is null ? null : JedecManufacturers.Decode(id);
         if (name is null && moduleManufacturerId is not null && moduleManufacturerId != id)
         {
             name = JedecManufacturers.Decode(moduleManufacturerId);
             id ??= moduleManufacturerId;
         }
-        return (name, id);
-    }
-
-    private static string NormalizeId(string text)
-    {
-        var t = text.Trim();
-        return (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? t[2..] : t).ToUpperInvariant();
+        return (name is null ? null : Clamp(name), id);
     }
 
     public static FleetEventRamModule FromSmbios(MemoryModuleInfo info, int? smbiosMemoryType)
@@ -90,7 +168,7 @@ internal static partial class HardwareInventoryParsers
         {
             Manufacturer = name,
             ManufacturerId = id,
-            PartNumber = CleanText(info.PartNumber),
+            PartNumber = CleanPartNumber(info.PartNumber),
             CapacityBytes = info.SizeBytes is > 0 ? info.SizeBytes : null,
             ConfiguredSpeedMts = info.ConfiguredSpeedMts,
             RatedSpeedMts = info.MaxSpeedMts,
@@ -120,7 +198,6 @@ internal static partial class HardwareInventoryParsers
     {
         1 => "scsi",
         3 => "ata",
-        7 => "usb",
         8 => "raid",
         10 => "sas",
         11 => "sata",
@@ -128,11 +205,12 @@ internal static partial class HardwareInventoryParsers
         _ => null,
     };
 
-    /// <summary>A Windows physical drive, or null when it is virtual, pooled or otherwise not a physical disk.</summary>
+    /// <summary>A Windows internal physical drive, or null when it is USB-attached, virtual, pooled or otherwise not a physical disk.</summary>
     public static FleetEventDrive? FromWindows(string vendor, string product, uint busType, string mediaType, long size)
     {
         // 14 virtual, 15 file-backed virtual, 16 Storage Spaces pool.
-        if (busType is 14 or 15 or 16)
+        // 7 USB: only internal drives are reported, so plugging in an external disk never changes the specs.
+        if (busType is 7 or 14 or 15 or 16)
             return null;
         var model = CleanText(product);
         var vend = TransportTagToNull(vendor);
@@ -157,7 +235,7 @@ internal static partial class HardwareInventoryParsers
 
     /// <summary>
     /// A Linux block device from its sysfs facts. <paramref name="resolvedDevicePath"/> is the symlink target of
-    /// /sys/block/NAME and carries the transport (nvme, usb, ata). Null for loop, RAM, mapper, optical, removable and virtual devices.
+    /// /sys/block/NAME and carries the transport (nvme, usb, ata). Null for loop, RAM, mapper, optical, removable, USB-attached and virtual devices.
     /// </summary>
     public static FleetEventDrive? FromLinux(string blockName, string resolvedDevicePath, string? vendor, string? model,
         long sizeSectors, string? rotational, string? removable)
@@ -172,8 +250,11 @@ internal static partial class HardwareInventoryParsers
         }
         if ((removable ?? "").Trim() == "1")
             return null;
-        if (resolvedDevicePath.Contains("/virtual/", StringComparison.Ordinal) || resolvedDevicePath.Contains("/virtio", StringComparison.Ordinal))
+        if (resolvedDevicePath.Contains("/virtual/", StringComparison.Ordinal) || resolvedDevicePath.Contains("/virtio", StringComparison.Ordinal)
+            || resolvedDevicePath.Contains("/usb", StringComparison.Ordinal))
+        {
             return null;
+        }
 
         var cleanModel = CleanText(model);
         var cleanVendor = TransportTagToNull(vendor);
@@ -185,8 +266,6 @@ internal static partial class HardwareInventoryParsers
         string? bus = null;
         if (blockName.StartsWith("nvme", StringComparison.Ordinal) || resolvedDevicePath.Contains("/nvme", StringComparison.Ordinal))
             bus = "nvme";
-        else if (resolvedDevicePath.Contains("/usb", StringComparison.Ordinal))
-            bus = "usb";
         else if (resolvedDevicePath.Contains("/ata", StringComparison.Ordinal))
             bus = "sata";
 
@@ -325,7 +404,7 @@ internal static partial class HardwareInventoryParsers
                     rawManufacturer = value;
                     break;
                 case "Part Number":
-                    current.PartNumber = CleanText(value);
+                    current.PartNumber = CleanPartNumber(value);
                     break;
             }
         }
