@@ -69,13 +69,69 @@ public class OpenRgbDetectorOverridesTests : IDisposable
         Assert.Contains("Elgato Stream Deck MK.2", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
-    [Theory]
-    [InlineData("ASUS ROG STRIX Radeon RX 6600 XT Gaming OC")]
-    [InlineData("Sapphire Radeon RX 9070 XT Nitro+")]
-    public void Amd_gpu_lighting_setting_lifts_the_linux_hold(string detector)
+    private void SeedHold(params string[] names)
     {
-        Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true, amdGpuLighting: false));
-        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true, amdGpuLighting: true));
+        var map = new JsonObject();
+        foreach (var n in names)
+        {
+            map[n] = false;
+        }
+        File.WriteAllText(Path.Combine(_dir, "OpenRGB.json"), new JsonObject { ["Detectors"] = new JsonObject { ["detectors"] = map } }.ToJsonString());
+    }
+
+    private const string Amd = "Sapphire Radeon RX 9070 XT Nitro+";
+    private const string Nvidia = "MSI GeForce RTX 3070 Gaming Trio";
+
+    [Fact]
+    public void Lifting_the_amd_hold_releases_amd_and_stale_nvidia_entries_on_linux()
+    {
+        SeedHold(Amd, Nvidia, "HYTE Keeb TKL");
+        var lifted = OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: false);
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), Array.Empty<string>(), lifted, linux: true);
+
+        var root = ReadConfig();
+        var map = (JsonObject)root["Detectors"]!["detectors"]!;
+        Assert.False(map.ContainsKey(Amd));
+        Assert.False(map.ContainsKey(Nvidia));
+        Assert.False(DetectorEnabled(root, "HYTE Keeb TKL"));
+    }
+
+    [Fact]
+    public void Amd_hold_is_written_and_stale_nvidia_released_when_the_setting_is_off()
+    {
+        SeedHold(Nvidia);
+        var held = OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true);
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), Array.Empty<string>(), held, linux: true);
+
+        var map = (JsonObject)ReadConfig()["Detectors"]!["detectors"]!;
+        Assert.False(map[Amd]!.GetValue<bool>());
+        Assert.False(map.ContainsKey(Nvidia));
+    }
+
+    [Fact]
+    public void User_excluded_gpu_detector_stays_disabled_when_the_hold_lifts()
+    {
+        SeedHold(Nvidia);
+        var lifted = OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: false);
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, new[] { Nvidia }, Array.Empty<string>(), lifted, linux: true);
+
+        Assert.False(DetectorEnabled(ReadConfig(), Nvidia));
+    }
+
+    [Fact]
+    public void Off_linux_the_gpu_entries_are_left_alone()
+    {
+        SeedHold(Amd, Nvidia);
+        var native = OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: false);
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), Array.Empty<string>(), native, linux: false);
+
+        var root = ReadConfig();
+        Assert.False(DetectorEnabled(root, Amd));
+        Assert.False(DetectorEnabled(root, Nvidia));
     }
 
     [Theory]
