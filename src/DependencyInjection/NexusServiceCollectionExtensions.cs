@@ -276,6 +276,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CommanderCoreCoolingProvider.IsCommanderCoreId, sp.GetRequiredService<Nexus.Service.Cooling.CommanderCoreCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS
@@ -315,7 +317,9 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif LINUX
         // hwmon (motherboard + AMD GPU via amdgpu) + liquidctl USB coolers
@@ -365,7 +369,9 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #else
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(
@@ -403,7 +409,9 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #endif
         services.AddSingleton<Np50CoolingProvider>();
@@ -1323,6 +1331,11 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingFrameWriter>());
         services.AddHostedService<Nexus.Service.Peripherals.Nzxt.KrakenConnectionWorker>();
 
+        // NZXT RGB & Fan Controller: fans only. Its lighting stays with OpenRGB.
+        services.AddSingleton<Nexus.Service.Peripherals.Nzxt.NzxtFanControllerHub>();
+        services.AddSingleton<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>();
+        services.AddHostedService<Nexus.Service.Peripherals.Nzxt.NzxtFanControllerConnectionWorker>();
+
         // JPEG-over-HID cooler LCDs. One hub, worker, panel discovery and device row per
         // model; the hub is created here and captured so all four share it. Plain HID, so
         // unlike the Kraken's WinUSB bulk pipe there is nothing Windows-only about them.
@@ -1701,6 +1714,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiFlexHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Galahad2Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KrakenHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NzxtFanControllerHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.CorsairLinkHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.StrimerHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NollieHandler>();
