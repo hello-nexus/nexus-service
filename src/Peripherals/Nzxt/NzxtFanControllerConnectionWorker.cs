@@ -88,7 +88,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                         if (!connectFailureLogged)
                         {
                             connectFailureLogged = true;
-                            ServiceLog.Warn("[nzxt-fan-controller] connect failed: no fan status report from the device; retrying");
+                            ServiceLog.Warn("[nzxt-fan-controller] connect failed (init write or first status report); retrying");
                         }
                         await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     }
