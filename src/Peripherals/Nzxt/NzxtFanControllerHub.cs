@@ -15,7 +15,7 @@ public sealed class NzxtFanControllerHub
     public const string ProductName = "NZXT RGB & Fan Controller";
 
     // Consecutive missed status windows before the device is treated as gone. Another app
-    // re-initialising the controller can silence the stream for several windows.
+    // re-initializing the controller can silence the stream for several windows.
     public const int MaxMissedPolls = 8;
 
     private readonly object _writeLock = new();
@@ -83,7 +83,7 @@ public sealed class NzxtFanControllerHub
 
     /// <summary>
     /// Waits for the next status report. False means none arrived or the device is gone; a miss
-    /// re-sends the start-reporting command, since the stream stops when another app resets the device.
+    /// re-sends the init and start-reporting commands, guarding against the stream having stopped.
     /// Worker thread only.
     /// </summary>
     public bool Poll()
@@ -103,7 +103,11 @@ public sealed class NzxtFanControllerHub
         {
             if (_device == device)
             {
-                device?.Write(NzxtFanControllerProtocol.EncodeStartReporting());
+                if (device != null
+                    && device.Write(NzxtFanControllerProtocol.EncodeSetStatusInterval()))
+                {
+                    device.Write(NzxtFanControllerProtocol.EncodeStartReporting());
+                }
             }
         }
         return false;
