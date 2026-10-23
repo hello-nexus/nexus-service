@@ -70,7 +70,9 @@ public static class SupportBundleBuilder
                     {
                         continue;
                     }
-                    AddLogs(zip, $"logs/user-{label}/", dir, "*.log", mustBeUnder: dir);
+                    var profile = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(dir))));
+                    var prefix = profile is null ? null : Lifecycle.UserDataSafety.ExpectedFinalPrefix(profile, Path.Combine("AppData", "Local", "Nexus", "logs"));
+                    AddLogs(zip, $"logs/user-{label}/", dir, "*.log", mustBeUnder: true, expectedPrefix: prefix);
                 }
                 catch (Exception)
                 {
@@ -147,7 +149,7 @@ public static class SupportBundleBuilder
         return result;
     }
 
-    private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern, string? mustBeUnder = null)
+    private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern, bool mustBeUnder = false, string? expectedPrefix = null)
     {
         if (!Directory.Exists(dir))
         {
@@ -155,16 +157,16 @@ public static class SupportBundleBuilder
         }
         foreach (var path in Directory.EnumerateFiles(dir, pattern).OrderBy(p => p, StringComparer.Ordinal))
         {
-            if (mustBeUnder is not null && Lifecycle.UserDataSafety.IsReparsePoint(path))
+            if (mustBeUnder && Lifecycle.UserDataSafety.IsReparsePoint(path))
             {
                 continue;
             }
-            AddFile(zip, prefix + Path.GetFileName(path), path, mustBeUnder);
+            AddFile(zip, prefix + Path.GetFileName(path), path, mustBeUnder, expectedPrefix);
         }
     }
 
     /// <summary>Copies a file that the service may still be writing; a file past <see cref="MaxLogBytes"/> ships as its tail behind one header line.</summary>
-    private static void AddFile(ZipArchive zip, string name, string path, string? mustBeUnder = null)
+    private static void AddFile(ZipArchive zip, string name, string path, bool mustBeUnder = false, string? expectedPrefix = null)
     {
         if (!File.Exists(path))
         {
@@ -173,7 +175,7 @@ public static class SupportBundleBuilder
         try
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (mustBeUnder is not null && !Lifecycle.UserDataSafety.HandleIsUnder(stream.SafeFileHandle, mustBeUnder))
+            if (mustBeUnder && !Lifecycle.UserDataSafety.HandleIsUnder(stream.SafeFileHandle, expectedPrefix))
             {
                 return;
             }

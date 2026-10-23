@@ -113,29 +113,40 @@ internal static class UserDataSafety
     }
 
     /// <summary>
-    /// True when the opened file's final resolved path (after any link) lies under <paramref name="expectedDir"/>,
-    /// comparing final path to final path so 8.3 names and a junctioned parent do not cause a false mismatch.
-    /// Closes the window between a path check and the open. Windows only; elsewhere the earlier check stands.
+    /// The final-path prefix every file of a per-user dir must resolve under: the profile folder's final path
+    /// (resolved once; C:\Users is not user-writable, so a profile folder cannot be swapped by the user) plus the
+    /// literal relative tail and a trailing separator. Anchoring here, not on the per-user dir itself, keeps a
+    /// junction swapped in for any folder below the profile from matching itself. Null off Windows or on failure
+    /// to resolve; callers must treat null as "cannot verify" (<see cref="HandleIsUnder"/> then rejects on Windows).
     /// </summary>
-    internal static bool HandleIsUnder(SafeFileHandle handle, string expectedDir)
+    internal static string? ExpectedFinalPrefix(string profileRoot, string relativeTail)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+        using var dir = CreateFileW(profileRoot, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+        if (dir.IsInvalid)
+        {
+            return null;
+        }
+        var root = FinalPath(dir);
+        return root is null ? null : root.TrimEnd('\\') + "\\" + relativeTail.Trim('\\') + "\\";
+    }
+
+    /// <summary>
+    /// True when the opened file's final resolved path (after any link) starts with <paramref name="expectedPrefix"/>
+    /// (case-insensitive, trailing separator included so a sibling like logs2 does not match). Closes the window
+    /// between a path check and the open. Windows only; elsewhere the earlier reparse checks stand.
+    /// </summary>
+    internal static bool HandleIsUnder(SafeFileHandle handle, string? expectedPrefix)
     {
         if (!OperatingSystem.IsWindows())
         {
             return true;
         }
-        // FILE_FLAG_BACKUP_SEMANTICS (0x02000000) is required to open a directory; access 0 only queries it.
-        using var dir = CreateFileW(expectedDir, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
-        if (dir.IsInvalid)
-        {
-            return false;
-        }
-        var expected = FinalPath(dir);
-        var actual = FinalPath(handle);
-        if (expected is null || actual is null)
-        {
-            return false;
-        }
-        return actual.StartsWith(expected.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
+        var actual = expectedPrefix is null ? null : FinalPath(handle);
+        return actual is not null && actual.StartsWith(expectedPrefix!, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? FinalPath(SafeFileHandle handle)
