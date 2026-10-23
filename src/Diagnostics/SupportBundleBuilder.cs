@@ -61,7 +61,12 @@ public static class SupportBundleBuilder
             AddLogs(zip, "logs/", src.LogsDirectory, "*.log");
             foreach (var (label, dir) in src.UserLogDirectories)
             {
-                AddLogs(zip, $"logs/user-{label}/", dir, "*.log");
+                // SYSTEM reads user-controlled folders here: refuse junctioned dirs and skip linked files.
+                if (Lifecycle.UserDataSafety.ChainHasReparsePoint(dir, 3))
+                {
+                    continue;
+                }
+                AddLogs(zip, $"logs/user-{label}/", dir, "*.log", skipReparsePoints: true);
             }
             AddLogs(zip, "updates/", src.UpdatesDirectory, Update.UpdateInstaller.InstallLogGlob);
             AddFile(zip, "updates/" + Update.StagedInstallMarkerStore.MarkerFileName, Path.Combine(src.UpdatesDirectory, Update.StagedInstallMarkerStore.MarkerFileName));
@@ -134,7 +139,7 @@ public static class SupportBundleBuilder
         return result;
     }
 
-    private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern)
+    private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern, bool skipReparsePoints = false)
     {
         if (!Directory.Exists(dir))
         {
@@ -142,6 +147,10 @@ public static class SupportBundleBuilder
         }
         foreach (var path in Directory.EnumerateFiles(dir, pattern).OrderBy(p => p, StringComparer.Ordinal))
         {
+            if (skipReparsePoints && Lifecycle.UserDataSafety.IsReparsePoint(path))
+            {
+                continue;
+            }
             AddFile(zip, prefix + Path.GetFileName(path), path);
         }
     }
