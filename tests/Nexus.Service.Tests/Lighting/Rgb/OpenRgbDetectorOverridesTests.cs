@@ -71,6 +71,54 @@ public class OpenRgbDetectorOverridesTests : IDisposable
 
     [Theory]
     [InlineData("ASUS ROG STRIX Radeon RX 6600 XT Gaming OC")]
+    [InlineData("Sapphire Radeon RX 9070 XT Nitro+")]
+    public void Amd_gpu_lighting_setting_lifts_the_linux_hold(string detector)
+    {
+        Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true, amdGpuLighting: false));
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true, amdGpuLighting: true));
+    }
+
+    [Theory]
+    [InlineData("ASUS ROG STRIX GeForce RTX 4090 Gaming OC")]
+    [InlineData("MSI GeForce RTX 3070 Gaming Trio")]
+    public void Nvidia_gpu_detectors_are_never_force_disabled_on_linux(string detector)
+    {
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
+    }
+
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    public void Amd_hold_follows_the_setting_on_linux_and_ignores_a_stale_value_elsewhere(bool linux, bool setting, bool held)
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.AmdGpuLighting = setting);
+
+        Assert.Equal(held, OpenRgbProcessManager.HoldAmdGpuDetectorsOff(linux, store));
+    }
+
+    [Fact]
+    public void Amd_hold_is_on_without_a_store()
+    {
+        Assert.True(OpenRgbProcessManager.HoldAmdGpuDetectorsOff(linux: true, store: null));
+    }
+
+    [Fact]
+    public void Process_manager_detector_set_moves_with_the_amd_setting_only_on_linux()
+    {
+        var store = new InMemoryConfigStore();
+        var proc = new OpenRgbProcessManager("missing-exe", store, new Nexus.Service.Devices.DeviceControlGate(store));
+        var held = proc.ResolveNativeDisabledDetectors();
+        store.Update(s => s.AmdGpuLighting = true);
+        var lifted = proc.ResolveNativeDisabledDetectors();
+
+        Assert.Equal(OperatingSystem.IsLinux(), held.Count > lifted.Count);
+    }
+
+    [Theory]
+    [InlineData("ASUS ROG STRIX Radeon RX 6600 XT Gaming OC")]
     [InlineData("ASUS TUF Radeon RX 9070 XT Gaming OC")]
     [InlineData("Sapphire Radeon RX 9070 XT Nitro+")]
     [InlineData("PowerColor Red Devil RX9070XT")]

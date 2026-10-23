@@ -157,6 +157,9 @@ public sealed class Preferences
     public int StartupDelaySeconds { get; set; }
     public bool DisableGpuMonitoring { get; set; }
     public bool ReadRamTemperatures { get; set; } = true;
+    public bool AmdGpuLighting { get; set; }
+    /// <summary>Read-only: true on Linux, where <see cref="AmdGpuLighting"/> has an effect. Ignored on write.</summary>
+    public bool AmdGpuLightingApplicable { get; set; }
     public FeaturesSettings Features { get; set; } = new();
 }
 
@@ -286,6 +289,7 @@ public sealed class PreferencesPatch
     public int? StartupDelaySeconds { get; set; }
     public bool? DisableGpuMonitoring { get; set; }
     public bool? ReadRamTemperatures { get; set; }
+    public bool? AmdGpuLighting { get; set; }
     public FeaturesSettingsPatch? Features { get; set; }
 }
 

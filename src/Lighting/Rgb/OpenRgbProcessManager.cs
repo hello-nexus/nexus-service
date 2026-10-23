@@ -200,10 +200,10 @@ public sealed class OpenRgbProcessManager : IDisposable
     }
 
     /// <summary>The detectors held off with Nexus Control on everywhere.</summary>
-    internal static string[] BuildDisabledDetectors(bool macOS, bool linux = false)
+    internal static string[] BuildDisabledDetectors(bool macOS, bool linux = false, bool amdGpuLighting = false)
     {
         var list = NativeDetectorClaims.ResolveDisabled(_ => true, macOS);
-        if (linux)
+        if (linux && !amdGpuLighting)
         {
             list.AddRange(OpenRgbAmdGpuI2cDetectors.Names);
         }
@@ -214,13 +214,17 @@ public sealed class OpenRgbProcessManager : IDisposable
     internal System.Collections.Generic.List<string> ResolveNativeDisabledDetectors()
     {
         var list = NativeDetectorClaims.ResolveDisabled(handler => _gate?.IsChosenOn(handler) == true, OperatingSystem.IsMacOS());
-        if (OperatingSystem.IsLinux())
+        if (HoldAmdGpuDetectorsOff(OperatingSystem.IsLinux(), _store))
         {
-            // Probing a Radeon's I2C buses can hang the amdgpu SMU, so the AMD GPU I2C detectors stay off on Linux. NVIDIA cards are not affected.
+            // Probing a Radeon's I2C buses can hang the amdgpu SMU, so the AMD GPU I2C detectors stay off on Linux unless the user opted in. NVIDIA cards are not affected.
             list.AddRange(OpenRgbAmdGpuI2cDetectors.Names);
         }
         return list;
     }
+
+    /// <summary>True when the AMD GPU I2C detectors stay force-disabled: on Linux only, and only while the AMD graphics card lighting setting is off. A persisted value is ignored off Linux.</summary>
+    internal static bool HoldAmdGpuDetectorsOff(bool linux, Nexus.Service.Persistence.IConfigStore? store)
+        => linux && !(store?.Load().AmdGpuLighting ?? false);
 
     private string _appliedNativeSignature = "";
 
