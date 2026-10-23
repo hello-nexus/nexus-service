@@ -35,6 +35,18 @@ public sealed class HelperRegistry
     public HelperConnection? GetForSession(int sessionId)
         => _bySession.TryGetValue(sessionId, out var c) ? c : null;
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint WTSGetActiveConsoleSessionId();
+
+    /// <summary>Id of the session on the physical console, or -1 when none is attached.</summary>
+    public static int ActiveConsoleSessionId() => (int)WTSGetActiveConsoleSessionId();
+
+    /// <summary>The helper of the session on the physical console; null when that session has none.</summary>
+    public HelperConnection? GetForConsole() => GetForSession(ActiveConsoleSessionId());
+
+    /// <summary>The console session's helper, else whichever helper exists (an RDP user has no console helper).</summary>
+    public HelperConnection? GetForConsoleOrAny() => ConsolePreference.Pick(GetForConsole(), GetAny);
+
     /// <summary>
     /// Returns whichever connection exists. Single-session only: picks the
     /// only active helper, does not address multi-user.

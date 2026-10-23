@@ -188,6 +188,12 @@ internal static class WindowsUserHelper
         using var idleDimPoller = new Helper.IdleDimPoller(outbound);
         // Idle until the service arms it, which it does only while a keyboard has key reactions on.
         using var keyPresses = new Helper.KeyPressWatcher(outbound);
+        // Idle until the service pushes combos; registers specific combos only (RegisterHotKey), nothing else is observed.
+        using var globalHotkeys = new Helper.GlobalHotkeys();
+        globalHotkeys.Fired += (id, combo) => _ = outbound.SendAsync(
+            type: HotkeyCommands.FiredType,
+            payload: new HotkeyFiredPayload { Id = id, Combo = combo },
+            payloadType: AppJsonContext.Default.HotkeyFiredPayload);
         var brightness = new Platform.Displays.WindowsDisplayBrightnessProvider();
         Platform.Windows.TrayIcon.SessionLockChanged += Platform.Displays.DdcGate.OnSessionLockChanged;
         Platform.Displays.DdcGate.Start(() => Platform.Windows.TrayIcon.SessionLockWatchActive);
@@ -231,6 +237,7 @@ internal static class WindowsUserHelper
             new ScreenOffTimeoutChangedPayload(),
             Nexus.Service.Serialization.AppJsonContext.Default.ScreenOffTimeoutChangedPayload);
         new KeyReactiveHandler(keyPresses.SetArmed).Register(handlerRegistry);
+        new HotkeysHandler(globalHotkeys.ApplyAsync, Platform.Windows.TrayIcon.ToggleLocalWindow).Register(handlerRegistry);
         new LifecycleHandler(
             onShutdown: () =>
             {
@@ -348,7 +355,12 @@ internal static class WindowsUserHelper
         var client = new HelperClientLoop(
             handlerRegistry,
             outbound,
-            onDisconnected: () => Platform.Windows.TrayIcon.SetVisible(false),
+            onDisconnected: () =>
+            {
+                Platform.Windows.TrayIcon.SetVisible(false);
+                // With no service there is nothing to act on a press, so give the combos back.
+                globalHotkeys.Clear();
+            },
             onConnected: PushSystemTheme);
         var pipeTask = Task.Run(() => client.RunAsync(s_exit.Token));
 

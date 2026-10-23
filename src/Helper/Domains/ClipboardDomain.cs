@@ -57,7 +57,7 @@ public static class ClipboardCommands
     /// </summary>
     public static async Task<bool> SetTextAndPasteAsync(HelperRegistry registry, string text, CancellationToken ct = default)
     {
-        var conn = registry.GetAny();
+        var conn = registry.GetForConsoleOrAny();
         if (conn is null)
         {
             return false;

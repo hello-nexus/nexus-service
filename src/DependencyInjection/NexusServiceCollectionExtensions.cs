@@ -232,6 +232,13 @@ public static class NexusServiceCollectionExtensions
         // engine and routes see motherboard + NP50 channels through one shape.
 #if WINDOWS
         services.AddSingleton<WindowsFanControlProvider>();
+        // Windows only: Linux keeps its liquidctl path for this family.
+        services.AddSingleton<Nexus.Service.Cooling.CommanderCoreCoolingProvider>(sp => new Nexus.Service.Cooling.CommanderCoreCoolingProvider(
+            new Nexus.Service.Cooling.RgbBridgeCommanderCoreSource(() => sp.GetRequiredService<Nexus.Service.Lighting.Rgb.RgbBridge>()),
+            sp.GetRequiredService<Nexus.Service.Lighting.Rgb.IRgbController>() as Nexus.Service.Lighting.Rgb.INexusCoolingTransport
+                ?? new Nexus.Service.Lighting.Rgb.NoNexusCoolingTransport(),
+            sp.GetRequiredService<IConfigStore>()));
+        services.AddHostedService<Nexus.Service.Cooling.CommanderCoreCoolingWorker>();
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(
             sp.GetRequiredService<WindowsFanControlProvider>(),
             sp.GetRequiredService<Np50CoolingProvider>(),
@@ -267,7 +274,9 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.CommanderCoreCoolingProvider.IsCommanderCoreId, sp.GetRequiredService<Nexus.Service.Cooling.CommanderCoreCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS
         services.AddSingleton<MacFanControlProvider>();
@@ -312,7 +321,10 @@ public static class NexusServiceCollectionExtensions
         // hwmon (motherboard + AMD GPU via amdgpu) + liquidctl USB coolers
         // + NVIDIA GPU fans, layered onto the same composite the routes see.
         services.AddSingleton<LinuxFanControlProvider>();
-        services.AddSingleton<LinuxLiquidctlProvider>();
+        services.AddSingleton(sp => new LinuxLiquidctlProvider(
+            sp.GetRequiredService<IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.Rgb.RgbBridge>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.KrakenHub>()));
         services.AddSingleton<LinuxNvidiaFanProvider>();
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(
             sp.GetRequiredService<LinuxFanControlProvider>(),
@@ -954,6 +966,22 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
         services.AddSingleton<Nexus.Service.Deck.IDeckActionExecutor>(sp =>
             sp.GetRequiredService<Nexus.Service.Deck.DeckActionExecutor>());
+        // Global hotkeys: OS-level registration only (Carbon on macOS, the user
+        // helper's RegisterHotKey on Windows); Linux reports unsupported.
+#if MACOS
+        // No AppKit run loop drains the main queue in a test host, so the Carbon registrar would only time out there.
+        if (Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1")
+            services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Hotkeys.UnsupportedHotkeyRegistrar>();
+        else
+            services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Platform.Mac.MacHotkeyRegistrar>();
+#elif WINDOWS
+        services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar>(sp =>
+            new Nexus.Service.Platform.Windows.HelperHotkeyRegistrar(sp.GetRequiredService<Nexus.Service.Helper.HelperRegistry>()));
+#else
+        services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Hotkeys.UnsupportedHotkeyRegistrar>();
+#endif
+        services.AddSingleton<Nexus.Service.Hotkeys.HotkeyService>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Hotkeys.HotkeyService>());
         services.AddSingleton<Nexus.Service.Deck.IDeckDialValues>(sp => new Nexus.Service.Deck.DeckDialValueService(
             sp.GetRequiredService<Nexus.Service.Activity.IVolumeProvider>(),
             sp.GetRequiredService<Nexus.Service.Activity.IAudioDeviceProvider>(),

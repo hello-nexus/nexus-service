@@ -23,13 +23,15 @@ internal sealed class UniformLocations
     public int AudioBoost = -1;
     public int Spectrum = -1;
     public int Spectrum64 = -1;
+    public int SpectrumL64 = -1;
+    public int SpectrumR64 = -1;
     public int SpecHist = -1;
     public int BassPeak = -1;
     public int MidPeak = -1;
     public int HighPeak = -1;
 
     public void Reset() =>
-        Resolution =  Time =  Speed =  Intensity =  Hue =  Colorize =  Saturation =  Contrast =  AudioLevel =  AudioBass =  AudioMid =  AudioHigh =  AudioBeat =  AudioBoost =  Spectrum =  Spectrum64 =  SpecHist =  BassPeak =  MidPeak =  HighPeak = -1;
+        Resolution =  Time =  Speed =  Intensity =  Hue =  Colorize =  Saturation =  Contrast =  AudioLevel =  AudioBass =  AudioMid =  AudioHigh =  AudioBeat =  AudioBoost =  Spectrum =  Spectrum64 =  SpectrumL64 =  SpectrumR64 =  SpecHist =  BassPeak =  MidPeak =  HighPeak = -1;
 
     public void Lookup(GL gl, uint prog)
     {
@@ -56,6 +58,16 @@ internal sealed class UniformLocations
         if (Spectrum64 < 0)
         {
             Spectrum64 = gl.GetUniformLocation(prog, "u_spectrum64");
+        }
+        SpectrumL64 = gl.GetUniformLocation(prog, "u_spectrumL64[0]");
+        if (SpectrumL64 < 0)
+        {
+            SpectrumL64 = gl.GetUniformLocation(prog, "u_spectrumL64");
+        }
+        SpectrumR64 = gl.GetUniformLocation(prog, "u_spectrumR64[0]");
+        if (SpectrumR64 < 0)
+        {
+            SpectrumR64 = gl.GetUniformLocation(prog, "u_spectrumR64");
         }
         SpecHist = gl.GetUniformLocation(prog, "u_specHist[0]");
         if (SpecHist < 0)
@@ -149,6 +161,30 @@ public sealed partial class ShaderEffect
                 fixed (float* p = Nexus.Service.Lighting.Engine.AudioState.Spectrum64)
                 {
                     gl.Uniform1(u.Spectrum64, (uint)Nexus.Service.Lighting.Engine.AudioState.Spectrum64Length, p);
+                }
+            }
+        }
+        if (u.SpectrumL64 >= 0 || u.SpectrumR64 >= 0)
+        {
+            if (ExtraParams is not null && ExtraParams.TryGetValue("u_stereo", out var stereo) && stereo >= 0.5f)
+            {
+                Nexus.Service.Lighting.Engine.AudioState.RequestStereo();
+            }
+            unsafe
+            {
+                if (u.SpectrumL64 >= 0)
+                {
+                    fixed (float* p = Nexus.Service.Lighting.Engine.AudioState.SpectrumLeft64)
+                    {
+                        gl.Uniform4(u.SpectrumL64, (uint)Nexus.Service.Lighting.Engine.AudioState.Spectrum64Vec4Count, p);
+                    }
+                }
+                if (u.SpectrumR64 >= 0)
+                {
+                    fixed (float* p = Nexus.Service.Lighting.Engine.AudioState.SpectrumRight64)
+                    {
+                        gl.Uniform4(u.SpectrumR64, (uint)Nexus.Service.Lighting.Engine.AudioState.Spectrum64Vec4Count, p);
+                    }
                 }
             }
         }

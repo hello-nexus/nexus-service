@@ -119,6 +119,21 @@ public class LinuxLiquidctlProviderTests
     }
 
     [Fact]
+    public void NativeKrakenOwnsHidraw_RefusesWritesToThatAddress()
+    {
+        string? owned = null;
+        var writes = 0;
+        var p = new LinuxLiquidctlProvider(() => KrakenJson, (_, _, _) => { writes++; return true; }, nativeHidPath: () => owned);
+        var id = p.GetFanChannels()[0].Id;
+        owned = "/dev/hidraw3";
+        p.DriveFanSpeed(id, 50);
+        Assert.Equal(0, writes);
+        owned = null;
+        p.DriveFanSpeed(id, 50);
+        Assert.Equal(1, writes);
+    }
+
+    [Fact]
     public void SetFanSpeed_SendsAddressChannelDutyToCli()
     {
         var calls = new List<(string addr, string chan, int duty)>();

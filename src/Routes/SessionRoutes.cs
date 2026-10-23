@@ -43,6 +43,18 @@ internal static class SessionRoutes
     /// <summary>The stored route, "" when none; the SPA clears it when Remember last page is turned off.</summary>
     internal static string LastRoute => Volatile.Read(ref _lastRoute).Path;
 
+    /// <summary>Dashboard URL that opens on the stored route, or the SPA restore at "/" when none is usable.</summary>
+    internal static string LastRouteUrl(int servicePort)
+    {
+        var route = LastRoute;
+        // Any localhost caller can POST the route, and a URL NSURL rejects leaves a fresh window blank.
+        var usable = route.StartsWith("/system/", StringComparison.Ordinal)
+            && route.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '-' or '_' or '.' or ':');
+        return usable
+            ? $"http://localhost:{servicePort}{route}"
+            : Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(servicePort);
+    }
+
     public static void MapSessionEndpoints(this WebApplication app)
     {
         app.MapGet("/session/last-route", () =>
