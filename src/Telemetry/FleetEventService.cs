@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Models.Sensors;
 using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 using Nexus.Service.Store;
@@ -238,13 +239,18 @@ internal sealed class FleetEventService
         if (_bootDevices is null && _clock.GetUtcNow() - _startedAt < _usbSettle)
             return;
 
-        var gpu = specs.GraphicsCard.Split(
-                " + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        // Chips, never the maker-prefixed display string, so the fleet gpu key does not move when a board becomes readable.
+        var gpu = (specs.GpuCards.Count > 0
+                ? specs.GpuCards.Select(c => c.Chip)
+                : specs.GraphicsCard.Split(" + ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             .OrderBy(g => g, StringComparer.Ordinal)
             .ToArray();
         var persisted = _store.Load().Telemetry;
+        var gpuReadEmpty = gpu.Length == 0;
         var gpuList = ResolveGpu(gpu, persisted.FleetGpu);
         gpu = gpuList;
+        var gpuCards = ResolveGpuCards(specs.GpuCards, gpuReadEmpty, persisted.FleetGpuCards);
+        PersistGpuCards(gpuCards, persisted);
         var ramBytes = ResolveRam(specs.Memory, OperatingSystem.IsWindows(), persisted.FleetRamBytes);
         if (ramBytes == 0)
             return; // no RAM figure of any kind yet; never send or hash 0.
@@ -276,7 +282,8 @@ internal sealed class FleetEventService
         var inventory = _inventory;
         // After a Bad Request the specs go without the inventory keys, and the hash must not claim they were delivered.
         var hashedInventory = _inventoryRejected ? HardwareInventory.Empty : inventory;
-        var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, hashedInventory);
+        var hashedGpuCards = _inventoryRejected ? null : gpuCards;
+        var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, hashedInventory, hashedGpuCards);
         if (hash == _store.Load().Telemetry.FleetSpecsHash)
             return; // unchanged since the last successful send.
 
@@ -292,14 +299,18 @@ internal sealed class FleetEventService
             IbuypowerSystem = ibuypowerSystem,
         };
         if (!_inventoryRejected)
+        {
             AttachInventory(payload.Specs, inventory);
+            payload.Specs.GpuCards = gpuCards.Count > 0 ? gpuCards.ToList() : null;
+        }
 
         var result = await _transport.PostAsync(payload, ct).ConfigureAwait(false);
-        if (result == FleetSendResult.Rejected && !_inventoryRejected && inventory.PopulatedModules + inventory.Drives.Count > 0)
+        if (result == FleetSendResult.Rejected && !_inventoryRejected && inventory.PopulatedModules + inventory.Drives.Count + gpuCards.Count > 0)
         {
             // An older nexus-api refuses the unknown keys with Bad Request; resend once without them so cpu, gpu and devices still update.
             _inventoryRejected = true;
             AttachInventory(payload.Specs, HardwareInventory.Empty);
+            payload.Specs.GpuCards = null;
             hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, HardwareInventory.Empty);
             result = await _transport.PostAsync(payload, ct).ConfigureAwait(false);
         }
@@ -310,6 +321,31 @@ internal sealed class FleetEventService
         _telemetry.Capture(TelemetryEvents.Specs,
             ("cpu", specs.Processor), ("gpu", gpu), ("ram_bytes", ramBytes), ("motherboard", specs.Motherboard));
     }
+
+    /// <summary>Discrete cards with a readable subsystem vendor, sorted and capped; a read with no GPUs at all reuses the remembered list, a read with GPUs but no boards sends none.</summary>
+    internal static IReadOnlyList<FleetEventGpuCard> ResolveGpuCards(IReadOnlyList<GpuCard> read, bool gpuReadEmpty, IReadOnlyList<FleetEventGpuCard> persisted)
+    {
+        if (gpuReadEmpty)
+            return persisted;
+        return read
+            .Where(c => GpuBoardPartners.IsPlausibleVendorId(c.SubsystemVendorId))
+            .OrderBy(c => c.Chip, StringComparer.Ordinal)
+            .ThenBy(c => c.SubsystemVendorId)
+            .ThenBy(c => c.SubsystemDeviceId)
+            .Take(FleetEventGpuCard.MaxCards)
+            .Select(FleetEventGpuCard.From)
+            .ToList();
+    }
+
+    private void PersistGpuCards(IReadOnlyList<FleetEventGpuCard> cards, TelemetrySettings persisted)
+    {
+        if (cards.Count == 0 || GpuCardSignature(cards) == GpuCardSignature(persisted.FleetGpuCards))
+            return;
+        _store.Update(s => s.Telemetry.FleetGpuCards = cards.ToList());
+    }
+
+    private static string GpuCardSignature(IEnumerable<FleetEventGpuCard> cards) =>
+        string.Join(';', cards.Select(c => string.Join('|', c.Chip, c.Maker, c.SubsystemVendorId, c.SubsystemDeviceId)));
 
     private static void AttachInventory(FleetEventSpecs specs, HardwareInventory inventory)
     {
@@ -402,7 +438,7 @@ internal sealed class FleetEventService
     // Unit-separator delimiter stops a field containing it from colliding two summaries into one hash.
     internal static string ComputeSpecsHash(string cpu, IReadOnlyList<string> gpu, long ramBytes, string motherboard,
         IReadOnlyList<FleetEventDevice>? devices = null, bool y70Seen = false, bool ibuypowerSystem = false,
-        HardwareInventory? inventory = null)
+        HardwareInventory? inventory = null, IReadOnlyList<FleetEventGpuCard>? gpuCards = null)
     {
         var deviceIds = devices is null
             ? ""
@@ -418,6 +454,9 @@ internal sealed class FleetEventService
                 .OrderBy(x => x, StringComparer.Ordinal);
             input = string.Join((char)0x1F, input, "ram:" + inventory.PopulatedModules + string.Join(';', ram), "drv:" + string.Join(';', drives));
         }
+        // Same rule as the inventory: absent changes nothing, so an install without readable boards keeps its delivered hash.
+        if (gpuCards is { Count: > 0 })
+            input = string.Join((char)0x1F, input, "gpc:" + GpuCardSignature(gpuCards));
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes);
     }

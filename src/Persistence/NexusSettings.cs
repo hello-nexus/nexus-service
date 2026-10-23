@@ -321,6 +321,9 @@ public sealed class TelemetrySettings
     /// <summary>Last non-empty GPU list (sorted, " + " joined); bridges reads where GPU enumeration came back empty.</summary>
     public string FleetGpu { get; set; } = "";
 
+    /// <summary>Last non-empty GPU board list sent in fleet specs; reused with <see cref="FleetGpu"/> when a read comes back without GPUs.</summary>
+    public List<Nexus.Service.Telemetry.FleetEventGpuCard> FleetGpuCards { get; set; } = new();
+
     /// <summary>Last non-empty RAM module list sent in fleet specs; bridges a boot where the platform read came back empty so the stored inventory is not overwritten with nothing.</summary>
     public List<Nexus.Service.Telemetry.FleetEventRamModule> FleetRamModules { get; set; } = new();
 

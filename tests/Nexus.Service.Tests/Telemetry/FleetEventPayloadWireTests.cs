@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using Nexus.Service.Serialization;
 using Nexus.Service.Telemetry;
@@ -124,6 +125,43 @@ public class FleetEventPayloadWireTests
         Assert.False(drive.TryGetProperty("vendor", out _));
         Assert.False(drive.TryGetProperty("serial", out _));
         Assert.False(module.TryGetProperty("serial", out _));
+    }
+
+    [Fact]
+    public void Specs_event_serializes_gpu_cards_with_hex_subsystem_ids_and_no_serial()
+    {
+        var payload = new FleetEventPayload
+        {
+            Type = TelemetryEvents.Specs,
+            Specs = new FleetEventSpecs
+            {
+                Gpu = new[] { "NVIDIA GeForce RTX 3090" },
+                GpuCards = new() { FleetEventGpuCard.From(new Nexus.Service.Models.Sensors.GpuCard("NVIDIA GeForce RTX 3090", "MSI", 0x1462, 0x3881)) },
+            },
+        };
+
+        var specs = JsonDocument.Parse(JsonSerializer.Serialize(payload, AppJsonContext.Default.FleetEventPayload))
+            .RootElement.GetProperty("specs");
+
+        Assert.Equal("NVIDIA GeForce RTX 3090", specs.GetProperty("gpu")[0].GetString());
+        var card = specs.GetProperty("gpuCards")[0];
+        Assert.Equal("NVIDIA GeForce RTX 3090", card.GetProperty("chip").GetString());
+        Assert.Equal("MSI", card.GetProperty("maker").GetString());
+        Assert.Equal("1462", card.GetProperty("subsystemVendorId").GetString());
+        Assert.Equal("3881", card.GetProperty("subsystemDeviceId").GetString());
+        Assert.Equal(4, card.EnumerateObject().Count());
+    }
+
+    [Fact]
+    public void Specs_without_boards_omit_gpu_cards_and_an_unnamed_vendor_omits_the_maker()
+    {
+        var bare = new FleetEventPayload { Type = TelemetryEvents.Specs, Specs = new FleetEventSpecs { RamBytes = 1 } };
+        Assert.False(JsonDocument.Parse(JsonSerializer.Serialize(bare, AppJsonContext.Default.FleetEventPayload))
+            .RootElement.GetProperty("specs").TryGetProperty("gpuCards", out _));
+
+        var unnamed = FleetEventGpuCard.From(new Nexus.Service.Models.Sensors.GpuCard("GPU", null, 0x1234, 0x5678));
+        var json = JsonSerializer.Serialize(new FleetEventPayload { Specs = new FleetEventSpecs { GpuCards = new() { unnamed } } }, AppJsonContext.Default.FleetEventPayload);
+        Assert.False(JsonDocument.Parse(json).RootElement.GetProperty("specs").GetProperty("gpuCards")[0].TryGetProperty("maker", out _));
     }
 
     [Fact]

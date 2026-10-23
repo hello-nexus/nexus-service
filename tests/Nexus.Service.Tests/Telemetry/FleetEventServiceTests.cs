@@ -44,7 +44,7 @@ public class FleetEventServiceTests
         {
             Sent.Add(payload);
             var s = payload.Specs;
-            var had = s is { RamModules: not null } or { StorageDrives: not null } or { RamModuleCount: not null };
+            var had = s is { RamModules: not null } or { StorageDrives: not null } or { RamModuleCount: not null } or { GpuCards: not null };
             if (payload.Type == TelemetryEvents.Specs)
                 SpecsHadInventory.Add(had);
             return had ? FleetSendResult.Rejected : FleetSendResult.Delivered;
@@ -68,6 +68,7 @@ public class FleetEventServiceTests
     {
         public string Cpu { get; init; } = "";
         public IReadOnlyList<string> GpuModels { get; init; } = Array.Empty<string>();
+        public IReadOnlyList<GpuBoard> Boards { get; init; } = Array.Empty<GpuBoard>();
         public string MemoryFormatted { get; init; } = "";
         public string Motherboard { get; init; } = "";
 
@@ -77,6 +78,7 @@ public class FleetEventServiceTests
         public IReadOnlyList<string> GetGpuModels() => GpuModels;
         public IReadOnlyList<HardwareSensor> GetGpuSensors() => Array.Empty<HardwareSensor>();
         public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
+        public IReadOnlyList<GpuBoard> GetGpuBoards() => Boards;
         public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
         public string GetMemoryTotalFormatted() => MemoryFormatted;
         public string GetRamBrandModel() => "";
@@ -621,6 +623,119 @@ public class FleetEventServiceTests
         Assert.Null(specs.RamModuleCount);
         Assert.Null(specs.RamModules);
         Assert.Null(specs.StorageDrives);
+    }
+
+    private static StubSensors BoardSensors(params GpuBoard[] boards) => new()
+    {
+        Cpu = "CPU A",
+        GpuModels = new[] { "AMD Radeon(TM) Graphics", "NVIDIA GeForce RTX 3090" },
+        Boards = boards,
+        MemoryFormatted = "32 GB",
+        Motherboard = "Board A",
+    };
+
+    [Fact]
+    public async Task Specs_event_keeps_the_bare_chip_in_gpu_and_adds_the_board_in_gpu_cards()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var sensors = BoardSensors(new GpuBoard("NVIDIA GeForce RTX 3090", 0x1462, 0x3881));
+
+        await MakeService(store, transport, sensors: sensors).RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(new[] { "AMD Radeon(TM) Graphics", "NVIDIA GeForce RTX 3090" }, specs.Gpu);
+        var card = specs.GpuCards!.Single();
+        Assert.Equal(("NVIDIA GeForce RTX 3090", "MSI", "1462", "3881"), (card.Chip, card.Maker, card.SubsystemVendorId, card.SubsystemDeviceId));
+        Assert.Equal("AMD Radeon(TM) Graphics + MSI NVIDIA GeForce RTX 3090", await new SystemSpecsCollector(sensors).GetAsync(CancellationToken.None) is { } r ? r.GraphicsCard : "");
+    }
+
+    [Fact]
+    public async Task Specs_event_omits_gpu_cards_when_no_board_could_be_read()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+
+        await MakeService(store, transport, sensors: BoardSensors()).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Null(transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.GpuCards);
+    }
+
+    [Fact]
+    public async Task A_400_on_the_gpu_cards_resends_without_them_so_the_rest_still_updates()
+    {
+        var store = OptedInStore();
+        var transport = new OldApiTransport();
+        var direct = new FleetEventService(store, transport, new TelemetryClient(store), Array.Empty<ITelemetrySink>(),
+            new SystemSpecsCollector(BoardSensors(new GpuBoard("NVIDIA GeForce RTX 3090", 0x1462, 0x3881))), new StubUsbEnumerator(),
+            () => false, TimeProvider.System, TimeSpan.Zero, () => HardwareInventory.Empty);
+
+        await direct.RunPendingRetriesAsync(CancellationToken.None);
+
+        var last = transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Null(last.GpuCards);
+        Assert.Equal(2, last.Gpu.Length);
+        Assert.NotEqual("", store.Load().Telemetry.FleetSpecsHash);
+    }
+
+    [Fact]
+    public async Task A_read_with_no_gpus_reuses_the_remembered_boards_but_a_read_with_gpus_and_no_boards_does_not()
+    {
+        var store = OptedInStore();
+        var board = new GpuBoard("NVIDIA GeForce RTX 3090", 0x3842, 0x3973);
+        await MakeService(store, new FakeFleetEventTransport(), sensors: BoardSensors(board)).RunPendingRetriesAsync(CancellationToken.None);
+
+        var noGpus = new FakeFleetEventTransport();
+        var cold = new StubSensors { Cpu = "CPU B", MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        await MakeService(store, noGpus, sensors: cold).RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal("EVGA", noGpus.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.GpuCards!.Single().Maker);
+
+        var swapped = new FakeFleetEventTransport();
+        await MakeService(store, swapped, sensors: BoardSensors()).RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Null(swapped.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.GpuCards);
+    }
+
+    [Fact]
+    public async Task Persisted_gpu_cards_survive_a_settings_round_trip()
+    {
+        var store = OptedInStore();
+        await MakeService(store, new FakeFleetEventTransport(), sensors: BoardSensors(new GpuBoard("NVIDIA GeForce RTX 3090", 0x1462, 0x3881)))
+            .RunPendingRetriesAsync(CancellationToken.None);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(store.Load(), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+
+        var card = back.Telemetry.FleetGpuCards.Single();
+        Assert.Equal(("MSI", "1462", "3881"), (card.Maker, card.SubsystemVendorId, card.SubsystemDeviceId));
+    }
+
+    [Fact]
+    public void Specs_hash_is_unchanged_without_boards_and_changes_with_them_or_their_maker()
+    {
+        var gpu = new[] { "GPU A" };
+        var baseline = FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board");
+        var msi = new[] { new FleetEventGpuCard { Chip = "GPU A", Maker = "MSI", SubsystemVendorId = "1462", SubsystemDeviceId = "3881" } };
+        var evga = new[] { new FleetEventGpuCard { Chip = "GPU A", Maker = "EVGA", SubsystemVendorId = "3842", SubsystemDeviceId = "3973" } };
+
+        Assert.Equal(baseline, FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", gpuCards: Array.Empty<FleetEventGpuCard>()));
+        Assert.NotEqual(baseline, FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", gpuCards: msi));
+        Assert.NotEqual(
+            FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", gpuCards: msi),
+            FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", gpuCards: evga));
+    }
+
+    [Fact]
+    public void Gpu_cards_are_capped_sorted_and_limited_to_boards_with_a_readable_vendor()
+    {
+        var read = Enumerable.Range(0, 12).Select(i => new GpuCard($"GPU {i:00}", "MSI", 0x1462, 0x3881 + i)).ToList();
+        read.Add(new GpuCard("Integrated"));
+        read.Reverse();
+
+        var cards = FleetEventService.ResolveGpuCards(read, false, Array.Empty<FleetEventGpuCard>());
+
+        Assert.Equal(8, cards.Count);
+        Assert.Equal("GPU 00", cards[0].Chip);
+        Assert.DoesNotContain(cards, c => c.Chip == "Integrated");
     }
 
     [Fact]

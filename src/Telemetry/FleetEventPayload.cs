@@ -42,6 +42,34 @@ public sealed class FleetEventSpecs
 
     /// <summary>One entry per physical drive, never volumes or partitions; capped at <see cref="Nexus.Service.Sensors.HardwareInventoryCollector.MaxDrives"/>; null when unavailable.</summary>
     public System.Collections.Generic.List<FleetEventDrive>? StorageDrives { get; set; }
+
+    /// <summary>Board-level identity of each discrete GPU whose PCI subsystem could be read, capped at <see cref="FleetEventGpuCard.MaxCards"/>; <see cref="Gpu"/> keeps the bare chip names. Null when none could be read.</summary>
+    public System.Collections.Generic.List<FleetEventGpuCard>? GpuCards { get; set; }
+}
+
+/// <summary>
+/// One discrete GPU as its board partner built it. Chip equals the matching <see cref="FleetEventSpecs.Gpu"/> entry.
+/// The ids are the PCI subsystem vendor and device as lowercase four-digit hex; Maker is this client's name for the
+/// vendor id and is absent when the id is not in its table. No serial number.
+/// </summary>
+public sealed class FleetEventGpuCard
+{
+    /// <summary>Bounds the specs event; nexus-api cuts a longer list to the same size.</summary>
+    internal const int MaxCards = 8;
+    internal const int MaxChipLength = 128;
+
+    public string Chip { get; set; } = "";
+    public string? Maker { get; set; }
+    public string? SubsystemVendorId { get; set; }
+    public string? SubsystemDeviceId { get; set; }
+
+    internal static FleetEventGpuCard From(Nexus.Service.Models.Sensors.GpuCard card) => new()
+    {
+        Chip = card.Chip.Length > MaxChipLength ? card.Chip[..MaxChipLength] : card.Chip,
+        Maker = card.Maker,
+        SubsystemVendorId = card.SubsystemVendorId.ToString("x4", System.Globalization.CultureInfo.InvariantCulture),
+        SubsystemDeviceId = card.SubsystemDeviceId.ToString("x4", System.Globalization.CultureInfo.InvariantCulture),
+    };
 }
 
 /// <summary>

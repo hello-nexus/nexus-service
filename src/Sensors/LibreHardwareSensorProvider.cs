@@ -122,6 +122,8 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
 
     public IReadOnlyList<HardwareSensor> GetGpuSensors() => GetGpus().SelectMany(g => g.Sensors).ToList();
 
+    public IReadOnlyList<GpuBoard> GetGpuBoards() => GpuBoardPartners.BoardsOf(GetGpus());
+
     public IReadOnlyList<GpuReadout> GetGpus()
     {
         _lhm.Update();

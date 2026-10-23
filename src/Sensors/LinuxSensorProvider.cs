@@ -68,6 +68,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
     private readonly Dictionary<string, (ulong Rx, ulong Tx, DateTime At)> _prevNetStats = new();
 
     private List<string>? _gpuModels;
+    private List<GpuBoard>? _gpuBoards;
     private string _gpuSmiCsv = "";
     private DateTime _gpuSmiFetchedAt;
 
@@ -252,15 +253,17 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
 
         var models = new List<string>();
+        var boards = new List<GpuBoard>();
         try
         {
-            var csv = ShellOut("/usr/bin/nvidia-smi", 2000, "--query-gpu=name", "--format=csv,noheader");
+            var csv = ShellOut("/usr/bin/nvidia-smi", 2000, "--query-gpu=name,pci.bus_id", "--format=csv,noheader");
             foreach (var line in csv.Split('\n'))
             {
-                var name = line.Trim();
+                var (name, busId) = LinuxPciSubsystem.ParseSmiRow(line);
                 if (name.Length > 0)
                 {
                     models.Add(name);
+                    AddBoard(boards, name, busId);
                 }
             }
 
@@ -275,7 +278,9 @@ public sealed class LinuxSensorProvider : ISensorProvider
                         var parts = line.Split('"');
                         if (parts.Length >= 6)
                         {
-                            models.Add($"{parts[3]} {parts[5]}".Trim());
+                            var name = $"{parts[3]} {parts[5]}".Trim();
+                            models.Add(name);
+                            AddBoard(boards, name, parts[0]);
                         }
                     }
                 }
@@ -283,8 +288,29 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
         catch { }
 
+        _gpuBoards = boards;
         _gpuModels = models;
         return _gpuModels;
+    }
+
+    public IReadOnlyList<GpuBoard> GetGpuBoards()
+    {
+        GetGpuModels();
+        return _gpuBoards ?? new List<GpuBoard>();
+    }
+
+    // Integrated adapters carry the motherboard's subsystem, not a card maker's, so only discrete ones are kept.
+    private static void AddBoard(List<GpuBoard> boards, string name, string? busId)
+    {
+        if (GpuClassifier.FromName(name).Integrated)
+        {
+            return;
+        }
+
+        if (LinuxPciSubsystem.Read(LinuxPciSubsystem.DevicesRoot, busId) is { } ids)
+        {
+            boards.Add(new GpuBoard(name, ids.Vendor, ids.Device));
+        }
     }
 
     public IReadOnlyList<HardwareSensor> GetGpuSensors() => GetGpus().SelectMany(g => g.Sensors).ToList();

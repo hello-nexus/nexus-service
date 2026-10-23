@@ -73,6 +73,9 @@ public sealed class GpuReadout
     public bool Integrated { get; set; }
     // Windows adapter LUID ("HighPart:LowPart"); "" off Windows or unmatched.
     public string AdapterLuid { get; set; } = "";
+    // PCI subsystem vendor and device ids of the matched adapter; 0 when unread.
+    public int SubsystemVendorId { get; set; }
+    public int SubsystemDeviceId { get; set; }
     public List<HardwareSensor> Sensors { get; set; } = new();
 }
 
