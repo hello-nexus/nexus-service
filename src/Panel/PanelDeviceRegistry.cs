@@ -66,7 +66,7 @@ public sealed class PanelDeviceRegistry
             {
                 var existing = s.PanelDevices.Values
                     .Where(d => string.IsNullOrEmpty(d.DisplayId)
-                        && string.Equals(d.Capabilities?.Surface, surface, StringComparison.Ordinal)
+                        && string.Equals(PanelSurfaces.Canonical(d.Capabilities?.Surface), PanelSurfaces.Canonical(surface), StringComparison.Ordinal)
                         && (canReuse is null || canReuse(d)))
                     .OrderByDescending(d => d.LastSeenAt)
                     .FirstOrDefault();

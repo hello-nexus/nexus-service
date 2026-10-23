@@ -49,6 +49,31 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Allocate_LcdRound_ReusesARecordStoredUnderTheLegacyKrakenSurface()
+    {
+        var legacy = _registry.Allocate(null, Caps(PanelSurfaces.LegacyKraken));
+        _registry.Patch(legacy.Id, new PanelDevicePatch { AccentColor = "#abc" });
+
+        var folded = _registry.Allocate(null, Caps(PanelSurfaces.LcdRound));
+
+        Assert.Equal(legacy.Id, folded.Id);
+        Assert.Equal("#abc", folded.AccentColor);
+        Assert.Equal(PanelSurfaces.LcdRound, folded.Capabilities!.Surface);
+        Assert.Single(_registry.List());
+    }
+
+    [Theory]
+    [InlineData(PanelSurfaces.LegacyKraken, PanelSurfaces.LcdRound)]
+    [InlineData(PanelSurfaces.LcdRound, PanelSurfaces.LcdRound)]
+    [InlineData(PanelSurfaces.Y70, PanelSurfaces.Y70)]
+    [InlineData(null, null)]
+    public void Canonical_ReadsTheLegacyKrakenSurfaceAsLcdRound(string? stored, string? expected)
+    {
+        Assert.Equal(expected, PanelSurfaces.Canonical(stored));
+        Assert.Equal(expected is not null && PanelSurfaces.IsSingleInstance(expected), PanelSurfaces.IsSingleInstance(stored));
+    }
+
+    [Fact]
     public void Allocate_Phone_DoesNotDedup()
     {
         var first = _registry.Allocate(null, Caps(PanelSurfaces.Phone));

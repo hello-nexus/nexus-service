@@ -18,6 +18,9 @@ public sealed class KrakenPanelDiscovery : IStreamedPanelDiscovery
     /// <summary>Persisted per-serial override key; changing it resets user overrides.</summary>
     private const string ProfileKind = "kraken-round";
 
+    /// <summary>The density the Kraken's grid has always been laid out at; the shared round-glass default differs.</summary>
+    internal const double PanelDpi = 240;
+
     private readonly KrakenHub _hub;
 
     public KrakenPanelDiscovery(KrakenHub hub)
@@ -44,11 +47,12 @@ public sealed class KrakenPanelDiscovery : IStreamedPanelDiscovery
                 {
                     Kind = ProfileKind,
                     DisplayName = $"{_hub.ModelName} LCD",
-                    Surface = PanelSurfaces.Kraken,
+                    Surface = PanelSurfaces.LcdRound,
                     Family = KrakenHub.DeviceId,
                     CssWidth = _hub.LcdWidth,
                     CssHeight = _hub.LcdHeight,
                     Dpr = 1.0,
+                    Dpi = PanelDpi,
                     // The Q565 models' rate is a display limit: a frame swaps buckets, and
                     // driving that harder reads as flicker.
                     Fps = _hub.Model.StreamFps,

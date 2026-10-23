@@ -227,6 +227,32 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void A_kraken_record_stored_under_the_legacy_surface_keeps_its_look_and_is_restamped_lcd_round()
+    {
+        var record = _registry.Allocate("Kraken", new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken", CssWidth = 640, CssHeight = 640 });
+        _registry.Patch(record.Id, new PanelDevicePatch { AccentColor = "#abc" });
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["k-serial"] = new() { PanelDeviceId = record.Id } });
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "k-serial",
+            Profile = new StreamedPanelProfile
+            {
+                Kind = "kraken-round", DisplayName = "Kraken LCD", Surface = PanelSurfaces.LcdRound, Family = "nzxt-kraken",
+                CssWidth = 640, CssHeight = 640, Dpi = 240,
+            },
+        });
+
+        Coordinator().TickOnce();
+
+        var after = _registry.Get(record.Id)!;
+        Assert.Equal(PanelSurfaces.LcdRound, after.Capabilities!.Surface);
+        Assert.Equal(240, after.Capabilities.Dpi);
+        Assert.Equal(640, after.Capabilities.CssWidth);
+        Assert.Equal("#abc", after.AccentColor);
+        Assert.Single(_registry.List());
+    }
+
+    [Fact]
     public void A_new_panel_of_ordinary_shape_keeps_the_client_seed()
     {
         _discovery.Devices.Add(Device());
