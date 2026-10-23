@@ -115,6 +115,10 @@ public static partial class DevicesRoutes
         m.PictureIds = order;
     }
 
+    /// <summary>The id a show of <paramref name="item"/> streams into: <see cref="MystiquePictureSlot"/>, else the item's own screen id, which a stream then records as stored.</summary>
+    internal static string MystiqueShowSlot(DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem item) =>
+        MystiquePictureSlot(m) ?? MystiqueScreenId(item);
+
     /// <summary>The listed picture whose whole copy holds <see cref="MystiquePictureSlot"/>, empty when none does.</summary>
     internal static string MystiqueShownPicture(DeepCoolMystiqueSettings m)
     {
@@ -250,10 +254,10 @@ public static partial class DevicesRoutes
         IConfigStore store, MystiqueWorker worker, DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem item, CancellationToken ct)
     {
         var order = MystiquePictureOrder(m);
-        string slot = order[^1];
+        string slot = MystiqueShowSlot(m, item);
         Nexus.Service.Platform.ServiceLog.Info("[deepcool-mystique] picture ids oldest first: "
             + string.Join(", ", order.Select(id => $"{id}={m.Media.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && MystiqueScreenId(i) == id)?.Id ?? "freed"}"))
-            + $"; recorded {m.PictureIds.Count > 0}, highest {order.Max(StringComparer.Ordinal)}");
+            + $"; recorded {m.PictureIds.Count > 0}, highest {(order.Count > 0 ? order.Max(StringComparer.Ordinal) : "none")}, slot {slot}");
         void Playing() => store.Update(s =>
         {
             var d = s.Devices.DeepCoolMystique;

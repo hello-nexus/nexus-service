@@ -700,6 +700,25 @@ public class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
+    public void With_no_stored_id_a_show_resends_the_picture_under_its_own_id_and_records_it()
+    {
+        const string fresh = "41c9bf307cba45a1aa3a1d92bbe93b96";
+        var m = new DeepCoolMystiqueSettings { PictureIds = new() { Third } };
+        var item = new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First, ScreenId = fresh, Unsent = true };
+        m.Media.Add(item);
+        Assert.Empty(DevicesRoutes.MystiquePictureOrder(m));
+
+        string slot = DevicesRoutes.MystiqueShowSlot(m, item);
+        var plan = DevicesRoutes.MystiquePicturePlan(m, item, slot);
+
+        Assert.Equal(fresh, slot);
+        Assert.Equal(new[] { (First, fresh) }, plan.ConvertAll(p => (p.Item.Id, p.ScreenId)));
+        DevicesRoutes.RecordMystiquePictureStreams(m, plan.ConvertAll(p => (p.Item.Id, p.ScreenId)), 1);
+        Assert.Equal(new[] { fresh }, DevicesRoutes.MystiquePictureOrder(m));
+        Assert.Equal(First, DevicesRoutes.MystiqueShownPicture(m));
+    }
+
+    [Fact]
     public void A_screen_id_given_to_a_picture_counts_as_stored_only_once_a_stream_reaches_it()
     {
         const string fresh = "41c9bf307cba45a1aa3a1d92bbe93b96";
