@@ -337,8 +337,8 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// by the detector that produced it.
     /// </summary>
     /// <param name="nativeDisabledDetectors">Detectors held off for an enabled native driver; null holds every native-claimed detector. A claimed detector outside it and outside the other lists is returned to OpenRGB's default by dropping its entry.</param>
-    /// <param name="linux">Overrides the OS check, for tests.</param>
     /// <param name="busDisabledDetectors">Detectors held off because their shared bus is toggled off (<see cref="SmbusDramDetectors"/>). Tracked in the service-owned <c>Detectors.bus_disabled</c> array with the same drop-to-re-enable rule as user exclusions.</param>
+    /// <param name="linux">Overrides the OS check, for tests.</param>
     internal static void EnsureDetectorOverrides(string configDir, System.Collections.Generic.IReadOnlyCollection<string>? placeholderOnlyDetectors,
         System.Collections.Generic.IReadOnlyCollection<string>? busDisabledDetectors = null,
         System.Collections.Generic.IReadOnlyCollection<string>? nativeDisabledDetectors = null,
@@ -489,7 +489,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                 {
                     held.UnionWith(busDisabledDetectors);
                 }
-                // Linux also releases every GPU I2C name an earlier build wrote as disabled and that is no longer held (the AMD hold lifts with the setting; NVIDIA is no longer held at all). Names the user excluded are in placeholder_only and stay.
+                // On Linux the pass also releases stale GPU I2C names.
                 var releasable = onLinux
                     ? NativeDetectorClaims.Universe().Concat(OpenRgbLegacyGpuI2cDetectors.Names)
                     : NativeDetectorClaims.Universe();

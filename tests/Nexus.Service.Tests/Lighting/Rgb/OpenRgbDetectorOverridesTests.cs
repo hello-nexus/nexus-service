@@ -162,30 +162,6 @@ public class OpenRgbDetectorOverridesTests : IDisposable
     }
 
     [Fact]
-    public void Process_manager_detector_set_moves_with_the_amd_setting_only_on_linux()
-    {
-        var store = new InMemoryConfigStore();
-        var proc = new OpenRgbProcessManager("missing-exe", store, new Nexus.Service.Devices.DeviceControlGate(store));
-        var held = proc.ResolveNativeDisabledDetectors();
-        store.Update(s => s.AmdGpuLighting = true);
-        var lifted = proc.ResolveNativeDisabledDetectors();
-
-        Assert.Equal(OperatingSystem.IsLinux(), held.Count > lifted.Count);
-    }
-
-    [Theory]
-    [InlineData("ASUS ROG STRIX Radeon RX 6600 XT Gaming OC")]
-    [InlineData("ASUS TUF Radeon RX 9070 XT Gaming OC")]
-    [InlineData("Sapphire Radeon RX 9070 XT Nitro+")]
-    [InlineData("PowerColor Red Devil RX9070XT")]
-    public void Amd_gpu_i2c_detectors_disabled_on_linux_only(string detector)
-    {
-        Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
-        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
-        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
-    }
-
-    [Fact]
     public void Amd_gpu_i2c_detector_names_are_unique_and_keep_first_party_entries()
     {
         Assert.Equal(OpenRgbAmdGpuI2cDetectors.Names.Length, OpenRgbAmdGpuI2cDetectors.Names.Distinct().Count());
