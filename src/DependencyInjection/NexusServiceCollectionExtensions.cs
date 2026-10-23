@@ -232,6 +232,13 @@ public static class NexusServiceCollectionExtensions
         // engine and routes see motherboard + NP50 channels through one shape.
 #if WINDOWS
         services.AddSingleton<WindowsFanControlProvider>();
+        // Windows only: Linux keeps its liquidctl path for this family.
+        services.AddSingleton<Nexus.Service.Cooling.CommanderCoreCoolingProvider>(sp => new Nexus.Service.Cooling.CommanderCoreCoolingProvider(
+            new Nexus.Service.Cooling.RgbBridgeCommanderCoreSource(() => sp.GetRequiredService<Nexus.Service.Lighting.Rgb.RgbBridge>()),
+            sp.GetRequiredService<Nexus.Service.Lighting.Rgb.IRgbController>() as Nexus.Service.Lighting.Rgb.INexusCoolingTransport
+                ?? new Nexus.Service.Lighting.Rgb.NoNexusCoolingTransport(),
+            sp.GetRequiredService<IConfigStore>()));
+        services.AddHostedService<Nexus.Service.Cooling.CommanderCoreCoolingWorker>();
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(
             sp.GetRequiredService<WindowsFanControlProvider>(),
             sp.GetRequiredService<Np50CoolingProvider>(),
@@ -267,7 +274,9 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.CommanderCoreCoolingProvider.IsCommanderCoreId, sp.GetRequiredService<Nexus.Service.Cooling.CommanderCoreCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS
         services.AddSingleton<MacFanControlProvider>();
@@ -312,7 +321,9 @@ public static class NexusServiceCollectionExtensions
         // hwmon (motherboard + AMD GPU via amdgpu) + liquidctl USB coolers
         // + NVIDIA GPU fans, layered onto the same composite the routes see.
         services.AddSingleton<LinuxFanControlProvider>();
-        services.AddSingleton<LinuxLiquidctlProvider>();
+        services.AddSingleton(sp => new LinuxLiquidctlProvider(
+            sp.GetRequiredService<IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.Rgb.RgbBridge>()));
         services.AddSingleton<LinuxNvidiaFanProvider>();
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(
             sp.GetRequiredService<LinuxFanControlProvider>(),

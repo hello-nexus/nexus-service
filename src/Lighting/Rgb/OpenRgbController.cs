@@ -26,7 +26,7 @@ namespace Nexus.Service.Lighting.Rgb;
 ///
 /// AOT: pure System.Net.Sockets + ArrayPool, zero reflection.
 /// </summary>
-public sealed class OpenRgbController : IRgbController
+public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
 {
     private const string ClientName = "nexus";
     private const uint ClientFlags = OpenRgbProtocol.ClientFlagSupportsRgbController
@@ -405,6 +405,73 @@ public sealed class OpenRgbController : IRgbController
         finally
         {
             _requestLock.Release();
+        }
+    }
+
+    public async Task<NexusCoolingStatusResult> GetCoolingStatusAsync(int address, CancellationToken ct = default)
+    {
+        var session = Volatile.Read(ref _session);
+        if (session is null || session.Closed || !session.Ready)
+        {
+            return new NexusCoolingStatusResult(NexusCoolingOutcome.Failed, null);
+        }
+        try
+        {
+            await WaitRequestLockAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var (body, status) = await RequestLockedAsync(session, OpenRgbProtocol.PacketId.NexusCoolingGetStatus, (uint)address,
+                    null, OpenRgbProtocol.PacketId.NexusCoolingGetStatus, replyOnly: false, ct).ConfigureAwait(false);
+                if (status == OpenRgbProtocol.StatusUnsupported)
+                {
+                    return new NexusCoolingStatusResult(NexusCoolingOutcome.Unsupported, null);
+                }
+                if (status != OpenRgbProtocol.StatusOk || body is null || !NexusCoolingProtocol.TryParseStatus(body, out var parsed))
+                {
+                    return new NexusCoolingStatusResult(NexusCoolingOutcome.Failed, null);
+                }
+                return new NexusCoolingStatusResult(NexusCoolingOutcome.Ok, parsed);
+            }
+            finally
+            {
+                _requestLock.Release();
+            }
+        }
+        catch (IOException)
+        {
+            return new NexusCoolingStatusResult(NexusCoolingOutcome.Failed, null);
+        }
+    }
+
+    public async Task<NexusCoolingOutcome> SetCoolingDutiesAsync(int address, IReadOnlyList<(int Channel, int Duty)> duties, CancellationToken ct = default)
+    {
+        var session = Volatile.Read(ref _session);
+        if (session is null || session.Closed || !session.Ready)
+        {
+            return NexusCoolingOutcome.Failed;
+        }
+        try
+        {
+            await WaitRequestLockAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var (_, status) = await RequestLockedAsync(session, OpenRgbProtocol.PacketId.NexusCoolingSetDuties, (uint)address,
+                    NexusCoolingProtocol.BuildSetDutiesBody(duties), reply: null, replyOnly: false, ct).ConfigureAwait(false);
+                return status switch
+                {
+                    OpenRgbProtocol.StatusOk => NexusCoolingOutcome.Ok,
+                    OpenRgbProtocol.StatusUnsupported => NexusCoolingOutcome.Unsupported,
+                    _ => NexusCoolingOutcome.Failed,
+                };
+            }
+            finally
+            {
+                _requestLock.Release();
+            }
+        }
+        catch (IOException)
+        {
+            return NexusCoolingOutcome.Failed;
         }
     }
 

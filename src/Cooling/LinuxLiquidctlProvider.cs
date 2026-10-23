@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Lighting.Rgb;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -30,7 +31,11 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
 {
     public const string IdPrefix = "liquidctl:";
 
-    private readonly Func<string> _statusJson;
+    private readonly Func<string> _listJson;
+    private readonly Func<string> _statusAllJson;
+    private readonly Func<LiquidctlListEntry, string> _statusOneJson;
+    private readonly Func<bool> _bridgeActive;
+    private readonly Func<long> _nowMs;
     private readonly Func<string, string, int, bool> _setSpeed; // (address, channel, duty) -> applied?
     private readonly bool _forceAvailable;
     private readonly IConfigStore? _config;
@@ -42,16 +47,32 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private readonly HashSet<string> _warned = new();
     private bool? _present;
 
-    // `liquidctl --json status` enumerates USB and costs ~1-2s; one curve tick
-    // reads fans + temps. Cache the parse briefly so a tick spawns it once.
+    // Each status read is a subprocess spawn; one curve tick reads fans + temps.
+    // Cache the parse briefly so a tick spawns it once.
     private const long SnapshotTtlMs = 1500;
+    // Enumeration only; hotplug is rare.
+    private const long ListTtlMs = 10000;
+    private const int MaxParallelReads = 4;
     private List<LiquidDevice>? _snapshot;
     private long _snapshotAtMs = long.MinValue;
+    private LiquidctlOwnership.Policy _snapshotPolicy;
+    // address -> entry as of the latest refresh, so Drive can tell a withheld address without waiting on a refresh.
+    private Dictionary<string, LiquidctlListEntry> _known = new(StringComparer.Ordinal);
 
-    public LinuxLiquidctlProvider(IConfigStore config)
+    // Held across a refresh's subprocesses so _lock stays free for Drive(); guards the fields below.
+    private readonly object _refreshLock = new();
+    private readonly HashSet<string> _skipLogged = new(StringComparer.Ordinal);
+    private List<LiquidctlListEntry>? _list;
+    private long _listAtMs = long.MinValue;
+
+    public LinuxLiquidctlProvider(IConfigStore config, RgbBridge bridge)
     {
         _config = config;
-        _statusJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "status");
+        _listJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "list");
+        _statusAllJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "status");
+        _statusOneJson = e => ShellExecutor.Run("liquidctl", 8000, LiquidctlOwnership.StatusArgs(e));
+        _nowMs = () => Environment.TickCount64;
+        _bridgeActive = () => bridge.IsActive;
         // Verify the write landed (exit 0) instead of assuming it - a rejected
         // `set` (permissions, wrong channel) must not be reported as applied.
         // NOTE: a few liquidctl devices need `liquidctl initialize` once per
@@ -63,9 +84,22 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     }
 
     // Injected command seams for tests (no real liquidctl needed).
-    internal LinuxLiquidctlProvider(Func<string> statusJson, Func<string, string, int, bool> setSpeed, IConfigStore? config = null)
+    // The all-devices statusJson doubles as the list; per-device reads return it filtered by address.
+    internal LinuxLiquidctlProvider(Func<string> statusJson, Func<string, string, int, bool> setSpeed,
+        IConfigStore? config = null, Func<bool>? bridgeActive = null, Func<long>? nowMs = null)
+        : this(statusJson, statusJson, e => statusJson(), setSpeed, config, bridgeActive ?? (() => false), nowMs)
     {
-        _statusJson = statusJson;
+    }
+
+    internal LinuxLiquidctlProvider(Func<string> listJson, Func<string> statusAllJson,
+        Func<LiquidctlListEntry, string> statusOneJson, Func<string, string, int, bool> setSpeed,
+        IConfigStore? config, Func<bool> bridgeActive, Func<long>? nowMs = null)
+    {
+        _listJson = listJson;
+        _statusAllJson = statusAllJson;
+        _statusOneJson = statusOneJson;
+        _bridgeActive = bridgeActive;
+        _nowMs = nowMs ?? (() => Environment.TickCount64);
         _setSpeed = setSpeed;
         _forceAvailable = true;
         _config = config;
@@ -177,6 +211,11 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
             if (!control.TryGetValue(channelId, out target))
                 return dutyPercent;
         }
+        if (IsWithheldAddress(target.Address))
+        {
+            WarnWithheldOnce(target.Address);
+            return dutyPercent;
+        }
         if (_setSpeed(target.Address, target.Channel, dutyPercent))
         {
             // Record an explicit user override so it survives a restart and feeds
@@ -191,6 +230,30 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
             WarnOnce(channelId);
         }
         return dutyPercent;
+    }
+
+    private bool IsWithheldAddress(string address)
+    {
+        var policy = CurrentPolicy();
+        if (!policy.WithholdsAnything)
+            return false;
+        LiquidctlListEntry? entry;
+        lock (_lock)
+        {
+            _known.TryGetValue(address, out entry);
+        }
+        // An address no refresh has described is refused too: a failed list must not open the family.
+        return entry is null || LiquidctlOwnership.IsWithheld(entry, policy);
+    }
+
+    private void WarnWithheldOnce(string address)
+    {
+        lock (_lock)
+        {
+            if (!_warned.Add("withheld:" + address))
+                return;
+        }
+        ServiceLog.Info($"[liquidctl] not writing to {address}: OpenRGB drives Commander Core devices");
     }
 
     private void WarnOnce(string channelId)
@@ -240,15 +303,138 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     {
         if (!Available())
             return new List<LiquidDevice>();
+        lock (_refreshLock)
+        {
+            var now = _nowMs();
+            var policy = CurrentPolicy();
+            lock (_lock)
+            {
+                if (_snapshot is not null && policy == _snapshotPolicy && now - _snapshotAtMs < SnapshotTtlMs)
+                    return _snapshot;
+            }
+            var fresh = ReadEligible(now, policy);
+            var after = CurrentPolicy();
+            if (after != policy)
+            {
+                // The policy changed during the subprocesses: that result may have opened a now-withheld device.
+                policy = after;
+                fresh = ReadEligible(now, policy);
+            }
+            lock (_lock)
+            {
+                _snapshot = fresh;
+                _snapshotAtMs = now;
+                _snapshotPolicy = policy;
+            }
+            return fresh;
+        }
+    }
+
+    // The persisted exclusions can lead the daemon: a brief window exists after the user un-controls the device.
+    private LiquidctlOwnership.Policy CurrentPolicy()
+    {
+        var active = _bridgeActive();
+        if (!active)
+            return new LiquidctlOwnership.Policy(false, false, false);
+        var names = new List<string>();
+        _config?.Read(s =>
+        {
+            foreach (var ex in s.Devices.OpenRgbDetectorExclusions.Values)
+                names.Add(ex.DetectorName);
+        });
+        return LiquidctlOwnership.BuildPolicy(true, names);
+    }
+
+    // Caller holds _refreshLock. Withholding always reads per device: the all-devices read prints nothing if any one device errors.
+    private List<LiquidDevice> ReadEligible(long now, LiquidctlOwnership.Policy policy)
+    {
+        if (!policy.WithholdsAnything)
+        {
+            _skipLogged.Clear();
+            ClearWithheldWarnings(null);
+            var all = ParseStatus(_statusAllJson());
+            if (all.Count > 0)
+                PublishKnown(all.Select(d => new LiquidctlListEntry(d.Address, null, null, d.Description)));
+            return all;
+        }
+
+        var list = ReadList(now);
+        if (list.Count == 0)
+            return new List<LiquidDevice>();
+        PublishKnown(list);
+
+        var eligible = new List<LiquidctlListEntry>();
+        var skipped = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in list)
+        {
+            if (!LiquidctlOwnership.IsWithheld(entry, policy))
+            {
+                eligible.Add(entry);
+                continue;
+            }
+            skipped.Add(entry.Address);
+            if (_skipLogged.Add(entry.Address))
+                ServiceLog.Info($"[liquidctl] not polling {entry.Address} ({entry.Description}): OpenRGB drives Commander Core devices");
+        }
+        _skipLogged.IntersectWith(skipped);
+        ClearWithheldWarnings(skipped);
+        return ReadPerDevice(eligible);
+    }
+
+    private void ClearWithheldWarnings(HashSet<string>? stillWithheld)
+    {
         lock (_lock)
         {
-            var now = Environment.TickCount64;
-            if (_snapshot is not null && now - _snapshotAtMs < SnapshotTtlMs)
-                return _snapshot;
-            _snapshot = ParseStatus(_statusJson());
-            _snapshotAtMs = now;
-            return _snapshot;
+            _warned.RemoveWhere(k => k.StartsWith("withheld:", StringComparison.Ordinal)
+                && (stillWithheld is null || !stillWithheld.Contains(k.Substring("withheld:".Length))));
         }
+    }
+
+    private void PublishKnown(IEnumerable<LiquidctlListEntry> entries)
+    {
+        var map = new Dictionary<string, LiquidctlListEntry>(StringComparer.Ordinal);
+        foreach (var e in entries)
+            map[e.Address] = e;
+        lock (_lock) _known = map;
+    }
+
+    private List<LiquidDevice> ReadPerDevice(List<LiquidctlListEntry> eligible)
+    {
+        var results = new List<LiquidDevice>[eligible.Count];
+        Parallel.For(0, eligible.Count, new ParallelOptions { MaxDegreeOfParallelism = MaxParallelReads }, i =>
+        {
+            var found = new List<LiquidDevice>();
+            try
+            {
+                foreach (var d in ParseStatus(_statusOneJson(eligible[i])))
+                {
+                    if (string.Equals(d.Address, eligible[i].Address, StringComparison.Ordinal))
+                        found.Add(d);
+                }
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[liquidctl] status read for {eligible[i].Address} failed: {ex.Message}");
+            }
+            results[i] = found;
+        });
+        return results.SelectMany(r => r).ToList();
+    }
+
+    // Enumeration only. A failed or empty read is never cached.
+    private List<LiquidctlListEntry> ReadList(long now)
+    {
+        if (_list is not null && now - _listAtMs < ListTtlMs)
+            return _list;
+        var parsed = LiquidctlOwnership.ParseList(_listJson());
+        if (parsed.Count == 0)
+        {
+            _list = null;
+            return parsed;
+        }
+        _list = parsed;
+        _listAtMs = now;
+        return parsed;
     }
 
     public static bool IsLiquidctlId(string id)
