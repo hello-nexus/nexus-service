@@ -44,13 +44,17 @@ internal sealed unsafe class AdlxGpuFans
 
         var dir = NexusDataPaths.NexusRoot();
         var key = InitGuardKey(path);
-        if (AdlxInitGuard.Latched(dir, key))
+        // Under Sync so rediscovery cannot read a live scope's mark; the latch is read once per process.
+        lock (Sync)
         {
-            ServiceLog.Warn($"[amd-fan] ADLX off until a reboot or driver update: a previous run died inside an ADLX call ({key})");
-            return null;
+            if (AdlxInitGuard.LatchedOnce(dir, key))
+            {
+                ServiceLog.Warn($"[amd-fan] ADLX off until a reboot or driver update: a previous run died inside an ADLX call ({key})");
+                return null;
+            }
+            AdlxInitGuard.Configure(dir, key);
+            using (AdlxInitGuard.Scope()) return Create(path, blockChanged);
         }
-        AdlxInitGuard.Configure(dir, key);
-        using (AdlxInitGuard.Scope()) return Create(path, blockChanged);
     }
 
     // A driver update or a reboot can clear a broken ADLX, so either one re-arms it.
