@@ -37,15 +37,25 @@ internal static class AdlxInitGuard
         Disarm(dir);
     }
 
+    private static string? _dirReady;
+
     public static void Arm(string dir, string key)
     {
         if (_stopped) return;
         try
         {
-            Directory.CreateDirectory(dir);
+            // Armed per ADLX call, so the directory is created once, not on every write.
+            if (_dirReady != dir)
+            {
+                Directory.CreateDirectory(dir);
+                _dirReady = dir;
+            }
             File.WriteAllText(Path.Combine(dir, MarkFile), key);
         }
-        catch (Exception) { }
+        catch (Exception)
+        {
+            _dirReady = null;
+        }
     }
 
     public static void Disarm(string dir)
@@ -58,6 +68,15 @@ internal static class AdlxInitGuard
     private static string? _scopeKey;
     private static int _scopeDepth;
 
+    private static bool? _latchedOnce;
+
+    /// <summary>
+    /// <see cref="Latched"/> once per process. A later call would find the live mark of a running scope and
+    /// turn it into a latch, so rediscovery reuses the first answer.
+    /// </summary>
+    public static bool LatchedOnce(string dir, string key) => _latchedOnce ??= Latched(dir, key);
+
+    /// <summary>Callers hold <c>AdlxGpuFans.Sync</c>, like every <see cref="Scope"/>.</summary>
     public static void Configure(string dir, string key)
     {
         _scopeDir = dir;
@@ -66,8 +85,8 @@ internal static class AdlxInitGuard
 
     /// <summary>
     /// Marks every ADLX call after init the way init is marked: a C++ exception escaping amdadlx64.dll aborts
-    /// the process, so the next start finds the mark and keeps ADLX off. Callers hold <c>AdlxGpuFans.Sync</c>;
-    /// nested scopes keep the outer mark until the outermost one ends.
+    /// the process, so the next start finds the mark and keeps ADLX off. Every caller holds <c>AdlxGpuFans.Sync</c>, which
+    /// guards the depth counter and the configuration; nested scopes keep the outer mark until the outermost one ends.
     /// </summary>
     public static MarkScope Scope() => new();
 
@@ -86,6 +105,13 @@ internal static class AdlxInitGuard
         }
     }
 
-    /// <summary>Test seam: a simulated death leaves the depth raised, which a real death resets with the process.</summary>
-    internal static void ResetScopes() => _scopeDepth = 0;
+    /// <summary>Test seam: a simulated death leaves static state behind, which a real death resets with the process.</summary>
+    internal static void ResetScopes()
+    {
+        _scopeDepth = 0;
+        _scopeDir = null;
+        _scopeKey = null;
+        _latchedOnce = null;
+        _dirReady = null;
+    }
 }

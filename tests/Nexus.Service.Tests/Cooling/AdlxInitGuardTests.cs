@@ -11,6 +11,7 @@ public sealed class AdlxInitGuardTests : IDisposable
 
     public void Dispose()
     {
+        AdlxInitGuard.ResetScopes();
         try { Directory.Delete(_dir, recursive: true); } catch { }
     }
 
@@ -80,5 +81,20 @@ public sealed class AdlxInitGuardTests : IDisposable
             Assert.True(File.Exists(Path.Combine(_dir, "adlx-init-crashguard")));
         }
         Assert.False(File.Exists(Path.Combine(_dir, "adlx-init-crashguard")));
+    }
+
+    [Fact]
+    public void Rediscovery_during_a_live_scope_does_not_turn_its_mark_into_a_latch()
+    {
+        Assert.False(AdlxInitGuard.LatchedOnce(_dir, "1.4.0.121@9"));
+        AdlxInitGuard.Configure(_dir, "1.4.0.121@9");
+
+        using (AdlxInitGuard.Scope())
+        {
+            Assert.False(AdlxInitGuard.LatchedOnce(_dir, "1.4.0.121@9"));
+            Assert.True(File.Exists(Path.Combine(_dir, "adlx-init-crashguard")));
+        }
+
+        Assert.False(File.Exists(Path.Combine(_dir, "adlx-init-latched")));
     }
 }
