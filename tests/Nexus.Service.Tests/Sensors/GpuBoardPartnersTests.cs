@@ -205,10 +205,12 @@ public sealed class LinuxPciSubsystemTests : IDisposable
 
     public void Dispose() => Directory.Delete(_root, true);
 
-    private void Device(string busId, string vendor, string device, string? chipVendor = null, long? vram = null)
+    private void Device(string busId, string vendor, string device, string? chipVendor = null, long? vram = null, string? deviceId = null)
     {
         var dir = Path.Combine(_root, busId);
         Directory.CreateDirectory(dir);
+        if (deviceId is not null)
+            File.WriteAllText(Path.Combine(dir, "device"), deviceId + "\n");
         if (chipVendor is not null)
             File.WriteAllText(Path.Combine(dir, "vendor"), chipVendor + "\n");
         if (vram is not null)
@@ -258,45 +260,118 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.Equal((name, busId), LinuxPciSubsystem.ParseSmiRow(row));
     }
 
-    // lspci -mm lines in the format the provider parses; the sysfs ids are the pci.ids entries for each device and a board with the Gigabyte subsystem.
+    private void Board(string vendor) => Device("0000:00:00.0", vendor, "0x0000");
+
+    // lspci -mm lines in the format the provider parses; device ids are pci.ids entries.
     private const string LspciMm =
         "6e:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Raphael\" -rc1 \"Gigabyte Technology Co., Ltd.\" \"Device d000\"\n" +
-        "65:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Phoenix1\" -rc1 \"Gigabyte Technology Co., Ltd.\" \"Device d000\"\n" +
-        "05:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]\" -rc8 \"ASUSTeK Computer Inc.\" \"Device 16c2\"\n" +
         "03:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Navi 31 [Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M]\" -rc8 \"Sapphire Technology Limited\" \"Device 471e\"\n" +
         "00:1f.3 \"Audio device\" \"Intel Corporation\" \"Cannon Lake PCH cAVS\"\n";
 
-    [Fact]
-    public void An_amd_igpu_without_graphics_in_its_name_is_not_discrete_and_a_discrete_radeon_is()
-    {
-        Device("0000:6e:00.0", "0x1458", "0xd000", chipVendor: "0x1002", vram: 536870912);
-        Device("0000:65:00.0", "0x1458", "0xd000", chipVendor: "0x1002", vram: 536870912);
-        Device("0000:05:00.0", "0x1043", "0x16c2", chipVendor: "0x1002", vram: 536870912);
-        Device("0000:03:00.0", "0x1da2", "0x471e", chipVendor: "0x1002", vram: 25753026560);
+    private bool Discrete(string busId, string name = "GPU") => LinuxPciSubsystem.IsDiscrete(_root, busId, name);
 
+    [Fact]
+    public void Parses_the_vga_and_3d_controllers_from_lspci()
+    {
         var gpus = LinuxPciSubsystem.ParseLspciGpus(LspciMm);
 
-        Assert.Equal(new[] { "6e:00.0", "65:00.0", "05:00.0", "03:00.0" }, gpus.Select(g => g.Slot));
-        Assert.Equal(new[] { false, false, false, true }, gpus.Select(g => LinuxPciSubsystem.IsDiscrete(_root, g.Slot, g.Name)));
+        Assert.Equal(new[] { "6e:00.0", "03:00.0" }, gpus.Select(g => g.Slot));
         Assert.Contains("Raphael", gpus[0].Name);
+    }
+
+    [Fact]
+    public void A_discrete_radeon_from_a_partner_on_another_vendors_board_gets_a_maker()
+    {
+        Board("0x1043");
+        Device("0000:03:00.0", "0x1da2", "0x471e", chipVendor: "0x1002", vram: 25753026560, deviceId: "0x744c");
+
+        Assert.True(Discrete("03:00.0"));
+    }
+
+    [Fact]
+    public void A_card_from_the_boards_own_vendor_gets_no_maker()
+    {
+        Board("0x1043");
+        Device("0000:03:00.0", "0x1043", "0x0506", chipVendor: "0x1002", vram: 25753026560, deviceId: "0x744c");
+
+        Assert.False(Discrete("03:00.0"));
+    }
+
+    [Theory]
+    [InlineData("0x164e", 8589934592L, "0x1458")] // desktop Raphael with an 8 GiB UMA carve-out on a Gigabyte board
+    [InlineData("0x164e", 8589934592L, "0x1da2")] // same part, even if its subsystem vendor differed from the board's
+    [InlineData("0x15bf", 4294967296L, "0x1043")] // ROG Ally Phoenix1 with a 4 GiB carve-out, board vendor equals subsystem vendor
+    [InlineData("0x15bf", 4294967296L, "0x1458")] // Phoenix1 on a different board vendor: the deny list still holds
+    [InlineData("0x163f", 1073741824L, "0x1002")] // Steam Deck VanGogh with a 1 GiB carve-out
+    [InlineData("0x1638", 536870912L, "0x1043")]  // Cezanne
+    public void An_amd_apu_never_gets_a_maker(string device, long vram, string subsystemVendor)
+    {
+        Board("0x1043");
+        Device("0000:65:00.0", subsystemVendor, "0xd000", chipVendor: "0x1002", vram: vram, deviceId: device);
+
+        Assert.False(Discrete("65:00.0"));
     }
 
     [Fact]
     public void An_amd_function_with_unreadable_memory_is_not_given_a_maker()
     {
-        Device("0000:03:00.0", "0x1da2", "0x471e", chipVendor: "0x1002");
+        Board("0x1043");
+        Device("0000:03:00.0", "0x1da2", "0x471e", chipVendor: "0x1002", deviceId: "0x744c");
 
-        Assert.False(LinuxPciSubsystem.IsDiscrete(_root, "03:00.0", "Navi 31"));
+        Assert.False(Discrete("03:00.0"));
+    }
+
+    [Theory]
+    [InlineData("0000:00:02.0", "0x7d55", "Intel Corporation Meteor Lake-P [Intel Arc Graphics]")]
+    [InlineData("0000:00:02.0", "0x64a0", "Intel Corporation Core Ultra 200V Series Processors Arc Graphics 130V/140V GPU")]
+    [InlineData("0000:00:02.0", "0x56a0", "Intel Corporation DG2 [Arc A770]")]
+    [InlineData("0000:03:00.0", "0x7d55", "Intel Corporation Meteor Lake-P [Intel Arc Graphics]")]
+    public void An_intel_igpu_never_gets_a_maker(string busId, string device, string name)
+    {
+        Board("0x1043");
+        Device(busId, "0x1da2", "0x1234", chipVendor: "0x8086", deviceId: device);
+
+        Assert.False(Discrete(busId[5..], name));
     }
 
     [Fact]
-    public void An_nvidia_function_is_discrete_and_only_an_arc_intel_function_is()
+    public void An_intel_arc_card_off_the_igpu_slot_with_a_dgpu_codename_gets_a_maker()
+    {
+        Board("0x1043");
+        Device("0000:03:00.0", "0x1da2", "0x1234", chipVendor: "0x8086", deviceId: "0xe20b");
+
+        Assert.True(Discrete("03:00.0", "Intel Corporation Battlemage G21 [Arc B580]"));
+        Assert.False(Discrete("03:00.0", "Intel Corporation Some New Part"));
+    }
+
+    [Fact]
+    public void An_nvidia_card_on_another_vendors_board_gets_a_maker()
+    {
+        Board("0x1043");
+        Device("0000:01:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
+
+        Assert.True(Discrete("00000000:01:00.0"));
+    }
+
+    [Fact]
+    public void With_no_readable_chipset_there_is_no_maker()
     {
         Device("0000:01:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
-        Device("0000:00:02.0", "0x1458", "0xd000", chipVendor: "0x8086");
 
-        Assert.True(LinuxPciSubsystem.IsDiscrete(_root, "00000000:01:00.0", "NVIDIA GeForce RTX 3090"));
-        Assert.False(LinuxPciSubsystem.IsDiscrete(_root, "00:02.0", "Intel Corporation Raptor Lake-S GT1 [UHD Graphics 770]"));
-        Assert.True(LinuxPciSubsystem.IsDiscrete(_root, "00:02.0", "Intel Corporation DG2 [Arc A770]"));
+        Assert.False(Discrete("01:00.0"));
+    }
+
+    [Fact]
+    public void The_smbus_controller_stands_in_when_the_host_bridge_is_unreadable()
+    {
+        var dir = Path.Combine(_root, "0000:00:1f.4");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "class"), "0x0c0500\n");
+        File.WriteAllText(Path.Combine(dir, "subsystem_vendor"), "0x1043\n");
+        Device("0000:01:00.0", "0x1043", "0x1234", chipVendor: "0x10de");
+        Device("0000:02:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
+
+        Assert.False(Discrete("01:00.0"));
+        Assert.True(Discrete("02:00.0"));
     }
 }

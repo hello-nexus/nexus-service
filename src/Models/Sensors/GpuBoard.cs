@@ -20,7 +20,8 @@ public sealed record GpuCard(string Chip, string? Maker = null, int SubsystemVen
     // Only a clean "[NVIDIA ]GeForce ..." name qualifies; workstation, datacenter and raw lspci names such as "NVIDIA Corporation AD103 [...]" do not.
     private static string? FoundersEdition(string chip)
     {
-        var model = chip.StartsWith("NVIDIA ", System.StringComparison.OrdinalIgnoreCase) ? chip[7..] : chip;
+        const string vendorPrefix = "NVIDIA ";
+        var model = chip.StartsWith(vendorPrefix, System.StringComparison.OrdinalIgnoreCase) ? chip[vendorPrefix.Length..] : chip;
         return model.StartsWith("GeForce ", System.StringComparison.OrdinalIgnoreCase) ? $"NVIDIA Founders Edition {model}" : null;
     }
 }

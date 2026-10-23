@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 
 namespace Nexus.Service.Sensors;
 
@@ -51,17 +52,34 @@ internal static class LinuxPciSubsystem
         return NormalizeBusId(tail) is null ? (line, null) : (line[..comma].Trim(), tail);
     }
 
-    /// <summary>Dedicated memory at or above this marks a discrete AMD adapter; an APU exposes only a small carve-out.</summary>
+    /// <summary>A floor, not proof of a discrete card: a UMA carve-out can exceed it, so it only narrows the AMD gate.</summary>
     internal const long DiscreteVramMinBytes = 1024L * 1024 * 1024;
 
     private const int NvidiaVendorId = 0x10DE;
     private const int AmdVendorId = 0x1002;
     private const int IntelVendorId = 0x8086;
+    private const string IntegratedIntelFunction = "0000:00:02.0";
+    private const string HostBridge = "0000:00:00.0";
+    private const string SmbusClass = "0x0c05";
 
     /// <summary>
-    /// True only with positive proof the function is a discrete card: NVIDIA parts are always discrete, an AMD function needs
-    /// amdgpu to report dedicated memory at or above the threshold, an Intel function needs an Arc name. Anything unreadable is
-    /// not discrete, so an iGPU is never given its motherboard maker as a card maker.
+    /// AMD device ids that are APUs, from the PCI ID Repository (https://pci-ids.ucw.cz/v2.2/pci.ids) vendor 1002 entries:
+    /// Raphael, Granite Ridge, Phoenix1, Phoenix2, Cezanne, Rembrandt, Renoir, Lucienne, Picasso/Raven 2, Barcelo,
+    /// Mendocino, Strix, Strix Halo, Krackan, VanGogh, Sephiroth. A second gate behind the board-vendor rule.
+    /// </summary>
+    private static readonly HashSet<int> AmdApuDeviceIds = new()
+    {
+        0x164e, 0x13c0, 0x15bf, 0x15c8, 0x1638, 0x1681, 0x1636, 0x164c, 0x15d8, 0x15e7, 0x1506, 0x150e, 0x1586, 0x1114, 0x163f, 0x1435,
+    };
+
+    private static readonly string[] IntelDiscreteCodenames = { "DG1", "DG2", "Alchemist", "Battlemage" };
+
+    /// <summary>
+    /// True only when every gate agrees the function is a discrete card whose subsystem vendor is a board partner and not the
+    /// motherboard maker. The board-vendor rule: the GPU's subsystem vendor must differ from the one on a bus 0 chipset
+    /// function (host bridge, else the SMBus controller); with neither readable there is no maker. Intel needs a dGPU codename
+    /// and is never 00:02.0; AMD must not be a listed APU and needs dedicated memory at the floor; NVIDIA has no integrated
+    /// parts here. Missing beats wrong, so same-vendor card and board, and laptops, report no maker.
     /// </summary>
     internal static bool IsDiscrete(string devicesRoot, string? busId, string name)
     {
@@ -69,13 +87,53 @@ internal static class LinuxPciSubsystem
         if (normalized is null)
             return false;
         var dir = Path.Combine(devicesRoot, normalized);
+        var subsystemVendor = ReadHex(Path.Combine(dir, "subsystem_vendor"));
+        var boardVendor = ReadBoardVendor(devicesRoot);
+        if (subsystemVendor is null || boardVendor is null || subsystemVendor == boardVendor)
+            return false;
         return ReadHex(Path.Combine(dir, "vendor")) switch
         {
             NvidiaVendorId => true,
-            AmdVendorId => ReadLong(Path.Combine(dir, "mem_info_vram_total")) is { } vram && vram >= DiscreteVramMinBytes,
-            IntelVendorId => name.Contains("Arc", StringComparison.OrdinalIgnoreCase),
+            AmdVendorId => ReadHex(Path.Combine(dir, "device")) is { } id && !AmdApuDeviceIds.Contains(id)
+                && ReadLong(Path.Combine(dir, "mem_info_vram_total")) is { } vram && vram >= DiscreteVramMinBytes,
+            IntelVendorId => normalized != IntegratedIntelFunction
+                && IntelDiscreteCodenames.Any(c => name.Contains(c, StringComparison.OrdinalIgnoreCase)),
             _ => false,
         };
+    }
+
+    /// <summary>The motherboard maker's subsystem vendor: the host bridge's, else the first SMBus controller's.</summary>
+    private static int? ReadBoardVendor(string devicesRoot)
+    {
+        if (ReadHex(Path.Combine(devicesRoot, HostBridge, "subsystem_vendor")) is { } host)
+            return host;
+        try
+        {
+            foreach (var dir in Directory.GetDirectories(devicesRoot).OrderBy(d => d, StringComparer.Ordinal))
+            {
+                if (ReadText(Path.Combine(dir, "class"))?.StartsWith(SmbusClass, StringComparison.OrdinalIgnoreCase) == true
+                    && ReadHex(Path.Combine(dir, "subsystem_vendor")) is { } smbus)
+                {
+                    return smbus;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        return null;
+    }
+
+    private static string? ReadText(string path)
+    {
+        try
+        {
+            return File.ReadAllText(path).Trim();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>The VGA and 3D controllers of <c>lspci -mm</c> output as (name, slot).</summary>
