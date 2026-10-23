@@ -127,6 +127,9 @@ internal static partial class WindowsSpecsNative
             .OfType<FleetEventDrive>()
             .ToList();
 
+    /// <summary>SMBIOS chassis type from the raw firmware table; null when unreadable.</summary>
+    public static int? ReadChassisType() => SmbiosParser.ParseChassisType(MemoryInfoProvider.ReadRawTable());
+
     /// <summary>Populated memory modules for fleet telemetry, in slot order.</summary>
     public static List<FleetEventRamModule> ReadRamModules() =>
         SmbiosParser.ParseModules(MemoryInfoProvider.ReadRawTable())

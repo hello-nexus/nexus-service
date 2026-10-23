@@ -67,6 +67,40 @@ public static class SmbiosParser
         return (modules, ComputeXmpLikelyActive(parsed));
     }
 
+    private const byte SystemEnclosureType = 3;
+    private const int OffsetChassisType = 0x05;
+    private const byte ChassisTypeMask = 0x7F;
+
+    /// <summary>The chassis type of the first System Enclosure (Type 3) structure, without its chassis-lock bit; null when absent.</summary>
+    internal static int? ParseChassisType(byte[]? rawFirmwareTableBuffer)
+    {
+        if (rawFirmwareTableBuffer is null || rawFirmwareTableBuffer.Length < 8)
+        {
+            return null;
+        }
+
+        var end = Math.Min(8 + (int)BitConverter.ToUInt32(rawFirmwareTableBuffer, 4), rawFirmwareTableBuffer.Length);
+        var offset = 8;
+        while (offset + 4 <= end)
+        {
+            var type = rawFirmwareTableBuffer[offset];
+            var length = rawFirmwareTableBuffer[offset + 1];
+            if (length < 4 || offset + length > end || type == EndOfTableType)
+            {
+                return null;
+            }
+
+            if (type == SystemEnclosureType)
+            {
+                return ReadByte(rawFirmwareTableBuffer, offset, length, OffsetChassisType) is { } value ? value & ChassisTypeMask : null;
+            }
+
+            offset = SkipStringSet(rawFirmwareTableBuffer, offset + length, end, out _);
+        }
+
+        return null;
+    }
+
     /// <summary>Each populated module with its raw SMBIOS memory-type byte (Win32_PhysicalMemory.SMBIOSMemoryType).</summary>
     internal static IReadOnlyList<(MemoryModuleInfo Info, byte? MemoryType)> ParseModules(byte[]? rawFirmwareTableBuffer)
     {

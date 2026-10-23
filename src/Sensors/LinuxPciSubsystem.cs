@@ -10,6 +10,7 @@ namespace Nexus.Service.Sensors;
 internal static class LinuxPciSubsystem
 {
     internal const string DevicesRoot = "/sys/bus/pci/devices";
+    internal const string DmiRoot = "/sys/class/dmi/id";
 
     /// <summary>
     /// A bus address as sysfs names it: four hex digits of domain, then bus:slot.function. nvidia-smi pads the
@@ -65,8 +66,8 @@ internal static class LinuxPciSubsystem
     /// <summary>
     /// Discrete Radeon device ids, from the PCI ID Repository (https://pci-ids.ucw.cz/v2.2/pci.ids) vendor 1002 entries whose
     /// names are consumer Radeon cards: Navi 10, 14, 21, 22, 23, 24, 31, 32, 33, 44 and 48 RX parts, Polaris Ellesmere, Baffin
-    /// and Lexa RX parts, Vega 10 RX Vega 56/64 and Vega 20 Radeon VII. Mobile-only, workstation, USB, "Radeon Graphics" and
-    /// APU entries are left out on purpose. Anything not listed gets no maker.
+    /// and Lexa RX parts, Vega 10 RX Vega 56/64 and Vega 20 Radeon VII. Some ids are shared with laptop and Pro parts; the
+    /// chassis gate covers laptops. Mobile-only, USB, "Radeon Graphics" and APU entries are left out. Anything not listed gets no maker.
     /// </summary>
     private static readonly HashSet<int> AmdDiscreteDeviceIds = new()
     {
@@ -82,15 +83,15 @@ internal static class LinuxPciSubsystem
 
     /// <summary>
     /// True only when every gate agrees the function is a discrete card whose subsystem vendor is a board partner and not the
-    /// motherboard maker. Board vendor: the SMBus controller's subsystem vendor, else the host bridge's unless that names
-    /// silicon; unreadable means no maker. The GPU's subsystem vendor must differ from it. Intel needs a dGPU codename and is
+    /// motherboard maker. A portable chassis never qualifies. Board vendor: the first SMBus controller whose subsystem vendor is
+    /// not silicon, else the host bridge's unless that names silicon; unreadable means no maker. The GPU's subsystem vendor must differ from it. Intel needs a dGPU codename and is
     /// never 00:02.0; AMD must be on the allow list with dedicated memory at the floor; NVIDIA must not be a laptop part.
     /// Missing beats wrong, so a same-vendor card and board reports no maker.
     /// </summary>
-    internal static bool IsDiscrete(string devicesRoot, string? busId, string name)
+    internal static bool IsDiscrete(string devicesRoot, string? busId, string name, string dmiRoot = DmiRoot)
     {
         var normalized = NormalizeBusId(busId);
-        if (normalized is null)
+        if (normalized is null || PortableChassis.IsPortable(ReadChassisType(dmiRoot)))
             return false;
         var dir = Path.Combine(devicesRoot, normalized);
         var subsystemVendor = ReadHex(Path.Combine(dir, "subsystem_vendor"));
@@ -129,6 +130,10 @@ internal static class LinuxPciSubsystem
 
         return ReadHex(Path.Combine(devicesRoot, HostBridge, "subsystem_vendor")) is { } host && !SiliconVendorIds.Contains(host) ? host : null;
     }
+
+    /// <summary>The SMBIOS chassis type the kernel exposes without root; null when the file is absent or does not parse.</summary>
+    internal static int? ReadChassisType(string dmiRoot) =>
+        int.TryParse(ReadText(Path.Combine(dmiRoot, "chassis_type")), NumberStyles.Integer, CultureInfo.InvariantCulture, out var type) ? type : null;
 
     private static string? ReadText(string path)
     {

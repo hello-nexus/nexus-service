@@ -200,10 +200,22 @@ public class GpuBoardPartnersTests
 public sealed class LinuxPciSubsystemTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "pci-" + Guid.NewGuid().ToString("N"));
+    private readonly string _dmi = Path.Combine(Path.GetTempPath(), "dmi-" + Guid.NewGuid().ToString("N"));
 
     public LinuxPciSubsystemTests() => Directory.CreateDirectory(_root);
 
-    public void Dispose() => Directory.Delete(_root, true);
+    public void Dispose()
+    {
+        Directory.Delete(_root, true);
+        if (Directory.Exists(_dmi))
+            Directory.Delete(_dmi, true);
+    }
+
+    private void Chassis(string type)
+    {
+        Directory.CreateDirectory(_dmi);
+        File.WriteAllText(Path.Combine(_dmi, "chassis_type"), type + "\n");
+    }
 
     private void Device(string busId, string vendor, string device, string? chipVendor = null, long? vram = null, string? deviceId = null)
     {
@@ -283,7 +295,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         "03:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Navi 31 [Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M]\" -rc8 \"Sapphire Technology Limited\" \"Device 471e\"\n" +
         "00:1f.3 \"Audio device\" \"Intel Corporation\" \"Cannon Lake PCH cAVS\"\n";
 
-    private bool Discrete(string busId, string name = "GPU") => LinuxPciSubsystem.IsDiscrete(_root, busId, name);
+    private bool Discrete(string busId, string name = "GPU") => LinuxPciSubsystem.IsDiscrete(_root, busId, name, _dmi);
 
     private void Amd(string busId, string subsystemVendor, string deviceId, long vram) =>
         Device(busId, subsystemVendor, "0x1234", chipVendor: "0x1002", vram: vram, deviceId: deviceId);
@@ -421,5 +433,139 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Device("0000:01:00.0", "0x1043", "0x1234", chipVendor: "0x10de");
 
         Assert.True(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
+    }
+
+    [Theory]
+    [InlineData("8", true)]
+    [InlineData("9", true)]
+    [InlineData("10", true)]
+    [InlineData("14", true)]
+    [InlineData("31", true)]
+    [InlineData("32", true)]
+    [InlineData("3", false)]
+    [InlineData("7", false)]
+    [InlineData("13", false)]
+    [InlineData("35", false)]
+    public void A_portable_chassis_never_gets_a_maker_and_a_desktop_one_still_can(string chassis, bool portable)
+    {
+        Am5Desktop();
+        Chassis(chassis);
+        Device("0000:01:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
+
+        Assert.Equal(!portable, Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
+    }
+
+    [Fact]
+    public void A_laptop_with_a_modular_radeon_and_a_pascal_or_turing_laptop_gpu_named_without_a_laptop_marker_gets_none()
+    {
+        HostBridge("0x1022");
+        Smbus("0x17aa");
+        Chassis("10");
+        Amd("0000:03:00.0", "0x1da2", "0x7480", 8 * Gib);
+        Device("0000:01:00.0", "0x17aa", "0x3a0e", chipVendor: "0x10de");
+        Device("0000:02:00.0", "0x1462", "0x3a0e", chipVendor: "0x10de");
+
+        Assert.False(Discrete("03:00.0", "AMD Radeon RX 7700S"));
+        Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 2060"));
+        Assert.False(Discrete("02:00.0", "NVIDIA GeForce RTX 2060"));
+
+        Chassis("3");
+        Assert.True(Discrete("03:00.0", "AMD Radeon RX 7700S"));
+        Assert.True(Discrete("02:00.0", "NVIDIA GeForce RTX 2060"));
+    }
+
+    [Fact]
+    public void An_unreadable_or_garbled_chassis_type_falls_back_to_the_other_gates()
+    {
+        Am5Desktop();
+        Device("0000:01:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
+        Assert.True(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
+
+        Chassis("unknown");
+        Assert.True(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
+    }
+
+    [Fact]
+    public void A_silicon_smbus_controller_is_skipped_for_a_later_board_vendor_one()
+    {
+        var first = Path.Combine(_root, "0000:00:14.0");
+        Directory.CreateDirectory(first);
+        File.WriteAllText(Path.Combine(first, "class"), "0x0c0500\n");
+        File.WriteAllText(Path.Combine(first, "subsystem_vendor"), "0x1022\n");
+        var second = Path.Combine(_root, "0000:00:14.1");
+        Directory.CreateDirectory(second);
+        File.WriteAllText(Path.Combine(second, "class"), "0x0c0500\n");
+        File.WriteAllText(Path.Combine(second, "subsystem_vendor"), "0x1458\n");
+        Device("0000:01:00.0", "0x1458", "0x1234", chipVendor: "0x10de");
+        Device("0000:02:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
+
+        Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
+        Assert.True(Discrete("02:00.0", "NVIDIA GeForce RTX 3090"));
+    }
+
+    [Fact]
+    public void Only_silicon_smbus_controllers_fall_back_to_a_board_maker_host_bridge()
+    {
+        var dir = Path.Combine(_root, "0000:00:14.0");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "class"), "0x0c0500\n");
+        File.WriteAllText(Path.Combine(dir, "subsystem_vendor"), "0x1022\n");
+        HostBridge("0x1043");
+        Device("0000:01:00.0", "0x1043", "0x1234", chipVendor: "0x10de");
+        Device("0000:02:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
+
+        Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
+        Assert.True(Discrete("02:00.0", "NVIDIA GeForce RTX 3090"));
+    }
+}
+
+public class SmbiosChassisTypeTests
+{
+    // RawSMBIOSData framing (eight header bytes, length at offset 4), a BIOS structure, then a System Enclosure structure.
+    private static byte[] Table(byte chassisByte, bool withEnclosure = true)
+    {
+        var body = new List<byte>();
+        body.AddRange(new byte[] { 0, 0x18, 0, 0, 1, 2, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+        body.AddRange(new byte[] { (byte)'a', 0, (byte)'b', 0, 0 });
+        if (withEnclosure)
+        {
+            body.AddRange(new byte[] { 3, 0x16, 4, 0, 1, chassisByte, 2, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+            body.AddRange(new byte[] { (byte)'m', 0, (byte)'v', 0, (byte)'s', 0, 0 });
+        }
+        body.AddRange(new byte[] { 127, 4, 0, 0, 0, 0 });
+        var table = new byte[8 + body.Count];
+        BitConverter.TryWriteBytes(table.AsSpan(4, 4), (uint)body.Count);
+        body.CopyTo(table, 8);
+        return table;
+    }
+
+    [Theory]
+    [InlineData(10, 10)]
+    [InlineData(0x8A, 10)]
+    [InlineData(3, 3)]
+    public void Reads_the_chassis_type_and_drops_the_lock_bit(int raw, int expected)
+    {
+        Assert.Equal(expected, Nexus.Service.Diagnostics.Memory.SmbiosParser.ParseChassisType(Table((byte)raw)));
+    }
+
+    [Fact]
+    public void A_table_without_an_enclosure_or_a_missing_table_reads_as_nothing()
+    {
+        Assert.Null(Nexus.Service.Diagnostics.Memory.SmbiosParser.ParseChassisType(Table(0, withEnclosure: false)));
+        Assert.Null(Nexus.Service.Diagnostics.Memory.SmbiosParser.ParseChassisType(null));
+    }
+
+    [Theory]
+    [InlineData(8, true)]
+    [InlineData(9, true)]
+    [InlineData(10, true)]
+    [InlineData(14, true)]
+    [InlineData(31, true)]
+    [InlineData(32, true)]
+    [InlineData(3, false)]
+    [InlineData(null, false)]
+    public void Portable_is_the_laptop_family_only(int? type, bool portable)
+    {
+        Assert.Equal(portable, PortableChassis.IsPortable(type));
     }
 }
