@@ -50,6 +50,8 @@ public sealed class CorsairLinkHub : IDisposable
     internal Func<long> NowMs { get; set; } = () => Environment.TickCount64;
     internal int DetectionPollMs { get; set; } = CorsairLinkProtocol.DetectionPollMs;
     private bool _disposed;
+    private bool _devicesLogged;
+    private int _loggedDevicesKey;
     // A re-detection owns the hub: colour, duty and telemetry I/O stand down.
     private bool _redetecting;
     private volatile bool _redetectRequested;
@@ -406,11 +408,23 @@ public sealed class CorsairLinkHub : IDisposable
         return true;
     }
 
-    private string _loggedDevices = "";
-
     // One line per device-list change (connect, hot-plug), never per refresh.
     private void LogDevicesIfChanged(List<CorsairLinkDevice> list)
     {
+        var hash = new HashCode();
+        hash.Add(list.Count);
+        foreach (var d in list)
+        {
+            hash.Add(d.Channel);
+            hash.Add(d.Type);
+            hash.Add(d.Model);
+            hash.Add(d.Name);
+            hash.Add(d.LedCount);
+        }
+        var key = hash.ToHashCode();
+        if (_devicesLogged && key == _loggedDevicesKey) return;
+        _devicesLogged = true;
+        _loggedDevicesKey = key;
         var sb = new System.Text.StringBuilder();
         var totalLeds = 0;
         foreach (var d in list)
@@ -421,8 +435,6 @@ public sealed class CorsairLinkHub : IDisposable
             totalLeds += d.LedCount;
         }
         var line = $"[corsair] hub devices ({list.Count}): {sb}; color bytes per frame={totalLeds * 3}";
-        if (line == _loggedDevices) return;
-        _loggedDevices = line;
         ServiceLog.Info(line);
     }
 

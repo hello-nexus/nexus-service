@@ -205,6 +205,7 @@ public class CorsairLinkHubHandleTests
         var frame = new byte[34 * 3];
         frame[0] = 0xFF;
         frame[1] = 0x0E;
+        frame[^1] = 0x5A;
 
         Assert.True(hub.SendColors(frame));
 
