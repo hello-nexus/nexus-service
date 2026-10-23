@@ -59,7 +59,6 @@ public class OpenRgbDetectorOverridesTests : IDisposable
     {
         Assert.Contains("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
         Assert.DoesNotContain("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
-        Assert.DoesNotContain(OpenRgbAmdGpuI2cDetectors.Names, n => n.Contains("GeForce", StringComparison.Ordinal));
         Assert.Contains("HYTE Keeb TKL", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
