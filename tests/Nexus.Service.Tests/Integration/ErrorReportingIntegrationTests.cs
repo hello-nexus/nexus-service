@@ -63,6 +63,19 @@ public sealed class ErrorReportingIntegrationTests : IClassFixture<NexusAppFacto
     }
 
     [Fact]
+    public async Task Client_errors_accepts_the_app_kind_and_logs_a_wrn_line()
+    {
+        var reporter = _factory.Services.GetRequiredService<ErrorReporter>();
+        var before = reporter.PendingCount;
+        var fp = "fp-" + Guid.NewGuid().ToString("N");
+        var json = "{\"errors\":[{\"kind\":\"app\",\"fingerprint\":\"" + fp + "\",\"type\":\"com.test.app:TypeError\",\"message\":\"probe-" + fp + "\\nWRN forged\",\"app\":\"com.test.app@1.2.3 panel worker-error\",\"count\":1}]}";
+        Assert.Equal(StatusCodes.Status204NoContent, await PostClientErrors(json));
+        Assert.Equal(before + 1, reporter.PendingCount);
+        var logged = Nexus.Service.Platform.ServiceLog.RecentLines();
+        Assert.Contains("[app-error] com.test.app@1.2.3 panel worker-error: probe-" + fp + " WRN forged", logged);
+    }
+
+    [Fact]
     public async Task Client_errors_skips_null_elements_instead_of_failing()
         => Assert.Equal(StatusCodes.Status204NoContent, await PostClientErrors("{\"errors\":[null]}"));
 

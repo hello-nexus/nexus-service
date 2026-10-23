@@ -9,6 +9,7 @@ using Nexus.Service.Models;
 using Nexus.Service.Serialization;
 using Nexus.Service.Auth;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Telemetry;
 
 namespace Nexus.Service.Routes;
@@ -100,8 +101,11 @@ internal static class TelemetryRoutes
             {
                 if (e is null)
                     continue;
-                if (e.Kind is not ("window-error" or "unhandled-rejection" or "render") || string.IsNullOrEmpty(e.Fingerprint))
+                if (e.Kind is not ("window-error" or "unhandled-rejection" or "render" or "app") || string.IsNullOrEmpty(e.Fingerprint))
                     continue;
+                // Local support log line, written whether or not anonymous data is on; only the upload below honours the opt-out.
+                if (e.Kind == "app")
+                    LogAppError(e.App, e.Message);
                 reporter.ReportClient(e.Kind, e.Fingerprint, e.Type ?? "", e.Message ?? "", e.Stack ?? "", e.Context, Math.Clamp(e.Count, 1, ErrorReporter.MaxCount));
             }
             return Results.NoContent();
@@ -110,6 +114,46 @@ internal static class TelemetryRoutes
 
     private static readonly System.Text.RegularExpressions.Regex PageSlug = new(
         "^[a-z0-9][a-z0-9-]{0,39}\\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private const int MaxAppErrorLogsPerMinute = 30;
+    private const int MaxAppErrorTagLength = 160;
+    private const int MaxAppErrorMessageLength = 500;
+    private static readonly object AppErrorLogGate = new();
+    private static long _appErrorWindowStart;
+    private static int _appErrorWindowCount;
+
+    /// <summary>One WRN line per SDK app error, so a support bundle shows which app broke; capped per minute against a chatty client.</summary>
+    internal static bool LogAppError(string? app, string? message, long? nowMs = null)
+    {
+        var now = nowMs ?? Environment.TickCount64;
+        lock (AppErrorLogGate)
+        {
+            if (now - _appErrorWindowStart >= 60_000 || now < _appErrorWindowStart)
+            {
+                _appErrorWindowStart = now;
+                _appErrorWindowCount = 0;
+            }
+            if (_appErrorWindowCount >= MaxAppErrorLogsPerMinute)
+                return false;
+            _appErrorWindowCount++;
+        }
+        ServiceLog.Warn(FormatAppError(app, message));
+        return true;
+    }
+
+    internal static string FormatAppError(string? app, string? message) =>
+        $"[app-error] {LogText(app, MaxAppErrorTagLength)}: {LogText(message, MaxAppErrorMessageLength)}";
+
+    // Untrusted text: cap the length and neutralize control characters so a newline cannot forge a second log line.
+    private static string LogText(string? s, int max)
+    {
+        if (string.IsNullOrEmpty(s)) return "?";
+        if (s.Length > max) s = s[..max];
+        return string.Create(s.Length, s, static (span, src) =>
+        {
+            for (var i = 0; i < src.Length; i++) span[i] = src[i] < ' ' ? ' ' : src[i];
+        });
+    }
 
     private const int MaxClientErrors = 10;
     private const int MaxClientErrorsBytes = 128 * 1024;
