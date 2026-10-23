@@ -20,6 +20,9 @@ internal sealed class FleetEventService
     // Opted-out box: an undelivered opt_out this old is abandoned rather than retried forever.
     private static readonly TimeSpan OptOutRetryExpiry = TimeSpan.FromDays(7);
 
+    // A box whose inventory read keeps failing stops reporting the remembered hardware after this long, rather than for ever.
+    internal static readonly TimeSpan PersistedInventoryMaxAge = TimeSpan.FromDays(30);
+
     private readonly IConfigStore _store;
     private readonly IFleetEventTransport _transport;
     private readonly ITelemetry _telemetry;
@@ -40,7 +43,7 @@ internal sealed class FleetEventService
     // Not persisted: RAM module and drive identity read once per process, so a flaky re-read can never flip the hash.
     private HardwareInventory? _inventory;
 
-    // Not persisted: set when nexus-api answered 400 to the inventory keys; later passes in this process skip them, a restart tries again.
+    // Not persisted: set when nexus-api answered Bad Request to the inventory keys; later passes in this process skip them, a restart tries again.
     private bool _inventoryRejected;
     private readonly DateTimeOffset _startedAt;
     private readonly TimeSpan _usbSettle;
@@ -263,10 +266,15 @@ internal sealed class FleetEventService
         var y70Seen = _store.Load().Telemetry.FleetY70Seen;
         var ibuypowerSystem = _ibuypowerSystem();
         // The platform read happens once per process; an empty one falls back to the last good inventory instead of erasing it server-side.
-        _inventory ??= ResolveInventory(_inventorySource(), persisted);
+        if (_inventory is null)
+        {
+            var read = _inventorySource();
+            var now = _clock.GetUtcNow();
+            _inventory = ResolveInventory(read, persisted, now);
+            PersistInventory(_inventory, persisted, read.RamModules.Count > 0 || read.Drives.Count > 0 ? now : null);
+        }
         var inventory = _inventory;
-        PersistInventory(inventory, persisted);
-        // After a 400 the specs go without the inventory keys, and the hash must not claim they were delivered.
+        // After a Bad Request the specs go without the inventory keys, and the hash must not claim they were delivered.
         var hashedInventory = _inventoryRejected ? HardwareInventory.Empty : inventory;
         var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, hashedInventory);
         if (hash == _store.Load().Telemetry.FleetSpecsHash)
@@ -289,7 +297,7 @@ internal sealed class FleetEventService
         var result = await _transport.PostAsync(payload, ct).ConfigureAwait(false);
         if (result == FleetSendResult.Rejected && !_inventoryRejected && inventory.PopulatedModules + inventory.Drives.Count > 0)
         {
-            // An older nexus-api refuses the unknown keys with a 400; resend once without them so cpu, gpu and devices still update.
+            // An older nexus-api refuses the unknown keys with Bad Request; resend once without them so cpu, gpu and devices still update.
             _inventoryRejected = true;
             AttachInventory(payload.Specs, HardwareInventory.Empty);
             hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, HardwareInventory.Empty);
@@ -310,23 +318,35 @@ internal sealed class FleetEventService
         specs.StorageDrives = inventory.Drives.Count > 0 ? inventory.Drives.ToList() : null;
     }
 
-    /// <summary>A non-empty read wins; an empty list reuses the last persisted one, list by list.</summary>
-    internal static HardwareInventory ResolveInventory(HardwareInventory current, TelemetrySettings persisted)
+    /// <summary>
+    /// A non-empty read wins; an empty list reuses the last persisted one, list by list, until the persisted inventory is older than
+    /// <see cref="PersistedInventoryMaxAge"/> since the last read that returned data.
+    /// </summary>
+    internal static HardwareInventory ResolveInventory(HardwareInventory current, TelemetrySettings persisted, DateTimeOffset now)
     {
-        var ram = current.RamModules.Count > 0 ? current.RamModules : persisted.FleetRamModules;
-        var total = current.RamModules.Count > 0 ? current.PopulatedModules : persisted.FleetRamModuleTotal;
-        var drives = current.Drives.Count > 0 ? current.Drives : persisted.FleetDrives;
+        var usable = DateTimeOffset.TryParse(persisted.FleetInventoryReadAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var readAt)
+            && now - readAt < PersistedInventoryMaxAge;
+        var ram = current.RamModules.Count > 0 ? current.RamModules : usable ? persisted.FleetRamModules : current.RamModules;
+        var total = current.RamModules.Count > 0 ? current.PopulatedModules : usable ? persisted.FleetRamModuleTotal : 0;
+        var drives = current.Drives.Count > 0 ? current.Drives : usable ? persisted.FleetDrives : current.Drives;
         return new HardwareInventory(ram, drives, total);
     }
 
-    private void PersistInventory(HardwareInventory inventory, TelemetrySettings persisted)
+    private void PersistInventory(HardwareInventory inventory, TelemetrySettings persisted, DateTimeOffset? readAt)
     {
-        var ramChanged = inventory.RamModules.Count > 0 && InventorySignature(inventory) != InventorySignature(new HardwareInventory(persisted.FleetRamModules, Array.Empty<FleetEventDrive>(), persisted.FleetRamModuleTotal));
-        var drivesChanged = inventory.Drives.Count > 0 && InventorySignature(new HardwareInventory(Array.Empty<FleetEventRamModule>(), inventory.Drives)) != InventorySignature(new HardwareInventory(Array.Empty<FleetEventRamModule>(), persisted.FleetDrives));
-        if (!ramChanged && !drivesChanged)
+        var none = Array.Empty<FleetEventDrive>();
+        var noModules = Array.Empty<FleetEventRamModule>();
+        var ramChanged = inventory.RamModules.Count > 0
+            && InventorySignature(new HardwareInventory(inventory.RamModules, none, inventory.PopulatedModules))
+                != InventorySignature(new HardwareInventory(persisted.FleetRamModules, none, persisted.FleetRamModuleTotal));
+        var drivesChanged = inventory.Drives.Count > 0
+            && InventorySignature(new HardwareInventory(noModules, inventory.Drives)) != InventorySignature(new HardwareInventory(noModules, persisted.FleetDrives));
+        if (!ramChanged && !drivesChanged && readAt is null)
             return;
         _store.Update(s =>
         {
+            if (readAt is not null)
+                s.Telemetry.FleetInventoryReadAt = readAt.Value.ToString("O", CultureInfo.InvariantCulture);
             if (ramChanged)
             {
                 s.Telemetry.FleetRamModules = inventory.RamModules.ToList();

@@ -4,14 +4,14 @@ using System.Globalization;
 namespace Nexus.Service.Sensors;
 
 /// <summary>
-/// Names memory vendors from JEDEC JEP106 ids. The SMBIOS Module Manufacturer ID (Type 17, offset 2Ch) and the hex strings boards put in the
+/// Names memory vendors from JEDEC JEP106 ids. The SMBIOS Type 17 Module Manufacturer ID field and the hex strings boards put in the
 /// manufacturer field carry the continuation-code count first (low 7 bits, odd parity in bit 7) and the id code second (bit 7 is odd parity);
 /// dmidecode prints that as "Bank (count+1), Hex code". Names come from <see cref="JedecVendorTable"/>. An id outside the table or with a
 /// bad parity stays unnamed rather than guessed, and the caller keeps the raw id.
 /// </summary>
 internal static class JedecManufacturers
 {
-    /// <summary>True when <paramref name="text"/> is a four-digit hex id, with or without a 0x prefix.</summary>
+    /// <summary>True when <paramref name="text"/> is a hex id, with or without a 0x prefix.</summary>
     public static bool LooksLikeId(string text) => TryParseBytes(text, out _, out _);
 
     /// <summary>The vendor name for a hex id string (count byte then code byte), or null when unlisted or malformed.</summary>

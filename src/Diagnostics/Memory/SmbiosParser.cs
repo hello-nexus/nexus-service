@@ -14,7 +14,7 @@ public sealed record MemoryModuleInfo(
     string? Manufacturer,
     string? PartNumber)
 {
-    /// <summary>SMBIOS 3.2+ Module Manufacturer ID (Type 17 offset 2Ch, per dmidecode) as the JEDEC continuation-count byte then id byte in hex; null when the table predates the field or leaves it zero.</summary>
+    /// <summary>SMBIOS Module Manufacturer ID (the Type 17 field dmidecode prints under that name) as the JEDEC continuation-count byte then id byte in hex; null when the table predates the field or leaves it zero.</summary>
     public string? ModuleManufacturerId { get; init; }
 }
 

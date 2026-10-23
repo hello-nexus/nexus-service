@@ -504,6 +504,43 @@ public class FleetEventServiceTests
         Assert.Equal("Samsung SSD 990 PRO 2TB", specs.StorageDrives!.Single().Model);
     }
 
+    [Theory]
+    [InlineData(29, true)]
+    [InlineData(31, false)]
+    public async Task The_remembered_inventory_stops_being_reused_after_the_expiry(int daysSinceLastGoodRead, bool expectReused)
+    {
+        var store = OptedInStore();
+        var clock = new ManualClock();
+        var stamp = clock.GetUtcNow() - TimeSpan.FromDays(daysSinceLastGoodRead);
+        store.Update(s =>
+        {
+            s.Telemetry.FleetRamModules = SampleInventory().RamModules.ToList();
+            s.Telemetry.FleetRamModuleTotal = 2;
+            s.Telemetry.FleetDrives = SampleInventory().Drives.ToList();
+            s.Telemetry.FleetInventoryReadAt = stamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        });
+        var transport = new FakeFleetEventTransport();
+
+        await MakeService(store, transport, sensors: DefaultSensors(), clock: clock, inventory: HardwareInventory.Empty)
+            .RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(expectReused, specs.RamModules is not null);
+        Assert.Equal(expectReused, specs.StorageDrives is not null);
+    }
+
+    [Fact]
+    public async Task A_good_read_refreshes_the_expiry_stamp()
+    {
+        var store = OptedInStore();
+        var clock = new ManualClock();
+
+        await MakeService(store, new FakeFleetEventTransport(), sensors: DefaultSensors(), clock: clock, inventory: SampleInventory())
+            .RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(store.Load().Telemetry.FleetInventoryReadAt, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     [Fact]
     public async Task An_empty_read_with_nothing_remembered_is_not_hashed_as_a_change()
     {

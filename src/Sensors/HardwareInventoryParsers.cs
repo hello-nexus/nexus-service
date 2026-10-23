@@ -47,35 +47,17 @@ internal static partial class HardwareInventoryParsers
     private static string? HexBody(string text)
     {
         var t = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text[2..] : text;
-        return t.Length >= 4 && t.Length % 2 == 0 && t.All(Uri.IsHexDigit) ? t : null;
+        return t.Length >= JedecIdDigits && t.Length % 2 == 0 && t.All(Uri.IsHexDigit) ? t : null;
     }
 
-    /// <summary>Printable ASCII behind a hex literal (Intel-Mac system_profiler hex-encodes some strings), or null when it is not text.</summary>
-    private static string? DecodeHexAscii(string hexBody)
-    {
-        var chars = new List<char>();
-        for (var i = 0; i < hexBody.Length; i += 2)
-        {
-            var b = Convert.ToByte(hexBody.Substring(i, 2), 16);
-            if (b == 0)
-                break;
-            if (b is < 0x20 or > 0x7E)
-                return null;
-            chars.Add((char)b);
-        }
-        var text = new string(chars.ToArray()).Trim();
-        return text.Length >= 2 ? text : null;
-    }
+    /// <summary>Hex digits in a JEDEC id: the continuation-count byte then the code byte.</summary>
+    private const int JedecIdDigits = 4;
 
-    /// <summary>A part number with Intel-Mac hex encoding decoded; an undecodable 0x literal is dropped rather than sent as if it were a part number.</summary>
+    /// <summary>A part number, or null for a 0x literal: that is an encoded value, not a part number, and no sample of a decodable one is on record.</summary>
     public static string? CleanPartNumber(string? value)
     {
         var t = CleanText(value);
-        if (t is null || !t.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            return t;
-        var body = HexBody(t);
-        var decoded = body is null ? null : DecodeHexAscii(body);
-        return decoded is null ? null : CleanText(decoded);
+        return t is not null && t.StartsWith("0x", StringComparison.OrdinalIgnoreCase) && HexBody(t) is not null ? null : t;
     }
 
     /// <summary>
@@ -124,8 +106,7 @@ internal static partial class HardwareInventoryParsers
 
     /// <summary>
     /// Vendor name and raw id for an SMBIOS manufacturer string, falling back to the Module Manufacturer ID field. A hex literal is
-    /// never returned as a name: four digits are a JEDEC id, sixteen digits with a zero tail are that id padded, and anything else is
-    /// decoded as hex-encoded ASCII or dropped.
+    /// never returned as a name: one the width of a JEDEC id is that id, any other hex literal is dropped.
     /// </summary>
     public static (string? Name, string? Id) ResolveManufacturer(string? smbiosString, string? moduleManufacturerId)
     {
@@ -133,20 +114,9 @@ internal static partial class HardwareInventoryParsers
         string? id = null;
         if (text is not null && HexBody(text) is { } body)
         {
-            if (body.Length == 4)
-            {
+            if (body.Length == JedecIdDigits)
                 id = body.ToUpperInvariant();
-                text = null;
-            }
-            else if (body.Length == 16 && body[4..].All(c => c == '0'))
-            {
-                id = body[..4].ToUpperInvariant();
-                text = null;
-            }
-            else
-            {
-                text = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? CleanText(DecodeHexAscii(body)) : null;
-            }
+            text = null;
         }
 
         if (text is not null)
@@ -208,8 +178,8 @@ internal static partial class HardwareInventoryParsers
     /// <summary>A Windows internal physical drive, or null when it is USB-attached, virtual, pooled or otherwise not a physical disk.</summary>
     public static FleetEventDrive? FromWindows(string vendor, string product, uint busType, string mediaType, long size)
     {
-        // 14 virtual, 15 file-backed virtual, 16 Storage Spaces pool.
-        // 7 USB: only internal drives are reported, so plugging in an external disk never changes the specs.
+        // Virtual, file-backed virtual and Storage Spaces pool buses are not physical disks.
+        // USB-attached: only internal drives are reported, so plugging in an external disk never changes the specs.
         if (busType is 7 or 14 or 15 or 16)
             return null;
         var model = CleanText(product);

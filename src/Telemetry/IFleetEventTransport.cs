@@ -8,7 +8,7 @@ internal enum FleetSendResult
 {
     Delivered,
 
-    /// <summary>nexus-api answered 400: it refused the body itself, as an older api does for fields it does not know.</summary>
+    /// <summary>nexus-api answered Bad Request: it refused the body itself, as an older api does for fields it does not know.</summary>
     Rejected,
     Failed,
 }

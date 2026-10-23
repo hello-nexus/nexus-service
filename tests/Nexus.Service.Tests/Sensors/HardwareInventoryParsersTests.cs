@@ -171,22 +171,20 @@ public class HardwareInventoryParsersTests
         }
     }
 
-    [Theory]
-    [InlineData("0x802C000000000000", "Micron Technology", "802C")] // 16-digit id with a zero tail
-    [InlineData("0x80CE", "Samsung", "80CE")]
-    [InlineData("0x436F7273616972", "Corsair", null)] // hex-encoded ASCII
-    public void Hex_manufacturer_strings_are_decoded_never_sent_as_names(string raw, string expectedName, string? expectedId)
+    [Fact]
+    public void Prefixed_hex_manufacturer_id_decodes()
     {
-        var (name, id) = HardwareInventoryParsers.ResolveManufacturer(raw, null);
-        Assert.Equal(expectedName, name);
-        Assert.Equal(expectedId, id);
+        var (name, id) = HardwareInventoryParsers.ResolveManufacturer("0x80CE", null);
+        Assert.Equal("Samsung", name);
+        Assert.Equal("80CE", id);
     }
 
     [Theory]
-    [InlineData("0x1234567890ABCDEF")] // 16 digits, non-zero tail, not text
+    [InlineData("0x802C000000000000")] // wider than a JEDEC id: no source for a layout, so dropped
+    [InlineData("0x436F7273616972")] // hex-encoded text: no real sample on record, so dropped
     [InlineData("DEADBEEF")]
     [InlineData("0x00FF00FF")]
-    public void Undecodable_hex_manufacturer_strings_are_dropped(string raw)
+    public void Hex_manufacturer_strings_that_are_not_a_jedec_id_are_dropped(string raw)
     {
         var (name, id) = HardwareInventoryParsers.ResolveManufacturer(raw, null);
         Assert.Null(name);
@@ -194,9 +192,17 @@ public class HardwareInventoryParsersTests
     }
 
     [Fact]
-    public void Hex_encoded_part_number_is_decoded_and_an_undecodable_one_dropped()
+    public void Hex_manufacturer_string_still_falls_back_to_the_module_manufacturer_id()
     {
-        Assert.Equal("HMA81GU6", HardwareInventoryParsers.CleanPartNumber("0x484D413831475536"));
+        var (name, id) = HardwareInventoryParsers.ResolveManufacturer("0x436F7273616972", "029E");
+        Assert.Equal("Corsair", name);
+        Assert.Equal("029E", id);
+    }
+
+    [Fact]
+    public void Hex_literal_part_number_is_dropped_and_a_real_one_kept()
+    {
+        Assert.Null(HardwareInventoryParsers.CleanPartNumber("0x484D413831475536"));
         Assert.Null(HardwareInventoryParsers.CleanPartNumber("0xFFFFFFFF"));
         Assert.Equal("CMK32GX5M2B6000C36", HardwareInventoryParsers.CleanPartNumber("CMK32GX5M2B6000C36"));
     }
