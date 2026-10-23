@@ -21,10 +21,9 @@ public sealed class NzxtFanControllerHandler : IDeviceHandler
     /// <summary>Fans are configured on Cooling, lighting belongs to OpenRGB.</summary>
     public bool HasPage => false;
 
-    public IReadOnlyList<UsbId> Identifiers { get; } = new[]
-    {
-        new UsbId(NzxtFanControllerProtocol.VendorId, NzxtFanControllerProtocol.ProductId),
-    };
+    public IReadOnlyList<UsbId> Identifiers { get; } = NzxtFanControllerProtocol.ProductIds
+        .Select(pid => new UsbId(NzxtFanControllerProtocol.VendorId, pid))
+        .ToArray();
 
     public bool IsConnected(IReadOnlyList<UsbDeviceEntry> detectedDevices)
     {
@@ -34,7 +33,7 @@ public sealed class NzxtFanControllerHandler : IDeviceHandler
         }
         return detectedDevices.Any(d =>
             d.VendorId == NzxtFanControllerProtocol.VendorId &&
-            d.ProductId == NzxtFanControllerProtocol.ProductId);
+            NzxtFanControllerProtocol.ProductIds.Contains(d.ProductId));
     }
 
     public string GetFirmwareVersion() => "";

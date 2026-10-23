@@ -20,7 +20,7 @@ public class NzxtFanControllerTests
         public bool Disposed;
 
         public int VendorId => NzxtFanControllerProtocol.VendorId;
-        public int ProductId => NzxtFanControllerProtocol.ProductId;
+        public int ProductId => NzxtFanControllerProtocol.ProductIds[0];
         public string Path => "fake-nzxt-fan-controller";
         public string? Serial => null;
         public int UsagePage => 0xFF00;
@@ -418,14 +418,26 @@ public class NzxtFanControllerTests
     }
 
     [Fact]
-    public void Handler_MatchesOnlyProduct2011()
+    public void Handler_MatchesOnlySiblingProducts()
     {
         var handler = new NzxtFanControllerHandler(new NzxtFanControllerHub());
 
-        Assert.Equal(new UsbId(0x1E71, 0x2011), Assert.Single(handler.Identifiers));
-        Assert.True(handler.IsConnected(new[] { Entry(0x1E71, 0x2011) }));
-        Assert.False(handler.IsConnected(new[] { Entry(0x1E71, 0x2019), Entry(0x1E71, 0x3012), Entry(0x3402, 0x2011) }));
+        Assert.Equal(
+            new[] { new UsbId(0x1E71, 0x2011), new UsbId(0x1E71, 0x2019), new UsbId(0x1E71, 0x201F) },
+            handler.Identifiers);
+        Assert.False(handler.IsConnected(new[] { Entry(0x1E71, 0x2020), Entry(0x1E71, 0x2006), Entry(0x1E71, 0x3012), Entry(0x3402, 0x2011) }));
         Assert.False(handler.HasPage);
+    }
+
+    [Theory]
+    [InlineData(0x2011)]
+    [InlineData(0x2019)]
+    [InlineData(0x201F)]
+    public void Handler_ConnectedForEachSiblingProduct(int pid)
+    {
+        var handler = new NzxtFanControllerHandler(new NzxtFanControllerHub());
+
+        Assert.True(handler.IsConnected(new[] { Entry(0x1E71, pid) }));
     }
 
     [Fact]

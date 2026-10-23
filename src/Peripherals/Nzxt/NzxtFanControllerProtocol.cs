@@ -12,7 +12,8 @@ namespace Nexus.Service.Peripherals.Nzxt;
 internal static class NzxtFanControllerProtocol
 {
     public const int VendorId = 0x1E71;
-    public const int ProductId = 0x2011;
+    /// <summary>Three sibling revisions share the 3 fan channel profile and report layout.</summary>
+    public static readonly int[] ProductIds = { 0x2011, 0x2019, 0x201F };
     public const int ReportLength = 64;
     public const int FanChannelCount = 3;
 

@@ -49,7 +49,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
             try
             {
                 if (!_gate.IsEnabled(NzxtFanControllerHub.DeviceId)
-                    || !_presence.UsbPresent(NzxtFanControllerProtocol.VendorId, NzxtFanControllerProtocol.ProductId))
+                    || !_presence.UsbPresent(NzxtFanControllerProtocol.VendorId, NzxtFanControllerProtocol.ProductIds))
                 {
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
@@ -113,7 +113,8 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
     private IHidDevice? FindAndOpen()
     {
         HidDeviceInfo? best = null;
-        foreach (var info in _hid.Find(NzxtFanControllerProtocol.VendorId, NzxtFanControllerProtocol.ProductId))
+        foreach (var info in NzxtFanControllerProtocol.ProductIds
+            .SelectMany(pid => _hid.Find(NzxtFanControllerProtocol.VendorId, pid)))
         {
             if (info.OutputReportByteLength < MinUsableReportLength
                 || info.InputReportByteLength < MinUsableReportLength)
