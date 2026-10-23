@@ -225,9 +225,15 @@ public sealed class WindowsShortcutsProvider : IShortcutsProvider
         }
 
         var resolved = ResolveProcessNameCore(targetId);
-        lock (_processNameLock)
+        // An empty result is not cached: it can be a transient failure (the shortcut
+        // list not enumerated yet, a link read that threw), and callers fall back
+        // when it is empty, so re-resolving costs only a repeat pick.
+        if (resolved.Length > 0)
         {
-            _processNameCache[targetId] = resolved;
+            lock (_processNameLock)
+            {
+                _processNameCache[targetId] = resolved;
+            }
         }
         return resolved;
     }
