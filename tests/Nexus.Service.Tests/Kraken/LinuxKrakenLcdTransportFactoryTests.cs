@@ -24,36 +24,81 @@ public sealed class LinuxKrakenLcdTransportFactoryTests : IDisposable
         File.WriteAllText(Path.Combine(dir, "serial"), serial + "\n");
     }
 
+    private void AddInterface(string device, int number, string cls, bool endpoint02, bool hidChild = false)
+    {
+        var dir = Path.Combine(_root, device, $"{device}:1.{number}");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "bInterfaceNumber"), $"{number:x2}\n");
+        File.WriteAllText(Path.Combine(dir, "bInterfaceClass"), cls + "\n");
+        if (endpoint02)
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "ep_02"));
+        }
+        if (hidChild)
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "0003:1E71:3012.0001"));
+        }
+    }
+
     [Fact]
-    public void Candidates_PutsTheSerialMatchFirstAndSkipsOtherDevices()
+    public void Candidates_OnlyTheSerialMatchWhenOneExists()
     {
         AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
+        AddInterface("1-2", 0, "ff", true);
         AddDevice("1-3", "1e71", "3012", 1, 6, "BBB");
+        AddInterface("1-3", 0, "ff", true);
         AddDevice("1-4", "046d", "3012", 1, 7, "BBB");
 
         var nodes = new LinuxKrakenLcdTransportFactory(_root).Candidates("bbb");
 
-        Assert.Equal(new[] { "/dev/bus/usb/001/006", "/dev/bus/usb/001/005" }, nodes);
+        Assert.Equal(new[] { ("/dev/bus/usb/001/006", 0) }, nodes);
     }
 
     [Fact]
-    public void Candidates_WithoutSerialReturnsEveryKraken()
+    public void Candidates_FallsBackToEveryKrakenWhenNoSerialMatches()
     {
         AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
+        AddInterface("1-2", 0, "ff", true);
 
+        Assert.Single(new LinuxKrakenLcdTransportFactory(_root).Candidates("ZZZ"));
         Assert.Single(new LinuxKrakenLcdTransportFactory(_root).Candidates(null));
+    }
+
+    [Fact]
+    public void Candidates_UsesTheInterfaceThatOwnsEndpoint02()
+    {
+        AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
+        AddInterface("1-2", 0, "03", false);
+        AddInterface("1-2", 1, "ff", true);
+
+        var target = Assert.Single(new LinuxKrakenLcdTransportFactory(_root).Candidates("AAA"));
+
+        Assert.Equal(1, target.Interface);
+    }
+
+    [Fact]
+    public void Candidates_SkipsDeviceWithoutEndpoint02()
+    {
+        AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
+        AddInterface("1-2", 0, "ff", false);
+
+        Assert.Empty(new LinuxKrakenLcdTransportFactory(_root).Candidates("AAA"));
+    }
+
+    [Theory]
+    [InlineData("03", false)]
+    [InlineData("ff", true)]
+    public void Candidates_RefusesHidClassInterface(string cls, bool hidChild)
+    {
+        AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
+        AddInterface("1-2", 0, cls, true, hidChild);
+
+        Assert.Empty(new LinuxKrakenLcdTransportFactory(_root).Candidates("AAA"));
     }
 
     [Fact]
     public void Open_ReturnsNullWhenNoKrakenIsPresent()
     {
         Assert.Null(new LinuxKrakenLcdTransportFactory(_root).Open("AAA"));
-    }
-
-    [Fact]
-    public void BulkTargetIsInterfaceZeroNeverTheHidInterface()
-    {
-        Assert.Equal(0, LinuxKrakenLcdTransport.BulkInterface);
-        Assert.Equal(0x02, LinuxKrakenLcdTransport.BulkOutEndpoint);
     }
 }
