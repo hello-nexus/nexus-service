@@ -12,7 +12,11 @@ public sealed record MemoryModuleInfo(
     int? MaxSpeedMts,
     int? ConfiguredSpeedMts,
     string? Manufacturer,
-    string? PartNumber);
+    string? PartNumber)
+{
+    /// <summary>SMBIOS 3.2+ Module Manufacturer ID as the JEDEC continuation-count byte then id byte in hex; null when the table predates the field or leaves it zero.</summary>
+    public string? ModuleManufacturerId { get; init; }
+}
 
 /// <summary>
 /// Pure SMBIOS Type 17 (Memory Device) parser over the raw buffer returned by
@@ -35,6 +39,7 @@ public static class SmbiosParser
     private const int OffsetPartNumber = 0x1A;
     private const int OffsetExtendedSize = 0x1C;
     private const int OffsetConfiguredSpeed = 0x20;
+    private const int OffsetModuleManufacturerId = 0x2D;
 
     private const ushort SizeWordUnknown = 0xFFFF;
     private const ushort SizeWordExtended = 0x7FFF;
@@ -177,12 +182,23 @@ public static class SmbiosParser
             if (cfg is ushort c and not 0 and not SizeWordUnknown) configuredSpeedMts = c;
         }
 
+        string? moduleManufacturerId = null;
+        if (ReadByte(b, offset, length, OffsetModuleManufacturerId) is byte bankByte
+            && ReadByte(b, offset, length, OffsetModuleManufacturerId + 1) is byte idByte
+            && (bankByte | idByte) != 0)
+        {
+            moduleManufacturerId = $"{bankByte:X2}{idByte:X2}";
+        }
+
         byte? memoryType = ReadByte(b, offset, length, OffsetMemoryType);
 
         return new ParsedModule
         {
             MemoryType = memoryType,
-            Info = new MemoryModuleInfo(slot, sizeBytes, maxSpeedMts, configuredSpeedMts, manufacturer, partNumber),
+            Info = new MemoryModuleInfo(slot, sizeBytes, maxSpeedMts, configuredSpeedMts, manufacturer, partNumber)
+            {
+                ModuleManufacturerId = moduleManufacturerId,
+            },
         };
     }
 

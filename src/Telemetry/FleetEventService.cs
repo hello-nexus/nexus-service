@@ -27,6 +27,7 @@ internal sealed class FleetEventService
     private readonly SystemSpecsCollector _specs;
     private readonly IUsbEnumerator _usb;
     private readonly Func<bool> _ibuypowerSystem;
+    private readonly Func<HardwareInventory> _inventorySource;
     private readonly TimeProvider _clock;
     // USB devices can enumerate late on a cold boot; specs snapshot the bus only after this delay.
     internal static readonly TimeSpan UsbSettleDelay = TimeSpan.FromMinutes(2);
@@ -35,6 +36,9 @@ internal sealed class FleetEventService
 
     // Not persisted: USB set captured once per process after the bus settles; later passes reuse it so hot-plugging never changes the hash.
     private List<FleetEventDevice>? _bootDevices;
+
+    // Not persisted: RAM module and drive identity read once per process, so a flaky re-read can never flip the hash.
+    private HardwareInventory? _inventory;
     private readonly DateTimeOffset _startedAt;
     private readonly TimeSpan _usbSettle;
 
@@ -53,7 +57,8 @@ internal sealed class FleetEventService
         IUsbEnumerator usb,
         HardwareAppCatalog hardware)
         : this(store, transport, telemetry, sinks, specs, usb,
-            () => hardware.IsMatched(HardwareAppCatalog.IbuypowerAppId), TimeProvider.System)
+            () => hardware.IsMatched(HardwareAppCatalog.IbuypowerAppId), TimeProvider.System,
+            inventorySource: HardwareInventoryCollector.GetCached)
     {
     }
 
@@ -66,8 +71,10 @@ internal sealed class FleetEventService
         IUsbEnumerator usb,
         Func<bool> ibuypowerSystem,
         TimeProvider clock,
-        TimeSpan? usbSettle = null)
+        TimeSpan? usbSettle = null,
+        Func<HardwareInventory>? inventorySource = null)
     {
+        _inventorySource = inventorySource ?? (() => HardwareInventory.Empty);
         _startedAt = clock.GetUtcNow();
         _usbSettle = usbSettle ?? UsbSettleDelay;
         _store = store;
@@ -252,7 +259,10 @@ internal sealed class FleetEventService
         var devices = _bootDevices;
         var y70Seen = _store.Load().Telemetry.FleetY70Seen;
         var ibuypowerSystem = _ibuypowerSystem();
-        var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem);
+        // Off the gate thread: macOS shells out to system_profiler, which takes seconds.
+        _inventory ??= await Task.Run(_inventorySource, ct).ConfigureAwait(false);
+        var inventory = _inventory;
+        var hash = ComputeSpecsHash(specs.Processor, gpu, ramBytes, specs.Motherboard, devices, y70Seen, ibuypowerSystem, inventory);
         if (hash == _store.Load().Telemetry.FleetSpecsHash)
             return; // unchanged since the last successful send.
 
@@ -266,6 +276,9 @@ internal sealed class FleetEventService
             Devices = devices,
             Y70Seen = y70Seen,
             IbuypowerSystem = ibuypowerSystem,
+            RamModuleCount = inventory.RamModules.Count > 0 ? inventory.RamModules.Count : null,
+            RamModules = inventory.RamModules.Count > 0 ? inventory.RamModules.ToList() : null,
+            StorageDrives = inventory.Drives.Count > 0 ? inventory.Drives.ToList() : null,
         };
 
         if (!await _transport.SendAsync(payload, ct).ConfigureAwait(false))
@@ -315,13 +328,23 @@ internal sealed class FleetEventService
 
     // Unit-separator delimiter stops a field containing it from colliding two summaries into one hash.
     internal static string ComputeSpecsHash(string cpu, IReadOnlyList<string> gpu, long ramBytes, string motherboard,
-        IReadOnlyList<FleetEventDevice>? devices = null, bool y70Seen = false, bool ibuypowerSystem = false)
+        IReadOnlyList<FleetEventDevice>? devices = null, bool y70Seen = false, bool ibuypowerSystem = false,
+        HardwareInventory? inventory = null)
     {
         var deviceIds = devices is null
             ? ""
             : string.Join(',', devices.Select(d => $"{d.Vid:x4}:{d.Pid:x4}"));
         var input = string.Join((char)0x1F, cpu, string.Join((char)0x1F, gpu), ramBytes.ToString(), motherboard, deviceIds,
             y70Seen ? "y70" : "", ibuypowerSystem ? "ibp" : "");
+        // Appended only when present so an install without inventory keeps the hash it already delivered and is not re-sent.
+        if (inventory is not null && (inventory.RamModules.Count > 0 || inventory.Drives.Count > 0))
+        {
+            var ram = inventory.RamModules.Select(m => string.Join('|', m.Manufacturer, m.ManufacturerId, m.PartNumber,
+                m.CapacityBytes, m.ConfiguredSpeedMts, m.RatedSpeedMts, m.Generation)).OrderBy(x => x, StringComparer.Ordinal);
+            var drives = inventory.Drives.Select(d => string.Join('|', d.Model, d.Vendor, d.CapacityBytes, d.Bus, d.Media))
+                .OrderBy(x => x, StringComparer.Ordinal);
+            input = string.Join((char)0x1F, input, "ram:" + string.Join(';', ram), "drv:" + string.Join(';', drives));
+        }
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes);
     }

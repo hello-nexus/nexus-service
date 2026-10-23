@@ -86,11 +86,13 @@ public class FleetEventServiceTests
         TimeProvider? clock = null,
         IUsbEnumerator? usb = null,
         bool ibuypowerSystem = false,
-        TimeSpan? usbSettle = null) =>
+        TimeSpan? usbSettle = null,
+        HardwareInventory? inventory = null) =>
         new(store, transport, telemetry ?? new TelemetryClient(store),
             sinks ?? Array.Empty<ITelemetrySink>(), new SystemSpecsCollector(sensors ?? new StubSensors()),
             usb ?? new StubUsbEnumerator(), () => ibuypowerSystem,
-            clock ?? TimeProvider.System, usbSettle ?? TimeSpan.Zero);
+            clock ?? TimeProvider.System, usbSettle ?? TimeSpan.Zero,
+            inventory is null ? null : () => inventory);
 
     private sealed class StubUsbEnumerator : IUsbEnumerator
     {
@@ -432,6 +434,63 @@ public class FleetEventServiceTests
 
         await svc.RunPendingRetriesAsync(CancellationToken.None);
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+    }
+
+    private static HardwareInventory SampleInventory(string part = "CMK32GX5M2B6000C36") => new(
+        new[]
+        {
+            new FleetEventRamModule { Manufacturer = "Corsair", PartNumber = part, CapacityBytes = 17179869184, ConfiguredSpeedMts = 6000, RatedSpeedMts = 6000, Generation = "DDR5" },
+            new FleetEventRamModule { Manufacturer = "Corsair", PartNumber = part, CapacityBytes = 17179869184, ConfiguredSpeedMts = 6000, RatedSpeedMts = 6000, Generation = "DDR5" },
+        },
+        new[] { new FleetEventDrive { Model = "Samsung SSD 990 PRO 2TB", CapacityBytes = 2000398934016, Bus = "nvme", Media = "ssd" } });
+
+    [Fact]
+    public async Task Specs_event_carries_ram_modules_and_physical_drives()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        var svc = MakeService(store, transport, sensors: sensors, inventory: SampleInventory());
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(2, specs.RamModuleCount);
+        Assert.Equal("CMK32GX5M2B6000C36", specs.RamModules![0].PartNumber);
+        Assert.Equal("Samsung SSD 990 PRO 2TB", specs.StorageDrives!.Single().Model);
+        Assert.Equal(34359738368, specs.RamBytes);
+    }
+
+    [Fact]
+    public async Task Specs_event_omits_ram_and_storage_when_the_platform_reports_none()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        var svc = MakeService(store, transport, sensors: sensors);
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Null(specs.RamModuleCount);
+        Assert.Null(specs.RamModules);
+        Assert.Null(specs.StorageDrives);
+    }
+
+    [Fact]
+    public void Specs_hash_changes_when_a_module_or_drive_changes_and_ignores_order()
+    {
+        var gpu = new[] { "GPU A" };
+        var baseline = FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board");
+        var a = SampleInventory();
+        var withInventory = FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", inventory: a);
+        var otherPart = FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", inventory: SampleInventory("OTHER"));
+        var reversed = new HardwareInventory(a.RamModules.Reverse().ToArray(), a.Drives);
+
+        Assert.NotEqual(baseline, withInventory);
+        Assert.NotEqual(withInventory, otherPart);
+        Assert.Equal(withInventory, FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", inventory: reversed));
+        Assert.Equal(baseline, FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", inventory: HardwareInventory.Empty));
     }
 
     [Fact]

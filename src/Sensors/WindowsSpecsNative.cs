@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Win32;
 using Nexus.Service.Diagnostics.Memory;
 using Nexus.Service.Platform.Windows;
+using Nexus.Service.Telemetry;
 
 namespace Nexus.Service.Sensors;
 
@@ -118,6 +119,19 @@ internal static partial class WindowsSpecsNative
         }
         return rows;
     }
+
+    /// <summary>Physical drives for fleet telemetry: model, vendor, size, bus and media, no serial. Removable media and virtual or pooled disks are dropped.</summary>
+    public static List<FleetEventDrive> ReadDriveDetails() =>
+        EnumeratePhysicalDisks()
+            .Select(d => HardwareInventoryParsers.FromWindows(d.Vendor, d.Product, d.BusType, d.MediaType, d.Size))
+            .OfType<FleetEventDrive>()
+            .ToList();
+
+    /// <summary>Populated memory modules for fleet telemetry, in slot order.</summary>
+    public static List<FleetEventRamModule> ReadRamModules() =>
+        SmbiosParser.ParseModules(MemoryInfoProvider.ReadRawTable())
+            .Select(m => HardwareInventoryParsers.FromSmbios(m.Info, m.MemoryType))
+            .ToList();
 
     private static List<DiskRow> EnumeratePhysicalDisks()
     {

@@ -77,4 +77,63 @@ public class FleetEventPayloadWireTests
         Assert.Equal("Razer", device.GetProperty("manufacturer").GetString());
         Assert.False(device.TryGetProperty("serial", out _));
     }
+
+    [Fact]
+    public void Specs_event_serializes_ram_modules_and_drives_without_identifying_fields()
+    {
+        var payload = new FleetEventPayload
+        {
+            InstallId = "abc123",
+            Type = TelemetryEvents.Specs,
+            Specs = new FleetEventSpecs
+            {
+                RamBytes = 34359738368,
+                RamModuleCount = 2,
+                RamModules = new()
+                {
+                    new FleetEventRamModule
+                    {
+                        Manufacturer = "Corsair", ManufacturerId = "029E", PartNumber = "CMK32GX5M2B6000C36",
+                        CapacityBytes = 17179869184, ConfiguredSpeedMts = 6000, RatedSpeedMts = 6000, Generation = "DDR5",
+                    },
+                },
+                StorageDrives = new()
+                {
+                    new FleetEventDrive { Model = "Samsung SSD 990 PRO 2TB", CapacityBytes = 2000398934016, Bus = "nvme", Media = "ssd" },
+                },
+            },
+        };
+
+        var specs = JsonDocument.Parse(JsonSerializer.Serialize(payload, AppJsonContext.Default.FleetEventPayload))
+            .RootElement.GetProperty("specs");
+
+        Assert.Equal(34359738368, specs.GetProperty("ramBytes").GetInt64());
+        Assert.Equal(2, specs.GetProperty("ramModuleCount").GetInt32());
+        var module = specs.GetProperty("ramModules")[0];
+        Assert.Equal("Corsair", module.GetProperty("manufacturer").GetString());
+        Assert.Equal("029E", module.GetProperty("manufacturerId").GetString());
+        Assert.Equal("CMK32GX5M2B6000C36", module.GetProperty("partNumber").GetString());
+        Assert.Equal(17179869184, module.GetProperty("capacityBytes").GetInt64());
+        Assert.Equal(6000, module.GetProperty("configuredSpeedMts").GetInt32());
+        Assert.Equal(6000, module.GetProperty("ratedSpeedMts").GetInt32());
+        Assert.Equal("DDR5", module.GetProperty("generation").GetString());
+        var drive = specs.GetProperty("storageDrives")[0];
+        Assert.Equal("Samsung SSD 990 PRO 2TB", drive.GetProperty("model").GetString());
+        Assert.Equal("nvme", drive.GetProperty("bus").GetString());
+        Assert.Equal("ssd", drive.GetProperty("media").GetString());
+        Assert.False(drive.TryGetProperty("vendor", out _));
+        Assert.False(drive.TryGetProperty("serial", out _));
+        Assert.False(module.TryGetProperty("serial", out _));
+    }
+
+    [Fact]
+    public void Specs_without_inventory_omit_the_new_fields()
+    {
+        var payload = new FleetEventPayload { Type = TelemetryEvents.Specs, Specs = new FleetEventSpecs { RamBytes = 1 } };
+        var specs = JsonDocument.Parse(JsonSerializer.Serialize(payload, AppJsonContext.Default.FleetEventPayload))
+            .RootElement.GetProperty("specs");
+        Assert.False(specs.TryGetProperty("ramModules", out _));
+        Assert.False(specs.TryGetProperty("ramModuleCount", out _));
+        Assert.False(specs.TryGetProperty("storageDrives", out _));
+    }
 }
