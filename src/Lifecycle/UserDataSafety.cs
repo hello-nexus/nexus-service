@@ -69,7 +69,18 @@ internal static class UserDataSafety
     /// anything inside is a reparse point. This refuses junctions that already exist; it does not stop one
     /// swapped in while a recursive delete is running (see <see cref="TryDeleteUserDir"/>).
     /// </summary>
-    internal static bool IsSafeUserTree(string dir) => !ChainHasReparsePoint(dir, 3) && TreeHasNoReparsePoint(dir);
+    internal static bool IsSafeUserTree(string dir)
+    {
+        // A user can deny SYSTEM read-attributes on their own folders; any failure to look means unsafe.
+        try
+        {
+            return !ChainHasReparsePoint(dir, 3) && TreeHasNoReparsePoint(dir);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// Deletes a per-user folder only when <see cref="IsSafeUserTree"/> holds. No delayed-delete fallback: a locked
@@ -102,7 +113,8 @@ internal static class UserDataSafety
     }
 
     /// <summary>
-    /// True when the opened file's final resolved path (after any link) lies under <paramref name="expectedDir"/>.
+    /// True when the opened file's final resolved path (after any link) lies under <paramref name="expectedDir"/>,
+    /// comparing final path to final path so 8.3 names and a junctioned parent do not cause a false mismatch.
     /// Closes the window between a path check and the open. Windows only; elsewhere the earlier check stands.
     /// </summary>
     internal static bool HandleIsUnder(SafeFileHandle handle, string expectedDir)
@@ -111,19 +123,36 @@ internal static class UserDataSafety
         {
             return true;
         }
+        // FILE_FLAG_BACKUP_SEMANTICS (0x02000000) is required to open a directory; access 0 only queries it.
+        using var dir = CreateFileW(expectedDir, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+        if (dir.IsInvalid)
+        {
+            return false;
+        }
+        var expected = FinalPath(dir);
+        var actual = FinalPath(handle);
+        if (expected is null || actual is null)
+        {
+            return false;
+        }
+        return actual.StartsWith(expected.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? FinalPath(SafeFileHandle handle)
+    {
         var buffer = new char[1024];
         var len = GetFinalPathNameByHandleW(handle.DangerousGetHandle(), buffer, (uint)buffer.Length, 0);
         if (len == 0 || len >= buffer.Length)
         {
-            return false;
+            return null;
         }
-        var final = StripPrefix(new string(buffer, 0, (int)len));
-        var expected = StripPrefix(Path.GetFullPath(expectedDir)).TrimEnd('\\') + "\\";
-        return final.StartsWith(expected, StringComparison.OrdinalIgnoreCase);
+        var p = new string(buffer, 0, (int)len);
+        return p.StartsWith(@"\\?\", StringComparison.Ordinal) ? p[4..] : p;
     }
-
-    private static string StripPrefix(string p) => p.StartsWith(@"\\?\", StringComparison.Ordinal) ? p[4..] : p;
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint GetFinalPathNameByHandleW(IntPtr handle, [Out] char[] path, uint length, uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(string fileName, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
 }

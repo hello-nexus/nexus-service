@@ -297,7 +297,9 @@ internal static class FactoryReset
 
         if (wipe)
         {
-            DeleteRoots();
+            // Nothing in the wipe may skip RestartService below, or the service stays down until reboot.
+            try { DeleteRoots(); }
+            catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] wipe aborted: {ex.Message}"); }
         }
 #if WINDOWS
         // The reopen flag lives under %ProgramData%\Nexus, so it must be
@@ -308,7 +310,8 @@ internal static class FactoryReset
         // is ready.
         if (wipe)
         {
-            DashboardReopenFlag.Write();
+            try { DashboardReopenFlag.Write(); }
+            catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] reopen flag failed: {ex.Message}"); }
         }
 #endif
         RestartService();
@@ -356,9 +359,10 @@ internal static class FactoryReset
             {
                 // The finalizer runs as SYSTEM on folders a user controls: a junction in the way would
                 // redirect the delete, so such roots are skipped (static junctions only; see UserDataSafety).
+                // IsSafeUserTree never throws, so one hostile root cannot abort the sweep.
                 if (!UserDataSafety.IsSafeUserTree(root.Path))
                 {
-                    Console.Error.WriteLine($"[factory-reset] skipping {root.Path}: contains or sits behind a reparse point");
+                    Console.Error.WriteLine($"[factory-reset] skipping {root.Path}: unreadable or behind a reparse point");
                     continue;
                 }
             }
