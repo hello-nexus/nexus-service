@@ -17,7 +17,6 @@ namespace Nexus.Service.Peripherals.Nzxt;
 public sealed class NzxtFanControllerConnectionWorker : BackgroundService
 {
     private const int ConnectPollMs = 5000;
-    private const int MaxConsecutiveFailures = 3;
 
     // Smallest report that carries a fan command; the device's other HID collections are shorter.
     private const int MinUsableReportLength = NzxtFanControllerProtocol.ReportLength;
@@ -44,6 +43,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        bool connectFailureLogged = false;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -69,16 +69,15 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                     if (_hub.Connect())
                     {
                         started = true;
+                        connectFailureLogged = false;
                         ServiceLog.Info($"[nzxt-fan-controller] connected: {_hub.Fans.Length} fan channel(s)");
-                        int failures = 0;
                         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(NzxtFanControllerHub.DeviceId))
                         {
                             if (_hub.Poll())
                             {
-                                failures = 0;
                                 _cooling.ReassertControl();
                             }
-                            else if (++failures >= MaxConsecutiveFailures)
+                            else if (_hub.Lost)
                             {
                                 break;
                             }
@@ -86,6 +85,11 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                     }
                     else
                     {
+                        if (!connectFailureLogged)
+                        {
+                            connectFailureLogged = true;
+                            ServiceLog.Warn("[nzxt-fan-controller] connect failed: no fan status report from the device; retrying");
+                        }
                         await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     }
                 }
