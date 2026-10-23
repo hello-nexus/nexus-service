@@ -54,9 +54,9 @@ public static class DeviceControlPolicy
     private static readonly HashSet<string> UnverifiedHandlers = new(StringComparer.OrdinalIgnoreCase)
     {
         "lianli-galahad2-lcd",
-        "corsair-xc7-lcd", "corsair-capellix-lcd", "idcooling-fx-lcd",
+        "corsair-xc7-lcd", "corsair-capellix-lcd", "corsair-nautilus-lcd", "idcooling-fx-lcd",
         "asrock-lcd", "asus-slc4-lcd", "corsair-link-lcd",
-        "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88",
+        "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88", "asus-glacial-lcd",
     };
 
     /// <summary>Feeds <see cref="ConflictAppFor"/> alone: names a competing app for the UI hint; the handler defaults on unless that app starts whitelisted.</summary>
@@ -64,6 +64,7 @@ public static class DeviceControlPolicy
     {
         ["tryx"] = "tryx-kanali",
         ["nzxt-kraken"] = "nzxt-cam",
+        ["nzxt-fan-controller"] = "nzxt-cam",
         ["zmatrices-lcd"] = "zmatrices",
         ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
         ["asiahorse-umbra"] = "asiahorse-umbra",

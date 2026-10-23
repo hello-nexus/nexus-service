@@ -28,7 +28,10 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
 
     public bool ListedWhileWithheld { get; }
 
-    public string? WithheldSerial => _hub.IsConnected && Withheld ? _hub.Serial ?? _hub.Driver.HandlerId : null;
+    public string? WithheldSerial => _hub.IsConnected && Withheld ? StreamSerial : null;
+
+    /// <summary>The key the stream is stored under: fixed for a one-per-PC panel, else its USB serial.</summary>
+    private string StreamSerial => _hub.Driver.SingleUnitPerPc ? _hub.Driver.HandlerId : _hub.Serial ?? _hub.Driver.HandlerId;
 
     public string HandlerId => _hub.Driver.HandlerId;
 
@@ -45,7 +48,8 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
         {
             new StreamedPanelDeviceInfo
             {
-                Serial = _hub.Serial ?? driver.HandlerId,
+                Serial = StreamSerial,
+                AdoptsFamilyRecords = driver.SingleUnitPerPc,
                 Profile = new StreamedPanelProfile
                 {
                     Kind = driver.HandlerId,
@@ -60,6 +64,7 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
                     SupportsSecondaryMonitor = driver.SupportsSecondaryMonitor && _monitors is { IsAvailable: true },
                     SupportsPortrait = driver.SupportsPortrait,
                     Dpi = driver.Dpi,
+                    MultiInstance = driver.MultiInstance,
                     // The driver owns compression - JPEG for most, raw pixels for the
                     // Ryujin - so the overlay hands back whole frames either way.
                     Codec = StreamCodec.RawBgra,

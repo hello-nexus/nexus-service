@@ -101,6 +101,17 @@ public sealed record KrakenModel(
         new(0x2014, "NZXT Kraken X3", 0, 0, KrakenLcdFormat.None, KrakenLightingProtocol.StreamedTables),
     };
 
+    /// <summary>hwmon chip name nzxt-kraken3.c registers per product id; null for models the kernel does not drive.</summary>
+    public static string? KernelHwmonName(int productId) => productId switch
+    {
+        0x2007 or 0x2014 => "x53",
+        0x3008 => "z53",
+        0x300E => "kraken2023",
+        0x300C => "kraken2023elite",
+        0x3012 => "kraken2024elite",
+        _ => null,
+    };
+
     public static KrakenModel? Find(int productId)
     {
         foreach (var model in All)

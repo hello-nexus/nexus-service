@@ -76,7 +76,7 @@ public class IbpPeripheralConnectionWorkerTests
 
         public Rig()
         {
-            Hub = new IbpPeripheralHub(Hid);
+            Hub = new IbpPeripheralHub(Hid, matchOnLinux: true);
             Lighting = new Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider(
                 Hub, Store, new Nexus.Service.Lighting.Np50IdentifyTracker());
             Lighting.DevicesChanged += () => Changes++;

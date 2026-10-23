@@ -49,6 +49,67 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Allocate_LcdRound_ReusesARecordStoredUnderTheLegacyKrakenSurface()
+    {
+        var legacy = _registry.Allocate(null, Caps(PanelSurfaces.LegacyKraken));
+        _registry.Patch(legacy.Id, new PanelDevicePatch { AccentColor = "#abc" });
+
+        var folded = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound, Family = "nzxt-kraken" });
+
+        Assert.Equal(legacy.Id, folded.Id);
+        Assert.Equal("#abc", folded.AccentColor);
+        Assert.Equal(PanelSurfaces.LcdRound, folded.Capabilities!.Surface);
+        Assert.Single(_registry.List());
+    }
+
+    [Theory]
+    [InlineData(PanelSurfaces.LegacyKraken, PanelSurfaces.LcdRound)]
+    [InlineData(PanelSurfaces.LcdRound, PanelSurfaces.LcdRound)]
+    [InlineData(PanelSurfaces.Y70, PanelSurfaces.Y70)]
+    [InlineData(null, null)]
+    public void Canonical_ReadsTheLegacyKrakenSurfaceAsLcdRound(string? stored, string? expected)
+    {
+        Assert.Equal(expected, PanelSurfaces.Canonical(stored));
+        Assert.Equal(expected is not null && PanelSurfaces.IsSingleInstance(expected), PanelSurfaces.IsSingleInstance(stored));
+    }
+
+    [Fact]
+    public void Allocate_LcdRoundWithoutAFamily_DoesNotAdoptAKrakenRecord()
+    {
+        var kraken = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken", Dpi = 240 });
+
+        var other = _registry.Allocate(null, Caps(PanelSurfaces.LcdRound));
+
+        Assert.NotEqual(kraken.Id, other.Id);
+        var kept = _registry.Get(kraken.Id)!.Capabilities!;
+        Assert.Equal("nzxt-kraken", kept.Family);
+        Assert.Equal(240, kept.Dpi);
+    }
+
+    [Fact]
+    public void Allocate_Kraken_DoesNotAdoptAnotherRoundCoolersRecord_AndReusesItsOwn()
+    {
+        var cooler = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound, Family = "corsair-link-lcd" });
+        var kraken = new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken" };
+
+        var first = _registry.Allocate(null, kraken);
+        var second = _registry.Allocate(null, kraken);
+
+        Assert.NotEqual(cooler.Id, first.Id);
+        Assert.Equal(first.Id, second.Id);
+    }
+
+    [Fact]
+    public void Allocate_KrakenRecordStoredWithoutAFamily_IsStillTheKrakens()
+    {
+        var legacy = _registry.Allocate(null, Caps(PanelSurfaces.LegacyKraken));
+
+        var again = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken" });
+
+        Assert.Equal(legacy.Id, again.Id);
+    }
+
+    [Fact]
     public void Allocate_Phone_DoesNotDedup()
     {
         var first = _registry.Allocate(null, Caps(PanelSurfaces.Phone));

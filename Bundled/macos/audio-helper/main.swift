@@ -1,7 +1,7 @@
 // nexus-audio-helper
 //
-// Captures system audio output via ScreenCaptureKit and streams float32 mono PCM
-// at 44100 Hz to stdout. The Nexus service spawns this helper, reads its
+// Captures system audio output via ScreenCaptureKit and streams interleaved float32
+// stereo PCM at 44100 Hz to stdout. The Nexus service spawns this helper, reads its
 // stdout, and feeds the samples into AudioAnalyser.
 //
 // Why a helper: ScreenCaptureKit is Swift / Objective-C only and has implicit
@@ -14,7 +14,8 @@
 // to the parent bundle (Nexus.app) when this helper lives under
 // Nexus.app/Contents/MacOS/.
 //
-// Wire format: little-endian IEEE float32, mono, 44100 Hz, written in raw
+// Wire format: little-endian IEEE float32, interleaved L/R stereo (a mono
+// source repeats into both), 44100 Hz, written in raw
 // frames as fast as SCK delivers them.
 
 import Foundation
@@ -33,8 +34,8 @@ final class StreamHandler: NSObject, SCStreamOutput, SCStreamDelegate {
     // overflow; never shrunk. Single-threaded by SCK's serial sample queue.
     private let listBytes: UnsafeMutableRawPointer
     private let listSize: Int
-    private var monoCapacity: Int = 0
-    private var monoBuffer: UnsafeMutablePointer<Float>? = nil
+    private var stereoCapacity: Int = 0
+    private var stereoBuffer: UnsafeMutablePointer<Float>? = nil
 
     override init() {
         listSize = AudioBufferList.sizeInBytes(maximumBuffers: 8)
@@ -46,7 +47,7 @@ final class StreamHandler: NSObject, SCStreamOutput, SCStreamDelegate {
 
     deinit {
         listBytes.deallocate()
-        monoBuffer?.deallocate()
+        stereoBuffer?.deallocate()
     }
 
     func log(_ message: String) {
@@ -86,25 +87,20 @@ final class StreamHandler: NSObject, SCStreamOutput, SCStreamDelegate {
         let frameCount = Int(leftBuf.mDataByteSize) / MemoryLayout<Float>.size
         guard frameCount > 0 else { return }
 
-        if frameCount > monoCapacity {
-            monoBuffer?.deallocate()
-            monoBuffer = UnsafeMutablePointer<Float>.allocate(capacity: frameCount)
-            monoCapacity = frameCount
+        if frameCount * 2 > stereoCapacity {
+            stereoBuffer?.deallocate()
+            stereoBuffer = UnsafeMutablePointer<Float>.allocate(capacity: frameCount * 2)
+            stereoCapacity = frameCount * 2
         }
-        let mono = monoBuffer!
+        let stereo = stereoBuffer!
 
-        if listPtr.count >= 2 {
-            for i in 0..<frameCount {
-                mono[i] = (leftPtr[i] + rightPtr[i]) * 0.5
-            }
-        } else {
-            for i in 0..<frameCount {
-                mono[i] = leftPtr[i]
-            }
+        for i in 0..<frameCount {
+            stereo[i * 2] = leftPtr[i]
+            stereo[i * 2 + 1] = rightPtr[i]
         }
 
-        let bytes = frameCount * MemoryLayout<Float>.size
-        let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mono), count: bytes, deallocator: .none)
+        let bytes = frameCount * 2 * MemoryLayout<Float>.size
+        let data = Data(bytesNoCopy: UnsafeMutableRawPointer(stereo), count: bytes, deallocator: .none)
         stdout.write(data)
     }
 

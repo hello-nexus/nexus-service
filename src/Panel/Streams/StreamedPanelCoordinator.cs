@@ -49,6 +49,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly IReadOnlyList<IStreamedPanelDiscovery> _discoveries;
     private readonly StreamedPanelStore _store;
     private readonly PanelDeviceRegistry _registry;
+    private readonly Func<string, bool> _removePanel;
+    private readonly Func<string, bool> _isCustomized;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
@@ -73,8 +75,12 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Action? notifyOverlay = null,
         Func<long>? nowMs = null,
         Action<string>? notifyPanelChanged = null,
-        LcdLockState? lockState = null)
+        LcdLockState? lockState = null,
+        Func<string, bool>? removePanel = null,
+        Func<string, bool>? isCustomized = null)
     {
+        _removePanel = removePanel ?? registry.Remove;
+        _isCustomized = isCustomized ?? registry.IsCustomized;
         _discoveries = discoveries.ToList();
         _store = store;
         _registry = registry;
@@ -778,6 +784,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private string ResolvePanelDeviceId(StreamedPanelDeviceInfo info)
     {
         var records = _store.Load();
+        if (info.AdoptsFamilyRecords)
+        {
+            AdoptFamilyRecords(records, info);
+        }
         if (records.TryGetValue(info.Serial, out var rec)
             && !string.IsNullOrEmpty(rec.PanelDeviceId)
             && _registry.Get(rec.PanelDeviceId) is not null
@@ -819,6 +829,77 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         records[info.Serial] = rec;
         _store.Save(records);
         return record.Id;
+    }
+
+    /// <summary>
+    /// Gives the device's family one record under the fixed key: the most recently seen
+    /// customized one, else the most recently seen, whatever serial or key it was stored under.
+    /// Records that are not customized are removed through the same cleanup a delete does; a
+    /// customized record is never removed, so two of them both stay (the other under its own key).
+    /// Idempotent, so it also tidies a mix left by an earlier build.
+    /// </summary>
+    private void AdoptFamilyRecords(Dictionary<string, StreamedPanelRecord> records, StreamedPanelDeviceInfo info)
+    {
+        var family = info.Profile.Family;
+        var members = records
+            .Select(pair => (Serial: pair.Key, Record: pair.Value, Panel: string.IsNullOrEmpty(pair.Value.PanelDeviceId) ? null : _registry.Get(pair.Value.PanelDeviceId)))
+            .Where(m => m.Panel is not null && string.Equals(m.Panel.Capabilities?.Family, family, StringComparison.Ordinal))
+            .OrderByDescending(m => m.Panel!.LastSeenAt)
+            .ToList();
+        if (members.Count == 0 || (members.Count == 1 && members[0].Serial == info.Serial))
+        {
+            return;
+        }
+        var customized = members.Where(m => IsCustomized(m.Panel!.Id)).Select(m => m.Panel!.Id).ToHashSet(StringComparer.Ordinal);
+        var keep = members.FirstOrDefault(m => customized.Contains(m.Panel!.Id));
+        if (keep.Panel is null)
+        {
+            keep = members[0];
+        }
+        var changed = false;
+        foreach (var m in members)
+        {
+            if (m.Record.PanelDeviceId == keep.Record.PanelDeviceId)
+            {
+                changed |= m.Serial != info.Serial && records.Remove(m.Serial);
+            }
+            else if (!customized.Contains(m.Panel!.Id))
+            {
+                records.Remove(m.Serial);
+                _removePanel(m.Panel.Id);
+                changed = true;
+            }
+            else if (m.Serial == info.Serial)
+            {
+                // The fixed key goes to the survivor; this customized record keeps a key of its own.
+                records.Remove(m.Serial);
+                records[$"{info.Serial}~{m.Panel.Id}"] = m.Record;
+                changed = true;
+            }
+        }
+        if (!records.TryGetValue(info.Serial, out var current) || current.PanelDeviceId != keep.Record.PanelDeviceId)
+        {
+            records[info.Serial] = keep.Record;
+            changed = true;
+        }
+        if (changed)
+        {
+            _store.Save(records);
+        }
+    }
+
+    /// <summary>Unknown is treated as customized: a check that fails must never lead to a delete, nor escape the session start.</summary>
+    private bool IsCustomized(string panelId)
+    {
+        try
+        {
+            return _isCustomized(panelId);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[streamed-panel] customized check failed for '{panelId}': {ex.GetType().Name}: {ex.Message}");
+            return true;
+        }
     }
 
     /// <summary>
@@ -993,7 +1074,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         var scale = _registry.Get(panelDeviceId)?.HighResolution == true ? 1.0 : profile.PerformanceRenderScale;
         return scale.Equals(profile.RenderScale)
             ? info
-            : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale } };
+            : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
     }
 
     internal static bool ProfilesEqual(StreamedPanelProfile a, StreamedPanelProfile b)

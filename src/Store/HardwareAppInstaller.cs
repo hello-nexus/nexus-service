@@ -166,7 +166,7 @@ public sealed class HardwareAppInstaller : BackgroundService
     {
         var request = await ResolveAsync(appId, ct).ConfigureAwait(false);
         if (request is null) return false;
-        var result = await _installer.InstallAsync(request, ct).ConfigureAwait(false);
+        var result = await _installer.InstallAsync(request, ct, Nexus.Service.Telemetry.AppLifecycleTelemetry.ReasonAuto).ConfigureAwait(false);
         if (!result.Ok)
             ServiceLog.Warn($"[store] auto-install of {appId} failed: {result.Reason}");
         return result.Ok;

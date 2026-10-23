@@ -710,6 +710,7 @@ app.MapKeebEndpoints();
 app.MapStreamDeckEndpoints();
 app.MapDeckImageEndpoints();
 app.MapDeckEndpoints();
+app.MapHotkeyEndpoints();
 app.MapDisplayEndpoints();
 app.MapActivityEndpoints();
 app.MapLifecycleEndpoints();
@@ -966,8 +967,18 @@ static void FastServiceShutdown(WebApplication app)
             }
             catch { }
         }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Telemetry.UsageTelemetrySink>()?.PersistForShutdown(sp.GetRequiredService<IConfigStore>(), sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>()); } catch { } }),
         Task.Run(() =>
         {
+            // The fast teardown skips the hubs' disconnect, so the remembered picture is written before the flush.
+            try
+            {
+                foreach (var hub in sp.GetServices<Nexus.Service.Peripherals.BulkPanels.BulkPanelHub>())
+                {
+                    hub.Driver.PersistState();
+                }
+            }
+            catch { }
             try { sp.GetService<IConfigStore>()?.FlushNow(); } catch { }
             try { sp.GetService<ProfileManager>()?.SaveActiveProfile(); } catch { }
         }),

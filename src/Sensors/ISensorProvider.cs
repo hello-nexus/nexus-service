@@ -42,6 +42,16 @@ public interface ISensorProvider
     /// </summary>
     IReadOnlyList<GpuReadout> GetGpus();
 
+    /// <summary>
+    /// PCI subsystem ids of each discrete GPU, matched to <see cref="GetGpuModels"/> by name. Empty where the platform
+    /// exposes none (Apple Silicon, a Linux service that cannot read sysfs) and for integrated adapters, whose
+    /// subsystem is the motherboard's, not a card's.
+    /// </summary>
+    IReadOnlyList<GpuBoard> GetGpuBoards() => System.Array.Empty<GpuBoard>();
+
+    /// <summary>Each GPU model paired with its board maker where one could be read; a provider that already holds both reads overrides this to read once.</summary>
+    IReadOnlyList<GpuCard> GetGpuCards() => Nexus.Service.Sensors.GpuBoardPartners.Resolve(GetGpuModels(), GetGpuBoards());
+
     IReadOnlyList<HardwareSensor> GetMemorySensors();
     string GetMemoryTotalFormatted();
     /// <summary>

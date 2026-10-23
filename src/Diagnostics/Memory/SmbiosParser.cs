@@ -12,7 +12,11 @@ public sealed record MemoryModuleInfo(
     int? MaxSpeedMts,
     int? ConfiguredSpeedMts,
     string? Manufacturer,
-    string? PartNumber);
+    string? PartNumber)
+{
+    /// <summary>SMBIOS Module Manufacturer ID (the Type 17 field dmidecode prints under that name) as the JEDEC continuation-count byte then id byte in hex; null when the table predates the field or leaves it zero.</summary>
+    public string? ModuleManufacturerId { get; init; }
+}
 
 /// <summary>
 /// Pure SMBIOS Type 17 (Memory Device) parser over the raw buffer returned by
@@ -35,6 +39,7 @@ public static class SmbiosParser
     private const int OffsetPartNumber = 0x1A;
     private const int OffsetExtendedSize = 0x1C;
     private const int OffsetConfiguredSpeed = 0x20;
+    private const int OffsetModuleManufacturerId = 0x2C;
 
     private const ushort SizeWordUnknown = 0xFFFF;
     private const ushort SizeWordExtended = 0x7FFF;
@@ -60,6 +65,40 @@ public static class SmbiosParser
         var modules = new List<MemoryModuleInfo>(parsed.Count);
         foreach (var p in parsed) modules.Add(p.Info);
         return (modules, ComputeXmpLikelyActive(parsed));
+    }
+
+    private const byte SystemEnclosureType = 3;
+    private const int OffsetChassisType = 0x05;
+    private const byte ChassisTypeMask = 0x7F;
+
+    /// <summary>The chassis type of the first System Enclosure (Type 3) structure, without its chassis-lock bit; null when absent.</summary>
+    internal static int? ParseChassisType(byte[]? rawFirmwareTableBuffer)
+    {
+        if (rawFirmwareTableBuffer is null || rawFirmwareTableBuffer.Length < 8)
+        {
+            return null;
+        }
+
+        var end = Math.Min(8 + (int)BitConverter.ToUInt32(rawFirmwareTableBuffer, 4), rawFirmwareTableBuffer.Length);
+        var offset = 8;
+        while (offset + 4 <= end)
+        {
+            var type = rawFirmwareTableBuffer[offset];
+            var length = rawFirmwareTableBuffer[offset + 1];
+            if (length < 4 || offset + length > end || type == EndOfTableType)
+            {
+                return null;
+            }
+
+            if (type == SystemEnclosureType)
+            {
+                return ReadByte(rawFirmwareTableBuffer, offset, length, OffsetChassisType) is { } value ? value & ChassisTypeMask : null;
+            }
+
+            offset = SkipStringSet(rawFirmwareTableBuffer, offset + length, end, out _);
+        }
+
+        return null;
     }
 
     /// <summary>Each populated module with its raw SMBIOS memory-type byte (Win32_PhysicalMemory.SMBIOSMemoryType).</summary>
@@ -177,12 +216,23 @@ public static class SmbiosParser
             if (cfg is ushort c and not 0 and not SizeWordUnknown) configuredSpeedMts = c;
         }
 
+        string? moduleManufacturerId = null;
+        if (ReadByte(b, offset, length, OffsetModuleManufacturerId) is byte bankByte
+            && ReadByte(b, offset, length, OffsetModuleManufacturerId + 1) is byte idByte
+            && (bankByte | idByte) != 0)
+        {
+            moduleManufacturerId = $"{bankByte:X2}{idByte:X2}";
+        }
+
         byte? memoryType = ReadByte(b, offset, length, OffsetMemoryType);
 
         return new ParsedModule
         {
             MemoryType = memoryType,
-            Info = new MemoryModuleInfo(slot, sizeBytes, maxSpeedMts, configuredSpeedMts, manufacturer, partNumber),
+            Info = new MemoryModuleInfo(slot, sizeBytes, maxSpeedMts, configuredSpeedMts, manufacturer, partNumber)
+            {
+                ModuleManufacturerId = moduleManufacturerId,
+            },
         };
     }
 

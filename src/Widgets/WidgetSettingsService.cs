@@ -95,6 +95,17 @@ public sealed class WidgetSettingsService
         return Get(instanceId);
     }
 
+    /// <summary>The app and version behind an app widget instance, false for any other id.</summary>
+    public bool TryGetApp(string instanceId, out string appId, out string appVersion)
+    {
+        appId = "";
+        appVersion = "";
+        if (!TryResolve(_store.Load(), instanceId, out var widget, out var manifest)) return false;
+        appId = manifest!.Id;
+        appVersion = manifest.Version;
+        return true;
+    }
+
     /// <summary>
     /// Find the <see cref="PanelWidgetDto"/> with this id anywhere in the
     /// persisted layouts (active desktop dashboard + every registered panel

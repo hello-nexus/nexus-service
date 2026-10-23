@@ -23,6 +23,8 @@ namespace Nexus.Service.Platform.Displays;
 public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessProvider
 {
     private const string BacklightRoot = "/sys/class/backlight";
+    private const string DrmRoot = "/sys/class/drm";
+    internal const string DisableDdcEnv = "NEXUS_DISABLE_DDC";
     private const byte DdcAddress = 0x37;
     private const byte EdidAddress = 0x50;
     private const byte VcpBrightness = 0x10;
@@ -50,7 +52,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         lock (_gate)
         {
             _targets.Clear();
-            foreach (var t in EnumerateBacklights().Concat(EnumerateDdc()))
+            foreach (var t in EnumerateBacklights().Concat(EnumerateDdc(DrmRoot)))
             {
                 // An opted-out display is listed but not registered as a
                 // target, so no read or write can reach it later.
@@ -231,17 +233,13 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 
     // ── External monitors (DDC/CI over i2c-dev) ──
 
-    private static IEnumerable<Target> EnumerateDdc()
+    private static IEnumerable<Target> EnumerateDdc(string drmRoot)
     {
-        string[] buses;
-        try { buses = Directory.GetFiles("/dev", "i2c-*"); }
-        catch { yield break; }
+        if (Environment.GetEnvironmentVariable(DisableDdcEnv) == "1")
+            yield break;
 
-        foreach (var busPath in buses)
+        foreach (var bus in SelectDdcBuses(drmRoot))
         {
-            var n = busPath.AsSpan("/dev/i2c-".Length);
-            if (!int.TryParse(n, out var bus))
-                continue;
             // A bus is a DDC/CI monitor only if it answers a VCP 0x10 read.
             if (ReadDdcVcp(bus, VcpBrightness) is null)
                 continue;
@@ -267,6 +265,65 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
             };
             yield return new Target(false, null, bus, dto, pnpId);
         }
+    }
+
+    private const string I2cDevicesRoot = "/sys/bus/i2c/devices";
+
+    /// <summary>
+    /// I2c bus numbers to probe for DDC: buses linked from connected DRM connectors, plus every NVIDIA
+    /// adapter (the proprietary driver exposes no connector link). Probing any other /dev/i2c-* (GPU internal, SMBus) can hang the GPU.
+    /// </summary>
+    internal static List<int> SelectDdcBuses(string drmRoot, string i2cRoot = I2cDevicesRoot)
+    {
+        var buses = new SortedSet<int>();
+        string[] connectors;
+        try { connectors = Directory.GetDirectories(drmRoot, "card*-*"); }
+        catch { connectors = Array.Empty<string>(); }
+
+        foreach (var dir in connectors)
+        {
+            if (LinuxSysfs.ReadText(Path.Combine(dir, "status")) != "connected")
+                continue;
+            // The kernel links the connector's DDC adapter as "ddc"; DP AUX adapters nest an i2c-N child instead.
+            var ddcLink = Path.Combine(dir, "ddc");
+            var leaf = LinuxSysfs.ReadLinkLeaf(ddcLink);
+            if (leaf is not null)
+            {
+                AddBus(buses, leaf, ddcLink);
+                continue;
+            }
+            foreach (var child in ChildI2cLeaves(dir))
+                AddBus(buses, child, Path.Combine(dir, child));
+        }
+
+        try
+        {
+            foreach (var adapter in Directory.GetDirectories(i2cRoot, "i2c-*"))
+            {
+                if (LinuxSysfs.ReadText(Path.Combine(adapter, "name"))?.StartsWith("NVIDIA i2c adapter", StringComparison.Ordinal) == true)
+                    AddBus(buses, Path.GetFileName(adapter), adapter);
+            }
+        }
+        catch { }
+        return buses.ToList();
+    }
+
+    private static void AddBus(SortedSet<int> buses, string leaf, string adapterDir)
+    {
+        // The amdgpu SMU adapter carries power-management table transfers; a DDC probe there wedges the SMU.
+        if (LinuxSysfs.ReadText(Path.Combine(adapterDir, "name"))?.StartsWith("AMDGPU SMU", StringComparison.Ordinal) == true)
+            return;
+        if (leaf.StartsWith("i2c-", StringComparison.Ordinal)
+            && int.TryParse(leaf.AsSpan("i2c-".Length), NumberStyles.None, CultureInfo.InvariantCulture, out var bus))
+        {
+            buses.Add(bus);
+        }
+    }
+
+    private static string[] ChildI2cLeaves(string connectorDir)
+    {
+        try { return Directory.GetDirectories(connectorDir, "i2c-*").Select(d => Path.GetFileName(d)!).Order(StringComparer.Ordinal).ToArray(); }
+        catch { return Array.Empty<string>(); }
     }
 
     /// <summary>Brightness (VCP 0x10) as 0..100, scaling the raw current by the monitor's reported max.</summary>

@@ -37,6 +37,7 @@ public class ExperimentalBetaLockTests : IDisposable
     [InlineData("nzxt-kraken")]
     [InlineData("smbus-dram")]
     [InlineData("asus-ryujin-lcd")]
+    [InlineData("asus-glacial-lcd")]
     public void RequiresBeta_FirstPartyOrStableHandler_IsFalse(string handlerId)
     {
         Assert.False(DeviceControlPolicy.RequiresBeta(handlerId));
@@ -97,7 +98,7 @@ public class ExperimentalBetaLockTests : IDisposable
         Assert.Empty(DeviceControlPolicy.HandlersFor("icue"));
         Assert.DoesNotContain(DeviceControlPolicy.HandlersWithConflictApp(), DeviceControlPolicy.IsExperimental);
         Assert.Equal("nzxt-cam", DeviceControlPolicy.ConflictAppFor("nzxt-kraken"));
-        Assert.Equal(new[] { "nzxt-kraken" }, DeviceControlPolicy.HandlersFor("nzxt-cam"));
+        Assert.Equal(new[] { "nzxt-kraken", "nzxt-fan-controller" }, DeviceControlPolicy.HandlersFor("nzxt-cam"));
     }
 
     [Fact]

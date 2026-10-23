@@ -343,6 +343,7 @@ public static class LightingDevicesCatalog
         Native("Corsair",    "XC7 RGB Elite LCD",   "aio",      "0x1B1C", "0x0C42", screen: true, rgb: false),
         Native("Corsair",    "Elite Capellix LCD",  "aio",      "0x1B1C", "0x0C39", screen: true, rgb: false),
         Native("Corsair",    "Elite Capellix LCD",  "aio",      "0x1B1C", "0x0C33", screen: true, rgb: false),
+        Native("Corsair",    "Nautilus LCD Cap",    "aio",      "0x1B1C", "0x0C55", screen: true, rgb: false),
         Native("ID-Cooling", "FX-LCD",              "aio",      "0x2000", "0x3000", screen: true, rgb: false),
         Native("ASRock",     "AIO LCD",             "aio",      "0x26CE", "0x0A10", screen: true, rgb: false),
         Native("ASUS",       "ROG Strix SLC IV LCD","aio",      "0x0B05", "0x1DE6", screen: true, rgb: false),
@@ -352,6 +353,7 @@ public static class LightingDevicesCatalog
         Native("Thermalright", "Vision LCD",        "aio",      "0x87AD", "0x70DB", screen: true, rgb: false),
         Native("ASUS",       "Ryujin LCD",          "aio",      "0x0B05", "0x1AA2", screen: true, rgb: false),
         Native("Lian Li",    "Universal Screen 8.8","light",    "0x1CBE", "0xA088", screen: true, rgb: false),
+        Native("ASUS",       "ROG Crosshair X870E Glacial LCD", "light", "0x0B05", "0x1D93", screen: true, rgb: false),
 
         // HydroShift II LCD-S / LCD-C over USB: glass, pump, fan headers and ring on one bulk
         // pipe - src/Peripherals/BulkPanels/HydroShift2LcdDriver.cs.

@@ -137,6 +137,28 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
     }
 
     [Fact]
+    public void Process_manager_holds_amd_gpu_i2c_detectors_off_only_on_linux()
+    {
+        var held = new OpenRgbProcessManager("missing-exe").ResolveNativeDisabledDetectors();
+
+        foreach (var name in OpenRgbAmdGpuI2cDetectors.Names)
+        {
+            Assert.Equal(OperatingSystem.IsLinux(), held.Contains(name));
+        }
+    }
+
+    [Theory]
+    [InlineData("ASUS ROG STRIX GeForce RTX 4090 Gaming OC")]
+    [InlineData("Gigabyte GeForce RTX 3080 Gaming OC")]
+    [InlineData("MSI GeForce RTX 3070 Gaming Trio")]
+    public void Process_manager_never_holds_nvidia_gpu_i2c_detectors(string name)
+    {
+        var held = new OpenRgbProcessManager("missing-exe").ResolveNativeDisabledDetectors();
+
+        Assert.DoesNotContain(name, held);
+    }
+
+    [Fact]
     public void Process_manager_holds_the_detector_off_with_control_on_or_off()
     {
         var store = new InMemoryConfigStore();

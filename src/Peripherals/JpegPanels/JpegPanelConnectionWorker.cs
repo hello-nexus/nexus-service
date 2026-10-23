@@ -230,7 +230,8 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
                 // output reports are long enough to carry a frame chunk. Matching on the
                 // declared length rather than a usage page keeps this working across the
                 // family, whose collections are not consistently tagged.
-                if (info.OutputReportByteLength < model.ReportLength)
+                // Linux stays unattached: hidraw read() drops the report-id byte that the AsRock and ASUS reply parsers index past.
+                if (OperatingSystem.IsLinux() || info.OutputReportByteLength < model.ReportLength)
                 {
                     continue;
                 }

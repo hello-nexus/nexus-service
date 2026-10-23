@@ -233,6 +233,8 @@ public static class ProfileRoutes
                 StartupDelaySeconds = s.StartupDelaySeconds,
                 DisableGpuMonitoring = s.DisableGpuMonitoring,
                 ReadRamTemperatures = s.ReadRamTemperatures,
+                AmdGpuLighting = OperatingSystem.IsLinux() && s.AmdGpuLighting,
+                AmdGpuLightingApplicable = OperatingSystem.IsLinux(),
                 Features = s.Features,
             };
         }).AllowPanel();
@@ -426,14 +428,17 @@ public static class ProfileRoutes
             }
         });
 
-        app.MapPost("/preferences", (PreferencesPatch body, ProfileManager pm, MultiplexHub hub, Nexus.Service.Lifecycle.FeatureReconciler reconciler, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/preferences", (PreferencesPatch body, ProfileManager pm, MultiplexHub hub, Nexus.Service.Lifecycle.FeatureReconciler reconciler, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Lighting.Rgb.RgbBridge? bridge) =>
         {
+            var amdGpuLightingChanged = false;
             // Captured inside the patch, emitted after it: the current mode
             // also rides the telemetry person profile, but only a recorded
             // transition separates a deliberate switch from the v15 migration
             // that seeded every pre-existing install to "advanced".
             (string From, string To)? lightingModeChange = null;
             (string From, string To)? coolingModeChange = null;
+            Nexus.Service.Models.Panel.PanelLayoutDto? dashboardBefore = null;
+            Nexus.Service.Models.Panel.PanelLayoutDto? dashboardAfter = null;
             // ApplyPatch runs the mutation and the Features before/after
             // transition under the reconciler's own lock, so a concurrent
             // PATCH /preferences cannot interleave its own before-snapshot
@@ -468,7 +473,12 @@ public static class ProfileRoutes
                     if (panel.PanelOpacity.HasValue)             s.Panel.PanelOpacity          = Math.Clamp(panel.PanelOpacity.Value, 0.0, 1.0);
                     if (panel.WidgetOpacity.HasValue)            s.Panel.WidgetOpacity         = panel.WidgetOpacity.Value;
                     if (panel.WidgetLabels.HasValue)             s.Panel.WidgetLabels          = panel.WidgetLabels.Value;
-                    if (panel.DashboardLayout is not null)       s.Panel.DashboardLayout       = panel.DashboardLayout;
+                    if (panel.DashboardLayout is not null)
+                    {
+                        dashboardBefore = s.Panel.DashboardLayout;
+                        dashboardAfter = panel.DashboardLayout;
+                        s.Panel.DashboardLayout = panel.DashboardLayout;
+                    }
                     if (panel.DashboardGaugeGradient is not null) s.Panel.DashboardGaugeGradient = panel.DashboardGaugeGradient;
                 }
                 if (body.Overlay is { } overlay)
@@ -597,6 +607,11 @@ public static class ProfileRoutes
                 {
                     s.ReadRamTemperatures = readRam;
                 }
+                if (body.AmdGpuLighting is { } amdGpu && OperatingSystem.IsLinux() && amdGpu != s.AmdGpuLighting)
+                {
+                    s.AmdGpuLighting = amdGpu;
+                    amdGpuLightingChanged = true;
+                }
                 if (body.Features is { } features)
                 {
                     if (features.Lighting.HasValue) s.Features.Lighting = features.Lighting.Value;
@@ -658,6 +673,12 @@ public static class ProfileRoutes
             }
             pm.MarkDirty();
             PanelTopics.BroadcastPrefs(hub);
+            if (amdGpuLightingChanged)
+            {
+                bridge?.OnAmdGpuLightingChanged();
+            }
+            if (dashboardAfter is not null)
+                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, dashboardBefore, dashboardAfter, "desktop");
             return ApiResponse.Ok();
         }).AllowPanel();
     }

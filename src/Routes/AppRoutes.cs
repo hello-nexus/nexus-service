@@ -97,6 +97,16 @@ public static class AppRoutes
             return Results.Json(settings.Get(instanceId), AppJsonContext.Default.WidgetSettingsDocument);
         }).AllowPanel();
 
+        // The widget host posts this when an app widget mounts and hourly while it stays mounted; the settings
+        // editor does not, so editing a widget is not counted as use. The per-day dedupe lives in the tracker.
+        app.MapPost("/apps-api/instance/{instanceId}/used",
+            (string instanceId, WidgetSettingsService settings, Nexus.Service.Telemetry.AppUsageTracker usage) =>
+        {
+            if (settings.TryGetApp(instanceId, out var appId, out var appVersion))
+                usage.Note(appId, appVersion);
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        }).AllowPanel();
+
         app.MapPatch("/apps-api/instance/{instanceId}/settings",
             (string instanceId, WidgetSettingsPatch body, WidgetSettingsService settings) =>
         {
@@ -383,13 +393,14 @@ public static class AppRoutes
         }).AllowPanel();
 
         // The host posts this when an installed app's page surface opens.
-        app.MapPost("/apps-api/page-opened/{appId}", (string appId, AppRegistry registry, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/apps-api/page-opened/{appId}", (string appId, AppRegistry registry, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Telemetry.AppUsageTracker usage) =>
         {
             if (!AppIds.IsValid(appId) || !registry.TryGet(appId, out var entry))
             {
                 return Results.Json(ApiResponse.Fail("app not installed"), AppJsonContext.Default.ApiResponse, statusCode: 404);
             }
             Nexus.Service.Telemetry.AppPageTelemetry.CaptureOpened(telemetry, appId, entry.Manifest.Version);
+            usage.Note(appId, entry.Manifest.Version);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).AllowPanel();
 

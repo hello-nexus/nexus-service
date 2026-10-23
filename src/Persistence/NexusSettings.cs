@@ -58,6 +58,9 @@ public sealed class NexusSettings
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
 
+    /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
+    public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();
+
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
 
@@ -111,6 +114,9 @@ public sealed class NexusSettings
 
     /// <summary>False stops LHM from reading DIMM SPD temperatures, independent of the memory device's Nexus Control toggle. Applies live. NOT profile-scoped: workstation-level.</summary>
     public bool ReadRamTemperatures { get; set; } = true;
+
+    /// <summary>Linux only. False keeps the AMD GPU I2C detectors force-disabled in OpenRGB; true lifts that hold. Ignored on every other OS. Applies live. NOT profile-scoped: workstation-level.</summary>
+    public bool AmdGpuLighting { get; set; }
 
     /// <summary>True once the desktop first-run welcome screen has been shown and
     /// dismissed. Install-scoped, not cloud profile synced: excluded from
@@ -190,6 +196,9 @@ public sealed class NexusSettings
     /// <summary>True once at least one FanControl category has been imported.
     /// Same scoping as <see cref="FanControlImportOffered"/>.</summary>
     public bool FanControlImportCompleted { get; set; }
+
+    /// <summary>Global hotkeys (OS-registered key combos bound to a deck action or a deck slot). NOT profile-scoped: bindings follow the machine, so a profile switch never drops them. Additive, so it carries no schema migration; the defaults seed at service start.</summary>
+    public Nexus.Service.Hotkeys.HotkeySettings Hotkeys { get; set; } = new();
 
     /// <summary>Physical Stream Deck bindings, keyed by device serial. Profile-scoped via the <see cref="ProfileSharing.Device"/> sharing category (defaults to Shared, so it behaves like a workstation-global setting until the user opts a profile out).</summary>
     public StreamDeckSettings StreamDeck { get; set; } = new();
@@ -311,6 +320,24 @@ public sealed class TelemetrySettings
 
     /// <summary>Last non-empty GPU list (sorted, " + " joined); bridges reads where GPU enumeration came back empty.</summary>
     public string FleetGpu { get; set; } = "";
+
+    /// <summary>Last non-empty GPU board list sent in fleet specs; reused with <see cref="FleetGpu"/> when a read comes back without GPUs.</summary>
+    public List<Nexus.Service.Telemetry.FleetEventGpuCard> FleetGpuCards { get; set; } = new();
+
+    /// <summary>Last non-empty RAM module list sent in fleet specs; bridges a boot where the platform read came back empty so the stored inventory is not overwritten with nothing.</summary>
+    public List<Nexus.Service.Telemetry.FleetEventRamModule> FleetRamModules { get; set; } = new();
+
+    /// <summary>Populated module count that went with <see cref="FleetRamModules"/>, before its cap.</summary>
+    public int FleetRamModuleTotal { get; set; }
+
+    /// <summary>Last non-empty physical drive list sent in fleet specs; same role as <see cref="FleetRamModules"/>.</summary>
+    public List<Nexus.Service.Telemetry.FleetEventDrive> FleetDrives { get; set; } = new();
+
+    /// <summary>Round-trip UTC timestamp of the last process whose read returned RAM modules; <see cref="FleetRamModules"/> stops being reused once this is older than the fleet service's expiry.</summary>
+    public string FleetRamReadAt { get; set; } = "";
+
+    /// <summary>Same role as <see cref="FleetRamReadAt"/> for <see cref="FleetDrives"/>; the two lists expire independently.</summary>
+    public string FleetDrivesReadAt { get; set; } = "";
 
     /// <summary>Latched true by SystemProfileService the first time the Y70 handler reports connected; sent in fleet specs as y70Seen.</summary>
     public bool FleetY70Seen { get; set; }
@@ -1433,6 +1460,26 @@ public sealed class KrakenFirmwareLighting
 
 public sealed class DevicesSettings
 {
+    /// <summary>
+    /// Hidden, no UI. Pacing of the Glacial LCD picture upload as a percent of the gaps copied
+    /// from the vendor app's capture. 0 or less means unset, which is the default, so files store
+    /// 0 and a later change of the default reaches every install; see
+    /// <see cref="ResolveGlacialLcdUploadPace"/>.
+    /// </summary>
+    public int GlacialLcdUploadPacePercent { get; set; }
+
+    public const int DefaultGlacialLcdUploadPacePercent = 4;
+
+    /// <summary>
+    /// Hidden. Off, the Glacial LCD keeps only its native modes: nothing streams or uploads to it,
+    /// no panel record is kept for it, and the Nexus panel mode is unavailable. Read at start.
+    /// </summary>
+    public bool GlacialLcdNexusPanel { get; set; }
+
+    /// <summary>The pace to use for a stored value: unset (0 or less) is the default, and the top is capped.</summary>
+    public static int ResolveGlacialLcdUploadPace(int stored) =>
+        stored <= 0 ? DefaultGlacialLcdUploadPacePercent : Math.Min(stored, 1000);
+
     public List<string> DisabledLightingDevices { get; set; } = new();
     /// <summary>Per-card sampling mode by card id ("nearest", "rows" or "columns"); only non-default entries are stored, a card absent here reads the plain spot ("led").</summary>
     public Dictionary<string, string> SamplingModes { get; set; } = new();
@@ -1529,6 +1576,8 @@ public sealed class DevicesSettings
     public bool FlexSyncEnabled { get; set; }
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
+    /// <summary>What the ROG Crosshair X870E Glacial LCD shows. Service-side so it survives a restart; only what differs from the panel's own state is sent, and a monitor the user chose is resumed on connect.</summary>
+    public GlacialLcdSettings GlacialLcd { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
@@ -2170,6 +2219,89 @@ public sealed class HydroShift2CurveSettings
     public bool? PumpFollowsMotherboard { get; set; }
     /// <summary>The glass's Offline Mode (date and time shown while the PC is off). Null until set in Nexus, so a flag set in L-Connect is left alone.</summary>
     public bool? OfflineMode { get; set; }
+}
+
+/// <summary>One hardware-monitor widget: the sensor it shows and the label sent to the panel.</summary>
+public sealed class GlacialLcdSlot
+{
+    /// <summary>Monitoring category ("cpu", "gpu", "motherboard"); empty falls back to the slot's default sensor.</summary>
+    public string Category { get; set; } = "";
+
+    /// <summary>Sensor id within <see cref="Category"/>.</summary>
+    public string Sensor { get; set; } = "";
+
+    /// <summary>Label text. Empty uses the sensor's own name.</summary>
+    public string Label { get; set; } = "";
+
+    public GlacialLcdSlot Copy() => new() { Category = Category, Sensor = Sensor, Label = Label };
+}
+
+/// <summary>
+/// The Glacial LCD's native modes. Until the user changes something in Nexus the panel is
+/// only read: brightness, display and sleep are seeded from what it reports, and nothing is
+/// written back.
+/// </summary>
+public sealed class GlacialLcdSettings
+{
+    public const string ModeStatic = "static";
+    public const string ModeAnimated = "animated";
+    public const string ModeMonitor = "monitor";
+
+    /// <summary>A Nexus Panel streams to the display as its stored custom picture; the user picks this explicitly.</summary>
+    public const string ModePanel = "panel";
+
+    /// <summary>The animation the vendor app starts on.</summary>
+    public const int FirstRunAnimation = 1;
+
+    /// <summary>Set the first time the user changes any control; from then on Nexus writes to the panel.</summary>
+    public bool UserEdited { get; set; }
+
+    /// <summary>Set once the user has picked a mode or asset, so the panel's mode is known and may be reselected.</summary>
+    public bool ModeChosen { get; set; }
+
+    /// <summary>The saved mode, asset or widgets changed and the change has not reached the panel yet; survives a restart.</summary>
+    public bool ModePending { get; set; }
+
+    /// <summary>Per field: the user set it, so Nexus writes it. A field the user never set follows the panel instead.</summary>
+    public bool BrightnessEdited { get; set; }
+    public bool DisplayEdited { get; set; }
+    public bool SleepEdited { get; set; }
+
+    public bool DisplayOn { get; set; } = true;
+    public string Mode { get; set; } = ModeAnimated;
+    public int StaticAsset { get; set; } = 3;
+    public int AnimatedAsset { get; set; } = FirstRunAnimation;
+    public int SlotCount { get; set; } = 3;
+    public List<GlacialLcdSlot> Slots { get; set; } = DefaultSlots();
+    public int Brightness { get; set; } = 50;
+    public bool StayOnWhileAsleep { get; set; }
+
+    /// <summary>True when the user has picked the Nexus Panel mode, which is when the stream may own the display.</summary>
+    public static bool StreamChosen(GlacialLcdSettings s) => s.UserEdited && s.ModeChosen && s.Mode == ModePanel;
+
+    public static List<GlacialLcdSlot> DefaultSlots() => new()
+    {
+        new() { Category = "cpu", Label = "CPU" },
+        new() { Category = "cpu", Label = "CPU Package" },
+        new() { Category = "gpu", Label = "GPU" },
+    };
+
+    /// <summary>A deep copy with nulls from an old or hand-edited file replaced and the widget list filled out.</summary>
+    public GlacialLcdSettings Copy()
+    {
+        var copy = (GlacialLcdSettings)MemberwiseClone();
+        copy.Mode = Mode ?? ModeAnimated;
+        copy.Slots = new List<GlacialLcdSlot>();
+        var defaults = DefaultSlots();
+        for (int i = 0; i < defaults.Count; i++)
+        {
+            var slot = Slots is not null && i < Slots.Count ? Slots[i] : null;
+            copy.Slots.Add(slot is null
+                ? defaults[i]
+                : new GlacialLcdSlot { Category = slot.Category ?? "", Sensor = slot.Sensor ?? "", Label = slot.Label ?? "" });
+        }
+        return copy;
+    }
 }
 
 public sealed class Galahad2LightingSettings

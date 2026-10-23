@@ -14,7 +14,7 @@ dashboard, the on-device panels, the phone companions, and
 | **Monitoring** | CPU, GPU, RAM, disk, network, fan, temperature, FPS and battery sensors (LibreHardwareMonitor on Windows, IOKit on macOS, sysfs on Linux), 1 Hz history, a timeline of system events, per-drive SMART health. |
 | **Cooling** | Fan curves, pump and AIO control across the first-party and vendor hubs the service drives, with calibration, safety limits and a CPU thermal guard (on by default) that raises fans near the part's own temperature limit and repairs curve configs that can stall them. |
 | **Lighting** | RGB for the whole OpenRGB catalog through a bundled headless child process, plus first-party protocols. Effects engine, screen and audio sync, key-press reactions on per-key keyboards, LAN smart lights (Hue, Nanoleaf, Govee). |
-| **Devices** | Native USB drivers: HYTE (Y70, Q-series, Keeb, CNVS, hubs), Lian Li (Uni Fan, Galahad II, HydroShift LCD, HydroShift II, Strimer, wireless, TL and SL-INF LCD Flex fans), Corsair iCUE LINK, Xeneon Edge and Galleon K100 SD (screen and dials), NZXT Kraken, iBUYPOWER (AW5, keyboards, mice), Tryx Panorama, Elgato Stream Deck (keys, dials, touch strip), Nollie, Asiahorse Umbra V2. Firmware updates, and detection of competing vendor software. |
+| **Devices** | Native USB drivers: HYTE (Y70, Q-series, Keeb, CNVS, hubs), Lian Li (Uni Fan, Galahad II, HydroShift LCD, HydroShift II, Strimer, wireless, TL and SL-INF LCD Flex fans), Corsair iCUE LINK, Xeneon Edge and Galleon K100 SD (screen and dials), NZXT Kraken and RGB & Fan Controller (fans), iBUYPOWER (AW5, keyboards, mice), Tryx Panorama, Elgato Stream Deck (keys, dials, touch strip), Nollie, Asiahorse Umbra V2. Firmware updates, and detection of competing vendor software. |
 | **Panels** | Pairs and serves the React panel UIs for the Y70 touch panel, Q-series screens and the phone companion, and streams off-screen rendered panels (H.264 or raw frames) to USB display devices on Windows and macOS. |
 | **Apps** | Host for `nexus.app/1` SDK apps (sandboxed Web Worker runtime, sensor bindings) and the cloud app store. |
 | **Activity** | Screen time, app detection, installed-game catalog with per-game FPS sessions, focus modes, per-app volume mixer, media sessions, and the Steam, Discord, OBS, Twitch and Home Assistant integrations. |
@@ -70,6 +70,7 @@ service runs as LocalSystem and cannot see user-scope variables):
 | `NEXUS_DISCORD_PRESENCE_CLIENT_ID` | Discord application used for Rich Presence, to test against a scratch application. |
 | `NEXUS_LED_SPACE` | Windows only. `0` closes the LED-space look-ahead window path so every window renders through the canvas path. |
 | `NEXUS_D3D_PREVENT_THREADING` | Windows only. `1` creates the ANGLE renderer's D3D11 device with the driver's internal threading off. |
+| `NEXUS_DISABLE_DDC` | Linux only. `1` skips DDC/CI display brightness probing over the I2C buses. |
 | `NEXUS_API_BASE`, `NEXUS_CLOUD_API` | Cloud API base override for the account and LED-mapping clients, and for the store catalog proxy respectively. |
 
 ## Source layout
@@ -91,6 +92,7 @@ src/
   Panel/               # panel pairing, kiosk launch, backgrounds; Streams/ = streamed-panel sessions + transports
   Sentry/              # lock alert: armed on a locked PC, the first input pushes to paired phones through the cloud API (reads no input itself)
   Deck/  Rendering/    # deck action model + headless executor; server-rendered tiles and key images
+  Hotkeys/             # global hotkeys: bindings, OS registration status, firing; registered with the OS only (Carbon on macOS, the user helper's RegisterHotKey on Windows), never by capturing keystrokes
   Widgets/  Store/     # nexus.app/1 app host and installer; cloud app-store proxy, entitlements
   Gallery/  Media/     # shared image/video sources; media import + library
   Activity/            # screen time, app detection, audio analysis

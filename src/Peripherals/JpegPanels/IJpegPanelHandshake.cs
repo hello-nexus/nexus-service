@@ -71,3 +71,12 @@ public interface IJpegPanelSession
     /// </summary>
     bool Attach(IHidDevice device, int reportLength, object? gate, System.Threading.CancellationToken cancel);
 }
+
+/// <summary>
+/// A control channel that reports on the frames the hub pushes, for a panel whose keepalive
+/// carries the size of the last frame. Called under the hub's lock after a frame is fully sent.
+/// </summary>
+public interface IJpegPanelFrameObserver
+{
+    void OnFrameSent(int jpegBytes, int chunks);
+}

@@ -138,6 +138,7 @@ public sealed class MultiplexHub
     private static readonly HashSet<string> DesktopOnlyTopics = new(StringComparer.Ordinal)
     {
         PanelTopics.PairCodeRequest,
+        PanelTopics.Hotkeys,
     };
 
     public Task HandleClientAsync(WebSocket socket, string? phoneSessionId, CancellationToken cancellationToken = default)

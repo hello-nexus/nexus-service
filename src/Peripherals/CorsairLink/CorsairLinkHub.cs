@@ -50,6 +50,8 @@ public sealed class CorsairLinkHub : IDisposable
     internal Func<long> NowMs { get; set; } = () => Environment.TickCount64;
     internal int DetectionPollMs { get; set; } = CorsairLinkProtocol.DetectionPollMs;
     private bool _disposed;
+    private bool _devicesLogged;
+    private int _loggedDevicesKey;
     // A re-detection owns the hub: colour, duty and telemetry I/O stand down.
     private bool _redetecting;
     private volatile bool _redetectRequested;
@@ -305,15 +307,7 @@ public sealed class CorsairLinkHub : IDisposable
             _colorInner[3] = 0x00;
             _colorInner[4] = CorsairLinkProtocol.DataSetColor[0];
             _colorInner[5] = CorsairLinkProtocol.DataSetColor[1];
-            // The firmware treats a per-LED (0,0,0) as "no change" and holds the
-            // LED's prior/default color, so a black LED stays lit instead of going
-            // dark. Floor every channel to 1 (imperceptible) so each LED always
-            // receives a definite value and a black frame reads as off.
-            var dst = _colorInner.AsSpan(6, rgb.Length);
-            for (var i = 0; i < dst.Length; i++)
-            {
-                dst[i] = rgb[i] == 0 ? (byte)1 : rgb[i];
-            }
+            rgb.CopyTo(_colorInner.AsSpan(6));
 
             var offset = 0;
             var first = true;
@@ -407,10 +401,41 @@ public sealed class CorsairLinkHub : IDisposable
             };
             list.Add(dev);
         }
+        LogDevicesIfChanged(list);
         State.Devices = list;
         State.HasLcd = hasLcd;
         State.UnmappedChannels = unmapped;
         return true;
+    }
+
+    // One line per device-list change (connect, hot-plug), never per refresh.
+    private void LogDevicesIfChanged(List<CorsairLinkDevice> list)
+    {
+        var hash = new HashCode();
+        hash.Add(list.Count);
+        foreach (var d in list)
+        {
+            hash.Add(d.Channel);
+            hash.Add(d.Type);
+            hash.Add(d.Model);
+            hash.Add(d.Name);
+            hash.Add(d.LedCount);
+        }
+        var key = hash.ToHashCode();
+        if (_devicesLogged && key == _loggedDevicesKey) return;
+        _devicesLogged = true;
+        _loggedDevicesKey = key;
+        var sb = new System.Text.StringBuilder();
+        var totalLeds = 0;
+        foreach (var d in list)
+        {
+            if (sb.Length > 0) sb.Append("; ");
+            sb.Append("ch").Append(d.Channel).Append(" type=").Append(d.Type)
+                .Append(" model=").Append(d.Model).Append(" \"").Append(d.Name).Append("\" leds=").Append(d.LedCount);
+            totalLeds += d.LedCount;
+        }
+        var line = $"[corsair] hub devices ({list.Count}): {sb}; color bytes per frame={totalLeds * 3}";
+        ServiceLog.Info(line);
     }
 
     // close -> open -> read without dataType validation; for endpoints whose response

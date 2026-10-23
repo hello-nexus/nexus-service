@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Persistence;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Panel;
@@ -46,6 +47,22 @@ public sealed class PanelDeviceRegistry
     /// <summary>Raised (record ids) after a record's display fingerprint was first recorded or changed, so profile files can pick up its match key.</summary>
     public event Action<IReadOnlyList<string>>? FingerprintsChanged;
 
+    /// <summary>The family a record reuses under: a Kraken record stored without one is still the Kraken's.</summary>
+    internal static string? ReuseFamily(PanelDeviceCapabilities? caps) =>
+        caps?.Family ?? (string.Equals(caps?.Surface, PanelSurfaces.LegacyKraken, StringComparison.Ordinal) ? KrakenHub.DeviceId : null);
+
+    /// <summary>
+    /// The Kraken shares the lcd-round reuse pool with other round coolers but never swaps records with
+    /// them. Every other pairing of families reuses as it always has.
+    /// </summary>
+    internal static bool CanShareRecord(PanelDeviceCapabilities? record, string? family)
+    {
+        var recordFamily = ReuseFamily(record);
+        var krakenId = KrakenHub.DeviceId;
+        return (recordFamily != krakenId && family != krakenId)
+            || string.Equals(recordFamily, family, StringComparison.Ordinal);
+    }
+
     /// <param name="canReuse">Narrows which record a single-instance surface may reuse; null allows any.</param>
     public PanelDeviceRecord Allocate(string? displayName, PanelDeviceCapabilities? capabilities, Func<PanelDeviceRecord, bool>? canReuse = null)
     {
@@ -66,7 +83,8 @@ public sealed class PanelDeviceRegistry
             {
                 var existing = s.PanelDevices.Values
                     .Where(d => string.IsNullOrEmpty(d.DisplayId)
-                        && string.Equals(d.Capabilities?.Surface, surface, StringComparison.Ordinal)
+                        && string.Equals(PanelSurfaces.Canonical(d.Capabilities?.Surface), PanelSurfaces.Canonical(surface), StringComparison.Ordinal)
+                        && CanShareRecord(d.Capabilities, capabilities?.Family)
                         && (canReuse is null || canReuse(d)))
                     .OrderByDescending(d => d.LastSeenAt)
                     .FirstOrDefault();
@@ -1101,6 +1119,42 @@ public sealed class PanelDeviceRegistry
         foreach (var stop in stops)
             copy.Add(new PanelGaugeGradientStop { At = stop.At, Color = stop.Color });
         return copy;
+    }
+
+    /// <summary>
+    /// True when the record holds anything beyond what a freshly minted one with the same
+    /// identity and capabilities does: a layout, a theme, a background, a flag the user set.
+    /// Compared as stored JSON, so a field added to the record later is covered without a list.
+    /// </summary>
+    public static bool IsCustomized(PanelDeviceRecord r)
+    {
+        var fresh = new PanelDeviceRecord
+        {
+            Id = r.Id,
+            DisplayName = r.DisplayName,
+            FirstSeenAt = r.FirstSeenAt,
+            LastSeenAt = r.LastSeenAt,
+            Capabilities = r.Capabilities,
+        };
+        return System.Text.Json.JsonSerializer.Serialize(r, Serialization.AppJsonContext.Default.PanelDeviceRecord)
+            != System.Text.Json.JsonSerializer.Serialize(fresh, Serialization.AppJsonContext.Default.PanelDeviceRecord);
+    }
+
+    /// <summary>
+    /// <see cref="IsCustomized(PanelDeviceRecord)"/> on the stored instance, not a response clone,
+    /// which leaves out presets, the active preset and the display fields.
+    /// </summary>
+    public bool IsCustomized(string id)
+    {
+        var customized = false;
+        _store.Read(s =>
+        {
+            if (s.PanelDevices.TryGetValue(id, out var stored))
+            {
+                customized = IsCustomized(stored);
+            }
+        });
+        return customized;
     }
 
     // The response clone: DisplayFingerprint and SiblingDisplayIds stay in the store, off the wire.
