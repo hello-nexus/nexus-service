@@ -22,7 +22,7 @@ namespace Nexus.Service.Sensors;
 /// On non-Windows platforms this class should never be instantiated - the
 /// factory in Program.cs gates on RuntimeInformation.IsOSPlatform.
 /// </summary>
-public sealed class LibreHardwareSensorProvider : ISensorProvider
+public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 {
     private readonly LhmComputer _lhm;
     private readonly AstralGpuSupplement _astral;
@@ -37,6 +37,8 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         _astralMonitor = astral;
         _astral = new AstralGpuSupplement(new AstralNvApiClient(), astral);
     }
+
+    public void Dispose() => _astral.Dispose();
 
     public void BeforeSmartRead() => _lhm.BeforeSmartRead();
 

@@ -209,4 +209,29 @@ public class AstralSupplementFeedTests
         }
         Assert.True(timer.Disposed);
     }
+
+    [Fact]
+    public void A_fallback_tick_that_fires_slightly_early_still_reads()
+    {
+        var rig = new Rig();
+        rig.ListTick();
+        rig.Idle(5);
+        rig.Supplement.FallbackTick();
+        var reads = rig.Client.Reads;
+        rig.Time.Now = rig.Time.Now.AddSeconds(0.7);
+        rig.Supplement.FallbackTick();
+        Assert.Equal(reads + 1, rig.Client.Reads);
+    }
+
+    [Fact]
+    public void Disposing_the_supplement_stops_the_fallback_for_good()
+    {
+        var rig = new Rig();
+        rig.ListTick();
+        var timer = rig.Time.Last!;
+        rig.Supplement.Dispose();
+        Assert.True(timer.Disposed);
+        rig.ListTick(2);
+        Assert.Equal(1, rig.Time.TimersCreated);
+    }
 }

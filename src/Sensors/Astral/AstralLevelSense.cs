@@ -6,9 +6,9 @@ namespace Nexus.Service.Sensors.Astral;
 public readonly record struct AstralAngles(float X, float Y, float Z);
 
 /// <summary>
-/// G-sensor block (ITE IT8915FN registers 0x70-0x76): big-endian X, Y, Z words clamped
-/// to +-4096 (1 g), then a status byte. Angles are asin(x), asin(y), acos(z) of the
-/// normalized vector, as GPU Tweak III computes them.
+/// G-sensor block read from the card's power-monitor chip: big-endian X, Y, Z words
+/// clamped to one g of full scale, then a status byte. Angles are asin(x), asin(y),
+/// acos(z) of the normalized vector.
 /// </summary>
 internal static class AstralGSensorParser
 {
@@ -42,7 +42,7 @@ internal static class AstralGSensorParser
 /// <summary>
 /// Level Sense for one card. Readings are smoothed (half old, half new); a calibration
 /// keeps the most frequent smoothed value per axis over <see cref="CalibrationSamples"/>
-/// readings (smallest on a tie). X and Y deviations keep GPU Tweak III's rule of comparing
+/// readings (smallest on a tie). X and Y deviations keep the vendor's rule of comparing
 /// magnitudes across zero; Sag and Lean carry direction (+ sag: free end lower, + lean: top
 /// edge toward the fans), with +X running from the PCIe fingers to the top edge and +Z out
 /// through the fans. Not thread-safe; the owner locks.
@@ -86,7 +86,7 @@ internal sealed class AstralLevelSense
         return Calibration;
     }
 
-    /// <summary>GPU Tweak III's X and Y: how far each moved from the calibration.</summary>
+    /// <summary>X and Y in the vendor's convention: how far each moved from the calibration.</summary>
     public (float X, float Y)? Deviation => _smoothed is { } n && Calibration is { } c
         ? (Delta(n.X, c.X), Delta(n.Y, c.Y))
         : null;

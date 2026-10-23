@@ -35,9 +35,9 @@ public static class AstralNoticeCommands
     public const string CancelType = "astral.cancel";
 
     /// <summary>Never held by the notification gate: a shutdown countdown must show.</summary>
-    public static Task NoticeAsync(HelperRegistry registry, AstralNoticePayload payload, CancellationToken ct = default)
+    public static Task NoticeAsync(HelperRegistry registry, AstralNoticePayload payload, HelperConnection? target = null, CancellationToken ct = default)
     {
-        var conn = registry.GetAny();
+        var conn = target ?? registry.GetAny();
         if (conn is null) return Task.CompletedTask;
         return conn.SendAsync(
             type: NoticeType,

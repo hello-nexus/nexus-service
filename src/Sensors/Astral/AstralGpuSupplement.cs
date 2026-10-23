@@ -20,7 +20,7 @@ namespace Nexus.Service.Sensors.Astral;
 /// NvAPI_EnumPhysicalGPUs call, since LHM's public IHardware surface exposes
 /// no PCI ids to match on directly.
 /// </summary>
-internal sealed class AstralGpuSupplement
+internal sealed class AstralGpuSupplement : IDisposable
 {
     // The G-sensor retry delay doubles per miss up to this many doublings.
     private const int MaxGSensorBackoffShift = 6;
@@ -35,6 +35,7 @@ internal sealed class AstralGpuSupplement
     private readonly AstralMonitor? _monitor;
     private readonly object _lock = new();
     private ITimer? _fallback;
+    private bool _disposed;
     private readonly Dictionary<int, GpuState> _states = new();
 
     public AstralGpuSupplement(IAstralNvApiClient client, AstralMonitor? monitor = null)
@@ -194,7 +195,21 @@ internal sealed class AstralGpuSupplement
     // answering.
     private void EnsureFallback()
     {
+        if (_disposed)
+        {
+            return;
+        }
         _fallback ??= _timeProvider.CreateTimer(_ => FallbackTick(), null, _probeInterval, _probeInterval);
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            _disposed = true;
+            _fallback?.Dispose();
+            _fallback = null;
+        }
     }
 
     internal void FallbackTick()
@@ -227,7 +242,8 @@ internal sealed class AstralGpuSupplement
     {
         foreach (var state in _states.Values)
         {
-            if (state.LastReadout is not null && now >= state.NextProbeUtc && now - state.DrivenUtc >= _probeInterval * ExternalSilenceIntervals)
+            // A tick that fires a little early still reads; the margin is less than one interval so a read never repeats within a tick.
+            if (state.LastReadout is not null && now + _probeInterval / 2 >= state.NextProbeUtc && now - state.DrivenUtc >= _probeInterval * ExternalSilenceIntervals)
             {
                 return state;
             }

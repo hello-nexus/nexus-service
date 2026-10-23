@@ -229,7 +229,7 @@ internal static class TrayBootstrap
 
         // Diagnostics alerts - pushed down the pipe, same as pairing/transfer.
         var diagAlerts = app.Services.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
-        void SendDiagnosticsNotice(Nexus.Service.Diagnostics.DiagnosticsAlertNotice notice)
+        void SendDiagnosticsNotice(Nexus.Service.Diagnostics.DiagnosticsAlertNotice notice, HelperConnection? target = null)
         {
             try
             {
@@ -243,7 +243,7 @@ internal static class TrayBootstrap
                         CancelLabel = "Cancel shutdown",
                         CancelId = cancelId,
                         WindowPath = path ?? "",
-                    }).ObserveFaults();
+                    }, target).ObserveFaults();
                 }
                 else
                 {
@@ -252,7 +252,7 @@ internal static class TrayBootstrap
             }
             catch (Exception ex) { Console.Error.WriteLine($"[diagnostics-notify] show failed: {ex.Message}"); }
         }
-        diagAlerts.AlertNeedsAttention += SendDiagnosticsNotice;
+        diagAlerts.AlertNeedsAttention += notice => SendDiagnosticsNotice(notice);
 
         // Cancel on an Astral countdown notice applies to the countdown it was made for; a helper that
         // connects mid-countdown is shown the notice again.
@@ -267,9 +267,9 @@ internal static class TrayBootstrap
             }
             catch (Exception ex) { ServiceLog.Warn($"[astral] cancel from notice: bad payload: {ex.Message}"); }
         };
-        helperRegistry.Connected += _ =>
+        helperRegistry.Connected += conn =>
         {
-            if (astral.CurrentCountdownNotice() is { } running) SendDiagnosticsNotice(running);
+            if (astral.CurrentCountdownNotice() is { } running) SendDiagnosticsNotice(running, conn);
         };
 
         // Startup conflict shutdown - a native notification listing what it
