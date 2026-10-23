@@ -1298,7 +1298,7 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingFrameWriter>());
         services.AddHostedService<Nexus.Service.Peripherals.AsiahorseUmbra.UmbraConnectionWorker>();
 
-        // NZXT Kraken Elite V2: HID control + WinUSB bulk LCD, cooling + per-LED lighting.
+        // NZXT Kraken Elite V2: HID control + bulk LCD (WinUSB / usbfs), cooling + per-LED lighting.
 #if WINDOWS
         services.AddSingleton<Nexus.Service.Peripherals.Nzxt.IKrakenLcdTransportFactory,
                               Nexus.Service.Peripherals.Nzxt.WindowsKrakenLcdTransportFactory>();
