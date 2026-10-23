@@ -50,6 +50,37 @@ public static class ServiceLog
     public static string LogsDirectory =>
         _path is not null ? Path.GetDirectoryName(_path)! : ResolveLogsDir();
 
+    /// <summary>
+    /// Per-user fallback for user-session writers (helper, tray) whose %ProgramData% log file is
+    /// not writable for them. Resolved against the calling user's LocalAppData.
+    /// </summary>
+    internal static string UserFallbackLogsDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Nexus", "logs");
+
+    // File names whose shared-dir write failed this process: later lines go straight to the fallback.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> s_userLogPrimaryFailed = new();
+
+    /// <summary>Appends to a user-session log under the shared logs dir, falling back to the per-user dir when that is not writable.</summary>
+    internal static void AppendUserSessionLog(string fileName, byte[] bytes)
+    {
+        if (!s_userLogPrimaryFailed.ContainsKey(fileName))
+        {
+            try
+            {
+                var dir = LogsDirectory;
+                Directory.CreateDirectory(dir);
+                using var fs = new FileStream(Path.Combine(dir, fileName), FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                fs.Write(bytes, 0, bytes.Length);
+                return;
+            }
+            catch { s_userLogPrimaryFailed[fileName] = true; }
+        }
+        var fallback = UserFallbackLogsDirectory;
+        Directory.CreateDirectory(fallback);
+        using var ffs = new FileStream(Path.Combine(fallback, fileName), FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        ffs.Write(bytes, 0, bytes.Length);
+    }
+
     public static void Initialize()
     {
         // Re-entry would tee the tee: each call captures the current Console.Out

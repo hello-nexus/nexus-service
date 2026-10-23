@@ -73,7 +73,8 @@ Q-series screens.
   where that app is installed.
 - First-party drivers under `Peripherals/`: HYTE Keeb, CNVS, hubs, Y70,
   Q-series; iBUYPOWER keyboards and mice; the Lian Li Uni fan family, Galahad
-  II AIO, Strimer, SL wireless; Corsair iCUE LINK and Xeneon Edge; NZXT Kraken;
+  II AIO, Strimer, SL wireless; Corsair iCUE LINK and Xeneon Edge; NZXT Kraken and RGB & Fan
+  Controller (fans);
   iBUYPOWER AW5; Tryx; Nollie ARGB channel controllers (the 32-channel
   board's two Strimer connectors present as one port each, pre-wired with
   the Lian Li cable; what a board runs once Nexus lets go is set through

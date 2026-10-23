@@ -160,6 +160,28 @@ public class SmbiosParserTests
         return AppendStrings(b, strings);
     }
 
+    [Fact]
+    public void ModuleManufacturerIdField_isExposedAsHex()
+    {
+        const byte length = 0x30;
+        var strings = new List<string> { "DIMM_A1", "Unknown", "F5-6000J3038F16G" };
+        var b = new byte[length];
+        b[0] = MemoryDeviceType;
+        b[1] = length;
+        WriteU16(b, 0x0C, 16384);
+        b[0x10] = 1;
+        b[0x12] = MemoryTypeDdr5;
+        b[0x17] = 2;
+        b[0x1A] = 3;
+        b[0x2C] = 0x04; // continuation count
+        b[0x2D] = 0xCD; // id byte
+        var table = BuildTable(AppendStrings(b, strings));
+
+        var (modules, _) = SmbiosParser.Parse(table);
+
+        Assert.Equal("04CD", modules.Single().ModuleManufacturerId);
+    }
+
     private static byte[] BuildEmptySlotType17(ushort handle, string deviceLocator)
     {
         const byte length = 0x22;

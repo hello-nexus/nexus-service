@@ -108,7 +108,7 @@ public class NexusServiceCollectionExtensionsTests
         var handlers = sp.GetServices<IDeviceHandler>().ToArray();
         // CNVS, QSeries (Q60+Q80 collapsed), Y70, Keeb, IbpKeyboard, IbpMouse, GalleonSd, FanHub, AW5,
         // NP50, SmartHub, LianLi (one per hub slot), LianLiWireless, LianLiFlex, LianLiTl, Galahad2, CorsairLink,
-        // CorsairLinkLcd, Strimer, Nollie, AsiahorseUmbra, Tryx, StreamDeck, Kraken, SmbusDram (the chipset
+        // CorsairLinkLcd, Strimer, Nollie, AsiahorseUmbra, Tryx, StreamDeck, Kraken, NzxtFanController, SmbusDram (the chipset
         // bus as a device), plus one JpegPanelHandler per JpegPanelModel (Galahad II LCD,
         // Corsair XC7, Corsair Elite Capellix, ID-Cooling FX-LCD).
         // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8,
