@@ -14,12 +14,12 @@ internal readonly record struct AstralStep(
 
 /// <summary>
 /// Power Detector for one ROG Astral card, fed one reading per second (all six
-/// 12V-2x6 pin currents) from the existing GPU read. Limits follow GPU Tweak III:
-/// overcurrent at 12.5 A and critical at 17 A (18 and 20 A with a ROG Equalizer
-/// cable). With the matching shutdown on, a pin over the overcurrent limit for the
-/// chosen time starts a countdown, and a critical pin (two readings in a row) starts
-/// a short one. A cancel only holds off further overcurrent countdowns; a critical
-/// pin always arms again. Not thread-safe; the owner locks. Allocation free.
+/// 12V-2x6 pin currents) from the existing GPU read. Limits follow GPU Tweak III and
+/// rise with a ROG Equalizer cable. With the matching shutdown on, a pin over the
+/// overcurrent limit for the chosen time starts a countdown, and a critical pin (two
+/// readings in a row) starts a short one. A cancel only applies to an overcurrent
+/// countdown and holds further ones off; a critical countdown cannot be cancelled.
+/// Not thread-safe; the owner locks. Allocation free.
 /// </summary>
 internal sealed class AstralPowerDetector
 {
@@ -202,14 +202,15 @@ internal sealed class AstralPowerDetector
         _hotReported = _deadReported = false;
     }
 
+    /// <summary>Stops an overcurrent countdown and holds further ones off. A critical countdown cannot be cancelled and keeps its end time.</summary>
     public bool Cancel()
     {
-        if (!Running || ShutdownIssued)
+        if (!Running || ShutdownIssued || Critical)
         {
             return false;
         }
         Running = false;
-        HeldOff |= !Critical;
+        HeldOff = true;
         return true;
     }
 

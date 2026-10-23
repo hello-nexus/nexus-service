@@ -33,6 +33,7 @@ public sealed class AstralMonitor
         public readonly float[] Amps = new float[AstralTelemetryParser.PinCount];
         public AstralLevelSense? Level;
         public long CalibratedAtMs;
+        public long CountdownId;
         public DateTimeOffset LastFeed;
         public DateTimeOffset NextCalibrationCheck;
     }
@@ -43,6 +44,7 @@ public sealed class AstralMonitor
     private readonly object _lock = new();
     private readonly Dictionary<string, Card> _cards = new(StringComparer.Ordinal);
     private ITimer? _timer;
+    private long _countdownSeq;
 
     /// <summary>Delivers a notice through the diagnostics alert path.</summary>
     internal Action<DiagnosticsAlertNotice>? AlertSink { get; set; }
@@ -85,10 +87,10 @@ public sealed class AstralMonitor
         AstralStep step;
         var settings = _store.Load().Astral;
         AstralAlertKind kind;
-        Card card;
+        DiagnosticsAlertNotice? countdown = null;
         lock (_lock)
         {
-            if (!_cards.TryGetValue(id, out card!))
+            if (!_cards.TryGetValue(id, out var card))
             {
                 card = _cards[id] = new Card { Id = id };
             }
@@ -96,18 +98,20 @@ public sealed class AstralMonitor
             amps[..card.Amps.Length].CopyTo(card.Amps);
             step = card.Detector.Update(card.Amps, settings, now);
             kind = step.Alert;
+            if (step.CountdownStarted)
+            {
+                card.CountdownId = ++_countdownSeq;
+                countdown = CountdownNotice(card, now);
+            }
             if (step.CountdownStarted || step.CountdownCancelled)
             {
                 Rearm(now);
             }
         }
 
-        if (step.CountdownStarted)
+        if (countdown is not null)
         {
-            var seconds = (int)Math.Round((card.Detector.EndsUtc - now).TotalSeconds);
-            var why = card.Detector.Critical ? "a pin at its critical current" : "a pin over its current limit";
-            Send(new DiagnosticsAlertNotice(
-                "ROG Astral shutdown", $"{name}: shutting down in {seconds} s because of {why}. Cancel to stop it.", CountdownKind));
+            Send(countdown);
         }
         else if (kind != AstralAlertKind.None && settings.Alerts)
         {
@@ -197,6 +201,59 @@ public sealed class AstralMonitor
             }
         }
     }
+
+    // Caller holds _lock. Only an overcurrent countdown carries a cancel action.
+    private static DiagnosticsAlertNotice CountdownNotice(Card card, DateTimeOffset now)
+    {
+        var d = card.Detector;
+        var seconds = Math.Max(0, (int)Math.Round((d.EndsUtc - now).TotalSeconds));
+        return d.Critical
+            ? new DiagnosticsAlertNotice(
+                "ROG Astral shutdown", $"{card.Name}: shutting down in {seconds} s because a pin reached its critical current.", CountdownKind)
+            : new DiagnosticsAlertNotice(
+                "ROG Astral shutdown", $"{card.Name}: shutting down in {seconds} s because a pin stayed over its current limit. Cancel to stop it.",
+                CountdownKind, card.CountdownId);
+    }
+
+    /// <summary>The notice for the countdown that ends first, or null; resent when a helper connects mid-countdown.</summary>
+    public DiagnosticsAlertNotice? CurrentCountdownNotice()
+    {
+        lock (_lock)
+        {
+            Card? soonest = null;
+            foreach (var card in _cards.Values)
+            {
+                var d = card.Detector;
+                if (d.Running && !d.ShutdownIssued && (soonest is null || d.EndsUtc < soonest.Detector.EndsUtc))
+                {
+                    soonest = card;
+                }
+            }
+            return soonest is null ? null : CountdownNotice(soonest, _time.GetUtcNow());
+        }
+    }
+
+    /// <summary>Cancels the countdown a notice's Cancel button was made for; a button from an earlier countdown does nothing.</summary>
+    public void CancelCountdown(long id)
+    {
+        lock (_lock)
+        {
+            var any = false;
+            foreach (var card in _cards.Values)
+            {
+                any |= card.CountdownId == id && card.Detector.Cancel();
+            }
+            if (any)
+            {
+                Rearm(_time.GetUtcNow());
+            }
+        }
+    }
+
+    /// <summary>Set by the dev-tools simulation to add its card to every GPU list.</summary>
+    internal Action<List<GpuReadout>>? SimulatedGpus { get; set; }
+
+    public void AppendSimulatedGpus(List<GpuReadout> gpus) => SimulatedGpus?.Invoke(gpus);
 
     public void Remove(string id)
     {
@@ -295,7 +352,11 @@ public sealed class AstralMonitor
 
     private void Shutdown(Card card)
     {
-        var reason = $"Nexus: {card.Name} 12V-2x6 connector {(card.Detector.Critical ? "critical" : "overcurrent")} protection";
+        string reason;
+        lock (_lock)
+        {
+            reason = $"Nexus: {card.Name} 12V-2x6 connector {(card.Detector.Critical ? "critical" : "overcurrent")} protection";
+        }
         var ok = true;
         if (card.Simulated)
         {

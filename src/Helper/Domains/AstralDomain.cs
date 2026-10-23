@@ -14,6 +14,8 @@ public sealed class AstralNoticePayload
     public string Title { get; set; } = "";
     public string Text { get; set; } = "";
     public string CancelLabel { get; set; } = "";
+    /// <summary>The countdown the Cancel button applies to.</summary>
+    public long CancelId { get; set; }
     /// <summary>SPA path the toast body, and the balloon fallback, opens.</summary>
     public string WindowPath { get; set; } = "";
 }
@@ -21,6 +23,7 @@ public sealed class AstralNoticePayload
 /// <summary>Payload for <c>astral.cancel</c>. Helper-to-service: the user pressed Cancel on the countdown notice.</summary>
 public sealed class AstralCancelPayload
 {
+    public long Id { get; set; }
 }
 
 // JSON source-gen registration lives in src/Serialization/AppJsonContext.cs.

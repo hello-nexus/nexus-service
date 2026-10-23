@@ -182,6 +182,11 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
         return _getPciIdentifiers!(handle, out _, out subSystemId, out _, out _) == NvStatus.Ok;
     }
 
+    private readonly byte[] _telemetryBuffer = new byte[AstralTelemetryParser.BlockSize];
+    private readonly byte[] _gSensorBuffer = new byte[AstralGSensorParser.BlockSize];
+    private readonly byte[] _telemetryRegister = { AstralRegisterAddress };
+    private readonly byte[] _gSensorRegister = { AstralGSensorParser.RegisterAddress };
+
     public bool TryReadAstralBlock(int adapterIndex, out byte[] block) =>
         TryReadRegisters(adapterIndex, AstralRegisterAddress, AstralTelemetryParser.BlockSize, out block);
 
@@ -196,8 +201,9 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
             return false;
         }
 
-        var buffer = new byte[size];
-        var regAddress = new byte[] { register };
+        // Reused: the owner reads one block at a time and finishes with it before the next read.
+        var buffer = register == AstralRegisterAddress ? _telemetryBuffer : _gSensorBuffer;
+        var regAddress = register == AstralRegisterAddress ? _telemetryRegister : _gSensorRegister;
         NvStatus status;
 
         unsafe

@@ -33,8 +33,6 @@ public sealed class AstralSim
     // A vertically mounted card at rest: X on the height axis, Y tilted slightly toward the bracket.
     private static readonly AstralAngles Rest = new(90f, 1.2f, 90f);
 
-    public static AstralSim? Current { get; private set; }
-
     private readonly AstralMonitor _monitor;
     private readonly object _lock = new();
     private bool _active;
@@ -46,10 +44,8 @@ public sealed class AstralSim
     public AstralSim(AstralMonitor monitor)
     {
         _monitor = monitor;
-        Current = this;
+        monitor.SimulatedGpus = Append;
     }
-
-    public static void AppendGpu(List<GpuReadout> gpus) => Current?.Append(gpus);
 
     public AstralSimDto Get()
     {

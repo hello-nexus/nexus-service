@@ -14,8 +14,8 @@ namespace Nexus.Service.Diagnostics;
 /// needs attention. Consumed the same way as
 /// <see cref="Nexus.Service.Transfer.TransferAttentionNotice"/>: platform
 /// bootstraps subscribe and surface a tray balloon / native banner.</summary>
-/// <summary>Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to.</summary>
-public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind);
+/// <summary>ActionId names the countdown a Cancel button on the notice applies to. Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to.</summary>
+public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind, long? ActionId = null);
 
 /// <summary>
 /// Polls <see cref="DiagnosticsHealthModel"/> every 5 minutes (first check 2

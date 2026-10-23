@@ -140,15 +140,21 @@ public class AstralPowerDetectorTests
     }
 
     [Fact]
-    public void Cancelling_a_critical_countdown_arms_it_again_while_the_pin_stays_critical()
+    public void A_critical_countdown_cannot_be_cancelled_and_keeps_its_end_time()
     {
         var d = new AstralPowerDetector();
         var s = new AstralSettings { CriticalShutdown = true };
         Tick(d, Pins(18f), s, 0);
         Assert.True(Tick(d, Pins(18f), s, 1).CountdownStarted);
-        Assert.True(d.Cancel());
+        var ends = d.EndsUtc;
+        for (var i = 2; i < 8; i++)
+        {
+            Assert.False(d.Cancel());
+            Assert.False(Tick(d, Pins(18f), s, i).CountdownStarted);
+        }
+        Assert.True(d.Running);
         Assert.False(d.HeldOff);
-        Assert.True(Tick(d, Pins(18f), s, 2).CountdownStarted);
+        Assert.Equal(ends, d.EndsUtc);
     }
 
     [Fact]

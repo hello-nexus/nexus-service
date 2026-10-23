@@ -22,11 +22,19 @@ namespace Nexus.Service.Sensors.Astral;
 /// </summary>
 internal sealed class AstralGpuSupplement
 {
+    // The G-sensor retry delay doubles per miss up to this many doublings.
+    private const int MaxGSensorBackoffShift = 6;
+    // The GPU list counts as driving the read while it probed within this many intervals.
+    private const int ExternalSilenceIntervals = 3;
+    // A card that has not answered for this many intervals no longer keeps the fallback alive.
+    private const int GiveUpIntervals = 60;
+
     private readonly IAstralNvApiClient _client;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _probeInterval;
     private readonly AstralMonitor? _monitor;
     private readonly object _lock = new();
+    private ITimer? _fallback;
     private readonly Dictionary<int, GpuState> _states = new();
 
     public AstralGpuSupplement(IAstralNvApiClient client, AstralMonitor? monitor = null)
@@ -52,6 +60,12 @@ internal sealed class AstralGpuSupplement
         public bool LoggedFirstGSensor;
         public int GSensorMisses;
         public DateTimeOffset NextGSensorUtc;
+        public string HwId = "";
+        public string HwName = "";
+        public string? Name;
+        public string? CalibrationKey;
+        public DateTimeOffset DrivenUtc;
+        public DateTimeOffset LastGoodUtc;
         public AstralTelemetryParser.AstralReadout? LastReadout;
     }
 
@@ -82,6 +96,8 @@ internal sealed class AstralGpuSupplement
     /// </summary>
     public void AppendSensors(string hwIdentifier, string hwId, string hwName, List<HardwareSensor> result)
     {
+        Span<float> amps = stackalloc float[AstralTelemetryParser.PinCount];
+        Delivery delivery = default;
         lock (_lock)
         {
             if (!TryGetState(hwIdentifier, out var state))
@@ -94,12 +110,13 @@ internal sealed class AstralGpuSupplement
                 return;
             }
 
+            (state.HwId, state.HwName) = (hwId, hwName);
             var now = _timeProvider.GetUtcNow();
             if (now >= state.NextProbeUtc)
             {
                 state.NextProbeUtc = now + _probeInterval;
-                Probe(state, state.AdapterIndex);
-                Feed(state, hwId, hwName, now);
+                state.DrivenUtc = now;
+                delivery = ReadAndPrepare(state, now, amps);
             }
 
             if (state.LastReadout is { } readout)
@@ -108,44 +125,126 @@ internal sealed class AstralGpuSupplement
                 _monitor?.AppendLevelSensors(hwId, hwName, result);
             }
         }
+
+        // The monitor writes settings and raises alerts, so it runs outside the lock.
+        Deliver(delivery, amps);
     }
 
-    // Hands the fresh readings to the monitor: pin currents, then the G-sensor with
-    // backoff (1 s doubling to 60 s) so a card without one is not hammered.
-    private void Feed(GpuState state, string hwId, string hwName, DateTimeOffset now)
+    // Everything the monitor is handed after a read, resolved under the lock.
+    private readonly record struct Delivery(
+        string HwId, string Name, string Key, bool Pins, AstralAngles? Angles);
+
+    // Probes the card. Only a successful read is handed on: a failed one must not
+    // replay the retained readout as a fresh sample. The G-sensor backs off after misses.
+    private Delivery ReadAndPrepare(GpuState state, DateTimeOffset now, Span<float> amps)
     {
-        if (_monitor is null || state.LastReadout is not { } readout)
+        if (!Probe(state, state.AdapterIndex, out var readout) || _monitor is null)
         {
-            return;
+            return default;
         }
 
-        var name = AstralAibVendors.EnrichName(hwName, state.SubSystemId, true);
-        Span<float> amps = stackalloc float[AstralTelemetryParser.PinCount];
+        state.LastGoodUtc = now;
+        EnsureFallback();
+        state.Name ??= AstralAibVendors.EnrichName(state.HwName, state.SubSystemId, true);
+        state.CalibrationKey ??= CalibrationKey(state.AdapterIndex, state.SubSystemId);
         for (var i = 0; i < amps.Length; i++)
         {
             amps[i] = readout.Pins[i].CurrentAmps;
         }
-        _monitor.Feed(hwId, name, CalibrationKey(state.AdapterIndex, state.SubSystemId), amps);
 
-        if (now < state.NextGSensorUtc)
+        AstralAngles? angles = null;
+        if (now >= state.NextGSensorUtc)
+        {
+            var ok = _client.TryReadGSensorBlock(state.AdapterIndex, out var block);
+            angles = ok ? AstralGSensorParser.Parse(block) : null;
+            if (!state.LoggedFirstGSensor)
+            {
+                state.LoggedFirstGSensor = true;
+                ServiceLog.Info($"[astral] gpu{state.AdapterIndex} first G-sensor read {(angles is null ? "failed" : "ok")}, raw={Convert.ToHexString(block)}");
+            }
+            if (angles is null)
+            {
+                state.GSensorMisses = Math.Min(state.GSensorMisses + 1, MaxGSensorBackoffShift);
+                state.NextGSensorUtc = now + TimeSpan.FromSeconds(1 << state.GSensorMisses);
+            }
+            else
+            {
+                state.GSensorMisses = 0;
+            }
+        }
+        return new Delivery(state.HwId, state.Name, state.CalibrationKey, true, angles);
+    }
+
+    private void Deliver(Delivery d, ReadOnlySpan<float> amps)
+    {
+        if (!d.Pins || _monitor is null)
         {
             return;
         }
-        var ok = _client.TryReadGSensorBlock(state.AdapterIndex, out var block);
-        var angles = ok ? AstralGSensorParser.Parse(block) : null;
-        if (!state.LoggedFirstGSensor)
+        _monitor.Feed(d.HwId, d.Name, d.Key, amps);
+        if (d.Angles is { } a)
         {
-            state.LoggedFirstGSensor = true;
-            ServiceLog.Info($"[astral] gpu{state.AdapterIndex} first G-sensor read {(angles is null ? "failed" : "ok")}, raw={Convert.ToHexString(block)}");
+            _monitor.FeedAngles(d.HwId, a);
         }
-        if (angles is { } a)
+    }
+
+    // A card is protected only while its pins are read. The GPU list drives the read when
+    // something asks for it; this timer covers the rest. It exists only once a card has
+    // answered, reads nothing while the list is driving, and goes away once the card stops
+    // answering.
+    private void EnsureFallback()
+    {
+        _fallback ??= _timeProvider.CreateTimer(_ => FallbackTick(), null, _probeInterval, _probeInterval);
+    }
+
+    internal void FallbackTick()
+    {
+        Span<float> amps = stackalloc float[AstralTelemetryParser.PinCount];
+        while (true)
         {
-            state.GSensorMisses = 0;
-            _monitor.FeedAngles(hwId, a);
-            return;
+            Delivery delivery;
+            lock (_lock)
+            {
+                var now = _timeProvider.GetUtcNow();
+                var state = NextFallbackState(now);
+                if (state is null)
+                {
+                    if (_fallback is not null && !AnyAnswering(now))
+                    {
+                        _fallback.Dispose();
+                        _fallback = null;
+                    }
+                    return;
+                }
+                state.NextProbeUtc = now + _probeInterval;
+                delivery = ReadAndPrepare(state, now, amps);
+            }
+            Deliver(delivery, amps);
         }
-        state.GSensorMisses = Math.Min(state.GSensorMisses + 1, 6);
-        state.NextGSensorUtc = now + TimeSpan.FromSeconds(1 << state.GSensorMisses);
+    }
+
+    private GpuState? NextFallbackState(DateTimeOffset now)
+    {
+        foreach (var state in _states.Values)
+        {
+            if (state.LastReadout is not null && now >= state.NextProbeUtc && now - state.DrivenUtc >= _probeInterval * ExternalSilenceIntervals)
+            {
+                return state;
+            }
+        }
+        return null;
+    }
+
+    private bool AnyAnswering(DateTimeOffset now)
+    {
+        foreach (var state in _states.Values)
+        {
+            if (state.LastReadout is not null && now - state.LastGoodUtc < _probeInterval * GiveUpIntervals)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     internal static string CalibrationKey(int adapterIndex, uint subSystemId) => $"gpu{adapterIndex}:{subSystemId:X8}";
@@ -174,15 +273,15 @@ internal sealed class AstralGpuSupplement
         return state.HasSubSystemId;
     }
 
-    private void Probe(GpuState state, int adapterIndex)
+    private bool Probe(GpuState state, int adapterIndex, out AstralTelemetryParser.AstralReadout readout)
     {
         var ok = _client.TryReadAstralBlock(adapterIndex, out var block);
-        AstralTelemetryParser.AstralReadout? readout = null;
+        AstralTelemetryParser.AstralReadout? parsed = null;
         if (ok)
         {
             try
             {
-                readout = AstralTelemetryParser.Parse(block);
+                parsed = AstralTelemetryParser.Parse(block);
             }
             catch (ArgumentException)
             {
@@ -193,13 +292,15 @@ internal sealed class AstralGpuSupplement
         if (!state.LoggedFirstAttempt)
         {
             state.LoggedFirstAttempt = true;
-            LogFirstAttempt(adapterIndex, ok, block, readout);
+            LogFirstAttempt(adapterIndex, ok, block, parsed);
         }
 
         if (ok)
         {
-            state.LastReadout = readout;
+            state.LastReadout = parsed;
         }
+        readout = parsed.GetValueOrDefault();
+        return ok;
     }
 
     private static void LogFirstAttempt(

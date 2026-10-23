@@ -466,11 +466,12 @@ internal static class WindowsUserHelper
     [SupportedOSPlatform("windows10.0.19041.0")]
     private static void ShowAstralNotice(AstralNoticePayload p, HelperOutbound outbound)
     {
+        var cancelId = p.CancelId;
         var shown = Platform.Windows.ToastNotifications.TryShowConflictLaunchToast(
             p.Title, p.Text, p.CancelLabel, p.WindowPath,
             onEnd: () => _ = outbound.SendAsync(
                 type: AstralNoticeCommands.CancelType,
-                payload: new AstralCancelPayload(),
+                payload: new AstralCancelPayload { Id = cancelId },
                 payloadType: AppJsonContext.Default.AstralCancelPayload));
         if (!shown) Platform.Windows.TrayIcon.ShowNoticeBalloon(p.Title, p.Text, null, p.WindowPath);
     }

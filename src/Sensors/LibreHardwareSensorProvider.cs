@@ -26,6 +26,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
 {
     private readonly LhmComputer _lhm;
     private readonly AstralGpuSupplement _astral;
+    private readonly AstralMonitor? _astralMonitor;
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
@@ -33,6 +34,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
     public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null)
     {
         _lhm = lhm;
+        _astralMonitor = astral;
         _astral = new AstralGpuSupplement(new AstralNvApiClient(), astral);
     }
 
@@ -180,9 +182,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
             });
         }
         GpuAdapterLuids.Attach(result, rawNames);
-#if DEV_TOOLS
-        Nexus.Service.Dev.AstralSim.AppendGpu(result);
-#endif
+        _astralMonitor?.AppendSimulatedGpus(result);
         return result;
     }
 

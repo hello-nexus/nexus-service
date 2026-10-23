@@ -153,6 +153,47 @@ public class AstralMonitorTests
     }
 
     [Fact]
+    public void Cancel_leaves_a_critical_countdown_running()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { CriticalShutdown = true });
+        rig.Feed(18f);
+        rig.Feed(18f);
+        var before = rig.Monitor.GetState().Countdown!;
+        var after = rig.Monitor.Cancel();
+        Assert.Equal("critical", after.Countdown!.Reason);
+        Assert.Equal(before.EndsAtMs, after.Countdown.EndsAtMs);
+    }
+
+    [Fact]
+    public void A_cancel_from_an_earlier_countdown_notice_is_ignored()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { OvercurrentShutdown = true, OvercurrentSeconds = 10, CountdownSeconds = 60 });
+        for (var i = 0; i < 13; i++) rig.Feed(13f);
+        var notice = rig.Notices.Single(n => n.Kind == AstralMonitor.CountdownKind);
+        Assert.NotNull(notice.ActionId);
+
+        rig.Monitor.CancelCountdown(notice.ActionId!.Value + 1);
+        Assert.NotNull(rig.Monitor.GetState().Countdown);
+        Assert.Equal(notice.ActionId, rig.Monitor.CurrentCountdownNotice()!.ActionId);
+
+        rig.Monitor.CancelCountdown(notice.ActionId.Value);
+        Assert.Null(rig.Monitor.GetState().Countdown);
+        Assert.Null(rig.Monitor.CurrentCountdownNotice());
+    }
+
+    [Fact]
+    public void A_critical_countdown_notice_carries_no_cancel_action()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { CriticalShutdown = true });
+        rig.Feed(18f);
+        rig.Feed(18f);
+        Assert.Null(Assert.Single(rig.Notices, n => n.Kind == AstralMonitor.CountdownKind).ActionId);
+    }
+
+    [Fact]
     public void ShutdownNow_shortens_a_running_countdown_and_never_starts_one()
     {
         var rig = new Rig();
