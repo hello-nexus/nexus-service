@@ -57,7 +57,7 @@ public class MystiqueWorkerTests
         try
         {
             await WaitFor(() => worker.IsConnected);
-            Assert.True(await worker.UploadAsync(package, () => DeepCoolMystiqueSettings.SourceImages, CancellationToken.None));
+            Assert.True(await worker.UploadAsync(package, () => new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceImages, true), CancellationToken.None));
 
             var writes = pipes.Pipe!.Writes();
             int start = writes.FindIndex(w => w.Length == MystiqueProtocol.FrameLength && w[2] == MystiqueProtocol.CmdUploadStart);
@@ -86,7 +86,7 @@ public class MystiqueWorkerTests
             await WaitFor(() => worker.IsConnected);
             pipes.Pipe!.HoldStream = true;
             using var cts = new CancellationTokenSource();
-            var upload = worker.UploadAsync(package, () => DeepCoolMystiqueSettings.SourceImages, cts.Token);
+            var upload = worker.UploadAsync(package, () => new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceImages, true), cts.Token);
             Assert.True(pipes.Pipe.Streaming.Wait(TimeSpan.FromSeconds(10)));
             cts.Cancel();
             pipes.Pipe.Release.Set();
