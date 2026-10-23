@@ -94,6 +94,29 @@ public class SupportBundleBuilderTests : IDisposable
     }
 
     [Fact]
+    public void Per_user_fallback_logs_ship_under_a_user_prefix_and_profiles_are_deduplicated()
+    {
+        var alice = Path.Combine(_root, "Users", "alice");
+        var aliceLogs = Path.Combine(alice, "AppData", "Local", "Nexus", "logs");
+        Directory.CreateDirectory(aliceLogs);
+        File.WriteAllText(Path.Combine(aliceLogs, "nexus-overlay.log"), "fallback\n");
+        var bob = Path.Combine(_root, "Users", "bob");
+
+        var dirs = SupportBundleBuilder.UserLogDirectoriesFor(new[] { alice, bob, alice.ToUpperInvariant() + Path.DirectorySeparatorChar });
+        Assert.Equal(new[] { "alice", "bob" }, dirs.Select(d => d.Label));
+
+        var entries = Entries(SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
+        {
+            LogsDirectory = Path.Combine(_root, "logs"),
+            OpenRgbConfigDirectory = Path.Combine(_root, "openrgb"),
+            UserLogDirectories = dirs,
+        }));
+
+        Assert.Contains("logs/user-alice/nexus-overlay.log", entries.Keys);
+        Assert.DoesNotContain(entries.Keys, k => k.StartsWith("logs/user-bob/"));
+    }
+
+    [Fact]
     public void Settings_ship_with_every_credential_blanked_and_nothing_else_touched()
     {
         var settings = new NexusSettings();

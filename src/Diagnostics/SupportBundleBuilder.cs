@@ -26,6 +26,8 @@ public static class SupportBundleBuilder
     public sealed class Sources
     {
         public string LogsDirectory { get; init; } = "";
+        /// <summary>Per-user fallback log dirs (user-session writers land there when the shared dir is not writable for them), keyed by user label.</summary>
+        public IReadOnlyList<(string Label, string Directory)> UserLogDirectories { get; init; } = Array.Empty<(string, string)>();
         /// <summary>The OTA staging dir: a failed silent install leaves its only trace in the Inno log there.</summary>
         public string UpdatesDirectory { get; init; } = "";
         public string OpenRgbConfigDirectory { get; init; } = "";
@@ -57,6 +59,10 @@ public static class SupportBundleBuilder
             }
             WriteText(zip, "system-profile.txt", src.StartupSnapshot);
             AddLogs(zip, "logs/", src.LogsDirectory, "*.log");
+            foreach (var (label, dir) in src.UserLogDirectories)
+            {
+                AddLogs(zip, $"logs/user-{label}/", dir, "*.log");
+            }
             AddLogs(zip, "updates/", src.UpdatesDirectory, Update.UpdateInstaller.InstallLogGlob);
             AddFile(zip, "updates/" + Update.StagedInstallMarkerStore.MarkerFileName, Path.Combine(src.UpdatesDirectory, Update.StagedInstallMarkerStore.MarkerFileName));
             AddLogs(zip, "openrgb/logs/", Path.Combine(src.OpenRgbConfigDirectory, "logs"), "OpenRGB_*.log");
@@ -108,6 +114,24 @@ public static class SupportBundleBuilder
             light.StableKey = blank;
         }
         return copy;
+    }
+
+    /// <summary>The per-user fallback log dir of every profile, deduplicated, labeled by profile folder name.</summary>
+    internal static List<(string Label, string Directory)> UserLogDirectoriesFor(IEnumerable<string> profiles)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<(string, string)>();
+        foreach (var profile in profiles)
+        {
+            var trimmed = profile.TrimEnd('\\', '/');
+            if (trimmed.Length == 0 || !seen.Add(trimmed))
+            {
+                continue;
+            }
+            var label = Path.GetFileName(trimmed);
+            result.Add((label.Length == 0 ? "user" : label, Path.Combine(trimmed, "AppData", "Local", "Nexus", "logs")));
+        }
+        return result;
     }
 
     private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern)

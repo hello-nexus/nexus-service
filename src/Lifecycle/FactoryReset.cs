@@ -68,7 +68,7 @@ internal static class FactoryReset
             // ai-history binary stores), devices/ (device media + records),
             // media/ (lighting content), drivers/, firmware,
             // logs (nexus-service/overlay/tray/helper/volume/gpu/pawnio),
-            // https cert, ffmpeg-pids, DesktopWebView2, openrgb-config. Whole-tree
+            // https cert, ffmpeg-pids, openrgb-config, the legacy DesktopWebView2. Whole-tree
             // wipe, so the grouped subdirs need no per-name upkeep here.
             // Preserve PawnIO\ (kernel driver) and gpu-render-state (which card
             // yields a working GL context - a hardware fact, not user data; a
@@ -78,7 +78,8 @@ internal static class FactoryReset
             // Per-user data the daemon can't reach via GetFolderPath: it runs as
             // LocalSystem, so LocalApplicationData resolves to the SYSTEM profile.
             // dashboard-bounds.json (written by the user-session overlay) lands in
-            // a real user's Local\Nexus; current SDK-app installs go to
+            // a real user's Local\Nexus, as does the per-user DesktopWebView2
+            // profile (localStorage, cached auth token); current SDK-app installs go to
             // %ProgramData%\Nexus\apps (wiped above), but older installs may
             // linger in a profile's Roaming\Nexus. WindowsUserProfiles() returns
             // BOTH every C:\Users\* profile AND the system profile, so each one's
@@ -129,7 +130,7 @@ internal static class FactoryReset
 
     // Every user profile on the machine (C:\Users\* plus the LocalSystem
     // profile), so the LocalSystem finalizer can wipe per-user AppData\Nexus.
-    private static IEnumerable<string> WindowsUserProfiles()
+    internal static IEnumerable<string> WindowsUserProfiles()
     {
         var profiles = new List<string>();
         var systemDrive = Environment.GetEnvironmentVariable("SystemDrive") ?? "C:";
@@ -257,7 +258,7 @@ internal static class FactoryReset
 #endif
 
 #if WINDOWS
-        // A wipe deletes %ProgramData%\Nexus\DesktopWebView2 /
+        // A wipe deletes each user's %LocalAppData%\Nexus\DesktopWebView2 /
         // \DashboardEdge (the dashboard's WebView2/Edge profiles, holding
         // localStorage's cached auth token) out from under the overlay and
         // helper if either is still running - they survive a plain service

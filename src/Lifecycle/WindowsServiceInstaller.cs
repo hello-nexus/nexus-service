@@ -332,6 +332,18 @@ internal static class WindowsServiceInstaller
                 InstallDirName);
             Log($"--purge: deleting {dataDir}");
             TryDeleteOrScheduleOnReboot(dataDir);
+            // Per-user data (the WebView2 profile with its cached auth token, fallback logs) lives
+            // in each profile's Local\Nexus; the uninstaller runs as admin so it can reach every
+            // C:\Users\* profile. Profiles of deleted accounts are not enumerated.
+            foreach (var profile in FactoryReset.WindowsUserProfiles())
+            {
+                var userDir = Path.Combine(profile, "AppData", "Local", InstallDirName);
+                if (Directory.Exists(userDir))
+                {
+                    Log($"--purge: deleting {userDir}");
+                    TryDeleteOrScheduleOnReboot(userDir);
+                }
+            }
         }
 
         Log("uninstall complete");
