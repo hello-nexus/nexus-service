@@ -186,4 +186,22 @@ public class GalleonSdDialsHubTests
         Assert.False(hub.IsConnected);
         Assert.True(hid.Device.Disposed);
     }
+
+    [Fact]
+    public void Per_usage_count_one_caps_still_connect()
+    {
+        var hid = new FakeLampArrayHid();
+        var multi = new List<Nexus.Service.Peripherals.Hid.HidValueCap>
+        {
+            FakeLampArrayDevice.Cap(4, 0x50, 0x03, 8, 1), FakeLampArrayDevice.Cap(4, 0x50, 0x55, 8, 1),
+        };
+        for (var i = 0; i < 8; i++) multi.Add(FakeLampArrayDevice.Cap(4, 0x50, 0x21, 16, 1));
+        foreach (var u in new[] { 0x51, 0x52, 0x53, 0x54 })
+        {
+            for (var i = 0; i < 8; i++) multi.Add(FakeLampArrayDevice.Cap(4, 0x50, u, 8, 1));
+        }
+        hid.Device.CapsOverride = hid.Device.ReadFeatureValueCaps()!.Where(c => c.ReportId != 4).Concat(multi).ToList();
+        using var hub = NewHub(hid);
+        Assert.True(hub.Reconcile(true));
+    }
 }

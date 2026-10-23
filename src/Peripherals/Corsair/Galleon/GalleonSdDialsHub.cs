@@ -74,7 +74,7 @@ public sealed class GalleonSdDialsHub : IGalleonLightingHub, IDisposable
 
     private const int ConsecutiveFailureThreshold = 5;
     private const int ProbeSends = 3;
-    private const int LogBudget = 60;
+    private const int LogBudget = 200;
     private const double MinFrameGapMs = 50;
     private const double KeepAliveMs = 10_000;
     private const double ControlReassertMs = 30_000;
@@ -88,6 +88,7 @@ public sealed class GalleonSdDialsHub : IGalleonLightingHub, IDisposable
     private bool _disposed;
     private string? _failedKey;
     private int _logsLeft = LogBudget;
+    private bool _capsDumped;
 
     public GalleonSdDialsHub(IHidEnumerator hid, Func<long>? clock = null)
     {
@@ -177,6 +178,12 @@ public sealed class GalleonSdDialsHub : IGalleonLightingHub, IDisposable
         {
             LogOnce(key, "feature value caps unreadable; dials left alone");
             return null;
+        }
+        if (!_capsDumped)
+        {
+            _capsDumped = true;
+            Log($"feature value caps: {caps.Count} entries");
+            foreach (var c in caps) Log(LampArrayProtocol.DescribeCap(c));
         }
         var ids = LampArrayProtocol.ResolveReportIds(caps, out var reason);
         if (ids is null)

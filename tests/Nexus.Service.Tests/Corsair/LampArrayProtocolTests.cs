@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.Hid.LampArray;
@@ -111,5 +112,58 @@ public class LampArrayProtocolTests
         var mono = new LampAttributes(0, 0, 0, 0, 0, 0, 0, 0, 0, 255, true, 0);
         Assert.Equal(255, LampArrayProtocol.IntensityFor(rgb, new RgbColor(1, 2, 3)));
         Assert.Equal(7, LampArrayProtocol.IntensityFor(mono, new RgbColor(1, 7, 3)));
+    }
+
+    private static List<HidValueCap> Replace(int report, params HidValueCap[] with)
+    {
+        var caps = new FakeLampArrayDevice().ReadFeatureValueCaps()!.Where(c => c.ReportId != report).ToList();
+        caps.AddRange(with);
+        return caps;
+    }
+
+    [Fact]
+    public void Listed_usages_reported_one_entry_each_with_count_one_total_the_same_bits()
+    {
+        var multi = new List<HidValueCap>
+        {
+            FakeLampArrayDevice.Cap(4, 0x50, 0x03, 8, 1), FakeLampArrayDevice.Cap(4, 0x50, 0x55, 8, 1),
+        };
+        for (var i = 0; i < 8; i++) multi.Add(FakeLampArrayDevice.Cap(4, 0x50, 0x21, 16, 1));
+        foreach (var u in new[] { 0x51, 0x52, 0x53, 0x54 })
+        {
+            for (var i = 0; i < 8; i++) multi.Add(FakeLampArrayDevice.Cap(4, 0x50, u, 8, 1));
+        }
+        Assert.Equal(Ids, LampArrayProtocol.ResolveReportIds(Replace(4, multi.ToArray()), out var reason));
+        Assert.Equal("", reason);
+    }
+
+    [Fact]
+    public void Channels_declared_as_one_usage_range_spread_their_count_over_the_usages()
+    {
+        var range = new HidValueCap(4, 0x59, 0x51, 0x59, 0x50, 8, 32, UsageMax: 0x54, IsRange: true);
+        var caps = Replace(4,
+            FakeLampArrayDevice.Cap(4, 0x50, 0x03, 8, 1), FakeLampArrayDevice.Cap(4, 0x50, 0x55, 8, 1),
+            FakeLampArrayDevice.Cap(4, 0x50, 0x21, 16, 8), range);
+        Assert.Equal(Ids, LampArrayProtocol.ResolveReportIds(caps, out _));
+    }
+
+    [Fact]
+    public void A_short_listed_layout_is_refused()
+    {
+        var multi = new List<HidValueCap>
+        {
+            FakeLampArrayDevice.Cap(4, 0x50, 0x03, 8, 1), FakeLampArrayDevice.Cap(4, 0x50, 0x55, 8, 1),
+        };
+        for (var i = 0; i < 7; i++) multi.Add(FakeLampArrayDevice.Cap(4, 0x50, 0x21, 16, 1));
+        multi.Add(FakeLampArrayDevice.Cap(4, 0x50, 0x51, 8, 8));
+        Assert.Null(LampArrayProtocol.ResolveReportIds(Replace(4, multi.ToArray()), out var reason));
+        Assert.Contains("unexpected field layout", reason);
+    }
+
+    [Fact]
+    public void Cap_description_names_every_field()
+    {
+        var text = LampArrayProtocol.DescribeCap(new HidValueCap(4, 0x59, 0x51, 0x59, 0x50, 8, 32, UsageMax: 0x54, IsRange: true, LinkCollection: 2));
+        Assert.Equal("cap report=4 page=59 usage=51-54 range=True link=2:59/50 bits=8 count=32", text);
     }
 }

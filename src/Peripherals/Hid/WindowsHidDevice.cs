@@ -108,7 +108,10 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
                     LinkUsagePage: BitConverter.ToUInt16(raw, o + 10),
                     LinkUsage: BitConverter.ToUInt16(raw, o + 8),
                     BitSize: BitConverter.ToUInt16(raw, o + 18),
-                    ReportCount: BitConverter.ToUInt16(raw, o + 20)));
+                    ReportCount: BitConverter.ToUInt16(raw, o + 20),
+                    UsageMax: BitConverter.ToUInt16(raw, o + 58),
+                    IsRange: raw[o + 12] != 0,
+                    LinkCollection: BitConverter.ToUInt16(raw, o + 6)));
             }
             return list;
         }

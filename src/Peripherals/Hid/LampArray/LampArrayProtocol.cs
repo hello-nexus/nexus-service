@@ -93,19 +93,29 @@ public static class LampArrayProtocol
         if (fieldUsage < 0) return 0;
         foreach (var c in caps)
         {
-            if (c.UsagePage == UsagePage && c.Usage == fieldUsage && c.ReportId != 0) return (byte)c.ReportId;
+            if (c.UsagePage == UsagePage && fieldUsage >= c.Usage && fieldUsage <= c.LastUsage && c.ReportId != 0) return (byte)c.ReportId;
         }
         return 0;
     }
 
+    // Windows lists a repeated usage either as one entry with ReportCount N or as N entries; both total the same bits. A range spreads its ReportCount over its usages.
     private static bool Has(IReadOnlyList<HidValueCap> caps, int reportId, int usage, int bits, int count)
     {
+        var total = 0;
+        var found = false;
         foreach (var c in caps)
         {
-            if (c.ReportId == reportId && c.UsagePage == UsagePage && c.Usage == usage) return c.BitSize == bits && c.ReportCount == count;
+            if (c.ReportId != reportId || c.UsagePage != UsagePage || usage < c.Usage || usage > c.LastUsage) continue;
+            if (c.BitSize != bits) return false;
+            var span = c.LastUsage - c.Usage + 1;
+            total += c.BitSize * (span > 1 ? Math.Max(1, c.ReportCount / span) : c.ReportCount);
+            found = true;
         }
-        return false;
+        return found && total == bits * count;
     }
+
+    public static string DescribeCap(HidValueCap c) =>
+        $"cap report={c.ReportId} page={c.UsagePage:X} usage={(c.IsRange ? $"{c.Usage:X}-{c.UsageMax:X}" : c.Usage.ToString("X"))} range={c.IsRange} link={c.LinkCollection}:{c.LinkUsagePage:X}/{c.LinkUsage:X} bits={c.BitSize} count={c.ReportCount}";
 
     public static byte[] BuildControl(LampArrayReportIds ids, bool autonomous) => new byte[] { ids.Control, autonomous ? (byte)1 : (byte)0 };
 
