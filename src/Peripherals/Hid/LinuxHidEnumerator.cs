@@ -96,11 +96,16 @@ public sealed partial class LinuxHidEnumerator : IHidEnumerator
             if (vid == 0) return null;
 
             var (usagePage, usage) = (0, 0);
+            var (inLen, outLen, featLen) = (0, 0, 0);
             var descPath = System.IO.Path.Combine(deviceDir, "report_descriptor");
             if (File.Exists(descPath))
             {
                 var desc = ReadSysfsBytes(descPath);
-                if (desc.Length > 0) (usagePage, usage) = ParseTopUsage(desc);
+                if (desc.Length > 0)
+                {
+                    (usagePage, usage) = ParseTopUsage(desc);
+                    (inLen, outLen, featLen) = HidReportDescriptorSizes.Compute(desc);
+                }
             }
 
             return new HidDeviceInfo
@@ -111,8 +116,9 @@ public sealed partial class LinuxHidEnumerator : IHidEnumerator
                 Serial = serial,
                 UsagePage = usagePage,
                 Usage = usage,
-                // Report byte lengths aren't needed for keeb selection (matched
-                // on usage page/usage); left 0 on Linux.
+                InputReportByteLength = inLen,
+                OutputReportByteLength = outLen,
+                FeatureReportByteLength = featLen,
             };
         }
         catch

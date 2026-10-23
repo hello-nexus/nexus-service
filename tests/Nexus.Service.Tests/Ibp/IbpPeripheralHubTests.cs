@@ -93,6 +93,17 @@ public class IbpPeripheralHubTests
         new HashSet<IbpPeripheralModel>(IbpPeripheralProtocol.Models.Where(m => m.Kind == IbpPeripheralKind.Mouse));
 
     [Fact]
+    public void Linux_attaches_nothing_by_default_until_the_length_match_is_validated_there()
+    {
+        var hid = new ScriptedEnumerator();
+        hid.AddUnit(IbpPeripheralProtocol.Km7Keyboard, "KB1");
+        using var hub = new IbpPeripheralHub(hid);
+
+        Assert.Equal(!OperatingSystem.IsLinux(), hub.Reconcile(AllowAll));
+        Assert.Equal(OperatingSystem.IsLinux() ? 0 : 1, hub.Attached.Count);
+    }
+
+    [Fact]
     public void Reconcile_opens_only_the_collection_whose_feature_length_matches()
     {
         var hid = new ScriptedEnumerator();
@@ -100,7 +111,7 @@ public class IbpPeripheralHubTests
         hid.AddUnit(IbpPeripheralProtocol.Km7Mouse, "MS1");
         // Keeb TKL on the same VID: not ours.
         hid.Infos.Add(new HidDeviceInfo { VendorId = 0x3402, ProductId = 0x0300, Path = "keeb", FeatureReportByteLength = 9 });
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
 
         Assert.True(hub.Reconcile(AllowAll));
         Assert.Equal(2, hub.Attached.Count);
@@ -128,7 +139,7 @@ public class IbpPeripheralHubTests
             VendorId = 0x3402, ProductId = 0x0301, Path = "km7-keyboard-KB1-other", Serial = "KB1",
             UsagePage = 0xFF01, Usage = 0x02, FeatureReportByteLength = 33,
         });
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         Assert.True(hub.Reconcile(AllowAll));
         Assert.Single(hub.Attached);
         Assert.Single(hid.Opened);
@@ -145,7 +156,7 @@ public class IbpPeripheralHubTests
             VendorId = 0x3402, ProductId = 0x0303, Path = @"\\?\hid#vid_3402&pid_0303&mi_01#8&abc#{guid}",
             FeatureReportByteLength = 520,
         });
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         var id1 = hub.Attached.Single().DeviceId;
         Assert.StartsWith("ibp:mk9-keyboard:p-", id1);
@@ -161,7 +172,7 @@ public class IbpPeripheralHubTests
         hid.AddUnit(IbpPeripheralProtocol.Mek4Keyboard, "MK1");
         hid.AddUnit(IbpPeripheralProtocol.Km7Keyboard, "KB1");
         long now = 1000;
-        using var hub = new IbpPeripheralHub(hid, () => now);
+        using var hub = new IbpPeripheralHub(hid, () => now, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         var mek = hid.Opened["mek4-keyboard-MK1-vendor"];
         var km7 = hid.Opened["km7-keyboard-KB1-vendor"];
@@ -188,7 +199,7 @@ public class IbpPeripheralHubTests
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Mek4Keyboard, "MK1");
         long now = 1000;
-        using var hub = new IbpPeripheralHub(hid, () => now);
+        using var hub = new IbpPeripheralHub(hid, () => now, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         var mek = hid.Opened["mek4-keyboard-MK1-vendor"];
         var id = hub.Attached.Single().DeviceId;
@@ -222,7 +233,7 @@ public class IbpPeripheralHubTests
     {
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Km7Keyboard, "KB1");
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         var id = hub.Attached.Single().DeviceId;
         var dev = hid.Opened["km7-keyboard-KB1-vendor"];
@@ -251,7 +262,7 @@ public class IbpPeripheralHubTests
     {
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Km7Mouse, "MS1");
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         var id = hub.Attached.Single().DeviceId;
         var dev = hid.Opened["km7-mouse-MS1-vendor"];
@@ -278,7 +289,7 @@ public class IbpPeripheralHubTests
     {
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Mk9Keyboard, "MK1");
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         var id = hub.Attached.Single().DeviceId;
         var dev = hid.Opened["mk9-keyboard-MK1-vendor"];
@@ -295,7 +306,7 @@ public class IbpPeripheralHubTests
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Km7Keyboard, "KB1");
         hid.AddUnit(IbpPeripheralProtocol.Km7Mouse, "MS1");
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         var kbId = hub.Attached.Single(a => a.Model.Kind == IbpPeripheralKind.Keyboard).DeviceId;
         hub.WriteFrame(kbId, new RgbColor[24]);
@@ -321,7 +332,7 @@ public class IbpPeripheralHubTests
     {
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Km10Mouse, "MS1");
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         var id = hub.Attached.Single().DeviceId;
         var dev = hid.Opened["km10-mouse-MS1-vendor"];
@@ -352,7 +363,7 @@ public class IbpPeripheralHubTests
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Km7Keyboard, "KB1");
         hid.RefuseOpen.Add("km7-keyboard-KB1-vendor");
-        using var hub = new IbpPeripheralHub(hid);
+        using var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         Assert.False(hub.Reconcile(AllowAll));
         Assert.False(hub.IsConnected);
         hid.RefuseOpen.Clear();
@@ -366,7 +377,7 @@ public class IbpPeripheralHubTests
         var hid = new ScriptedEnumerator();
         hid.AddUnit(IbpPeripheralProtocol.Km7Keyboard, "KB1");
         hid.AddUnit(IbpPeripheralProtocol.Mek4Keyboard, "MEK1");
-        var hub = new IbpPeripheralHub(hid);
+        var hub = new IbpPeripheralHub(hid, matchOnLinux: true);
         hub.Reconcile(AllowAll);
         foreach (var a in hub.Attached) hub.WriteFrame(a.DeviceId, new RgbColor[a.Model.LedCount]);
         hub.Dispose();

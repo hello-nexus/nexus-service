@@ -91,7 +91,7 @@ public class IbpPeripheralHandlerAndCardTests
         Assert.Equal("iBUYPOWER Mouse", mouse.Name);
 
         var hid = new OneUnitEnumerator(IbpPeripheralProtocol.Mk9ProKeyboard);
-        using var live = new IbpPeripheralHub(hid);
+        using var live = new IbpPeripheralHub(hid, matchOnLinux: true);
         live.Reconcile(new HashSet<IbpPeripheralModel>(IbpPeripheralProtocol.Models));
         Assert.Equal("iBUYPOWER MK9 Pro Keyboard", new IbpKeyboardHandler(live).Name);
         Assert.Equal("iBUYPOWER Mouse", new IbpMouseHandler(live).Name);

@@ -99,6 +99,40 @@ public class LinuxLiquidctlProviderTests
         Assert.Equal(1890, ch.Rpm);
     }
 
+    [Theory]
+    [InlineData("/dev/hidraw3", 0)]
+    [InlineData("/dev/hidraw4", 1)]
+    [InlineData(null, 1)]
+    public void NativeKrakenOwnsHidraw_HidesOnlyThatNodeEverywhere(string? owned, int expected)
+    {
+        var p = new LinuxLiquidctlProvider(() => KrakenJson, (_, _, _) => true, nativeHidPath: () => owned);
+        Assert.Equal(expected, p.GetFanChannels().Count);
+        Assert.Equal(expected, p.GetTemperatureSources().Count);
+        Assert.Equal(expected, p.GetAll().Count);
+    }
+
+    [Fact]
+    public void NativeKrakenOwnsHidraw_KeepsOtherLiquidctlDevices()
+    {
+        var p = new LinuxLiquidctlProvider(() => CommanderJson, (_, _, _) => true, nativeHidPath: () => "/dev/hidraw3");
+        Assert.Equal(2, p.GetFanChannels().Count);
+    }
+
+    [Fact]
+    public void NativeKrakenOwnsHidraw_RefusesWritesToThatAddress()
+    {
+        string? owned = null;
+        var writes = 0;
+        var p = new LinuxLiquidctlProvider(() => KrakenJson, (_, _, _) => { writes++; return true; }, nativeHidPath: () => owned);
+        var id = p.GetFanChannels()[0].Id;
+        owned = "/dev/hidraw3";
+        p.DriveFanSpeed(id, 50);
+        Assert.Equal(0, writes);
+        owned = null;
+        p.DriveFanSpeed(id, 50);
+        Assert.Equal(1, writes);
+    }
+
     [Fact]
     public void SetFanSpeed_SendsAddressChannelDutyToCli()
     {

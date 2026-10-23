@@ -327,6 +327,16 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
+    /// <summary>The AMD graphics card lighting switch moved the force-disabled detector set; re-detect when it did.</summary>
+    public void OnAmdGpuLightingChanged()
+    {
+        if (_proc.NativeDetectorSetChanged())
+        {
+            ServiceLog.Info("[rgb-bridge] AMD graphics card lighting setting changed: GPU detectors follow");
+            Redetect("amd-gpu-lighting", detectorsChanged: true);
+        }
+    }
+
     // Fire-and-forget - RefreshDevicesAsync is the same path the periodic refresh loop
     // uses and is debounced by _refreshSemaphore.
     private void OnContributorDevicesChanged() => _ = RefreshAfterContributorChangeAsync();

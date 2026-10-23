@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Nexus.Service.Lighting.Rgb;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Cooling;
@@ -39,6 +40,7 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private readonly Func<string, string, int, bool> _setSpeed; // (address, channel, duty) -> applied?
     private readonly bool _forceAvailable;
     private readonly IConfigStore? _config;
+    private readonly Func<string?> _nativeHidPath;
 
     private readonly object _lock = new();
     // Rebuilt wholesale and published atomically (assigned, never mutated in
@@ -65,9 +67,10 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     private List<LiquidctlListEntry>? _list;
     private long _listAtMs = long.MinValue;
 
-    public LinuxLiquidctlProvider(IConfigStore config, RgbBridge bridge)
+    public LinuxLiquidctlProvider(IConfigStore config, RgbBridge bridge, KrakenHub krakenHub)
     {
         _config = config;
+        _nativeHidPath = () => krakenHub.ClaimedHidPath;
         _listJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "list");
         _statusAllJson = () => ShellExecutor.Run("liquidctl", 8000, "--json", "status");
         _statusOneJson = e => ShellExecutor.Run("liquidctl", 8000, LiquidctlOwnership.StatusArgs(e));
@@ -86,15 +89,16 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     // Injected command seams for tests (no real liquidctl needed).
     // The all-devices statusJson doubles as the list; per-device reads return it filtered by address.
     internal LinuxLiquidctlProvider(Func<string> statusJson, Func<string, string, int, bool> setSpeed,
-        IConfigStore? config = null, Func<bool>? bridgeActive = null, Func<long>? nowMs = null)
-        : this(statusJson, statusJson, e => statusJson(), setSpeed, config, bridgeActive ?? (() => false), nowMs)
+        IConfigStore? config = null, Func<bool>? bridgeActive = null, Func<long>? nowMs = null, Func<string?>? nativeHidPath = null)
+        : this(statusJson, statusJson, e => statusJson(), setSpeed, config, bridgeActive ?? (() => false), nowMs, nativeHidPath)
     {
     }
 
     internal LinuxLiquidctlProvider(Func<string> listJson, Func<string> statusAllJson,
         Func<LiquidctlListEntry, string> statusOneJson, Func<string, string, int, bool> setSpeed,
-        IConfigStore? config, Func<bool> bridgeActive, Func<long>? nowMs = null)
+        IConfigStore? config, Func<bool> bridgeActive, Func<long>? nowMs = null, Func<string?>? nativeHidPath = null)
     {
+        _nativeHidPath = nativeHidPath ?? (() => null);
         _listJson = listJson;
         _statusAllJson = statusAllJson;
         _statusOneJson = statusOneJson;
@@ -211,6 +215,8 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
             if (!control.TryGetValue(channelId, out target))
                 return dutyPercent;
         }
+        if (_nativeHidPath() is { } owned && target.Address == owned)
+            return dutyPercent;
         if (IsWithheldAddress(target.Address))
         {
             WarnWithheldOnce(target.Address);
@@ -300,6 +306,15 @@ public sealed class LinuxLiquidctlProvider : IFanControlProvider, ICoolingProvid
     }
 
     private List<LiquidDevice> Snapshot()
+    {
+        var devices = SnapshotAll();
+        // The native driver owns this hidraw node; a second card would write to the same cooler.
+        return _nativeHidPath() is { } owned
+            ? devices.Where(d => d.Address != owned).ToList()
+            : devices;
+    }
+
+    private List<LiquidDevice> SnapshotAll()
     {
         if (!Available())
             return new List<LiquidDevice>();

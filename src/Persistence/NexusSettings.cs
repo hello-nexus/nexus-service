@@ -115,6 +115,9 @@ public sealed class NexusSettings
     /// <summary>False stops LHM from reading DIMM SPD temperatures, independent of the memory device's Nexus Control toggle. Applies live. NOT profile-scoped: workstation-level.</summary>
     public bool ReadRamTemperatures { get; set; } = true;
 
+    /// <summary>Linux only. False keeps the AMD GPU I2C detectors force-disabled in OpenRGB; true lifts that hold. Ignored on every other OS. Applies live. NOT profile-scoped: workstation-level.</summary>
+    public bool AmdGpuLighting { get; set; }
+
     /// <summary>True once the desktop first-run welcome screen has been shown and
     /// dismissed. Install-scoped, not cloud profile synced: excluded from
     /// <see cref="Nexus.Service.Persistence.ProfileManager"/>'s CloneSettings

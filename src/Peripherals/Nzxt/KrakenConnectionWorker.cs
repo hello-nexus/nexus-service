@@ -51,12 +51,14 @@ public sealed class KrakenConnectionWorker : BackgroundService
             {
                 if (!_gate.IsEnabled(KrakenHub.DeviceId))
                 {
+                    _hub.ReleaseClaim();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!_presence.UsbPresent(KrakenProtocol.VendorId, KrakenProtocol.ProductIds))
                 {
+                    _hub.ReleaseClaim();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
@@ -64,6 +66,7 @@ public sealed class KrakenConnectionWorker : BackgroundService
                 var found = FindAndOpen();
                 if (found == null)
                 {
+                    _hub.ReleaseClaim();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
@@ -104,6 +107,7 @@ public sealed class KrakenConnectionWorker : BackgroundService
                     }
                     else
                     {
+                        _hub.ReleaseClaim();
                         await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     }
                 }
@@ -166,6 +170,8 @@ public sealed class KrakenConnectionWorker : BackgroundService
         {
             return null;
         }
+        // Claimed before Open so the Linux duplicates stay hidden across detach and reconnect.
+        _hub.Claim(best.Path, bestModel);
         // forInput so Read honors its timeout instead of busy-spinning on Windows.
         var device = _hid.Open(best.Path, forInput: true);
         return device == null ? null : (device, bestModel, best.OutputReportByteLength);

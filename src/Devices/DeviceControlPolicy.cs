@@ -64,6 +64,7 @@ public static class DeviceControlPolicy
     {
         ["tryx"] = "tryx-kanali",
         ["nzxt-kraken"] = "nzxt-cam",
+        ["nzxt-fan-controller"] = "nzxt-cam",
         ["zmatrices-lcd"] = "zmatrices",
         ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
         ["asiahorse-umbra"] = "asiahorse-umbra",
