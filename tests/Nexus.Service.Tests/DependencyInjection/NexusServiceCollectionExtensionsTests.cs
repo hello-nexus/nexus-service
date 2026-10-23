@@ -104,7 +104,7 @@ public class NexusServiceCollectionExtensionsTests
         var sp = Build();
         Assert.NotNull(sp!.GetRequiredService<DeviceManager>());
         var handlers = sp.GetServices<IDeviceHandler>().ToArray();
-        // CNVS, QSeries (Q60+Q80 collapsed), Y70, Keeb, IbpKeyboard, IbpMouse, FanHub, AW5,
+        // CNVS, QSeries (Q60+Q80 collapsed), Y70, Keeb, IbpKeyboard, IbpMouse, GalleonSd, FanHub, AW5,
         // NP50, SmartHub, LianLi (one per hub slot), LianLiWireless, LianLiFlex, LianLiTl, Galahad2, CorsairLink,
         // CorsairLinkLcd, Strimer, Nollie, AsiahorseUmbra, Tryx, StreamDeck, Kraken, SmbusDram (the chipset
         // bus as a device), plus one JpegPanelHandler per JpegPanelModel (Galahad II LCD,
@@ -112,7 +112,7 @@ public class NexusServiceCollectionExtensionsTests
         // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8,
         // ZMatrices, HydroShift II, HydroShift II OLED Curved), plus the Glacial LCD handler.
         Assert.Equal(
-            23 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 7,
+            24 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 7,
             handlers.Length);
     }
 

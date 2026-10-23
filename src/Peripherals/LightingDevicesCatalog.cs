@@ -313,6 +313,9 @@ public static class LightingDevicesCatalog
         Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x1031", screen: true),
         Native("Tryx",    "Panorama v2",            "aio",      "0x391A", "0x10B1", screen: true),
 
+        // Corsair Galleon 100 SD keyboard - IDs from src/Peripherals/Corsair/Galleon.
+        Native("Corsair", "Galleon 100 SD Keyboard", "keyboard", "0x1B1C", "0x2B0C"),
+
         // Corsair iCUE LINK - PIDs from src/Peripherals/CorsairLink. The LCD/XD5 pumps
         // carry a screen.
         Native("Corsair", "iCUE LINK System Hub",   "fan",      "0x1B1C", "0x0C3F"),
