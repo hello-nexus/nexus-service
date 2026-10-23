@@ -133,8 +133,8 @@ public sealed class IbpPeripheralHub : IDisposable
             if (info.VendorId != IbpPeripheralProtocol.VendorId) continue;
             var model = IbpPeripheralProtocol.ForProductId(info.ProductId);
             if (model is null || !allowed.Contains(model)) continue;
-            // Windows only: LinuxHidEnumerator leaves the report lengths at 0,
-            // so no collection matches there.
+            // Linux units stay unmatched until the feature-report length is validated there.
+            if (OperatingSystem.IsLinux()) continue;
             if (info.FeatureReportByteLength != model.ReportLength) continue;
             var serial = !string.IsNullOrWhiteSpace(info.Serial) ? info.Serial! : StableIdFromPath(info.Path);
             // One slot per physical unit: a second matching collection on the

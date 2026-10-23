@@ -938,6 +938,7 @@
     <Compile Remove="src/Platform/Displays/MacDisplayTopologyProvider.cs" />
     <Compile Remove="src/Platform/Mac/MacAppBootstrap.cs" />
     <Compile Remove="src/Platform/Mac/MacAppWindow.cs" />
+    <Compile Remove="src/Platform/Mac/MacHotkeyRegistrar.cs" />
     <Compile Remove="src/Platform/Mac/MachStats.cs" />
     <Compile Remove="src/Platform/Mac/MacNotify.cs" />
     <Compile Remove="src/Platform/Mac/MacOverlayHostLauncher.cs" />
@@ -965,6 +966,7 @@
     <Compile Remove="src/Activity/LinuxVolumeProvider.cs" />
     <Compile Remove="src/Cooling/LinuxFanControlProvider.cs" />
     <Compile Remove="src/Cooling/LinuxLiquidctlProvider.cs" />
+    <Compile Remove="src/Cooling/LiquidctlOwnership.cs" />
     <Compile Remove="src/Cooling/LinuxNvidiaFanProvider.cs" />
     <Compile Remove="src/Cooling/Nvml.cs" />
     <Compile Remove="src/Devices/Detection/LinuxUsbEnumerator.cs" />
@@ -986,6 +988,10 @@
     <Compile Remove="src/Peripherals/Keeb/LinuxInputter.cs" />
     <Compile Remove="src/Peripherals/LianLiWireless/LinuxSlv3Discovery.cs" />
     <Compile Remove="src/Peripherals/LianLiWireless/LinuxSlv3Transport.cs" />
+    <Compile Remove="src/Peripherals/LianLiWireless/LinuxSlv3Lcd.cs" />
+    <Compile Remove="src/Peripherals/LinuxUsb/LinuxUsbfs.cs" />
+    <Compile Remove="src/Peripherals/Nzxt/LinuxKrakenLcdTransport.cs" />
+    <Compile Remove="src/Peripherals/BulkPanels/LinuxBulkUsbPipe.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayBrightnessProvider.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayOrientationProvider.cs" />
     <Compile Remove="src/Platform/Displays/LinuxDisplayTopologyProvider.cs" />
@@ -1000,6 +1006,11 @@
     <Compile Remove="src/Platform/Linux/LinuxPerformanceProvider.cs" />
     <Compile Remove="src/Platform/Linux/LinuxResumeListener.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSession.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxStreamRenderHost.cs" />
+    <Compile Remove="src/Platform/Linux/Render/CdpPipeClient.cs" />
+    <Compile Remove="src/Platform/Linux/Render/HeadlessBrowser.cs" />
+    <Compile Remove="src/Platform/Linux/Render/PanelRenderSession.cs" />
+    <Compile Remove="src/Platform/Linux/Render/RawFrameIngestClient.cs" />
     <Compile Remove="src/Platform/Linux/LinuxX11Outputs.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSysfs.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSystemAccentProvider.cs" />

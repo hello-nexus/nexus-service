@@ -54,7 +54,7 @@ public static class DeviceControlPolicy
     private static readonly HashSet<string> UnverifiedHandlers = new(StringComparer.OrdinalIgnoreCase)
     {
         "lianli-galahad2-lcd",
-        "corsair-xc7-lcd", "corsair-capellix-lcd", "idcooling-fx-lcd",
+        "corsair-xc7-lcd", "corsair-capellix-lcd", "corsair-nautilus-lcd", "idcooling-fx-lcd",
         "asrock-lcd", "asus-slc4-lcd", "corsair-link-lcd",
         "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88", "asus-glacial-lcd",
     };

@@ -354,6 +354,9 @@ public static class PanelTopics
     /// </summary>
     public const string StreamDeck = "streamdeck";
 
+    /// <summary>Global hotkey bindings and their registration status; payload is the GET /hotkeys body. Desktop sockets only.</summary>
+    public const string Hotkeys = "hotkeys";
+
     public static void BroadcastStreamDeck(MultiplexHub hub, Nexus.Service.Models.Peripherals.StreamDeck.StreamDeckChangedFrame frame)
     {
         if (!hub.TopicHasSubscribers(StreamDeck))

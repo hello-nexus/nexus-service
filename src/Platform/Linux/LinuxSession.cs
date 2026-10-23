@@ -39,6 +39,9 @@ public static partial class LinuxSession
     /// <summary>The session user's primary gid; pairs with <see cref="SessionUid"/>.</summary>
     public static uint? SessionGid { get; private set; }
 
+    /// <summary>The adopted session user's home, null when the lookup failed. Set before <see cref="SessionUid"/>.</summary>
+    public static string? SessionHome { get; private set; }
+
     /// <summary>The adopted session's X11 <c>DISPLAY</c>, null on Wayland. Kept out
     /// of this process's environment (see <see cref="Apply"/>); browsers get it from
     /// <see cref="ApplySessionDisplayEnv"/>.</summary>
@@ -157,6 +160,7 @@ public static partial class LinuxSession
         SessionXauthority = s.Xauthority;
         // Set last: LinuxPanelKioskHost.Reconcile reads a null SessionUid as "no session yet".
         SessionGid = s.Gid;
+        SessionHome = string.IsNullOrEmpty(s.Home) ? null : s.Home;
         SessionUid = s.Uid;
 
         Console.Error.WriteLine($"[session] root daemon adopted {s.Type ?? "unknown"} session of uid {s.Uid} (home {s.Home}, wayland {s.Wayland ?? "none"}, display {s.Display ?? "none"})");
