@@ -42,7 +42,7 @@ public sealed class FocusModeDto
     public bool StaticPanelBackgrounds { get; set; }
     public int ExitGraceSeconds { get; set; }
 
-    /// <summary>Apps the "app" trigger watches; empty for every other trigger.</summary>
+    /// <summary>Apps the "app" trigger watches. Kept when the trigger changes to another one, so switching back restores them; only consulted while Trigger is "app".</summary>
     public List<FocusAppDto> Apps { get; set; } = new();
 }
 

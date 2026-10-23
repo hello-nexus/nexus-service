@@ -340,11 +340,11 @@ public class FocusModeStateTests
     public void ARunningAppActivatesItsMode()
     {
         var (state, _, procs) = BuildApp();
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
         Assert.False(state.IsActive);
 
         procs.Add(new ProcessInfo { Pid = 1, Name = "chrome.exe" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         Assert.Equal("apps", state.ActiveModeId);
         Assert.Equal("auto", state.Reason);
@@ -357,7 +357,7 @@ public class FocusModeStateTests
         store.Update(s => s.Focus.Modes.First(m => m.Id == "apps").Apps.Add(
             new PresetAppBinding { Id = "proc:code", Name = "Code", ProcessName = "code" }));
         procs.Add(new ProcessInfo { Pid = 2, Name = "Code" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         Assert.Equal("apps", state.ActiveModeId);
     }
@@ -367,7 +367,7 @@ public class FocusModeStateTests
     {
         var (state, _, procs) = BuildApp(delay: TimeSpan.FromMinutes(5));
         procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         Assert.False(state.IsActive);
     }
@@ -377,11 +377,11 @@ public class FocusModeStateTests
     {
         var (state, _, procs) = BuildApp();
         procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
         Assert.True(state.IsActive);
 
         procs.Clear();
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         Assert.False(state.IsActive);
     }
@@ -391,10 +391,10 @@ public class FocusModeStateTests
     {
         var (state, _, procs) = BuildApp(graceSeconds: 600);
         procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         procs.Clear();
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         Assert.True(state.IsActive);
     }
@@ -406,8 +406,8 @@ public class FocusModeStateTests
         var (state, _, procs) = BuildApp();
         procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
         procs.Add(new ProcessInfo { Pid = 2, Name = "notepad", HasWindow = true });
-        state.SweepForTests();
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         Assert.Equal("apps", state.ActiveModeId);
     }
@@ -417,16 +417,16 @@ public class FocusModeStateTests
     {
         var (state, _, procs) = BuildApp();
         procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         state.TurnOff();
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
         Assert.False(state.IsActive);
 
         procs.Clear();
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
         procs.Add(new ProcessInfo { Pid = 3, Name = "chrome" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
         Assert.Equal("apps", state.ActiveModeId);
     }
 
@@ -436,11 +436,11 @@ public class FocusModeStateTests
         var (state, _, procs) = BuildApp(processName: "steamlink", displayName: "Steam Link");
         procs.Add(new ProcessInfo { Pid = 1, Name = "steam" });
         procs.Add(new ProcessInfo { Pid = 2, Name = "link" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
         Assert.False(state.IsActive);
 
         procs.Add(new ProcessInfo { Pid = 3, Name = "SteamLink.exe" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
         Assert.True(state.IsActive);
     }
 
@@ -450,7 +450,7 @@ public class FocusModeStateTests
         var (state, store, procs) = BuildApp();
         store.Update(s => s.Focus.Modes.First(m => m.Id == "apps").Apps.Clear());
         procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
-        state.SweepForTests();
+        state.SweepForTests(); state.SweepForTests();
 
         Assert.False(state.IsActive);
     }
@@ -477,17 +477,63 @@ public class FocusModeStateTests
         Assert.Empty(old.Focus.Modes.Single().Apps);
     }
 
-    private sealed class FakeShortcuts : IShortcutsProvider
+    [Fact]
+    public void ASnapshotThatNeverRefreshesDoesNotConfirmAnApp()
     {
-        public IReadOnlyList<Shortcut> GetAll() => Array.Empty<Shortcut>();
-        public Shortcut? GetById(string targetId) => null;
-        public byte[] GetIcon(string targetId) => Array.Empty<byte>();
-        public bool Launch(string targetId) => false;
-        public string ResolveProcessName(string targetId) => targetId == "lnk:known" ? "Known.exe" : "";
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Focus.Modes.Add(new FocusModeSettings
+        {
+            Id = "apps", Name = "Browse", Trigger = FocusTriggers.App, ExitGraceSeconds = 0,
+            Apps = new List<PresetAppBinding> { new() { Id = "proc:chrome", Name = "Chrome", ProcessName = "chrome" } },
+        }));
+        var procs = new List<ProcessInfo> { new() { Pid = 1, Name = "chrome" } };
+        long seq = 10;
+        var state = new FocusModeState(store, TimeSpan.Zero, g => false, () => procs.ToList(), () => seq);
+
+        state.SweepForTests();
+        state.SweepForTests();
+        state.SweepForTests();
+        Assert.False(state.IsActive);
+
+        seq++;
+        state.SweepForTests();
+        Assert.True(state.IsActive);
     }
 
     [Fact]
-    public void PatchResolutionDropsAppsThatResolveToNothing()
+    public void AnAppModeIgnoresItsAppsWhileAnotherTriggerIsSelected()
+    {
+        var (state, store, procs) = BuildApp();
+        store.Update(s => s.Focus.Modes.First(m => m.Id == "apps").Trigger = FocusTriggers.Manual);
+        procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
+        state.SweepForTests();
+        state.SweepForTests();
+        Assert.False(state.IsActive);
+
+        store.Update(s => s.Focus.Modes.First(m => m.Id == "apps").Trigger = FocusTriggers.App);
+        Assert.Single(Mode(store, "apps").Apps);
+        state.SweepForTests();
+        state.SweepForTests();
+        Assert.True(state.IsActive);
+    }
+
+    private sealed class FakeShortcuts : IShortcutsProvider
+    {
+        public Dictionary<string, Shortcut> ById { get; } = new();
+        public IReadOnlyList<Shortcut> GetAll() => Array.Empty<Shortcut>();
+        public Shortcut? GetById(string targetId) => ById.GetValueOrDefault(targetId);
+        public byte[] GetIcon(string targetId) => Array.Empty<byte>();
+        public bool Launch(string targetId) => false;
+        public string ResolveProcessName(string targetId) => targetId switch
+        {
+            "lnk:known" => "Known.exe",
+            "lnk:discord" => "update",
+            _ => "",
+        };
+    }
+
+    [Fact]
+    public void PatchResolutionReportsEveryAppThatResolvesToNothing()
     {
         var store = new InMemoryConfigStore();
         var picked = new List<Nexus.Service.Models.Focus.FocusAppDto>
@@ -496,14 +542,52 @@ public class FocusModeStateTests
             new() { Id = "lnk:known", Name = "Known", ProcessName = "" },
             new() { Id = "lnk:clientsent", Name = "Sent", ProcessName = "Sent.EXE" },
             new() { Id = "lnk:unknown", Name = "Nothing", ProcessName = "" },
+            new() { Id = "lnk:discord", Name = "Discord", ProcessName = "" },
             new() { Id = "proc:Steam.exe", Name = "Dupe", ProcessName = "" },
             new() { Id = "", Name = "Blank", ProcessName = "x" },
         };
 
-        var resolved = Nexus.Service.Routes.FocusRoutes.ResolveApps(picked, store, new FakeShortcuts());
+        var (resolved, unresolved) = Nexus.Service.Routes.FocusRoutes.ResolveApps(
+            picked, store, new FakeShortcuts(), (id, sc) => FocusAppResolver.Resolve(id, sc, isMac: false, _ => null));
 
         Assert.Equal(
             new[] { ("proc:Steam.exe", "steam"), ("lnk:known", "known"), ("lnk:clientsent", "sent") },
             resolved.Select(a => (a.Id, a.ProcessName)));
+        Assert.Equal(new[] { "Nothing", "Discord", "Blank" }, unresolved);
+    }
+
+    [Theory]
+    [InlineData("proc:Update.exe")]
+    [InlineData("proc:squirrel")]
+    [InlineData("lnk:discord")]
+    public void ABareLauncherNameIsNeverStored(string id)
+    {
+        Assert.Equal("", FocusAppResolver.Resolve(id, new FakeShortcuts(), isMac: false, _ => null));
+    }
+
+    [Fact]
+    public void AMacBundleResolvesToItsExecutableNotItsDisplayName()
+    {
+        var shortcuts = new FakeShortcuts();
+        shortcuts.ById["app:vscode"] = new Shortcut
+        {
+            Id = "app:vscode", Name = "Visual Studio Code", Path = "/Applications/Visual Studio Code.app", ProcessName = "code",
+        };
+        shortcuts.ById["app:odd"] = new Shortcut { Id = "app:odd", Name = "Odd", Path = "/x/odd", ProcessName = "odd" };
+
+        Assert.Equal("electron", FocusAppResolver.Resolve("app:vscode", shortcuts, isMac: true, _ => "Electron"));
+        Assert.Equal("", FocusAppResolver.Resolve("app:vscode", shortcuts, isMac: true, _ => null));
+        Assert.Equal("", FocusAppResolver.Resolve("app:odd", shortcuts, isMac: true, _ => "Odd"));
+        Assert.Equal("", FocusAppResolver.Resolve("app:missing", shortcuts, isMac: true, _ => "Odd"));
+        Assert.Equal("chrome", FocusAppResolver.Resolve("proc:chrome", shortcuts, isMac: true, _ => null));
+    }
+
+    [Theory]
+    [InlineData("{\"CFBundleExecutable\":\"Electron\",\"CFBundleName\":\"Code\"}", "Electron")]
+    [InlineData("{\"CFBundleName\":\"Code\"}", null)]
+    [InlineData("not json", null)]
+    public void BundleExecutableIsReadFromTheInfoPlist(string json, string? expected)
+    {
+        Assert.Equal(expected, FocusAppResolver.ExecutableFromInfoPlistJson(json));
     }
 }

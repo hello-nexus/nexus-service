@@ -77,7 +77,21 @@ public static class FocusRoutes
         app.MapPatch("/api/focus/modes/{id}", (string id, UpdateFocusModeBody body, FocusModeState state, IConfigStore config, MultiplexHub hub, Nexus.Service.Activity.IShortcutsProvider shortcuts) =>
         {
             var found = false;
-            var resolvedApps = body.Apps is null ? null : ResolveApps(body.Apps, config, shortcuts);
+            List<PresetAppBinding>? resolvedApps = null;
+            if (body.Apps is not null)
+            {
+                var (apps, unresolved) = ResolveApps(body.Apps, config, shortcuts);
+                // Refuse the whole PATCH: saving the resolvable subset would silently shrink the user's pick list.
+                if (unresolved.Count > 0)
+                {
+                    return Results.BadRequest(new ApiResponse
+                    {
+                        Error = true,
+                        Msg = "could not resolve: " + string.Join(", ", unresolved),
+                    });
+                }
+                resolvedApps = apps;
+            }
             config.Update(s =>
             {
                 var mode = s.Focus.Modes.FirstOrDefault(m => m.Id == id);
@@ -160,10 +174,12 @@ public static class FocusRoutes
         });
     }
 
-    /// <summary>Resolves each pick the way the lighting per-app presets do; an entry that resolves to nothing is dropped, and a repeat id keeps its first entry.</summary>
-    internal static List<PresetAppBinding> ResolveApps(
-        List<FocusAppDto> apps, IConfigStore config, Nexus.Service.Activity.IShortcutsProvider shortcuts)
+    /// <summary>Resolves each pick to the process it runs under; a repeat id keeps its first entry, and Unresolved lists the display name of every pick that resolved to nothing so the caller can refuse the whole request.</summary>
+    internal static (List<PresetAppBinding> Apps, List<string> Unresolved) ResolveApps(
+        List<FocusAppDto> apps, IConfigStore config, Nexus.Service.Activity.IShortcutsProvider shortcuts,
+        Func<string, Nexus.Service.Activity.IShortcutsProvider, string>? resolve = null)
     {
+        resolve ??= FocusAppResolver.Resolve;
         var known = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var mode in LoadSettings(config).Modes)
         {
@@ -174,23 +190,34 @@ public static class FocusRoutes
         }
 
         var resolved = new List<PresetAppBinding>();
+        var unresolved = new List<string>();
         foreach (var app in apps)
         {
-            if (string.IsNullOrWhiteSpace(app.Id)
-                || resolved.Exists(r => string.Equals(r.Id, app.Id, StringComparison.OrdinalIgnoreCase)))
+            var label = Clean(app.Name, 128) is { Length: > 0 } n ? n : Clean(app.Id, 128);
+            if (string.IsNullOrWhiteSpace(app.Id))
             {
+                unresolved.Add(label.Length > 0 ? label : "(unnamed)");
                 continue;
             }
-            var processName = DevicesRoutes.ResolveBindingProcessName(app.Id, shortcuts);
-            if (processName.Length == 0 && known.TryGetValue(app.Id, out var previous)) processName = previous;
+            if (resolved.Exists(r => string.Equals(r.Id, app.Id, StringComparison.OrdinalIgnoreCase))) continue;
+
+            var processName = resolve(app.Id, shortcuts);
+            if (processName.Length == 0 && known.TryGetValue(app.Id, out var previous))
+            {
+                processName = FocusAppResolver.Accept(Nexus.Service.Lighting.AppPresetMatching.ProcessKey(previous));
+            }
             if (processName.Length == 0 && !string.IsNullOrWhiteSpace(app.ProcessName))
             {
-                processName = Nexus.Service.Lighting.AppPresetMatching.ProcessKey(app.ProcessName);
+                processName = FocusAppResolver.Accept(Nexus.Service.Lighting.AppPresetMatching.ProcessKey(app.ProcessName));
             }
-            if (processName.Length == 0) continue;
+            if (processName.Length == 0)
+            {
+                unresolved.Add(label);
+                continue;
+            }
             resolved.Add(new PresetAppBinding { Id = app.Id, Name = Clean(app.Name, 128), ProcessName = processName });
         }
-        return resolved;
+        return (resolved, unresolved);
     }
 
     private static string Clean(string? value, int maxLength)
