@@ -9,7 +9,7 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.Corsair.Galleon;
 
-/// <summary>Opens a Galleon 100 SD interface (keyboard, or the dial LampArray via <see cref="GalleonSdDialsHub"/>) while it is enumerated and its Nexus Control gate is on, closes it (board back in hardware mode) otherwise, and tells the lighting provider when that changes.</summary>
+/// <summary>Opens a Galleon 100 SD interface (the dials stand down while the yield handler is enabled) (keyboard, or the dial LampArray via <see cref="GalleonSdDialsHub"/>) while it is enumerated and its Nexus Control gate is on, closes it (board back in hardware mode) otherwise, and tells the lighting provider when that changes.</summary>
 public sealed class GalleonSdConnectionWorker : BackgroundService
 {
     private const int PollMs = 1000;
@@ -21,16 +21,18 @@ public sealed class GalleonSdConnectionWorker : BackgroundService
     private readonly GalleonSdLightingDeviceProvider? _lighting;
     private readonly Func<long> _clock;
     private readonly int _productId;
+    private readonly string? _yieldToHandlerId;
 
     internal int ProductId => _productId;
     private long _retryAt;
     private bool _openLastTick;
     private int _lastVersion;
 
-    public GalleonSdConnectionWorker(IGalleonLightingHub hub, HardwarePresence presence, DeviceControlGate gate, GalleonSdLightingDeviceProvider? lighting = null, Func<long>? clock = null, int productId = GalleonSdProtocol.ProductId)
+    public GalleonSdConnectionWorker(IGalleonLightingHub hub, HardwarePresence presence, DeviceControlGate gate, GalleonSdLightingDeviceProvider? lighting = null, Func<long>? clock = null, int productId = GalleonSdProtocol.ProductId, string? yieldToHandlerId = null)
     {
         _hub = hub;
         _productId = productId;
+        _yieldToHandlerId = yieldToHandlerId;
         _presence = presence;
         _gate = gate;
         _lighting = lighting;
@@ -56,6 +58,7 @@ public sealed class GalleonSdConnectionWorker : BackgroundService
     internal void Tick()
     {
         var allowed = _gate.IsEnabled(GalleonSdProtocol.HandlerId)
+            && (_yieldToHandlerId is null || !_gate.IsEnabled(_yieldToHandlerId))
             && _presence.UsbPresent(GalleonSdProtocol.VendorId, _productId);
         var now = _clock();
         var open = _hub.IsConnected;

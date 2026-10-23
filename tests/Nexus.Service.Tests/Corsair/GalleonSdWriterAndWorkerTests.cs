@@ -241,7 +241,7 @@ public class GalleonSdWriterAndWorkerTests
             Hub = new GalleonSdDialsHub(Hid);
             Provider = new GalleonSdLightingDeviceProvider(new GalleonSdHub(new KeyboardHid()), Store, new Np50IdentifyTracker(), Hub);
             Provider.DevicesChanged += () => Changes++;
-            Worker = new GalleonSdConnectionWorker(Hub, new HardwarePresence(Usb), new DeviceControlGate(Store), Provider, () => Now, GalleonSdProtocol.StreamDeckProductId);
+            Worker = new GalleonSdConnectionWorker(Hub, new HardwarePresence(Usb), new DeviceControlGate(Store), Provider, () => Now, GalleonSdProtocol.StreamDeckProductId, "streamdeck");
         }
 
         public void Plug() => Usb.Bus.Add(new UsbDeviceEntry { VendorId = 0x1B1C, ProductId = GalleonSdProtocol.StreamDeckProductId });
@@ -295,6 +295,40 @@ public class GalleonSdWriterAndWorkerTests
         Assert.False(rig.Hub.IsConnected);
 
         rig.Now += GalleonSdConnectionWorker.OpenRetryMs + 1;
+        rig.Worker.Tick();
+        Assert.True(rig.Hub.IsConnected);
+    }
+
+    [Fact]
+    public void Dials_stand_down_while_the_nexus_stream_deck_driver_is_on_and_resume_when_it_is_off()
+    {
+        var rig = new WorkerRig();
+        rig.Plug();
+        rig.Worker.Tick();
+        Assert.True(rig.Hub.IsConnected);
+        rig.Hub.WriteFrame(Enumerable.Repeat(new RgbColor(5, 5, 5), 4).ToArray());
+        rig.Hid.Device.Sets.Clear();
+
+        rig.Store.Update(s => s.Devices.NexusControlEnabled = new List<string> { GalleonSdProtocol.HandlerId, "streamdeck" });
+        rig.Worker.Tick();
+
+        Assert.False(rig.Hub.IsConnected);
+        Assert.Equal(new byte[] { FakeLampArrayDevice.Ctrl, 1 }, Assert.Single(rig.Hid.Device.Sets));
+        Assert.True(rig.Hid.Device.Disposed);
+        rig.Worker.Tick();
+        Assert.False(rig.Hub.IsConnected);
+
+        rig.Store.Update(s => s.Devices.NexusControlEnabled = new List<string> { GalleonSdProtocol.HandlerId });
+        rig.Worker.Tick();
+        Assert.True(rig.Hub.IsConnected);
+    }
+
+    [Fact]
+    public void The_elgato_app_running_does_not_stand_the_dials_down_while_nexus_stream_deck_is_off()
+    {
+        var rig = new WorkerRig();
+        rig.Store.Update(s => s.Devices.NexusControlDisabled = new List<string> { "streamdeck" });
+        rig.Plug();
         rig.Worker.Tick();
         Assert.True(rig.Hub.IsConnected);
     }

@@ -172,7 +172,7 @@ public static class LampArrayProtocol
     {
         lamp = default;
         if (report.Length < ResponseBytes) return false;
-        lamp = new LampAttributes(U16(report, 1), (int)U32(report, 3), (int)U32(report, 7), (int)U32(report, 11), U32(report, 15), U32(report, 19),
+        lamp = new LampAttributes(U16(report, 1), (int)U32(report, 3), (int)U32(report, 7), (int)U32(report, 11), U32(report, 19), U32(report, 15),
             report[23], report[24], report[25], report[26], report[27] != 0, report[28]);
         return true;
     }

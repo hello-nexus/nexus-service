@@ -941,13 +941,14 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
             sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>()));
-        // Registered directly: AddHostedService de-duplicates by implementation type and would drop this second worker.
+        // The dial lamps yield to the Stream Deck driver, which lights the same rings. Registered directly: AddHostedService de-duplicates by implementation type and would drop this second worker.
         services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
             sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>(),
             sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
             sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
-            productId: Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.StreamDeckProductId));
+            productId: Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.StreamDeckProductId,
+            yieldToHandlerId: "streamdeck"));
 
         // Stream Deck: gen1-protocol button decks (Mini bench-verified
         // 2026-07-10). Peripheral, not lighting - no frame contributor, no

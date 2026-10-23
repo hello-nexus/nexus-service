@@ -166,4 +166,40 @@ public class LampArrayProtocolTests
         var text = LampArrayProtocol.DescribeCap(new HidValueCap(4, 0x59, 0x51, 0x59, 0x50, 8, 32, UsageMax: 0x54, IsRange: true, LinkCollection: 2));
         Assert.Equal("cap report=4 page=59 usage=51-54 range=True link=2:59/50 bits=8 count=32", text);
     }
+
+    [Fact]
+    public void Lamp_response_reads_update_latency_before_purposes()
+    {
+        var resp = new byte[LampArrayProtocol.ResponseBytes];
+        resp[0] = 226;
+        resp[1] = 1;
+        resp[15] = 0x20; resp[16] = 0x4E;
+        resp[19] = 0x01;
+        Assert.True(LampArrayProtocol.TryParseLampAttributes(resp, out var lamp));
+        Assert.Equal(20000u, lamp.LatencyUs);
+        Assert.Equal(1u, lamp.Purposes);
+    }
+
+    // The Galleon 100 SD dial interface as the customer bundle reported it: ids 224-229, LampId one cap of 16 bits x 8, RGBI as 32 count-one caps.
+    [Fact]
+    public void The_galleon_mixed_cap_layout_resolves_to_report_ids_224_to_229()
+    {
+        HidValueCap Cap(int report, int link, int usage, int bits, int count) => FakeLampArrayDevice.Cap(report, link, usage, bits, count);
+        var caps = new List<HidValueCap>
+        {
+            Cap(224, 0x02, 0x03, 16, 1), Cap(224, 0x02, 0x04, 32, 1),
+            Cap(225, 0x20, 0x21, 16, 1),
+            Cap(226, 0x22, 0x21, 16, 1), Cap(226, 0x22, 0x23, 32, 1),
+            Cap(227, 0x50, 0x03, 8, 1), Cap(227, 0x50, 0x55, 8, 1), Cap(227, 0x50, 0x21, 16, 8),
+            Cap(228, 0x60, 0x55, 8, 1), Cap(228, 0x60, 0x61, 16, 1),
+            Cap(229, 0x70, 0x71, 8, 1),
+        };
+        foreach (var u in new[] { 0x51, 0x52, 0x53, 0x54 })
+        {
+            for (var i = 0; i < 8; i++) caps.Add(Cap(227, 0x50, u, 8, 1));
+        }
+        var ids = LampArrayProtocol.ResolveReportIds(caps, out var reason);
+        Assert.Equal(new LampArrayReportIds(224, 225, 226, 227, 228, 229), ids);
+        Assert.Equal("", reason);
+    }
 }

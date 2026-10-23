@@ -220,7 +220,7 @@ public sealed class GalleonSdDialsHub : IGalleonLightingHub, IDisposable
                 return null;
             }
             if (first && lamp.LampId != i) Log($"lamp {i} answered id {lamp.LampId}");
-            if (first && lamps.Count < 12) Log($"lamp {i} id={lamp.LampId} pos={lamp.XUm},{lamp.YUm},{lamp.ZUm}um purposes={lamp.Purposes:X} levels={lamp.RedLevels}/{lamp.GreenLevels}/{lamp.BlueLevels}/{lamp.IntensityLevels} programmable={lamp.Programmable}");
+            if (first && lamps.Count < 12) Log($"lamp {i} id={lamp.LampId} pos={lamp.XUm},{lamp.YUm},{lamp.ZUm}um purposes={lamp.Purposes:X} latency={lamp.LatencyUs}us levels={lamp.RedLevels}/{lamp.GreenLevels}/{lamp.BlueLevels}/{lamp.IntensityLevels} programmable={lamp.Programmable}");
             lamps.Add(lamp);
         }
 
