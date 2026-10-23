@@ -9,7 +9,7 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.Corsair.Galleon;
 
-/// <summary>Opens a Galleon 100 SD interface (the dials stand down while the yield handler is enabled) (keyboard, or the dial LampArray via <see cref="GalleonSdDialsHub"/>) while it is enumerated and its Nexus Control gate is on, closes it (board back in hardware mode) otherwise, and tells the lighting provider when that changes.</summary>
+/// <summary>Opens a Galleon 100 SD interface (the keyboard, or the dial LampArray via <see cref="GalleonSdDialsHub"/>, which stands down while the yield handler is enabled) while it is enumerated and its Nexus Control gate is on, closes it (board back in hardware mode) otherwise, and tells the lighting provider when that changes.</summary>
 public sealed class GalleonSdConnectionWorker : BackgroundService
 {
     private const int PollMs = 1000;

@@ -173,14 +173,14 @@ public class NexusServiceCollectionExtensionsTests
         services.AddHttpClient();
         var sp = services.BuildServiceProvider();
 
-        // The full hosted graph needs services other test fixtures wire; instantiate only the registrations that resolve.
+        // Only the factories typed as the Galleon worker are invoked, so no other worker's constructor runs here.
         var ids = new List<int>();
-        foreach (var d in services.Where(d => d.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService) && d.ImplementationFactory is not null))
+        foreach (var d in services.Where(d => d.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService)
+            && d.ImplementationFactory?.GetType().GenericTypeArguments is [_, var made]
+            && made == typeof(Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker)))
         {
-            object? instance;
-            try { instance = d.ImplementationFactory!(sp); }
-            catch (Exception) { continue; }
-            if (instance is Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker w) ids.Add(w.ProductId);
+            var worker = (Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker)d.ImplementationFactory!(sp);
+            ids.Add(worker.ProductId);
         }
 
         ids.Sort();
