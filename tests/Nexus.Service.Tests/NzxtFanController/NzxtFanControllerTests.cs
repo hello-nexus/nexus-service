@@ -203,10 +203,16 @@ public class NzxtFanControllerTests
         var (hub, hid) = Connected();
         hub.StatusTimeoutMs = 20;
         int before = StartReportingWrites(hid);
+        int intervalBefore = hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x02);
+        hid.Writes.Clear();
 
         Assert.False(hub.Poll());
 
-        Assert.Equal(before + 1, StartReportingWrites(hid));
+        Assert.Equal(2, hid.Writes.Count);
+        Assert.Equal(new byte[] { 0x60, 0x02 }, hid.Writes[0].Take(2).ToArray());
+        Assert.Equal(new byte[] { 0x60, 0x03 }, hid.Writes[1].Take(2).ToArray());
+        Assert.Equal(1, before);
+        Assert.Equal(1, intervalBefore);
     }
 
     [Fact]
