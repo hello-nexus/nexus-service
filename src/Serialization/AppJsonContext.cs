@@ -856,6 +856,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Focus.SetFocusActiveBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Focus.CreateFocusModeBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Focus.UpdateFocusModeBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Focus.FocusAppDto))]
+[JsonSerializable(typeof(List<Nexus.Service.Models.Focus.FocusAppDto>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Focus.ReorderFocusModesBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Focus.FocusChangedFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudAccountsChangedFrame))]

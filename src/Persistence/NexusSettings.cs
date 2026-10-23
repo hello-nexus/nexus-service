@@ -378,8 +378,9 @@ public static class FocusTriggers
     public const string Manual = "manual";
     public const string Game = "game";
     public const string Obs = "obs";
+    public const string App = "app";
 
-    public static bool IsKnown(string? id) => id is Manual or Game or Obs;
+    public static bool IsKnown(string? id) => id is Manual or Game or Obs or App;
 }
 
 public sealed class FocusModeSettings
@@ -410,6 +411,9 @@ public sealed class FocusModeSettings
 
     /// <summary>How long the mode stays active after its trigger clears.</summary>
     public int ExitGraceSeconds { get; set; } = 3;
+
+    /// <summary>Apps the <see cref="FocusTriggers.App"/> trigger fires on while any is running. Absent in older files, so it loads empty.</summary>
+    public List<PresetAppBinding> Apps { get; set; } = new();
 
     public static List<FocusModeSettings> StockModes() => new()
     {

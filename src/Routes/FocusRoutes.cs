@@ -74,15 +74,17 @@ public static class FocusRoutes
             return Results.Ok(BuildStatus(state, config));
         });
 
-        app.MapPatch("/api/focus/modes/{id}", (string id, UpdateFocusModeBody body, FocusModeState state, IConfigStore config, MultiplexHub hub) =>
+        app.MapPatch("/api/focus/modes/{id}", (string id, UpdateFocusModeBody body, FocusModeState state, IConfigStore config, MultiplexHub hub, Nexus.Service.Activity.IShortcutsProvider shortcuts) =>
         {
             var found = false;
+            var resolvedApps = body.Apps is null ? null : ResolveApps(body.Apps, config, shortcuts);
             config.Update(s =>
             {
                 var mode = s.Focus.Modes.FirstOrDefault(m => m.Id == id);
                 if (mode is null) return;
                 found = true;
 
+                if (resolvedApps is not null) mode.Apps = resolvedApps;
                 if (Clean(body.Name, MaxNameLength) is { Length: > 0 } name) mode.Name = name;
                 if (Clean(body.Icon, 32) is { Length: > 0 } icon) mode.Icon = icon;
                 if (body.Trigger is { } trigger && FocusTriggers.IsKnown(trigger)) mode.Trigger = trigger;
@@ -158,6 +160,39 @@ public static class FocusRoutes
         });
     }
 
+    /// <summary>Resolves each pick the way the lighting per-app presets do; an entry that resolves to nothing is dropped, and a repeat id keeps its first entry.</summary>
+    internal static List<PresetAppBinding> ResolveApps(
+        List<FocusAppDto> apps, IConfigStore config, Nexus.Service.Activity.IShortcutsProvider shortcuts)
+    {
+        var known = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mode in LoadSettings(config).Modes)
+        {
+            foreach (var b in mode.Apps)
+            {
+                if (b.ProcessName.Length > 0) known[b.Id] = b.ProcessName;
+            }
+        }
+
+        var resolved = new List<PresetAppBinding>();
+        foreach (var app in apps)
+        {
+            if (string.IsNullOrWhiteSpace(app.Id)
+                || resolved.Exists(r => string.Equals(r.Id, app.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+            var processName = DevicesRoutes.ResolveBindingProcessName(app.Id, shortcuts);
+            if (processName.Length == 0 && known.TryGetValue(app.Id, out var previous)) processName = previous;
+            if (processName.Length == 0 && !string.IsNullOrWhiteSpace(app.ProcessName))
+            {
+                processName = Nexus.Service.Lighting.AppPresetMatching.ProcessKey(app.ProcessName);
+            }
+            if (processName.Length == 0) continue;
+            resolved.Add(new PresetAppBinding { Id = app.Id, Name = Clean(app.Name, 128), ProcessName = processName });
+        }
+        return resolved;
+    }
+
     private static string Clean(string? value, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value)) return "";
@@ -190,8 +225,9 @@ public static class FocusRoutes
                 TurnPanelDisplaysOff = m.TurnPanelDisplaysOff,
                 StaticPanelBackgrounds = m.StaticPanelBackgrounds,
                 ExitGraceSeconds = m.ExitGraceSeconds,
+                Apps = m.Apps.Select(a => new FocusAppDto { Id = a.Id, Name = a.Name, ProcessName = a.ProcessName }).ToList(),
             }).ToList(),
-            AvailableTriggers = new List<string> { FocusTriggers.Manual, FocusTriggers.Game, FocusTriggers.Obs },
+            AvailableTriggers = new List<string> { FocusTriggers.Manual, FocusTriggers.Game, FocusTriggers.Obs, FocusTriggers.App },
         };
     }
 

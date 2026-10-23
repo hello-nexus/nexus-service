@@ -41,6 +41,17 @@ public sealed class FocusModeDto
     public bool TurnPanelDisplaysOff { get; set; }
     public bool StaticPanelBackgrounds { get; set; }
     public int ExitGraceSeconds { get; set; }
+
+    /// <summary>Apps the "app" trigger watches; empty for every other trigger.</summary>
+    public List<FocusAppDto> Apps { get; set; } = new();
+}
+
+/// <summary>Same shape as PresetAppDto: Id is a shortcut target id or "proc:&lt;name&gt;", ProcessName the resolved match key.</summary>
+public sealed class FocusAppDto
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string ProcessName { get; set; } = "";
 }
 
 /// <summary>Every field optional: a PATCH of one mode. Id comes from the route.</summary>
@@ -54,6 +65,9 @@ public sealed class UpdateFocusModeBody
     public bool? TurnPanelDisplaysOff { get; set; }
     public bool? StaticPanelBackgrounds { get; set; }
     public int? ExitGraceSeconds { get; set; }
+
+    /// <summary>Replaces the mode's app list when present.</summary>
+    public List<FocusAppDto>? Apps { get; set; }
 }
 
 public sealed class CreateFocusModeBody

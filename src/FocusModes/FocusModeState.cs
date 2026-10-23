@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Hosting;
+using Nexus.Service.Activity;
+using Nexus.Service.Lighting;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
@@ -19,6 +21,10 @@ public sealed record TrackedGame(
 /// The game trigger tracks the game's PROCESS, not the fps focus session that
 /// reports it: that session ends on the first alt-tab, so following it would
 /// toggle every effect each time the player switches away.
+///
+/// The app trigger watches the process list instead: a mode fires while any of
+/// its chosen apps is running, foreground or not, after the same activation
+/// delay the game trigger uses.
 /// </summary>
 public sealed class FocusModeState : BackgroundService
 {
@@ -39,12 +45,20 @@ public sealed class FocusModeState : BackgroundService
     private readonly IConfigStore _config;
     private readonly TimeSpan _activationDelay;
     private readonly Func<TrackedGame, bool> _isRunning;
+    private readonly ProcessMonitor? _processes;
+    private readonly Func<IReadOnlyList<ProcessInfo>>? _listProcesses;
 
     private readonly object _lock = new();
     private readonly Dictionary<int, TrackedGame> _games = new();
     private readonly Dictionary<int, TrackedGame> _pending = new();
     private readonly Dictionary<string, long> _graceUntilUtcMs = new(StringComparer.Ordinal);
     private readonly HashSet<string> _wasFiring = new(StringComparer.Ordinal);
+    // App-trigger modes whose apps are running and have outlived the activation delay, and when each first matched.
+    private readonly HashSet<string> _appRunning = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _appSeenSinceMs = new(StringComparer.Ordinal);
+    private bool _appDemand;
+
+    private const string AppDemandSource = "focus-app";
 
     private bool _obsLive;
     private string? _manualModeId;
@@ -56,14 +70,20 @@ public sealed class FocusModeState : BackgroundService
     private string _reason = "";
     private long _activatedUtcMs;
 
-    public FocusModeState(IConfigStore config) : this(config, DefaultActivationDelay) { }
+    public FocusModeState(IConfigStore config, ProcessMonitor processes)
+        : this(config, DefaultActivationDelay, null, () => processes.GetProcesses())
+    {
+        _processes = processes;
+    }
 
     internal FocusModeState(
-        IConfigStore config, TimeSpan activationDelay, Func<TrackedGame, bool>? isRunning = null)
+        IConfigStore config, TimeSpan activationDelay, Func<TrackedGame, bool>? isRunning = null,
+        Func<IReadOnlyList<ProcessInfo>>? listProcesses = null)
     {
         _config = config;
         _activationDelay = activationDelay;
         _isRunning = isRunning ?? IsStillRunning;
+        _listProcesses = listProcesses;
     }
 
     /// <summary>Raised outside the state lock whenever the active mode changes; null means nothing is active.</summary>
@@ -169,9 +189,18 @@ public sealed class FocusModeState : BackgroundService
 
     private void Sweep()
     {
+        var settings = LoadSettings();
+        var appModes = settings.Modes.Where(m => m.Trigger == FocusTriggers.App && m.Apps.Count > 0).ToList();
+        SetAppDemand(appModes.Count > 0);
+        var processes = appModes.Count > 0 ? ReadProcesses() : null;
+
         lock (_lock)
         {
             PromotePendingLocked();
+            if (processes is not null || _appRunning.Count > 0 || _appSeenSinceMs.Count > 0)
+            {
+                UpdateAppTriggersLocked(appModes, processes);
+            }
 
             List<int>? dead = null;
             foreach (var game in _games.Values)
@@ -185,6 +214,64 @@ public sealed class FocusModeState : BackgroundService
         }
 
         Reevaluate();
+    }
+
+    private void SetAppDemand(bool wanted)
+    {
+        if (_appDemand == wanted) return;
+        _appDemand = wanted;
+        _processes?.SetDemand(AppDemandSource, wanted);
+    }
+
+    private IReadOnlyList<ProcessInfo>? ReadProcesses()
+    {
+        try { return _listProcesses?.Invoke(); }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Running, not focused: a mode's app trigger is raw-true once any of its apps
+    /// has been in the process list for the activation delay, and stays true until
+    /// none is. A null list (no source, or the read failed) keeps the last answer
+    /// rather than reading as "everything quit".
+    /// </summary>
+    private void UpdateAppTriggersLocked(List<FocusModeSettings> appModes, IReadOnlyList<ProcessInfo>? processes)
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var live = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var mode in appModes) live.Add(mode.Id);
+
+        foreach (var id in _appSeenSinceMs.Keys.Where(id => !live.Contains(id)).ToList()) _appSeenSinceMs.Remove(id);
+        _appRunning.RemoveWhere(id => !live.Contains(id));
+        if (processes is null) return;
+
+        foreach (var mode in appModes)
+        {
+            if (!AnyAppRunning(mode, processes))
+            {
+                _appSeenSinceMs.Remove(mode.Id);
+                _appRunning.Remove(mode.Id);
+                continue;
+            }
+            if (!_appSeenSinceMs.TryGetValue(mode.Id, out var since))
+            {
+                since = nowMs;
+                _appSeenSinceMs[mode.Id] = since;
+            }
+            if (nowMs - since >= (long)_activationDelay.TotalMilliseconds) _appRunning.Add(mode.Id);
+        }
+    }
+
+    private static bool AnyAppRunning(FocusModeSettings mode, IReadOnlyList<ProcessInfo> processes)
+    {
+        foreach (var app in mode.Apps)
+        {
+            foreach (var proc in processes)
+            {
+                if (AppPresetMatching.Matches(app.ProcessName, app.Name, proc.Name)) return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>Moves candidates that have outlived the activation delay into the tracked set and drops the ones that died first.</summary>
@@ -309,6 +396,7 @@ public sealed class FocusModeState : BackgroundService
     {
         FocusTriggers.Game => _games.Count > 0,
         FocusTriggers.Obs => _obsLive,
+        FocusTriggers.App => _appRunning.Contains(mode.Id),
         _ => false,
     };
 

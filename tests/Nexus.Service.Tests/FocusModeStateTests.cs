@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Nexus.Service.Activity;
+using Nexus.Service.Models.Activity;
 using Nexus.Service.FocusModes;
 using Nexus.Service.Persistence;
 using Xunit;
@@ -305,11 +307,189 @@ public class FocusModeStateTests
     [InlineData("manual", true)]
     [InlineData("game", true)]
     [InlineData("obs", true)]
+    [InlineData("app", true)]
     [InlineData("", false)]
     [InlineData("mic", false)]
     [InlineData(null, false)]
     public void OnlyImplementedTriggersAreAccepted(string? id, bool known)
     {
         Assert.Equal(known, FocusTriggers.IsKnown(id));
+    }
+
+    private static (FocusModeState State, InMemoryConfigStore Store, List<ProcessInfo> Procs) BuildApp(
+        TimeSpan? delay = null, int graceSeconds = 0, string processName = "chrome", string displayName = "Google Chrome")
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Focus.Modes.Add(new FocusModeSettings
+        {
+            Id = "apps",
+            Name = "Browse",
+            Trigger = FocusTriggers.App,
+            ExitGraceSeconds = graceSeconds,
+            Apps = new List<PresetAppBinding>
+            {
+                new() { Id = "proc:" + processName, Name = displayName, ProcessName = processName },
+            },
+        }));
+        var procs = new List<ProcessInfo>();
+        var state = new FocusModeState(store, delay ?? TimeSpan.Zero, g => false, () => procs.ToList());
+        return (state, store, procs);
+    }
+
+    [Fact]
+    public void ARunningAppActivatesItsMode()
+    {
+        var (state, _, procs) = BuildApp();
+        state.SweepForTests();
+        Assert.False(state.IsActive);
+
+        procs.Add(new ProcessInfo { Pid = 1, Name = "chrome.exe" });
+        state.SweepForTests();
+
+        Assert.Equal("apps", state.ActiveModeId);
+        Assert.Equal("auto", state.Reason);
+    }
+
+    [Fact]
+    public void AnyOneOfSeveralAppsFiresTheMode()
+    {
+        var (state, store, procs) = BuildApp();
+        store.Update(s => s.Focus.Modes.First(m => m.Id == "apps").Apps.Add(
+            new PresetAppBinding { Id = "proc:code", Name = "Code", ProcessName = "code" }));
+        procs.Add(new ProcessInfo { Pid = 2, Name = "Code" });
+        state.SweepForTests();
+
+        Assert.Equal("apps", state.ActiveModeId);
+    }
+
+    [Fact]
+    public void AnAppModeWaitsOutTheActivationDelay()
+    {
+        var (state, _, procs) = BuildApp(delay: TimeSpan.FromMinutes(5));
+        procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
+        state.SweepForTests();
+
+        Assert.False(state.IsActive);
+    }
+
+    [Fact]
+    public void TheAppModeEndsOnceTheAppExitsAndTheGraceHasPassed()
+    {
+        var (state, _, procs) = BuildApp();
+        procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
+        state.SweepForTests();
+        Assert.True(state.IsActive);
+
+        procs.Clear();
+        state.SweepForTests();
+
+        Assert.False(state.IsActive);
+    }
+
+    [Fact]
+    public void TheAppModeHoldsInsideTheGraceWindowAfterTheAppExits()
+    {
+        var (state, _, procs) = BuildApp(graceSeconds: 600);
+        procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
+        state.SweepForTests();
+
+        procs.Clear();
+        state.SweepForTests();
+
+        Assert.True(state.IsActive);
+    }
+
+    [Fact]
+    public void FocusingAnotherWindowDoesNotMatterToAnAppMode()
+    {
+        // Only the running list is consulted, so an alt-tab leaves the mode on.
+        var (state, _, procs) = BuildApp();
+        procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
+        procs.Add(new ProcessInfo { Pid = 2, Name = "notepad", HasWindow = true });
+        state.SweepForTests();
+        state.SweepForTests();
+
+        Assert.Equal("apps", state.ActiveModeId);
+    }
+
+    [Fact]
+    public void OffHoldsAnAppModeOutUntilTheAppQuits()
+    {
+        var (state, _, procs) = BuildApp();
+        procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
+        state.SweepForTests();
+
+        state.TurnOff();
+        state.SweepForTests();
+        Assert.False(state.IsActive);
+
+        procs.Clear();
+        state.SweepForTests();
+        procs.Add(new ProcessInfo { Pid = 3, Name = "chrome" });
+        state.SweepForTests();
+        Assert.Equal("apps", state.ActiveModeId);
+    }
+
+    [Fact]
+    public void AnAppModeWithNoAppsNeverFires()
+    {
+        var (state, store, procs) = BuildApp();
+        store.Update(s => s.Focus.Modes.First(m => m.Id == "apps").Apps.Clear());
+        procs.Add(new ProcessInfo { Pid = 1, Name = "chrome" });
+        state.SweepForTests();
+
+        Assert.False(state.IsActive);
+    }
+
+    [Fact]
+    public void AppsRoundTripThroughPersistenceAndOldFilesLoadEmpty()
+    {
+        var settings = new NexusSettings();
+        settings.Focus.Modes.Add(new FocusModeSettings
+        {
+            Id = "apps",
+            Trigger = FocusTriggers.App,
+            Apps = new List<PresetAppBinding> { new() { Id = "proc:obs64", Name = "OBS", ProcessName = "obs64" } },
+        });
+        var ctx = Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings;
+        var back = System.Text.Json.JsonSerializer.Deserialize(
+            System.Text.Json.JsonSerializer.Serialize(settings, ctx), ctx)!;
+
+        var app = Assert.Single(back.Focus.Modes.First(m => m.Id == "apps").Apps);
+        Assert.Equal(("proc:obs64", "OBS", "obs64"), (app.Id, app.Name, app.ProcessName));
+
+        var old = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"focus\":{\"modes\":[{\"id\":\"x\",\"name\":\"X\",\"trigger\":\"game\"}]}}", ctx)!;
+        Assert.Empty(old.Focus.Modes.Single().Apps);
+    }
+
+    private sealed class FakeShortcuts : IShortcutsProvider
+    {
+        public IReadOnlyList<Shortcut> GetAll() => Array.Empty<Shortcut>();
+        public Shortcut? GetById(string targetId) => null;
+        public byte[] GetIcon(string targetId) => Array.Empty<byte>();
+        public bool Launch(string targetId) => false;
+        public string ResolveProcessName(string targetId) => targetId == "lnk:known" ? "Known.exe" : "";
+    }
+
+    [Fact]
+    public void PatchResolutionDropsAppsThatResolveToNothing()
+    {
+        var store = new InMemoryConfigStore();
+        var picked = new List<Nexus.Service.Models.Focus.FocusAppDto>
+        {
+            new() { Id = "proc:Steam.exe", Name = "Steam", ProcessName = "ignored" },
+            new() { Id = "lnk:known", Name = "Known", ProcessName = "" },
+            new() { Id = "lnk:clientsent", Name = "Sent", ProcessName = "Sent.EXE" },
+            new() { Id = "lnk:unknown", Name = "Nothing", ProcessName = "" },
+            new() { Id = "proc:Steam.exe", Name = "Dupe", ProcessName = "" },
+            new() { Id = "", Name = "Blank", ProcessName = "x" },
+        };
+
+        var resolved = Nexus.Service.Routes.FocusRoutes.ResolveApps(picked, store, new FakeShortcuts());
+
+        Assert.Equal(
+            new[] { ("proc:Steam.exe", "steam"), ("lnk:known", "known"), ("lnk:clientsent", "sent") },
+            resolved.Select(a => (a.Id, a.ProcessName)));
     }
 }
