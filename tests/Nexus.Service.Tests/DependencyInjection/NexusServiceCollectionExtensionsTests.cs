@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Nexus.Service.Activity;
 using Nexus.Service.Cooling;
 using Nexus.Service.DependencyInjection;
@@ -8,6 +9,7 @@ using Nexus.Service.Persistence;
 using Nexus.Service.Sensors;
 using Nexus.Service.Sockets;
 using Microsoft.Extensions.DependencyInjection;
+using System.Linq;
 using Xunit;
 
 namespace Nexus.Service.Tests.DependencyInjection;
@@ -160,5 +162,28 @@ public class NexusServiceCollectionExtensionsTests
         var sp = Build();
         Assert.True(sp!.GetRequiredService<Nexus.Service.Peripherals.StreamDeck.StreamDeckConnectionWorker>()
             .FanHeaderRenamesWired);
+    }
+
+    [Fact]
+    public void Both_galleon_connection_workers_are_registered_as_hosted_services()
+    {
+        var services = new ServiceCollection();
+        services.AddNexusCore().AddNexusSensors().AddNexusCooling().AddNexusBenchmarks().AddNexusLighting().AddNexusDevices().AddNexusPeripherals().AddNexusHelper();
+        services.AddLogging();
+        services.AddHttpClient();
+        var sp = services.BuildServiceProvider();
+
+        // The full hosted graph needs services other test fixtures wire; instantiate only the registrations that resolve.
+        var ids = new List<int>();
+        foreach (var d in services.Where(d => d.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService) && d.ImplementationFactory is not null))
+        {
+            object? instance;
+            try { instance = d.ImplementationFactory!(sp); }
+            catch (Exception) { continue; }
+            if (instance is Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker w) ids.Add(w.ProductId);
+        }
+
+        ids.Sort();
+        Assert.Equal(new[] { Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.ProductId, Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.StreamDeckProductId }, ids);
     }
 }

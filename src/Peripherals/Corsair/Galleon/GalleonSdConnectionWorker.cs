@@ -21,6 +21,8 @@ public sealed class GalleonSdConnectionWorker : BackgroundService
     private readonly GalleonSdLightingDeviceProvider? _lighting;
     private readonly Func<long> _clock;
     private readonly int _productId;
+
+    internal int ProductId => _productId;
     private long _retryAt;
     private bool _openLastTick;
     private int _lastVersion;

@@ -941,7 +941,8 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
             sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>()));
-        services.AddHostedService(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
+        // Registered directly: AddHostedService de-duplicates by implementation type and would drop this second worker.
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
             sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>(),
             sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
