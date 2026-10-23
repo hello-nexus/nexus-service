@@ -46,12 +46,11 @@ internal sealed unsafe class AdlxGpuFans
         var key = InitGuardKey(path);
         if (AdlxInitGuard.Latched(dir, key))
         {
-            ServiceLog.Warn($"[amd-fan] ADLX off until a reboot or driver update: a previous run died inside ADLX init ({key})");
+            ServiceLog.Warn($"[amd-fan] ADLX off until a reboot or driver update: a previous run died inside an ADLX call ({key})");
             return null;
         }
-        AdlxInitGuard.Arm(dir, key);
-        try { return Create(path, blockChanged); }
-        finally { AdlxInitGuard.Disarm(dir); }
+        AdlxInitGuard.Configure(dir, key);
+        using (AdlxInitGuard.Scope()) return Create(path, blockChanged);
     }
 
     // A driver update or a reboot can clear a broken ADLX, so either one re-arms it.
@@ -132,6 +131,7 @@ internal sealed unsafe class AdlxGpuFans
     public AdlxGpuFan? Find(string lhmPnp, out bool pnpMatched)
     {
         lock (Sync)
+        using (AdlxInitGuard.Scope())
         {
             var gpu = _gpus.FirstOrDefault(g => PnpMatches(g.Pnp, lhmPnp));
             pnpMatched = gpu is not null;
@@ -250,6 +250,7 @@ internal sealed unsafe class AdlxGpuFan
     public bool SetDuty(int duty)
     {
         lock (AdlxGpuFans.Sync)
+        using (AdlxInitGuard.Scope())
         {
             if (!_takenOver && !TakeOver()) return false;
             _duty = duty;
@@ -287,6 +288,7 @@ internal sealed unsafe class AdlxGpuFan
     public bool Release()
     {
         lock (AdlxGpuFans.Sync)
+        using (AdlxInitGuard.Scope())
         {
             if (!_takenOver) return true;
             // Released from here on, whatever the driver does: a calibration lease must not re-take the old duty.
