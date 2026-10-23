@@ -564,16 +564,8 @@ public static class TrayIcon
         // file it creates).
         try
         {
-            var dir = Nexus.Service.Platform.ServiceLog.LogsDirectory;
-            System.IO.Directory.CreateDirectory(dir);
-            using var fs = new System.IO.FileStream(
-                System.IO.Path.Combine(dir, "nexus-tray.log"),
-                System.IO.FileMode.Append,
-                System.IO.FileAccess.Write,
-                System.IO.FileShare.ReadWrite);
             var line = $"{DateTime.Now:HH:mm:ss.fff} [TrayIcon p{Environment.ProcessId}] {msg}\n";
-            var bytes = System.Text.Encoding.UTF8.GetBytes(line);
-            fs.Write(bytes, 0, bytes.Length);
+            Nexus.Service.Platform.ServiceLog.AppendUserSessionLog("nexus-tray.log", System.Text.Encoding.UTF8.GetBytes(line));
         }
         catch { }
     }
