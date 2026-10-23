@@ -7,6 +7,7 @@ using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.Nzxt;
+using Nexus.Service.Sockets;
 using Xunit;
 
 namespace Nexus.Service.Tests.NzxtFanController;
@@ -191,6 +192,71 @@ public class NzxtFanControllerTests
         Assert.True(hub.Poll());
 
         Assert.Equal(900, hub.Fans[0].Rpm);
+    }
+
+    private static int StartReportingWrites(FakeHid hid) =>
+        hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x03);
+
+    [Fact]
+    public void Poll_MissResendsStartReporting()
+    {
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+        int before = StartReportingWrites(hid);
+
+        Assert.False(hub.Poll());
+
+        Assert.Equal(before + 1, StartReportingWrites(hid));
+    }
+
+    [Fact]
+    public void Poll_ShortSilenceStaysConnectedAndLongSilenceIsLost()
+    {
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+
+        for (int i = 0; i < NzxtFanControllerHub.MaxMissedPolls - 1; i++)
+        {
+            Assert.False(hub.Poll());
+        }
+        Assert.False(hub.Lost);
+        hid.Incoming.Enqueue(Status(ThreeFans));
+        Assert.True(hub.Poll());
+        for (int i = 0; i < NzxtFanControllerHub.MaxMissedPolls - 1; i++)
+        {
+            Assert.False(hub.Poll());
+        }
+        Assert.False(hub.Lost);
+
+        Assert.False(hub.Poll());
+
+        Assert.True(hub.Lost);
+    }
+
+    [Fact]
+    public void ConnectAndDetachBroadcastCooling_FailedConnectDoesNot()
+    {
+        var ws = new MultiplexHub();
+        var topics = new List<string>();
+        ws.OnBroadcastForTest += (topic, _) => topics.Add(topic);
+        using var sub = ws.AddTestSubscription(PanelTopics.Cooling);
+        var hid = new FakeHid();
+        var hub = new NzxtFanControllerHub(ws) { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect());
+        hub.Detach();
+        Assert.Empty(topics);
+
+        var hid2 = new FakeHid();
+        hid2.Incoming.Enqueue(Status(ThreeFans));
+        hub.Attach(hid2);
+        Assert.True(hub.Connect());
+        Assert.Single(topics);
+        hub.Detach();
+
+        Assert.Equal(2, topics.Count);
+        Assert.All(topics, t => Assert.Equal(PanelTopics.Cooling, t));
     }
 
     [Fact]
