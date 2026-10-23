@@ -12,7 +12,7 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Lighting;
 
-/// <summary>Pushes engine output to the Galleon 100 SD at 30 Hz while a software effect runs; with no effect (or the unit handed to firmware) the board is returned to hardware mode once.</summary>
+/// <summary>Pushes engine output to the Galleon 100 SD on a timer while a software effect runs; with no effect (or the unit handed to firmware) the board is returned to hardware mode once.</summary>
 public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
 {
     private const int TickPeriodMs = 33;

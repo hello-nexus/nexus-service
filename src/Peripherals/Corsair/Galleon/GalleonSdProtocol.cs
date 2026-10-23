@@ -163,9 +163,8 @@ public static class GalleonSdProtocol
         outputReportByteLength == WireLength || outputReportByteLength == WireLength + 1;
 
     /// <summary>
-    /// Replies were never captured. A reply is taken to echo the request header
-    /// (<c>.. .. .. CMD STATUS</c>) or OpenRGB's layout (<c>.. CMD STATUS</c>);
-    /// anything else is unparsed and logged raw.
+    /// Replies were never captured. A reply parses only when it echoes the request
+    /// header position (<c>.. .. .. CMD STATUS</c>); anything else is unparsed and logged raw.
     /// </summary>
     public static GalleonReply ParseReply(byte cmd, ReadOnlySpan<byte> reply)
     {
@@ -176,10 +175,6 @@ public static class GalleonSdProtocol
         if (reply.Length > ArgsIndex && reply[CommandIndex] == cmd)
         {
             return new GalleonReply(true, reply[ArgsIndex]);
-        }
-        if (reply.Length > 2 && reply[1] == cmd)
-        {
-            return new GalleonReply(true, reply[2]);
         }
         return default;
     }

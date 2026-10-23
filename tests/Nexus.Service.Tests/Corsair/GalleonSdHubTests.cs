@@ -17,6 +17,7 @@ public class GalleonSdHubTests
         public Queue<byte[]> Replies { get; } = new();
         public Func<byte[], byte[]?>? OnWrite { get; set; }
         public bool FailWrites { get; set; }
+        public bool FailWritesAfterRecording { get; set; }
         public bool Disposed { get; private set; }
 
         public int VendorId => GalleonSdProtocol.VendorId;
@@ -31,6 +32,11 @@ public class GalleonSdHubTests
             if (FailWrites) return false;
             var wire = report[1..].ToArray();
             Writes.Add(wire);
+            if (FailWritesAfterRecording)
+            {
+                OnWrite?.Invoke(wire);
+                return false;
+            }
             var reply = OnWrite?.Invoke(wire);
             if (reply is not null) Replies.Enqueue(reply);
             return true;
@@ -63,9 +69,9 @@ public class GalleonSdHubTests
         public IHidDevice? Open(string path, bool forInput = false) => path == "galleon" ? Device : null;
     }
 
-    private static long _clock;
+    private long _clock;
 
-    private static GalleonSdHub NewHub(ScriptedHid hid) => new(hid, () => _clock);
+    private GalleonSdHub NewHub(ScriptedHid hid) => new(hid, () => _clock);
 
     private static IEnumerable<byte[]> Commands(ScriptedDevice d, byte cmd) => d.Writes.Where(w => w[3] == cmd);
 
@@ -159,7 +165,7 @@ public class GalleonSdHubTests
     }
 
     [Fact]
-    public void Rejected_start_reply_retries_the_next_handle()
+    public void Rejected_start_reply_retries_the_next_handle_without_stopping_the_rejected_one()
     {
         _clock = 4_000_000_000;
         var hid = new ScriptedHid();
@@ -180,6 +186,42 @@ public class GalleonSdHubTests
         var starts = Commands(dev, GalleonSdProtocol.CmdStartTx).ToList();
         Assert.Equal(new byte[] { 0, 1 }, starts.Select(x => x[4]));
         Assert.Equal(1, Commands(dev, GalleonSdProtocol.CmdBlockFirst).Single()[4]);
+        Assert.Equal(new byte[] { 1 }, Commands(dev, GalleonSdProtocol.CmdStopTx).Select(x => x[5]));
+    }
+
+    [Fact]
+    public void Start_rejected_on_every_handle_writes_no_data_and_renegotiates_later()
+    {
+        _clock = 4_500_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        var dev = hid.Device;
+        dev.Writes.Clear();
+        dev.OnWrite = wire =>
+        {
+            var reply = new byte[128];
+            reply[3] = wire[3];
+            if (wire[3] == GalleonSdProtocol.CmdStartTx) reply[4] = 3;
+            return reply;
+        };
+
+        Assert.True(hub.WriteFrame(Frame));
+
+        Assert.Equal(GalleonSdProtocol.MaxHandle + 1, Commands(dev, GalleonSdProtocol.CmdStartTx).Count());
+        Assert.Empty(Commands(dev, GalleonSdProtocol.CmdBlockFirst));
+        Assert.Empty(Commands(dev, GalleonSdProtocol.CmdBlockNext));
+        Assert.Empty(Commands(dev, GalleonSdProtocol.CmdStopTx));
+
+        dev.OnWrite = wire =>
+        {
+            var ok = new byte[128];
+            ok[3] = wire[3];
+            return ok;
+        };
+        _clock += 10 * System.Diagnostics.Stopwatch.Frequency;
+        Assert.True(hub.WriteFrame(Frame));
+        Assert.Single(Commands(dev, GalleonSdProtocol.CmdBlockFirst));
     }
 
     [Fact]
@@ -192,7 +234,7 @@ public class GalleonSdHubTests
         hub.WriteFrame(Frame);
         var count = hid.Device.Writes.Count;
 
-        _clock += System.Diagnostics.Stopwatch.Frequency; // 1 s later, identical colors
+        _clock += System.Diagnostics.Stopwatch.Frequency;
         Assert.True(hub.WriteFrame(Frame));
 
         Assert.Equal(count, hid.Device.Writes.Count);
@@ -214,5 +256,32 @@ public class GalleonSdHubTests
         }
 
         Assert.Null(hub.Attached);
+    }
+
+    [Fact]
+    public void Dropping_after_io_failures_attempts_a_hardware_mode_handback_first()
+    {
+        _clock = 7_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hub.WriteFrame(Frame);
+        var dev = hid.Device;
+        var attempted = 0;
+        dev.OnWrite = wire =>
+        {
+            if (wire[3] == GalleonSdProtocol.CmdSet && wire[6] == GalleonSdProtocol.ModeHardware) attempted++;
+            return null;
+        };
+        dev.FailWritesAfterRecording = true;
+
+        for (var i = 0; i < 5; i++)
+        {
+            _clock += System.Diagnostics.Stopwatch.Frequency;
+            hub.WriteFrame(Enumerable.Repeat(new RgbColor((byte)(i + 50), 0, 0), GalleonSdProtocol.LedCount).ToArray());
+        }
+
+        Assert.Null(hub.Attached);
+        Assert.Equal(1, attempted);
     }
 }

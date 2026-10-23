@@ -124,6 +124,7 @@ public class LightingDevicesCatalogTests
     [InlineData("Asiahorse", "Umbra V2", "0x1A86", "0xFE04")]
     [InlineData("Tryx", "Panorama", "0x391A", "0x1011")]
     [InlineData("Aftershock", "Glacier Matrix 360", "0x38C1", "0x0026")]
+    [InlineData("Corsair", "Galleon 100 SD Keyboard", "0x1B1C", "0x2B0C")]
     [InlineData("Corsair", "iCUE LINK System Hub", "0x1B1C", "0x0C3F")]
     [InlineData("NZXT", "Kraken Z3", "0x1E71", "0x3008")]
     [InlineData("NZXT", "Kraken X3", "0x1E71", "0x2007")]

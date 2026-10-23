@@ -53,6 +53,7 @@ public sealed class GalleonSdHub : IDisposable
         public byte Handle { get; set; }
         public bool HandleSettled { get; set; }
         public int Failures { get; set; }
+        public long NextNegotiateStamp { get; set; }
         public int FramesSent { get; set; }
         public long LastSentStamp { get; set; }
         public long LastModeStamp { get; set; }
@@ -77,8 +78,8 @@ public sealed class GalleonSdHub : IDisposable
     private const int FrameReplyMs = 20;
     private const int FirstPacketReplyMs = 5;
     private const int InputBufferBytes = GalleonSdProtocol.WireLength + 1;
-    // OpenRGB CORSAIR_V2_WRITE_PACE: the K100 family drops back-to-back continuation packets.
-    private const double ContinuationPaceMs = 2;
+    private const int ContinuationPaceMs = 2;
+    private const double RejectBackoffMs = 2000;
 
     private readonly IHidEnumerator _hid;
     private readonly Func<long> _clock;
@@ -116,6 +117,7 @@ public sealed class GalleonSdHub : IDisposable
         {
             foreach (var info in _hid.Find(GalleonSdProtocol.VendorId, GalleonSdProtocol.ProductId))
             {
+                // hidraw report lengths are unvalidated for this interface, so Linux units stay unopened.
                 if (OperatingSystem.IsLinux()) continue;
                 if (!GalleonSdProtocol.IsCommandInterface(info.OutputReportByteLength)) continue;
                 if (chosen is null || info.UsagePage == GalleonSdProtocol.VendorUsagePage) chosen = info;
@@ -195,7 +197,12 @@ public sealed class GalleonSdHub : IDisposable
                     if (!EnterSoftwareLocked(slot)) return RecordFailureLocked(slot, "software-mode");
                     slot.LastModeStamp = now;
                 }
-                if (!SendDirectLocked(slot, probe)) return RecordFailureLocked(slot, "frame");
+                if (!SendDirectLocked(slot, probe, now, out var sent)) return RecordFailureLocked(slot, "frame");
+                if (!sent)
+                {
+                    slot.WindowSkipped++;
+                    return true;
+                }
                 slot.Payload.CopyTo(slot.LastPayload, 0);
                 slot.HasLast = true;
                 slot.Failures = 0;
@@ -290,35 +297,50 @@ public sealed class GalleonSdHub : IDisposable
         return true;
     }
 
-    private bool SendDirectLocked(Slot slot, bool log)
+    // sent=false with a true return means the start was rejected and nothing was written.
+    private bool SendDirectLocked(Slot slot, bool log, long now, out bool sent)
     {
+        sent = false;
         var replyMs = log ? ProbeReplyMs : FrameReplyMs;
         if (slot.RepliesEver == 0 && slot.FramesSent >= ProbeFrames) replyMs = 0;
+        if (!slot.HandleSettled && now < slot.NextNegotiateStamp) return true;
 
         var resource = GalleonSdProtocol.DirectResource;
-        GalleonReply start;
         if (slot.HandleSettled)
         {
-            start = Exchange(slot, GalleonSdProtocol.StartTransaction(slot.Handle, resource), "start tx", replyMs, log, check: true);
+            var start = Exchange(slot, GalleonSdProtocol.StartTransaction(slot.Handle, resource), "start tx", replyMs, log, check: true);
+            if (start.Parsed && !start.IsOk)
+            {
+                slot.HandleSettled = false;
+                slot.NextNegotiateStamp = now + (long)(RejectBackoffMs * Stopwatch.Frequency / 1000);
+                return true;
+            }
         }
         else
         {
-            byte handle = 0;
-            while (true)
+            byte? accepted = null;
+            GalleonReply last = default;
+            for (byte handle = 0; handle <= GalleonSdProtocol.MaxHandle; handle++)
             {
-                start = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"start tx h={handle}", replyMs, log: true, check: true);
-                if (!start.Parsed || start.Status == 0 || handle >= GalleonSdProtocol.MaxHandle) break;
-                Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"stop tx h={handle}", replyMs, log: true);
-                handle++;
+                last = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"start tx h={handle}", replyMs, log: true, check: true);
+                if (!last.Parsed || last.IsOk)
+                {
+                    accepted = handle;
+                    break;
+                }
             }
-            if (start.Parsed && start.Status != 0)
+            if (accepted is null)
             {
-                ServiceLog.Error("[galleon-sd] start tx rejected on every handle; continuing on handle 0");
-                handle = 0;
+                slot.NextNegotiateStamp = now + (long)(RejectBackoffMs * Stopwatch.Frequency / 1000);
+                if (slot.ErrorLogs++ < MaxErrorLogs)
+                {
+                    ServiceLog.Error($"[galleon-sd] start tx rejected on every handle (last status {last.Status:X2}); frame skipped");
+                }
+                return true;
             }
-            slot.Handle = handle;
+            slot.Handle = accepted.Value;
             slot.HandleSettled = true;
-            ServiceLog.Info($"[galleon-sd] direct handle {handle} (start reply parsed={start.Parsed} status={start.Status:X2})");
+            ServiceLog.Info($"[galleon-sd] direct handle {slot.Handle} (start reply parsed={last.Parsed} status={last.Status:X2})");
         }
 
         var chunks = GalleonSdProtocol.BlockWrite(slot.Handle, slot.Payload);
@@ -326,21 +348,20 @@ public sealed class GalleonSdHub : IDisposable
         {
             if (i == 0)
             {
-                Exchange(slot, chunks[i], "block first", log ? ProbeReplyMs : Math.Min(replyMs, FirstPacketReplyMs), log, check: true);
+                var ack = Exchange(slot, chunks[i], "block first", log ? ProbeReplyMs : Math.Min(replyMs, FirstPacketReplyMs), log, check: true);
+                if (!ack.Parsed) PaceWait();
                 continue;
             }
             if (!SendWire(slot, chunks[i], $"block next {i}", log)) return false;
-            SpinFor(ContinuationPaceMs);
+            PaceWait();
         }
         Exchange(slot, GalleonSdProtocol.StopTransaction(slot.Handle), "stop tx", replyMs, log, check: true);
+        sent = true;
         return true;
     }
 
-    private static void SpinFor(double ms)
-    {
-        var end = Stopwatch.GetTimestamp() + (long)(ms * Stopwatch.Frequency / 1000);
-        while (Stopwatch.GetTimestamp() < end) Thread.Yield();
-    }
+    // OpenRGB CORSAIR_V2_WRITE_PACE: the K100 family drops back-to-back packets, and continuation packets are never acknowledged.
+    private static void PaceWait() => Thread.Sleep(ContinuationPaceMs);
 
     private bool SendWire(Slot slot, byte[] wire, string label, bool log)
     {
@@ -420,6 +441,7 @@ public sealed class GalleonSdHub : IDisposable
         if (n >= ConsecutiveWriteFailureThreshold)
         {
             ServiceLog.Error($"[galleon-sd] {n} consecutive IO failures ({where}) - dropping interface");
+            ReleaseLocked(slot);
             try { slot.Device.Dispose(); } catch { /* best effort */ }
             _slot = null;
             Volatile.Write(ref _snapshot, null);

@@ -97,15 +97,15 @@ public class GalleonSdProtocolTests
     }
 
     [Fact]
-    public void Reply_status_is_read_from_either_echo_layout_and_ignores_a_leading_report_id()
+    public void Reply_status_is_read_from_either_echo_position_and_ignores_a_leading_report_id()
     {
         var a = new byte[128];
         a[3] = 0x0D; a[4] = 0x03;
         Assert.Equal(new GalleonReply(true, 3), GalleonSdProtocol.ParseReply(0x0D, a));
 
-        var b = new byte[128];
-        b[1] = 0x0D; b[2] = 0x00;
-        Assert.True(GalleonSdProtocol.ParseReply(0x0D, b).IsOk);
+        var inputReport = new byte[128];
+        inputReport[1] = GalleonSdProtocol.CmdSet;
+        Assert.False(GalleonSdProtocol.ParseReply(GalleonSdProtocol.CmdSet, inputReport).Parsed);
 
         var withId = new byte[129];
         a.CopyTo(withId, 1);
