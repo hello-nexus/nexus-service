@@ -7,24 +7,35 @@ namespace Nexus.Service.Tests.Sensors;
 
 public class HardwareInventoryParsersTests
 {
+    // Expected names are the JEP106 list in i2c-tools decode-dimms; the ids are the hex strings seen in prod ramModel data (029E, 04CD, 071C).
     [Theory]
-    [InlineData("859B", "Crucial")]
-    [InlineData("0x859B", "Crucial")]
-    [InlineData("04CD", "G.Skill")]
+    [InlineData("859B", "Crucial Technology")]
+    [InlineData("0x859B", "Crucial Technology")]
+    [InlineData("04CD", "G Skill Intl")]
     [InlineData("029E", "Corsair")]
-    [InlineData("9801", "Kingston")]
+    [InlineData("0198", "Kingston")]
     [InlineData("80CE", "Samsung")]
-    [InlineData("80AD", "SK hynix")]
-    [InlineData("802C", "Micron")]
-    [InlineData("2C00", "Micron")] // swapped byte order, as some boards print it
-    public void Jedec_ids_decode_in_either_byte_order(string id, string expected) =>
+    [InlineData("80AD", "SK Hynix")]
+    [InlineData("802C", "Micron Technology")]
+    [InlineData("04EF", "Team Group Inc.")]
+    [InlineData("04CB", "A-DATA Technology")]
+    [InlineData("0502", "Patriot Memory")]
+    [InlineData("01BA", "PNY Technologies Inc.")]
+    [InlineData("0A76", "Lexar Co Limited")]
+    [InlineData("09F7", "Netac Technology Co Ltd")]
+    [InlineData("0B92", "Kingbank Technology Co Ltd")]
+    [InlineData("071C", "Ramsta")]
+    public void Jedec_ids_decode_from_the_count_then_code_bytes(string id, string expected) =>
         Assert.Equal(expected, JedecManufacturers.Decode(id));
 
     [Theory]
     [InlineData("Corsair")]
-    [InlineData("1234")] // well-formed but unlisted: stays unnamed rather than guessed
+    [InlineData("FFFF")] // bad parity
+    [InlineData("2C80")] // code byte first is not the SMBIOS order
+    [InlineData("108F")] // bank past the end of the list
+    [InlineData("0000")]
     [InlineData("")]
-    public void Names_and_unlisted_ids_do_not_decode(string text) => Assert.Null(JedecManufacturers.Decode(text));
+    public void Names_and_invalid_ids_do_not_decode(string text) => Assert.Null(JedecManufacturers.Decode(text));
 
     [Theory]
     [InlineData("Unknown")]
@@ -45,7 +56,7 @@ public class HardwareInventoryParsersTests
     public void Manufacturer_id_string_is_decoded_and_the_raw_id_kept()
     {
         var (name, id) = HardwareInventoryParsers.ResolveManufacturer("859B", null);
-        Assert.Equal("Crucial", name);
+        Assert.Equal("Crucial Technology", name);
         Assert.Equal("859B", id);
     }
 
@@ -53,7 +64,7 @@ public class HardwareInventoryParsersTests
     public void Placeholder_manufacturer_falls_back_to_the_module_manufacturer_id_field()
     {
         var (name, id) = HardwareInventoryParsers.ResolveManufacturer("Unknown", "04CD");
-        Assert.Equal("G.Skill", name);
+        Assert.Equal("G Skill Intl", name);
         Assert.Equal("04CD", id);
     }
 
@@ -79,7 +90,7 @@ public class HardwareInventoryParsersTests
         var info = new MemoryModuleInfo("DIMM_A1", 17179869184, 6000, 5600, "04CD", " F5-6000J3038F16G ");
         var module = HardwareInventoryParsers.FromSmbios(info, 0x22);
 
-        Assert.Equal("G.Skill", module.Manufacturer);
+        Assert.Equal("G Skill Intl", module.Manufacturer);
         Assert.Equal("04CD", module.ManufacturerId);
         Assert.Equal("F5-6000J3038F16G", module.PartNumber);
         Assert.Equal(17179869184, module.CapacityBytes);
@@ -256,7 +267,7 @@ Memory:
           Type: Empty
 """;
         var module = HardwareInventoryParsers.ParseMacMemory(profile).Single();
-        Assert.Equal("Micron", module.Manufacturer);
+        Assert.Equal("Micron Technology", module.Manufacturer);
         Assert.Equal("802C", module.ManufacturerId);
         Assert.Equal("8ATF1G64HZ-2G6E1", module.PartNumber);
         Assert.Equal(8L * 1024 * 1024 * 1024, module.CapacityBytes);

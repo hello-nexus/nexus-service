@@ -1,46 +1,37 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
 
 namespace Nexus.Service.Sensors;
 
 /// <summary>
-/// Names memory vendors from JEDEC JEP106 manufacturer ids. SMBIOS reports the id as hex
-/// text (continuation-byte count then id byte) on boards that do not write a vendor name.
-/// Only vendors confirmed from real module readouts are listed; an unlisted id stays
-/// unnamed rather than guessed, and the caller keeps the raw id.
+/// Names memory vendors from JEDEC JEP106 ids. The SMBIOS Module Manufacturer ID (Type 17, offset 2Ch) and the hex strings boards put in the
+/// manufacturer field carry the continuation-code count first (low 7 bits, odd parity in bit 7) and the id code second (bit 7 is odd parity);
+/// dmidecode prints that as "Bank (count+1), Hex code". Names come from <see cref="JedecVendorTable"/>. An id outside the table or with a
+/// bad parity stays unnamed rather than guessed, and the caller keeps the raw id.
 /// </summary>
 internal static class JedecManufacturers
 {
-    // Key: (bank, id with parity bit stripped). Bank is the continuation-byte count plus one.
-    private static readonly Dictionary<(int Bank, int Id), string> Names = new()
-    {
-        [(1, 0x2C)] = "Micron",
-        [(1, 0x4E)] = "Samsung",
-        [(1, 0x2D)] = "SK hynix",
-        [(2, 0x18)] = "Kingston",
-        [(3, 0x1E)] = "Corsair",
-        [(5, 0x4B)] = "A-DATA",
-        [(5, 0x4D)] = "G.Skill",
-        [(6, 0x1B)] = "Crucial",
-    };
-
     /// <summary>True when <paramref name="text"/> is a four-digit hex id, with or without a 0x prefix.</summary>
     public static bool LooksLikeId(string text) => TryParseBytes(text, out _, out _);
 
-    /// <summary>The vendor name for a hex id string in either byte order, or null when unlisted.</summary>
+    /// <summary>The vendor name for a hex id string (count byte then code byte), or null when unlisted or malformed.</summary>
     public static string? Decode(string text)
     {
-        if (!TryParseBytes(text, out var first, out var second))
+        if (!TryParseBytes(text, out var count, out var code))
             return null;
-        // Firmware prints either (continuation, id) or the swapped pair.
-        return Lookup(first, second) ?? Lookup(second, first);
+        return Decode(count, code);
     }
 
-    private static string? Lookup(int continuation, int idByte)
+    public static string? Decode(int countByte, int codeByte)
     {
-        var bank = (continuation & 0x7F) + 1;
-        return Names.TryGetValue((bank, idByte & 0x7F), out var name) ? name : null;
+        var bank = countByte & 0x7F;
+        var id = codeByte & 0x7F;
+        // Odd parity on the code byte, as decode-dimms requires; zero ids are padding.
+        if (int.PopCount(codeByte & 0xFF) % 2 == 0 || id == 0)
+            return null;
+        if (bank >= JedecVendorTable.Banks.Count || id > JedecVendorTable.Banks[bank].Length)
+            return null;
+        return JedecVendorTable.Banks[bank][id - 1];
     }
 
     private static bool TryParseBytes(string text, out int first, out int second)

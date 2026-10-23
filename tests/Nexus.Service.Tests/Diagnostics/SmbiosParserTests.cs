@@ -173,8 +173,8 @@ public class SmbiosParserTests
         b[0x12] = MemoryTypeDdr5;
         b[0x17] = 2;
         b[0x1A] = 3;
-        b[0x2D] = 0x04; // continuation count
-        b[0x2E] = 0xCD; // id byte
+        b[0x2C] = 0x04; // continuation count
+        b[0x2D] = 0xCD; // id byte
         var table = BuildTable(AppendStrings(b, strings));
 
         var (modules, _) = SmbiosParser.Parse(table);

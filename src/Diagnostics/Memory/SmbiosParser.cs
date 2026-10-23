@@ -14,7 +14,7 @@ public sealed record MemoryModuleInfo(
     string? Manufacturer,
     string? PartNumber)
 {
-    /// <summary>SMBIOS 3.2+ Module Manufacturer ID as the JEDEC continuation-count byte then id byte in hex; null when the table predates the field or leaves it zero.</summary>
+    /// <summary>SMBIOS 3.2+ Module Manufacturer ID (Type 17 offset 2Ch, per dmidecode) as the JEDEC continuation-count byte then id byte in hex; null when the table predates the field or leaves it zero.</summary>
     public string? ModuleManufacturerId { get; init; }
 }
 
@@ -39,7 +39,7 @@ public static class SmbiosParser
     private const int OffsetPartNumber = 0x1A;
     private const int OffsetExtendedSize = 0x1C;
     private const int OffsetConfiguredSpeed = 0x20;
-    private const int OffsetModuleManufacturerId = 0x2D;
+    private const int OffsetModuleManufacturerId = 0x2C;
 
     private const ushort SizeWordUnknown = 0xFFFF;
     private const ushort SizeWordExtended = 0x7FFF;
