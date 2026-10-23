@@ -444,8 +444,9 @@ public sealed class LinuxPciSubsystemTests : IDisposable
     [InlineData("32", true)]
     [InlineData("3", false)]
     [InlineData("7", false)]
-    [InlineData("13", false)]
-    [InlineData("35", false)]
+    [InlineData("13", true)]
+    [InlineData("35", true)]
+    [InlineData("16", false)]
     public void A_portable_chassis_never_gets_a_maker_and_a_desktop_one_still_can(string chassis, bool portable)
     {
         Am5Desktop();
@@ -562,9 +563,17 @@ public class SmbiosChassisTypeTests
     [InlineData(14, true)]
     [InlineData(31, true)]
     [InlineData(32, true)]
+    [InlineData(11, true)]
+    [InlineData(12, true)]
+    [InlineData(13, true)]
+    [InlineData(30, true)]
+    [InlineData(35, true)]
+    [InlineData(36, true)]
     [InlineData(3, false)]
+    [InlineData(15, false)]
+    [InlineData(16, false)]
     [InlineData(null, false)]
-    public void Portable_is_the_laptop_family_only(int? type, bool portable)
+    public void Portable_covers_laptop_and_integrated_chassis(int? type, bool portable)
     {
         Assert.Equal(portable, PortableChassis.IsPortable(type));
     }
