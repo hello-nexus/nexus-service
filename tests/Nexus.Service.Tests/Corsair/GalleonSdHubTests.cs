@@ -378,4 +378,62 @@ public class GalleonSdHubTests
 
         Assert.Empty(Commands(hid.Device, GalleonSdProtocol.CmdBlockFirst));
     }
+
+    private void HandBack(ScriptedHid hid, GalleonSdHub hub, Func<bool> rejecting)
+    {
+        hid.Device.OnWrite = RejectStarts(rejecting);
+        for (var i = 0; i < 3; i++)
+        {
+            _clock += System.Diagnostics.Stopwatch.Frequency * 3;
+            hub.WriteFrame(Enumerable.Repeat(new RgbColor((byte)(i + 1), 0, 0), GalleonSdProtocol.LedCount).ToArray());
+        }
+    }
+
+    [Fact]
+    public void Retries_after_a_handback_back_off_with_doubling_waits()
+    {
+        _clock = 12_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        HandBack(hid, hub, () => true);
+        var freq = System.Diagnostics.Stopwatch.Frequency;
+        var sets = Commands(hid.Device, GalleonSdProtocol.CmdSet).Count();
+
+        _clock += freq * 5 / 2;
+        hub.WriteFrame(Enumerable.Repeat(new RgbColor(7, 0, 0), GalleonSdProtocol.LedCount).ToArray());
+        Assert.Equal(sets, Commands(hid.Device, GalleonSdProtocol.CmdSet).Count());
+
+        _clock += freq * 2;
+        hub.WriteFrame(Enumerable.Repeat(new RgbColor(8, 0, 0), GalleonSdProtocol.LedCount).ToArray());
+        var afterRetry = Commands(hid.Device, GalleonSdProtocol.CmdSet).Count();
+        Assert.True(afterRetry > sets);
+
+        _clock += freq * 5;
+        hub.WriteFrame(Enumerable.Repeat(new RgbColor(9, 0, 0), GalleonSdProtocol.LedCount).ToArray());
+        Assert.Equal(afterRetry, Commands(hid.Device, GalleonSdProtocol.CmdSet).Count());
+
+        _clock += freq * 4;
+        hub.WriteFrame(Enumerable.Repeat(new RgbColor(10, 0, 0), GalleonSdProtocol.LedCount).ToArray());
+        Assert.True(Commands(hid.Device, GalleonSdProtocol.CmdSet).Count() > afterRetry);
+    }
+
+    [Fact]
+    public void Streaming_resumes_once_the_board_accepts_a_start_after_a_handback()
+    {
+        _clock = 13_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        var rejecting = true;
+        HandBack(hid, hub, () => rejecting);
+        Assert.Empty(Commands(hid.Device, GalleonSdProtocol.CmdBlockFirst));
+
+        rejecting = false;
+        _clock += System.Diagnostics.Stopwatch.Frequency * 5;
+        hub.WriteFrame(Enumerable.Repeat(new RgbColor(50, 0, 0), GalleonSdProtocol.LedCount).ToArray());
+
+        Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdBlockFirst));
+        Assert.Equal(GalleonSdProtocol.ModeSoftware, Commands(hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
+    }
 }

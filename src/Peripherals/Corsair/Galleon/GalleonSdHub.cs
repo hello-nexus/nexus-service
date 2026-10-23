@@ -31,7 +31,7 @@ public sealed class GalleonSdAttached
 /// lighting resource is ever opened; onboard layer and profile resources are
 /// never touched. Handle IO is serialised on <c>_io</c>.
 /// </summary>
-public sealed class GalleonSdHub : IDisposable
+public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
 {
     private sealed class Slot
     {
@@ -85,6 +85,8 @@ public sealed class GalleonSdHub : IDisposable
     private const int InputBufferBytes = GalleonSdProtocol.WireLength + 1;
     private const int ContinuationPaceMs = 2;
     private const double RejectBackoffMs = 2000;
+    private const double MaxRejectBackoffMs = 60_000;
+    private const int MaxBackoffDoublings = 5;
 
     private readonly IHidEnumerator _hid;
     private readonly Func<long> _clock;
@@ -272,11 +274,11 @@ public sealed class GalleonSdHub : IDisposable
         try
         {
             var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware", ProbeReplyMs, log: true);
-            if (!reply.IsOk) ServiceLog.Warn($"[galleon-sd] hardware-mode handback not confirmed (parsed={reply.Parsed} status={reply.Status:X2})");
+            if (!reply.IsOk && slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] hardware-mode handback not confirmed (parsed={reply.Parsed} status={reply.Status:X2})");
         }
         catch (Exception ex)
         {
-            ServiceLog.Warn($"[galleon-sd] hardware-mode handback threw: {ex.GetType().Name}");
+            if (slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] hardware-mode handback threw: {ex.GetType().Name}");
         }
     }
 
@@ -377,11 +379,14 @@ public sealed class GalleonSdHub : IDisposable
 
     private void NegotiationFailedLocked(Slot slot, long now, GalleonReply last)
     {
-        slot.NextNegotiateStamp = now + (long)(RejectBackoffMs * Stopwatch.Frequency / 1000);
         slot.NegotiationFailures++;
+        // Past the handback threshold the wait doubles per further rejection, so a Web Hub that keeps every handle busy costs one mode round trip per minute at most, not one per backoff.
+        var doublings = Math.Clamp(slot.NegotiationFailures - HandbackAfterFailures + 1, 0, MaxBackoffDoublings);
+        var backoffMs = Math.Min(MaxRejectBackoffMs, RejectBackoffMs * (1 << doublings));
+        slot.NextNegotiateStamp = now + (long)(backoffMs * Stopwatch.Frequency / 1000);
         if (slot.ErrorLogs++ < MaxErrorLogs)
         {
-            ServiceLog.Error($"[galleon-sd] start tx rejected (parsed={last.Parsed} status={last.Status:X2} raw={slot.LastReplyHex}); frame skipped, failures={slot.NegotiationFailures}");
+            ServiceLog.Error($"[galleon-sd] start tx rejected (parsed={last.Parsed} status={last.Status:X2} raw={(slot.LastReplyHex.Length == 0 ? "(no reply)" : slot.LastReplyHex)}); frame skipped, failures={slot.NegotiationFailures}");
         }
         if (slot.NegotiationFailures >= HandbackAfterFailures) ReleaseLocked(slot);
     }
@@ -404,6 +409,7 @@ public sealed class GalleonSdHub : IDisposable
             return default;
         }
         var cmd = wire[GalleonSdProtocol.CommandIndex];
+        slot.LastReplyHex = "";
         var buf = new byte[InputBufferBytes];
         var deadline = _clock() + (long)(replyTimeoutMs * Stopwatch.Frequency / 1000.0);
         GalleonReply result = default;
