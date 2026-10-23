@@ -97,7 +97,7 @@ public class GalleonSdProtocolTests
     }
 
     [Fact]
-    public void Reply_status_is_read_from_either_echo_position_and_ignores_a_leading_report_id()
+    public void Reply_parses_only_at_the_header_aligned_echo_and_ignores_a_leading_report_id()
     {
         var a = new byte[128];
         a[3] = 0x0D; a[4] = 0x03;

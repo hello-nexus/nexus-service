@@ -54,6 +54,9 @@ public sealed class GalleonSdHub : IDisposable
         public bool HandleSettled { get; set; }
         public int Failures { get; set; }
         public long NextNegotiateStamp { get; set; }
+        public int NegotiationFailures { get; set; }
+        public int NegotiationRounds { get; set; }
+        public string LastReplyHex { get; set; } = "";
         public int FramesSent { get; set; }
         public long LastSentStamp { get; set; }
         public long LastModeStamp { get; set; }
@@ -70,6 +73,8 @@ public sealed class GalleonSdHub : IDisposable
     private const int ConsecutiveWriteFailureThreshold = 5;
     private const int ProbeFrames = 3;
     private const int MaxErrorLogs = 20;
+    private const int ProbeNegotiations = 3;
+    private const int HandbackAfterFailures = 3;
     private const double MinFrameGapMs = 50;
     private const double KeepAliveMs = 10_000;
     private const double ModeReassertMs = 30_000;
@@ -192,6 +197,11 @@ public sealed class GalleonSdHub : IDisposable
             try
             {
                 var probe = slot.FramesSent < ProbeFrames;
+                if (!slot.SoftwareMode && now < slot.NextNegotiateStamp)
+                {
+                    slot.WindowSkipped++;
+                    return true;
+                }
                 if (!slot.SoftwareMode || StampsToMs(now - slot.LastModeStamp) >= ModeReassertMs)
                 {
                     if (!EnterSoftwareLocked(slot)) return RecordFailureLocked(slot, "software-mode");
@@ -305,25 +315,23 @@ public sealed class GalleonSdHub : IDisposable
         if (slot.RepliesEver == 0 && slot.FramesSent >= ProbeFrames) replyMs = 0;
         if (!slot.HandleSettled && now < slot.NextNegotiateStamp) return true;
 
-        var resource = GalleonSdProtocol.DirectResource;
         if (slot.HandleSettled)
         {
-            var start = Exchange(slot, GalleonSdProtocol.StartTransaction(slot.Handle, resource), "start tx", replyMs, log, check: true);
-            if (start.Parsed && !start.IsOk)
+            if (!TryStart(slot, slot.Handle, "start tx", replyMs, log, out var start))
             {
                 slot.HandleSettled = false;
-                slot.NextNegotiateStamp = now + (long)(RejectBackoffMs * Stopwatch.Frequency / 1000);
+                NegotiationFailedLocked(slot, now, start);
                 return true;
             }
         }
         else
         {
+            var logRound = slot.NegotiationRounds++ < ProbeNegotiations;
             byte? accepted = null;
             GalleonReply last = default;
             for (byte handle = 0; handle <= GalleonSdProtocol.MaxHandle; handle++)
             {
-                last = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"start tx h={handle}", replyMs, log: true, check: true);
-                if (!last.Parsed || last.IsOk)
+                if (TryStart(slot, handle, $"start tx h={handle}", replyMs, logRound, out last))
                 {
                     accepted = handle;
                     break;
@@ -331,15 +339,12 @@ public sealed class GalleonSdHub : IDisposable
             }
             if (accepted is null)
             {
-                slot.NextNegotiateStamp = now + (long)(RejectBackoffMs * Stopwatch.Frequency / 1000);
-                if (slot.ErrorLogs++ < MaxErrorLogs)
-                {
-                    ServiceLog.Error($"[galleon-sd] start tx rejected on every handle (last status {last.Status:X2}); frame skipped");
-                }
+                NegotiationFailedLocked(slot, now, last);
                 return true;
             }
             slot.Handle = accepted.Value;
             slot.HandleSettled = true;
+            slot.NegotiationFailures = 0;
             ServiceLog.Info($"[galleon-sd] direct handle {slot.Handle} (start reply parsed={last.Parsed} status={last.Status:X2})");
         }
 
@@ -358,6 +363,27 @@ public sealed class GalleonSdHub : IDisposable
         Exchange(slot, GalleonSdProtocol.StopTransaction(slot.Handle), "stop tx", replyMs, log, check: true);
         sent = true;
         return true;
+    }
+
+    // A start counts as accepted on an OK reply, or when the board never replies at all; a reply that arrives but never parses is a rejection.
+    private bool TryStart(Slot slot, byte handle, string label, int replyMs, bool log, out GalleonReply reply)
+    {
+        DrainInput(slot);
+        var before = slot.RepliesEver;
+        reply = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, GalleonSdProtocol.DirectResource), label, replyMs, log, check: true);
+        var answered = slot.RepliesEver > before;
+        return reply.IsOk || (!reply.Parsed && !answered);
+    }
+
+    private void NegotiationFailedLocked(Slot slot, long now, GalleonReply last)
+    {
+        slot.NextNegotiateStamp = now + (long)(RejectBackoffMs * Stopwatch.Frequency / 1000);
+        slot.NegotiationFailures++;
+        if (slot.ErrorLogs++ < MaxErrorLogs)
+        {
+            ServiceLog.Error($"[galleon-sd] start tx rejected (parsed={last.Parsed} status={last.Status:X2} raw={slot.LastReplyHex}); frame skipped, failures={slot.NegotiationFailures}");
+        }
+        if (slot.NegotiationFailures >= HandbackAfterFailures) ReleaseLocked(slot);
     }
 
     // OpenRGB CORSAIR_V2_WRITE_PACE: the K100 family drops back-to-back packets, and continuation packets are never acknowledged.
@@ -389,6 +415,7 @@ public sealed class GalleonSdHub : IDisposable
             if (n <= 0) break;
             gotAny = true;
             slot.RepliesEver++;
+            slot.LastReplyHex = Hex(buf.AsSpan(0, n));
             var reply = GalleonSdProtocol.ParseReply(cmd, buf.AsSpan(0, n));
             if (log) ServiceLog.Info($"[galleon-sd] IN  {label}: {Hex(buf.AsSpan(0, n))} parsed={reply.Parsed} status={reply.Status:X2}");
             if (reply.Parsed)
