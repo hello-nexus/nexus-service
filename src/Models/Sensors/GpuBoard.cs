@@ -9,8 +9,14 @@ public readonly record struct GpuBoard(string Name, int SubsystemVendorId, int S
 /// <summary>One GPU as the specs surfaces describe it: the chip plus, where the board could be read, its maker.</summary>
 public sealed record GpuCard(string Chip, string? Maker = null, int SubsystemVendorId = 0, int SubsystemDeviceId = 0)
 {
-    /// <summary>The chip name with the maker in front of it, or the chip alone when the maker is unknown or already leads the name.</summary>
-    public string Display => Maker is null || Chip.StartsWith(Maker, System.StringComparison.OrdinalIgnoreCase)
-        ? Chip
-        : $"{Maker} {Chip}";
+    /// <summary>Partner boards read "Maker Chip"; an NVIDIA reference board reads "NVIDIA Founders Edition Chip" (the form the catalog matcher resolves); an AMD reference board stays the bare chip.</summary>
+    public string Display => SubsystemVendorId switch
+    {
+        0x10DE => $"NVIDIA Founders Edition {StripLeading(Chip, "NVIDIA")}",
+        0x1002 => Chip,
+        _ => Maker is null || Chip.StartsWith(Maker, System.StringComparison.OrdinalIgnoreCase) ? Chip : $"{Maker} {Chip}",
+    };
+
+    private static string StripLeading(string chip, string word) =>
+        chip.StartsWith(word + " ", System.StringComparison.OrdinalIgnoreCase) ? chip[(word.Length + 1)..] : chip;
 }

@@ -93,13 +93,27 @@ public class GpuBoardPartnersTests
     }
 
     [Theory]
-    [InlineData("NVIDIA GeForce RTX 3090", "NVIDIA", "NVIDIA GeForce RTX 3090")]
     [InlineData("AMD Radeon RX 7900 XTX", "AMD", "AMD Radeon RX 7900 XTX")]
     [InlineData("NVIDIA GeForce RTX 3090", "EVGA", "EVGA NVIDIA GeForce RTX 3090")]
     [InlineData("AMD Radeon RX 7900 XTX", null, "AMD Radeon RX 7900 XTX")]
     public void Display_puts_the_maker_in_front_unless_the_chip_name_already_starts_with_it(string chip, string? maker, string expected)
     {
         Assert.Equal(expected, new GpuCard(chip, maker).Display);
+    }
+
+    [Theory]
+    [InlineData("NVIDIA GeForce RTX 5080", "NVIDIA Founders Edition GeForce RTX 5080")]
+    [InlineData("GeForce RTX 5080", "NVIDIA Founders Edition GeForce RTX 5080")]
+    public void An_nvidia_reference_board_reads_founders_edition_without_a_doubled_vendor(string chip, string expected)
+    {
+        Assert.Equal(expected, new GpuCard(chip, "NVIDIA", 0x10DE, 0x2095).Display);
+    }
+
+    [Fact]
+    public void An_amd_reference_board_keeps_the_bare_chip()
+    {
+        Assert.Equal("AMD Radeon RX 7900 XTX", new GpuCard("AMD Radeon RX 7900 XTX", "AMD", 0x1002, 0x0e3b).Display);
+        Assert.Equal("Radeon RX 7900 XTX", new GpuCard("Radeon RX 7900 XTX", "AMD", 0x1002, 0x0e3b).Display);
     }
 
     [Theory]
@@ -142,7 +156,7 @@ public class GpuBoardPartnersTests
 
         var cards = GpuBoardPartners.Resolve(gpus.Select(g => g.Name).ToList(), GpuBoardPartners.BoardsOf(gpus));
 
-        Assert.Equal("AMD Radeon(TM) Graphics + NVIDIA GeForce RTX 5080", string.Join(" + ", cards.Select(c => c.Display)));
+        Assert.Equal("AMD Radeon(TM) Graphics + NVIDIA Founders Edition GeForce RTX 5080", string.Join(" + ", cards.Select(c => c.Display)));
         Assert.Null(cards[0].Maker);
         Assert.Equal("NVIDIA", cards[1].Maker);
     }
