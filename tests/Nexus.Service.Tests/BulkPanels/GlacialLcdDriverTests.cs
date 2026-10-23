@@ -1191,13 +1191,64 @@ public class GlacialLcdDriverTests
             string text = File.ReadAllText(Path.Combine(dir, GlacialLcdLog.FileName));
             Assert.Contains("TIMEOUT", text);
             Assert.Contains("timers for the rest of the upload", text);
-            Assert.Contains("replies not awaited", text);
+            Assert.Contains("replies not awaited for silent steps", text);
             Assert.Equal(2, tuning.Stats().Acks.Timeouts);
         }
         finally
         {
             GlacialLcdLogTestSetup.Restore();
         }
+    }
+
+    [Fact]
+    public void A_silent_panel_is_asked_again_on_every_eighth_upload_and_waits_only_there()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { ReplyDriven = true, PacePercent = 0 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        for (int i = 1; i <= 7; i++)
+        {
+            driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: i));
+            Assert.True(WaitUntil(() => driver.UploadsCompleted == i, 30_000));
+        }
+        // Only the first upload spent its two prelude waits; the next six ran on timers.
+        Assert.Equal(2, tuning.Stats().Acks.Timeouts);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 8));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 8, 30_000));
+        Assert.Equal(4, tuning.Stats().Acks.Timeouts);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_panel_that_answers_the_prelude_but_not_the_chunks_stops_being_waited_on_at_the_chunks_only()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { ReplyDriven = true, PacePercent = 0 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        ScriptAcks(hid, pipe);
+        pipe.OnWrite = null;
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 1));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1, 30_000));
+        int after = tuning.Stats().Acks.Timeouts;
+        Assert.Equal(1, after);
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 2));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 2, 30_000));
+
+        // The second upload still got its prelude and commit replies and skipped the chunk waits.
+        Assert.Equal(after, tuning.Stats().Acks.Timeouts);
+        Assert.True(tuning.Stats().Acks.LastUploadReplies >= 3);
+        driver.Disconnect(pipe, hid);
     }
 
     [Fact]

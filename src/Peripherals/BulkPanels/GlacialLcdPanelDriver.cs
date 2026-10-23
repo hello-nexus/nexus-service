@@ -246,9 +246,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     private int _stallStreak;
     private long _nextProbeMs;
 
-    /// <summary>How many uploads in a row got no reply at all from the panel; while above zero the uploads run on timers, with a probe now and then.</summary>
-    private int _ackSilentUploads;
+    /// <summary>Per step type, how many uploads in a row got no reply to it; while above zero that step runs on timers, with a probe every few uploads.</summary>
+    private int _silentPrelude;
+    private int _silentChunk;
+    private int _silentCommit;
+    private bool _ackSkipLogged;
+    private bool _replyDrivenSeen = true;
     private const int AckProbeEvery = 8;
+    private bool _rawNeedsSync;
 
     private volatile bool _rawActive;
     private int _rawFailStreak;
@@ -421,7 +426,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 _nextAllowedMs = 0;
             }
             Volatile.Write(ref _uploadsSinceConnect, 0);
-            Volatile.Write(ref _ackSilentUploads, 0);
+            ResetAckSilence();
+            _rawNeedsSync = false;
             _rawActive = false;
             _rawFailStreak = 0;
             _tuning?.SetRawActive(false);
@@ -799,9 +805,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         watch.Stop();
         FinishUploading(state);
-        if (run.AcksTried)
+        if (!state.Stop && run.AckReplies + run.AckTimeouts > 0)
         {
-            Volatile.Write(ref _ackSilentUploads, run.AckReplies > 0 ? 0 : Volatile.Read(ref _ackSilentUploads) + 1);
+            // Only steps that were actually waited on count, and a worker torn down by a replug never touches the new link's counters.
+            _silentPrelude = Silence(_silentPrelude, run.PreludeReplies, run.PreludeMisses);
+            // A prelude that got no reply at all ended the reply waits, so the later steps count as silent too.
+            int skipped = run.PreludeReplies == 0 && run.PreludeMisses >= 2 ? 1 : 0;
+            _silentChunk = Silence(_silentChunk, run.ChunkReplies, run.ChunkMisses + skipped);
+            _silentCommit = Silence(_silentCommit, run.CommitReplies, run.CommitMisses + skipped);
             _tuning?.RecordAcks(run.AckReplies, run.AckTimeouts, run.AckWaitMs, run.CommitWaitMs);
         }
         GlacialLcdLog.Write($"u{seq} end outcome={outcome} totalMs={watch.ElapsedMilliseconds} acks={run.AckReplies}/{run.AckReplies + run.AckTimeouts} ackWaitMs={run.AckWaitMs} commitWaitMs={run.CommitWaitMs}{(run.Error is null ? "" : " error=" + run.Error)}");
@@ -1084,15 +1095,20 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         public int Seq { get; init; }
         public string? Error { get; set; }
 
-        /// <summary>True while the upload still waits for the panel's replies; cleared when they stop coming.</summary>
-        public bool AcksOn { get; set; }
-        public bool AcksTried { get; set; }
+        /// <summary>Per step type: whether the upload still waits for the panel's replies; cleared when they stop coming.</summary>
+        public bool PreludeOn { get; set; }
+        public bool ChunkOn { get; set; }
+        public bool CommitOn { get; set; }
+        public int PreludeReplies { get; set; }
+        public int ChunkReplies { get; set; }
+        public int ChunkMisses { get; set; }
+        public int CommitReplies { get; set; }
+        public int CommitMisses { get; set; }
         public int AckReplies { get; set; }
         public int AckTimeouts { get; set; }
         public long AckWaitMs { get; set; }
         public long CommitWaitMs { get; set; }
         public int PreludeMisses { get; set; }
-        public int ChunkMissStreak { get; set; }
     }
 
     /// <summary>One chunk gap: the captured interval per protocol-size transfer, scaled by the pace and by the transfer size.</summary>
@@ -1205,20 +1221,45 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private delegate bool AckMatch(ReadOnlySpan<byte> report);
 
-    /// <summary>Whether this upload should wait on the panel's replies: the knob is on and the panel has not just been silent through earlier uploads (it is asked again every few).</summary>
-    private bool AckWaitsAllowed(GlacialLcdTuningValues cfg, UploadRun run)
+    private static int Silence(int silent, int replies, int misses) =>
+        replies + misses == 0 ? silent : replies > 0 ? 0 : silent + 1;
+
+    private void ResetAckSilence()
     {
+        _silentPrelude = 0;
+        _silentChunk = 0;
+        _silentCommit = 0;
+        _ackSkipLogged = false;
+    }
+
+    /// <summary>
+    /// Decides per step type whether this upload waits on the panel's replies: the knob is on and that step has not just
+    /// been silent through earlier uploads (it is asked again every few uploads, counted separately from the silence).
+    /// </summary>
+    private void ChooseAckSteps(GlacialLcdTuningValues cfg, UploadRun run, int uploadNumber)
+    {
+        if (cfg.ReplyDriven != _replyDrivenSeen)
+        {
+            // Turning the knob off and on starts the panel afresh.
+            _replyDrivenSeen = cfg.ReplyDriven;
+            ResetAckSilence();
+        }
         if (!cfg.ReplyDriven)
         {
-            return false;
+            return;
         }
-        int silent = Volatile.Read(ref _ackSilentUploads);
-        if (silent == 0 || silent % AckProbeEvery == 0)
+        bool probe = uploadNumber % AckProbeEvery == 0;
+        run.PreludeOn = _silentPrelude == 0 || probe;
+        run.ChunkOn = _silentChunk == 0 || probe;
+        run.CommitOn = _silentCommit == 0 || probe;
+        bool skipping = !(run.PreludeOn && run.ChunkOn && run.CommitOn);
+        if (skipping != _ackSkipLogged)
         {
-            return true;
+            _ackSkipLogged = skipping;
+            GlacialLcdLog.Write(skipping
+                ? $"u{run.Seq} replies not awaited for silent steps (prelude={!run.PreludeOn} chunk={!run.ChunkOn} commit={!run.CommitOn}); timers there, asked again every {AckProbeEvery} uploads"
+                : $"u{run.Seq} replies awaited at every step again");
         }
-        GlacialLcdLog.Write($"u{run.Seq} replies not awaited, the last {silent} uploads got none; timers only");
-        return false;
     }
 
     /// <summary>
@@ -1256,8 +1297,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         var sinceStart = System.Diagnostics.Stopwatch.StartNew();
         int chunkBytes = cfg.ChunkKb * 1024;
-        run.AcksOn = AckWaitsAllowed(cfg, run);
-        run.AcksTried = run.AcksOn;
+        ChooseAckSteps(cfg, run, Volatile.Read(ref _uploadsSinceConnect));
 
         if (!HidWrite(state, GlacialLcdProtocol.EncodeQuery()))
         {
@@ -1288,13 +1328,20 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             Tx(run, sinceStart, step);
             AckMatch? ack = report[1] == 0x71 ? GlacialLcdProtocol.IsBeginAck : report[1] == 0x73 ? GlacialLcdProtocol.IsStageAck : null;
-            if (run.AcksOn && ack is not null)
+            if (run.PreludeOn && ack is not null)
             {
                 bool replied = AwaitAck(state, run, GlacialLcdProtocol.AckPreludeTimeoutMs, step, sinceStart, ack, out long preludeWaitMs);
                 run.AckWaitMs += preludeWaitMs;
-                if (!replied && ++run.PreludeMisses >= 2)
+                if (replied)
                 {
-                    run.AcksOn = false;
+                    run.PreludeReplies++;
+                }
+                else if (++run.PreludeMisses >= 2)
+                {
+                    // Silent through the whole prelude: the panel is taken to be silent for the rest of this upload too.
+                    run.PreludeOn = false;
+                    run.ChunkOn = false;
+                    run.CommitOn = false;
                     GlacialLcdLog.Write($"u{run.Seq} no replies to the prelude, timers for the rest of the upload");
                 }
                 gapCovered = true;
@@ -1327,9 +1374,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             Tx(run, sinceStart, $"chunk {index + 1}/{chunks} {length}B");
             // Submit to submit: the gap counts from this write's start, so a slow write does not stretch it.
             int scaled = ChunkGapMs(_pace, chunkBytes);
-            if (run.AcksOn)
+            if (run.ChunkOn)
             {
-                // One report per protocol-size transfer; the wait is never shorter than the timer gap, so a silent panel costs no more than the gap plus the floor.
+                // One report per protocol-size transfer; the wait lasts the larger of the timer gap and the floor, so a silent panel costs no more than that per chunk.
                 int expected = (length + GlacialLcdProtocol.ChunkBytes - 1) / GlacialLcdProtocol.ChunkBytes;
                 int limit = Math.Max(GlacialLcdProtocol.AckChunkMinTimeoutMs, scaled);
                 bool all = true;
@@ -1341,12 +1388,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 run.AckWaitMs += ackWatch.ElapsedMilliseconds;
                 if (all)
                 {
-                    run.ChunkMissStreak = 0;
+                    run.ChunkReplies++;
                 }
-                else if (++run.ChunkMissStreak >= 2)
+                else
                 {
-                    run.AcksOn = false;
-                    GlacialLcdLog.Write($"u{run.Seq} no chunk replies, timers for the rest of the upload");
+                    // A late report for this chunk would otherwise release the next one early, so one miss ends reply waiting for the rest of the upload.
+                    run.ChunkMisses++;
+                    run.ChunkOn = false;
+                    GlacialLcdLog.Write($"u{run.Seq} chunk reply missed, timers for the rest of the upload");
                 }
             }
             else
@@ -1367,16 +1416,30 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         Tx(run, sinceStart, "end 73FF");
         int settleMs = (int)((long)GlacialLcdProtocol.FinishSettleMs * _pace / 100);
         bool committed = false;
-        if (run.AcksOn)
+        if (run.CommitOn)
         {
             // The captured settle is the longest the panel is given to store the picture; its report ends the wait early.
             int limit = Math.Max(settleMs, GlacialLcdProtocol.FinishSettleMs);
             committed = AwaitAck(state, run, limit, "end 73FF", sinceStart, GlacialLcdProtocol.IsCommitAck, out long commitMs);
             run.CommitWaitMs = commitMs;
+            if (committed)
+            {
+                run.CommitReplies++;
+            }
+            else
+            {
+                run.CommitMisses++;
+                // The timer path's total is the floor: whatever of it the wait did not cover is still waited out.
+                long remainder = FinishReplyWaitMs + settleMs - commitMs;
+                if (!state.Stop && remainder > 0 && _hardAbort.Wait((int)remainder))
+                {
+                    return UploadOutcome.Cancelled;
+                }
+            }
         }
         if (!committed)
         {
-            if (!run.AcksOn)
+            if (!run.CommitOn)
             {
                 var finishWait = System.Diagnostics.Stopwatch.StartNew();
                 while (finishWait.ElapsedMilliseconds < FinishReplyWaitMs && !state.Stop)
@@ -1450,9 +1513,20 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             return;
         }
-        if (!_rawActive && !EnterRaw(state))
+        if (!_rawActive)
         {
-            return;
+            long now = _clock();
+            lock (_stateLock)
+            {
+                if (now < _nextAllowedMs)
+                {
+                    return;
+                }
+            }
+            if (!EnterRaw(state))
+            {
+                return;
+            }
         }
         if (Ready())
         {
@@ -1477,13 +1551,20 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             if (!HidWrite(state, GlacialLcdProtocol.EncodeFrameStreamMode()))
             {
+                if (!state.Stop)
+                {
+                    RawFailed("write failed at the frame stream mode select");
+                }
                 return false;
             }
+            // From here the panel may be in stream mode, so an exit has to run even if this wait is cut short.
+            _rawActive = true;
+            _tuning?.SetRawActive(true);
+            _link.ShowPending = false;
             GlacialLcdLog.Write("raw stream: entered frame stream mode (51 20)");
-            if (_hardAbort.Wait(RawEnterSettleMs))
-            {
-                return false;
-            }
+            // A reply to the mode select ends the settle early; the fixed wait is the short pause the reference tool leaves after the switch.
+            var sinceStart = System.Diagnostics.Stopwatch.StartNew();
+            Reply(state, RawEnterSettleMs, "raw enter 51 20", "rawenter", sinceStart);
             lock (_hidLock)
             {
                 if (_hid is { } hid)
@@ -1491,9 +1572,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                     DrainInput(hid);
                 }
             }
-            _rawActive = true;
-            _tuning?.SetRawActive(true);
-            _link.ShowPending = false;
+            if (state.Stop)
+            {
+                return false;
+            }
         }
         MarkPending();
         return true;
@@ -1506,47 +1588,84 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// </summary>
     private void ExitRaw(WorkerState state)
     {
-        lock (_link.Sync)
+        lock (_hidLock)
         {
-            // A quiescing shutdown still puts the panel back; a Nexus panel that ended, a dark display, a sleep or a waiting native edit leave that to the path taking over.
-            bool restore = !state.Stop && !_link.Suspended && _link.NexusPanelEnabled && _link.Streaming && _link.StreamWanted && !_link.Dark && !_link.NativePending;
-            if (restore)
-            {
-                var sinceStart = System.Diagnostics.Stopwatch.StartNew();
-                var run = new UploadRun { Seq = Volatile.Read(ref _uploadSeq) };
-                HidWrite(state, GlacialLcdProtocol.EncodeQuery());
-                Tx(run, sinceStart, "raw exit DC");
-                Reply(state, ReplyWaitMs, "raw exit DC", "rawexit", sinceStart);
-                HidWrite(state, GlacialLcdProtocol.EncodeMode(GlacialLcdProtocol.ModeStaticAsset, 0));
-                Tx(run, sinceStart, "raw exit wallpaper 51");
-            }
-            _rawActive = false;
-            _tuning?.SetRawActive(false);
-            _link.ShowPending = true;
-            lock (_stateLock)
-            {
-                _nextShowMs = 0;
-            }
-            GlacialLcdLog.Write($"raw stream: left frame stream mode ({(restore ? "wallpaper mode sent, stored picture shows next" : "native path restores its mode")})");
+            // Counts as work in flight, so a shutdown or detach waits for the restore.
+            _uploading = true;
+            _idle.Reset();
         }
-        MarkPending();
+        try
+        {
+            lock (_link.Sync)
+            {
+                // A quiescing shutdown still puts the panel back; a Nexus panel that ended, a dark display, a sleep or a waiting native edit leave that to the path taking over.
+                bool restore = !state.Stop && !_link.Suspended && _link.NexusPanelEnabled && _link.Streaming && _link.StreamWanted && !_link.Dark && !_link.NativePending;
+                bool shown = false;
+                if (restore)
+                {
+                    var sinceStart = System.Diagnostics.Stopwatch.StartNew();
+                    var run = new UploadRun { Seq = Volatile.Read(ref _uploadSeq) };
+                    HidWrite(state, GlacialLcdProtocol.EncodeQuery());
+                    Tx(run, sinceStart, "raw exit DC");
+                    Reply(state, ReplyWaitMs, "raw exit DC", "rawexit", sinceStart);
+                    int slot;
+                    bool stored;
+                    lock (_stateLock)
+                    {
+                        stored = _lastHash is not null;
+                        slot = _shownSlot;
+                    }
+                    // The stored picture comes straight back when there is one; otherwise the panel gets the first wallpaper, as the reference tool leaves it.
+                    HidWrite(state, stored ? GlacialLcdProtocol.EncodeCustomPicture(slot) : GlacialLcdProtocol.EncodeMode(GlacialLcdProtocol.ModeStaticAsset, 0));
+                    Tx(run, sinceStart, stored ? "raw exit show stored picture 51" : "raw exit wallpaper 51");
+                    shown = stored;
+                }
+                _rawActive = false;
+                _tuning?.SetRawActive(false);
+                _link.ShowPending = !shown;
+                lock (_stateLock)
+                {
+                    _nextShowMs = 0;
+                }
+                GlacialLcdLog.Write($"raw stream: left frame stream mode ({(restore ? "panel restored" : "native path restores its mode")})");
+            }
+            MarkPending();
+        }
+        finally
+        {
+            FinishUploading(state);
+        }
     }
 
     private void SendRawFrame(WorkerState state, EncoderCache cache, GlacialLcdTuningValues cfg)
     {
+        int wrongSize = 0;
         lock (_frameLock)
         {
-            if (_latest is null || _latest.Length != GlacialLcdProtocol.RawFrameBytes)
+            if (_latest is null)
             {
                 _pending = false;
                 return;
             }
-            if (cache.Snapshot is null || cache.Snapshot.Length != _latest.Length)
+            if (_latest.Length != GlacialLcdProtocol.RawFrameBytes)
             {
-                cache.Snapshot = new byte[_latest.Length];
+                _pending = false;
+                wrongSize = _latest.Length;
             }
-            _latest.CopyTo(cache.Snapshot, 0);
-            _pending = false;
+            if (wrongSize == 0)
+            {
+                if (cache.Snapshot is null || cache.Snapshot.Length != _latest.Length)
+                {
+                    cache.Snapshot = new byte[_latest.Length];
+                }
+                _latest.CopyTo(cache.Snapshot, 0);
+                _pending = false;
+            }
+        }
+        if (wrongSize != 0)
+        {
+            RawFailed($"frame is {wrongSize} bytes, the panel takes {GlacialLcdProtocol.RawFrameBytes}", retry: false);
+            return;
         }
         lock (_hidLock)
         {
@@ -1606,9 +1725,19 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             MarkPending();
             return;
         }
-        MarkPending();
+        RawFailed(run.Error, retry: true);
+    }
+
+    /// <summary>Counts one failed raw frame or entry: logs it, backs off, and after a few in a row switches the knob off so the normal path takes over.</summary>
+    private void RawFailed(string error, bool retry = true)
+    {
+        if (retry)
+        {
+            MarkPending();
+        }
+        _rawNeedsSync = true;
         _tuning?.RawFrame(false);
-        _tuning?.UploadFailed(run.Error);
+        _tuning?.UploadFailed(error);
         int streak = ++_rawFailStreak;
         int delay;
         lock (_stateLock)
@@ -1616,10 +1745,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             delay = Backoff(streak);
             _nextAllowedMs = _clock() + delay;
         }
-        Failed($"raw frame failed: {run.Error}; retrying in {delay / 1000} s");
+        GlacialLcdLog.Write($"raw stream: failure {streak}/{RawFailuresBeforeOff}: {error}");
+        Failed($"raw frame failed: {error}; retrying in {delay / 1000} s");
         if (streak >= RawFailuresBeforeOff && _tuning is not null)
         {
-            GlacialLcdLog.Write($"raw stream: {streak} frames in a row failed, switching raw streaming off so the normal path takes over");
+            GlacialLcdLog.Write($"raw stream: {streak} failures in a row, switching raw streaming off so the normal path takes over");
             _tuning.Apply(new GlacialLcdTuningChange { RawStream = false });
         }
     }
@@ -1632,6 +1762,21 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 DrainInput(hid);
             }
+        }
+        if (_rawNeedsSync)
+        {
+            // After a failure the panel may still hold half a frame; a state query that is answered shows it is listening again.
+            if (!HidWrite(state, GlacialLcdProtocol.EncodeQuery()))
+            {
+                run.Error = state.Stop ? null : "write failed at raw resync DC";
+                return false;
+            }
+            if (!AwaitAnyReply(state, StallReplyMs, "raw resync DC", sinceStart))
+            {
+                run.Error = "no reply to the state query after a failed frame";
+                return false;
+            }
+            _rawNeedsSync = false;
         }
         if (!HidWrite(state, GlacialLcdProtocol.EncodeFrameAnnounce(frame.Length)))
         {
@@ -1701,6 +1846,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _wake.Set();
             state.Thread?.Join(JoinOnDisconnectMs);
         }
+        _rawActive = false;
+        _tuning?.SetRawActive(false);
         lock (_frameLock)
         {
             _latest = null;
@@ -1786,6 +1933,15 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     public void BeginShutdown()
     {
         _quiescing = true;
+        if (_rawActive)
+        {
+            // The worker's raw exit is work in flight from here, so the wait that follows covers it.
+            lock (_hidLock)
+            {
+                _uploading = true;
+                _idle.Reset();
+            }
+        }
         _wake.Set();
     }
 
