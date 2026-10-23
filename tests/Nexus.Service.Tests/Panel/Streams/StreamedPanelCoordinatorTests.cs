@@ -226,30 +226,75 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Contains(widgets, w => w.Type == "weather" && w.Size == "4x4");
     }
 
+    private static StreamedPanelDeviceInfo KrakenScreen(string serial) => new()
+    {
+        Serial = serial,
+        Profile = new StreamedPanelProfile
+        {
+            Kind = "kraken-round", DisplayName = "Kraken LCD", Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken",
+            CssWidth = 640, CssHeight = 640, Dpi = 240,
+        },
+    };
+
     [Fact]
-    public void A_kraken_record_stored_under_the_legacy_surface_keeps_its_look_and_is_restamped_lcd_round()
+    public void A_kraken_record_keeps_its_look_and_its_legacy_surface_across_an_attach()
     {
         var record = _registry.Allocate("Kraken", new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken", CssWidth = 640, CssHeight = 640 });
         _registry.Patch(record.Id, new PanelDevicePatch { AccentColor = "#abc" });
         _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["k-serial"] = new() { PanelDeviceId = record.Id } });
-        _discovery.Devices.Add(new StreamedPanelDeviceInfo
-        {
-            Serial = "k-serial",
-            Profile = new StreamedPanelProfile
-            {
-                Kind = "kraken-round", DisplayName = "Kraken LCD", Surface = PanelSurfaces.LcdRound, Family = "nzxt-kraken",
-                CssWidth = 640, CssHeight = 640, Dpi = 240,
-            },
-        });
+        _discovery.Devices.Add(KrakenScreen("k-serial"));
 
         Coordinator().TickOnce();
 
         var after = _registry.Get(record.Id)!;
-        Assert.Equal(PanelSurfaces.LcdRound, after.Capabilities!.Surface);
+        Assert.Equal(PanelSurfaces.LegacyKraken, after.Capabilities!.Surface);
         Assert.Equal(240, after.Capabilities.Dpi);
-        Assert.Equal(640, after.Capabilities.CssWidth);
         Assert.Equal("#abc", after.AccentColor);
         Assert.Single(_registry.List());
+    }
+
+    [Fact]
+    public void A_round_cooler_without_a_stored_entry_does_not_take_the_krakens_record()
+    {
+        var kraken = _registry.Allocate("Kraken", new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken });
+        _discovery.Devices.Add(FanScreen("fan", multiInstance: false));
+
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        var id = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.NotEqual(kraken.Id, id);
+        Assert.Equal(2, _registry.List().Count);
+    }
+
+    [Fact]
+    public void The_kraken_without_a_stored_entry_does_not_take_another_round_coolers_record()
+    {
+        var other = _registry.Allocate("Cooler", new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound });
+        _discovery.Devices.Add(KrakenScreen("k"));
+
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        var id = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.NotEqual(other.Id, id);
+        Assert.Equal(2, _registry.List().Count);
+    }
+
+    [Fact]
+    public void The_kraken_without_a_stored_entry_reuses_its_own_record_even_when_that_has_no_family()
+    {
+        _config.Update(st =>
+        {
+            st.PanelDevices["cooler"] = new PanelDeviceRecord { Id = "cooler", LastSeenAt = 2, Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound } };
+            st.PanelDevices["legacy"] = new PanelDeviceRecord { Id = "legacy", LastSeenAt = 1, Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken } };
+        });
+        _discovery.Devices.Add(KrakenScreen("k"));
+
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        Assert.Equal("legacy", Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId);
     }
 
     [Fact]

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Persistence;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Panel;
@@ -45,6 +46,10 @@ public sealed class PanelDeviceRegistry
 
     /// <summary>Raised (record ids) after a record's display fingerprint was first recorded or changed, so profile files can pick up its match key.</summary>
     public event Action<IReadOnlyList<string>>? FingerprintsChanged;
+
+    /// <summary>The family a record reuses under: a Kraken record stored without one is still the Kraken's.</summary>
+    internal static string? ReuseFamily(PanelDeviceCapabilities? caps) =>
+        caps?.Family ?? (string.Equals(caps?.Surface, PanelSurfaces.LegacyKraken, StringComparison.Ordinal) ? KrakenHub.DeviceId : null);
 
     /// <param name="canReuse">Narrows which record a single-instance surface may reuse; null allows any.</param>
     public PanelDeviceRecord Allocate(string? displayName, PanelDeviceCapabilities? capabilities, Func<PanelDeviceRecord, bool>? canReuse = null)

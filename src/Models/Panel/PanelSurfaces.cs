@@ -18,9 +18,8 @@ public static class PanelSurfaces
     public const string Monitor = "monitor";
 
     /// <summary>
-    /// What records and profile files written before the Kraken folded into
-    /// <see cref="LcdRound"/> carry. Read it as <see cref="LcdRound"/> via <see cref="Canonical"/>;
-    /// never stamp it on a live record.
+    /// The surface Kraken records keep persisted, so builds from before the Kraken folded into
+    /// <see cref="LcdRound"/> still find them. Read it as <see cref="LcdRound"/> via <see cref="Canonical"/>.
     /// </summary>
     public const string LegacyKraken = "kraken";
 
