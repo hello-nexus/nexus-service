@@ -135,6 +135,18 @@ public class OpenRgbDetectorOverridesTests : IDisposable
     }
 
     [Theory]
+    [InlineData("ASUS ROG STRIX Radeon RX 6600 XT Gaming OC")]
+    [InlineData("ASUS TUF Radeon RX 9070 XT Gaming OC")]
+    [InlineData("Sapphire Radeon RX 9070 XT Nitro+")]
+    [InlineData("PowerColor Red Devil RX9070XT")]
+    public void Amd_gpu_i2c_detectors_disabled_on_linux_only(string detector)
+    {
+        Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
+    }
+
+    [Theory]
     [InlineData("ASUS ROG STRIX GeForce RTX 4090 Gaming OC")]
     [InlineData("MSI GeForce RTX 3070 Gaming Trio")]
     public void Nvidia_gpu_detectors_are_never_force_disabled_on_linux(string detector)
