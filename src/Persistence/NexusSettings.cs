@@ -2397,8 +2397,11 @@ public sealed class DeepCoolMystiqueSettings
     /// <summary>The screen may hold pictures and GIFs from before Nexus tracked their order, so the GIF it plays and the picture it shows first are guesses; a format clears it.</summary>
     public bool GifSlotUnsure { get; set; } = true;
 
-    /// <summary>The screen id of the picture the screen shows first when the pictures start; empty until known or guessed.</summary>
-    public string PictureSlot { get; set; } = "";
+    /// <summary>Set by a format until the next new item or source change: the screen's own software sent no source command after the first picture that followed one (capture 3).</summary>
+    public bool QuietSinceFormat { get; set; }
+
+    /// <summary>Picture screen ids in the order the screen first stored them, oldest first; empty until an upload or show records it.</summary>
+    public List<string> PictureIds { get; set; } = new();
 
     /// <summary>The <see cref="Media"/> id of the GIF <see cref="GifSlot"/> holds, empty when unknown.</summary>
     public string ShownGif { get; set; } = "";
@@ -2441,7 +2444,7 @@ public sealed class DeepCoolMystiqueSettings
         copy.Freed = Freed is null ? new List<DeepCoolMystiqueMediaItem>() : Freed.ConvertAll(m => m.Copy());
         copy.GifSlot = GifSlot ?? "";
         copy.ShownGif = ShownGif ?? "";
-        copy.PictureSlot = PictureSlot ?? "";
+        copy.PictureIds = PictureIds is null ? new List<string>() : new List<string>(PictureIds);
         copy.CpuTemperature = CpuTemperature?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuFrequency = CpuFrequency?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuUsage = CpuUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();
