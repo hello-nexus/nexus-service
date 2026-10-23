@@ -292,7 +292,7 @@ public class DeepCoolMystiqueRoutesTests
         m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third });
         Assert.Equal(Third, DevicesRoutes.MystiquePictureSlot(m));
 
-        // Three pictures added in order, after the three swaps of the alpha.9 build.
+        // Pictures added in order, then swapped.
         m.Freed.Clear();
         m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
         m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "gif", Id = Other });
@@ -308,14 +308,14 @@ public class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
-    public void A_recorded_order_wins_and_keeps_only_ids_the_screen_holds()
+    public void A_recorded_order_wins_and_keeps_only_recorded_ids_the_screen_holds()
     {
         var m = new DeepCoolMystiqueSettings { PictureIds = new() { Other, First, Clicked } };
         m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
         m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First });
         m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third });
 
-        Assert.Equal(new[] { Third, First, Clicked }, DevicesRoutes.MystiquePictureOrder(m));
+        Assert.Equal(new[] { First, Clicked }, DevicesRoutes.MystiquePictureOrder(m));
         Assert.Equal(Clicked, DevicesRoutes.MystiquePictureSlot(m));
     }
 
@@ -677,22 +677,42 @@ public class DeepCoolMystiqueRoutesTests
     {
         var m = new DeepCoolMystiqueSettings { MediaSource = stored, SourceEdited = storedChosen };
 
-        Assert.Equal(sent, DevicesRoutes.MystiqueSourceAfterUpload(m, isGif, inPlace, chosenDuringStream));
+        var after = DevicesRoutes.MystiqueSourceAfterUpload(m, isGif, inPlace, chosenDuringStream);
+        Assert.Equal(sent, after?.Source);
+        Assert.True(after?.Send ?? true);
         Assert.Equal(sent ?? stored, m.MediaSource);
     }
 
     [Theory]
-    [InlineData(false, null, "images")]
-    [InlineData(true, "gif", "images")]
-    public void After_a_format_the_first_new_picture_sends_no_source_and_the_next_new_item_does(bool gifFirst, string? first, string second)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void After_a_format_the_first_new_picture_selects_pictures_unsent_and_the_next_new_item_sends(bool gifFirst)
     {
-        var m = new DeepCoolMystiqueSettings { MediaSource = "gif", SourceEdited = true, QuietSinceFormat = true };
+        var m = new DeepCoolMystiqueSettings { MediaSource = "gif", SourceEdited = false, QuietSinceFormat = true };
 
         Assert.Null(DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, inPlace: true, chosenDuringStream: false));
         Assert.True(m.QuietSinceFormat);
-        Assert.Equal(first, DevicesRoutes.MystiqueSourceAfterUpload(m, gifFirst, inPlace: false, chosenDuringStream: false));
+        var first = DevicesRoutes.MystiqueSourceAfterUpload(m, gifFirst, inPlace: false, chosenDuringStream: false);
+        Assert.Equal(gifFirst ? new MystiqueSourceAfter("gif", true) : new MystiqueSourceAfter("images", false), first);
+        Assert.Equal((first!.Value.Source, true), (m.MediaSource, m.SourceEdited));
         Assert.False(m.QuietSinceFormat);
-        Assert.Equal(second, DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, inPlace: false, chosenDuringStream: false));
+        Assert.Equal(new MystiqueSourceAfter("images", true), DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, inPlace: false, chosenDuringStream: false));
+    }
+
+    [Fact]
+    public void A_screen_id_given_to_a_picture_counts_as_stored_only_once_a_stream_reaches_it()
+    {
+        const string fresh = "41c9bf307cba45a1aa3a1d92bbe93b96";
+        var m = new DeepCoolMystiqueSettings { PictureIds = new() { Clicked, First } };
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First, ScreenId = fresh, Unsent = true });
+
+        Assert.Equal(new[] { Clicked }, DevicesRoutes.MystiquePictureOrder(m));
+
+        DevicesRoutes.RecordMystiquePictureStreams(m, new[] { (First, fresh) }, 1);
+
+        Assert.Equal(new[] { Clicked, fresh }, DevicesRoutes.MystiquePictureOrder(m));
+        Assert.Equal(First, DevicesRoutes.MystiqueShownPicture(m));
     }
 
     [Fact]

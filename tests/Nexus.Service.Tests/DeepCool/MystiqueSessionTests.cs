@@ -214,6 +214,25 @@ public class MystiqueSessionTests
     }
 
     [Fact]
+    public void A_source_kept_unsent_counts_as_applied()
+    {
+        var pipe = new FakePipe();
+        var session = new MystiqueSession(pipe, sleep: NoSleep);
+        var settings = new DeepCoolMystiqueSettings { SourceEdited = true, MediaSource = DeepCoolMystiqueSettings.SourceGif };
+        Assert.True(session.Open(settings, Now));
+        pipe.Writes.Clear();
+
+        Assert.True(session.Upload(MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b"),
+            () => new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceImages, false)));
+
+        Assert.DoesNotContain(pipe.Writes, w => w.Frame.Length == MystiqueProtocol.FrameLength && w.Frame[2] == MystiqueProtocol.CmdMediaSource);
+        pipe.Writes.Clear();
+        settings.MediaSource = DeepCoolMystiqueSettings.SourceImages;
+        Assert.True(session.Apply(settings.Copy()));
+        Assert.Empty(pipe.Writes);
+    }
+
+    [Fact]
     public void The_source_is_chosen_after_the_finish_packet_and_sent_as_chosen()
     {
         var pipe = new FakePipe();
@@ -226,7 +245,7 @@ public class MystiqueSessionTests
         Assert.True(session.Upload(MystiqueMedia.BuildGif(Enumerable.Repeat(new byte[100], MystiqueMedia.GifFrames).ToList(), "acd9325521f3493c86bfc0b0aa85658d"), source: () =>
         {
             writesWhenChosen = pipe.Writes.Count;
-            return DeepCoolMystiqueSettings.SourceImages;
+            return new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceImages, true);
         }));
 
         Assert.Equal(MystiqueMedia.FinishLength, pipe.Writes[writesWhenChosen - 1].Frame.Length);

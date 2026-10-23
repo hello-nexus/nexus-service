@@ -2258,7 +2258,10 @@ public sealed class DeepCoolMystiqueSettings
     /// <summary>The screen may hold pictures and GIFs from before Nexus tracked their order, so the GIF it plays and the picture it shows first are guesses; a format clears it.</summary>
     public bool GifSlotUnsure { get; set; } = true;
 
-    /// <summary>Set by a format until the next new item or source change: the screen's own software sent no source command after the first picture that followed one (capture 3).</summary>
+    /// <summary>
+    /// Set by a format: the screen's own software sends no source command after the first new picture that follows one.
+    /// Cleared by the next new item, a source change or a picture show.
+    /// </summary>
     public bool QuietSinceFormat { get; set; }
 
     /// <summary>Picture screen ids in the order the screen first stored them, oldest first; empty until an upload or show records it.</summary>
