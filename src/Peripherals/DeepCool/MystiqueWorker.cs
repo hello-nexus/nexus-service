@@ -88,15 +88,15 @@ public sealed class MystiqueWorker : BackgroundService
     /// pipes. False when no screen is connected, another upload is waiting, the stream fails, or the
     /// caller gives up before the stream starts; once it has started, the real result is awaited.
     /// </summary>
-    /// <param name="source">Runs on the worker once the stream is finished, before anything else is sent, and names the source command to follow it (null for none).</param>
-    public async Task<bool> UploadAsync(MystiqueMediaPackage package, Func<string?> source, CancellationToken ct) =>
+    /// <param name="source">Runs on the worker once the stream is finished, before anything else is sent, and names the source it leaves the screen on (null for none).</param>
+    public async Task<bool> UploadAsync(MystiqueMediaPackage package, Func<MystiqueSourceAfter?> source, CancellationToken ct) =>
         await UploadAsync(new[] { package }, source, ct).ConfigureAwait(false) == 1;
 
     /// <summary>
     /// Streams the packages in one turn of the worker, the source command once after the last; returns how many
-    /// were streamed cleanly, as <see cref="MystiqueSession.Upload(IReadOnlyList{MystiqueMediaPackage}, Func{string?}?, Action{long}?)"/>.
+    /// were streamed cleanly, as <see cref="MystiqueSession.Upload(IReadOnlyList{MystiqueMediaPackage}, Func{MystiqueSourceAfter?}?, Action{long}?)"/>.
     /// </summary>
-    public async Task<int> UploadAsync(IReadOnlyList<MystiqueMediaPackage> packages, Func<string?> source, CancellationToken ct)
+    public async Task<int> UploadAsync(IReadOnlyList<MystiqueMediaPackage> packages, Func<MystiqueSourceAfter?> source, CancellationToken ct)
     {
         long total = 0;
         foreach (var package in packages)

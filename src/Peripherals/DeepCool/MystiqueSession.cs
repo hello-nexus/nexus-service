@@ -5,6 +5,9 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.DeepCool;
 
+/// <summary>The source a stream leaves the screen on, and whether the source command for it is sent.</summary>
+public readonly record struct MystiqueSourceAfter(string Source, bool Send);
+
 /// <summary>
 /// One open pipe to a Mystique: the opening exchange, the settings groups the user has
 /// changed, the clock, and the poll plus sensor push that keeps the screen on live data.
@@ -125,7 +128,7 @@ public sealed class MystiqueSession
     /// Nothing streams unless the screen answered the announce. True once a clean stream is finished,
     /// whether or not the source command was answered.
     /// </summary>
-    public bool Upload(MystiqueMediaPackage package, Func<string?>? source = null, Action<long>? progress = null) =>
+    public bool Upload(MystiqueMediaPackage package, Func<MystiqueSourceAfter?>? source = null, Action<long>? progress = null) =>
         Upload(new[] { package }, source, progress) == 1;
 
     /// <summary>
@@ -134,7 +137,7 @@ public sealed class MystiqueSession
     /// first that was not; the source command follows only when all were. <paramref name="progress"/> gets the
     /// bytes streamed across all of them.
     /// </summary>
-    public int Upload(IReadOnlyList<MystiqueMediaPackage> packages, Func<string?>? source = null, Action<long>? progress = null)
+    public int Upload(IReadOnlyList<MystiqueMediaPackage> packages, Func<MystiqueSourceAfter?>? source = null, Action<long>? progress = null)
     {
         long streamed = 0;
         long started = _monotonicMs();
@@ -152,15 +155,20 @@ public sealed class MystiqueSession
         ServiceLog.Info($"[deepcool-mystique] streamed {streamed} bytes in {_monotonicMs() - started} ms");
         var last = packages[^1];
         string kind = last.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
-        string? chosen = source is null ? kind : source();
-        ServiceLog.Info($"[deepcool-mystique] finish sent; source after it: {chosen ?? "none"}");
-        if (chosen is not null)
+        var after = source is null ? new MystiqueSourceAfter(kind, true) : source();
+        ServiceLog.Info($"[deepcool-mystique] finish sent; source after it: {(after is { } a ? a.Source + (a.Send ? "" : ", not sent") : "none")}");
+        if (after is { Send: true } send)
         {
             if (last.Kind == MystiqueMedia.KindPicture)
             {
                 _sleep(AfterPictureGapMs);
             }
-            SendSource(chosen);
+            SendSource(send.Source);
+        }
+        else if (after is { } kept && _applied is not null)
+        {
+            _applied.MediaSource = kept.Source;
+            _applied.SourceEdited = true;
         }
         return packages.Count;
     }
