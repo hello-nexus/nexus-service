@@ -336,6 +336,15 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
         [DllImport("hid.dll")]
         public static extern int HidP_GetCaps(IntPtr preparsedData, ref HIDP_CAPS caps);
 
+        /// <summary>HIDP_REPORT_TYPE value for feature reports.</summary>
+        public const int HidP_Feature = 2;
+
+        /// <summary>sizeof(HIDP_VALUE_CAPS).</summary>
+        public const int ValueCapsSize = 72;
+
+        [DllImport("hid.dll")]
+        public static extern int HidP_GetValueCaps(int reportType, byte[] valueCaps, ref ushort valueCapsLength, IntPtr preparsedData);
+
         [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         public static extern IntPtr SetupDiGetClassDevs(ref Guid classGuid, string? enumerator, IntPtr parent, uint flags);
 
