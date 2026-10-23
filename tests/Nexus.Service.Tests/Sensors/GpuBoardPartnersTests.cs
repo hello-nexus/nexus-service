@@ -260,15 +260,35 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.Equal((name, busId), LinuxPciSubsystem.ParseSmiRow(row));
     }
 
-    private void Board(string vendor) => Device("0000:00:00.0", vendor, "0x0000");
+    private void Smbus(string vendor)
+    {
+        var dir = Path.Combine(_root, "0000:00:14.0");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "class"), "0x0c0500\n");
+        File.WriteAllText(Path.Combine(dir, "subsystem_vendor"), vendor + "\n");
+    }
 
-    // lspci -mm lines in the format the provider parses; device ids are pci.ids entries.
+    private void HostBridge(string vendor) => Device("0000:00:00.0", vendor, "0x0000");
+
+    // The AM5 desktop layout measured on a lab PC: host bridge subsystem names the CPU vendor, SMBus names the board maker.
+    private void Am5Desktop()
+    {
+        HostBridge("0x1022");
+        Smbus("0x1458");
+    }
+
+    // lspci -mm lines in the format the provider parses.
     private const string LspciMm =
         "6e:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Raphael\" -rc1 \"Gigabyte Technology Co., Ltd.\" \"Device d000\"\n" +
         "03:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Navi 31 [Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M]\" -rc8 \"Sapphire Technology Limited\" \"Device 471e\"\n" +
         "00:1f.3 \"Audio device\" \"Intel Corporation\" \"Cannon Lake PCH cAVS\"\n";
 
     private bool Discrete(string busId, string name = "GPU") => LinuxPciSubsystem.IsDiscrete(_root, busId, name);
+
+    private void Amd(string busId, string subsystemVendor, string deviceId, long vram) =>
+        Device(busId, subsystemVendor, "0x1234", chipVendor: "0x1002", vram: vram, deviceId: deviceId);
+
+    private const long Gib = 1024L * 1024 * 1024;
 
     [Fact]
     public void Parses_the_vga_and_3d_controllers_from_lspci()
@@ -280,45 +300,73 @@ public sealed class LinuxPciSubsystemTests : IDisposable
     }
 
     [Fact]
-    public void A_discrete_radeon_from_a_partner_on_another_vendors_board_gets_a_maker()
+    public void On_the_am5_desktop_the_igpu_and_the_boards_own_nvidia_card_get_no_maker_and_a_partner_radeon_does()
     {
-        Board("0x1043");
-        Device("0000:03:00.0", "0x1da2", "0x471e", chipVendor: "0x1002", vram: 25753026560, deviceId: "0x744c");
+        Am5Desktop();
+        Amd("0000:6e:00.0", "0x1458", "0x13c0", Gib / 2);
+        Amd("0000:03:00.0", "0x1da2", "0x744c", 24 * Gib);
+        Device("0000:01:00.0", "0x1458", "0x40bf", chipVendor: "0x10de");
 
+        Assert.False(Discrete("6e:00.0"));
         Assert.True(Discrete("03:00.0"));
+        Assert.Equal("Sapphire", GpuBoardPartners.NameOf(0x1da2));
+        Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 4090"));
     }
 
     [Fact]
-    public void A_card_from_the_boards_own_vendor_gets_no_maker()
+    public void On_an_all_one_vendor_intel_board_the_boards_own_card_gets_none_and_another_partners_card_gets_its_maker()
     {
-        Board("0x1043");
-        Device("0000:03:00.0", "0x1043", "0x0506", chipVendor: "0x1002", vram: 25753026560, deviceId: "0x744c");
+        HostBridge("0x1043");
+        Smbus("0x1043");
+        Device("0000:01:00.0", "0x1043", "0x889c", chipVendor: "0x10de");
+        Device("0000:02:00.0", "0x1462", "0x5107", chipVendor: "0x10de");
 
-        Assert.False(Discrete("03:00.0"));
+        Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 4070"));
+        Assert.True(Discrete("02:00.0", "NVIDIA GeForce RTX 4070"));
+        Assert.Equal("MSI", GpuBoardPartners.NameOf(0x1462));
     }
 
     [Theory]
-    [InlineData("0x164e", 8589934592L, "0x1458")] // desktop Raphael with an 8 GiB UMA carve-out on a Gigabyte board
-    [InlineData("0x164e", 8589934592L, "0x1da2")] // same part, even if its subsystem vendor differed from the board's
-    [InlineData("0x15bf", 4294967296L, "0x1043")] // ROG Ally Phoenix1 with a 4 GiB carve-out, board vendor equals subsystem vendor
-    [InlineData("0x15bf", 4294967296L, "0x1458")] // Phoenix1 on a different board vendor: the deny list still holds
-    [InlineData("0x163f", 1073741824L, "0x1002")] // Steam Deck VanGogh with a 1 GiB carve-out
-    [InlineData("0x1638", 536870912L, "0x1043")]  // Cezanne
-    public void An_amd_apu_never_gets_a_maker(string device, long vram, string subsystemVendor)
+    [InlineData("NVIDIA GeForce RTX 4060 Laptop GPU")]
+    [InlineData("NVIDIA GeForce RTX 3080 Max-Q")]
+    [InlineData("NVIDIA GeForce GTX 1060 Mobile")]
+    public void A_laptop_nvidia_gpu_gets_no_maker_even_when_its_subsystem_differs_from_the_board(string name)
     {
-        Board("0x1043");
-        Device("0000:65:00.0", subsystemVendor, "0xd000", chipVendor: "0x1002", vram: vram, deviceId: device);
+        HostBridge("0x1022");
+        Smbus("0x1043");
+        Device("0000:01:00.0", "0x1043", "0x1234", chipVendor: "0x10de");
+        Device("0000:02:00.0", "0x17aa", "0x1234", chipVendor: "0x10de");
+
+        Assert.False(Discrete("01:00.0", name));
+        Assert.False(Discrete("02:00.0", name));
+    }
+
+    [Theory]
+    [InlineData("0x1900", 2)]  // Hawk Point laptop with a small UMA carve-out
+    [InlineData("0x13fe", 1)]  // BC-250
+    [InlineData("0x164e", 8)]  // desktop Raphael
+    [InlineData("0x15bf", 4)]  // handheld Phoenix1
+    [InlineData("0x163f", 1)]  // Steam Deck VanGogh
+    [InlineData("0x1638", 1)]  // Cezanne
+    [InlineData("0x15dd", 2)]  // Raven Ridge
+    [InlineData("0x164d", 2)]  // Rembrandt-R
+    public void An_amd_apu_that_is_not_on_the_allow_list_never_gets_a_maker_whatever_its_subsystem(string device, long gib)
+    {
+        Am5Desktop();
+        Amd("0000:65:00.0", "0x17aa", device, gib * Gib);
 
         Assert.False(Discrete("65:00.0"));
     }
 
     [Fact]
-    public void An_amd_function_with_unreadable_memory_is_not_given_a_maker()
+    public void A_listed_radeon_needs_a_foreign_subsystem_and_readable_memory()
     {
-        Board("0x1043");
-        Device("0000:03:00.0", "0x1da2", "0x471e", chipVendor: "0x1002", deviceId: "0x744c");
+        Am5Desktop();
+        Amd("0000:03:00.0", "0x1458", "0x744c", 24 * Gib);
+        Device("0000:04:00.0", "0x1da2", "0x1234", chipVendor: "0x1002", deviceId: "0x744c");
 
         Assert.False(Discrete("03:00.0"));
+        Assert.False(Discrete("04:00.0"));
     }
 
     [Theory]
@@ -328,7 +376,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
     [InlineData("0000:03:00.0", "0x7d55", "Intel Corporation Meteor Lake-P [Intel Arc Graphics]")]
     public void An_intel_igpu_never_gets_a_maker(string busId, string device, string name)
     {
-        Board("0x1043");
+        Am5Desktop();
         Device(busId, "0x1da2", "0x1234", chipVendor: "0x8086", deviceId: device);
 
         Assert.False(Discrete(busId[5..], name));
@@ -337,7 +385,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
     [Fact]
     public void An_intel_arc_card_off_the_igpu_slot_with_a_dgpu_codename_gets_a_maker()
     {
-        Board("0x1043");
+        Am5Desktop();
         Device("0000:03:00.0", "0x1da2", "0x1234", chipVendor: "0x8086", deviceId: "0xe20b");
 
         Assert.True(Discrete("03:00.0", "Intel Corporation Battlemage G21 [Arc B580]"));
@@ -345,33 +393,33 @@ public sealed class LinuxPciSubsystemTests : IDisposable
     }
 
     [Fact]
-    public void An_nvidia_card_on_another_vendors_board_gets_a_maker()
+    public void With_no_usable_board_vendor_there_is_no_maker()
     {
-        Board("0x1043");
         Device("0000:01:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
+        Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
 
-        Assert.True(Discrete("00000000:01:00.0"));
+        HostBridge("0x1022");
+        Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
     }
 
     [Fact]
-    public void With_no_readable_chipset_there_is_no_maker()
+    public void A_host_bridge_naming_a_board_maker_stands_in_when_there_is_no_smbus_controller()
     {
-        Device("0000:01:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
-
-        Assert.False(Discrete("01:00.0"));
-    }
-
-    [Fact]
-    public void The_smbus_controller_stands_in_when_the_host_bridge_is_unreadable()
-    {
-        var dir = Path.Combine(_root, "0000:00:1f.4");
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, "class"), "0x0c0500\n");
-        File.WriteAllText(Path.Combine(dir, "subsystem_vendor"), "0x1043\n");
+        HostBridge("0x1043");
         Device("0000:01:00.0", "0x1043", "0x1234", chipVendor: "0x10de");
         Device("0000:02:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
 
-        Assert.False(Discrete("01:00.0"));
-        Assert.True(Discrete("02:00.0"));
+        Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
+        Assert.True(Discrete("02:00.0", "NVIDIA GeForce RTX 3090"));
+    }
+
+    [Fact]
+    public void The_smbus_controller_wins_over_a_host_bridge()
+    {
+        HostBridge("0x1043");
+        Smbus("0x1458");
+        Device("0000:01:00.0", "0x1043", "0x1234", chipVendor: "0x10de");
+
+        Assert.True(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
     }
 }
