@@ -290,7 +290,7 @@ public sealed class MonitoringEventCollector : BackgroundService
     {
         if (_useWindowedProcesses)
         {
-            return ExtractWindowedAppNames(procs).Select(n => new AppCandidate(n, null)).ToList();
+            return ExtractWindowedAppNames(procs, Environment.ProcessId).Select(n => new AppCandidate(n, null)).ToList();
         }
 
         if (nowUtc - _lastDetectedPollUtc < DetectedAppPollInterval)
@@ -301,7 +301,7 @@ public sealed class MonitoringEventCollector : BackgroundService
 
         try
         {
-            return DetectedAppCandidates(_appDetection.GetDetected());
+            return DetectedAppCandidates(_appDetection.GetDetected(), Environment.ProcessId);
         }
         catch (Exception ex)
         {
@@ -313,7 +313,7 @@ public sealed class MonitoringEventCollector : BackgroundService
     /// <summary>Detected entries to candidates, one per distinct name (a
     /// multi-process app lists several entries sharing a display name), Id
     /// parsed as the pid the platform provider records.</summary>
-    internal static List<AppCandidate> DetectedAppCandidates(IReadOnlyList<Detected> detected)
+    internal static List<AppCandidate> DetectedAppCandidates(IReadOnlyList<Detected> detected, int selfPid)
     {
         var byName = new Dictionary<string, AppCandidate>(StringComparer.OrdinalIgnoreCase);
         foreach (var app in detected)
@@ -322,7 +322,12 @@ public sealed class MonitoringEventCollector : BackgroundService
             {
                 continue;
             }
-            byName[app.Name] = new AppCandidate(app.Name, int.TryParse(app.Id, out var pid) ? pid : null);
+            int? pid = int.TryParse(app.Id, out var parsed) ? parsed : null;
+            if (pid == selfPid)
+            {
+                continue;
+            }
+            byName[app.Name] = new AppCandidate(app.Name, pid);
         }
         return byName.Values.ToList();
     }
@@ -332,15 +337,16 @@ public sealed class MonitoringEventCollector : BackgroundService
     /// ProcessAggregation.GroupByName - the same isApp notion
     /// MonitoringBroadcaster.BuildProcessFrame uses - rather than
     /// re-deriving it.</summary>
-    internal static IReadOnlyList<string> ExtractWindowedAppNames(IReadOnlyList<ProcessInfo> procs) =>
-        ProcessAggregation.GroupByName(procs).Where(kv => kv.Value.HasWindow && !IsNexusProcess(kv.Key)).Select(kv => kv.Key).ToList();
+    internal static IReadOnlyList<string> ExtractWindowedAppNames(IReadOnlyList<ProcessInfo> procs, int selfPid) =>
+        ProcessAggregation.GroupByName(procs.Where(p => p.Pid != selfPid).ToList()).Where(kv => kv.Value.HasWindow && !IsNexusProcess(kv.Key)).Select(kv => kv.Key).ToList();
 
-    // Name set, not exe path: resolving a path per candidate every tick is
-    // real process I/O. msedgewebview2 is deliberately absent (shared with
-    // other apps).
+    // Our own service is matched by pid; only uniquely named exes are matched
+    // by name, since other products ship a Nexus.exe. Not an exe path:
+    // resolving one per candidate every tick is real process I/O.
+    // msedgewebview2 is deliberately absent (shared with other apps).
     private static readonly HashSet<string> NexusProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Nexus", "nexus-overlay", "nexus-overlay-helper", "OpenRGB-headless",
+        "nexus-overlay", "nexus-overlay-helper", "OpenRGB-headless", "NexusUpdater",
     };
 
     /// <summary>True for a process Nexus ships; its windows appearing (the

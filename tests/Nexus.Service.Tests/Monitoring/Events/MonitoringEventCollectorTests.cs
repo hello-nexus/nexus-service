@@ -112,7 +112,7 @@ public class MonitoringEventCollectorTests
             new() { Pid = 2, Name = "svchost.exe", HasWindow = false },
         };
 
-        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs);
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1);
 
         Assert.Equal(new[] { "notepad.exe" }, names);
     }
@@ -126,7 +126,7 @@ public class MonitoringEventCollectorTests
             new() { Pid = 2, Name = "app.exe", HasWindow = true },
         };
 
-        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs);
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1);
 
         Assert.Equal(new[] { "app.exe" }, names);
     }
@@ -134,7 +134,7 @@ public class MonitoringEventCollectorTests
     [Theory]
     [InlineData("nexus-overlay")]
     [InlineData("nexus-overlay.exe")]
-    [InlineData("Nexus.exe")]
+    [InlineData("NexusUpdater.exe")]
     [InlineData("OpenRGB-headless")]
     public void ExtractWindowedAppNames_SkipsNexusOwnProcesses(string nexusName)
     {
@@ -144,9 +144,22 @@ public class MonitoringEventCollectorTests
             new() { Pid = 2, Name = "msedgewebview2.exe", HasWindow = true },
         };
 
-        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs);
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1);
 
         Assert.Equal(new[] { "msedgewebview2.exe" }, names);
+    }
+
+    [Fact]
+    public void ExtractWindowedAppNames_SkipsOurOwnPid_ButNotAnotherProductNamedNexus()
+    {
+        var procs = new List<ProcessInfo>
+        {
+            new() { Pid = 10, Name = "Nexus.exe", HasWindow = true },
+            new() { Pid = 20, Name = "Nexus.exe", HasWindow = true },
+        };
+
+        Assert.Empty(MonitoringEventCollector.ExtractWindowedAppNames(new[] { procs[0] }, selfPid: 10));
+        Assert.Equal(new[] { "Nexus.exe" }, MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: 10));
     }
 
     [Fact]
@@ -156,9 +169,11 @@ public class MonitoringEventCollectorTests
         {
             new() { Id = "1", Name = "Nexus" },
             new() { Id = "2", Name = "Safari" },
-        });
+            new() { Id = "3", Name = "nexus-overlay" },
+            new() { Id = "4", Name = "Nexus Dock" },
+        }, selfPid: 1);
 
-        Assert.Equal(new[] { "Safari" }, candidates.Select(c => c.Name));
+        Assert.Equal(new[] { "Safari", "Nexus Dock" }, candidates.Select(c => c.Name));
     }
 
     [Fact]
@@ -350,7 +365,7 @@ public class MonitoringEventCollectorTests
             new() { Id = "502", Name = "Safari" },
             new() { Id = "notapid", Name = "Finder" },
             new() { Id = "504", Name = "" },
-        });
+        }, selfPid: -1);
 
         Assert.Equal(2, candidates.Count);
         Assert.Equal(501, candidates.Single(c => c.Name == "Safari").Pid);
