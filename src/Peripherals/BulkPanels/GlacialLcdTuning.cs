@@ -75,6 +75,7 @@ public sealed class GlacialLcdTuning
     private int _rawOk;
     private int _rawFailed;
     private volatile bool _rawActive;
+    private int _rawEnables;
 
     public GlacialLcdTuning(IConfigStore store, Func<long>? clock = null)
     {
@@ -83,6 +84,9 @@ public sealed class GlacialLcdTuning
     }
 
     public bool Stalled => _stalled;
+
+    /// <summary>How many times the raw stream knob has been turned on; lets the driver see an off-and-on between two of its passes.</summary>
+    public int RawEnables => Volatile.Read(ref _rawEnables);
 
     public GlacialLcdTuningValues Current()
     {
@@ -177,6 +181,10 @@ public sealed class GlacialLcdTuning
         lock (_lock)
         {
             version = ++_version;
+            if (c.RawStream == true)
+            {
+                _rawEnables++;
+            }
         }
         var after = Current();
         var changes = new List<string>();

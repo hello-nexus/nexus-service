@@ -257,7 +257,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
     private volatile bool _rawActive;
     private int _rawFailStreak;
-    private bool _rawKnobSeen;
+    private int _rawEnablesSeen;
     private volatile bool _rawOffPending;
     private int _ackUploads;
     private readonly object _rawLock = new();
@@ -265,14 +265,20 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// <summary>Set while no raw exit is owed; reset together with <see cref="_rawActive"/>, so a shutdown wait can tell the panel may still be in the stream mode.</summary>
     private readonly ManualResetEventSlim _rawExitDone = new(true);
 
-    private void SetRawActive()
+    /// <summary>Marks a raw exit as owed, unless a shutdown has begun; the shutdown flag is read under the same lock it is set under, so a shutdown wait either sees the owed exit or the entry never happens.</summary>
+    private bool TrySetRawActive()
     {
         lock (_rawLock)
         {
+            if (_quiescing)
+            {
+                return false;
+            }
             _rawActive = true;
             _rawExitDone.Reset();
         }
         _tuning?.SetRawActive(true);
+        return true;
     }
 
     private void ClearRawActive()
@@ -457,6 +463,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _rawNeedsSync = false;
             ClearRawActive();
             _rawFailStreak = 0;
+            _rawOffPending = false;
             _tuning?.SetRawActive(false);
             lock (_lastLoggedReply)
             {
@@ -545,14 +552,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             try
             {
                 var cfg = Cfg();
-                if (cfg.RawStream != _rawKnobSeen)
+                int enables = _tuning?.RawEnables ?? 0;
+                if (enables != _rawEnablesSeen)
                 {
-                    // A fresh start for the failure count whenever the knob is turned on.
-                    _rawKnobSeen = cfg.RawStream;
-                    if (cfg.RawStream)
-                    {
-                        _rawFailStreak = 0;
-                    }
+                    // A fresh start for the failure count whenever the knob is turned on, even if it was off and on again between two passes.
+                    _rawEnablesSeen = enables;
+                    _rawFailStreak = 0;
                 }
                 if (_rawOffPending)
                 {
@@ -858,7 +863,16 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             _tuning?.RecordAcks(run.AckReplies, run.AckTimeouts, run.AckWaitMs, run.CommitWaitMs);
         }
         GlacialLcdLog.Write($"u{seq} end outcome={outcome} totalMs={watch.ElapsedMilliseconds} acks={run.AckReplies}/{run.AckReplies + run.AckTimeouts} ackWaitMs={run.AckWaitMs} commitWaitMs={run.CommitWaitMs}{(run.Error is null ? "" : " error=" + run.Error)}");
-        if (outcome != UploadOutcome.Done && run.FlushSent)
+        if (run.Abandoned)
+        {
+            // The transfer never opened: the earlier picture is put back on display instead of being forgotten.
+            _link.ShowPending = true;
+            lock (_stateLock)
+            {
+                _nextShowMs = 0;
+            }
+        }
+        else if (outcome != UploadOutcome.Done && run.FlushSent)
         {
             // What the flush clears is not known to stop at the slot being written, so after a
             // failed or cut-short upload nothing is assumed to be on display: the next frame is
@@ -1139,6 +1153,9 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
         /// <summary>Per step type: whether the upload still waits for the panel's replies; cleared when they stop coming.</summary>
         public bool Probe { get; set; }
+
+        /// <summary>The upload was given up after the flush with nothing stored, so the picture on display is the earlier one.</summary>
+        public bool Abandoned { get; set; }
         public bool PreludeOn { get; set; }
         public bool ChunkOn { get; set; }
         public bool CommitOn { get; set; }
@@ -1400,10 +1417,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                     {
                         break;
                     }
-                    if (++busyTries > GlacialLcdProtocol.BusyRetries)
+                    if (++busyTries > GlacialLcdProtocol.BusyRetries || _quiescing)
                     {
                         // Streaming chunks into a transfer the panel has not opened would only be rejected; leave write mode and try the whole upload again later.
-                        GlacialLcdLog.Write($"u{run.Seq} panel still busy at {step} after {busyTries - 1} retries, upload abandoned");
+                        GlacialLcdLog.Write($"u{run.Seq} panel busy at {step}, upload abandoned after {busyTries - 1} retries{(_quiescing ? " (shutting down)" : "")}");
+                        run.Abandoned = true;
                         if (cfg.CloseWriteMode)
                         {
                             HidWrite(state, GlacialLcdProtocol.EncodeCloseWriteMode());
@@ -1659,8 +1677,11 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                     DrainInput(hid);
                 }
             }
-            // Owed before the write, so a shutdown that looks now cannot miss a panel that is about to be in stream mode.
-            SetRawActive();
+            // Owed before the write and refused once a shutdown has begun, so the shutdown wait cannot return while the panel is about to be put in stream mode.
+            if (!TrySetRawActive())
+            {
+                return false;
+            }
             if (!HidWrite(state, GlacialLcdProtocol.EncodeFrameStreamMode()))
             {
                 ClearRawActive();
@@ -1669,7 +1690,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             _link.ShowPending = false;
             GlacialLcdLog.Write("raw stream: entered frame stream mode (51 20)");
-            // A reply to the mode select ends the settle early; the fixed wait is the 100 ms the reference raw-stream implementation sleeps after its mode switch (its frame stream entry).
+            // A reply to the mode select ends the settle early; the fixed wait is the short sleep the reference raw-stream implementation leaves after its mode switch (its frame stream entry).
             var sinceStart = System.Diagnostics.Stopwatch.StartNew();
             Reply(state, RawEnterSettleMs, "raw enter 51 20", "rawenter", sinceStart);
             lock (_hidLock)
@@ -1938,6 +1959,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                 run.Error = "no reply to the raw frame announce";
                 return false;
             }
+            if (attempt >= GlacialLcdProtocol.BusyRetries)
+            {
+                break;
+            }
             // Refused right after the mode select (or while the panel is still busy): not ready yet, so ask again shortly before counting a failure.
             GlacialLcdLog.Write($"r{run.Seq} raw announce refused (not ready), asking again in {GlacialLcdProtocol.BusyRetryMs}ms ({attempt + 1}/{GlacialLcdProtocol.BusyRetries})");
             if (_hardAbort.Wait(GlacialLcdProtocol.BusyRetryMs))
@@ -2070,7 +2095,10 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     /// <summary>Stops new uploads; one in flight runs on. Called first on shutdown and before a detach.</summary>
     public void BeginShutdown()
     {
-        _quiescing = true;
+        lock (_rawLock)
+        {
+            _quiescing = true;
+        }
         _wake.Set();
     }
 

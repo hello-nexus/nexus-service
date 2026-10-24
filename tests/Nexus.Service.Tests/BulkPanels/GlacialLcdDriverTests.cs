@@ -1569,7 +1569,7 @@ public class GlacialLcdDriverTests
         Assert.True(WaitUntilTicking(clock, () => Volatile.Read(ref writing) == 1));
 
         var detach = Task.Run(driver.PrepareDetach);
-        await Task.Delay(200);
+        await Task.Yield();
         Assert.False(detach.IsCompleted, "the wait must not end while the frame is still being written");
         gate.Set();
 
@@ -1598,6 +1598,47 @@ public class GlacialLcdDriverTests
         // Four failures in all, but only two since the knob came back on: still on.
         Assert.True(tuning.Current().RawStream);
         driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_shutdown_that_begins_while_raw_streaming_is_being_entered_leaves_the_panel_alone()
+    {
+        var clock = new FakeClock();
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { RawStream = true });
+        var driver = Fast(clock: clock);
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid { Echo = false };
+        int fired = 0;
+        // The entry drains input before the mode select; the shutdown begins at that first read.
+        hid.OnRead = _ =>
+        {
+            if (Interlocked.Exchange(ref fired, 1) == 0)
+            {
+                driver.BeginShutdown();
+            }
+        };
+        driver.Connect(pipe, hid);
+
+        Assert.True(WaitUntilTicking(clock, () => Volatile.Read(ref fired) == 1));
+        int ticks = driver.Ticks;
+        Assert.True(WaitUntilTicking(clock, () => driver.Ticks >= ticks + 3));
+
+        Assert.DoesNotContain(hid.Writes, w => w[1] == 0x51 && w[2] == 0x20);
+        Assert.True(driver.WaitIdle(TimeSpan.FromSeconds(1)));
+        Assert.False(tuning.Stats().RawActive);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void Turning_raw_streaming_off_and_on_between_two_passes_still_restarts_the_failure_count()
+    {
+        var tuning = NewTuning(out _);
+        int before = tuning.RawEnables;
+        tuning.Apply(new GlacialLcdTuningChange { RawStream = false });
+        tuning.Apply(new GlacialLcdTuningChange { RawStream = true });
+        Assert.Equal(before + 1, tuning.RawEnables);
     }
 
     [Fact]
