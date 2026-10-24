@@ -90,13 +90,16 @@ public class ThermalGuardEngineTests
         return (engine, fans, store, clock);
     }
 
-    // Default limit without a sensor provider is 90 C; the limit trip is the limit held for 5 s.
+    // Holds a temperature past the default limit, one tick per second, until the limit trip fires.
     private static void Trip(CurveEngine engine, Fans fans, long[] clock)
     {
         fans.CpuTemp = 99f;
         engine.Tick();
-        clock[0] += 5000;
-        engine.Tick();
+        for (var i = 0; i < 5; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
     }
 
     // A slow climb at low fan duty and unknown load, until the guard declares lost cooling.
@@ -328,6 +331,31 @@ public class ThermalGuardEngineTests
         CoolDown(engine, clock);
         var cooling = store.Load().Cooling;
         Assert.NotNull(cooling.LastThermalTrip!.EndedAtUtcMs);
+        Assert.NotNull(cooling.HealSnapshot);
+    }
+
+    [Fact]
+    public void EscalatedCoolingLossTripEnd_StillHealsTheCurves()
+    {
+        var (engine, fans, store, clock) = Build();
+        LearnRpm(engine, fans, clock, 1000);
+        TripOnCoolingLoss(engine, fans, store, clock);
+        fans.CpuTemp = 95f;
+        fans.Channels[0].Rpm = 100;
+        fans.Channels[1].Rpm = 100;
+        for (var i = 0; i < 25; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.True(store.Load().Cooling.LastThermalTrip!.Escalated);
+
+        fans.CpuTemp = 50f;
+        engine.Tick();
+        CoolDown(engine, clock);
+        var cooling = store.Load().Cooling;
+        Assert.NotNull(cooling.LastThermalTrip!.EndedAtUtcMs);
+        Assert.Equal(ThermalTripReasons.CoolingLoss, cooling.LastThermalTrip.Reason);
         Assert.NotNull(cooling.HealSnapshot);
     }
 
@@ -1200,7 +1228,7 @@ public class ThermalGuardEngineTests
             s.Cooling.ManualSpeeds["f2"] = 70;
         });
         var before = store.Load().Cooling.Curves.Select(c => c.Id).ToArray();
-        Trip(engine, fans, clock);
+        TripOnCoolingLoss(engine, fans, store, clock);
         fans.CpuTemp = 50f;
         engine.Tick();
         CoolDown(engine, clock);
@@ -1709,7 +1737,7 @@ public class ThermalGuardEngineTests
         }
         Assert.Equal(40, LastDuty(fans, "f1"));
 
-        // 99 C is past the default limit but under the overridden one: no trip however long.
+        // Past the default limit but under the override: no trip however long.
         fans.CpuTemp = 99.9f;
         for (var i = 0; i < 8; i++)
         {
