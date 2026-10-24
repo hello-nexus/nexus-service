@@ -68,7 +68,7 @@ void main() {
         }
         float body = band * flicker * mix(1.0, 0.45 + 1.1 * ray, rays * 0.7);
 
-        // Color comes from the wheel range, not the global tint. Each band takes its own hue from the wheel's range (the lowest band the
+        // Each band takes its own hue from the wheel range (the lowest band the
         // first end); a gentle gradient inside the band keeps it soft.
         float k = clamp(-dy * invUp / 1.7, 0.0, 1.0);
         float n = float(bands - 1) - fi;
