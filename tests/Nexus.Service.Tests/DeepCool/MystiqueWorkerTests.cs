@@ -223,7 +223,7 @@ public class MystiqueWorkerTests
         }
     }
 
-    private sealed class FakeUsb : IUsbEnumerator
+    internal sealed class FakeUsb : IUsbEnumerator
     {
         private readonly bool _present;
 
@@ -263,7 +263,7 @@ public class MystiqueWorkerTests
         }
     }
 
-    private sealed class FakeFactory : IBulkUsbPipeFactory
+    internal sealed class FakeFactory : IBulkUsbPipeFactory
     {
         public int Opens;
         public int Formats;
@@ -280,7 +280,7 @@ public class MystiqueWorkerTests
         }
     }
 
-    private sealed class RecordingPipe(FakeFactory factory) : IBulkUsbPipe
+    internal sealed class RecordingPipe(FakeFactory factory) : IBulkUsbPipe
     {
         private readonly object _lock = new();
         private readonly List<byte[]> _writes = new();
@@ -352,7 +352,7 @@ public class MystiqueWorkerTests
         }
     }
 
-    private sealed class FakeSensors : ISensorProvider
+    internal sealed class FakeSensors : ISensorProvider
     {
         public string GetCpuModel() => "TestCPU";
         public IReadOnlyList<HardwareSensor> GetCpuSensors() => new[]

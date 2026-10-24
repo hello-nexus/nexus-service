@@ -16,7 +16,7 @@ using Xunit;
 
 namespace Nexus.Service.Tests.Integration;
 
-public class DeepCoolMystiqueRoutesTests
+public partial class DeepCoolMystiqueRoutesTests
 {
     private static HttpClient Client(NexusAppFactory factory)
     {

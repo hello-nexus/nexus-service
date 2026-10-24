@@ -14,6 +14,7 @@ namespace Nexus.Service.Routes;
 public static partial class DevicesRoutes
 {
     private static readonly TimeSpan MystiqueUploadBudget = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan MystiqueHeldSourceBudget = TimeSpan.FromSeconds(30);
     private const int MystiqueNameMax = 64;
 
     // Bounds a kept source, so full slots of uploads up to MediaImporter.MaxFileSize never pile up gigabytes.
@@ -115,9 +116,76 @@ public static partial class DevicesRoutes
         m.PictureIds = order;
     }
 
-    /// <summary>Whether a new picture stored under <paramref name="screenId"/> is swapped into <see cref="MystiquePictureSlot"/> to stay on the screen.</summary>
+    /// <summary>Whether a picture stored under <paramref name="screenId"/> sits above <see cref="MystiquePictureSlot"/>, so an upload swaps it there to stay on the screen.</summary>
     internal static bool MystiqueUploadSwaps(DeepCoolMystiqueSettings m, string screenId) =>
         MystiquePictureOrder(m).Exists(id => string.CompareOrdinal(id, screenId) < 0);
+
+    /// <summary>Lists an item the screen took under <paramref name="screenId"/>, in place of the one with its id.</summary>
+    internal static void ListMystiqueUpload(DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem item, string screenId)
+    {
+        m.Media ??= new();
+        m.Freed ??= new();
+        bool isGif = item.Kind == DeepCoolMystiqueMediaItem.KindGif;
+        if (!isGif)
+        {
+            NoteMystiquePictureStored(m, screenId);
+        }
+        m.Freed.RemoveAll(i => i.Id == screenId);
+        int at = m.Media.FindIndex(i => i.Id == item.Id);
+        if (at >= 0)
+        {
+            m.Media[at] = item;
+        }
+        else
+        {
+            m.Media.Add(item);
+        }
+        if (isGif)
+        {
+            SetMystiqueGifSlot(m, screenId, item.Id);
+        }
+    }
+
+    /// <summary>
+    /// The streams that swap <paramref name="uploaded"/>, about to go up as <paramref name="package"/>, into
+    /// <see cref="MystiquePictureSlot"/> as a click does, from <paramref name="m"/> before the upload; null when it will hold
+    /// the slot, the pictures will not be the source, or the picture there cannot be rebuilt. An unsent picture that
+    /// cannot be rebuilt stays as it is.
+    /// </summary>
+    internal static async Task<(List<MystiqueMediaPackage> Packages, List<(string ItemId, string ScreenId)> Sent)?> PlanMystiqueUploadSwapAsync(
+        DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem uploaded, MystiqueMediaPackage package, bool inPlace, bool rotate, CancellationToken ct)
+    {
+        string screenId = MystiqueScreenId(uploaded);
+        var after = MystiqueSourceAfterUpload(m.Copy(), isGif: false, inPlace, chosenDuringStream: false);
+        bool pictures = after is { } a
+            ? a is { Send: true, Source: DeepCoolMystiqueSettings.SourceImages }
+            : m.SourceEdited && m.MediaSource == DeepCoolMystiqueSettings.SourceImages;
+        if (!pictures || !MystiqueUploadSwaps(m, screenId))
+        {
+            return null;
+        }
+        m = m.Copy();
+        ListMystiqueUpload(m, uploaded, screenId);
+        string slot = MystiquePictureSlot(m)!;
+        var packages = new List<MystiqueMediaPackage>();
+        var sent = new List<(string ItemId, string ScreenId)>();
+        foreach (var (target, id) in MystiquePicturePlan(m, uploaded, slot))
+        {
+            var resolved = target.Id == uploaded.Id
+                ? MystiqueMedia.LoadPicture(MystiqueMedia.SavePicture(package, rotate), id, out _)
+                : await ResolveMystiqueMediaAsync(target, id, rotate, null, ct);
+            if (resolved is null && (target.Id == uploaded.Id || MystiqueScreenId(target) == slot))
+            {
+                return null;
+            }
+            if (resolved is not null)
+            {
+                packages.Add(resolved);
+                sent.Add((target.Id, id));
+            }
+        }
+        return (packages, sent);
+    }
 
     /// <summary>The id a show of <paramref name="item"/> streams into: <see cref="MystiquePictureSlot"/>, else the item's own screen id, which a stream then records as stored.</summary>
     internal static string MystiqueShowSlot(DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem item) =>
@@ -249,6 +317,59 @@ public static partial class DevicesRoutes
             AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
 
     /// <summary>
+    /// Streams a planned upload swap and the source command the upload held back after it, unless the user chose a
+    /// source since the upload started. When the swap does not finish, the held source is recorded and sent on its own.
+    /// </summary>
+    private static async Task SwapMystiqueUploadAsync(
+        IConfigStore store, MystiqueWorker worker, (List<MystiqueMediaPackage> Packages, List<(string ItemId, string ScreenId)> Sent) swap,
+        bool inPlace, int startChoices, long sentBefore, long totalBytes, CancellationToken ct)
+    {
+        bool held = true;
+        MystiqueSourceAfter? SourceAfterSwap()
+        {
+            MystiqueSourceAfter? after = null;
+            store.Update(s =>
+            {
+                var d = s.Devices.DeepCoolMystique;
+                bool chosen = MystiqueSourceChoices != startChoices;
+                after = MystiqueSourceAfterUpload(d, isGif: false, inPlace, chosen);
+                if (!chosen)
+                {
+                    d.MediaSource = DeepCoolMystiqueSettings.SourceImages;
+                    d.SourceEdited = true;
+                    after = new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceImages, after?.Send ?? true);
+                }
+            });
+            held = false;
+            return after;
+        }
+        if (MystiqueSourceChoices == startChoices)
+        {
+            int streamed = await worker.UploadAsync(swap.Packages, SourceAfterSwap, ct, sentBefore, totalBytes);
+            if (streamed >= 0)
+            {
+                store.Update(s => RecordMystiquePictureStreams(s.Devices.DeepCoolMystique, swap.Sent, streamed));
+            }
+        }
+        if (held)
+        {
+            MystiqueSourceAfter? after = null;
+            bool chosen = false;
+            store.Update(s =>
+            {
+                chosen = MystiqueSourceChoices != startChoices;
+                after = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif: false, inPlace, chosen);
+            });
+            if (!chosen && after is { Send: true } send)
+            {
+                using var late = new CancellationTokenSource(MystiqueHeldSourceBudget);
+                await worker.SendSourceAsync(send.Source, late.Token);
+            }
+        }
+        worker.RequestApply();
+    }
+
+    /// <summary>
     /// Shows a picture by streaming it under <see cref="MystiquePictureSlot"/> and the picture that held that id under the
     /// clicked one's old id, then picking the pictures, which the screen starts from the first; no select command is
     /// known. Pictures marked <see cref="DeepCoolMystiqueMediaItem.Unsent"/> go again with them. A picture already in the
@@ -303,11 +424,11 @@ public static partial class DevicesRoutes
             return shown;
         }
         worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
-        int streamed = await worker.UploadAsync(packages, () =>
+        int streamed = Math.Max(0, await worker.UploadAsync(packages, () =>
         {
             Playing();
             return new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceImages, true);
-        }, ct);
+        }, ct));
         store.Update(s => RecordMystiquePictureStreams(s.Devices.DeepCoolMystique, sent, streamed));
         worker.RequestApply();
         return streamed == packages.Count ? shown : MystiqueMediaFailure("The screen did not take the picture");
@@ -448,22 +569,35 @@ public static partial class DevicesRoutes
                     return MystiqueMediaFailure(encoded.Error ?? "Encode failed");
                 }
                 var package = encoded.Package!;
-                bool swapAfter = false;
+                var listed = new DeepCoolMystiqueMediaItem { Kind = kind, Id = id, ScreenId = isGif || screenId == id ? "" : screenId };
+                var swap = null as (List<MystiqueMediaPackage> Packages, List<(string ItemId, string ScreenId)> Sent)?;
+                if (!isGif)
+                {
+                    var before = new DeepCoolMystiqueSettings();
+                    store.Read(s => before = s.Devices.DeepCoolMystique.Copy());
+                    swap = await PlanMystiqueUploadSwapAsync(before, listed, package, inPlace, rotate, budget.Token);
+                }
+                long uploadBytes = MystiqueWorker.Bytes(new[] { package });
+                long totalBytes = uploadBytes + (swap is { } planned ? MystiqueWorker.Bytes(planned.Packages) : 0);
+                // While a swap follows, the source is neither recorded nor sent, so the screen gets one source command after it.
+                bool holdSource = swap is not null;
                 // Once streaming starts this waits for the real result, so an item the screen took is always recorded.
                 MystiqueSourceAfter? SourceAfterStream()
                 {
                     MystiqueSourceAfter? after = null;
                     store.Update(s =>
                     {
-                        var d = s.Devices.DeepCoolMystique;
-                        after = MystiqueSourceAfterUpload(d, isGif, inPlace, MystiqueSourceChoices != startChoices);
-                        swapAfter = !isGif && after is { Send: true, Source: DeepCoolMystiqueSettings.SourceImages } && MystiqueUploadSwaps(d, screenId);
+                        bool chosen = MystiqueSourceChoices != startChoices;
+                        holdSource &= !chosen;
+                        if (!holdSource)
+                        {
+                            after = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif, inPlace, chosen);
+                        }
                     });
-                    // The swap that follows sends the source after its own streams.
-                    return swapAfter ? null : after;
+                    return after;
                 }
                 worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
-                if (!await worker.UploadAsync(package, SourceAfterStream, budget.Token))
+                if (await worker.UploadAsync(new[] { package }, SourceAfterStream, budget.Token, 0, totalBytes) != 1)
                 {
                     if (isGif)
                     {
@@ -478,46 +612,14 @@ public static partial class DevicesRoutes
                 SaveMystiqueThumbnail(id, encoded.Thumbnail!);
                 string keptExt = await KeepMystiqueSource(id, ext, source, isGif);
                 SaveMystiqueStream(id, isGif ? MystiqueMedia.SaveGif(package, rotate) : MystiqueMedia.SavePicture(package, rotate));
-                string name = TruncateName(Path.GetFileNameWithoutExtension(file.FileName), MystiqueNameMax);
-                store.Update(s =>
-                {
-                    var m = s.Devices.DeepCoolMystique;
-                    m.Media ??= new();
-                    m.Freed ??= new();
-                    if (!isGif)
-                    {
-                        NoteMystiquePictureStored(m, screenId);
-                    }
-                    m.Freed.RemoveAll(i => i.Id == screenId);
-                    var item = new DeepCoolMystiqueMediaItem
-                    {
-                        Kind = kind, Id = id, ScreenId = isGif || screenId == id ? "" : screenId, Name = name, Ext = keptExt,
-                        Crop = crop is null ? "" : form["crop"].ToString(),
-                    };
-                    int at = m.Media.FindIndex(i => i.Id == id);
-                    if (at >= 0)
-                    {
-                        m.Media[at] = item;
-                    }
-                    else
-                    {
-                        m.Media.Add(item);
-                    }
-                    if (isGif)
-                    {
-                        SetMystiqueGifSlot(m, screenId, id);
-                    }
-                });
+                listed.Name = TruncateName(Path.GetFileNameWithoutExtension(file.FileName), MystiqueNameMax);
+                listed.Ext = keptExt;
+                listed.Crop = crop is null ? "" : form["crop"].ToString();
+                store.Update(s => ListMystiqueUpload(s.Devices.DeepCoolMystique, listed, screenId));
                 worker.RequestApply();
-                // A new picture moves into the place the pictures start from, as a click does, so it stays on the screen.
-                if (swapAfter)
+                if (holdSource)
                 {
-                    var m = new DeepCoolMystiqueSettings();
-                    store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
-                    if (m.Media.Find(i => i.Id == id) is { } uploaded)
-                    {
-                        return await ShowMystiquePictureAsync(store, worker, m, uploaded, budget.Token);
-                    }
+                    await SwapMystiqueUploadAsync(store, worker, swap!.Value, inPlace, startChoices, uploadBytes, totalBytes, budget.Token);
                 }
                 return Results.Json(new DeepCoolMystiqueMediaResponse { Id = id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
             }
