@@ -87,12 +87,12 @@ public sealed class HeadlessBrowser : IDisposable
     }
 
     /// <summary>Kills the tree, waits a bounded time for the process to leave (so a relaunch on the same profile is not blocked by its singleton lock), and reaps in the background.</summary>
-    public async Task AbandonAsync()
+    public async Task AbandonAsync(CancellationToken ct = default)
     {
         Kill();
         try
         {
-            await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromMilliseconds(AbandonWaitMs)).ConfigureAwait(false);
+            await _process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromMilliseconds(AbandonWaitMs), ct).ConfigureAwait(false);
         }
         catch
         {
@@ -211,7 +211,7 @@ public sealed class HeadlessBrowser : IDisposable
         }
         catch
         {
-            await browser.AbandonAsync().ConfigureAwait(false);
+            await browser.AbandonAsync(ct).ConfigureAwait(false);
             throw;
         }
     }

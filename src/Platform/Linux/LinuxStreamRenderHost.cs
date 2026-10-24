@@ -25,7 +25,6 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private const int GpuDemoteAfterFailures = 2;
     private const int MaxSessionRetryMs = 60_000;
     private const int HealthyAfterMs = 30_000;
-    private const int StderrSettleMs = 300;
     private const int GpuTierBudgetMs = 10_000;
     private const int GpuReprobeMs = 10 * 60_000;
     private const string Tag = "[panel-render]";
@@ -133,6 +132,12 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             if (!wanted.ContainsKey(id))
             {
                 _retryAfter.Remove(id);
+            }
+        }
+        foreach (var id in new List<string>(_faultStreak.Keys))
+        {
+            if (!wanted.ContainsKey(id) && !_sessions.ContainsKey(id))
+            {
                 _faultStreak.Remove(id);
             }
         }
@@ -271,8 +276,6 @@ public sealed class LinuxStreamRenderHost : BackgroundService
                 var renderer = await candidate.ProbeRendererAsync(budget.Token).ConfigureAwait(false);
                 var capturedOk = !GpuTiers.IsSoftwareRenderer(renderer)
                     && await CapturesCorrectlyAsync(candidate, budget.Token).ConfigureAwait(false);
-                // Lets the stderr reader catch up with the browser before its markers are read.
-                await Task.Delay(StderrSettleMs, budget.Token).ConfigureAwait(false);
                 // Chromium prints the GPU-process markers even when it recovers on another backend in the same
                 // browser, so a tier that logged one is rejected here rather than demoted after acceptance.
                 // Unhooked before acceptance so the budget can never kill a browser that was kept; a budget
