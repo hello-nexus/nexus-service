@@ -20,8 +20,8 @@ public sealed class PanelRenderSession : IDisposable
     private readonly SemaphoreSlim _frameReady = new(0, 1);
     private sealed record PendingFrame(string Data, int Ack);
     private PendingFrame? _latestFrame;
-    // Chromium sends the next screencast frame only once the previous ones are acked, so holding
-    // acks until the paced loop has taken a frame makes the capture rate follow Fps.
+    // Chromium sends the next screencast frame only once earlier ones are acked; with one frame in
+    // flight and the ack sent when the paced loop takes a frame, the capture rate follows Fps.
     private readonly ConcurrentQueue<int> _owedAcks = new();
     private readonly TaskCompletionSource _loaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -60,7 +60,9 @@ public sealed class PanelRenderSession : IDisposable
     public long FramesDelivered => Interlocked.Read(ref _framesDelivered);
     private long _framesDelivered;
 
-    public bool Faulted { get; private set; }
+    public bool Faulted => Volatile.Read(ref _faulted) != 0;
+    private int _faulted;
+    private void MarkFaulted() => Volatile.Write(ref _faulted, 1);
 
     public async Task StartAsync(CancellationToken ct)
     {
@@ -100,14 +102,28 @@ public sealed class PanelRenderSession : IDisposable
         catch (TimeoutException)
         {
         }
-        await Send("Page.startScreencast", w =>
+        void WriteScreencast(Utf8JsonWriter w, bool limitInFlight)
         {
             w.WriteString("format", "jpeg");
             w.WriteNumber("quality", JpegQuality);
             w.WriteNumber("maxWidth", PixelWidth);
             w.WriteNumber("maxHeight", PixelHeight);
             w.WriteNumber("everyNthFrame", 1);
-        }, ct).ConfigureAwait(false);
+            if (limitInFlight)
+            {
+                // Default is 3, which would capture and encode up to 3x the cap.
+                w.WriteNumber("maxFramesInFlight", 1);
+            }
+        }
+        try
+        {
+            await Send("Page.startScreencast", w => WriteScreencast(w, true), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not (OperationCanceledException or IOException or TimeoutException))
+        {
+            // A Chromium without the parameter may reject the call.
+            await Send("Page.startScreencast", w => WriteScreencast(w, false), ct).ConfigureAwait(false);
+        }
 
         _pump = Task.Run(() => PumpAsync(_cts.Token));
     }
@@ -132,7 +148,7 @@ public sealed class PanelRenderSession : IDisposable
                 && parameters.TryGetProperty("sessionId", out var detached)
                 && string.Equals(detached.GetString(), _cdpSession, StringComparison.Ordinal))
             {
-                Faulted = true;
+                MarkFaulted();
             }
             return;
         }
@@ -170,7 +186,7 @@ public sealed class PanelRenderSession : IDisposable
                 _loaded.TrySetResult();
                 break;
             case "Inspector.targetCrashed":
-                Faulted = true;
+                MarkFaulted();
                 break;
         }
     }
@@ -213,7 +229,7 @@ public sealed class PanelRenderSession : IDisposable
         }
         catch (Exception ex)
         {
-            Faulted = true;
+            MarkFaulted();
             ServiceLog.Warn($"[panel-render] session {SessionId} pump failed: {ex.GetType().Name}: {ex.Message}");
         }
     }

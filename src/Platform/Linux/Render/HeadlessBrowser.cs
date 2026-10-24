@@ -55,6 +55,37 @@ public sealed class HeadlessBrowser : IDisposable
         "GPU process exited unexpectedly", "GPU process isn't usable", "Exiting GPU process",
     };
 
+    internal static bool IsGpuFailureLine(string? line)
+    {
+        if (string.IsNullOrEmpty(line))
+        {
+            return false;
+        }
+        foreach (var marker in GpuFailureMarkers)
+        {
+            if (line.Contains(marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Forgets markers seen so far; a tier accepted by the probe is judged only on what follows.</summary>
+    public void ClearGpuFailure() => Volatile.Write(ref _gpuProcessFailed, 0);
+
+    /// <summary>Kills the browser tree without waiting; reap with <see cref="Dispose"/> off the caller's path.</summary>
+    public void Kill()
+    {
+        try
+        {
+            _process.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+        }
+    }
+
     private const string WebGlRendererProbe =
         "(() => { const c = document.createElement('canvas');"
         + " const gl = c.getContext('webgl2') || c.getContext('webgl'); if (!gl) return 'none';"
@@ -164,7 +195,8 @@ public sealed class HeadlessBrowser : IDisposable
         }
         catch
         {
-            browser.Dispose();
+            browser.Kill();
+            _ = Task.Run(browser.Dispose);
             throw;
         }
     }
@@ -177,12 +209,9 @@ public sealed class HeadlessBrowser : IDisposable
             string? line;
             while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) is not null)
             {
-                foreach (var marker in GpuFailureMarkers)
+                if (IsGpuFailureLine(line))
                 {
-                    if (line.Contains(marker, StringComparison.Ordinal))
-                    {
-                        Volatile.Write(ref browser._gpuProcessFailed, 1);
-                    }
+                    Volatile.Write(ref browser._gpuProcessFailed, 1);
                 }
                 if (logged < StderrLinesLogged && !string.IsNullOrWhiteSpace(line))
                 {
