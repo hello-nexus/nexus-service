@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Fonts;
 
@@ -8,9 +9,34 @@ namespace Nexus.Service.Fonts;
 /// </summary>
 public static class SystemFontCatalog
 {
-    private static readonly Lazy<IReadOnlyList<string>> Cache = new(Enumerate);
+    private static readonly TimeSpan SuccessTtl = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(30);
+    private static readonly object Gate = new();
+    private static IReadOnlyList<string> _cached = [];
+    private static DateTime _validUntilUtc = DateTime.MinValue;
 
-    public static IReadOnlyList<string> Families => Cache.Value;
+    /// <summary>
+    /// A non-empty result is cached for a while (the console user's fonts can appear later); an
+    /// empty or failed one is retried after a short backoff so a request storm cannot re-enumerate.
+    /// </summary>
+    public static IReadOnlyList<string> Families
+    {
+        get
+        {
+            lock (Gate)
+            {
+                var now = DateTime.UtcNow;
+                if (now < _validUntilUtc)
+                {
+                    return _cached;
+                }
+                var result = Enumerate();
+                _cached = result;
+                _validUntilUtc = now + (result.Count > 0 ? SuccessTtl : FailureBackoff);
+                return result;
+            }
+        }
+    }
 
     private static IReadOnlyList<string> Enumerate()
     {
@@ -26,8 +52,9 @@ public static class SystemFontCatalog
             return [];
 #endif
         }
-        catch
+        catch (Exception ex)
         {
+            ServiceLog.Warn($"[system-fonts] enumeration failed: {ex.Message}");
             return [];
         }
     }
@@ -76,8 +103,7 @@ public static class SystemFontCatalog
         var psi = new ProcessStartInfo("fc-list", ": family")
         {
             RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
+                        UseShellExecute = false,
         };
         using var proc = Process.Start(psi);
         if (proc is null)

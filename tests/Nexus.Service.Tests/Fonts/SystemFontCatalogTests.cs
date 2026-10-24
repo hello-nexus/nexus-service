@@ -38,6 +38,21 @@ public class SystemFontCatalogTests
         Assert.Equal(["Ok"], result);
     }
 
+    [Theory]
+    [InlineData("A'B")]
+    [InlineData("A\"B")]
+    [InlineData("A\\B")]
+    [InlineData("A;B")]
+    [InlineData("A{B")]
+    [InlineData("A}B")]
+    [InlineData("A<B")]
+    [InlineData("A>B")]
+    public void CssSignificantCharactersAreRejectedEverywhere(string name)
+    {
+        Assert.Empty(SystemFontCatalog.Clean([name], null));
+        Assert.False(PanelFontValue.TryNormalize("system:" + name, out _));
+    }
+
     [Fact]
     public void ParseFcList_TakesTheFirstAliasPerLine()
     {
@@ -51,6 +66,9 @@ public class SystemFontCatalogTests
     public void Families_NeverThrowsAndIsSorted()
     {
         var families = SystemFontCatalog.Families;
+#if MACOS || WINDOWS
+        Assert.NotEmpty(families);
+#endif
 
         Assert.Equal(families.OrderBy(f => f, StringComparer.OrdinalIgnoreCase), families);
     }

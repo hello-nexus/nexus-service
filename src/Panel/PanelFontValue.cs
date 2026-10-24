@@ -35,6 +35,9 @@ public static class PanelFontValue
         return true;
     }
 
+    // Defense in depth: the family ends up in a CSS font-family value.
+    private const string CssSignificant = "'\"\\;{}<>";
+
     public static bool IsValidFamily(string family)
     {
         if (family.Length == 0 || family.Length > MaxFamilyLength)
@@ -43,7 +46,7 @@ public static class PanelFontValue
         }
         foreach (var c in family)
         {
-            if (char.IsControl(c))
+            if (char.IsControl(c) || CssSignificant.Contains(c))
             {
                 return false;
             }

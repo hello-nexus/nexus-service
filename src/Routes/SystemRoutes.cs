@@ -42,11 +42,11 @@ public static class SystemRoutes
         app.MapGet("/system/specs", (SystemSpecsCollector collector, HttpContext ctx) =>
             collector.GetAsync(ctx.RequestAborted)).AllowPanel();
 
-        // Installed font families of this PC for the panel font picker. Desktop-token only.
+        // Installed font families of this PC for the panel font picker. Family names only, so panel sessions may read it.
         // Empty on failure or an unsupported OS.
         app.MapGet("/system/fonts", () => Results.Json(
             new SystemFontsResponse { Families = Nexus.Service.Fonts.SystemFontCatalog.Families },
-            AppJsonContext.Default.SystemFontsResponse));
+            AppJsonContext.Default.SystemFontsResponse)).AllowPanel();
 
         // Detected coolers, fans and controllers from the hubs' cached state, for the Build page's
         // My Systems list. Desktop-token only; no device I/O.
