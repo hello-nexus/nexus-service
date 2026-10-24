@@ -95,16 +95,26 @@ public sealed class MystiqueWorker : BackgroundService
     /// <summary>
     /// Streams the packages in one turn of the worker, the source command once after the last; returns how many
     /// were streamed cleanly, as <see cref="MystiqueSession.Upload(IReadOnlyList{MystiqueMediaPackage}, Func{MystiqueSourceAfter?}?, Action{long}?)"/>,
-    /// or -1 when the turn was never taken. Progress counts <paramref name="sentBefore"/> bytes as already sent out of
-    /// <paramref name="totalBytes"/>, which defaults to the packages' own.
+    /// 0 when a started turn ended without a count, or -1 when the turn was never taken. <paramref name="failed"/> runs
+    /// in the turn when not every package streamed, before the session reopens. Progress counts
+    /// <paramref name="sentBefore"/> bytes as already sent out of <paramref name="totalBytes"/>, which defaults to the packages' own.
     /// </summary>
     public async Task<int> UploadAsync(
-        IReadOnlyList<MystiqueMediaPackage> packages, Func<MystiqueSourceAfter?> source, CancellationToken ct, long sentBefore = 0, long totalBytes = 0)
+        IReadOnlyList<MystiqueMediaPackage> packages, Func<MystiqueSourceAfter?> source, CancellationToken ct,
+        long sentBefore = 0, long totalBytes = 0, Action? failed = null)
     {
         long total = totalBytes > 0 ? totalBytes : sentBefore + Bytes(packages);
         int streamed = -1;
-        await RunMediaAsync(s => (streamed = s.Upload(packages, source, sent => ReportProgress(ProgressSending, sentBefore + sent, total))) == packages.Count, ct)
-            .ConfigureAwait(false);
+        await RunMediaAsync(s =>
+        {
+            streamed = 0;
+            streamed = s.Upload(packages, source, sent => ReportProgress(ProgressSending, sentBefore + sent, total));
+            if (streamed != packages.Count)
+            {
+                failed?.Invoke();
+            }
+            return streamed == packages.Count;
+        }, ct).ConfigureAwait(false);
         return streamed;
     }
 
@@ -124,6 +134,18 @@ public sealed class MystiqueWorker : BackgroundService
 
     /// <summary>Sends the source command between ticks; false when no screen is connected or it did not answer.</summary>
     public Task<bool> SendSourceAsync(string source, CancellationToken ct) => RunMediaAsync(s => s.SendSource(source), ct);
+
+    /// <summary>Runs <paramref name="source"/> between ticks and sends what it names in the same turn; false when the turn was not taken.</summary>
+    public async Task<bool> SendSourceAsync(Func<MystiqueSourceAfter?> source, CancellationToken ct)
+    {
+        bool taken = false;
+        await RunMediaAsync(s =>
+        {
+            taken = true;
+            return s.SendSourceAfter(source());
+        }, ct).ConfigureAwait(false);
+        return taken;
+    }
 
     public const string ProgressConverting = "converting";
     public const string ProgressSending = "sending";

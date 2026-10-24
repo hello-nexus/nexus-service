@@ -318,9 +318,10 @@ public static partial class DevicesRoutes
 
     /// <summary>
     /// Streams a planned upload swap and the source command the upload held back after it, unless the user chose a
-    /// source since the upload started. When the swap does not finish, the held source is recorded and sent on its own.
+    /// source since the upload started. A swap that fails records the held source for the reopened session to send; one
+    /// never taken records and sends it in a turn of its own, or only records it when no turn is taken.
     /// </summary>
-    private static async Task SwapMystiqueUploadAsync(
+    internal static async Task SwapMystiqueUploadAsync(
         IConfigStore store, MystiqueWorker worker, (List<MystiqueMediaPackage> Packages, List<(string ItemId, string ScreenId)> Sent) swap,
         bool inPlace, int startChoices, long sentBefore, long totalBytes, CancellationToken ct)
     {
@@ -343,9 +344,22 @@ public static partial class DevicesRoutes
             held = false;
             return after;
         }
+        // Records the held source; null when the user chose one since the upload started, which then stands.
+        MystiqueSourceAfter? HeldSource()
+        {
+            MystiqueSourceAfter? after = null;
+            store.Update(s =>
+            {
+                bool chosen = MystiqueSourceChoices != startChoices;
+                after = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif: false, inPlace, chosen);
+                after = chosen ? null : after;
+            });
+            held = false;
+            return after;
+        }
         if (MystiqueSourceChoices == startChoices)
         {
-            int streamed = await worker.UploadAsync(swap.Packages, SourceAfterSwap, ct, sentBefore, totalBytes);
+            int streamed = await worker.UploadAsync(swap.Packages, SourceAfterSwap, ct, sentBefore, totalBytes, () => HeldSource());
             if (streamed >= 0)
             {
                 store.Update(s => RecordMystiquePictureStreams(s.Devices.DeepCoolMystique, swap.Sent, streamed));
@@ -353,17 +367,10 @@ public static partial class DevicesRoutes
         }
         if (held)
         {
-            MystiqueSourceAfter? after = null;
-            bool chosen = false;
-            store.Update(s =>
+            using var late = new CancellationTokenSource(MystiqueHeldSourceBudget);
+            if (!await worker.SendSourceAsync(HeldSource, late.Token))
             {
-                chosen = MystiqueSourceChoices != startChoices;
-                after = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif: false, inPlace, chosen);
-            });
-            if (!chosen && after is { Send: true } send)
-            {
-                using var late = new CancellationTokenSource(MystiqueHeldSourceBudget);
-                await worker.SendSourceAsync(send.Source, late.Token);
+                HeldSource();
             }
         }
         worker.RequestApply();
@@ -424,11 +431,15 @@ public static partial class DevicesRoutes
             return shown;
         }
         worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
-        int streamed = Math.Max(0, await worker.UploadAsync(packages, () =>
+        int streamed = await worker.UploadAsync(packages, () =>
         {
             Playing();
             return new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceImages, true);
-        }, ct));
+        }, ct);
+        if (streamed < 0)
+        {
+            return MystiqueMediaFailure("The screen did not take the picture");
+        }
         store.Update(s => RecordMystiquePictureStreams(s.Devices.DeepCoolMystique, sent, streamed));
         worker.RequestApply();
         return streamed == packages.Count ? shown : MystiqueMediaFailure("The screen did not take the picture");
@@ -597,13 +608,14 @@ public static partial class DevicesRoutes
                     return after;
                 }
                 worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
-                if (await worker.UploadAsync(new[] { package }, SourceAfterStream, budget.Token, 0, totalBytes) != 1)
+                int uploaded = await worker.UploadAsync(new[] { package }, SourceAfterStream, budget.Token, 0, totalBytes);
+                if (uploaded != 1)
                 {
-                    if (isGif)
+                    if (uploaded == 0 && isGif)
                     {
                         store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, screenId, ""));
                     }
-                    else
+                    else if (uploaded == 0)
                     {
                         FreeFailedMystiqueId(store, kind, screenId);
                     }
@@ -696,9 +708,13 @@ public static partial class DevicesRoutes
                     return after;
                 }
                 worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
-                if (!await worker.UploadAsync(package, SourceAfterStream, budget.Token))
+                int streamed = await worker.UploadAsync(new[] { package }, SourceAfterStream, budget.Token);
+                if (streamed != 1)
                 {
-                    store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, slot, ""));
+                    if (streamed == 0)
+                    {
+                        store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, slot, ""));
+                    }
                     return MystiqueMediaFailure("The screen did not take the GIF");
                 }
                 store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, slot, id));
