@@ -72,7 +72,11 @@ public sealed class DiagnosticsToolsTests : IDisposable
         new UpdateDownloader(new NullHttpClientFactory()),
         store,
         TestFirmwareFlasher.Create(),
-        new MultiplexHub());
+        new MultiplexHub()
+#if WINDOWS
+        , new Nexus.Service.Helper.HelperRegistry()
+#endif
+        );
 
     private static DeviceManager BuildEmptyDeviceManager(IConfigStore store) => new(
         Array.Empty<IDeviceHandler>(),
@@ -81,7 +85,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
         new DeviceControlGate(store));
 
     private static DiagnosticsHealthModel BuildHealthModel(IConfigStore store) => new(
-        new SmartHealthMonitor(),
+        new UnsupportedSmartHealthSource(),
         new CoolingStallDetector(),
         new GpuHealthMonitor(),
         new EventLogMonitor(),
@@ -100,7 +104,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
         return new IMcpTool[]
         {
             new GetHealthTool(BuildHealthModel(store), new FeatureGates(store)),
-            new GetStorageHealthTool(new SmartHealthMonitor()),
+            new GetStorageHealthTool(new UnsupportedSmartHealthSource()),
             new GetGpuHealthTool(new GpuHealthMonitor(), new EventLogMonitor()),
             new GetSystemSpecsTool(new SystemSpecsCollector(sensors)),
             new GetConflictsTool(new ConflictWatcher(new MultiplexHub())),
@@ -111,7 +115,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
 
     // ── get_health ──────────────────────────────────────────────────────────
 
-    [Fact]
+    [NonWindowsFact]
     public async Task GetHealth_HappyPath_ReturnsOverallAndComponents()
     {
         var store = NewStore();
@@ -132,7 +136,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
     [Fact]
     public async Task GetStorageHealth_HappyPath_ReturnsShape()
     {
-        var tool = new GetStorageHealthTool(new SmartHealthMonitor());
+        var tool = new GetStorageHealthTool(new UnsupportedSmartHealthSource());
 
         var result = await tool.ExecuteAsync(null, CancellationToken.None);
 
@@ -148,7 +152,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
     {
         var store = new InMemoryConfigStore();
         store.Update(s => s.Features.Diagnostics = false);
-        var tool = new GetStorageHealthTool(new SmartHealthMonitor(), new Nexus.Service.Lifecycle.FeatureGates(store));
+        var tool = new GetStorageHealthTool(new UnsupportedSmartHealthSource(), new Nexus.Service.Lifecycle.FeatureGates(store));
 
         var result = await tool.ExecuteAsync(
             JsonSerializer.SerializeToElement(new { refresh = true }), CancellationToken.None);
@@ -160,7 +164,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
     [Fact]
     public async Task GetStorageHealth_UnknownDrive_IsErrorListingKnownDrives()
     {
-        var tool = new GetStorageHealthTool(new SmartHealthMonitor());
+        var tool = new GetStorageHealthTool(new UnsupportedSmartHealthSource());
 
         var result = await tool.ExecuteAsync(
             JsonSerializer.SerializeToElement(new { drive = "does-not-exist" }), CancellationToken.None);
@@ -172,7 +176,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
 
     // ── get_gpu_health ──────────────────────────────────────────────────────
 
-    [Fact]
+    [NonWindowsFact]
     public async Task GetGpuHealth_HappyPath_ReturnsShape()
     {
         var tool = new GetGpuHealthTool(new GpuHealthMonitor(), new EventLogMonitor());
@@ -238,7 +242,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
 
     // ── get_memory_info ─────────────────────────────────────────────────────
 
-    [Fact]
+    [NonWindowsFact]
     public async Task GetMemoryInfo_HappyPath_ReturnsShape()
     {
         var tool = new GetMemoryInfoTool(new MemoryDiagnosticOrchestrator());

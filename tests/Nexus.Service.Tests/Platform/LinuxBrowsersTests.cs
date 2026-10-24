@@ -25,7 +25,7 @@ public class LinuxBrowsersTests
         Assert.Equal("/snap/bin/brave", candidates[1]);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void Candidates_SweepsEveryNameInEveryDirectory()
     {
         var candidates = LinuxBrowsers.Candidates(Curated, Dirs, Names);
@@ -66,7 +66,7 @@ public class LinuxBrowsersTests
     }
 
     // Bazzite ships Firefox as a system flatpak, Ubuntu as a snap, Debian as firefox-esr.
-    [Fact]
+    [NonWindowsFact]
     public void FirefoxFamily_ProbesFlatpakPackageAndSnap()
     {
         var family = LinuxBrowsers.FirefoxFamily();

@@ -3019,6 +3019,8 @@ public partial class Slv3HubTests
         public bool TxWedged { get; set; }
         // A TX that takes writes and never replies; the RX's reset restarts it too.
         public bool TxMute { get; set; }
+        /// <summary>A hung TX the RX reset does not revive.</summary>
+        public bool TxIgnoresReset { get; set; }
         // Every TX write fails at once, with no timeout.
         public bool TxFailFast { get; set; }
     }
@@ -3177,8 +3179,11 @@ public partial class Slv3HubTests
             }
             if (copy.Length >= 1 && copy[0] == Slv3Protocol.UsbResetAnother)
             {
-                _net.TxWedged = false;
-                _net.TxMute = false;
+                if (!_net.TxIgnoresReset)
+                {
+                    _net.TxWedged = false;
+                    _net.TxMute = false;
+                }
             }
             return true;
         }

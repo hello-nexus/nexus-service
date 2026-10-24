@@ -40,7 +40,7 @@ public sealed class LinuxKrakenLcdTransportFactoryTests : IDisposable
         }
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void Candidates_OnlyTheSerialMatchWhenOneExists()
     {
         AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
@@ -54,7 +54,7 @@ public sealed class LinuxKrakenLcdTransportFactoryTests : IDisposable
         Assert.Equal(new[] { ("/dev/bus/usb/001/006", 0) }, nodes);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void Candidates_FallsBackToEveryKrakenWhenNoSerialMatches()
     {
         AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
@@ -64,7 +64,7 @@ public sealed class LinuxKrakenLcdTransportFactoryTests : IDisposable
         Assert.Single(new LinuxKrakenLcdTransportFactory(_root).Candidates(null));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void Candidates_UsesTheInterfaceThatOwnsEndpoint02()
     {
         AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
@@ -76,7 +76,7 @@ public sealed class LinuxKrakenLcdTransportFactoryTests : IDisposable
         Assert.Equal(1, target.Interface);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void Candidates_SkipsDeviceWithoutEndpoint02()
     {
         AddDevice("1-2", "1e71", "3012", 1, 5, "AAA");
@@ -85,7 +85,7 @@ public sealed class LinuxKrakenLcdTransportFactoryTests : IDisposable
         Assert.Empty(new LinuxKrakenLcdTransportFactory(_root).Candidates("AAA"));
     }
 
-    [Theory]
+    [NonWindowsTheory]
     [InlineData("03", false)]
     [InlineData("ff", true)]
     public void Candidates_RefusesHidClassInterface(string cls, bool hidChild)
@@ -96,7 +96,7 @@ public sealed class LinuxKrakenLcdTransportFactoryTests : IDisposable
         Assert.Empty(new LinuxKrakenLcdTransportFactory(_root).Candidates("AAA"));
     }
 
-    [Theory]
+    [NonWindowsTheory]
     [InlineData("03", true)]
     [InlineData("ff", false)]
     public void Candidates_SerialMatchWithRefusedInterfaceDoesNotFallBack(string cls, bool endpoint02)
