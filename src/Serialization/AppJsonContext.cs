@@ -461,6 +461,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SystemReportResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudLibraryResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudImportConflictResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudImportResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudImportRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudDeviceDto))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Cloud.CloudDeviceDto>))]

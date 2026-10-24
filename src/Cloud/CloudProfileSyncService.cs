@@ -189,7 +189,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             Name = conflict.Name,
             BaseRevision = conflict.CloudRevision,
             Payload = localExport,
-            AppData = PcSetupBackup.Attach(appData, _pcSetup),
+            AppData = PcSetupBackup.Attach(appData, _pcSetup, out var pushedSetup),
         };
         var result = await _accounts.WithAuthAsync(accountId, token => _api.PutProfileAsync(token, OwnInstallId(), profileId, request, ct), ct).ConfigureAwait(false);
 
@@ -204,7 +204,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             return CloudActionResult.FromError(result);
         }
 
-        SetSyncRecord(accountId, profileId, revision, hash);
+        SetSyncRecord(accountId, profileId, revision, hash, pushedSetup);
         _conflicts.TryRemove(profileId, out _);
         _dirtySince.TryRemove(profileId, out _);
         return CloudActionResult.Ok();
@@ -398,6 +398,15 @@ public sealed class CloudProfileSyncService : BackgroundService
                 syncedRevision: syncRecord?.Revision ?? 0,
                 syncedHash: syncRecord?.LastSyncedHash);
 
+            // The PC setup is left out of the profile hash (the api's copy would never compare equal), so a
+            // setup-only change shows up here instead: a manual Back up uploads it, a background pass never does.
+            if (action == CloudSyncAction.None && manual && localEntry is not null && localExport is not null
+                && cloudRow is not null && syncRecord is not null
+                && PcSetupBackup.Digest(_pcSetup) is { } setupDigest && setupDigest != syncRecord.LastPushedSetupHash)
+            {
+                action = CloudSyncAction.Push;
+            }
+
             switch (action)
             {
                 case CloudSyncAction.None:
@@ -479,7 +488,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             Name = name,
             BaseRevision = baseRevision,
             Payload = payload,
-            AppData = PcSetupBackup.Attach(appData, _pcSetup),
+            AppData = PcSetupBackup.Attach(appData, _pcSetup, out var pushedSetup),
         };
         var result = await _accounts.WithAuthAsync(accountId, token => _api.PutProfileAsync(token, OwnInstallId(), profileId, request, ct), ct).ConfigureAwait(false);
 
@@ -502,7 +511,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             return false;
         }
 
-        SetSyncRecord(accountId, profileId, revision, localHash);
+        SetSyncRecord(accountId, profileId, revision, localHash, pushedSetup);
         return true;
     }
 
@@ -612,7 +621,7 @@ public sealed class CloudProfileSyncService : BackgroundService
         });
     }
 
-    private void SetSyncRecord(string accountId, string profileId, int revision, string hash)
+    private void SetSyncRecord(string accountId, string profileId, int revision, string hash, string? pushedSetupHash = null)
     {
         _store.Update(s =>
         {
@@ -626,6 +635,8 @@ public sealed class CloudProfileSyncService : BackgroundService
                 Revision = revision,
                 LastSyncedAt = DateTimeOffset.UtcNow.ToString("o"),
                 LastSyncedHash = hash,
+                // A pull does not touch the record, so what was last pushed stays.
+                LastPushedSetupHash = pushedSetupHash ?? (rec.ProfileSync.TryGetValue(profileId, out var previous) ? previous.LastPushedSetupHash : ""),
             };
         });
     }

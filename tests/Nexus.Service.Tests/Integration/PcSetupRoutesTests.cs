@@ -352,3 +352,96 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         }
     }
 }
+
+public sealed class PcSetupProfileFileTests : IClassFixture<LightingSceneAppFactory>
+{
+    private readonly LightingSceneAppFactory _factory;
+
+    public PcSetupProfileFileTests(LightingSceneAppFactory factory)
+    {
+        _factory = factory;
+        _factory.ResetSettings();
+        Scene.Setup.Reset();
+    }
+
+    private LightingSceneStore Scene => _factory.Services.GetRequiredService<LightingSceneStore>();
+
+    private HttpClient Desktop()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", _factory.Services.GetRequiredService<TokenService>().Token);
+        return client;
+    }
+
+    private static PcSetup Setup(string id)
+    {
+        var s = new PcSetup();
+        s.Items.Add(new PcSetupItem { Id = id, Kind = "keyboard", Custom = new PcSetupCustom { Name = "Keys" } });
+        return s;
+    }
+
+    private async Task<(string Json, string ProfileId)> Export()
+    {
+        var client = Desktop();
+        var created = await client.PostAsync("/profiles/create", new StringContent("""{"name":"SetupFile"}""", Encoding.UTF8, "application/json"));
+        if (created.StatusCode == HttpStatusCode.Conflict)
+        {
+            created = await client.PostAsync("/profiles/create", new StringContent("""{"name":"SetupFile2"}""", Encoding.UTF8, "application/json"));
+        }
+        using var made = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        var id = made.RootElement.GetProperty("profile").GetProperty("id").GetString()!;
+        return (await client.GetStringAsync($"/profiles/{id}/export"), id);
+    }
+
+    private static string Rename(string json, string name)
+    {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        node["name"] = name;
+        return node.ToJsonString();
+    }
+
+    private async Task<JsonElement> Import(string json, string name)
+    {
+        var res = await Desktop().PostAsync("/profiles/import", new StringContent(json, Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        return doc.RootElement.Clone();
+    }
+
+    [Fact]
+    public async Task An_exported_file_carries_the_record_and_this_machine_and_imports_back_here()
+    {
+        Scene.Setup.TrySave(0, Setup("kb"), out _);
+        var (json, _) = await Export();
+        using var doc = JsonDocument.Parse(json);
+        Assert.False(string.IsNullOrEmpty(doc.RootElement.GetProperty("installId").GetString()));
+        Assert.Equal("kb", doc.RootElement.GetProperty("appData").GetProperty("nexus.pc-setup").GetProperty("setup").GetProperty("items")[0].GetProperty("id").GetString());
+
+        Scene.Setup.TrySave(1, Setup("changed"), out _);
+        var res = await Import(Rename(json, "Copy"), "copy");
+
+        Assert.Equal("applied", res.GetProperty("pcSetup").GetString());
+        Assert.Equal(["kb"], Scene.Setup.Load().Setup.Items.Select(i => i.Id));
+    }
+
+    [Fact]
+    public async Task A_file_from_another_machine_skips_the_record_and_one_naming_no_machine_applies_and_reports_it()
+    {
+        Scene.Setup.TrySave(0, Setup("mine"), out _);
+        var (json, _) = await Export();
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        node["name"] = "Other";
+        node["installId"] = "some-other-install";
+        var other = await Import(node.ToJsonString(), "other");
+        Assert.Equal("skipped_other_machine", other.GetProperty("pcSetup").GetString());
+        Assert.Equal(["mine"], Scene.Setup.Load().Setup.Items.Select(i => i.Id));
+
+        node["name"] = "Anon";
+        node.Remove("installId");
+        node["appData"]!["nexus.pc-setup"]!["setup"]!["items"]![0]!["id"] = "anon";
+        var anon = await Import(node.ToJsonString(), "anon");
+        Assert.Equal("applied_unknown_machine", anon.GetProperty("pcSetup").GetString());
+        Assert.Equal(["anon"], Scene.Setup.Load().Setup.Items.Select(i => i.Id));
+    }
+}

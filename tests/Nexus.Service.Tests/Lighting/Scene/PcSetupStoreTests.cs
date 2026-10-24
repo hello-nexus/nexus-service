@@ -391,6 +391,28 @@ public sealed class PcSetupStoreTests : IDisposable
     }
 
     [Fact]
+    public void Detected_key_accepts_free_text_with_spaces_and_hash_up_to_the_cap()
+    {
+        foreach (var key in new[] { "LG ULTRAGEAR #2 (HDMI)", "DELL U2723QE / 27\" 4K", "Ж монитор", new string('k', PcSetupValidation.MaxKey) })
+        {
+            var setup = Valid();
+            setup.Items[0].Detected = new PcSetupDetected { Key = key, Hidden = true };
+            Assert.Null(PcSetupValidation.Validate(setup));
+        }
+
+        var tooLong = Valid();
+        tooLong.Items[0].Detected = new PcSetupDetected { Key = new string('k', PcSetupValidation.MaxKey + 1) };
+        Assert.Equal("string_too_long", PcSetupValidation.Validate(tooLong)!.Code);
+    }
+
+    [Fact]
+    public void Ascii_safe_ids_with_a_hash_are_accepted_while_a_raw_name_as_an_id_is_not()
+    {
+        Assert.Null(PcSetupValidation.Validate(Setup("det-3fa9c1d2")));
+        Assert.Equal("invalid_item", PcSetupValidation.Validate(Setup("det:LG #2"))!.Code);
+    }
+
+    [Fact]
     public void Custom_sizes_and_prices_must_be_finite_and_positive()
     {
         var setup = Valid();

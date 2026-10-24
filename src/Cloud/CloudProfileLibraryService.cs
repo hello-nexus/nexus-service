@@ -111,7 +111,7 @@ public sealed class CloudProfileLibraryService
                 Revision = r.Revision,
                 SizeBytes = r.SizeBytes,
                 UpdatedAt = r.UpdatedAt,
-                AppIds = r.AppIds ?? new List<string>(),
+                AppIds = (r.AppIds ?? new List<string>()).Where(id => id != PcSetupBackup.AppId).ToList(),
             })
             .ToList();
 
@@ -145,6 +145,7 @@ public sealed class CloudProfileLibraryService
         // The PC setup rides in the app-data bundle, under the same toggle; it is machine scope, so it is applied once the profile has landed.
         appData = PcSetupBackup.Detach(appData, out var restoredSetup);
         LastImportReplacedActive = false;
+        LastImportPcSetup = null;
 
         // Restoring this machine's own backup keeps the original profileId and
         // name, so the row re-links to its local profile instead of orphaning
@@ -155,7 +156,7 @@ public sealed class CloudProfileLibraryService
             {
                 var restored = _profiles.ImportProfileWithId(request.ProfileId, sourceName, settings, absorbPanelLooks: true);
                 _appData.ReplaceApps(restored.Id, appData);
-                RestoreSetup(restoredSetup);
+                RestoreSetup(restoredSetup, ownMachine: true);
                 LastImportReplacedActive = restored.Id == _profiles.ActiveProfileId;
                 return CloudActionResult.Ok();
             }
@@ -172,7 +173,7 @@ public sealed class CloudProfileLibraryService
         {
             var entry = _profiles.ImportProfile(name, settings, request.ReplaceExisting);
             _appData.ReplaceApps(entry.Id, appData);
-            RestoreSetup(restoredSetup);
+            RestoreSetup(restoredSetup, ownMachine: false);
             LastImportReplacedActive = entry.Id == _profiles.ActiveProfileId;
             return CloudActionResult.Ok();
         }
@@ -189,11 +190,24 @@ public sealed class CloudProfileLibraryService
         }
     }
 
-    private void RestoreSetup(PcSetup? setup)
+    /// <summary>What the last import did with a PC setup in the backup: "applied", "skipped_other_machine", or null when it carried none.</summary>
+    public string? LastImportPcSetup { get; private set; }
+
+    private void RestoreSetup(PcSetup? setup, bool ownMachine)
     {
-        if (setup is not null)
+        if (setup is null)
+        {
+            return;
+        }
+        // Machine scope: only a backup this machine made may replace this machine's setup.
+        if (ownMachine)
         {
             _pcSetup?.Replace(setup);
+            LastImportPcSetup = "applied";
+        }
+        else
+        {
+            LastImportPcSetup = "skipped_other_machine";
         }
     }
 

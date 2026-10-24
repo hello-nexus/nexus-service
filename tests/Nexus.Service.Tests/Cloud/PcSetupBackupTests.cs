@@ -113,9 +113,10 @@ public sealed class PcSetupBackupTests : IDisposable
         var filler = JsonSerializer.SerializeToElement(new string('x', AppDataStore.MaxBundleBytes - 100));
         var appData = new Dictionary<string, Dictionary<string, JsonElement>> { ["com.test.big"] = new() { ["save"] = filler } };
 
-        var result = PcSetupBackup.Attach(appData, _scene.Setup);
+        var result = PcSetupBackup.Attach(appData, _scene.Setup, out var digest);
 
         Assert.DoesNotContain(PcSetupBackup.AppId, result.Keys);
+        Assert.Null(digest);
     }
 
     [Fact]
@@ -139,6 +140,7 @@ public sealed class PcSetupBackupTests : IDisposable
         var result = await _library.ImportAsync(new CloudImportRequest { InstallId = own, ProfileId = profileId, IncludeAppData = true }, CancellationToken.None);
 
         Assert.True(result.Success);
+        Assert.Equal("applied", _library.LastImportPcSetup);
         var file = _scene.Setup.Load();
         Assert.Equal(["restored"], file.Setup.Items.Select(i => i.Id));
         Assert.Equal(1, file.Rev);
@@ -167,6 +169,97 @@ public sealed class PcSetupBackupTests : IDisposable
         await _library.ImportAsync(new CloudImportRequest { InstallId = own, ProfileId = profileId, IncludeAppData = false }, CancellationToken.None);
 
         Assert.Equal(["mine"], _scene.Setup.Load().Setup.Items.Select(i => i.Id));
+    }
+
+    private string SeedSyncedProfile(int cloudRevision = 1)
+    {
+        var profileId = _profiles.ActiveProfileId;
+        var hash = CloudProfileSyncService.HashPayload(_profiles.ExportProfileForSync(profileId)!);
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[profileId] = new CloudProfileSyncRecord { Revision = cloudRevision, LastSyncedHash = hash });
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
+        {
+            new() { InstallId = _accounts.ResolveStableInstallId(), ProfileId = profileId, Name = "Default", Revision = cloudRevision, UpdatedAt = "t", UpdatedByInstallId = "x" },
+        });
+        return profileId;
+    }
+
+    [Fact]
+    public async Task A_setup_only_change_is_uploaded_by_the_next_manual_back_up_and_then_not_again()
+    {
+        var profileId = SeedSyncedProfile();
+        _scene.Setup.TrySave(0, Setup("kb"), out _);
+        var puts = 0;
+        CloudPutProfileRequest? sent = null;
+        _api.OnPutProfile = (_, _, _, body) =>
+        {
+            puts++;
+            sent = body;
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 2 });
+        };
+
+        await _sync.TriggerNowAsync(profileId);
+
+        Assert.Equal(1, puts);
+        Assert.Equal(1, sent!.BaseRevision);
+        Assert.Contains(PcSetupBackup.AppId, sent.AppData!.Keys);
+        var record = _store.Load().Auth!.CloudAccounts[0].ProfileSync[profileId];
+        Assert.Equal(PcSetupBackup.Digest(_scene.Setup), record.LastPushedSetupHash);
+
+        _api.OnListProfiles = _ => CloudApiResult<List<CloudProfileSummaryDto>>.Ok(new List<CloudProfileSummaryDto>
+        {
+            new() { InstallId = _accounts.ResolveStableInstallId(), ProfileId = profileId, Name = "Default", Revision = 2, UpdatedAt = "t", UpdatedByInstallId = "x" },
+        });
+        await _sync.TriggerNowAsync(profileId);
+        Assert.Equal(1, puts);
+
+        // Moving an item changes the digest, so the next manual Back up uploads again.
+        var moved = Setup("kb");
+        moved.Items[0].Place!.X = 99f;
+        _scene.Setup.TrySave(1, moved, out _);
+        await _sync.TriggerNowAsync(profileId);
+        Assert.Equal(2, puts);
+    }
+
+    [Fact]
+    public async Task A_background_pass_never_uploads_a_setup_only_change()
+    {
+        var profileId = SeedSyncedProfile();
+        _scene.Setup.TrySave(0, Setup("kb"), out _);
+        var puts = 0;
+        _api.OnPutProfile = (_, _, _, _) =>
+        {
+            puts++;
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 2 });
+        };
+
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None);
+
+        Assert.Equal(0, puts);
+        Assert.Equal("", _store.Load().Auth!.CloudAccounts[0].ProfileSync[profileId].LastPushedSetupHash);
+    }
+
+    [Fact]
+    public async Task A_restore_of_another_machines_backup_skips_the_record_and_says_so()
+    {
+        _scene.Setup.TrySave(0, Setup("mine"), out _);
+        _api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto>());
+        _api.OnGetProfile = (_, _, _) => CloudApiResult<CloudProfileDto>.Ok(new CloudProfileDto
+        {
+            InstallId = "install-other",
+            ProfileId = "p-remote",
+            Name = "Theirs",
+            Revision = 2,
+            UpdatedAt = "t",
+            Payload = new ProfileExport { Name = "Theirs", Settings = new NexusSettings() },
+            AppData = BundleWith(Setup("theirs")),
+        });
+
+        var result = await _library.ImportAsync(new CloudImportRequest { InstallId = "install-other", ProfileId = "p-remote", IncludeAppData = true }, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("skipped_other_machine", _library.LastImportPcSetup);
+        Assert.Equal(["mine"], _scene.Setup.Load().Setup.Items.Select(i => i.Id));
+        Assert.DoesNotContain(_profiles.GetManifest().Profiles.SelectMany(p => _appData.ReadProfile(p.Id).Keys), k => k == PcSetupBackup.AppId);
     }
 
     [Fact]

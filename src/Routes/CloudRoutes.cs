@@ -269,6 +269,10 @@ public static class CloudRoutes
                 PanelTopics.BroadcastLighting(hub);
                 PanelTopics.BroadcastCooling(hub);
             }
+            if (result.Success && library.LastImportPcSetup is { } setupOutcome)
+            {
+                return Results.Ok(new CloudImportResponse { PcSetup = setupOutcome });
+            }
             return CloudResult(result);
         });
 

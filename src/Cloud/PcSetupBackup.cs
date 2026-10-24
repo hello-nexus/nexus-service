@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Nexus.Service.Lighting.Scene;
 using Nexus.Service.Persistence;
@@ -19,13 +22,26 @@ public static class PcSetupBackup
     public const string Key = "setup";
 
     /// <summary>
+    /// Hash of the saved record's own canonical serialization, so "changed since
+    /// the last Back up" never depends on the api's copy. Null with no saved record.
+    /// </summary>
+    public static string? Digest(PcSetupStore? store) =>
+        store?.LoadSaved() is { } saved ? Digest(saved.Setup) : null;
+
+    private static string Digest(PcSetup setup) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(setup, PersistenceJsonContext.Default.PcSetup))));
+
+    /// <summary>
     /// A copy of <paramref name="appData"/> with the record added, or the input
     /// itself when there is no saved record or adding it would put the bundle
     /// over the cap the other app data already has to fit in.
+    /// <paramref name="digest"/> is the <see cref="Digest(PcSetupStore?)"/> of what was
+    /// attached, null when nothing was.
     /// </summary>
     public static Dictionary<string, Dictionary<string, JsonElement>> Attach(
-        Dictionary<string, Dictionary<string, JsonElement>> appData, PcSetupStore? store)
+        Dictionary<string, Dictionary<string, JsonElement>> appData, PcSetupStore? store, out string? digest)
     {
+        digest = null;
         if (store?.LoadSaved() is not { } saved)
         {
             return appData;
@@ -35,9 +51,12 @@ public static class PcSetupBackup
         {
             [AppId] = new Dictionary<string, JsonElement>(System.StringComparer.Ordinal) { [Key] = doc },
         };
-        return doc.GetRawText().Length > AppDataStore.MaxDataBytes || CloudProfileSyncService.AppDataTooLarge(withSetup)
-            ? appData
-            : withSetup;
+        if (doc.GetRawText().Length > AppDataStore.MaxDataBytes || CloudProfileSyncService.AppDataTooLarge(withSetup))
+        {
+            return appData;
+        }
+        digest = Digest(saved.Setup);
+        return withSetup;
     }
 
     /// <summary>
