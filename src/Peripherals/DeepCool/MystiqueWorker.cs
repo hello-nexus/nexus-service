@@ -117,7 +117,6 @@ public sealed class MystiqueWorker : BackgroundService
         return streamed;
     }
 
-
     public const string ProgressConverting = "converting";
     public const string ProgressSending = "sending";
 

@@ -2379,13 +2379,13 @@ public sealed class DeepCoolMystiqueSettings
     /// <summary>Pictures and GIFs this PC keeps for the screen, which holds one of each kind at a time and cannot be read back.</summary>
     public List<DeepCoolMystiqueMediaItem> Media { get; set; } = new();
 
-    /// <summary>Screen ids the screen may still hold from removed items; a slot is taken from them before a recorded one exists.</summary>
+    /// <summary>Legacy only: screen ids earlier builds freed, which a slot is taken from before a recorded one exists; nothing adds to it.</summary>
     public List<DeepCoolMystiqueMediaItem> Freed { get; set; } = new();
 
     /// <summary>The screen id every GIF goes up under, so showing another GIF replaces the one it holds. Empty until the first GIF after a format.</summary>
     public string GifSlot { get; set; } = "";
 
-    /// <summary>The screen may hold pictures and GIFs from before Nexus kept one slot for each, so what it shows is a guess; a format clears it.</summary>
+    /// <summary>The screen may hold pictures or GIFs from before Nexus kept one slot for each, so what it shows is a guess; a format clears it. Named for GIFs, as saved settings use it.</summary>
     public bool GifSlotUnsure { get; set; } = true;
 
     /// <summary>

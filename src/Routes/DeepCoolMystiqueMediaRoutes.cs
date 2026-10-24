@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
@@ -79,7 +80,7 @@ public static partial class DevicesRoutes
     /// The screen id a picture goes up under, and whether the screen already holds it. The screen keeps one picture, as it
     /// keeps one GIF in <see cref="MystiqueGifSlot"/>, so each show replaces it in place. Before a slot is recorded a picture
     /// id the screen may hold is taken, listed ones first, then freed ones; which of several the screen shows is unknown,
-    /// so <see cref="DeepCoolMystiqueSettings.GifSlotUnsure"/> reports it until a format.
+    /// so <see cref="MystiquePicturesUnsure"/> reports it until a format.
     /// </summary>
     internal static (string Id, bool Held) MystiquePictureSlot(DeepCoolMystiqueSettings m, string itemId)
     {
@@ -91,12 +92,18 @@ public static partial class DevicesRoutes
         return held is not null ? (held.Id, true) : (itemId, false);
     }
 
+    /// <summary>True while no picture slot is recorded and the screen may hold more than one picture id from earlier builds.</summary>
+    internal static bool MystiquePicturesUnsure(DeepCoolMystiqueSettings m) =>
+        !MystiqueMedia.IsId(m.PictureSlot)
+        && (m.Media ?? new()).Concat(m.Freed ?? new()).Where(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture).Select(i => i.Id).Distinct().Count() > 1;
+
     /// <summary>
     /// Records what a finished or failed picture stream left in the slot: the shown item, or none when the stream failed.
     /// Freed picture ids are dropped: pictures never go up under them once a slot is recorded.
     /// </summary>
     internal static void SetMystiquePictureSlot(DeepCoolMystiqueSettings m, string slot, string shown)
     {
+        m.GifSlotUnsure |= MystiquePicturesUnsure(m);
         m.PictureSlot = slot;
         m.ShownPicture = shown;
         m.Freed?.RemoveAll(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture);
@@ -219,8 +226,8 @@ public static partial class DevicesRoutes
                 if (id is null)
                 {
                     return MystiqueMediaFailure(isGif
-                        ? "The screen holds its maximum number of GIFs; replace or remove one first."
-                        : "The screen holds its maximum number of pictures; replace or remove one first.");
+                        ? "Nexus keeps its maximum number of GIFs; replace or remove one first."
+                        : "Nexus keeps its maximum number of pictures; replace or remove one first.");
                 }
                 string slot = id;
                 bool held = false;

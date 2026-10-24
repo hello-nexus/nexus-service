@@ -38,7 +38,7 @@ public static class MystiqueMedia
     public const int MaxPictureJpegBytes = 145_654;
     public const int MaxGifStreamBytes = 10_982_436;
 
-    // The screen's own software offers this many slots of each kind.
+    // Library cap per kind in Nexus, matching the slots the screen's own software offers.
     public const int MaxPictures = 9;
     public const int MaxGifs = 9;
 

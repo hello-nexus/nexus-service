@@ -181,7 +181,7 @@ public sealed class MystiqueSession
     }
 
     /// <summary>Sends the source command; true when the screen answered it.</summary>
-    public bool SendSource(string source)
+    internal bool SendSource(string source)
     {
         var command = MystiqueProtocol.BuildMediaSource(source);
         bool delivered = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, command,

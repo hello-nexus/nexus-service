@@ -333,6 +333,37 @@ public partial class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
+    public async Task Several_picture_ids_from_earlier_builds_report_unsure_and_keep_it_once_a_slot_is_recorded()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+        var store = factory.Services.GetRequiredService<IConfigStore>();
+        async Task<bool> Unsure()
+        {
+            using var state = JsonDocument.Parse(await client.GetStringAsync("/devices/deepcool-mystique/state"));
+            return state.RootElement.GetProperty("gifSlotUnsure").GetBoolean();
+        }
+        var listed = new DeepCoolMystiqueMediaItem { Kind = "picture", Id = "acd9325521f3493c86bfc0b0aa85658d" };
+        var freed = new DeepCoolMystiqueMediaItem { Kind = "picture", Id = "83182dc7830844c89ca5f01e57f63ad9" };
+
+        store.Update(s =>
+        {
+            var m = s.Devices.DeepCoolMystique;
+            m.GifSlotUnsure = false;
+            m.Media = new() { listed };
+        });
+        Assert.False(await Unsure());
+
+        store.Update(s => s.Devices.DeepCoolMystique.Freed = new() { freed });
+        Assert.True(await Unsure());
+
+        store.Update(s => DevicesRoutes.SetMystiquePictureSlot(s.Devices.DeepCoolMystique, listed.Id, listed.Id));
+        Assert.True(await Unsure());
+        store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = false);
+        Assert.False(await Unsure());
+    }
+
+    [Fact]
     public async Task Showing_a_gif_needs_the_screen_and_a_listed_gif()
     {
         using var factory = new NexusAppFactory();
