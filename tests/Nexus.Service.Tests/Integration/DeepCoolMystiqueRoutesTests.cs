@@ -364,6 +364,35 @@ public partial class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
+    public async Task Removing_one_of_several_earlier_pictures_keeps_the_slot_unsure()
+    {
+        using var factory = new NexusAppFactory();
+        var client = Client(factory);
+        var store = factory.Services.GetRequiredService<IConfigStore>();
+        const string kept = "acd9325521f3493c86bfc0b0aa85658d";
+        const string removed = "83182dc7830844c89ca5f01e57f63ad9";
+        store.Update(s =>
+        {
+            var m = s.Devices.DeepCoolMystique;
+            m.GifSlotUnsure = false;
+            m.Media = new()
+            {
+                new DeepCoolMystiqueMediaItem { Kind = "picture", Id = kept },
+                new DeepCoolMystiqueMediaItem { Kind = "picture", Id = removed },
+            };
+        });
+
+        Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync($"/devices/deepcool-mystique/media/{removed}")).StatusCode);
+
+        using var state = JsonDocument.Parse(await client.GetStringAsync("/devices/deepcool-mystique/state"));
+        Assert.True(state.RootElement.GetProperty("gifSlotUnsure").GetBoolean());
+        store.Update(s => DevicesRoutes.SetMystiquePictureSlot(s.Devices.DeepCoolMystique, kept, kept));
+        var after = new DeepCoolMystiqueSettings();
+        store.Read(s => after = s.Devices.DeepCoolMystique.Copy());
+        Assert.True(after.GifSlotUnsure);
+    }
+
+    [Fact]
     public async Task Showing_a_gif_needs_the_screen_and_a_listed_gif()
     {
         using var factory = new NexusAppFactory();

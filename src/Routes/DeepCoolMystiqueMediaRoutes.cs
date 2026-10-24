@@ -467,8 +467,11 @@ public static partial class DevicesRoutes
             {
                 var m = s.Devices.DeepCoolMystique;
                 m.Media ??= new();
+                bool unsure = MystiquePicturesUnsure(m);
                 gone = m.Media.FindAll(match);
                 m.Media.RemoveAll(match);
+                // The removed picture may still be on the screen, so fewer listed ids does not make the slot sure.
+                m.GifSlotUnsure |= unsure && gone.Count > 0;
                 if (gone.Exists(i => i.Id == m.ShownGif))
                 {
                     m.ShownGif = "";
