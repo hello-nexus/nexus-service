@@ -241,6 +241,37 @@ public sealed class PcSetupStoreTests : IDisposable
         Assert.Equal(itemKind, Assert.Single(file.Setup.Items).Kind);
     }
 
+    [Theory]
+    [InlineData("deskmat")]
+    [InlineData("strip")]
+    [InlineData("light")]
+    [InlineData("box")]
+    [InlineData("headset")]
+    [InlineData("keyboard")]
+    public void Migration_keeps_the_scene_kind_on_the_item_so_a_client_lays_it_out_as_that_kind(string sceneKind)
+    {
+        var file = Migrate(Obj("o", sceneKind, "user", 0f, 0f, w: 900f, d: 400f));
+        var custom = Assert.Single(file.Setup.Items).Custom!;
+        Assert.Equal(sceneKind, custom.SceneKind);
+        Assert.Equal((900f, 400f), (custom.WidthMm, custom.DepthMm));
+        Assert.Null(PcSetupValidation.Validate(file.Setup));
+    }
+
+    [Fact]
+    public void A_scene_kind_outside_the_known_set_is_refused_and_one_inside_it_survives_a_save()
+    {
+        var setup = Setup("a");
+        setup.Items[0].Custom = new PcSetupCustom { Name = "a", SceneKind = "strip" };
+        Assert.Null(PcSetupValidation.Validate(setup));
+        setup.Items[0].Custom!.SceneKind = "teapot";
+        Assert.Equal("invalid_item", PcSetupValidation.Validate(setup)!.Code);
+        var store = new LightingSceneStore(_dir);
+        setup.Items[0].Custom!.SceneKind = "light";
+        Assert.True(store.Setup.TrySave(0, setup, out var saved));
+        Assert.Equal("light", store.Setup.Load().Setup.Items[0].Custom!.SceneKind);
+        Assert.Equal(1, saved.Rev);
+    }
+
     [Fact]
     public void Migration_keeps_build_objects_out_of_items_and_serves_every_old_object_as_resolved()
     {

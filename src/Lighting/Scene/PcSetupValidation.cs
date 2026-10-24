@@ -91,6 +91,14 @@ public static partial class PcSetupValidation
         return Opaque(resolved.CaseLayout, MaxOpaqueCaseLayout, "resolved.caseLayout");
     }
 
+    /// <summary>The scene kinds an item can keep from the lighting scene it migrated from.</summary>
+    private static readonly HashSet<string> SceneKinds = new(StringComparer.Ordinal)
+    {
+        "keyboard", "mouse", "mousepad", "deskmat", "headset", "monitor", "speaker", "strip", "light", "box",
+    };
+
+    public static bool IsSceneKind(string? kind) => kind is not null && SceneKinds.Contains(kind);
+
     public static bool IsFinitePlace(float x, float z, float yaw) =>
         float.IsFinite(x) && float.IsFinite(z) && float.IsFinite(yaw) && MathF.Abs(x) <= MaxExtentMm && MathF.Abs(z) <= MaxExtentMm;
 
@@ -135,6 +143,10 @@ public static partial class PcSetupValidation
             if (custom.Name is null || custom.Name.Length > MaxName)
             {
                 return custom.Name is null ? new("invalid_item", $"item {item.Id}: custom needs a name") : Long(item.Id, "custom.name");
+            }
+            if (custom.SceneKind is not null && !IsSceneKind(custom.SceneKind))
+            {
+                return new("invalid_item", $"item {item.Id}: unknown sceneKind");
             }
             if (!Dimension(custom.WidthMm) || !Dimension(custom.DepthMm))
             {

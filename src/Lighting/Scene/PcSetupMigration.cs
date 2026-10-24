@@ -38,6 +38,7 @@ public static class PcSetupMigration
                     Name = string.IsNullOrWhiteSpace(o.Label) ? o.Kind : o.Label!,
                     WidthMm = o.Size.Length == 3 && o.Size[0] > 0f ? o.Size[0] : null,
                     DepthMm = o.Size.Length == 3 && o.Size[2] > 0f ? o.Size[2] : null,
+                    SceneKind = PcSetupValidation.IsSceneKind(o.Kind) ? o.Kind : null,
                 },
                 Owned = true,
                 Place = PlaceOf(o),

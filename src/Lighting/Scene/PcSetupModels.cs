@@ -75,6 +75,12 @@ public sealed class PcSetupCustom
 
     /// <summary>Which side of the desk the return arm sits on: "left" or "right".</summary>
     public string? ReturnSide { get; set; }
+
+    /// <summary>
+    /// The lighting scene's kind an item migrated from (strip, light, deskmat, box, headset and so on), kept because the record's own kinds
+    /// are fewer: a client lays the item out as that kind so devices bound to it keep sampling. Absent on items Build made.
+    /// </summary>
+    public string? SceneKind { get; set; }
 }
 
 public sealed class PcSetupDetected
