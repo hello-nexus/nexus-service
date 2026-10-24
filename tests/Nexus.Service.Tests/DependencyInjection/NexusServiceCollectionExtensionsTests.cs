@@ -186,4 +186,14 @@ public class NexusServiceCollectionExtensionsTests
         ids.Sort();
         Assert.Equal(new[] { Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.ProductId, Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.StreamDeckProductId }, ids);
     }
+
+    [Fact]
+    public void Device_inventory_resolves_and_builds_from_idle_hubs()
+    {
+        var sp = Build();
+
+        var response = sp.GetRequiredService<DeviceInventoryService>().Build();
+
+        Assert.Empty(response.Devices);
+    }
 }

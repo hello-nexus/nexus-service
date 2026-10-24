@@ -1360,6 +1360,7 @@ public static class NexusServiceCollectionExtensions
 
         // NZXT RGB & Fan Controller: fans only. Its lighting stays with OpenRGB.
         services.AddSingleton<Nexus.Service.Peripherals.Nzxt.NzxtFanControllerHub>();
+        services.AddSingleton<Nexus.Service.Devices.DeviceInventoryService>();
         services.AddSingleton<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>();
         services.AddHostedService<Nexus.Service.Peripherals.Nzxt.NzxtFanControllerConnectionWorker>();
 
