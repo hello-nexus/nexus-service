@@ -79,6 +79,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                 }
 
                 ServiceLog.Info($"[{driver.HandlerId}] connected: {driver.Name}, {_hub.Width}x{_hub.Height}");
+                int reopenDelayMs = -1;
                 try
                 {
                     // The hub never detaches on a failed transfer, so presence, or a pipe that knows its
@@ -98,6 +99,12 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                             ServiceLog.Info($"[{driver.HandlerId}] device re-enumerated; reopening");
                             break;
                         }
+                        if (driver.TakeReopenDelayMs() is >= 0 and var delay)
+                        {
+                            reopenDelayMs = delay;
+                            ServiceLog.Warn($"[{driver.HandlerId}] link stalled ({driver.LastFailure ?? "unknown"}); reopening in {delay} ms");
+                            break;
+                        }
                         if (driver.GeometryStale && _hub.Renegotiate())
                         {
                             ServiceLog.Info($"[{driver.HandlerId}] renegotiated at {_hub.Width}x{_hub.Height}");
@@ -109,6 +116,10 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                 {
                     _hub.Detach();
                     ServiceLog.Info($"[{driver.HandlerId}] disconnected");
+                }
+                if (reopenDelayMs > 0)
+                {
+                    await Task.Delay(reopenDelayMs, stoppingToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException)

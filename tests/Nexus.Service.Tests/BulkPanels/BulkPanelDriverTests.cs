@@ -221,6 +221,112 @@ public class BulkPanelDriverTests
         Assert.Equal(RyujinProtocol.EncodeCommit(), Assert.Single(hid.Writes));
     }
 
+    [Fact]
+    public void Ryujin_keepalive_is_skipped_while_the_last_push_failed()
+    {
+        var driver = new RyujinPanelDriver();
+        var pipe = new FakeBulkPipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(320, 240));
+        pipe.FailWrites = true;
+        Assert.False(driver.SendFrame(pipe, hid, Frame(320, 240)));
+        pipe.FailWrites = false;
+        pipe.Writes.Clear();
+        hid.Writes.Clear();
+
+        Assert.True(driver.Resend(pipe, hid));
+        Assert.Empty(pipe.Writes);
+        Assert.Empty(hid.Writes);
+
+        Assert.True(driver.SendFrame(pipe, hid, Frame(320, 240)));
+        pipe.Writes.Clear();
+        Assert.True(driver.Resend(pipe, hid));
+        Assert.NotEmpty(pipe.Writes);
+    }
+
+    [Theory]
+    [InlineData(true, "bulk pipe write")]
+    [InlineData(false, "hid commit")]
+    public void Ryujin_names_the_half_that_failed(bool pipeFails, string expected)
+    {
+        var driver = new RyujinPanelDriver();
+        var pipe = new FakeBulkPipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        pipe.FailWrites = pipeFails;
+        hid.FailWrites = !pipeFails;
+
+        Assert.False(driver.SendFrame(pipe, hid, Frame(320, 240)));
+        Assert.Equal(expected, driver.LastFailure);
+    }
+
+    [Fact]
+    public void Ryujin_asks_for_a_reopen_after_a_failed_streak_with_growing_backoff()
+    {
+        var driver = new RyujinPanelDriver();
+        var pipe = new FakeBulkPipe { FailWrites = true };
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(320, 240));
+        driver.SendFrame(pipe, hid, Frame(320, 240));
+        Assert.Equal(-1, driver.TakeReopenDelayMs());
+
+        driver.SendFrame(pipe, hid, Frame(320, 240));
+        Assert.Equal(1000, driver.TakeReopenDelayMs());
+        Assert.Equal(-1, driver.TakeReopenDelayMs());
+
+        var expected = new[] { 2000, 5000, 5000 };
+        foreach (var delay in expected)
+        {
+            driver.Connect(pipe, hid);
+            for (int i = 0; i < 3; i++)
+            {
+                driver.SendFrame(pipe, hid, Frame(320, 240));
+            }
+            Assert.Equal(delay, driver.TakeReopenDelayMs());
+        }
+    }
+
+    [Fact]
+    public void Ryujin_a_successful_push_resets_the_streak_and_the_backoff()
+    {
+        var driver = new RyujinPanelDriver();
+        var pipe = new FakeBulkPipe { FailWrites = true };
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        for (int i = 0; i < 3; i++)
+        {
+            driver.SendFrame(pipe, hid, Frame(320, 240));
+        }
+        Assert.Equal(1000, driver.TakeReopenDelayMs());
+
+        driver.Connect(pipe, hid);
+        pipe.FailWrites = false;
+        Assert.True(driver.SendFrame(pipe, hid, Frame(320, 240)));
+        pipe.FailWrites = true;
+        for (int i = 0; i < 3; i++)
+        {
+            driver.SendFrame(pipe, hid, Frame(320, 240));
+        }
+        Assert.Equal(1000, driver.TakeReopenDelayMs());
+    }
+
+    [Fact]
+    public void Ryujin_a_single_write_that_hits_the_timeout_asks_for_a_reopen()
+    {
+        long now = 0;
+        var driver = new RyujinPanelDriver(() => now += 5000);
+        var pipe = new FakeBulkPipe { FailWrites = true };
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(320, 240));
+
+        Assert.Equal(1000, driver.TakeReopenDelayMs());
+    }
+
     // ── ZMatrices: mode command on its own pipe, then framed JPEGs ──
 
     [Fact]

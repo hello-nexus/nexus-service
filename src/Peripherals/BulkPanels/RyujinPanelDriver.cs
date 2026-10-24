@@ -12,8 +12,29 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// </summary>
 public sealed class RyujinPanelDriver : IBulkPanelDriver
 {
+    // Failed pushes in a row before the session is reopened.
+    private const int StreakToReopen = 3;
+    // A pipe write that burns the transport's full timeout is a wedged link on its own.
+    private const long StallMs = 4000;
+    private static readonly int[] ReopenBackoffMs = { 1000, 2000, 5000 };
+
     private readonly byte[] _bgr = new byte[RyujinProtocol.FrameBytes];
+    private readonly Func<long> _clock;
     private bool _hasFrame;
+    private volatile bool _lastPushFailed;
+    private volatile string? _lastFailure;
+    private volatile bool _reopenWanted;
+    private int _failStreak;
+    private int _attempts;
+
+    public RyujinPanelDriver() : this(() => Environment.TickCount64)
+    {
+    }
+
+    public RyujinPanelDriver(Func<long> clock)
+    {
+        _clock = clock;
+    }
 
     public string HandlerId => "asus-ryujin-lcd";
     public string Name => "ASUS Ryujin LCD";
@@ -32,7 +53,21 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
     public bool NeedsHidChannel => true;
 
     /// <summary>A starved panel falls back to its stored animation.</summary>
-    public int KeepaliveMs => 100;
+    public int KeepaliveMs => 1000;
+
+    public string? LastFailure => _lastFailure;
+
+    public int TakeReopenDelayMs()
+    {
+        if (!_reopenWanted)
+        {
+            return -1;
+        }
+        _reopenWanted = false;
+        int delay = ReopenBackoffMs[Math.Min(_attempts, ReopenBackoffMs.Length - 1)];
+        _attempts++;
+        return delay;
+    }
 
     /// <summary>Fixed geometry: this panel neither reports nor negotiates a size.</summary>
     public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
@@ -42,6 +77,9 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
             return null;
         }
         _hasFrame = false;
+        _lastPushFailed = false;
+        _failStreak = 0;
+        _reopenWanted = false;
         foreach (var command in RyujinProtocol.EncodeLiveStart())
         {
             if (!hid.Write(command))
@@ -64,21 +102,44 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
         return Push(pipe, hid);
     }
 
-    public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => !_hasFrame || (hid is not null && Push(pipe, hid));
+    // A failed link is retried by real frames only; a keepalive on top would double the traffic into it.
+    public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) =>
+        !_hasFrame || _lastPushFailed || (hid is not null && Push(pipe, hid));
 
     private bool Push(IBulkUsbPipe pipe, IHidDevice hid)
     {
+        long start = _clock();
+        string? failure = null;
         for (int offset = 0; offset < _bgr.Length; offset += RyujinProtocol.ChunkBytes)
         {
             int length = Math.Min(RyujinProtocol.ChunkBytes, _bgr.Length - offset);
             if (!pipe.Write(_bgr.AsSpan(offset, length)))
             {
-                return false;
+                failure = "bulk pipe write";
+                break;
             }
         }
         // Nothing appears until this lands, so a failed commit is a dropped frame even
         // though every byte reached the panel.
-        return hid.Write(RyujinProtocol.EncodeCommit());
+        if (failure is null && !hid.Write(RyujinProtocol.EncodeCommit()))
+        {
+            failure = "hid commit";
+        }
+        if (failure is null)
+        {
+            _lastPushFailed = false;
+            _failStreak = 0;
+            _attempts = 0;
+            return true;
+        }
+        _lastPushFailed = true;
+        _lastFailure = failure;
+        _failStreak++;
+        if (_failStreak >= StreakToReopen || _clock() - start >= StallMs)
+        {
+            _reopenWanted = true;
+        }
+        return false;
     }
 
     public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid)

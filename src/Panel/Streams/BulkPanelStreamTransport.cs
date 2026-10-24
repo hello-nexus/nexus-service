@@ -325,7 +325,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             if (!_dropLogged)
             {
                 _dropLogged = true;
-                ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frame rejected; retrying on the next frame");
+                ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frame rejected{(_hub.Driver.LastFailure is { } failure ? $" ({failure})" : "")}; retrying on the next frame");
             }
             return false;
         }
