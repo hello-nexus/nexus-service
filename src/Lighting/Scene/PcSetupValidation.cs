@@ -77,6 +77,13 @@ public static partial class PcSetupValidation
         {
             return new("resolved_required", "resolved.objects is required");
         }
+        foreach (var o in resolved.Objects)
+        {
+            if (o is not null && SceneValidation.ValidateCurve(o) is { } curveError)
+            {
+                return new("invalid_curve", curveError);
+            }
+        }
         if (SceneValidation.Validate(resolved.Objects, new List<SceneBinding>()) is { } sceneError)
         {
             return new("invalid_resolved", sceneError);

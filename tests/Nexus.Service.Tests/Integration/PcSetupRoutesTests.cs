@@ -323,6 +323,63 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         Assert.Equal("invalid_item", (await Body(res)).GetProperty("code").GetString());
     }
 
+    private const string CurvedMonitor = """
+        {"id":"mon","kind":"monitor","source":"user","position":[0,0,-200],"yaw":0,"size":[800,450,60],"curve":{"radiusMm":1500},"anchors":[]}
+        """;
+
+    [Fact]
+    public async Task A_monitor_curve_round_trips_through_put_and_scene_get()
+    {
+        var put = await Desktop().PutAsync("/system/setup", Json(Put(0, SetupJson(resolved: $"[{CurvedMonitor}]"))));
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        var get = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup").GetProperty("resolved").GetProperty("objects")[0];
+        Assert.Equal(1500, get.GetProperty("curve").GetProperty("radiusMm").GetInt32());
+        var scene = (await Body(await Desktop().GetAsync("/lighting/scene"))).GetProperty("objects")[0];
+        Assert.Equal(1500, scene.GetProperty("curve").GetProperty("radiusMm").GetInt32());
+    }
+
+    [Fact]
+    public async Task A_patch_moves_a_curved_monitor_and_keeps_its_curve()
+    {
+        const string items = """[{"id":"mon","kind":"monitor","owned":true,"custom":{"name":"Screen"},"place":{"x":0,"z":-200,"yaw":0}}]""";
+        var put = await Desktop().PutAsync("/system/setup", Json(Put(0, SetupJson(items, $"[{CurvedMonitor}]"))));
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        var patch = await Patch(Desktop(), "/system/setup/placements", """{"baseRev":1,"places":[{"id":"mon","x":50,"z":-150,"yaw":20}]}""");
+        Assert.Equal(HttpStatusCode.OK, patch.StatusCode);
+
+        var obj = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup").GetProperty("resolved").GetProperty("objects")[0];
+        Assert.Equal(50, obj.GetProperty("position")[0].GetInt32());
+        Assert.Equal(20, obj.GetProperty("yaw").GetInt32());
+        Assert.Equal(1500, obj.GetProperty("curve").GetProperty("radiusMm").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("monitor", "0")]
+    [InlineData("monitor", "299")]
+    [InlineData("monitor", "10001")]
+    [InlineData("keyboard", "1500")]
+    public async Task A_bad_curve_is_400_invalid_curve(string kind, string radius)
+    {
+        var obj = $$"""{"id":"o","kind":"{{kind}}","source":"user","position":[0,0,0],"yaw":0,"size":[800,450,60],"curve":{"radiusMm":{{radius}}},"anchors":[]}""";
+        var res = await Desktop().PutAsync("/system/setup", Json(Put(0, SetupJson(resolved: $"[{obj}]"))));
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal("invalid_curve", (await Body(res)).GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task The_curve_bounds_are_accepted_and_a_scene_put_validates_curves_too()
+    {
+        foreach (var r in new[] { "300", "10000" })
+        {
+            var obj = CurvedMonitor.Replace("1500", r);
+            Assert.Equal(HttpStatusCode.OK, (await Desktop().PutAsync("/lighting/scene", Json($$"""{"objects":[{{obj}}],"bindings":[]}"""))).StatusCode);
+        }
+        var bad = CurvedMonitor.Replace("1500", "50");
+        Assert.Equal(HttpStatusCode.BadRequest, (await Desktop().PutAsync("/lighting/scene", Json($$"""{"objects":[{{bad}}],"bindings":[]}"""))).StatusCode);
+    }
+
     // ---- lighting reads from the record ----
 
     [Fact]
