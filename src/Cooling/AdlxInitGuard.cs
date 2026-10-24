@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace Nexus.Service.Cooling;
 
@@ -12,20 +14,84 @@ internal static class AdlxInitGuard
     private const string MarkFile = "adlx-init-crashguard";
     private const string LatchFile = "adlx-init-latched";
 
-    /// <summary>True while ADLX stays off for <paramref name="key"/>. A mark a dead run left becomes the latch; another key clears it.</summary>
-    public static bool Latched(string dir, string key)
+    internal enum Latch { None, ThisBoot, UntilDriverUpdate }
+
+    private readonly record struct State(string Key, int Strikes, string Boot);
+
+    /// <summary>
+    /// Driver key: the ADLX file version plus the AMD adapters' sorted DXGI user-mode driver versions, so a driver
+    /// update changes it even when the ADLX build does not. Null when either part is unavailable, which limits latching to the current boot.
+    /// </summary>
+    internal static string? BuildKey(string? fileVersion, IEnumerable<long> umdVersions)
+    {
+        var umd = umdVersions.Where(v => v != 0).Distinct().OrderBy(v => v).ToList();
+        if (string.IsNullOrWhiteSpace(fileVersion) || umd.Count == 0) return null;
+        return $"{fileVersion}#{string.Join(",", umd)}";
+    }
+
+    /// <summary>
+    /// Two strikes. A run that died inside ADLX (its mark is still on disk) is a first strike: ADLX stays off for that
+    /// boot only, since power loss or another crash can look the same. A second death under the same driver key keeps ADLX off until
+    /// the key changes. A null <paramref name="key"/> never latches past the boot.
+    /// </summary>
+    public static Latch Latched(string dir, string? key, string boot)
     {
         var mark = Path.Combine(dir, MarkFile);
         var latch = Path.Combine(dir, LatchFile);
         try
         {
-            if (File.Exists(mark)) File.Move(mark, latch, overwrite: true);
-            if (!File.Exists(latch)) return false;
-            if (File.ReadAllText(latch).Trim() == key) return true;
-            File.Delete(latch);
-            return false;
+            var state = Read(latch, key);
+            if (File.Exists(mark))
+            {
+                var dead = ReadMark(File.ReadAllText(mark), key);
+                File.Delete(mark);
+                if (dead is { } d)
+                {
+                    var strikes = d.Key.Length > 0 && state is { } s && s.Key == d.Key ? s.Strikes + 1 : 1;
+                    state = new State(d.Key, d.Key.Length > 0 ? strikes : 1, d.Boot);
+                    File.WriteAllText(latch, $"{state.Value.Key}\t{state.Value.Strikes}\t{state.Value.Boot}");
+                }
+            }
+            if (state is not { } cur) return Clear(latch);
+            if (key is null) return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
+            if (cur.Key.Length > 0 && cur.Key != key) return Clear(latch);
+            if (cur.Strikes >= 2) return Latch.UntilDriverUpdate;
+            return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
         }
-        catch (Exception) { return false; }
+        catch (Exception) { return Latch.None; }
+    }
+
+    private static Latch Clear(string latch)
+    {
+        File.Delete(latch);
+        return Latch.None;
+    }
+
+    // Files from before the two-strike format hold "<fileVersion>@<boot>". One whose version still matches is the first strike, recorded on that earlier boot; otherwise the driver moved on.
+    private static State? Legacy(string text, string? key)
+    {
+        var at = text.LastIndexOf('@');
+        if (at < 0) return null;
+        var version = text[..at];
+        if (key is null) return new State("", 1, text[(at + 1)..]);
+        return key.Split('#')[0] == version ? new State(key, 1, text[(at + 1)..]) : null;
+    }
+
+    private static State? Read(string latch, string? key)
+    {
+        if (!File.Exists(latch)) return null;
+        var text = File.ReadAllText(latch).TrimEnd();
+        var parts = text.Split('\t');
+        if (parts.Length == 3 && int.TryParse(parts[1], out var strikes)) return new State(parts[0], strikes, parts[2]);
+        return Legacy(text, key);
+    }
+
+    private static State? ReadMark(string text, string? key)
+    {
+        text = text.TrimEnd();
+        var parts = text.Split('\t');
+        if (parts.Length == 2) return new State(parts[0], 1, parts[1]);
+        return Legacy(text, key);
     }
 
     private static volatile bool _stopped;
@@ -39,7 +105,7 @@ internal static class AdlxInitGuard
 
     private static string? _dirReady;
 
-    public static void Arm(string dir, string key)
+    public static void Arm(string dir, string? key, string boot)
     {
         if (_stopped) return;
         try
@@ -50,7 +116,7 @@ internal static class AdlxInitGuard
                 Directory.CreateDirectory(dir);
                 _dirReady = dir;
             }
-            File.WriteAllText(Path.Combine(dir, MarkFile), key);
+            File.WriteAllText(Path.Combine(dir, MarkFile), $"{key}\t{boot}");
         }
         catch (Exception)
         {
@@ -66,21 +132,23 @@ internal static class AdlxInitGuard
 
     private static string? _scopeDir;
     private static string? _scopeKey;
+    private static string _scopeBoot = "";
     private static int _scopeDepth;
 
-    private static bool? _latchedOnce;
+    private static Latch? _latchedOnce;
 
     /// <summary>
     /// <see cref="Latched"/> once per process. A later call would find the live mark of a running scope and
     /// turn it into a latch, so rediscovery reuses the first answer.
     /// </summary>
-    public static bool LatchedOnce(string dir, string key) => _latchedOnce ??= Latched(dir, key);
+    public static Latch LatchedOnce(string dir, string? key, string boot) => _latchedOnce ??= Latched(dir, key, boot);
 
     /// <summary>Callers hold <c>AdlxGpuFans.Sync</c>, like every <see cref="Scope"/>.</summary>
-    public static void Configure(string dir, string key)
+    public static void Configure(string dir, string? key, string boot)
     {
         _scopeDir = dir;
-        _scopeKey = key;
+        _scopeKey = key ?? "";
+        _scopeBoot = boot;
     }
 
     /// <summary>
@@ -95,7 +163,7 @@ internal static class AdlxInitGuard
         public MarkScope()
         {
             if (_scopeDir is null || _scopeKey is null) return;
-            if (_scopeDepth++ == 0) Arm(_scopeDir, _scopeKey);
+            if (_scopeDepth++ == 0) Arm(_scopeDir, _scopeKey, _scopeBoot);
         }
 
         public void Dispose()
@@ -111,6 +179,7 @@ internal static class AdlxInitGuard
         _scopeDepth = 0;
         _scopeDir = null;
         _scopeKey = null;
+        _scopeBoot = "";
         _latchedOnce = null;
         _dirReady = null;
     }

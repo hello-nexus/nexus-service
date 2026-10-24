@@ -9,6 +9,7 @@ using Nexus.Service.Lighting.Engine.Gpu;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Cooling;
 
@@ -44,26 +45,34 @@ internal sealed unsafe class AdlxGpuFans
 
         var dir = NexusDataPaths.NexusRoot();
         var key = InitGuardKey(path);
+        var boot = GpuRenderSelect.BootStamp();
         // Under Sync so rediscovery cannot read a live scope's mark; the latch is read once per process.
         lock (Sync)
         {
-            if (AdlxInitGuard.LatchedOnce(dir, key))
+            var latch = AdlxInitGuard.LatchedOnce(dir, key, boot);
+            if (latch != AdlxInitGuard.Latch.None)
             {
-                ServiceLog.Warn($"[amd-fan] ADLX off until the driver is updated: a previous run died inside an ADLX call ({key})");
+                var until = latch == AdlxInitGuard.Latch.UntilDriverUpdate ? "until the driver is updated" : "for this boot";
+                ServiceLog.Warn($"[amd-fan] ADLX off {until}: a previous run died inside an ADLX call ({key ?? "no driver key"})");
                 return null;
             }
-            AdlxInitGuard.Configure(dir, key);
+            AdlxInitGuard.Configure(dir, key, boot);
             using (AdlxInitGuard.Scope()) return Create(path, blockChanged);
         }
     }
 
-    // Only a driver update re-arms ADLX; a reboot does not, or the crash would repeat after every boot.
-    private static string InitGuardKey(string path)
+    // Null when the driver version cannot be read, which keeps the latch to one boot.
+    private static string? InitGuardKey(string path)
     {
         string? version = null;
         try { version = FileVersionInfo.GetVersionInfo(path).FileVersion; }
         catch (Exception) { }
-        return version ?? "?";
+        try
+        {
+            var amd = GpuAdapterLuids.Enumerate().Where(a => a.VendorId == 0x1002).Select(a => a.UmdVersion);
+            return AdlxInitGuard.BuildKey(version, amd);
+        }
+        catch (Exception) { return null; }
     }
 
     private static AdlxGpuFans? Create(string path, Action blockChanged)
