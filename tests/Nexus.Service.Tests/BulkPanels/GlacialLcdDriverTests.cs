@@ -1547,6 +1547,20 @@ public class GlacialLcdDriverTests
     [Fact]
     public async Task A_shutdown_during_a_raw_frame_waits_for_the_panel_to_be_put_back()
     {
+        string logDir = Path.Combine(Path.GetTempPath(), "glacial-shutdown-" + Guid.NewGuid().ToString("N")[..8]);
+        GlacialLcdLog.UseDirectory(logDir);
+        try
+        {
+            await ShutdownDuringRawFrame(logDir);
+        }
+        finally
+        {
+            GlacialLcdLogTestSetup.Restore();
+        }
+    }
+
+    private async Task ShutdownDuringRawFrame(string logDir)
+    {
         var clock = new FakeClock();
         var tuning = NewTuning(out _);
         tuning.Apply(new GlacialLcdTuningChange { RawStream = true });
@@ -1569,7 +1583,13 @@ public class GlacialLcdDriverTests
         Assert.True(WaitUntilTicking(clock, () => Volatile.Read(ref writing) == 1));
 
         var detach = Task.Run(driver.PrepareDetach);
-        await Task.Yield();
+        // The shutdown wait has started once it says so; the frame write is still held at the gate.
+        Assert.True(WaitUntil(() =>
+        {
+            GlacialLcdLog.Flush();
+            string path = Path.Combine(logDir, GlacialLcdLog.FileName);
+            return File.Exists(path) && File.ReadAllText(path).Contains("waiting up to");
+        }));
         Assert.False(detach.IsCompleted, "the wait must not end while the frame is still being written");
         gate.Set();
 
@@ -1692,6 +1712,16 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
+    public void The_estimate_counts_the_post_commit_watch_only_for_an_in_place_update()
+    {
+        var tuning = NewTuning(out _);
+        var cfg = tuning.Current();
+        int plain = GlacialLcdPanelDriver.EstimateUploadMs(80_000, cfg);
+        Assert.Equal(plain, GlacialLcdPanelDriver.EstimateUploadMs(80_000, cfg, inPlace: false));
+        Assert.Equal(plain + GlacialLcdPanelDriver.PostCommitWatchMs, GlacialLcdPanelDriver.EstimateUploadMs(80_000, cfg, inPlace: true));
+    }
+
+    [Fact]
     public void Without_the_in_place_probe_the_picture_is_shown_after_every_upload()
     {
         var tuning = NewTuning(out _);
@@ -1761,7 +1791,8 @@ public class GlacialLcdDriverTests
 
             // Past the lowered floor but short of the usual one.
             driver.SendFrame(pipe, hid, Frame(noiseRows: 2, seed: 5));
-            Thread.Sleep(300);
+            int held = driver.Ticks;
+            Assert.True(WaitUntil(() => driver.Ticks >= held + 3));
             Assert.Single(pipe.Writes);
             clock.Advance(GlacialLcdPanelDriver.RawProbeMinFrameIntervalMs + 10);
             Assert.True(WaitUntil(() => pipe.Writes.Count == 2));
