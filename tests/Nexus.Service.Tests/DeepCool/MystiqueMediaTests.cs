@@ -509,7 +509,7 @@ public class MystiqueMediaTests
         Assert.Equal(new byte[] { 0xFF, 0xD9 }, jpeg[^2..]);
     }
 
-    private static byte[] Png(int width, int height, int shift = 0)
+    internal static byte[] Png(int width, int height, int shift = 0)
     {
         using var bitmap = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Opaque));
         var pixels = bitmap.GetPixelSpan();

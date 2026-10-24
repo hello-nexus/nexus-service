@@ -94,9 +94,22 @@ public sealed class MystiqueWorker : BackgroundService
 
     /// <summary>
     /// Streams the packages in one turn of the worker, the source command once after the last; returns how many
-    /// were streamed cleanly, as <see cref="MystiqueSession.Upload(IReadOnlyList{MystiqueMediaPackage}, Func{MystiqueSourceAfter?}?, Action{long}?)"/>.
+    /// were streamed cleanly, as <see cref="MystiqueSession.Upload(IReadOnlyList{MystiqueMediaPackage}, Func{MystiqueSourceAfter?}?, Action{long}?)"/>,
+    /// or -1 when the turn was never taken. Progress counts <paramref name="sentBefore"/> bytes as already sent out of
+    /// <paramref name="totalBytes"/>, which defaults to the packages' own.
     /// </summary>
-    public async Task<int> UploadAsync(IReadOnlyList<MystiqueMediaPackage> packages, Func<MystiqueSourceAfter?> source, CancellationToken ct)
+    public async Task<int> UploadAsync(
+        IReadOnlyList<MystiqueMediaPackage> packages, Func<MystiqueSourceAfter?> source, CancellationToken ct, long sentBefore = 0, long totalBytes = 0)
+    {
+        long total = totalBytes > 0 ? totalBytes : sentBefore + Bytes(packages);
+        int streamed = -1;
+        await RunMediaAsync(s => (streamed = s.Upload(packages, source, sent => ReportProgress(ProgressSending, sentBefore + sent, total))) == packages.Count, ct)
+            .ConfigureAwait(false);
+        return streamed;
+    }
+
+    /// <summary>The frame bytes the packages stream.</summary>
+    public static long Bytes(IEnumerable<MystiqueMediaPackage> packages)
     {
         long total = 0;
         foreach (var package in packages)
@@ -106,10 +119,7 @@ public sealed class MystiqueWorker : BackgroundService
                 total += frame.Length;
             }
         }
-        int streamed = 0;
-        await RunMediaAsync(s => (streamed = s.Upload(packages, source, sent => ReportProgress(ProgressSending, sent, total))) == packages.Count, ct)
-            .ConfigureAwait(false);
-        return streamed;
+        return total;
     }
 
     /// <summary>Sends the source command between ticks; false when no screen is connected or it did not answer.</summary>
