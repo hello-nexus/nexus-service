@@ -202,7 +202,8 @@ public class GlacialLcdDriverTests
 
         pipe.FailWrites = true;
         driver.SendFrame(pipe, hid, Frame(noiseRows: 2));
-        Assert.True(WaitUntil(() => driver.UploadAttempts == 2 && !driver.IsUploading));
+        // The worker clears IsUploading before it forgets the picture, so wait for the forget itself.
+        Assert.True(WaitUntil(() => driver.UploadAttempts == 2 && !driver.IsUploading && memory.Hashes.Count == 0));
         // The failure came after the flush, so nothing is assumed to be on display.
         Assert.Empty(memory.Hashes);
         driver.SendFrame(pipe, hid, Frame(noiseRows: 3));
