@@ -22,10 +22,14 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private const int BrowserBackoffMaxMs = 60_000;
     private const int RapidExitMs = 60_000;
     private const int SessionStartTimeoutMs = 20_000;
+    private const int GpuDemoteAfterFailures = 2;
     private const string Tag = "[panel-render]";
 
     private static int _servicePort = ServiceLaunchIntent.DefaultServicePort;
     public static void Configure(int servicePort) => _servicePort = servicePort;
+
+    // Decided once per process by probing the GPU tiers, then reused by every browser relaunch.
+    private static GpuTier? s_tier;
 
     private readonly StreamedPanelCoordinator _coordinator;
     private readonly TokenService _tokens;
@@ -136,6 +140,7 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             StopAll();
             _rapidBrowserFailures = lived < RapidExitMs ? _rapidBrowserFailures + 1 : 1;
             _browserRetryAfter = Environment.TickCount64 + BackoffMs();
+            DemoteGpuIfUnstable();
         }
         if (_browser is null && !await EnsureBrowserAsync(ct).ConfigureAwait(false))
         {
@@ -196,17 +201,91 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         }
         try
         {
-            _browser = await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
-                line => ServiceLog.Info($"{Tag} {line}"), ct).ConfigureAwait(false);
+            _browser = s_tier is { } tier
+                ? await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+                    line => ServiceLog.Info($"{Tag} {line}"), ct, tier).ConfigureAwait(false)
+                : await LaunchProbingGpuAsync(browser, profileDir, ct).ConfigureAwait(false);
             _browserStartedAt = Environment.TickCount64;
+            ServiceLog.Info($"{Tag} headless browser rendering tier: {_browser.Tier}");
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _rapidBrowserFailures++;
             _browserRetryAfter = Environment.TickCount64 + BackoffMs();
+            DemoteGpuIfUnstable();
             ServiceLog.Warn($"{Tag} could not start {browser} headless: {ex.GetType().Name}: {ex.Message}");
             return false;
+        }
+    }
+
+    // First launch of the process: try Vulkan, then EGL, each only trusted once the page's WebGL
+    // renderer is a real GPU and a captured frame has the right pixels; else the CPU path.
+    private static async Task<HeadlessBrowser> LaunchProbingGpuAsync(string browser, string profileDir, CancellationToken ct)
+    {
+        HeadlessBrowser? kept = null;
+        var tier = await GpuTiers.SelectAsync(async candidateTier =>
+        {
+            var candidate = await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+                null, ct, candidateTier).ConfigureAwait(false);
+            try
+            {
+                var renderer = await candidate.ProbeRendererAsync(ct).ConfigureAwait(false);
+                if (GpuTiers.IsSoftwareRenderer(renderer) || !await CapturesCorrectlyAsync(candidate, ct).ConfigureAwait(false))
+                {
+                    candidate.Dispose();
+                    return false;
+                }
+                ServiceLog.Info($"{Tag} {candidateTier} renderer: {renderer}");
+                kept = candidate;
+                return true;
+            }
+            catch
+            {
+                candidate.Dispose();
+                throw;
+            }
+        }, line => ServiceLog.Info($"{Tag} gpu probe: {line}")).ConfigureAwait(false);
+
+        s_tier = tier;
+        return kept ?? await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+            line => ServiceLog.Info($"{Tag} {line}"), ct, GpuTier.Software).ConfigureAwait(false);
+    }
+
+    // A flat-color page must come back green; a GPU path that captures black or garbage fails here.
+    internal static async Task<bool> CapturesCorrectlyAsync(HeadlessBrowser browser, CancellationToken ct)
+    {
+        const int size = 64;
+        var frame = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            using var check = new PanelRenderSession(browser.Cdp, "gpu-check",
+                "data:text/html,<html><body style=\"margin:0;background:%2300ff00\"></body></html>", size, size, 1.0, 10);
+            check.FrameSink = f => frame.TrySetResult(f);
+            await check.StartAsync(ct).ConfigureAwait(false);
+            var bgra = await frame.Task.WaitAsync(TimeSpan.FromSeconds(8), ct).ConfigureAwait(false);
+            return IsGreen(bgra, size);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ServiceLog.Info($"{Tag} gpu probe: capture check failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    internal static bool IsGreen(byte[] bgra, int size)
+    {
+        var i = (size / 2 * size + size / 2) * 4;
+        return bgra.Length >= i + 4 && bgra[i] < 60 && bgra[i + 1] > 200 && bgra[i + 2] < 60;
+    }
+
+    // A GPU tier that keeps killing the browser is dropped for the CPU path instead of exhausting the retry cap.
+    private void DemoteGpuIfUnstable()
+    {
+        if (s_tier is { } tier && tier != GpuTier.Software && _rapidBrowserFailures >= GpuDemoteAfterFailures)
+        {
+            ServiceLog.Warn($"{Tag} browser unstable on {tier}; falling back to software rendering");
+            s_tier = GpuTier.Software;
         }
     }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,10 +12,17 @@ public sealed class PanelRenderSession : IDisposable
 {
     public const int MaxFps = 60;
 
+    // Panel transports re-encode at 85, so a near-lossless capture keeps the second pass cheap in quality.
+    internal const int JpegQuality = 90;
+
     private readonly CdpPipeClient _cdp;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _frameReady = new(0, 1);
-    private string? _latestFrame;
+    private sealed record PendingFrame(string Data, int Ack);
+    private PendingFrame? _latestFrame;
+    // Chromium sends the next screencast frame only once the previous ones are acked, so holding
+    // acks until the paced loop has taken a frame makes the capture rate follow Fps.
+    private readonly ConcurrentQueue<int> _owedAcks = new();
     private readonly TaskCompletionSource _loaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private const int LoadWaitMs = 10_000;
@@ -94,13 +102,22 @@ public sealed class PanelRenderSession : IDisposable
         }
         await Send("Page.startScreencast", w =>
         {
-            w.WriteString("format", "png");
+            w.WriteString("format", "jpeg");
+            w.WriteNumber("quality", JpegQuality);
             w.WriteNumber("maxWidth", PixelWidth);
             w.WriteNumber("maxHeight", PixelHeight);
             w.WriteNumber("everyNthFrame", 1);
         }, ct).ConfigureAwait(false);
 
         _pump = Task.Run(() => PumpAsync(_cts.Token));
+    }
+
+    private void Ack(int frame)
+    {
+        if (_cdpSession is not null && !_cdp.IsClosed && Volatile.Read(ref _disposed) == 0)
+        {
+            _cdp.Post("Page.screencastFrameAck", w => w.WriteNumber("sessionId", frame), _cdpSession);
+        }
     }
 
     private Task<JsonElement> Send(string method, Action<Utf8JsonWriter>? writeParams, CancellationToken ct) =>
@@ -122,13 +139,17 @@ public sealed class PanelRenderSession : IDisposable
         switch (method)
         {
             case "Page.screencastFrame":
-                if (parameters.TryGetProperty("sessionId", out var frameId) && frameId.TryGetInt32(out var ack))
+                if (!parameters.TryGetProperty("sessionId", out var frameId) || !frameId.TryGetInt32(out var ack))
                 {
-                    _cdp.Post("Page.screencastFrameAck", w => w.WriteNumber("sessionId", ack), _cdpSession);
+                    break;
                 }
                 if (parameters.TryGetProperty("data", out var data) && data.GetString() is { } base64)
                 {
-                    Volatile.Write(ref _latestFrame, base64);
+                    var superseded = Interlocked.Exchange(ref _latestFrame, new PendingFrame(base64, ack));
+                    if (superseded is not null)
+                    {
+                        _owedAcks.Enqueue(superseded.Ack);
+                    }
                     if (_frameReady.CurrentCount == 0)
                     {
                         try
@@ -139,6 +160,10 @@ public sealed class PanelRenderSession : IDisposable
                         {
                         }
                     }
+                }
+                else
+                {
+                    Ack(ack);
                 }
                 break;
             case "Page.loadEventFired":
@@ -159,10 +184,10 @@ public sealed class PanelRenderSession : IDisposable
             {
                 await _frameReady.WaitAsync(ct).ConfigureAwait(false);
                 var started = Environment.TickCount64;
-                var base64 = Interlocked.Exchange(ref _latestFrame, null);
-                if (base64 is not null)
+                var pending = Interlocked.Exchange(ref _latestFrame, null);
+                if (pending is not null)
                 {
-                    var frame = DecodeToBgra(base64, PixelWidth, PixelHeight);
+                    var frame = DecodeToBgra(pending.Data, PixelWidth, PixelHeight);
                     if (frame is not null)
                     {
                         FrameSink?.Invoke(frame);
@@ -173,6 +198,14 @@ public sealed class PanelRenderSession : IDisposable
                 if (spent < periodMs)
                 {
                     await Task.Delay((int)(periodMs - spent), ct).ConfigureAwait(false);
+                }
+                while (_owedAcks.TryDequeue(out var owed))
+                {
+                    Ack(owed);
+                }
+                if (pending is not null)
+                {
+                    Ack(pending.Ack);
                 }
             }
         }

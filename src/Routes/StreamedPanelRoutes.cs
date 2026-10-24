@@ -2,6 +2,9 @@ using System.IO;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
 using Nexus.Service.Auth;
+using Nexus.Service.Models;
+using Nexus.Service.Models.Panel;
+using Nexus.Service.Persistence;
 using Nexus.Service.Panel.Streams;
 using Nexus.Service.Platform;
 using Nexus.Service.Serialization;
@@ -20,6 +23,26 @@ public static class StreamedPanelRoutes
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
             return Results.Json(coordinator.GetAssignments(), AppJsonContext.Default.StreamAssignmentsResponse);
+        });
+
+        // Global fps cap for every streamed panel. A change wakes the coordinator,
+        // which re-mints live sessions at the new rate.
+        app.MapGet("/panel/streams/settings", (HttpContext ctx, IConfigStore config, TokenService tokens) =>
+        {
+            if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
+                return Results.Unauthorized();
+            return Results.Json(new StreamSettingsDto { FpsCap = config.Load().StreamedPanelFpsCap }, AppJsonContext.Default.StreamSettingsDto);
+        });
+
+        app.MapPut("/panel/streams/settings", (StreamSettingsDto body, HttpContext ctx, IConfigStore config, StreamedPanelCoordinator coordinator, TokenService tokens) =>
+        {
+            if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
+                return Results.Unauthorized();
+            if (!StreamFpsCap.IsValid(body.FpsCap))
+                return Results.BadRequest(ApiResponse.Fail("fpsCap must be one of 30, 20, 15, 10, 5, 1 or null"));
+            config.Update(s => s.StreamedPanelFpsCap = body.FpsCap);
+            coordinator.Wake();
+            return Results.Json(new StreamSettingsDto { FpsCap = body.FpsCap }, AppJsonContext.Default.StreamSettingsDto);
         });
 
         // One long-lived chunked POST per stream session carrying framed
