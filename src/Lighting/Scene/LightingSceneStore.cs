@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -46,7 +48,79 @@ public sealed class LightingSceneStore
         {
             doc.Objects = saved.Setup.Resolved.Objects;
         }
+        if (HealBindings(doc.Bindings, doc.Objects))
+        {
+            var healed = false;
+            lock (_lock)
+            {
+                // Re-heal the stored copy under the write lock, so concurrent readers persist it once.
+                var stored = Clone(_cached ??= ReadUnlocked());
+                if (HealBindings(stored.Bindings, doc.Objects))
+                {
+                    WriteUnlocked(stored);
+                    _cached = Clone(stored);
+                    healed = true;
+                }
+                doc.Bindings = stored.Bindings;
+            }
+            if (healed)
+            {
+                Changed?.Invoke();
+            }
+        }
         return doc;
+    }
+
+    /// <summary>
+    /// Retargets a binding whose object no longer exists (an id from before the shared PC setup, like
+    /// <c>mouse-1</c>) onto the one object of the same kind, when that object has the target's anchor or
+    /// a surface and no other target holds it. One target at a time, so two missing ids never share an
+    /// object. With zero or several candidates the target is left as it is. True when anything changed.
+    /// </summary>
+    internal static bool HealBindings(List<SceneBinding> bindings, List<SceneObject> objects)
+    {
+        var present = new HashSet<string>(objects.Select(o => o.Id), StringComparer.Ordinal);
+        var held = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var binding in bindings)
+        {
+            foreach (var target in binding.Targets)
+            {
+                if (present.Contains(target.ObjectId))
+                {
+                    held.Add(target.ObjectId);
+                }
+            }
+        }
+        var changed = false;
+        foreach (var binding in bindings)
+        {
+            foreach (var target in binding.Targets)
+            {
+                if (present.Contains(target.ObjectId))
+                {
+                    continue;
+                }
+                var dash = target.ObjectId.IndexOf('-', StringComparison.Ordinal);
+                var kind = dash > 0 ? target.ObjectId[..dash] : target.ObjectId;
+                var candidates = objects.Where(o => string.Equals(o.Kind, kind, StringComparison.Ordinal)).ToList();
+                if (candidates.Count != 1 || held.Contains(candidates[0].Id))
+                {
+                    continue;
+                }
+                var anchors = candidates[0].Anchors;
+                var anchor = anchors.FirstOrDefault(a => a.Id == target.AnchorId)
+                    ?? (anchors.Count(a => a.Kind == "surface") == 1 ? anchors.First(a => a.Kind == "surface") : null);
+                if (anchor is null)
+                {
+                    continue;
+                }
+                target.ObjectId = candidates[0].Id;
+                target.AnchorId = anchor.Id;
+                held.Add(candidates[0].Id);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     /// <summary>Raised after every successful write, outside the store lock.</summary>
