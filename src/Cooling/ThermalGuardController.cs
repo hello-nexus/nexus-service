@@ -873,17 +873,22 @@ public sealed class ThermalGuardController
         {
             var now = _utcNowMs();
             var peak = _cpu.PeakC;
+            string? endedReason = null;
             _store.Update(s =>
             {
                 if (s.Cooling.LastThermalTrip is { } t)
                 {
                     t.EndedAtUtcMs = now;
                     t.PeakC = Math.Max(t.PeakC, peak);
+                    endedReason = t.Reason;
                 }
             });
-            // Heal at trip end: the trip itself is handled by the override, and healing
-            // while the fans are pinned means the curves resume already corrected.
-            HealNow(automatic: true);
+            // Only a cooling-loss trip proves the user's curves are wrong; heal while the fans
+            // are pinned so they resume already corrected. A limit trip leaves curves untouched.
+            if (endedReason == ThermalTripReasons.CoolingLoss)
+            {
+                HealNow(automatic: true);
+            }
         }
     }
 
