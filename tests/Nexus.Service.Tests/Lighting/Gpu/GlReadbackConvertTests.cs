@@ -142,4 +142,12 @@ public class GlReadbackConvertTests
             Assert.Equal(Reference(src, w, h, rgba), dst);
         }
     }
+
+    [Fact]
+    public void Row_kernels_reject_a_destination_shorter_than_the_row_instead_of_storing_past_it()
+    {
+        var src = Noise(64 * 4);
+        Assert.Throws<IndexOutOfRangeException>(() => GlReadbackConvert.RowVector128(src, new byte[64 * 3 - 1], 64));
+        Assert.Throws<IndexOutOfRangeException>(() => GlReadbackConvert.RowSsse3(src, new byte[64 * 3 - 1], 64));
+    }
 }
