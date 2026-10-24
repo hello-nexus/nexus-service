@@ -149,8 +149,7 @@ public static partial class DevicesRoutes
         EdgePicking = m.EdgePicking,
         Media = m.Media.ConvertAll(i => new DeepCoolMystiqueMediaDto { Kind = i.Kind, Id = i.Id, Name = i.Name, Ext = i.Ext, Editable = MystiqueSourceExists(i) }).ToArray(),
         ShownGif = m.ShownGif,
-        ShownPicture = MystiqueShownPicture(m),
-        PicturesUnsent = m.Media.Exists(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && i.Unsent),
+        ShownPicture = m.ShownPicture,
         GifSlotUnsure = m.GifSlotUnsure,
         RecordingChosen = m.RecordingEdited,
         DeviceChosen = m.DeviceEdited,
@@ -234,11 +233,8 @@ public sealed class DeepCoolMystiqueStateResponse
     /// <summary>Id of the GIF the screen plays, empty when unknown.</summary>
     public string ShownGif { get; set; } = "";
 
-    /// <summary>Id of the picture the screen starts the pictures from, empty when unknown.</summary>
+    /// <summary>Id of the picture the screen shows, empty when unknown.</summary>
     public string ShownPicture { get; set; } = "";
-
-    /// <summary>A picture's copy on the screen is incomplete until the next picture show sends it again.</summary>
-    public bool PicturesUnsent { get; set; }
 
     /// <summary>The screen may hold GIFs from before Nexus's slot, so a picked GIF may not be the one it plays until Remove all is used.</summary>
     public bool GifSlotUnsure { get; set; }

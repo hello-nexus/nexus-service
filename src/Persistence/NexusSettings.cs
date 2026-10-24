@@ -2291,14 +2291,8 @@ public sealed class DeepCoolMystiqueMediaItem
     /// <summary><see cref="KindPicture"/> or <see cref="KindGif"/>.</summary>
     public string Kind { get; set; } = KindPicture;
 
-    /// <summary>Names the item; a picture goes up on the screen under it unless <see cref="ScreenId"/> is set, a GIF under <see cref="DeepCoolMystiqueSettings.GifSlot"/>.</summary>
+    /// <summary>Names the item; it goes up on the screen under <see cref="DeepCoolMystiqueSettings.PictureSlot"/> or <see cref="DeepCoolMystiqueSettings.GifSlot"/>.</summary>
     public string Id { get; set; } = "";
-
-    /// <summary>The id the screen holds a picture under when it differs from <see cref="Id"/>, as after a click swapped it into the first place; empty otherwise.</summary>
-    public string ScreenId { get; set; } = "";
-
-    /// <summary>The screen's copy of this picture did not finish streaming; the next picture show sends it again.</summary>
-    public bool Unsent { get; set; }
 
     public string Name { get; set; } = "";
 
@@ -2308,7 +2302,7 @@ public sealed class DeepCoolMystiqueMediaItem
     /// <summary>The crop the item was last encoded with, in <see cref="Nexus.Service.Media.CropRect"/> text form; empty for the whole frame.</summary>
     public string Crop { get; set; } = "";
 
-    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", ScreenId = ScreenId ?? "", Unsent = Unsent, Name = Name ?? "", Ext = Ext ?? "", Crop = Crop ?? "" };
+    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", Name = Name ?? "", Ext = Ext ?? "", Crop = Crop ?? "" };
 }
 
 /// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
@@ -2382,16 +2376,16 @@ public sealed class DeepCoolMystiqueSettings
     public string MediaSource { get; set; } = SourceImages;
     public bool EdgePicking { get; set; }
 
-    /// <summary>Pictures and GIFs this PC has put on the screen; the screen cannot be read back.</summary>
+    /// <summary>Pictures and GIFs this PC keeps for the screen, which holds one of each kind at a time and cannot be read back.</summary>
     public List<DeepCoolMystiqueMediaItem> Media { get; set; } = new();
 
-    /// <summary>Items removed from <see cref="Media"/> that the screen still holds: no delete command is known, so new uploads go up under these ids first.</summary>
+    /// <summary>Screen ids the screen may still hold from removed items; a slot is taken from them before a recorded one exists.</summary>
     public List<DeepCoolMystiqueMediaItem> Freed { get; set; } = new();
 
     /// <summary>The screen id every GIF goes up under, so showing another GIF replaces the one it holds. Empty until the first GIF after a format.</summary>
     public string GifSlot { get; set; } = "";
 
-    /// <summary>The screen may hold pictures and GIFs from before Nexus tracked their order, so the GIF it plays and the picture it shows first are guesses; a format clears it.</summary>
+    /// <summary>The screen may hold pictures and GIFs from before Nexus kept one slot for each, so what it shows is a guess; a format clears it.</summary>
     public bool GifSlotUnsure { get; set; } = true;
 
     /// <summary>
@@ -2400,8 +2394,11 @@ public sealed class DeepCoolMystiqueSettings
     /// </summary>
     public bool QuietSinceFormat { get; set; }
 
-    /// <summary>Picture screen ids in the order the screen first stored them, oldest first; empty until an upload or show records it.</summary>
-    public List<string> PictureIds { get; set; } = new();
+    /// <summary>The screen id every picture goes up under, so showing another picture replaces the one it holds. Empty until the first picture after a format.</summary>
+    public string PictureSlot { get; set; } = "";
+
+    /// <summary>The <see cref="Media"/> id of the picture <see cref="PictureSlot"/> holds, empty when unknown or when its stream failed.</summary>
+    public string ShownPicture { get; set; } = "";
 
     /// <summary>The <see cref="Media"/> id of the GIF <see cref="GifSlot"/> holds, empty when unknown.</summary>
     public string ShownGif { get; set; } = "";
@@ -2444,7 +2441,8 @@ public sealed class DeepCoolMystiqueSettings
         copy.Freed = Freed is null ? new List<DeepCoolMystiqueMediaItem>() : Freed.ConvertAll(m => m.Copy());
         copy.GifSlot = GifSlot ?? "";
         copy.ShownGif = ShownGif ?? "";
-        copy.PictureIds = PictureIds is null ? new List<string>() : new List<string>(PictureIds);
+        copy.PictureSlot = PictureSlot ?? "";
+        copy.ShownPicture = ShownPicture ?? "";
         copy.CpuTemperature = CpuTemperature?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuFrequency = CpuFrequency?.Copy() ?? new DeepCoolMystiqueSensorPick();
         copy.CpuUsage = CpuUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();

@@ -166,7 +166,7 @@ public sealed class MystiqueSession
     }
 
     /// <summary>Sends the source <paramref name="after"/> names, or counts it as applied when it is not to be sent; false when a sent one was not answered.</summary>
-    public bool SendSourceAfter(MystiqueSourceAfter? after)
+    private bool SendSourceAfter(MystiqueSourceAfter? after)
     {
         if (after is { Send: true } send)
         {
