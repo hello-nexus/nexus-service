@@ -146,4 +146,31 @@ public sealed class LinuxGpuRenderTests
         Assert.NotNull(rounded);
         Assert.Equal(34 * 18 * 4, rounded!.Length);
     }
+
+    [Theory]
+    [InlineData("[1:2:ERROR:gpu_process_host.cc(990)] GPU process exited unexpectedly: exit_code=139", true)]
+    [InlineData("[1:2:ERROR:viz_main_impl.cc(186)] Exiting GPU process due to errors during initialization", true)]
+    [InlineData("GPU process isn't usable. Goodbye.", true)]
+    [InlineData("[1:2:WARNING:gpu_channel.cc] unrelated warning", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void Gpu_failure_line_matching(string? line, bool expected) =>
+        Assert.Equal(expected, HeadlessBrowser.IsGpuFailureLine(line));
+
+    [Theory]
+    [InlineData(1, 5_000)]
+    [InlineData(2, 10_000)]
+    [InlineData(3, 20_000)]
+    [InlineData(5, 60_000)]
+    [InlineData(40, 60_000)]
+    public void Session_retry_backs_off_to_a_minute(int streak, int expected) =>
+        Assert.Equal(expected, LinuxStreamRenderHost.SessionRetryDelayMs(streak));
+
+    [Fact]
+    public void Probe_is_due_only_after_the_pause()
+    {
+        Assert.False(LinuxStreamRenderHost.ProbeDue(999, 1_000));
+        Assert.True(LinuxStreamRenderHost.ProbeDue(1_000, 1_000));
+        Assert.True(LinuxStreamRenderHost.ProbeDue(5, 0));
+    }
 }
