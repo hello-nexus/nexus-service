@@ -23,17 +23,14 @@ public sealed class PutPcSetupBody
     public PcSetup? Setup { get; set; }
 }
 
-/// <summary>Lighting's write: moves and turns existing items, nothing else.</summary>
+/// <summary>Lighting's write: moves and turns existing items, nothing else. The service updates the matching resolved objects' position and yaw itself; a <c>resolved</c> field in the body is ignored.</summary>
 public sealed class PatchPcSetupPlacementsBody
 {
     public int? BaseRev { get; set; }
     public List<PcSetupPlacement>? Places { get; set; }
-
-    /// <summary>Required when <see cref="Places"/> is not empty.</summary>
-    public PcSetupResolved? Resolved { get; set; }
 }
 
-/// <summary>An item id, or <c>case</c>, and its new footprint centre and yaw (units and direction in <see cref="PcSetup"/>).</summary>
+/// <summary>An item id, or <c>case</c>, and its new footprint center and yaw (units and direction in <see cref="PcSetup"/>).</summary>
 public sealed class PcSetupPlacement
 {
     public string Id { get; set; } = "";

@@ -68,14 +68,6 @@ public static class PcSetupRoutes
             {
                 return Fail(new("too_many_items", $"at most {PcSetupValidation.MaxItems + 1} places"));
             }
-            if (places.Count > 0 && body.Resolved is null)
-            {
-                return Fail(new("resolved_required", "resolved is required with places"));
-            }
-            if (body.Resolved is not null && PcSetupValidation.Resolved(body.Resolved) is { } resolvedError)
-            {
-                return Fail(resolvedError);
-            }
             lock (SetupWriteLock)
             {
                 var current = scene.Setup.Load();
@@ -98,19 +90,33 @@ public static class PcSetupRoutes
                     if (p.Id == PcSetupValidation.CaseId)
                     {
                         Apply(next.Case.Place ??= new PcSetupPlace(), p);
+                        MoveResolved(next.Resolved.Objects.Find(o => o.Kind == "case"), p);
                     }
                     else if (next.Items.Find(i => i.Id == p.Id) is { } item)
                     {
                         Apply(item.Place ??= new PcSetupPlace(), p);
+                        var desk = next.Resolved.Objects.Find(o => o.Id == p.Id);
+                        var oldX = desk?.Position[0] ?? 0f;
+                        var oldZ = desk?.Position[2] ?? 0f;
+                        var oldYaw = desk?.Yaw ?? 0f;
+                        MoveResolved(desk, p);
+                        // An L desk's return arm is its own resolved object, "<id>.return": it keeps its offset and turn relative to the desk.
+                        if (desk is not null && next.Resolved.Objects.Find(o => o.Id == p.Id + ".return") is { } ret)
+                        {
+                            var delta = p.Yaw - oldYaw;
+                            var offset = SceneMath.RotateYaw(new System.Numerics.Vector3(ret.Position[0] - oldX, 0f, ret.Position[2] - oldZ), delta);
+                            ret.Position = [p.X + offset.X, ret.Position[1], p.Z + offset.Z];
+                            ret.Yaw += delta;
+                        }
                     }
                     else
                     {
                         return Fail(new("unknown_id", $"no item with id {p.Id}"));
                     }
                 }
-                if (body.Resolved is not null)
+                if (PcSetupValidation.Size(next) > PcSetupValidation.MaxRecordBytes)
                 {
-                    next.Resolved = body.Resolved;
+                    return Fail(new("record_too_large", $"the record is over {PcSetupValidation.MaxRecordBytes / 1024} KiB"));
                 }
                 return scene.Setup.TrySave(baseRev, next, out var saved)
                     ? Results.Json(new PcSetupRevResponse { Rev = saved.Rev }, AppJsonContext.Default.PcSetupRevResponse)
@@ -122,6 +128,17 @@ public static class PcSetupRoutes
     /// <summary>Pings the <c>system/setup</c> topic after every save, whichever path made it (a route or a backup restore).</summary>
     public static void WireTopic(PcSetupStore store, Nexus.Service.Sockets.MultiplexHub hub) =>
         store.Changed += rev => Nexus.Service.Sockets.PanelTopics.BroadcastSystemSetup(hub, rev);
+
+    // The service moves the matching resolved object itself, so a client can never add, remove or reshape scene objects here.
+    private static void MoveResolved(SceneObject? obj, PcSetupPlacement p)
+    {
+        if (obj is null)
+        {
+            return;
+        }
+        obj.Position = [p.X, obj.Position.Length == 3 ? obj.Position[1] : 0f, p.Z];
+        obj.Yaw = p.Yaw;
+    }
 
     private static void Apply(PcSetupPlace place, PcSetupPlacement p)
     {

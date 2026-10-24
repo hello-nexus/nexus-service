@@ -9,9 +9,9 @@ namespace Nexus.Service.Lighting.Scene;
 /// Lighting may only move and turn them.
 ///
 /// Coordinate contract, identical to <see cref="SceneObject"/> so the service
-/// copies nothing: millimetres; world origin at the desk surface, +X to the
+/// copies nothing: millimeters; world origin at the desk surface, +X to the
 /// seated user's right, +Z toward the user; <c>x</c> and <c>z</c> are the
-/// centre of the item's footprint (the same point as
+/// center of the item's footprint (the same point as
 /// <c>SceneObject.Position</c> X and Z); <c>yaw</c> is degrees about +Y,
 /// counter-clockwise seen from above, the rotation three.js applies as
 /// rotation.y (an item's front at +Z turns toward +X for a positive yaw).
@@ -65,6 +65,16 @@ public sealed class PcSetupCustom
     public float? WidthMm { get; set; }
     public float? DepthMm { get; set; }
     public float? Price { get; set; }
+
+    /// <summary>"straight" (default when absent) or "l". Only a desk uses it.</summary>
+    public string? Shape { get; set; }
+
+    /// <summary>The L's second arm, same units and caps as the width and depth.</summary>
+    public float? ReturnWidthMm { get; set; }
+    public float? ReturnDepthMm { get; set; }
+
+    /// <summary>Which side of the desk the return arm sits on: "left" or "right".</summary>
+    public string? ReturnSide { get; set; }
 }
 
 public sealed class PcSetupDetected
@@ -73,7 +83,7 @@ public sealed class PcSetupDetected
     public bool? Hidden { get; set; }
 }
 
-/// <summary>Footprint-centre position and yaw, see <see cref="PcSetup"/> for units and direction.</summary>
+/// <summary>Footprint-center position and yaw, see <see cref="PcSetup"/> for units and direction.</summary>
 public sealed class PcSetupPlace
 {
     public float X { get; set; }

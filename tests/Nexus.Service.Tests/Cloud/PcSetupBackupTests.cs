@@ -22,6 +22,7 @@ public sealed class PcSetupBackupTests : IDisposable
     private readonly LightingSceneStore _scene;
     private readonly CloudProfileSyncService _sync;
     private readonly CloudProfileLibraryService _library;
+    private readonly ManualTimeProvider _clock = new(DateTimeOffset.UtcNow);
 
     public PcSetupBackupTests()
     {
@@ -32,7 +33,7 @@ public sealed class PcSetupBackupTests : IDisposable
         _accounts = new CloudAccountService(_api, _store, TimeProvider.System);
         _appData = new AppDataStore(() => Path.Combine(_tempDir, "app-data"), () => _profiles.ActiveProfileId);
         _scene = new LightingSceneStore(Path.Combine(_tempDir, "scene"));
-        _sync = new CloudProfileSyncService(_api, _accounts, _profiles, _store, new StubCoolingProvider(_store), _appData, TimeProvider.System, _scene.Setup);
+        _sync = new CloudProfileSyncService(_api, _accounts, _profiles, _store, new StubCoolingProvider(_store), _appData, _clock, _scene.Setup);
         _library = new CloudProfileLibraryService(_api, _accounts, _profiles, _store, _appData, _scene.Setup);
         _store.Update(s =>
         {
@@ -140,7 +141,7 @@ public sealed class PcSetupBackupTests : IDisposable
         var result = await _library.ImportAsync(new CloudImportRequest { InstallId = own, ProfileId = profileId, IncludeAppData = true }, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal("applied", _library.LastImportPcSetup);
+        Assert.Equal("applied", result.PcSetup);
         var file = _scene.Setup.Load();
         Assert.Equal(["restored"], file.Setup.Items.Select(i => i.Id));
         Assert.Equal(1, file.Rev);
@@ -239,6 +240,36 @@ public sealed class PcSetupBackupTests : IDisposable
     }
 
     [Fact]
+    public async Task A_background_push_for_a_profile_change_carries_no_new_setup_and_clears_the_pushed_hash()
+    {
+        var profileId = SeedSyncedProfile();
+        _scene.Setup.TrySave(0, Setup("kb"), out _);
+        var pushedDigest = PcSetupBackup.Digest(_scene.Setup)!;
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[profileId].LastPushedSetupHash = pushedDigest);
+        // The setup then changes locally, and so does a profile setting.
+        var moved = Setup("kb");
+        moved.Items[0].Place!.X = 50f;
+        _scene.Setup.TrySave(1, moved, out _);
+        _store.Update(s => s.Lighting.GlobalBrightness = 0.4f);
+        _store.FlushNow();
+        CloudPutProfileRequest? sent = null;
+        _api.OnPutProfile = (_, _, _, body) =>
+        {
+            sent = body;
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 2 });
+        };
+
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: false);
+        Assert.Equal(0, _api.PutProfileCalls);
+        _clock.Advance(TimeSpan.FromSeconds(61));
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: false);
+
+        Assert.NotNull(sent);
+        Assert.DoesNotContain(PcSetupBackup.AppId, sent!.AppData!.Keys);
+        Assert.Equal("", _store.Load().Auth!.CloudAccounts[0].ProfileSync[profileId].LastPushedSetupHash);
+    }
+
+    [Fact]
     public async Task A_restore_of_another_machines_backup_skips_the_record_and_says_so()
     {
         _scene.Setup.TrySave(0, Setup("mine"), out _);
@@ -257,7 +288,7 @@ public sealed class PcSetupBackupTests : IDisposable
         var result = await _library.ImportAsync(new CloudImportRequest { InstallId = "install-other", ProfileId = "p-remote", IncludeAppData = true }, CancellationToken.None);
 
         Assert.True(result.Success);
-        Assert.Equal("skipped_other_machine", _library.LastImportPcSetup);
+        Assert.Equal("skipped_other_machine", result.PcSetup);
         Assert.Equal(["mine"], _scene.Setup.Load().Setup.Items.Select(i => i.Id));
         Assert.DoesNotContain(_profiles.GetManifest().Profiles.SelectMany(p => _appData.ReadProfile(p.Id).Keys), k => k == PcSetupBackup.AppId);
     }

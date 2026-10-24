@@ -170,7 +170,7 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         var before = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup");
 
         var res = await Patch(Desktop(), "/system/setup/placements",
-            $$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":55,"z":66,"yaw":30},{"id":"case","x":-10,"z":20,"yaw":180}],"resolved":{{Resolved()}}}""");
+            $$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":55,"z":66,"yaw":30},{"id":"case","x":-10,"z":20,"yaw":180}]}""");
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         Assert.Equal(rev + 1, (await Body(res)).GetProperty("rev").GetInt32());
@@ -193,7 +193,7 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         var rev = await Seed();
 
         var res = await Patch(Desktop(), "/system/setup/placements",
-            $$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":1,"z":1,"yaw":1},{"id":"ghost","x":2,"z":2,"yaw":2}],"resolved":{{Resolved()}}}""");
+            $$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":1,"z":1,"yaw":1},{"id":"ghost","x":2,"z":2,"yaw":2}]}""");
 
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         Assert.Equal("unknown_id", (await Body(res)).GetProperty("code").GetString());
@@ -209,7 +209,7 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
 
         // An item in the body that is not in the record is just an unknown id; nothing is created.
         var add = await Patch(Desktop(), "/system/setup/placements",
-            $$"""{"baseRev":{{rev}},"places":[{"id":"new-item","x":1,"z":1,"yaw":1}],"resolved":{{Resolved()}}}""");
+            $$"""{"baseRev":{{rev}},"places":[{"id":"new-item","x":1,"z":1,"yaw":1}]}""");
         Assert.Equal(HttpStatusCode.BadRequest, add.StatusCode);
 
         // A patch that carries an items list, or a case, has no effect: the body shape has no such field.
@@ -222,7 +222,7 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
     }
 
     [Fact]
-    public async Task Patch_validates_places_and_resolved()
+    public async Task Patch_validates_places()
     {
         var rev = await Seed();
         var client = Desktop();
@@ -234,10 +234,8 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         }
 
         Assert.Equal("base_rev_required", await Code("""{"places":[]}"""));
-        Assert.Equal("resolved_required", await Code($$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":1,"z":1,"yaw":1}]}"""));
-        Assert.Equal("duplicate_id", await Code($$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":1,"z":1,"yaw":1},{"id":"kb","x":2,"z":2,"yaw":2}],"resolved":{{Resolved()}}}"""));
-        Assert.Equal("non_finite_number", await Code($$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":1e30,"z":1,"yaw":1}],"resolved":{{Resolved()}}}"""));
-        Assert.Equal("invalid_resolved", await Code($$$"""{"baseRev":{{{rev}}},"places":[],"resolved":{"objects":[{"id":"x y","kind":"box","source":"user","position":[0,0,0],"yaw":0,"size":[1,1,1],"anchors":[]}]}}"""));
+        Assert.Equal("duplicate_id", await Code($$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":1,"z":1,"yaw":1},{"id":"kb","x":2,"z":2,"yaw":2}]}"""));
+        Assert.Equal("non_finite_number", await Code($$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":1e30,"z":1,"yaw":1}]}"""));
     }
 
     [Fact]
@@ -246,12 +244,83 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         var rev = await Seed();
 
         var res = await Patch(Desktop(), "/system/setup/placements",
-            $$"""{"baseRev":{{rev - 1}},"places":[{"id":"kb","x":1,"z":1,"yaw":1}],"resolved":{{Resolved()}}}""");
+            $$"""{"baseRev":{{rev - 1}},"places":[{"id":"kb","x":1,"z":1,"yaw":1}]}""");
 
         Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
         var body = await Body(res);
         Assert.Equal(rev, body.GetProperty("rev").GetInt32());
         Assert.Equal(10, body.GetProperty("setup").GetProperty("items")[0].GetProperty("place").GetProperty("x").GetInt32());
+    }
+
+    [Fact]
+    public async Task Patch_moves_the_matching_resolved_objects_itself_and_ignores_a_resolved_list_in_the_body()
+    {
+        var rev = await Seed();
+        var smuggled = """{"objects":[{"id":"extra","kind":"box","source":"user","position":[0,0,0],"yaw":0,"size":[1,1,1],"anchors":[]}]}""";
+
+        var res = await Patch(Desktop(), "/system/setup/placements",
+            $$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":77,"z":88,"yaw":15}],"resolved":{{smuggled}}}""");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var resolved = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup").GetProperty("resolved").GetProperty("objects");
+        var only = Assert.Single(resolved.EnumerateArray());
+        Assert.Equal("kb", only.GetProperty("id").GetString());
+        Assert.Equal(77, only.GetProperty("position")[0].GetInt32());
+        Assert.Equal(0, only.GetProperty("position")[1].GetInt32());
+        Assert.Equal(88, only.GetProperty("position")[2].GetInt32());
+        Assert.Equal(15, only.GetProperty("yaw").GetInt32());
+        Assert.Equal(440, only.GetProperty("size")[0].GetInt32());
+        Assert.Equal(1, only.GetProperty("anchors").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Patch_checks_the_total_record_size_before_saving()
+    {
+        // A record over the cap can only exist through a path that skipped validation (a hand-edited file), so seed it directly.
+        var big = new PcSetup();
+        big.Items.Add(new PcSetupItem { Id = "kb", Kind = "keyboard", Place = new PcSetupPlace() });
+        big.Parts = JsonDocument.Parse("\"" + new string('x', PcSetupValidation.MaxRecordBytes) + "\"").RootElement.Clone();
+        Assert.True(Scene.Setup.TrySave(0, big, out var saved));
+
+        var res = await Patch(Desktop(), "/system/setup/placements", $$"""{"baseRev":{{saved.Rev}},"places":[{"id":"kb","x":1,"z":1,"yaw":1}]}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal("record_too_large", (await Body(res)).GetProperty("code").GetString());
+        Assert.Equal(0f, Scene.Setup.Load().Setup.Items[0].Place!.X);
+    }
+
+    [Fact]
+    public async Task Patching_an_l_desk_carries_its_return_object_and_rejects_the_return_id_as_a_place()
+    {
+        const string desk = """{"id":"desk","kind":"desk","source":"user","position":[0,0,0],"yaw":0,"size":[1600,30,800],"anchors":[]}""";
+        const string ret = """{"id":"desk.return","kind":"desk","source":"user","position":[-1000,0,500],"yaw":0,"size":[600,30,1200],"anchors":[]}""";
+        var items = """[{"id":"desk","kind":"desk","owned":true,"custom":{"name":"Desk","widthMm":1600,"depthMm":800,"shape":"l","returnWidthMm":600,"returnDepthMm":1200,"returnSide":"left"},"place":{"x":0,"z":0,"yaw":0}}]""";
+        var put = await Desktop().PutAsync("/system/setup", Json(Put(0, SetupJson(items, $"[{desk},{ret}]"))));
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        // A quarter turn counter-clockwise from above: local +X goes to -Z, local +Z goes to +X.
+        var res = await Patch(Desktop(), "/system/setup/placements", """{"baseRev":1,"places":[{"id":"desk","x":100,"z":200,"yaw":90}]}""");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var objs = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup").GetProperty("resolved").GetProperty("objects");
+        var moved = objs.EnumerateArray().Single(o => o.GetProperty("id").GetString() == "desk.return");
+        Assert.Equal(90, moved.GetProperty("yaw").GetInt32());
+        Assert.Equal(100 + 500, Math.Round(moved.GetProperty("position")[0].GetDouble()));
+        Assert.Equal(200 + 1000, Math.Round(moved.GetProperty("position")[2].GetDouble()));
+        Assert.Equal(2, objs.GetArrayLength());
+
+        var bad = await Patch(Desktop(), "/system/setup/placements", """{"baseRev":2,"places":[{"id":"desk.return","x":1,"z":1,"yaw":1}]}""");
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        Assert.Equal("unknown_id", (await Body(bad)).GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Put_with_an_unknown_desk_shape_is_400()
+    {
+        var items = """[{"id":"desk","kind":"desk","custom":{"name":"Desk","shape":"u"}}]""";
+        var res = await Desktop().PutAsync("/system/setup", Json(Put(0, SetupJson(items, "[]"))));
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal("invalid_item", (await Body(res)).GetProperty("code").GetString());
     }
 
     // ---- lighting reads from the record ----
@@ -300,9 +369,8 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         Assert.NotNull(Engine.Scene);
         var before = Engine.Scene!.Placements["kbd-1"][0].Center;
 
-        var moved = KbObject.Replace("\"position\":[10,0,150]", "\"position\":[210,0,150]");
         await Patch(client, "/system/setup/placements",
-            $$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":210,"z":150,"yaw":0}],"resolved":{{Resolved("[" + moved + "]")}}}""");
+            $$"""{"baseRev":{{rev}},"places":[{"id":"kb","x":210,"z":150,"yaw":0}]}""");
 
         Assert.Equal(before.X + 200f, Engine.Scene!.Placements["kbd-1"][0].Center.X, 3);
     }
@@ -384,14 +452,13 @@ public sealed class PcSetupProfileFileTests : IClassFixture<LightingSceneAppFact
     private async Task<(string Json, string ProfileId)> Export()
     {
         var client = Desktop();
-        var created = await client.PostAsync("/profiles/create", new StringContent("""{"name":"SetupFile"}""", Encoding.UTF8, "application/json"));
-        if (created.StatusCode == HttpStatusCode.Conflict)
-        {
-            created = await client.PostAsync("/profiles/create", new StringContent("""{"name":"SetupFile2"}""", Encoding.UTF8, "application/json"));
-        }
+        var created = await client.PostAsync("/profiles/create", new StringContent($$"""{"name":"SetupFile{{Guid.NewGuid():N}}"}""", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
         using var made = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
         var id = made.RootElement.GetProperty("profile").GetProperty("id").GetString()!;
-        return (await client.GetStringAsync($"/profiles/{id}/export"), id);
+        var json = await client.GetStringAsync($"/profiles/{id}/export");
+        await client.DeleteAsync($"/profiles/{id}");
+        return (json, id);
     }
 
     private static string Rename(string json, string name)
@@ -401,11 +468,13 @@ public sealed class PcSetupProfileFileTests : IClassFixture<LightingSceneAppFact
         return node.ToJsonString();
     }
 
-    private async Task<JsonElement> Import(string json, string name)
+    private async Task<JsonElement> Import(string json, string name, bool replace = true)
     {
-        var res = await Desktop().PostAsync("/profiles/import", new StringContent(json, Encoding.UTF8, "application/json"));
+        var res = await Desktop().PostAsync("/profiles/import" + (replace ? "?replace=true" : ""), new StringContent(json, Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        // The shared host caps the profile library, so each import cleans up after itself.
+        await Desktop().DeleteAsync("/profiles/" + doc.RootElement.GetProperty("profile").GetProperty("id").GetString());
         return doc.RootElement.Clone();
     }
 
@@ -415,7 +484,7 @@ public sealed class PcSetupProfileFileTests : IClassFixture<LightingSceneAppFact
         Scene.Setup.TrySave(0, Setup("kb"), out _);
         var (json, _) = await Export();
         using var doc = JsonDocument.Parse(json);
-        Assert.False(string.IsNullOrEmpty(doc.RootElement.GetProperty("installId").GetString()));
+        Assert.False(string.IsNullOrEmpty(doc.RootElement.GetProperty("installDigest").GetString()));
         Assert.Equal("kb", doc.RootElement.GetProperty("appData").GetProperty("nexus.pc-setup").GetProperty("setup").GetProperty("items")[0].GetProperty("id").GetString());
 
         Scene.Setup.TrySave(1, Setup("changed"), out _);
@@ -426,19 +495,48 @@ public sealed class PcSetupProfileFileTests : IClassFixture<LightingSceneAppFact
     }
 
     [Fact]
+    public async Task The_file_names_the_machine_by_a_digest_never_the_install_id()
+    {
+        Scene.Setup.TrySave(0, Setup("kb"), out _);
+        var (json, _) = await Export();
+        var installId = _factory.Services.GetRequiredService<Nexus.Service.Cloud.CloudAccountService>().ResolveStableInstallId();
+
+        Assert.DoesNotContain(installId, json);
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(Nexus.Service.Cloud.PcSetupBackup.MachineDigest(installId), doc.RootElement.GetProperty("installDigest").GetString());
+        Assert.NotEqual(installId, doc.RootElement.GetProperty("installDigest").GetString());
+    }
+
+    [Fact]
+    public async Task A_file_imported_as_a_new_profile_never_touches_the_machine_setup()
+    {
+        Scene.Setup.TrySave(0, Setup("mine"), out _);
+        var (json, _) = await Export();
+        Scene.Setup.TrySave(1, Setup("changed"), out _);
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        node["name"] = "Fresh";
+        node.Remove("installDigest");
+
+        var res = await Import(node.ToJsonString(), "fresh", replace: false);
+
+        Assert.Equal("skipped_new_profile", res.GetProperty("pcSetup").GetString());
+        Assert.Equal(["changed"], Scene.Setup.Load().Setup.Items.Select(i => i.Id));
+    }
+
+    [Fact]
     public async Task A_file_from_another_machine_skips_the_record_and_one_naming_no_machine_applies_and_reports_it()
     {
         Scene.Setup.TrySave(0, Setup("mine"), out _);
         var (json, _) = await Export();
         var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
         node["name"] = "Other";
-        node["installId"] = "some-other-install";
+        node["installDigest"] = "some-other-install";
         var other = await Import(node.ToJsonString(), "other");
         Assert.Equal("skipped_other_machine", other.GetProperty("pcSetup").GetString());
         Assert.Equal(["mine"], Scene.Setup.Load().Setup.Items.Select(i => i.Id));
 
         node["name"] = "Anon";
-        node.Remove("installId");
+        node.Remove("installDigest");
         node["appData"]!["nexus.pc-setup"]!["setup"]!["items"]![0]!["id"] = "anon";
         var anon = await Import(node.ToJsonString(), "anon");
         Assert.Equal("applied_unknown_machine", anon.GetProperty("pcSetup").GetString());

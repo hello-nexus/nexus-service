@@ -189,7 +189,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             Name = conflict.Name,
             BaseRevision = conflict.CloudRevision,
             Payload = localExport,
-            AppData = PcSetupBackup.Attach(appData, _pcSetup, out var pushedSetup),
+            AppData = AttachSetup(appData, accountId, profileId, manual: true, out var pushedSetup),
         };
         var result = await _accounts.WithAuthAsync(accountId, token => _api.PutProfileAsync(token, OwnInstallId(), profileId, request, ct), ct).ConfigureAwait(false);
 
@@ -425,7 +425,7 @@ public sealed class CloudProfileSyncService : BackgroundService
                         anyPending = true;
                         break;
                     }
-                    var pushed = await PushAsync(accountId, id, localEntry!.Name, localExport!, localAppData!, localHash!, syncRecord?.Revision ?? 0, ct).ConfigureAwait(false);
+                    var pushed = await PushAsync(accountId, id, localEntry!.Name, localExport!, localAppData!, localHash!, syncRecord?.Revision ?? 0, manual, ct).ConfigureAwait(false);
                     if (pushed)
                     {
                         _dirtySince.TryRemove(id, out _);
@@ -469,6 +469,36 @@ public sealed class CloudProfileSyncService : BackgroundService
         _state = !_conflicts.IsEmpty || anyPending ? "dirty" : "idle";
     }
 
+    /// <summary>
+    /// The PC setup is uploaded only by a manual Back up. A background push replaces the cloud copy of the
+    /// profile's app data wholesale, so it re-sends the setup only when the cloud already holds exactly that
+    /// content (nothing new leaves the machine); otherwise it omits it and clears the pushed hash, because the
+    /// cloud copy is then gone and the next manual Back up must upload the record again.
+    /// </summary>
+    private Dictionary<string, Dictionary<string, JsonElement>> AttachSetup(
+        Dictionary<string, Dictionary<string, JsonElement>> appData, string accountId, string profileId, bool manual, out string? pushedSetup)
+    {
+        if (manual)
+        {
+            var attached = PcSetupBackup.Attach(appData, _pcSetup, out pushedSetup);
+            pushedSetup ??= "";
+            return attached;
+        }
+        var pushed = _store.Load().Auth?.CloudAccounts.FirstOrDefault(a => a.AccountId == accountId)
+            ?.ProfileSync.GetValueOrDefault(profileId)?.LastPushedSetupHash ?? "";
+        if (pushed.Length > 0 && PcSetupBackup.Digest(_pcSetup) == pushed)
+        {
+            var withSetup = PcSetupBackup.Attach(appData, _pcSetup, out var digest);
+            if (digest == pushed)
+            {
+                pushedSetup = pushed;
+                return withSetup;
+            }
+        }
+        pushedSetup = "";
+        return appData;
+    }
+
     private bool DebounceElapsed(string profileId, DateTimeOffset now)
     {
         var since = _dirtySince.GetOrAdd(profileId, now);
@@ -476,7 +506,7 @@ public sealed class CloudProfileSyncService : BackgroundService
     }
 
     /// <returns>True only when the push actually landed a new revision. False on a conflict or an offline/server error - callers must not clear their own dirty-tracking state in that case, or a failed push stops being retried until the profile changes again.</returns>
-    private async Task<bool> PushAsync(string accountId, string profileId, string name, ProfileExport payload, Dictionary<string, Dictionary<string, JsonElement>> appData, string localHash, int baseRevision, CancellationToken ct)
+    private async Task<bool> PushAsync(string accountId, string profileId, string name, ProfileExport payload, Dictionary<string, Dictionary<string, JsonElement>> appData, string localHash, int baseRevision, bool manual, CancellationToken ct)
     {
         if (AppDataTooLarge(appData))
         {
@@ -488,7 +518,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             Name = name,
             BaseRevision = baseRevision,
             Payload = payload,
-            AppData = PcSetupBackup.Attach(appData, _pcSetup, out var pushedSetup),
+            AppData = AttachSetup(appData, accountId, profileId, manual, out var pushedSetup),
         };
         var result = await _accounts.WithAuthAsync(accountId, token => _api.PutProfileAsync(token, OwnInstallId(), profileId, request, ct), ct).ConfigureAwait(false);
 
@@ -566,7 +596,7 @@ public sealed class CloudProfileSyncService : BackgroundService
         }
         catch (InvalidOperationException)
         {
-            await PushAsync(accountId, profileId, name, localExport, localAppData, localHash, baseRevision, ct).ConfigureAwait(false);
+            await PushAsync(accountId, profileId, name, localExport, localAppData, localHash, baseRevision, manual: false, ct).ConfigureAwait(false);
             return;
         }
         catch (KeyNotFoundException)

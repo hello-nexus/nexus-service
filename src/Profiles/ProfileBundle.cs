@@ -31,8 +31,8 @@ public static class ProfileBundle
         /// <summary>"json" or "archive".</summary>
         public string Format { get; init; } = "json";
 
-        /// <summary>The machine the file was exported on, when it says.</summary>
-        public string? InstallId { get; init; }
+        /// <summary>Digest of the exporting machine's install id, when the file says.</summary>
+        public string? InstallDigest { get; init; }
 
         public static Parsed Fail(string error) => new() { Error = error };
     }
@@ -76,7 +76,7 @@ public static class ProfileBundle
             var export = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.ProfileExport);
             if (export?.Settings is not null)
             {
-                return new Parsed { Name = export.Name ?? "Imported", ProfileJson = json, AppData = Sanitize(export.AppData), InstallId = export.InstallId };
+                return new Parsed { Name = export.Name ?? "Imported", ProfileJson = json, AppData = Sanitize(export.AppData), InstallDigest = export.InstallDigest };
             }
             var bare = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
             return bare is null

@@ -133,6 +133,18 @@ public static partial class PcSetupValidation
             {
                 return new("non_finite_number", $"item {item.Id}: width and depth must be finite and positive");
             }
+            if (custom.Shape is not null && custom.Shape is not ("straight" or "l"))
+            {
+                return new("invalid_item", $"item {item.Id}: shape must be straight or l");
+            }
+            if (custom.ReturnSide is not null && custom.ReturnSide is not ("left" or "right"))
+            {
+                return new("invalid_item", $"item {item.Id}: returnSide must be left or right");
+            }
+            if (!Dimension(custom.ReturnWidthMm) || !Dimension(custom.ReturnDepthMm))
+            {
+                return new("non_finite_number", $"item {item.Id}: return width and depth must be finite and positive");
+            }
             if (custom.Price is { } price && (!float.IsFinite(price) || price < 0f || price > MaxPrice))
             {
                 return new("non_finite_number", $"item {item.Id}: price must be finite and not negative");

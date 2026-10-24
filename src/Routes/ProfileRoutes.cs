@@ -147,7 +147,7 @@ public static class ProfileRoutes
         {
             // The PC setup rides in the app-data bundle; the file names this machine so an import can tell it from another's.
             var json = AppDataStore.IsValidProfileId(id)
-                ? pm.ExportProfileJson(id, Nexus.Service.Cloud.PcSetupBackup.Attach(appDataStore.ReadProfile(id), scene.Setup, out _), accounts.ResolveStableInstallId())
+                ? pm.ExportProfileJson(id, Nexus.Service.Cloud.PcSetupBackup.Attach(appDataStore.ReadProfile(id), scene.Setup, out _), Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()))
                 : null;
             return json == null
                 ? Results.NotFound(ApiResponse.Fail("Profile not found."))
@@ -186,16 +186,20 @@ public static class ProfileRoutes
                     appDataStore.ReplaceApps(entry.Id, rest);
                     if (setup is not null)
                     {
-                        // Machine scope: only a file exported here (or one that names no machine) may replace this machine's setup.
-                        var own = accounts.ResolveStableInstallId();
-                        if (parsed.InstallId is not null && !string.Equals(parsed.InstallId, own, StringComparison.Ordinal))
+                        // Machine scope: only a replace of a profile from a file this machine exported (or one naming no machine) may replace this machine's setup; a new profile never touches it.
+                        if (replace != true)
+                        {
+                            setupOutcome = "skipped_new_profile";
+                        }
+                        else if (parsed.InstallDigest is not null
+                            && !string.Equals(parsed.InstallDigest, Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()), StringComparison.Ordinal))
                         {
                             setupOutcome = "skipped_other_machine";
                         }
                         else
                         {
                             scene.Setup.Replace(setup);
-                            setupOutcome = parsed.InstallId is null ? "applied_unknown_machine" : "applied";
+                            setupOutcome = parsed.InstallDigest is null ? "applied_unknown_machine" : "applied";
                         }
                     }
                 }

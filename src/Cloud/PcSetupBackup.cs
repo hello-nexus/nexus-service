@@ -21,6 +21,10 @@ public static class PcSetupBackup
     public const string AppId = "nexus.pc-setup";
     public const string Key = "setup";
 
+    /// <summary>One-way, prefixed digest of an install id: a profile file names its machine by this, never by the id itself.</summary>
+    public static string MachineDigest(string installId) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("nexus-profile-file-machine-v1:" + installId)));
+
     /// <summary>
     /// Hash of the saved record's own canonical serialization, so "changed since
     /// the last Back up" never depends on the api's copy. Null with no saved record.

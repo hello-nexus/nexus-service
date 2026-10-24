@@ -295,13 +295,13 @@ public sealed class PcSetupStoreTests : IDisposable
     // ---- coordinate contract ----
 
     [Fact]
-    public void Coordinate_contract_place_is_the_footprint_centre_in_millimetres_and_yaw_is_counter_clockwise_from_above()
+    public void Coordinate_contract_place_is_the_footprint_center_in_millimeters_and_yaw_is_counter_clockwise_from_above()
     {
         // Same world as SceneObject: +X right of the seated user, +Z toward them, +Y up, desk surface at y = 0.
         var file = Migrate(Obj("kb", "keyboard", "user", x: 120f, z: 340f, yaw: 90f));
         var place = file.Setup.Items[0].Place!;
 
-        // x and z are SceneObject.Position[0] and [2] unchanged: footprint centre, no unit or axis conversion.
+        // x and z are SceneObject.Position[0] and [2] unchanged: footprint center, no unit or axis conversion.
         Assert.Equal(120f, place.X);
         Assert.Equal(340f, place.Z);
 
@@ -410,6 +410,56 @@ public sealed class PcSetupStoreTests : IDisposable
     {
         Assert.Null(PcSetupValidation.Validate(Setup("det-3fa9c1d2")));
         Assert.Equal("invalid_item", PcSetupValidation.Validate(Setup("det:LG #2"))!.Code);
+    }
+
+    [Fact]
+    public void An_l_desk_round_trips_and_its_return_arm_is_validated_like_the_other_dimensions()
+    {
+        var setup = Valid();
+        setup.Items[0].Custom = new PcSetupCustom
+        {
+            Name = "Desk", WidthMm = 1600f, DepthMm = 800f, Shape = "l", ReturnWidthMm = 1200f, ReturnDepthMm = 600f, ReturnSide = "left",
+        };
+        Assert.Null(PcSetupValidation.Validate(setup));
+        var store = new LightingSceneStore(_dir);
+        Assert.True(store.Setup.TrySave(0, setup, out _));
+        var custom = new LightingSceneStore(_dir).Setup.Load().Setup.Items[0].Custom!;
+        Assert.Equal(("l", 1200f, 600f, "left"), (custom.Shape, custom.ReturnWidthMm, custom.ReturnDepthMm, custom.ReturnSide));
+
+        foreach (var bad in new Action<PcSetupCustom>[]
+        {
+            c => c.ReturnWidthMm = -1f, c => c.ReturnWidthMm = 0f, c => c.ReturnDepthMm = float.NaN,
+            c => c.ReturnDepthMm = float.PositiveInfinity, c => c.ReturnWidthMm = 1e9f,
+        })
+        {
+            var s = Valid();
+            s.Items[0].Custom = new PcSetupCustom { Name = "Desk", Shape = "l" };
+            bad(s.Items[0].Custom!);
+            Assert.Equal("non_finite_number", PcSetupValidation.Validate(s)!.Code);
+        }
+    }
+
+    [Fact]
+    public void An_unknown_shape_or_return_side_is_refused()
+    {
+        var setup = Valid();
+        setup.Items[0].Custom = new PcSetupCustom { Name = "Desk", Shape = "u" };
+        Assert.Equal("invalid_item", PcSetupValidation.Validate(setup)!.Code);
+
+        setup.Items[0].Custom = new PcSetupCustom { Name = "Desk", Shape = "l", ReturnSide = "up" };
+        Assert.Equal("invalid_item", PcSetupValidation.Validate(setup)!.Code);
+
+        setup.Items[0].Custom = new PcSetupCustom { Name = "Desk", Shape = "straight" };
+        Assert.Null(PcSetupValidation.Validate(setup));
+    }
+
+    [Fact]
+    public void Migration_omits_a_zero_size_instead_of_storing_zero()
+    {
+        var file = Migrate(Obj("o", "keyboard", "user", 0f, 0f, w: 0f, d: 0f));
+        var custom = Assert.Single(file.Setup.Items).Custom!;
+        Assert.Null(custom.WidthMm);
+        Assert.Null(custom.DepthMm);
     }
 
     [Fact]

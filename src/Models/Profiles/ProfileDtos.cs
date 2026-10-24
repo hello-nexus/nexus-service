@@ -13,7 +13,7 @@ public class ProfileResponse : ApiResponse
 {
     public ProfileEntry? Profile { get; set; }
 
-    /// <summary>What an import did with a PC setup in the bundle: "applied", "applied_unknown_machine" (the file names no machine) or "skipped_other_machine". Null when the bundle carried none.</summary>
+    /// <summary>What an import did with a PC setup in the bundle: "applied", "applied_unknown_machine" (the file names no machine) or "skipped_other_machine" or "skipped_new_profile" (a file imported as a new profile never touches the machine setup). Null when the bundle carried none.</summary>
     public string? PcSetup { get; set; }
 }
 
@@ -47,8 +47,8 @@ public sealed class ProfileExport
     /// <summary>The profile's app data as <c>{ appId: { key: data } }</c>. Absent in a legacy export and in the settings payload of a cloud backup.</summary>
     public Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>? AppData { get; set; }
 
-    /// <summary>The machine a profile FILE was exported on; lets an import tell its own machine's file from another's. Absent in a cloud payload (the row carries the install id there) and in older files.</summary>
-    public string? InstallId { get; set; }
+    /// <summary>One-way digest (<c>PcSetupBackup.MachineDigest</c>) of the install id of the machine a profile FILE was exported on, so an import can tell its own machine's file from another's without the file carrying the id. Absent in a cloud payload and in older files.</summary>
+    public string? InstallDigest { get; set; }
 }
 
 /// <summary>Response of <c>POST /profiles/import/inspect</c>; nothing is written.</summary>
