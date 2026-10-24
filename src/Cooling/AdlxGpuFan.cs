@@ -349,6 +349,7 @@ internal sealed unsafe class AdlxGpuFan
         if (!Monitor.TryEnter(AdlxGpuFans.Sync, wait))
         {
             _releaseRequested = true;
+            AdlxInitGuard.NoteSkippedRelease();
             return false;
         }
         try { return Release(); }

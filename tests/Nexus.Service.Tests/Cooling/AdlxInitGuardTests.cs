@@ -226,6 +226,34 @@ public sealed class AdlxInitGuardTests : IDisposable
     }
 
     [Fact]
+    public void A_skipped_fan_handback_keeps_the_first_strike()
+    {
+        Die(K, "b1");
+        AdlxInitGuard.Latched(_dir, K, "b1");
+        AdlxInitGuard.ResetScopes();
+        AdlxInitGuard.Configure(_dir, K, "b2");
+        AdlxInitGuard.Stop(_dir);
+        AdlxInitGuard.NoteSkippedRelease();
+        AdlxInitGuard.ClearFirstStrike(_dir);
+        AdlxInitGuard.ResetScopes();
+
+        Die(K, "b3");
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b3"));
+    }
+
+    [Fact]
+    public void A_mark_read_twice_in_its_own_boot_counts_one_strike()
+    {
+        Die(K, "b1");
+        AdlxInitGuard.Latched(_dir, K, "b1");
+        // The same death's mark again, as when its delete failed.
+        Die(K, "b1");
+
+        Assert.Equal(AdlxInitGuard.Latch.ThisBoot, AdlxInitGuard.Latched(_dir, K, "b1"));
+        Assert.Equal(AdlxInitGuard.Latch.None, AdlxInitGuard.Latched(_dir, K, "b2"));
+    }
+
+    [Fact]
     public void A_run_under_an_unreadable_key_never_clears_a_keyed_first_strike()
     {
         Die(K, "b1");

@@ -50,12 +50,14 @@ internal static class AdlxInitGuard
                 diedThisBoot = dead is { } m && m.Boot == boot;
                 if (dead is { } d && (d.Key.Length > 0 || state is null || state.Value.Key.Length == 0))
                 {
-                    var strikes = d.Key.Length > 0 && state is { } s && s.Key == d.Key ? s.Strikes + 1 : 1;
+                    // Strike one latches the rest of its boot, so a same-boot record is this death read again after a failed mark delete.
+                    var strikes = d.Key.Length > 0 && state is { } s && s.Key == d.Key ? (s.Boot == d.Boot ? s.Strikes : s.Strikes + 1) : 1;
                     state = new State(d.Key, strikes, d.Boot);
                     WriteAtomic(latch, $"{state.Value.Key}\t{state.Value.Strikes}\t{state.Value.Boot}");
                 }
                 // Only after the latch is on disk, so a failed write leaves the mark for the next start.
-                File.Delete(mark);
+                try { File.Delete(mark); }
+                catch (Exception) { }
             }
             var result = Decide(state, key, boot, latch);
             return result == Latch.None && diedThisBoot ? Latch.ThisBoot : result;
@@ -132,7 +134,7 @@ internal static class AdlxInitGuard
     /// </summary>
     public static void ClearFirstStrike(string dir)
     {
-        if (!_enabled) return;
+        if (!_enabled || _releaseSkipped) return;
         try
         {
             var latch = Path.Combine(dir, LatchFile);
@@ -142,6 +144,11 @@ internal static class AdlxInitGuard
     }
 
     private static bool _enabled;
+
+    private static volatile bool _releaseSkipped;
+
+    /// <summary>A fan handback skipped because ADLX was busy: the run never proved the handback safe, so its first strike stays.</summary>
+    public static void NoteSkippedRelease() => _releaseSkipped = true;
 
     private static string? _dirReady;
 
@@ -223,6 +230,7 @@ internal static class AdlxInitGuard
         _scopeKey = null;
         _scopeBoot = "";
         _enabled = false;
+        _releaseSkipped = false;
         _stopped = false;
         _latchedOnce = null;
         _dirReady = null;
