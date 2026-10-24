@@ -337,40 +337,92 @@ public class DeepCoolMystiqueRoutesTests
     }
 
     [Theory]
-    [InlineData("d0000000000000000000000000000001", "20000000000000000000000000000002", "f0000000000000000000000000000003")] // second upload holds the lowest id
-    [InlineData("90000000000000000000000000000001", "b0000000000000000000000000000002", "20000000000000000000000000000003")] // third upload holds the lowest id
-    public void Each_click_shows_the_clicked_picture_from_the_lowest_stored_id(string p1, string p2, string p3)
+    [InlineData("", "d0000000000000000000000000000001", "20000000000000000000000000000002", "f0000000000000000000000000000003",
+        "d0000000000000000000000000000001", "20000000000000000000000000000002", "20000000000000000000000000000002")]
+    [InlineData("", "90000000000000000000000000000001", "b0000000000000000000000000000002", "20000000000000000000000000000003",
+        "90000000000000000000000000000001", "90000000000000000000000000000001", "20000000000000000000000000000003")]
+    [InlineData("10000000000000000000000000000004", "d0000000000000000000000000000001", "20000000000000000000000000000002", "f0000000000000000000000000000003",
+        "10000000000000000000000000000004", "10000000000000000000000000000004", "10000000000000000000000000000004")]
+    public void A_new_picture_and_each_click_show_from_the_lowest_stored_id(string freed, string p1, string p2, string p3, string slot1, string slot2, string slot3)
     {
         var m = new DeepCoolMystiqueSettings();
-        void Upload(string id)
+        if (freed != "")
         {
+            m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = freed });
+        }
+        void Upload(string id, string slot)
+        {
+            bool swaps = DevicesRoutes.MystiqueUploadSwaps(m, id);
             DevicesRoutes.NoteMystiquePictureStored(m, id);
             m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = id });
-            string lowest = m.Media.ConvertAll(DevicesRoutes.MystiqueScreenId).Min(StringComparer.Ordinal)!;
-            Assert.Equal(lowest, DevicesRoutes.MystiquePictureSlot(m));
-            Assert.Equal(m.Media.Find(i => DevicesRoutes.MystiqueScreenId(i) == lowest)!.Id, DevicesRoutes.MystiqueShownPicture(m));
+            Assert.Equal(id != slot, swaps);
+            if (swaps)
+            {
+                Assert.True(Show(m, id, int.MaxValue) > 0);
+            }
+            Assert.Equal(slot, DevicesRoutes.MystiquePictureSlot(m));
+            Assert.Equal(id, DevicesRoutes.MystiqueShownPicture(m));
         }
-        void Click(string id)
+        void Click(string id, string slot)
         {
-            string slot = DevicesRoutes.MystiquePictureSlot(m)!;
             Show(m, id, int.MaxValue);
             Assert.Equal(slot, DevicesRoutes.MystiquePictureSlot(m));
             Assert.Equal(id, DevicesRoutes.MystiqueShownPicture(m));
             Assert.Equal(0, Show(m, id, int.MaxValue));
         }
 
-        Upload(p1);
-        Upload(p2);
+        Upload(p1, slot1);
+        Upload(p2, slot2);
         foreach (var clicked in new[] { p1, p2, p1 })
         {
-            Click(clicked);
+            Click(clicked, slot2);
         }
-        Upload(p3);
+        Upload(p3, slot3);
         foreach (var clicked in new[] { p1, p3, p2, p3 })
         {
-            Click(clicked);
+            Click(clicked, slot3);
         }
-        Assert.Equal(new[] { p1, p2, p3 }, m.PictureIds);
+        Assert.True(m.Media.TrueForAll(i => !i.Unsent));
+    }
+
+    [Fact]
+    public void Only_a_new_picture_above_the_lowest_held_picture_id_is_swapped()
+    {
+        var m = new DeepCoolMystiqueSettings();
+        Assert.False(DevicesRoutes.MystiqueUploadSwaps(m, Clicked));
+
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "gif", Id = "00000000000000000000000000000001" });
+        Assert.False(DevicesRoutes.MystiqueUploadSwaps(m, First));
+        Assert.True(DevicesRoutes.MystiqueUploadSwaps(m, "f0000000000000000000000000000003"));
+
+        m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = "10000000000000000000000000000004" });
+        Assert.True(DevicesRoutes.MystiqueUploadSwaps(m, First));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void A_failed_swap_after_an_upload_leaves_the_broken_copy_unsent_and_the_next_show_repairs_it(int streamed)
+    {
+        var m = new DeepCoolMystiqueSettings();
+        DevicesRoutes.NoteMystiquePictureStored(m, First);
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = First });
+        Assert.True(DevicesRoutes.MystiqueUploadSwaps(m, Clicked));
+        DevicesRoutes.NoteMystiquePictureStored(m, Clicked);
+        m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
+
+        Show(m, Clicked, streamed);
+
+        Assert.Equal(streamed == 0
+            ? new[] { (First, First, true), (Clicked, Clicked, false) }
+            : new[] { (First, Clicked, true), (Clicked, First, false) }, Held(m));
+        Assert.Equal(streamed == 0 ? "" : Clicked, DevicesRoutes.MystiqueShownPicture(m));
+        Assert.Empty(m.Freed);
+
+        Show(m, Clicked, int.MaxValue);
+        Assert.Equal(new[] { (First, Clicked, false), (Clicked, First, false) }, Held(m));
+        Assert.Equal(Clicked, DevicesRoutes.MystiqueShownPicture(m));
     }
 
     private const string Clicked = "acd9325521f3493c86bfc0b0aa85658d";
