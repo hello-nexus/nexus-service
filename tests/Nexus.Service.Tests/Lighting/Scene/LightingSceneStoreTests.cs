@@ -102,4 +102,28 @@ public sealed class LightingSceneStoreTests : IDisposable
         Assert.Equal("mouse-1", bindings[1].Targets[0].ObjectId);
         Assert.Equal(0, changes);
     }
+
+    [Fact]
+    public void A_removed_setup_item_is_not_re_homed()
+    {
+        var store = StoreWith([Bind("m", "p-mouse-old")], Obj("p-mouse-new", "mouse"));
+
+        Assert.Equal("p-mouse-old", store.LoadEffective().Bindings[0].Targets[0].ObjectId);
+    }
+
+    [Fact]
+    public void A_failed_persist_still_returns_the_healed_view()
+    {
+        var store = StoreWith([Bind("m", "mouse-1")], Obj("p-mouse-9", "mouse"));
+        var path = Path.Combine(_dir, "lighting-scene.json");
+        File.Delete(path);
+        Directory.CreateDirectory(path);
+        var changes = 0;
+        store.Changed += () => changes++;
+
+        var doc = store.LoadEffective();
+
+        Assert.Equal("p-mouse-9", doc.Bindings[0].Targets[0].ObjectId);
+        Assert.Equal(0, changes);
+    }
 }

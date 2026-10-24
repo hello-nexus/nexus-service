@@ -57,9 +57,17 @@ public sealed class LightingSceneStore
                 var stored = Clone(_cached ??= ReadUnlocked());
                 if (HealBindings(stored.Bindings, doc.Objects))
                 {
-                    WriteUnlocked(stored);
-                    _cached = Clone(stored);
-                    healed = true;
+                    try
+                    {
+                        WriteUnlocked(stored);
+                        _cached = Clone(stored);
+                        healed = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        // A failed write must not fail the read: the healed view still applies, and the next read retries.
+                        Console.Error.WriteLine($"[lighting-scene] heal persist failed: {ex.GetType().Name}: {ex.Message}");
+                    }
                 }
                 doc.Bindings = stored.Bindings;
             }
@@ -75,8 +83,10 @@ public sealed class LightingSceneStore
     /// Retargets a binding whose object no longer exists (an id from before the shared PC setup, like
     /// <c>mouse-1</c>) onto the one object of the same kind, when that object has the target's anchor or
     /// a surface and no other target holds it. One target at a time, so two missing ids never share an
-    /// object. With zero or several candidates the target is left as it is. True when anything changed.
+    /// object. Only legacy <c>kind-N</c> ids heal. With zero or several candidates the target is left as it is. True when anything changed.
     /// </summary>
+    private static readonly System.Text.RegularExpressions.Regex s_legacyId = new(@"^([a-z]+)-\d+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     internal static bool HealBindings(List<SceneBinding> bindings, List<SceneObject> objects)
     {
         var present = new HashSet<string>(objects.Select(o => o.Id), StringComparer.Ordinal);
@@ -100,8 +110,12 @@ public sealed class LightingSceneStore
                 {
                     continue;
                 }
-                var dash = target.ObjectId.IndexOf('-', StringComparison.Ordinal);
-                var kind = dash > 0 ? target.ObjectId[..dash] : target.ObjectId;
+                // Only the ids the scene editor minted before the shared setup (kind-N); a removed p-... item stays unbound.
+                if (s_legacyId.Match(target.ObjectId) is not { Success: true } legacy)
+                {
+                    continue;
+                }
+                var kind = legacy.Groups[1].Value;
                 var candidates = objects.Where(o => string.Equals(o.Kind, kind, StringComparison.Ordinal)).ToList();
                 if (candidates.Count != 1 || held.Contains(candidates[0].Id))
                 {
