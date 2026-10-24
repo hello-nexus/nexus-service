@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Nexus.Service.Persistence;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Platform;
@@ -52,12 +53,17 @@ public sealed class MystiqueSession
     private long _clockSentMs;
     private TimeSpan _clockOffset;
     private int _unanswered;
+    private readonly CancellationToken _stop;
 
     /// <param name="monotonicMs">Clock for the resend schedule; wall-clock steps must not move it.</param>
     /// <param name="utcOffset">Local UTC offset at a given local time, to resend when a time zone or DST change shifts it.</param>
-    public MystiqueSession(IBulkUsbPipe pipe, Func<long>? monotonicMs = null, Func<DateTime, TimeSpan>? utcOffset = null, Action<int>? sleep = null)
+    /// <param name="stop">Ends a stream early, which is then closed off as a failed one is.</param>
+    public MystiqueSession(
+        IBulkUsbPipe pipe, Func<long>? monotonicMs = null, Func<DateTime, TimeSpan>? utcOffset = null, Action<int>? sleep = null,
+        CancellationToken stop = default)
     {
         _pipe = pipe;
+        _stop = stop;
         _monotonicMs = monotonicMs ?? (() => Environment.TickCount64);
         _utcOffset = utcOffset ?? (t => TimeZoneInfo.Local.GetUtcOffset(t));
         _sleep = sleep ?? System.Threading.Thread.Sleep;
@@ -220,11 +226,16 @@ public sealed class MystiqueSession
             int sent = 0;
             while (sent < frame.Length)
             {
+                if (_stop.IsCancellationRequested)
+                {
+                    AbandonStream(f, frame.Length - sent, stopped: true);
+                    return false;
+                }
                 int length = Math.Min(StreamChunkBytes, frame.Length - sent);
                 int landed = WriteChunk(frame.AsSpan(sent, length));
                 if (landed != length)
                 {
-                    AbandonStream(f, frame.Length - sent - Math.Max(landed, 0));
+                    AbandonStream(f, frame.Length - sent - Math.Max(landed, 0), stopped: _stop.IsCancellationRequested);
                     return false;
                 }
                 sent += landed;
@@ -233,7 +244,12 @@ public sealed class MystiqueSession
             }
         }
         var finish = MystiqueMedia.FinishPacket();
-        return _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish, StreamWriteTimeoutMs) == finish.Length;
+        int took = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish, StreamWriteTimeoutMs, _stop);
+        if (took == 0 && _stop.IsCancellationRequested)
+        {
+            took = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish);
+        }
+        return took == finish.Length;
     }
 
     /// <summary>
@@ -242,8 +258,8 @@ public sealed class MystiqueSession
     /// </summary>
     private int WriteChunk(ReadOnlySpan<byte> chunk)
     {
-        int landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk, StreamWriteTimeoutMs);
-        if (landed == 0)
+        int landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk, StreamWriteTimeoutMs, _stop);
+        if (landed == 0 && !_stop.IsCancellationRequested)
         {
             landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk);
         }
@@ -253,14 +269,17 @@ public sealed class MystiqueSession
     /// <summary>
     /// Completes the failed frame with zeros and sends the finish packet, so the screen meets a failing byte
     /// sum (assumed, unverified, to drop the item and return to commands) instead of reading the reopen's
-    /// commands as stream. Later GIF frames are skipped: only their own headers carry their lengths. Reached only
-    /// after a transfer error or a whole <see cref="StreamWriteTimeoutMs"/>; a halt the failed transfer left would
-    /// refuse every fill write, so it is cleared first.
+    /// commands as stream. Later GIF frames are skipped: only their own headers carry their lengths. After a transfer
+    /// error or a whole <see cref="StreamWriteTimeoutMs"/> a halt the failed transfer left would refuse every fill write,
+    /// so it is cleared first; a <paramref name="stopped"/> stream left no halt.
     /// </summary>
-    private void AbandonStream(int frameIndex, int remaining)
+    private void AbandonStream(int frameIndex, int remaining, bool stopped)
     {
         long deadline = _monotonicMs() + RecoveryBudgetMs;
-        _pipe.ClearHalt(MystiqueProtocol.SettingsWritePipe);
+        if (!stopped)
+        {
+            _pipe.ClearHalt(MystiqueProtocol.SettingsWritePipe);
+        }
         bool finished = false;
         bool filled = true;
         foreach (var zeros in MystiqueMedia.Packets(new byte[Math.Max(remaining, 0)]))
@@ -277,8 +296,8 @@ public sealed class MystiqueSession
             finished = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish) == finish.Length;
         }
         ServiceLog.Warn(finished
-            ? $"[deepcool-mystique] upload failed in frame {frameIndex}; filled {remaining} bytes with zeros and sent the finish packet"
-            : $"[deepcool-mystique] upload failed in frame {frameIndex}; the pipe stopped taking writes, so the screen may stay in upload mode until power cycled");
+            ? $"[deepcool-mystique] upload {(stopped ? "stopped" : "failed")} in frame {frameIndex}; filled {remaining} bytes with zeros and sent the finish packet"
+            : $"[deepcool-mystique] upload {(stopped ? "stopped" : "failed")} in frame {frameIndex}; the pipe stopped taking writes, so the screen may stay in upload mode until power cycled");
     }
 
     /// <summary>Erases every stored picture and GIF; true only when the screen answered.</summary>

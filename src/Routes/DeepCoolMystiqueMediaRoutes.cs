@@ -135,24 +135,19 @@ public static partial class DevicesRoutes
             AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
 
     /// <summary>
-    /// Puts a GIF up where the screen holds one: a format, the GIF under its own id, the shown picture again, and one
-    /// source command after both, so the screen never stores two GIFs; overwriting a large one hung a screen until its
-    /// power was removed. Only screen-side state is reset, never the library, and a slot whose stream has not landed is
-    /// recorded with nothing shown, so the next show retries. Returns 1 once the GIF landed, 0 when it did not, or -1
-    /// when the format was not taken.
+    /// Puts a GIF up where the screen holds one: a format, the shown picture again, the GIF under its own id last, and one
+    /// source command after it, so the screen never stores two GIFs; overwriting a large one hung a screen until its power
+    /// was removed. Only screen-side state is reset, never the library. A slot is recorded only for an item that goes up,
+    /// with nothing shown until its stream lands, so the next show retries. Returns 1 once the GIF landed, 0 when it did
+    /// not, or -1 when the format was not taken.
     /// </summary>
     private static async Task<int> StreamMystiqueFreshGifAsync(
         IConfigStore store, MystiqueWorker worker, MystiqueMediaPackage gif, string gifId, int startChoices, CancellationToken ct)
     {
         var m = new DeepCoolMystiqueSettings();
         store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
-        var picture = m.Media.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && i.Id == m.ShownPicture)
-            ?? m.Media.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture);
-        var packages = new List<MystiqueMediaPackage> { gif };
-        if (picture is not null && await ResolveMystiqueMediaAsync(picture, picture.Id, MystiqueRotatesMedia(m), null, ct) is { } frames)
-        {
-            packages.Add(frames);
-        }
+        var (picture, frames) = await ResolveMystiquePictureToKeepAsync(m, ct);
+        var packages = frames is null ? new List<MystiqueMediaPackage> { gif } : new List<MystiqueMediaPackage> { frames, gif };
         worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
         bool formatted = await worker.FormatAsync(ct);
         store.Update(s =>
@@ -173,8 +168,10 @@ public static partial class DevicesRoutes
         {
             return -1;
         }
-        Nexus.Service.Platform.ServiceLog.Info($"[deepcool-mystique] gif {gifId} into slot {gifId} after a format"
-            + (packages.Count > 1 ? $", then picture {picture!.Id}" : ""));
+        Nexus.Service.Platform.ServiceLog.Info($"[deepcool-mystique] "
+            + (picture is null ? "" : $"picture {picture.Id} into slot {picture.Id}, then ")
+            + $"gif {gifId} into slot {gifId}, after a format");
+        // The GIF goes last so its source command follows it whenever it lands.
         MystiqueSourceAfter? SourceAfterStream()
         {
             var after = new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceGif, true);
@@ -187,20 +184,31 @@ public static partial class DevicesRoutes
             return after;
         }
         int streamed = await worker.UploadAsync(packages, SourceAfterStream, ct);
-        if (streamed < 1)
+        if (picture is not null && streamed >= 1)
+        {
+            store.Update(s => SetMystiquePictureSlot(s.Devices.DeepCoolMystique, picture.Id, picture.Id));
+        }
+        if (streamed < packages.Count)
         {
             return 0;
         }
-        store.Update(s =>
-        {
-            var d = s.Devices.DeepCoolMystique;
-            SetMystiqueGifSlot(d, gifId, gifId);
-            if (streamed == 2)
-            {
-                SetMystiquePictureSlot(d, picture!.Id, picture.Id);
-            }
-        });
+        store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, gifId, gifId));
         return 1;
+    }
+
+    /// <summary>The picture to show again after a format, the shown one first, and its frames; none when no listed picture can be sent.</summary>
+    private static async Task<(DeepCoolMystiqueMediaItem? Item, MystiqueMediaPackage? Frames)> ResolveMystiquePictureToKeepAsync(
+        DeepCoolMystiqueSettings m, CancellationToken ct)
+    {
+        var pictures = m.Media.FindAll(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture);
+        foreach (var picture in pictures.Where(i => i.Id == m.ShownPicture).Concat(pictures.Where(i => i.Id != m.ShownPicture)))
+        {
+            if (await ResolveMystiqueMediaAsync(picture, picture.Id, MystiqueRotatesMedia(m), null, ct) is { } frames)
+            {
+                return (picture, frames);
+            }
+        }
+        return (null, null);
     }
 
     /// <summary>
@@ -451,8 +459,9 @@ public static partial class DevicesRoutes
             {
                 return Results.NotFound();
             }
-            return await ForgetMystiqueMedia(store, worker, i => i.Id == id, ctx.RequestAborted) > 0
-                ? Results.Json(new DeepCoolMystiqueMediaResponse { Id = id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse)
+            int removed = await ForgetMystiqueMedia(store, worker, i => i.Id == id, ctx.RequestAborted);
+            return removed < 0 ? MystiqueMediaFailure("The screen is busy")
+                : removed > 0 ? Results.Json(new DeepCoolMystiqueMediaResponse { Id = id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse)
                 : Results.NotFound();
         });
 
@@ -463,7 +472,10 @@ public static partial class DevicesRoutes
             {
                 return MystiqueMediaFailure("The screen is not connected");
             }
-            await worker.UploadGate.WaitAsync(ctx.RequestAborted);
+            if (!await WaitMystiqueGateAsync(worker, ctx.RequestAborted))
+            {
+                return MystiqueMediaFailure("The screen is busy");
+            }
             try
             {
                 if (!await worker.FormatAsync(ctx.RequestAborted))
@@ -539,13 +551,33 @@ public static partial class DevicesRoutes
         return items.Count >= (kind == DeepCoolMystiqueMediaItem.KindGif ? MystiqueMedia.MaxGifs : MystiqueMedia.MaxPictures) ? null : sourceId;
     }
 
+    /// <summary>Takes the upload gate within the upload budget; false when it stayed held.</summary>
+    private static async Task<bool> WaitMystiqueGateAsync(MystiqueWorker worker, CancellationToken aborted)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(aborted);
+        budget.CancelAfter(MystiqueUploadBudget);
+        try
+        {
+            await worker.UploadGate.WaitAsync(budget.Token);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
-    /// Drops the matching items from the list with their files. Nexus-side only: the screen has no single-item delete,
-    /// so it keeps showing a removed item until the next show replaces it.
+    /// Drops the matching items from the list with their files and returns how many, or -1 when the upload gate stayed
+    /// held. Nexus-side only: the screen has no single-item delete, so it keeps showing a removed item until the next
+    /// show replaces it.
     /// </summary>
     private static async Task<int> ForgetMystiqueMedia(IConfigStore store, MystiqueWorker worker, Predicate<DeepCoolMystiqueMediaItem> match, CancellationToken ct)
     {
-        await worker.UploadGate.WaitAsync(ct);
+        if (!await WaitMystiqueGateAsync(worker, ct))
+        {
+            return -1;
+        }
         try
         {
             var gone = new List<DeepCoolMystiqueMediaItem>();

@@ -40,6 +40,9 @@ public sealed class MystiqueWorker : BackgroundService
     private readonly int _tickMs;
     private readonly SemaphoreSlim _wake = new(0, 1);
     private volatile bool _connected;
+
+    // Stops the open session's stream on service stop or when control is turned off.
+    private CancellationTokenSource? _sessionStop;
     private long _lastLogMs = long.MinValue;
 
     public MystiqueWorker(
@@ -207,10 +210,21 @@ public sealed class MystiqueWorker : BackgroundService
 
     private void OnGateChanged(string handlerId, bool enabled)
     {
-        if (handlerId == HandlerId)
+        if (handlerId != HandlerId)
         {
-            RequestApply();
+            return;
         }
+        if (!enabled)
+        {
+            try
+            {
+                Volatile.Read(ref _sessionStop)?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+        RequestApply();
     }
 
     public override void Dispose()
@@ -283,7 +297,14 @@ public sealed class MystiqueWorker : BackgroundService
             Log("the screen's pipes could not be opened", error: false);
             return false;
         }
-        var session = new MystiqueSession(pipe);
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        Volatile.Write(ref _sessionStop, stop);
+        // A gate turned off before the line above found no source to cancel.
+        if (!_gate.IsEnabled(HandlerId))
+        {
+            stop.Cancel();
+        }
+        var session = new MystiqueSession(pipe, stop: stop.Token);
         if (!session.Open(ReadSettings(), DateTime.Now))
         {
             Log("the screen did not answer the opening exchange", error: false);
@@ -335,6 +356,7 @@ public sealed class MystiqueWorker : BackgroundService
         }
         finally
         {
+            Interlocked.CompareExchange(ref _sessionStop, null, stop);
             _connected = false;
             // Also settles a stream an exception cut short, which never reported its own result.
             if (Volatile.Read(ref _pendingUpload) is { } left)

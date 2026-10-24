@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
@@ -91,10 +92,11 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
 
     public bool Write(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data) == data.Length;
 
-    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data, (int)(TransferTimeoutSeconds * 1000));
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) =>
+        WriteCounted(pipeId, data, (int)(TransferTimeoutSeconds * 1000), CancellationToken.None);
 
     /// <summary>Bytes the device took, also when the transfer failed part way and IOUSBHost reports a count; -1 when it reports none.</summary>
-    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs)
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs, CancellationToken ct)
     {
         if (_disposed || data.Length == 0)
         {
@@ -115,6 +117,12 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 {
                     return -1;
                 }
+                if (ct.IsCancellationRequested)
+                {
+                    return 0;
+                }
+                // Dispose waits on _ioLock, so the pipe outlives the registration.
+                using var abort = ct.Register(() => MacUsbHost.Abort(pipe));
                 IntPtr nsData;
                 fixed (byte* p = data)
                 {
@@ -434,6 +442,10 @@ internal static unsafe class MacUsbHost
     private static readonly IntPtr SelConfigure = Sel("configureWithValue:matchInterfaces:error:");
     private static readonly IntPtr SelCopyPipe = Sel("copyPipeWithAddress:error:");
     private static readonly IntPtr SelClearStall = Sel("clearStallWithError:");
+    private static readonly IntPtr SelAbort = Sel("abortWithOption:error:");
+
+    // IOUSBHostAbortOptionAsynchronous: returns without waiting for the aborted transfer.
+    private const nuint AbortAsynchronous = 0;
     private static readonly IntPtr SelSendRequest = Sel("sendIORequestWithData:bytesTransferred:completionTimeout:error:");
     private static readonly IntPtr SelInitWithBytes = Sel("initWithBytes:length:");
     private static readonly IntPtr SelInitWithLength = Sel("initWithLength:");
@@ -528,6 +540,21 @@ internal static unsafe class MacUsbHost
 
     public static IntPtr CopyPipe(IntPtr iface, byte address, IntPtr* error) =>
         MsgSendIndexError(iface, SelCopyPipe, address, error);
+
+    /// <summary>Ends the pipe's pending transfer, which then returns aborted.</summary>
+    public static void Abort(IntPtr pipe)
+    {
+        var pool = objc_autoreleasePoolPush();
+        try
+        {
+            IntPtr error = IntPtr.Zero;
+            MsgSendIndexError(pipe, SelAbort, AbortAsynchronous, &error);
+        }
+        finally
+        {
+            objc_autoreleasePoolPop(pool);
+        }
+    }
 
     public static void ClearStall(IntPtr pipe)
     {

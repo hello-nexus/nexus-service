@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
 
@@ -20,8 +21,12 @@ public interface IBulkUsbPipe : IDisposable
     /// </summary>
     int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => Write(pipeId, data) ? data.Length : -1;
 
-    /// <summary>As <see cref="WriteCounted(byte, ReadOnlySpan{byte})"/>, waiting up to <paramref name="timeoutMs"/> for the device to take it.</summary>
-    int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs) => WriteCounted(pipeId, data);
+    /// <summary>
+    /// As <see cref="WriteCounted(byte, ReadOnlySpan{byte})"/>, waiting up to <paramref name="timeoutMs"/> for the device to
+    /// take it; <paramref name="ct"/> ends the wait, and a write it cancels before starting returns 0.
+    /// </summary>
+    int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs, CancellationToken ct) =>
+        ct.IsCancellationRequested ? 0 : WriteCounted(pipeId, data);
 
     /// <summary>
     /// Reads one bulk transfer from the IN pipe. Returns the byte count, 0 on timeout,

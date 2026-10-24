@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 using Nexus.Service.Peripherals.LianLiWireless;
@@ -106,9 +107,10 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
 
     public bool Write(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data) == data.Length;
 
-    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data, (int)TransferTimeoutMs);
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data, (int)TransferTimeoutMs, CancellationToken.None);
 
-    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs)
+    /// <summary>The opened write pipe keeps its WinUSB timeout policy, which ends a longer wait on it first.</summary>
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs, CancellationToken ct)
     {
         if (_disposed || data.Length == 0)
         {
@@ -122,32 +124,18 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
             {
                 return -1;
             }
-            // The opened write pipe carries a WinUSB timeout policy, which would end a longer transfer first.
-            bool policy = pipeId == _writePipeId && timeoutMs != TransferTimeoutMs;
-            if (policy)
+            if (ct.IsCancellationRequested)
             {
-                SetWriteTimeoutPolicy((uint)timeoutMs);
+                return 0;
             }
-            try
+            // Dispose waits on _ioLock, so the handle outlives the registration.
+            using var abort = ct.Register(() => Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId));
+            fixed (byte* p = data)
             {
-                fixed (byte* p = data)
-                {
-                    return TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, (uint)Math.Max(1, timeoutMs), write: true);
-                }
-            }
-            finally
-            {
-                if (policy)
-                {
-                    SetWriteTimeoutPolicy(TransferTimeoutMs);
-                }
+                return TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, (uint)Math.Max(1, timeoutMs), write: true, ct);
             }
         }
     }
-
-    private void SetWriteTimeoutPolicy(uint timeoutMs) =>
-        Slv3WinUsbInterop.WinUsb_SetPipePolicy(
-            _winUsbHandle, _writePipeId, Slv3WinUsbInterop.PIPE_TRANSFER_TIMEOUT, sizeof(uint), ref timeoutMs);
 
     public bool ClearHalt(byte pipeId)
     {
@@ -182,7 +170,7 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
     /// under way gives the count the transfer reports, 0 when nothing went out, or -1 when an aborted write reports
     /// no count it settled, so how much went out is unknown. <paramref name="buffer"/>
     /// must stay pinned until this returns; every path waits out the transfer first.</summary>
-    private int TransferLocked(byte pipeId, IntPtr ioEvent, IntPtr buffer, int length, uint timeoutMs, bool write)
+    private int TransferLocked(byte pipeId, IntPtr ioEvent, IntPtr buffer, int length, uint timeoutMs, bool write, CancellationToken ct = default)
     {
         var ovPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NativeOverlapped>());
         try
@@ -197,6 +185,11 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
 
             if (!ok && Marshal.GetLastWin32Error() == (int)Slv3WinUsbInterop.ERROR_IO_PENDING)
             {
+                // A cancel that landed before the transfer was queued found nothing to abort.
+                if (ct.IsCancellationRequested)
+                {
+                    Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId);
+                }
                 if (Slv3WinUsbInterop.WaitForSingleObject(ioEvent, timeoutMs) != WaitObject0)
                 {
                     Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId);

@@ -386,6 +386,128 @@ public partial class DeepCoolMystiqueRoutesTests
         Assert.Empty(screen.Settings().Media);
     }
 
+    [FfmpegFact]
+    public async Task A_picture_that_fails_after_the_format_sends_no_gif_and_no_source_command()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var picture = MystiqueMediaTests.Png(120, 120);
+        var first = MystiqueMediaTests.Png(120, 120, shift: 3);
+        var second = MystiqueMediaTests.Png(120, 120, shift: 9);
+        await screen.UploadAsync(picture);
+        await UploadGifAsync(screen, first);
+        var before = screen.Pipe;
+        int mark = before.Writes().Count;
+        int next = before.Timeouts().Count;
+        screen.Factory.Pipes.StallTimedWrite = i => i == next;
+
+        var failed = await UploadGifAsync(screen, second);
+        screen.Factory.Pipes.StallTimedWrite = null;
+
+        Assert.False(Ok(failed));
+        var writes = before.Writes().Skip(mark).ToList();
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdFormat));
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        Assert.Equal(0, Commands(writes, MystiqueProtocol.CmdMediaSource));
+        var m = screen.Settings();
+        Assert.Equal(new[] { PictureId(picture), GifId(first) }, m.Media.ConvertAll(i => i.Id));
+        Assert.Equal((PictureId(picture), ""), (m.PictureSlot, m.ShownPicture));
+        Assert.Equal((GifId(second), ""), (m.GifSlot, m.ShownGif));
+    }
+
+    [FfmpegFact]
+    public async Task A_gif_that_fails_after_the_picture_landed_records_the_picture_and_sends_no_source_command()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var picture = MystiqueMediaTests.Png(120, 120);
+        var first = MystiqueMediaTests.Png(120, 120, shift: 3);
+        var second = MystiqueMediaTests.Png(120, 120, shift: 9);
+        await screen.UploadAsync(picture);
+        await UploadGifAsync(screen, first);
+        var before = screen.Pipe;
+        int mark = before.Writes().Count;
+        int announces = 0;
+        screen.Factory.Pipes.Silence = c => c == MystiqueProtocol.CmdUploadStart && Interlocked.Increment(ref announces) == 2;
+
+        var failed = await UploadGifAsync(screen, second);
+        screen.Factory.Pipes.Silence = null;
+
+        Assert.False(Ok(failed));
+        var writes = before.Writes().Skip(mark).ToList();
+        Assert.Equal(2, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        Assert.Equal(0, Commands(writes, MystiqueProtocol.CmdMediaSource));
+        var m = screen.Settings();
+        Assert.Equal((PictureId(picture), PictureId(picture)), (m.PictureSlot, m.ShownPicture));
+        Assert.Equal((GifId(second), ""), (m.GifSlot, m.ShownGif));
+    }
+
+    [FfmpegFact]
+    public async Task A_gif_change_streams_the_next_picture_that_can_be_sent_and_records_none_when_none_can()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var kept = MystiqueMediaTests.Png(120, 120);
+        var lost = MystiqueMediaTests.Png(120, 120, shift: 5);
+        var first = MystiqueMediaTests.Png(120, 120, shift: 3);
+        var second = MystiqueMediaTests.Png(120, 120, shift: 9);
+        var third = MystiqueMediaTests.Png(120, 120, shift: 11);
+        await screen.UploadAsync(kept);
+        await screen.UploadAsync(lost);
+        await UploadGifAsync(screen, first);
+        void Lose(byte[] png)
+        {
+            File.Delete(screen.MediaFile("streams", PictureId(png) + ".bin"));
+            File.Delete(screen.MediaFile("sources", PictureId(png) + ".png"));
+        }
+        Assert.Equal(PictureId(lost), screen.Settings().ShownPicture);
+        Lose(lost);
+        int mark = screen.Pipe.Writes().Count;
+
+        Assert.True(Ok(await UploadGifAsync(screen, second)));
+        Assert.Equal(2, Commands(WritesSince(screen, mark), MystiqueProtocol.CmdUploadStart));
+        var m = screen.Settings();
+        Assert.Equal((PictureId(kept), PictureId(kept)), (m.PictureSlot, m.ShownPicture));
+
+        Lose(kept);
+        mark = screen.Pipe.Writes().Count;
+        Assert.True(Ok(await UploadGifAsync(screen, third)));
+        Assert.Equal(1, Commands(WritesSince(screen, mark), MystiqueProtocol.CmdUploadStart));
+        m = screen.Settings();
+        Assert.Equal(("", ""), (m.PictureSlot, m.ShownPicture));
+        Assert.Equal((GifId(third), GifId(third)), (m.GifSlot, m.ShownGif));
+        Assert.Equal(5, m.Media.Count);
+    }
+
+    [FfmpegTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_stalled_stream_write_ends_when_control_is_turned_off_or_the_service_stops_and_the_stream_is_closed_off(bool gateOff)
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var before = screen.Pipe;
+        int mark = before.Writes().Count;
+        int halts = before.ClearHalts;
+        screen.Factory.Pipes.BlockTimedWrite = i => i == 0;
+
+        var upload = UploadGifAsync(screen, MystiqueMediaTests.Png(120, 120, shift: 3));
+        Assert.True(screen.Factory.Pipes.Blocked.Wait(TimeSpan.FromSeconds(10)));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        if (gateOff)
+        {
+            screen.Factory.Services.GetRequiredService<DeviceControlGate>().SetEnabled(MystiqueWorker.HandlerId, false);
+        }
+        else
+        {
+            await screen.Worker.StopAsync(CancellationToken.None);
+        }
+        var failed = await upload.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(5), "the blocked write woke on the cancel");
+        Assert.False(Ok(failed));
+        Assert.Equal(halts, before.ClearHalts);
+        var writes = before.Writes().Skip(mark).ToList();
+        Assert.Equal(MystiqueMedia.FinishLength, writes[^1].Length);
+        Assert.True(writes.Count > 2, "the stopped frame is filled before the finish packet");
+    }
+
     /// <summary>Waits out two worker passes, each of which applies any pending settings before it polls.</summary>
     private static Task TwoTicks(Screen screen)
     {
