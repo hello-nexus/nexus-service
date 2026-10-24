@@ -161,7 +161,7 @@ internal sealed class InMemoryConfigStore : Nexus.Service.Persistence.IConfigSto
 
     /// <summary>The first account's refresh token at each FlushNow, i.e. what that flush put on disk.</summary>
     public List<string?> FlushedRefreshTokens { get; } = new();
-    public void FlushNow() => FlushedRefreshTokens.Add(_settings.Auth?.CloudAccounts.FirstOrDefault()?.RefreshToken);
+    public void FlushNow() => FlushedRefreshTokens.Add(Nexus.Service.Security.SecretProtector.Unprotect(_settings.Auth?.CloudAccounts.FirstOrDefault()?.RefreshToken));
     public event Action? OnChanged;
 }
 
