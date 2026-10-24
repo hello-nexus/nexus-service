@@ -29,6 +29,28 @@ public class FleetEventServiceTests
         }
     }
 
+    /// <summary>An older nexus-api: answers 400 to any specs body that carries the inventory keys.</summary>
+    private sealed class OldApiTransport : IFleetEventTransport
+    {
+        public List<FleetEventPayload> Sent { get; } = new();
+
+        /// <summary>Whether each specs body carried inventory keys when it was posted (the payload object is reused across the retry).</summary>
+        public List<bool> SpecsHadInventory { get; } = new();
+        public Task<bool> SendAsync(FleetEventPayload payload, CancellationToken ct) =>
+            Task.FromResult(PostAsyncCore(payload) == FleetSendResult.Delivered);
+        public Task<FleetSendResult> PostAsync(FleetEventPayload payload, CancellationToken ct) =>
+            Task.FromResult(PostAsyncCore(payload));
+        private FleetSendResult PostAsyncCore(FleetEventPayload payload)
+        {
+            Sent.Add(payload);
+            var s = payload.Specs;
+            var had = s is { RamModules: not null } or { StorageDrives: not null } or { RamModuleCount: not null } or { GpuCards: not null };
+            if (payload.Type == TelemetryEvents.Specs)
+                SpecsHadInventory.Add(had);
+            return had ? FleetSendResult.Rejected : FleetSendResult.Delivered;
+        }
+    }
+
     private sealed class FakeTelemetrySink : ITelemetrySink
     {
         public bool Enabled { get; set; } = true;
@@ -46,6 +68,7 @@ public class FleetEventServiceTests
     {
         public string Cpu { get; init; } = "";
         public IReadOnlyList<string> GpuModels { get; init; } = Array.Empty<string>();
+        public IReadOnlyList<GpuBoard> Boards { get; init; } = Array.Empty<GpuBoard>();
         public string MemoryFormatted { get; init; } = "";
         public string Motherboard { get; init; } = "";
 
@@ -55,6 +78,7 @@ public class FleetEventServiceTests
         public IReadOnlyList<string> GetGpuModels() => GpuModels;
         public IReadOnlyList<HardwareSensor> GetGpuSensors() => Array.Empty<HardwareSensor>();
         public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
+        public IReadOnlyList<GpuBoard> GetGpuBoards() => Boards;
         public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
         public string GetMemoryTotalFormatted() => MemoryFormatted;
         public string GetRamBrandModel() => "";
@@ -86,11 +110,13 @@ public class FleetEventServiceTests
         TimeProvider? clock = null,
         IUsbEnumerator? usb = null,
         bool ibuypowerSystem = false,
-        TimeSpan? usbSettle = null) =>
+        TimeSpan? usbSettle = null,
+        HardwareInventory? inventory = null) =>
         new(store, transport, telemetry ?? new TelemetryClient(store),
             sinks ?? Array.Empty<ITelemetrySink>(), new SystemSpecsCollector(sensors ?? new StubSensors()),
             usb ?? new StubUsbEnumerator(), () => ibuypowerSystem,
-            clock ?? TimeProvider.System, usbSettle ?? TimeSpan.Zero);
+            clock ?? TimeProvider.System, usbSettle ?? TimeSpan.Zero,
+            inventory is null ? null : () => inventory);
 
     private sealed class StubUsbEnumerator : IUsbEnumerator
     {
@@ -432,6 +458,327 @@ public class FleetEventServiceTests
 
         await svc.RunPendingRetriesAsync(CancellationToken.None);
         Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+    }
+
+    private static HardwareInventory SampleInventory(string part = "CMK32GX5M2B6000C36") => new(
+        new[]
+        {
+            new FleetEventRamModule { Manufacturer = "Corsair", PartNumber = part, CapacityBytes = 17179869184, ConfiguredSpeedMts = 6000, RatedSpeedMts = 6000, Generation = "DDR5" },
+            new FleetEventRamModule { Manufacturer = "Corsair", PartNumber = part, CapacityBytes = 17179869184, ConfiguredSpeedMts = 6000, RatedSpeedMts = 6000, Generation = "DDR5" },
+        },
+        new[] { new FleetEventDrive { Model = "Samsung SSD 990 PRO 2TB", CapacityBytes = 2000398934016, Bus = "nvme", Media = "ssd" } });
+
+    [Fact]
+    public async Task Specs_event_carries_ram_modules_and_physical_drives()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        var svc = MakeService(store, transport, sensors: sensors, inventory: SampleInventory());
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(2, specs.RamModuleCount);
+        Assert.Equal("CMK32GX5M2B6000C36", specs.RamModules![0].PartNumber);
+        Assert.Equal("Samsung SSD 990 PRO 2TB", specs.StorageDrives!.Single().Model);
+        Assert.Equal(34359738368, specs.RamBytes);
+    }
+
+    private static StubSensors DefaultSensors() =>
+        new() { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+
+    [Fact]
+    public async Task An_empty_inventory_read_reuses_the_last_good_one_instead_of_erasing_it()
+    {
+        var store = OptedInStore();
+        var first = new FakeFleetEventTransport();
+        await MakeService(store, first, sensors: DefaultSensors(), inventory: SampleInventory()).RunPendingRetriesAsync(CancellationToken.None);
+
+        // New process, platform read fails, and an unrelated field changed so specs go out again.
+        var second = new FakeFleetEventTransport();
+        var changed = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU B" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        await MakeService(store, second, sensors: changed, inventory: HardwareInventory.Empty).RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = second.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(2, specs.RamModuleCount);
+        Assert.Equal(2, specs.RamModules!.Count);
+        Assert.Equal("Samsung SSD 990 PRO 2TB", specs.StorageDrives!.Single().Model);
+    }
+
+    [Theory]
+    [InlineData(29, true)]
+    [InlineData(31, false)]
+    public async Task The_remembered_inventory_stops_being_reused_after_the_expiry(int daysSinceLastGoodRead, bool expectReused)
+    {
+        var store = OptedInStore();
+        var clock = new ManualClock();
+        var stamp = clock.GetUtcNow() - TimeSpan.FromDays(daysSinceLastGoodRead);
+        store.Update(s =>
+        {
+            s.Telemetry.FleetRamModules = SampleInventory().RamModules.ToList();
+            s.Telemetry.FleetRamModuleTotal = 2;
+            s.Telemetry.FleetDrives = SampleInventory().Drives.ToList();
+            s.Telemetry.FleetRamReadAt = stamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+            s.Telemetry.FleetDrivesReadAt = stamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        });
+        var transport = new FakeFleetEventTransport();
+
+        await MakeService(store, transport, sensors: DefaultSensors(), clock: clock, inventory: HardwareInventory.Empty)
+            .RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(expectReused, specs.RamModules is not null);
+        Assert.Equal(expectReused, specs.StorageDrives is not null);
+    }
+
+    [Fact]
+    public async Task Ram_and_drives_expire_independently()
+    {
+        var store = OptedInStore();
+        var clock = new ManualClock();
+        var fresh = (clock.GetUtcNow() - TimeSpan.FromDays(1)).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        var stale = (clock.GetUtcNow() - TimeSpan.FromDays(40)).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        store.Update(s =>
+        {
+            s.Telemetry.FleetRamModules = SampleInventory().RamModules.ToList();
+            s.Telemetry.FleetRamModuleTotal = 2;
+            s.Telemetry.FleetDrives = SampleInventory().Drives.ToList();
+            s.Telemetry.FleetRamReadAt = fresh;
+            s.Telemetry.FleetDrivesReadAt = stale;
+        });
+        var transport = new FakeFleetEventTransport();
+
+        await MakeService(store, transport, sensors: DefaultSensors(), clock: clock, inventory: HardwareInventory.Empty)
+            .RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.NotNull(specs.RamModules);
+        Assert.Null(specs.StorageDrives);
+    }
+
+    [Fact]
+    public async Task A_good_read_refreshes_the_expiry_stamp()
+    {
+        var store = OptedInStore();
+        var clock = new ManualClock();
+
+        await MakeService(store, new FakeFleetEventTransport(), sensors: DefaultSensors(), clock: clock, inventory: SampleInventory())
+            .RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(store.Load().Telemetry.FleetRamReadAt, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(clock.GetUtcNow(), DateTimeOffset.Parse(store.Load().Telemetry.FleetDrivesReadAt, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public async Task An_empty_read_with_nothing_remembered_is_not_hashed_as_a_change()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        await MakeService(store, transport, sensors: DefaultSensors(), inventory: HardwareInventory.Empty).RunPendingRetriesAsync(CancellationToken.None);
+        var before = store.Load().Telemetry.FleetSpecsHash;
+
+        await MakeService(store, transport, sensors: DefaultSensors()).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(before, store.Load().Telemetry.FleetSpecsHash);
+        Assert.Equal(1, SpecsSent(transport));
+    }
+
+    [Fact]
+    public async Task Persisted_inventory_survives_a_settings_round_trip()
+    {
+        var store = OptedInStore();
+        await MakeService(store, new FakeFleetEventTransport(), sensors: DefaultSensors(), inventory: SampleInventory()).RunPendingRetriesAsync(CancellationToken.None);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(store.Load(), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+
+        Assert.Equal(2, back.Telemetry.FleetRamModules.Count);
+        Assert.Equal(2, back.Telemetry.FleetRamModuleTotal);
+        Assert.Equal("nvme", back.Telemetry.FleetDrives.Single().Bus);
+    }
+
+    [Fact]
+    public async Task Ram_module_count_is_the_populated_count_not_the_capped_list_length()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var capped = new HardwareInventory(SampleInventory().RamModules, SampleInventory().Drives, RamModuleTotal: 20);
+
+        await MakeService(store, transport, sensors: DefaultSensors(), inventory: capped).RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(20, specs.RamModuleCount);
+        Assert.Equal(2, specs.RamModules!.Count);
+    }
+
+    [Fact]
+    public async Task A_400_on_the_inventory_keys_resends_without_them_so_cpu_and_gpu_still_update()
+    {
+        var store = OptedInStore();
+        var transport = new OldApiTransport();
+        var direct = new FleetEventService(store, transport, new TelemetryClient(store), Array.Empty<ITelemetrySink>(),
+            new SystemSpecsCollector(DefaultSensors()), new StubUsbEnumerator(), () => false, TimeProvider.System, TimeSpan.Zero,
+            () => SampleInventory());
+
+        await direct.RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Equal(new[] { true, false }, transport.SpecsHadInventory);
+        var last = transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Null(last.RamModules);
+        Assert.Null(last.StorageDrives);
+        Assert.Null(last.RamModuleCount);
+        Assert.Equal("CPU A", last.Cpu);
+        Assert.NotEqual("", store.Load().Telemetry.FleetSpecsHash);
+
+        // Later passes in the same process do not retry the rejected keys or resend an unchanged summary.
+        await direct.RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal(2, transport.Sent.Count(p => p.Type == TelemetryEvents.Specs));
+    }
+
+    [Fact]
+    public async Task Specs_event_omits_ram_and_storage_when_the_platform_reports_none()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var sensors = new StubSensors { Cpu = "CPU A", GpuModels = new[] { "GPU A" }, MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        var svc = MakeService(store, transport, sensors: sensors);
+
+        await svc.RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Null(specs.RamModuleCount);
+        Assert.Null(specs.RamModules);
+        Assert.Null(specs.StorageDrives);
+    }
+
+    private static StubSensors BoardSensors(params GpuBoard[] boards) => new()
+    {
+        Cpu = "CPU A",
+        GpuModels = new[] { "AMD Radeon(TM) Graphics", "NVIDIA GeForce RTX 3090" },
+        Boards = boards,
+        MemoryFormatted = "32 GB",
+        Motherboard = "Board A",
+    };
+
+    [Fact]
+    public async Task Specs_event_keeps_the_bare_chip_in_gpu_and_adds_the_board_in_gpu_cards()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+        var sensors = BoardSensors(new GpuBoard("NVIDIA GeForce RTX 3090", 0x1462, 0x3881));
+
+        await MakeService(store, transport, sensors: sensors).RunPendingRetriesAsync(CancellationToken.None);
+
+        var specs = transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Equal(new[] { "AMD Radeon(TM) Graphics", "NVIDIA GeForce RTX 3090" }, specs.Gpu);
+        var card = specs.GpuCards!.Single();
+        Assert.Equal(("NVIDIA GeForce RTX 3090", "MSI", "1462", "3881"), (card.Chip, card.Maker, card.SubsystemVendorId, card.SubsystemDeviceId));
+        Assert.Equal("AMD Radeon(TM) Graphics + MSI NVIDIA GeForce RTX 3090", await new SystemSpecsCollector(sensors).GetAsync(CancellationToken.None) is { } r ? r.GraphicsCard : "");
+    }
+
+    [Fact]
+    public async Task Specs_event_omits_gpu_cards_when_no_board_could_be_read()
+    {
+        var store = OptedInStore();
+        var transport = new FakeFleetEventTransport();
+
+        await MakeService(store, transport, sensors: BoardSensors()).RunPendingRetriesAsync(CancellationToken.None);
+
+        Assert.Null(transport.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.GpuCards);
+    }
+
+    [Fact]
+    public async Task A_400_on_the_gpu_cards_resends_without_them_so_the_rest_still_updates()
+    {
+        var store = OptedInStore();
+        var transport = new OldApiTransport();
+        var direct = new FleetEventService(store, transport, new TelemetryClient(store), Array.Empty<ITelemetrySink>(),
+            new SystemSpecsCollector(BoardSensors(new GpuBoard("NVIDIA GeForce RTX 3090", 0x1462, 0x3881))), new StubUsbEnumerator(),
+            () => false, TimeProvider.System, TimeSpan.Zero, () => HardwareInventory.Empty);
+
+        await direct.RunPendingRetriesAsync(CancellationToken.None);
+
+        var last = transport.Sent.Last(p => p.Type == TelemetryEvents.Specs).Specs!;
+        Assert.Null(last.GpuCards);
+        Assert.Equal(2, last.Gpu.Length);
+        Assert.NotEqual("", store.Load().Telemetry.FleetSpecsHash);
+    }
+
+    [Fact]
+    public async Task A_read_with_no_gpus_reuses_the_remembered_boards_but_a_read_with_gpus_and_no_boards_does_not()
+    {
+        var store = OptedInStore();
+        var board = new GpuBoard("NVIDIA GeForce RTX 3090", 0x3842, 0x3973);
+        await MakeService(store, new FakeFleetEventTransport(), sensors: BoardSensors(board)).RunPendingRetriesAsync(CancellationToken.None);
+
+        var noGpus = new FakeFleetEventTransport();
+        var cold = new StubSensors { Cpu = "CPU B", MemoryFormatted = "32 GB", Motherboard = "Board A" };
+        await MakeService(store, noGpus, sensors: cold).RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Equal("EVGA", noGpus.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.GpuCards!.Single().Maker);
+
+        var swapped = new FakeFleetEventTransport();
+        await MakeService(store, swapped, sensors: BoardSensors()).RunPendingRetriesAsync(CancellationToken.None);
+        Assert.Null(swapped.Sent.Single(p => p.Type == TelemetryEvents.Specs).Specs!.GpuCards);
+    }
+
+    [Fact]
+    public async Task Persisted_gpu_cards_survive_a_settings_round_trip()
+    {
+        var store = OptedInStore();
+        await MakeService(store, new FakeFleetEventTransport(), sensors: BoardSensors(new GpuBoard("NVIDIA GeForce RTX 3090", 0x1462, 0x3881)))
+            .RunPendingRetriesAsync(CancellationToken.None);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(store.Load(), Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!;
+
+        var card = back.Telemetry.FleetGpuCards.Single();
+        Assert.Equal(("MSI", "1462", "3881"), (card.Maker, card.SubsystemVendorId, card.SubsystemDeviceId));
+    }
+
+    [Fact]
+    public void Specs_hash_is_unchanged_without_boards_and_changes_with_them_or_their_maker()
+    {
+        var gpu = new[] { "GPU A" };
+        var baseline = FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board");
+        var msi = new[] { new FleetEventGpuCard { Chip = "GPU A", Maker = "MSI", SubsystemVendorId = "1462", SubsystemDeviceId = "3881" } };
+        var evga = new[] { new FleetEventGpuCard { Chip = "GPU A", Maker = "EVGA", SubsystemVendorId = "3842", SubsystemDeviceId = "3973" } };
+
+        Assert.Equal(baseline, FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", gpuCards: Array.Empty<FleetEventGpuCard>()));
+        Assert.NotEqual(baseline, FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", gpuCards: msi));
+        Assert.NotEqual(
+            FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", gpuCards: msi),
+            FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", gpuCards: evga));
+    }
+
+    [Fact]
+    public void Gpu_cards_are_capped_sorted_and_limited_to_boards_with_a_readable_vendor()
+    {
+        var read = Enumerable.Range(0, 12).Select(i => new GpuCard($"GPU {i:00}", "MSI", 0x1462, 0x3881 + i)).ToList();
+        read.Add(new GpuCard("Integrated"));
+        read.Reverse();
+
+        var cards = FleetEventService.ResolveGpuCards(read, false, Array.Empty<FleetEventGpuCard>());
+
+        Assert.Equal(8, cards.Count);
+        Assert.Equal("GPU 00", cards[0].Chip);
+        Assert.DoesNotContain(cards, c => c.Chip == "Integrated");
+    }
+
+    [Fact]
+    public void Specs_hash_changes_when_a_module_or_drive_changes_and_ignores_order()
+    {
+        var gpu = new[] { "GPU A" };
+        var baseline = FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board");
+        var a = SampleInventory();
+        var withInventory = FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", inventory: a);
+        var otherPart = FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", inventory: SampleInventory("OTHER"));
+        var reversed = new HardwareInventory(a.RamModules.Reverse().ToArray(), a.Drives);
+
+        Assert.NotEqual(baseline, withInventory);
+        Assert.NotEqual(withInventory, otherPart);
+        Assert.Equal(withInventory, FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", inventory: reversed));
+        Assert.Equal(baseline, FleetEventService.ComputeSpecsHash("CPU", gpu, 1, "Board", inventory: HardwareInventory.Empty));
     }
 
     [Fact]

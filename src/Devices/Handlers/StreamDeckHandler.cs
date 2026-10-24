@@ -20,7 +20,8 @@ public sealed class StreamDeckHandler : IDeviceHandler
         _worker = worker;
     }
 
-    public string Id => "streamdeck";
+    public const string HandlerId = "streamdeck";
+    public string Id => HandlerId;
     public string Name => "Stream Deck";
     public string Category => "controller";
 

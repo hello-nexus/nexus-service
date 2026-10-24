@@ -622,7 +622,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         bool wantFps;
         lock (_lock)
         {
-            var enabled = _gate.IsEnabled("streamdeck");
+            var enabled = _gate.IsEnabled(Nexus.Service.Devices.Handlers.StreamDeckHandler.HandlerId);
             if (!enabled)
             {
                 DisconnectAll(keepSimulated: true);

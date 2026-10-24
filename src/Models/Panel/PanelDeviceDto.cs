@@ -138,6 +138,12 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// kiosk uses the global Y70.KeepCursorOff.
     /// </summary>
     public bool? KeepCursorOff { get; set; }
+    /// <summary>
+    /// Per-panel "keep the panel above other windows": the overlay hosts this
+    /// kiosk topmost or as a normal window. Display-bound records only; null =
+    /// default (true). The Y70 kiosk uses the global Panel.AlwaysOnTop.
+    /// </summary>
+    public bool? AlwaysOnTop { get; set; }
     /// <summary>Turn the pushed frame 180 degrees; a cooler LCD's pump head rotates with the
     /// tubing. Applied in the transport, not the renderer. Pushed-frame panels only; null = off.</summary>
     public bool? Flip180 { get; set; }
@@ -444,6 +450,8 @@ public sealed class PanelDevicePatch
     public bool? AutoOrient { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
     public bool? KeepCursorOff { get; set; }
+    /// <summary>Display-bound records only; ignored for other panels.</summary>
+    public bool? AlwaysOnTop { get; set; }
     /// <summary>Turn the pushed frame 180 degrees; a cooler LCD's pump head rotates with the
     /// tubing. Applied in the transport, not the renderer. Pushed-frame panels only; null = off.</summary>
     public bool? Flip180 { get; set; }

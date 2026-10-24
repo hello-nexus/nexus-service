@@ -64,16 +64,22 @@
   "selected": 0,
   "slots": [
    {
-    "speed": 45,
+    "speed": 40,
     "intensity": 1,
-    "hue": 0.33,
-    "colorize": 0.35,
-    "saturation": 1.05,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
     "contrast": 1,
     "params": {
      "u_curtains": 4,
-     "u_height": 0.55,
-     "u_shimmer": 0.5
+     "u_height": 0.75,
+     "u_shimmer": 0.4,
+     "u_bgLevel": 0.6,
+     "u_rays": 0.7,
+     "u_aHue": 0.67,
+     "u_aSpan": 0.33,
+     "u_aSat": 1,
+     "u_aVal": 1
     }
    },
    {
@@ -84,35 +90,53 @@
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_curtains": 8,
+     "u_curtains": 7,
      "u_height": 0.9,
-     "u_shimmer": 1
+     "u_shimmer": 1,
+     "u_bgLevel": 0.55,
+     "u_rays": 0.8,
+     "u_aHue": 0.08,
+     "u_aSpan": 0.5,
+     "u_aSat": 1,
+     "u_aVal": 1
     }
    },
    {
-    "speed": 85,
+    "speed": 70,
     "intensity": 1,
-    "hue": 0.08,
-    "colorize": 0.75,
-    "saturation": 1.1,
-    "contrast": 1.05,
-    "params": {
-     "u_curtains": 2,
-     "u_height": 0.3,
-     "u_shimmer": 0.15
-    }
-   },
-   {
-    "speed": 30,
-    "intensity": 1,
-    "hue": 0.62,
-    "colorize": 0.75,
+    "hue": 0,
+    "colorize": 0,
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_curtains": 6,
+     "u_curtains": 4,
+     "u_height": 0.85,
+     "u_shimmer": 0.3,
+     "u_bgLevel": 0.35,
+     "u_rays": 0.5,
+     "u_aHue": 0.98,
+     "u_aSpan": 0.3,
+     "u_aSat": 1,
+     "u_aVal": 1
+    }
+   },
+   {
+    "speed": 25,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_curtains": 3,
      "u_height": 0.7,
-     "u_shimmer": 0.75
+     "u_shimmer": 0.6,
+     "u_bgLevel": 0.5,
+     "u_rays": 0.55,
+     "u_aHue": 0.62,
+     "u_aSpan": 0.43,
+     "u_aSat": 1,
+     "u_aVal": 1
     }
    }
   ]

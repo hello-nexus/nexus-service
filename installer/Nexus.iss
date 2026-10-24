@@ -755,7 +755,7 @@ begin
   //      outlive their host and keep {app}\wwwroot files open, which used to
   //      be Restart Manager's job to clear (CloseApplications=no now). Match
   //      only our own by the --user-data-dir the overlay passes
-  //      (%ProgramData%\Nexus\DesktopWebView2), so another app's WebView2 is
+  //      (%LocalAppData%\Nexus\DesktopWebView2), so another app's WebView2 is
   //      left alone; the runtime image lives outside {app}, so a path match
   //      cannot distinguish them.
   KillMatching('msedgewebview2.exe', '', '\Nexus\DesktopWebView2', False);

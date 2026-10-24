@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Nexus.Service.Benchmarks;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Platform;
+using Nexus.Service.Telemetry;
 
 namespace Nexus.Service.Sensors;
 
@@ -56,16 +57,20 @@ public sealed class SystemSpecsCollector
         // lock would serialise unrelated concurrent callers behind it.
         await _sensors.ReadyAsync(ct).ConfigureAwait(false);
 
+        // Also outside the lock: macOS shells out to system_profiler for this, which takes seconds.
+        var inventory = await Task.Run(HardwareInventoryCollector.GetCached, ct).ConfigureAwait(false);
+
         lock (_lock)
         {
             if (_cached is not null) return _cached;
-            _cached = Build();
+            _cached = Build(inventory);
             return _cached;
         }
     }
 
-    private SystemSpecsResponse Build()
+    private SystemSpecsResponse Build(HardwareInventory inventory)
     {
+        var cards = _sensors.GetGpuCards();
         var s = new SystemSpecsResponse
         {
             PcName = SafeMachineName(),
@@ -73,7 +78,8 @@ public sealed class SystemSpecsCollector
             Processor = _sensors.GetCpuModel(),
             Motherboard = _sensors.GetMotherboardModel(),
             Memory = _sensors.GetMemoryTotalFormatted(),
-            GraphicsCard = string.Join(" + ", _sensors.GetGpuModels()),
+            GraphicsCard = string.Join(" + ", cards.Select(c => c.Display)),
+            GpuCards = cards.ToList(),
             PrimaryGpu = BenchmarkRunner.SelectReportedGpus(_sensors.GetGpus()).FirstOrDefault()
                 ?? _sensors.GetGpuModels().FirstOrDefault() ?? "",
         };
@@ -83,16 +89,22 @@ public sealed class SystemSpecsCollector
         else if (OperatingSystem.IsMacOS())
             EnrichMac(s);
 
-        // Storage fallback for paths the platform-specific enrichment didn't
-        // fill in (today: macOS).
+        // Physical drives only: volume labels and mount points ("C:", "/boot") are never a storage description.
         if (string.IsNullOrWhiteSpace(s.Storage))
         {
-            var brand = _sensors.GetStorageBrandModel();
-            var drives = _sensors.GetStorageInfo();
-            if (drives.Count > 0)
-                s.Storage = string.Join(", ", drives.Select(d => DescribeDrive(d, brand)));
-            else if (!string.IsNullOrWhiteSpace(brand))
-                s.Storage = brand;
+            if (inventory.Drives.Count > 0)
+                s.Storage = string.Join(" + ", inventory.Drives.Select(DescribeDrive));
+            else
+                s.Storage = _sensors.GetStorageBrandModel();
+        }
+
+        // Non-Windows platforms report only a total; add the module layout when the platform exposes it.
+        if (!OperatingSystem.IsWindows() && inventory.RamModules.Count > 0 && !s.Memory.Contains('('))
+        {
+            var sticks = inventory.RamModules.Where(m => m.CapacityBytes is > 0).Select(m => m.CapacityBytes!.Value).ToList();
+            var detail = StickLayout(sticks, PrimaryFirst(inventory.RamModules.Select(m =>
+                JoinBrandPart(m.Manufacturer is null ? "" : HardwareInventoryParsers.BrandLabel(m.Manufacturer), m.PartNumber ?? ""))));
+            if (detail.Length > 0 && s.Memory.Length > 0) s.Memory = $"{s.Memory} ({detail})";
         }
 
         return s;
@@ -147,8 +159,7 @@ public sealed class SystemSpecsCollector
         long totalBytes = 0;
         var perStick = new List<long>();
         int speed = 0;
-        string mfg = "";
-        string part = "";
+        var brands = new List<string>();
         int memType = 0;
         foreach (var row in rows.OfType<JsonObject>())
         {
@@ -160,8 +171,8 @@ public sealed class SystemSpecsCollector
                 var rated = JsonInt(row["Speed"]);
                 speed = configured > 0 ? configured : rated;
             }
-            if (string.IsNullOrEmpty(mfg)) mfg = Clean(JsonString(row["Manufacturer"]));
-            if (string.IsNullOrEmpty(part)) part = Clean(JsonString(row["PartNumber"]));
+            var brand = BrandOf(JsonString(row["Manufacturer"]), JsonString(row["PartNumber"]));
+            if (!string.IsNullOrEmpty(brand)) brands.Add(brand);
             if (memType == 0) memType = JsonInt(row["SMBIOSMemoryType"]);
         }
 
@@ -174,18 +185,31 @@ public sealed class SystemSpecsCollector
         else if (speed > 0)
             head += $" @ {speed} MT/s";
 
-        var detail = StickLayout(perStick, mfg, part);
+        var detail = StickLayout(perStick, PrimaryFirst(brands));
         s.Memory = string.IsNullOrEmpty(detail) ? head : $"{head} ({detail})";
     }
 
-    private static string StickLayout(List<long> sticks, string mfg, string part)
+    // Every distinct module brand, not just the first stick: mixed kits and per-stick vendors would otherwise read as one brand.
+    private static string BrandOf(string manufacturer, string partNumber)
+    {
+        var (name, _) = HardwareInventoryParsers.ResolveManufacturer(Clean(manufacturer), null);
+        return JoinBrandPart(name is null ? "" : HardwareInventoryParsers.BrandLabel(name), HardwareInventoryParsers.CleanPartNumber(Clean(partNumber)) ?? "");
+    }
+
+    // Most common kit first (ties by first slot): the catalog matcher reads only the text before the first "+" as the kit's brand and part number.
+    internal static string PrimaryFirst(IEnumerable<string> brands)
+    {
+        var all = brands.Where(b => b.Length > 0).ToList();
+        return string.Join(" + ", all.Distinct().OrderByDescending(b => all.Count(x => x == b)));
+    }
+
+    private static string StickLayout(List<long> sticks, string brand)
     {
         if (sticks.Count == 0) return "";
         var groups = sticks.GroupBy(b => b).OrderByDescending(g => g.Key).ToList();
         var layout = groups.Count == 1
             ? $"{sticks.Count} × {FormatGb(groups[0].Key / 1024.0 / 1024.0 / 1024.0)}"
             : $"{sticks.Count} sticks";
-        var brand = JoinBrandPart(mfg, part);
         return string.IsNullOrEmpty(brand) ? layout : $"{layout} {brand}";
     }
 
@@ -202,10 +226,7 @@ public sealed class SystemSpecsCollector
     {
         20 => "DDR",
         21 => "DDR2",
-        24 => "DDR3",
-        26 => "DDR4",
-        34 or 35 => "DDR5",
-        _ => "",
+        _ => HardwareInventoryParsers.MemoryGeneration(smbiosMemoryType) ?? "",
     };
 
     private static void ApplyDisks(SystemSpecsResponse s, JsonNode? node)
@@ -216,6 +237,7 @@ public sealed class SystemSpecsCollector
         foreach (var row in rows.OfType<JsonObject>())
         {
             var name = Clean(JsonString(row["FriendlyName"]));
+            if (HardwareInventoryParsers.IsVirtualDrive(name, null)) continue;
             var media = JsonString(row["MediaType"]);
             var bus = JsonString(row["BusType"]);
             var size = JsonLong(row["Size"]);
@@ -298,12 +320,12 @@ public sealed class SystemSpecsCollector
         s.NetworkCard = string.Join(" + ", parts);
     }
 
-    private static string DescribeDrive(StorageDriveInfo info, string brandFallback)
+    private static string DescribeDrive(FleetEventDrive drive)
     {
-        var name = !string.IsNullOrWhiteSpace(info.Name) ? info.Name : brandFallback;
-        var capacity = info.Capacity?.Trim() ?? "";
-        if (string.IsNullOrWhiteSpace(name)) return capacity;
-        return string.IsNullOrWhiteSpace(capacity) ? name : $"{capacity} {name}";
+        var name = drive.Model ?? drive.Vendor ?? "";
+        var capacity = drive.CapacityBytes is > 0 ? FormatGb(drive.CapacityBytes.Value / 1024.0 / 1024.0 / 1024.0) : "";
+        if (name.Length == 0) return capacity;
+        return capacity.Length == 0 ? name : $"{capacity} {name}";
     }
 
     // ── macOS enrichment ─────────────────────────────────────────────────

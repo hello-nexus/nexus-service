@@ -7,6 +7,7 @@ using System.Text.Json;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Persistence;
@@ -285,6 +286,16 @@ public static class PanelProfileData
         return JsonSerializer.Serialize(PanelLayoutDefaults.WithStableIds(clone, ""), PersistenceJsonContext.Default.PanelLayoutDto);
     }
 
+    /// <summary>
+    /// The surface a profile file stores for matching. A Kraken keeps the legacy token it was saved under
+    /// before it folded into lcd-round: it stays distinct from other round cooler glass, so a Kraken's
+    /// look never pairs with another cooler's, and files still pair with builds that predate the fold.
+    /// </summary>
+    private static string? MatchSurface(PanelDeviceCapabilities? caps) =>
+        string.Equals(caps?.Family, KrakenHub.DeviceId, StringComparison.Ordinal)
+            ? PanelSurfaces.LegacyKraken
+            : caps?.Surface;
+
     internal static bool IsPhone(PanelDeviceRecord r) =>
         string.Equals(r.Capabilities?.Surface, PanelSurfaces.Phone, StringComparison.Ordinal);
 
@@ -333,7 +344,7 @@ public static class PanelProfileData
         {
             Id = live.Id,
             LastSeenAt = live.LastSeenAt - live.LastSeenAt % DayMs,
-            Capabilities = new PanelDeviceCapabilities { Surface = live.Capabilities?.Surface },
+            Capabilities = new PanelDeviceCapabilities { Surface = MatchSurface(live.Capabilities) },
             FingerprintKey = live.FingerprintKey ?? FingerprintKey(live.DisplayFingerprint),
         };
         CopyLook(live, stripped);
@@ -379,7 +390,7 @@ public static class PanelProfileData
         }
 
         PairUnique(saved, live, pairs, claimed, r =>
-            r.Capabilities?.Surface is { } surface && PanelSurfaces.IsSingleInstance(surface) ? surface : null);
+            MatchSurface(r.Capabilities) is { } surface && PanelSurfaces.IsSingleInstance(surface) ? surface : null);
         PairUnique(saved, live, pairs, claimed, r => r.FingerprintKey ?? FingerprintKey(r.DisplayFingerprint));
         return pairs;
     }

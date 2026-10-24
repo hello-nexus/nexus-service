@@ -40,6 +40,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     private readonly Galahad2LcdLightingProvider _galahad2Lcd;
     private readonly HydroShiftLcdLightingProvider _hydroShiftLcd;
     private readonly AsiahorseUmbraLightingDeviceProvider _umbra;
+    private readonly GalleonSdLightingDeviceProvider _galleon;
     private readonly Peripherals.LianLiTl.TlFanHub _tl;
     private readonly Nexus.Service.Lighting.Smart.SmartLightProvider _smart;
     private readonly IConfigStore _store;
@@ -67,6 +68,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         Galahad2LcdLightingProvider galahad2Lcd,
         HydroShiftLcdLightingProvider hydroShiftLcd,
         AsiahorseUmbraLightingDeviceProvider umbra,
+        GalleonSdLightingDeviceProvider galleon,
         Peripherals.LianLiTl.TlFanHub tl,
         Nexus.Service.Lighting.Smart.SmartLightProvider smart,
         IConfigStore store,
@@ -94,6 +96,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         _galahad2Lcd = galahad2Lcd;
         _hydroShiftLcd = hydroShiftLcd;
         _umbra    = umbra;
+        _galleon  = galleon;
         _tl       = tl;
         _smart    = smart;
         _store    = store;
@@ -155,7 +158,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         };
     }
 
-    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _flex.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _hydroShiftLcd.IsConnected || _umbra.IsConnected || _smart.IsConnected;
+    public bool IsConnected => _openRgb.IsConnected || _np50.IsConnected || _miniHub.IsConnected || _smartHub.IsConnected || _cnvs.IsConnected || _qseries.IsConnected || _keeb.IsConnected || _ibp.IsConnected || _lianLi.IsConnected || _lianLiWireless.IsConnected || _flex.IsConnected || _corsair.IsConnected || _strimer.IsConnected || _galahad2.IsConnected || _nollie.IsConnected || _kraken.IsConnected || _hydroShift2.IsConnected || _hydroShift2Curve.IsConnected || _galahad2Lcd.IsConnected || _hydroShiftLcd.IsConnected || _umbra.IsConnected || _galleon.IsConnected || _smart.IsConnected;
 
     public GetLightingDevicesResponse GetAll() => Listing(mirrorIntoEngine: true);
 
@@ -341,6 +344,12 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             TagControlHandler(umbra.Devices, AsiahorseUmbraLightingDeviceProvider.DeviceId);
             rgb.Devices.AddRange(umbra.Devices);
         }
+        var galleon = _galleon.GetAll();
+        if (galleon.Devices.Count > 0)
+        {
+            rgb.IsInit = rgb.IsInit || galleon.IsInit;
+            rgb.Devices.AddRange(galleon.Devices);
+        }
         if (BuildTlCard(_tl.IsConnected, _tl.Snapshot, _store.Load()) is { } tlCard)
         {
             rgb.Devices.Add(tlCard);
@@ -515,6 +524,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         var galahad2LcdIds = new List<string>(ids.Count);
         var hydroShiftLcdIds = new List<string>(ids.Count);
         var umbraIds      = new List<string>(ids.Count);
+        var galleonIds    = new List<string>(ids.Count);
         var smartLightIds = new List<string>(ids.Count);
         foreach (var id in ids)
         {
@@ -537,6 +547,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
             else if (Galahad2LcdLightingProvider.IsGalahad2LcdId(id)) galahad2LcdIds.Add(id);
             else if (HydroShiftLcdLightingProvider.IsHydroShiftLcdId(id)) hydroShiftLcdIds.Add(id);
             else if (AsiahorseUmbraLightingDeviceProvider.IsUmbraId(id)) umbraIds.Add(id);
+            else if (GalleonSdLightingDeviceProvider.IsGalleonId(id)) galleonIds.Add(id);
             else if (_smart.Owns(id))   smartLightIds.Add(id);
             else                        rgbIds.Add(id);
         }
@@ -560,6 +571,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         if (galahad2LcdIds.Count > 0) _galahad2Lcd.SetDisabled(galahad2LcdIds);
         if (hydroShiftLcdIds.Count > 0) _hydroShiftLcd.SetDisabled(hydroShiftLcdIds);
         if (umbraIds.Count > 0)      _umbra.SetDisabled(umbraIds);
+        if (galleonIds.Count > 0)    _galleon.SetDisabled(galleonIds);
         if (smartLightIds.Count > 0) _smart.SetDisabled(smartLightIds);
     }
 
@@ -591,6 +603,7 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
         : Galahad2LcdLightingProvider.IsGalahad2LcdId(id) ? _galahad2Lcd
         : HydroShiftLcdLightingProvider.IsHydroShiftLcdId(id) ? _hydroShiftLcd
         : AsiahorseUmbraLightingDeviceProvider.IsUmbraId(id) ? _umbra
+        : GalleonSdLightingDeviceProvider.IsGalleonId(id) ? _galleon
         : _smart.Owns(id)    ? _smart
         : _openRgb;
 
