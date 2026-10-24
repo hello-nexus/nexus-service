@@ -115,6 +115,10 @@ public static partial class DevicesRoutes
         m.PictureIds = order;
     }
 
+    /// <summary>Whether a new picture stored under <paramref name="screenId"/> is swapped into <see cref="MystiquePictureSlot"/> to stay on the screen.</summary>
+    internal static bool MystiqueUploadSwaps(DeepCoolMystiqueSettings m, string screenId) =>
+        MystiquePictureOrder(m).Exists(id => string.CompareOrdinal(id, screenId) < 0);
+
     /// <summary>The id a show of <paramref name="item"/> streams into: <see cref="MystiquePictureSlot"/>, else the item's own screen id, which a stream then records as stored.</summary>
     internal static string MystiqueShowSlot(DeepCoolMystiqueSettings m, DeepCoolMystiqueMediaItem item) =>
         MystiquePictureSlot(m) ?? MystiqueScreenId(item);
@@ -444,12 +448,19 @@ public static partial class DevicesRoutes
                     return MystiqueMediaFailure(encoded.Error ?? "Encode failed");
                 }
                 var package = encoded.Package!;
+                bool swapAfter = false;
                 // Once streaming starts this waits for the real result, so an item the screen took is always recorded.
                 MystiqueSourceAfter? SourceAfterStream()
                 {
                     MystiqueSourceAfter? after = null;
-                    store.Update(s => after = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif, inPlace, MystiqueSourceChoices != startChoices));
-                    return after;
+                    store.Update(s =>
+                    {
+                        var d = s.Devices.DeepCoolMystique;
+                        after = MystiqueSourceAfterUpload(d, isGif, inPlace, MystiqueSourceChoices != startChoices);
+                        swapAfter = !isGif && after is { Send: true, Source: DeepCoolMystiqueSettings.SourceImages } && MystiqueUploadSwaps(d, screenId);
+                    });
+                    // The swap that follows sends the source after its own streams.
+                    return swapAfter ? null : after;
                 }
                 worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
                 if (!await worker.UploadAsync(package, SourceAfterStream, budget.Token))
@@ -498,6 +509,16 @@ public static partial class DevicesRoutes
                     }
                 });
                 worker.RequestApply();
+                // A new picture moves into the place the pictures start from, as a click does, so it stays on the screen.
+                if (swapAfter)
+                {
+                    var m = new DeepCoolMystiqueSettings();
+                    store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
+                    if (m.Media.Find(i => i.Id == id) is { } uploaded)
+                    {
+                        return await ShowMystiquePictureAsync(store, worker, m, uploaded, budget.Token);
+                    }
+                }
                 return Results.Json(new DeepCoolMystiqueMediaResponse { Id = id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
             }
             catch (OperationCanceledException)
