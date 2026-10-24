@@ -84,4 +84,62 @@ public class GlReadbackConvertTests
         canvas.WriteFromGl(new byte[10], rgba: true);
         Assert.Equal((5, 5, 5), canvas.GetPixel(0, 0));
     }
+
+    private delegate void RowKernel(ReadOnlySpan<byte> src, Span<byte> dst, int w);
+
+    private static void AssertRowKernelMatches(RowKernel kernel)
+    {
+        var rng = new Random(11);
+        for (var w = 0; w <= 70; w++)
+        {
+            var src = new byte[w * 4];
+            rng.NextBytes(src);
+            if (w > 0)
+            {
+                src[0] = 255;
+                src[^1] = 255;
+            }
+            var expected = new byte[w * 3];
+            for (var x = 0; x < w; x++)
+            {
+                expected[x * 3] = src[x * 4];
+                expected[(x * 3) + 1] = src[(x * 4) + 1];
+                expected[(x * 3) + 2] = src[(x * 4) + 2];
+            }
+            // Pre-filled so a short write or a stray surplus store shows as a mismatch.
+            var got = new byte[w * 3];
+            Array.Fill(got, (byte)0xA5);
+            kernel(src, got, w);
+            Assert.Equal(expected, got);
+        }
+    }
+
+    [Fact]
+    public void Vector128_row_kernel_matches_scalar_for_every_width()
+    {
+        AssertRowKernelMatches(GlReadbackConvert.RowVector128);
+    }
+
+    [Fact]
+    public void Ssse3_row_kernel_matches_scalar_for_every_width()
+    {
+        // Falls back to the scalar tail on CPUs without SSSE3, so it is exercised either way.
+        AssertRowKernelMatches(GlReadbackConvert.RowSsse3);
+    }
+
+    [Fact]
+    public void FlipRows_matches_the_reference_over_random_sizes()
+    {
+        var rng = new Random(23);
+        for (var i = 0; i < 200; i++)
+        {
+            var w = rng.Next(1, 200);
+            var h = rng.Next(1, 40);
+            var rgba = rng.Next(2) == 0;
+            var src = Noise((w * h * (rgba ? 4 : 3)) + rng.Next(0, 5));
+            var dst = new byte[w * h * 3];
+            GlReadbackConvert.FlipRows(src, dst, w, h, rgba);
+            Assert.Equal(Reference(src, w, h, rgba), dst);
+        }
+    }
 }
