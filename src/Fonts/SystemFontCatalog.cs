@@ -103,7 +103,7 @@ public static class SystemFontCatalog
         var psi = new ProcessStartInfo("fc-list", ": family")
         {
             RedirectStandardOutput = true,
-                        UseShellExecute = false,
+            UseShellExecute = false,
         };
         using var proc = Process.Start(psi);
         if (proc is null)
