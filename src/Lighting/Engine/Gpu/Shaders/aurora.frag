@@ -1,6 +1,6 @@
 uniform float u_curtains; // hint_range(1.0, 8.0, 1.0) = 4.0  number of overlapping curtain bands
-uniform float u_height; // hint_range(0.2, 1.0, 0.02) = 0.55  how much of the frame the curtains cover
-uniform float u_shimmer; // hint_range(0.0, 1.0, 0.02) = 0.5  high-freq flicker intensity
+uniform float u_height; // hint_range(0.2, 1.0, 0.02) = 0.75  how much of the frame the curtains cover
+uniform float u_shimmer; // hint_range(0.0, 1.0, 0.02) = 0.4  high-freq flicker intensity
 uniform float u_aHue;  // hint_range(0.0, 1.0, 0.01) = 0.67  center hue of the color range
 uniform float u_aSpan; // hint_range(0.0, 1.0, 0.01) = 0.33  share of the wheel the curtains step through
 uniform float u_aSat;  // hint_range(0.0, 1.0, 0.01) = 1.0
@@ -33,7 +33,7 @@ void main() {
     vec3 sky = hsv2rgb(vec3(u_aHue - u_aSpan * 0.5 - 0.04, u_aSat, 1.0)) * 0.4 * mix(0.15, 0.9, clamp(u_bgLevel, 0.0, 1.0));
     vec3 col = sky * (0.75 + 0.5 * uv.y);
 
-    // Pixel-size guards: ray frequency never goes finer than about three pixels.
+    // Pixel-size guard: ray frequency never goes finer than the canvas can resolve.
     float rayFreq = min(9.0, u_resolution.x * 0.12);
     float shimFreq = min(30.0, u_resolution.x * 0.4);
     float span = 0.2 + 0.62 * h;
@@ -66,11 +66,9 @@ void main() {
         if (band > 0.004) {
             flicker = 1.0 + shim * (vnoise(vec2(uv.x * shimFreq + fi * 7.0, t * 4.0 + fi)) - 0.5) * 0.9;
         }
-        // Ray texture inside the curtain body.
         float body = band * flicker * mix(1.0, 0.45 + 1.1 * ray, rays * 0.7);
 
-        // Hue comes from the wheel range, not the global tint.
-        // Each band takes its own hue from the wheel's range (the lowest band the
+        // Color comes from the wheel range, not the global tint. Each band takes its own hue from the wheel's range (the lowest band the
         // first end); a gentle gradient inside the band keeps it soft.
         float k = clamp(-dy * invUp / 1.7, 0.0, 1.0);
         float n = float(bands - 1) - fi;
@@ -85,9 +83,8 @@ void main() {
         // Boldness: lift the ray core so beams stay bright against the sky.
         rayI = min(rayI * 1.35, 1.0);
 
-        // Alpha-over instead of additive, so a front band keeps its own hue where
-        // bands overlap and the colored sky shows through the gaps. Rays carry
-        // their own band's color.
+        // Alpha-over keeps a front band's own hue where bands overlap and lets the
+        // colored sky show through the gaps. Rays carry their band's color.
         float a = clamp(body * 0.95 + rayI * 0.95, 0.0, 1.0);
         float hemI = hem * (0.2 + 0.9 * ray) * (0.6 + 0.4 * flicker);
         vec3 lit = lc * (0.75 + 0.5 * body + 0.35 * rayI) + mix(lc, vec3(1.0), 0.25) * hemI * 0.6;
@@ -98,6 +95,8 @@ void main() {
     // inside it and drawn as a round core whose radius is set in pixels, so a
     // star stays a pinpoint on a panel and still covers a whole pixel on the
     // small canvas the LED path renders into, where a cell is about one pixel.
+    // Jitter keeps stars off the cell edges, which is what lets the falloff be
+    // read from its own cell alone instead of sampling the neighbours.
     float cellRows = 90.0;
     vec2 cells = vec2(cellRows * aspect, cellRows);
     vec2 sp = uv * cells;
@@ -112,5 +111,6 @@ void main() {
         float twinkle = 0.75 + 0.25 * sin(t * 6.0 + sh * 90.0);
         col += vec3(bright * exp(-(d * d) / (core * core)) * twinkle * 0.4) * (1.0 - uv.y * 0.6);
     }
-    fragColor = vec4(finalize(col), 1.0);
+    // tonemap, not finalize: the wheel range owns the color, so the global tint is off.
+    fragColor = vec4(tonemap(col), 1.0);
 }
