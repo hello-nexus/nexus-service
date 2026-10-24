@@ -22,14 +22,13 @@ public class MacHidEnumeratorTests
     }
 
     [MacOnlyFact]
-    public void FindAll_ListsIoKitPathsWithVendorAndProduct()
+    public void FindAll_ListsIoKitPaths()
     {
         var all = new MacHidEnumerator().FindAll();
 
-        // Any Mac has at least its own HID devices (keyboard/trackpad/IR) in the IORegistry.
+        // Any Mac has HID services in the IORegistry, but a headless one has none with a non-zero vendor/product id, so only the path contract is asserted.
         Assert.NotEmpty(all);
         Assert.All(all, d => Assert.True(MacHidEnumerator.TryParseEntryId(d.Path, out _), d.Path));
-        Assert.Contains(all, d => d.VendorId != 0 && d.ProductId != 0);
     }
 
     /// <summary>Hardware-conditional: exercises open, a feature read and a second independent handle when a Stream Deck is plugged in; a no-op otherwise. Read-only on purpose - the running service owns the deck's brightness.</summary>
