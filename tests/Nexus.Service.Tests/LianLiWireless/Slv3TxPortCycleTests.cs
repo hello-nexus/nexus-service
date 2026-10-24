@@ -35,7 +35,7 @@ public partial class Slv3HubTests
     }
 
     // A TX the RX reset never revives, driven through connect attempts one reset window apart.
-    private (Slv3Hub Hub, ManualClock Clock, FakeSlv3Network Net, FakeTxPortCycler Cycler, ToggleDiscovery Discovery) HungTxHub(bool answersWithZeroMac = false, Action<Action>? run = null)
+    private (Slv3Hub Hub, ManualClock Clock, FakeSlv3Network Net, FakeTxPortCycler Cycler, ToggleDiscovery Discovery) HungTxHub(bool answersWithZeroMac = false, Action<Action>? run = null, bool displayOn = true)
     {
         var clock = new ManualClock();
         var net = new FakeSlv3Network { TxWedged = !answersWithZeroMac, TxIgnoresReset = true };
@@ -48,6 +48,10 @@ public partial class Slv3HubTests
             RunPortCycle = run ?? (work => work()),
             TxPortCycler = cycler,
         };
+        if (displayOn)
+        {
+            hub.OnDisplayState(1);
+        }
         return (hub, clock, net, cycler, discovery);
     }
 
@@ -95,7 +99,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void An_identity_the_cycler_refuses_is_not_cycled_and_counts_toward_the_cap()
+    public void A_refused_identity_is_not_cycled_and_uses_no_cap_slot()
     {
         var (hub, clock, _, cycler, _) = HungTxHub();
         cycler.Refuse = true;
@@ -103,7 +107,11 @@ public partial class Slv3HubTests
         Attempts(hub, clock, 400);
 
         Assert.Empty(cycler.Cycled);
-        Assert.Equal(Slv3Hub.MaxPortCyclesPerWindow, cycler.Resolves);
+        Assert.True(cycler.Resolves > Slv3Hub.MaxPortCyclesPerWindow);
+
+        cycler.Refuse = false;
+        Attempts(hub, clock, 400);
+        Assert.Equal(Slv3Hub.MaxPortCyclesPerWindow, cycler.Cycled.Count);
     }
 
     [Fact]
@@ -175,17 +183,43 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_long_gap_between_passes_holds_cycling_for_the_quiet_period()
+    public void An_unknown_display_state_never_cycles()
+    {
+        var (hub, clock, _, cycler, _) = HungTxHub(displayOn: false);
+
+        Attempts(hub, clock, 400);
+
+        Assert.Empty(cycler.Cycled);
+        Assert.Equal(0, cycler.Resolves);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void A_display_that_is_off_or_dimmed_holds_cycling(int state)
     {
         var (hub, clock, _, cycler, _) = HungTxHub();
         Attempts(hub, clock, 6);
+        hub.OnDisplayState(state);
+
+        Attempts(hub, clock, 100);
+
+        Assert.Empty(cycler.Cycled);
+    }
+
+    [Fact]
+    public void Cycling_returns_only_after_the_quiet_period_once_the_display_is_on()
+    {
+        var (hub, clock, _, cycler, _) = HungTxHub();
+        Attempts(hub, clock, 6);
+        hub.OnDisplayState(0);
+        Attempts(hub, clock, 100);
+
+        hub.OnDisplayState(1);
+        Attempts(hub, clock, 1);
         Assert.Empty(cycler.Cycled);
 
-        Attempts(hub, clock, 1, Slv3Hub.PortCyclePassGapMs + 1);
-        Assert.Empty(cycler.Cycled);
-
-        Attempts(hub, clock, 1, Slv3Hub.PortCycleResumeQuietMs + 1);
-        Attempts(hub, clock, 30);
+        Attempts(hub, clock, 5);
         Assert.NotEmpty(cycler.Cycled);
     }
 

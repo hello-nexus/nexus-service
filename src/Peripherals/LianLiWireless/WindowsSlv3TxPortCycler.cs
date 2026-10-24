@@ -4,12 +4,7 @@ using Nexus.Service.QSeries;
 
 namespace Nexus.Service.Peripherals.LianLiWireless;
 
-/// <summary>
-/// IOCTL_USB_HUB_CYCLE_PORT on the TX's own port, no pnputil fallback. The instance id is
-/// read back from the discovered interface, its VID/PID must be the TX, and its parent must
-/// be on the USB enumerator, and the cycle itself needs a hub interface on it; anything else is refused. <see cref="QSeriesUsbPortCycle"/> then resolves the
-/// hub and port from that same instance id, so it cannot reach a different device.
-/// </summary>
+/// <summary>IOCTL_USB_HUB_CYCLE_PORT on the TX's own port after an exact TX identity check, with no pnputil fallback.</summary>
 internal sealed class WindowsSlv3TxPortCycler : ISlv3TxPortCycler
 {
     public bool TryResolve(Slv3PortInfo txPort, out string instanceId, out string target)

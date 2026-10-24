@@ -279,15 +279,16 @@ public sealed partial class Slv3Hub : IDisposable
     internal const long PortCycleWindowMs = 86_400_000;
     // No cycle until this long after a resume: the TX is re-enumerating on its own.
     internal const long PortCycleResumeQuietMs = 120_000;
-    // Modern Standby may raise no suspend or resume event. The worker passes every few
-    // seconds, so a longer gap between two passes means the process was frozen and the
-    // same quiet period applies.
-    internal const long PortCyclePassGapMs = 90_000;
+    // Display state (0 off, 1 on, 2 dimmed, -1 unknown): Modern Standby always turns the display off first
+    // and may raise no suspend event, so cycling is held while it is anything but on, and after it returns.
+    internal const int DisplayUnknown = -1;
+    private int _displayState = DisplayUnknown;
+    private long _displayQuietUntilMs;
+    private readonly object _portCycleGate = new();
     private readonly Queue<long> _portCycleTimesMs = new();
     private bool _portCycleCapLogged;
     private bool _portCycleQuietLogged;
-    private long _lastCyclePassMs;
-    private long _gapQuietUntilMs;
+    private int _portCycleRefusalLogged;
     private int _txHungResets;
     private long _txHungSinceMs;
     private int _portCycles;
@@ -297,6 +298,9 @@ public sealed partial class Slv3Hub : IDisposable
 
     /// <summary>Windows only; null leaves the TX reset to the RX alone.</summary>
     internal ISlv3TxPortCycler? TxPortCycler { get; set; }
+
+    /// <summary>Owned display-state registration, released on dispose.</summary>
+    internal IDisposable? DisplayWatch { get; set; }
 
     internal Action<Action> RunPortCycle { get; init; } = work => _ = Task.Run(work);
 
@@ -713,18 +717,44 @@ public sealed partial class Slv3Hub : IDisposable
         _txHungResets = 0;
         _txHungSinceMs = 0;
         _portCycles = 0;
+        Volatile.Write(ref _portCycleRefusalLogged, 0);
+    }
+
+    private string? PortCycleHoldReason(long nowMs)
+    {
+        var quietUntil = Volatile.Read(ref _powerQuietUntilMs);
+        if (quietUntil == long.MaxValue)
+        {
+            return "suspend seen without a resume";
+        }
+        var display = Volatile.Read(ref _displayState);
+        if (display == DisplayUnknown)
+        {
+            return "display state unknown";
+        }
+        if (display != 1)
+        {
+            return "display off";
+        }
+        return nowMs < quietUntil || nowMs < Volatile.Read(ref _displayQuietUntilMs) ? "recent power transition" : null;
+    }
+
+    private int PortCyclesInWindow(long nowMs)
+    {
+        lock (_portCycleGate)
+        {
+            while (_portCycleTimesMs.Count > 0 && nowMs - _portCycleTimesMs.Peek() >= PortCycleWindowMs)
+            {
+                _portCycleTimesMs.Dequeue();
+            }
+            return _portCycleTimesMs.Count;
+        }
     }
 
     // Called with the TX this pass found enumerated, or null when it is not. A TX
     // that left the bus was re-enumerated, which is not a hang the RX reset ignored.
     private void ConsiderTxPortCycleLocked(Slv3PortInfo? txPort, long nowMs)
     {
-        var passGap = _lastCyclePassMs != 0 && nowMs - _lastCyclePassMs > PortCyclePassGapMs;
-        _lastCyclePassMs = nowMs;
-        if (passGap)
-        {
-            _gapQuietUntilMs = nowMs + PortCycleResumeQuietMs;
-        }
         if (txPort is null)
         {
             _txHungResets = 0;
@@ -740,60 +770,64 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return;
         }
-        var powerQuietUntil = Volatile.Read(ref _powerQuietUntilMs);
-        if (nowMs < powerQuietUntil || nowMs < _gapQuietUntilMs)
+        var hold = PortCycleHoldReason(nowMs);
+        if (hold is not null)
         {
             if (!_portCycleQuietLogged)
             {
                 _portCycleQuietLogged = true;
-                ServiceLog.Info(powerQuietUntil == long.MaxValue
-                    ? "[lianli-wireless] TX port cycle held back: suspend seen without a resume"
-                    : "[lianli-wireless] TX port cycle held back: recent power transition");
+                ServiceLog.Info($"[lianli-wireless] TX port cycle held back: {hold}");
             }
             return;
         }
         _portCycleQuietLogged = false;
-        while (_portCycleTimesMs.Count > 0 && nowMs - _portCycleTimesMs.Peek() >= PortCycleWindowMs)
-        {
-            _portCycleTimesMs.Dequeue();
-        }
-        if (_portCycleTimesMs.Count >= MaxPortCyclesPerWindow)
+        var issued = PortCyclesInWindow(nowMs);
+        if (issued >= MaxPortCyclesPerWindow)
         {
             if (!_portCycleCapLogged)
             {
                 _portCycleCapLogged = true;
-                ServiceLog.Warn($"[lianli-wireless] TX still hung after {_portCycleTimesMs.Count} port cycle(s) in the last day, giving up: unplug and replug the module");
+                ServiceLog.Warn($"[lianli-wireless] TX still hung after {issued} port cycle(s) in the last day, giving up: unplug and replug the module");
             }
             return;
         }
         _portCycleCapLogged = false;
-        _portCycleTimesMs.Enqueue(nowMs);
-        _portCycles++;
-        var episode = _portCycleTimesMs.Count;
         var resets = _txHungResets;
         var hungMinutes = (nowMs - _txHungSinceMs) / 60_000;
         _nextPortCycleMs = nowMs + PortCycleSpacingMs;
         _txHungResets = 0;
         _txHungSinceMs = 0;
         Volatile.Write(ref _portCycleInFlight, 1);
-        RunPortCycle(() => CycleTxPort(cycler, txPort, episode, resets, hungMinutes));
+        RunPortCycle(() => CycleTxPort(cycler, txPort, resets, hungMinutes));
     }
 
     // Runs without _lock: the hub IOCTL and the re-arrival wait can block for seconds.
-    private void CycleTxPort(ISlv3TxPortCycler cycler, Slv3PortInfo txPort, int episode, int resets, long hungMinutes)
+    // A cap slot is taken only once the IOCTL is about to be issued.
+    private void CycleTxPort(ISlv3TxPortCycler cycler, Slv3PortInfo txPort, int resets, long hungMinutes)
     {
         try
         {
             if (!cycler.TryResolve(txPort, out var instanceId, out var target))
             {
-                ServiceLog.Warn($"[lianli-wireless] TX port cycle refused: {target}");
+                if (Interlocked.Exchange(ref _portCycleRefusalLogged, 1) == 0)
+                {
+                    ServiceLog.Warn($"[lianli-wireless] TX port cycle refused: {target}");
+                }
                 return;
             }
-            if (_disposed || _nowMs() < Volatile.Read(ref _powerQuietUntilMs))
+            var nowMs = _nowMs();
+            if (_disposed || PortCycleHoldReason(nowMs) is not null)
             {
                 return;
             }
-            ServiceLog.Warn($"[lianli-wireless] TX ignored {resets} RX reset(s) over {hungMinutes} min, cycling its USB port {target} ({episode}/{MaxPortCyclesPerWindow} today)");
+            int slot;
+            lock (_portCycleGate)
+            {
+                _portCycleTimesMs.Enqueue(nowMs);
+                slot = _portCycleTimesMs.Count;
+            }
+            Interlocked.Increment(ref _portCycles);
+            ServiceLog.Warn($"[lianli-wireless] TX ignored {resets} RX reset(s) over {hungMinutes} min, cycling its USB port {target} ({slot}/{MaxPortCyclesPerWindow} today)");
             var ok = cycler.TryCycle(instanceId, out var detail);
             ServiceLog.Warn($"[lianli-wireless] TX port cycle {(ok ? "done" : "failed")}: {detail}");
         }
@@ -804,6 +838,16 @@ public sealed partial class Slv3Hub : IDisposable
         finally
         {
             Volatile.Write(ref _portCycleInFlight, 0);
+        }
+    }
+
+    /// <summary>Console display state from the OS: 0 off, 1 on, 2 dimmed. Cycling waits out a quiet period after it returns to on.</summary>
+    public void OnDisplayState(int state)
+    {
+        var previous = Interlocked.Exchange(ref _displayState, state);
+        if (state == 1 && previous != 1 && previous != DisplayUnknown)
+        {
+            Volatile.Write(ref _displayQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
         }
     }
 
@@ -3389,6 +3433,7 @@ public sealed partial class Slv3Hub : IDisposable
                 return;
             }
             _disposed = true;
+            try { DisplayWatch?.Dispose(); } catch { /* best effort */ }
             DisconnectLocked();
         }
     }
