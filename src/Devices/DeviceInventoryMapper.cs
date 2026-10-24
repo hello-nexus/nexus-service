@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Nexus.Service.Models.Devices;
+using Nexus.Service.Models.Peripherals;
+using Nexus.Service.Peripherals;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.CorsairLink;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
@@ -62,6 +65,12 @@ namespace Nexus.Service.Devices;
 /// asrock:lcd                    ASRock LCD
 /// asus:rog-strix-slc4-lcd       ROG Strix SLC IV LCD
 /// asus:ryujin-lcd               ROG Ryujin LCD
+/// lianli:tl-lcd                 Uni Fan TL LCD screens (wired)
+/// lianli-wl:strimer-N           wireless Strimer cable, N is the dev type (lighting)
+/// lianli-wl:unknown-N           wireless fan chain with an unmapped fans_type N (fan)
+/// VENDOR:MODEL                  first-party peripheral from the catalog (Source nexus), e.g. hyte:keeb-tkl
+/// usb:VID:PID                   recognized USB device with no model mapping, lowercase 4-digit hex
+/// openrgb:VENDOR:NAME           OpenRGB device, slugged (keyboard, mouse, headset, lighting, controller, fan, cooler)
 /// hyte:thicc-q60                THICC Q60
 /// hyte:thicc-q80                THICC Q80
 /// </code>
@@ -120,11 +129,30 @@ public static class DeviceInventoryMapper
                 });
                 continue;
             }
+            if (Slv3Protocol.IsStrimerDevType(devType))
+            {
+                rows.Add(new SystemDeviceDto
+                {
+                    Key = key,
+                    ModelKey = "lianli-wl:strimer-" + fan.DevType.ToString(CultureInfo.InvariantCulture),
+                    Category = SystemDeviceCategories.Lighting,
+                    Vendor = "Lian Li",
+                    Model = Nexus.Service.Lighting.Slv3LightingDeviceProvider.StrimerModelNameFor(devType),
+                    Family = "strimer",
+                });
+                continue;
+            }
             var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
             var (suffix, display) = WirelessFamily(family);
-            if (fan.FanCount <= 0 || suffix.Length == 0)
+            if (fan.FanCount <= 0)
             {
                 continue;
+            }
+            if (suffix.Length == 0)
+            {
+                // A chain whose fan type has no family yet is still a fan chain.
+                suffix = "unknown-" + fan.FanType.ToString(CultureInfo.InvariantCulture);
+                display = "Uni Fan (type " + fan.FanType.ToString(CultureInfo.InvariantCulture) + ")";
             }
             // Only the Flex fans encode screen presence in the sub-index; the rest of the sub-index meaning is not in the protocol source.
             if (family is Slv3FanFamily.SlInfFlex or Slv3FanFamily.TlFlex && Slv3FlexLcd.IsLcdFanType(fan.FanType))
@@ -459,5 +487,198 @@ public static class DeviceInventoryMapper
             Vendor = "HYTE",
             Model = variant == QSeriesCoolerProtocol.VariantQ80 ? "THICC Q80" : "THICC Q60",
         };
+    }
+
+    /// <summary>The wired TL LCD screens, one per fan, as one row.</summary>
+    public static SystemDeviceDto? FromTlLcd(int attachedScreens)
+    {
+        if (attachedScreens <= 0)
+        {
+            return null;
+        }
+        return new SystemDeviceDto
+        {
+            Key = "lianli-tl-lcd",
+            ModelKey = "lianli:tl-lcd",
+            Category = SystemDeviceCategories.Fan,
+            Vendor = "Lian Li",
+            Model = "Uni Fan TL LCD",
+            Vid = JpegPanelModel.TlLcd.VendorId,
+            Pid = JpegPanelModel.TlLcd.ProductIds[0],
+            Count = attachedScreens,
+            CountSource = SystemDeviceCountSources.Detected,
+        };
+    }
+
+    public static string Slug(string? text)
+    {
+        var sb = new System.Text.StringBuilder();
+        var dash = false;
+        foreach (var c in text ?? "")
+        {
+            if (char.IsAsciiLetterOrDigit(c))
+            {
+                if (dash && sb.Length > 0)
+                {
+                    sb.Append('-');
+                }
+                dash = false;
+                sb.Append(char.ToLowerInvariant(c));
+            }
+            else
+            {
+                dash = true;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static string Hex4(int value) => value.ToString("x4", CultureInfo.InvariantCulture);
+
+    /// <summary>Catalog category word to an inventory category, or null for parts Build already lists.</summary>
+    internal static string? CategoryFromCatalog(string? catalogCategory) => catalogCategory switch
+    {
+        "keyboard" or "keypad" => SystemDeviceCategories.Keyboard,
+        "mouse" => SystemDeviceCategories.Mouse,
+        "headset" or "microphone" => SystemDeviceCategories.Headset,
+        "aio" or "cooler" => SystemDeviceCategories.Cooler,
+        "fan" => SystemDeviceCategories.Fan,
+        "light" or "ledstrip" => SystemDeviceCategories.Lighting,
+        "controller" or "hub" or "unknown" => SystemDeviceCategories.Controller,
+        "gpu" or "motherboard" or "memory" or "dram" or "case" or "storage" or "monitor" or "laptop" or "virtual" => null,
+        null or "" => null,
+        _ => SystemDeviceCategories.Peripheral,
+    };
+
+    private static string? CategoryFromHandler(IDeviceHandler handler) => handler.Id switch
+    {
+        "lianli-wireless" => SystemDeviceCategories.Controller,
+        "lianli-flex" => SystemDeviceCategories.Fan,
+        _ => handler.Category switch
+        {
+            "keyboard" => SystemDeviceCategories.Keyboard,
+            "mouse" => SystemDeviceCategories.Mouse,
+            "headset" => SystemDeviceCategories.Headset,
+            "cooler" => SystemDeviceCategories.Cooler,
+            "fan" => SystemDeviceCategories.Fan,
+            "hub" or "controller" => SystemDeviceCategories.Controller,
+            "light" => SystemDeviceCategories.Lighting,
+            _ => SystemDeviceCategories.Peripheral,
+        },
+    };
+
+    private static bool TryParseHex(string? text, out int value)
+    {
+        value = 0;
+        var t = text ?? "";
+        if (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            t = t[2..];
+        }
+        return int.TryParse(t, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
+    }
+
+    /// <summary>
+    /// Every cached USB entry that a handler or the supported-devices catalog recognizes and that no
+    /// dedicated row stands for. Unrecognized USB devices are never listed. A first-party catalog row
+    /// (Source nexus) keys by vendor and model; anything else keys by vid and pid.
+    /// </summary>
+    public static List<SystemDeviceDto> FromUsb(
+        IReadOnlyList<UsbDeviceEntry> usb,
+        IEnumerable<IDeviceHandler> handlers,
+        ISet<string> claimedHandlerIds,
+        IReadOnlyList<SupportedDeviceDto> catalog)
+    {
+        var byId = new Dictionary<(int, int), SupportedDeviceDto>();
+        foreach (var row in catalog)
+        {
+            if (TryParseHex(row.VendorId, out var v) && TryParseHex(row.ProductId, out var p))
+            {
+                byId.TryAdd((v, p), row);
+            }
+        }
+        var handlerList = handlers.ToList();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rows = new List<SystemDeviceDto>();
+        foreach (var entry in usb)
+        {
+            var unit = Hex4(entry.VendorId) + ":" + Hex4(entry.ProductId);
+            if (!seen.Add(unit + ":" + entry.Serial))
+            {
+                continue;
+            }
+            var handler = handlerList.FirstOrDefault(h => h.Identifiers.Any(id => id.VendorId == entry.VendorId && id.ProductId == entry.ProductId));
+            byId.TryGetValue((entry.VendorId, entry.ProductId), out var known);
+            if (handler is null && known is null)
+            {
+                continue;
+            }
+            if (handler is not null && claimedHandlerIds.Contains(handler.Id))
+            {
+                continue;
+            }
+            var category = CategoryFromCatalog(known?.Category) ?? (known is null && handler is not null ? CategoryFromHandler(handler) : null);
+            if (category is null)
+            {
+                continue;
+            }
+            var firstParty = known is { Source: "nexus" };
+            var vendor = known?.Vendor is { Length: > 0 } kv ? kv : entry.Manufacturer;
+            var model = known?.Model is { Length: > 0 } km ? km : !string.IsNullOrEmpty(entry.Name) ? entry.Name : handler?.Name ?? unit;
+            rows.Add(new SystemDeviceDto
+            {
+                Key = "usb:" + unit + (string.IsNullOrEmpty(entry.Serial) ? "" : ":" + entry.Serial),
+                ModelKey = firstParty ? Slug(vendor) + ":" + Slug(model) : "usb:" + unit,
+                Category = category,
+                Vendor = vendor,
+                Model = model,
+                Vid = entry.VendorId,
+                Pid = entry.ProductId,
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// OpenRGB devices by their OpenRGB type. Parts Build lists itself (motherboard, memory, GPU, case,
+    /// storage) and virtual devices are skipped.
+    /// </summary>
+    public static List<SystemDeviceDto> FromOpenRgb(IEnumerable<Nexus.Service.Lighting.Rgb.RgbDevice> devices)
+    {
+        var rows = new List<SystemDeviceDto>();
+        foreach (var device in devices)
+        {
+            var typeName = Nexus.Service.Lighting.Rgb.OpenRgbZoneSupport.OpenRgbTypeName(device.Type);
+            if (typeName is "motherboard" or "dram" or "gpu" or "case" or "storage" or "virtual")
+            {
+                continue;
+            }
+            var resolved = LightingDevicesCatalog.ResolveCategory(device.Name, null, null, typeName);
+            var category = typeName == "unknown" ? SystemDeviceCategories.Controller : CategoryFromCatalog(resolved);
+            if (category is null)
+            {
+                continue;
+            }
+            rows.Add(new SystemDeviceDto
+            {
+                Key = "openrgb:" + device.StableId,
+                ModelKey = "openrgb:" + Slug(device.Vendor) + ":" + Slug(device.Name),
+                Category = category,
+                Vendor = device.Vendor,
+                Model = device.Name,
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>OpenRGB rows whose device a first-party row already covers by name; the first-party row wins.</summary>
+    public static List<SystemDeviceDto> DropOpenRgbDuplicates(IReadOnlyList<SystemDeviceDto> openRgb, IReadOnlyList<SystemDeviceDto> firstParty)
+    {
+        var names = firstParty.Select(r => Slug(r.Model).Replace("-", "")).Where(n => n.Length >= 4).ToList();
+        return openRgb.Where(r =>
+        {
+            var n = Slug(r.Model).Replace("-", "");
+            return !names.Any(f => n.Contains(f, StringComparison.Ordinal) || f.Contains(n, StringComparison.Ordinal));
+        }).ToList();
     }
 }
