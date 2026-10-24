@@ -51,10 +51,14 @@ public static class CoolingLayoutRoutes
     public static void WireTopic(CoolingLayoutStore store, Nexus.Service.Sockets.MultiplexHub hub) =>
         store.Changed += rev => Nexus.Service.Sockets.PanelTopics.BroadcastCoolingLayout(hub, rev);
 
-    // The service-wide body limit is sized for media uploads, so this route sets its own before reading.
+    // The service-wide body limit is sized for media uploads, so this route sets its own before reading; a declared length over it is refused up front, a chunked body by Kestrel.
     private static async Task<T?> ReadBodyAsync<T>(HttpContext ctx, JsonTypeInfo<T> info)
         where T : class
     {
+        if (ctx.Request.ContentLength > CoolingLayoutValidation.MaxBodyBytes)
+        {
+            return null;
+        }
         var size = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
         if (size is { IsReadOnly: false })
         {

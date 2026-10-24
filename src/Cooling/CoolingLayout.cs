@@ -48,7 +48,7 @@ public static class CoolingLayoutValidation
     public const int MaxMoves = 64;
     public const int MaxKey = 128;
     public const int MaxName = 64;
-    // Directions are bounded by the body cap, not a count: one entry per fan slot of one case.
+    // One entry per fan slot of one case.
     public const int MaxDirections = 512;
     public const long MaxBodyBytes = 256 * 1024;
 

@@ -190,6 +190,29 @@ public sealed class CoolingLayoutRoutesTests : IClassFixture<LightingSceneAppFac
     }
 
     [Fact]
+    public async Task Direction_count_caps_at_512_in_the_layout_and_in_a_test()
+    {
+        string Dirs(int n) => "{" + string.Join(",", Enumerable.Range(0, n).Select(i => $"\"s{i}\":\"intake\"")) + "}";
+
+        Assert.Equal(HttpStatusCode.OK, (await PutLayout(0, Layout(Dirs(512)))).StatusCode);
+        Scene.Cooling.Reset();
+        Assert.Equal(HttpStatusCode.OK, (await PutLayout(0, Layout(tests: $$"""[{"id":"t","name":"n","moves":[],"directions":{{Dirs(512)}}}]"""))).StatusCode);
+        Scene.Cooling.Reset();
+        await AssertRejected(Layout(Dirs(513)));
+        await AssertRejected(Layout(tests: $$"""[{"id":"t","name":"n","moves":[],"directions":{{Dirs(513)}}}]"""));
+    }
+
+    [Fact]
+    public async Task A_body_over_the_size_cap_is_400_and_changes_nothing()
+    {
+        var padding = new string('x', (int)Nexus.Service.Cooling.CoolingLayoutValidation.MaxBodyBytes + 1024);
+        var res = await Desktop().PutAsync("/cooling/layout", Json($$"""{"baseRev":0,"layout":{{Layout()}},"pad":"{{padding}}"}"""));
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal(0, Scene.Cooling.Load().Rev);
+    }
+
+    [Fact]
     public async Task Empty_ids_and_keys_are_rejected()
     {
         await AssertRejected(Layout(bindings: """[{"channelId":"","slotKeys":[]}]"""));
