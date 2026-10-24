@@ -1376,8 +1376,52 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             AckMatch? ack = report[1] == 0x71 ? GlacialLcdProtocol.IsBeginAck : report[1] == 0x73 ? GlacialLcdProtocol.IsStageAck : null;
             if (run.PreludeOn && ack is not null)
             {
-                bool replied = AwaitAck(state, run, GlacialLcdProtocol.AckPreludeTimeoutMs, step, sinceStart, ack, out long preludeWaitMs);
-                run.AckWaitMs += preludeWaitMs;
+                bool busy = false;
+                AckMatch matcher = report[1] == 0x73
+                    ? r =>
+                    {
+                        if (GlacialLcdProtocol.IsStageBusy(r))
+                        {
+                            busy = true;
+                            return true;
+                        }
+                        return GlacialLcdProtocol.IsStageAck(r);
+                    }
+                    : ack;
+                bool replied;
+                long preludeWaitMs;
+                int busyTries = 0;
+                while (true)
+                {
+                    busy = false;
+                    replied = AwaitAck(state, run, GlacialLcdProtocol.AckPreludeTimeoutMs, step, sinceStart, matcher, out preludeWaitMs);
+                    run.AckWaitMs += preludeWaitMs;
+                    if (!(replied && busy))
+                    {
+                        break;
+                    }
+                    if (++busyTries > GlacialLcdProtocol.BusyRetries)
+                    {
+                        // Streaming chunks into a transfer the panel has not opened would only be rejected; leave write mode and try the whole upload again later.
+                        GlacialLcdLog.Write($"u{run.Seq} panel still busy at {step} after {busyTries - 1} retries, upload abandoned");
+                        if (cfg.CloseWriteMode)
+                        {
+                            HidWrite(state, GlacialLcdProtocol.EncodeCloseWriteMode());
+                            Tx(run, sinceStart, "close write mode 72 (abandoned)");
+                        }
+                        return Fail($"panel busy at {step}");
+                    }
+                    GlacialLcdLog.Write($"u{run.Seq} panel busy at {step} (status reply), asking again in {GlacialLcdProtocol.BusyRetryMs}ms ({busyTries}/{GlacialLcdProtocol.BusyRetries})");
+                    if (_hardAbort.Wait(GlacialLcdProtocol.BusyRetryMs))
+                    {
+                        return UploadOutcome.Cancelled;
+                    }
+                    if (!HidWrite(state, report))
+                    {
+                        return Fail("write failed at " + step + " retry");
+                    }
+                    Tx(run, sinceStart, step + " retry");
+                }
                 if (replied)
                 {
                     run.PreludeReplies++;
@@ -1425,8 +1469,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             int scaled = ChunkGapMs(_pace, chunkBytes);
             if (run.ChunkOn)
             {
-                // One report per protocol-size transfer; the wait lasts the larger of the timer gap and the floor, so a silent panel costs no more than that per chunk.
-                int expected = (length + GlacialLcdProtocol.ChunkBytes - 1) / GlacialLcdProtocol.ChunkBytes;
+                // One report per bulk transfer, whatever its size; the wait lasts the larger of the timer gap and the floor, so a silent panel costs no more than that per chunk.
+                const int expected = 1;
                 int limit = Math.Max(GlacialLcdProtocol.AckChunkMinTimeoutMs, scaled);
                 bool all = true;
                 var ackWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -1849,38 +1893,61 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             }
             _rawNeedsSync = false;
         }
-        if (!HidWrite(state, GlacialLcdProtocol.EncodeFrameAnnounce(frame.Length)))
-        {
-            run.Error = state.Stop ? null : "write failed at raw announce 7F";
-            return false;
-        }
-        GlacialLcdLog.Write($"r{run.Seq} TX +{sinceStart.ElapsedMilliseconds}ms raw announce 7F 03 {frame.Length}B");
-        var waited = System.Diagnostics.Stopwatch.StartNew();
         bool accepted = false;
-        while (!state.Stop && waited.ElapsedMilliseconds < GlacialLcdProtocol.AckFrameAnnounceTimeoutMs)
+        for (int attempt = 0; attempt <= GlacialLcdProtocol.BusyRetries && !accepted; attempt++)
         {
-            int slice = (int)Math.Min(FinishReplySliceMs, GlacialLcdProtocol.AckFrameAnnounceTimeoutMs - waited.ElapsedMilliseconds);
-            var report = Reply(state, Math.Max(1, slice), "raw announce", "rawannounce", sinceStart, out bool failed);
-            if (report is not null && GlacialLcdProtocol.IsFrameAnnounceAck(report))
+            if (!HidWrite(state, GlacialLcdProtocol.EncodeFrameAnnounce(frame.Length)))
             {
-                accepted = true;
+                run.Error = state.Stop ? null : "write failed at raw announce 7F";
+                return false;
+            }
+            GlacialLcdLog.Write($"r{run.Seq} TX +{sinceStart.ElapsedMilliseconds}ms raw announce 7F 03 {frame.Length}B");
+            var waited = System.Diagnostics.Stopwatch.StartNew();
+            bool rejected = false;
+            while (!state.Stop && waited.ElapsedMilliseconds < GlacialLcdProtocol.AckFrameAnnounceTimeoutMs)
+            {
+                int slice = (int)Math.Min(FinishReplySliceMs, GlacialLcdProtocol.AckFrameAnnounceTimeoutMs - waited.ElapsedMilliseconds);
+                var report = Reply(state, Math.Max(1, slice), "raw announce", "rawannounce", sinceStart, out bool failed);
+                if (report is not null && GlacialLcdProtocol.IsFrameAnnounceAck(report))
+                {
+                    accepted = true;
+                    break;
+                }
+                if (report is not null && GlacialLcdProtocol.IsAnnounceRejected(report))
+                {
+                    rejected = true;
+                    break;
+                }
+                if (failed)
+                {
+                    break;
+                }
+            }
+            if (state.Stop)
+            {
+                return false;
+            }
+            if (accepted)
+            {
+                GlacialLcdLog.Write($"r{run.Seq} ACK raw announce replied after {waited.ElapsedMilliseconds}ms");
                 break;
             }
-            if (failed)
+            if (!rejected)
             {
-                break;
+                GlacialLcdLog.Write($"r{run.Seq} ACK raw announce TIMEOUT after {waited.ElapsedMilliseconds}ms, frame skipped");
+                run.Error = "no reply to the raw frame announce";
+                return false;
+            }
+            // Refused right after the mode select (or while the panel is still busy): not ready yet, so ask again shortly before counting a failure.
+            GlacialLcdLog.Write($"r{run.Seq} raw announce refused (not ready), asking again in {GlacialLcdProtocol.BusyRetryMs}ms ({attempt + 1}/{GlacialLcdProtocol.BusyRetries})");
+            if (_hardAbort.Wait(GlacialLcdProtocol.BusyRetryMs))
+            {
+                return false;
             }
         }
-        if (state.Stop)
-        {
-            return false;
-        }
-        GlacialLcdLog.Write(accepted
-            ? $"r{run.Seq} ACK raw announce replied after {waited.ElapsedMilliseconds}ms"
-            : $"r{run.Seq} ACK raw announce TIMEOUT after {waited.ElapsedMilliseconds}ms, frame skipped");
         if (!accepted)
         {
-            run.Error = "no reply to the raw frame announce";
+            run.Error = "the panel kept refusing the raw frame announce";
             return false;
         }
         if (!BulkWrite(state, frame))

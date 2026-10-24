@@ -207,4 +207,26 @@ public class GlacialLcdTests
     {
         Assert.Equal(accepted, GlacialLcdProtocol.IsFrameAnnounceAck(Convert.FromHexString(hex.Replace(" ", string.Empty))));
     }
+
+    [Theory]
+    [InlineData("EE 13 00 01", true, false)]
+    [InlineData("EE 13 10 01", false, true)]
+    [InlineData("EE 13 00 FF", false, false)]
+    [InlineData("EE 13 10 FF", false, false)]
+    public void A_stage_reply_with_a_non_zero_status_is_busy_not_an_acknowledgement(string hex, bool ack, bool busy)
+    {
+        var bytes = Convert.FromHexString(hex.Replace(" ", string.Empty));
+        Assert.Equal(ack, GlacialLcdProtocol.IsStageAck(bytes));
+        Assert.Equal(busy, GlacialLcdProtocol.IsStageBusy(bytes));
+    }
+
+    [Theory]
+    [InlineData("EC 7F 02", true)]
+    [InlineData("EC 7F 00", false)]
+    [InlineData("EC 7E 02", false)]
+    [InlineData("EC 7F", false)]
+    public void A_non_zero_status_frame_announce_reply_is_a_refusal(string hex, bool rejected)
+    {
+        Assert.Equal(rejected, GlacialLcdProtocol.IsAnnounceRejected(Convert.FromHexString(hex.Replace(" ", string.Empty))));
+    }
 }

@@ -262,7 +262,10 @@ public static class GlacialLcdProtocol
     public static bool IsBeginAck(ReadOnlySpan<byte> r) => r.Length >= 2 && r[0] == 0xEE && r[1] == 0x12;
 
     /// <summary>Reply to the stage report.</summary>
-    public static bool IsStageAck(ReadOnlySpan<byte> r) => r.Length >= 4 && r[0] == 0xEE && r[1] == 0x13 && r[3] == 0x01;
+    public static bool IsStageAck(ReadOnlySpan<byte> r) => r.Length >= 4 && r[0] == 0xEE && r[1] == 0x13 && r[2] == 0x00 && r[3] == 0x01;
+
+    /// <summary>The stage reply with a non-zero status byte: the panel is busy and has not opened the transfer.</summary>
+    public static bool IsStageBusy(ReadOnlySpan<byte> r) => r.Length >= 4 && r[0] == 0xEE && r[1] == 0x13 && r[2] != 0x00 && r[3] == 0x01;
 
     /// <summary>Reply to one bulk transfer.</summary>
     public static bool IsChunkAck(ReadOnlySpan<byte> r) => r.Length >= 2 && r[0] == 0xEE && r[1] == 0x14;
@@ -272,4 +275,11 @@ public static class GlacialLcdProtocol
 
     /// <summary>Reply that accepts a raw frame announce.</summary>
     public static bool IsFrameAnnounceAck(ReadOnlySpan<byte> r) => r.Length >= 3 && r[0] == ReportId && r[1] == 0x7F && r[2] == 0x00;
+
+    /// <summary>Reply that refuses a size announce (seen right after the mode select, and while a transfer was still open): not ready, try again shortly.</summary>
+    public static bool IsAnnounceRejected(ReadOnlySpan<byte> r) => r.Length >= 3 && r[0] == ReportId && r[1] == 0x7F && r[2] != 0x00;
+
+    /// <summary>Wait before asking again after a busy or refusing reply, and how many times to ask.</summary>
+    public const int BusyRetryMs = 300;
+    public const int BusyRetries = 5;
 }

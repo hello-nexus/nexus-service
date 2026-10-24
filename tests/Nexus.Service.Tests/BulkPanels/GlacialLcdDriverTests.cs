@@ -1138,6 +1138,102 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
+    public void A_larger_packet_size_gets_one_chunk_reply_per_transfer_and_no_timeout()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "glacial-ack-" + Guid.NewGuid().ToString("N")[..8]);
+        GlacialLcdLog.UseDirectory(dir);
+        try
+        {
+            var tuning = NewTuning(out _);
+            tuning.Apply(new GlacialLcdTuningChange { ReplyDriven = true, PacePercent = 100, ChunkKb = 8 });
+            var driver = Fast();
+            driver.BindTuning(tuning);
+            var pipe = new FakePipe();
+            var hid = new FakeHid();
+            // The panel sends a single report per transfer, not one per 4 KB inside it.
+            ScriptAcks(hid, pipe);
+            driver.Connect(pipe, hid);
+
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            driver.SendFrame(pipe, hid, Frame(noiseRows: 100));
+            Assert.True(WaitUntil(() => driver.UploadsCompleted == 1, 30_000));
+
+            Assert.True(watch.ElapsedMilliseconds < 4000, watch.ElapsedMilliseconds.ToString());
+            driver.Disconnect(pipe, hid);
+            GlacialLcdLog.Flush();
+            Assert.DoesNotContain("TIMEOUT", File.ReadAllText(Path.Combine(dir, GlacialLcdLog.FileName)));
+        }
+        finally
+        {
+            GlacialLcdLogTestSetup.Restore();
+        }
+    }
+
+    [Fact]
+    public void A_busy_stage_reply_is_asked_again_before_any_chunk_is_sent()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { ReplyDriven = true, PacePercent = 0 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        ScriptAcks(hid, pipe);
+        var script = hid.OnWrite;
+        int stages = 0;
+        hid.OnWrite = w =>
+        {
+            if (w[1] == 0x73 && w[2] == 0x01 && Interlocked.Increment(ref stages) == 1)
+            {
+                hid.Enqueue(Report("EE 13 10 01"));
+                return;
+            }
+            script!(w);
+        };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4));
+        Assert.True(WaitUntil(() => driver.UploadsCompleted == 1, 30_000));
+
+        var writes = hid.Writes;
+        Assert.Equal(2, writes.Count(w => w[1] == 0x73 && w[2] == 0x01));
+        Assert.Equal(0, tuning.Stats().UploadsFailed);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_panel_that_stays_busy_ends_the_upload_cleanly_with_no_chunk_streamed()
+    {
+        var tuning = NewTuning(out _);
+        tuning.Apply(new GlacialLcdTuningChange { ReplyDriven = true, PacePercent = 0 });
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        hid.OnWrite = w =>
+        {
+            if (w[1] == 0x71)
+            {
+                hid.Enqueue(Report("EE 12"));
+            }
+            else if (w[1] == 0x73 && w[2] == 0x01)
+            {
+                hid.Enqueue(Report("EE 13 10 01"));
+            }
+        };
+        driver.Connect(pipe, hid);
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 4));
+        Assert.True(WaitUntil(() => tuning.Stats().UploadsFailed >= 1, 30_000));
+
+        Assert.Empty(pipe.Writes);
+        Assert.Equal(0, driver.UploadsCompleted);
+        var writes = hid.Writes;
+        Assert.Equal(1 + GlacialLcdProtocol.BusyRetries, writes.Take(writes.FindIndex(w => w[1] == 0x72 && w[2] == 0x01 && w[3] == 0x00) + 1).Count(w => w[1] == 0x73 && w[2] == 0x01));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
     public void A_reply_that_does_not_match_the_step_does_not_end_the_wait()
     {
         var tuning = NewTuning(out _);
@@ -1368,6 +1464,29 @@ public class GlacialLcdDriverTests
         Assert.DoesNotContain(writes, w => w[1] is 0x71 or 0xF1 or 0x72 or 0x73);
         Assert.True(WaitUntil(() => tuning.Stats().RawFramesOk == 1));
         Assert.True(tuning.Stats().RawActive);
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void A_raw_announce_refused_as_not_ready_is_asked_again_before_it_counts_as_a_failure()
+    {
+        var clock = new FakeClock();
+        var driver = RawDriver(clock, out var tuning, out var pipe, out var hid);
+        int announces = 0;
+        hid.OnWrite = w =>
+        {
+            if (w[1] == 0x7F && w[2] == 0x03)
+            {
+                hid.Enqueue(Report(Interlocked.Increment(ref announces) == 1 ? "EC 7F 02" : "EC 7F 00"));
+            }
+        };
+
+        driver.SendFrame(pipe, hid, Frame(noiseRows: 2));
+        Assert.True(WaitUntilTicking(clock, () => pipe.Writes.Count == 1));
+
+        Assert.Equal(2, announces);
+        Assert.Equal(0, tuning.Stats().RawFramesFailed);
+        Assert.True(tuning.Current().RawStream);
         driver.Disconnect(pipe, hid);
     }
 
