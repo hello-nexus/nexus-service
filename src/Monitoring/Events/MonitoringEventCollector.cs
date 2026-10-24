@@ -318,7 +318,7 @@ public sealed class MonitoringEventCollector : BackgroundService
         var byName = new Dictionary<string, AppCandidate>(StringComparer.OrdinalIgnoreCase);
         foreach (var app in detected)
         {
-            if (string.IsNullOrWhiteSpace(app.Name) || byName.ContainsKey(app.Name))
+            if (string.IsNullOrWhiteSpace(app.Name) || IsNexusProcess(app.Name) || byName.ContainsKey(app.Name))
             {
                 continue;
             }
@@ -333,7 +333,27 @@ public sealed class MonitoringEventCollector : BackgroundService
     /// MonitoringBroadcaster.BuildProcessFrame uses - rather than
     /// re-deriving it.</summary>
     internal static IReadOnlyList<string> ExtractWindowedAppNames(IReadOnlyList<ProcessInfo> procs) =>
-        ProcessAggregation.GroupByName(procs).Where(kv => kv.Value.HasWindow).Select(kv => kv.Key).ToList();
+        ProcessAggregation.GroupByName(procs).Where(kv => kv.Value.HasWindow && !IsNexusProcess(kv.Key)).Select(kv => kv.Key).ToList();
+
+    // Name set, not exe path: resolving a path per candidate every tick is
+    // real process I/O. msedgewebview2 is deliberately absent (shared with
+    // other apps).
+    private static readonly HashSet<string> NexusProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Nexus", "nexus-overlay", "nexus-overlay-helper", "OpenRGB-headless",
+    };
+
+    /// <summary>True for a process Nexus ships; its windows appearing (the
+    /// dashboard opening) are not user apps opening.</summary>
+    internal static bool IsNexusProcess(string name)
+    {
+        var trimmed = name.Trim();
+        if (trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[..^4];
+        }
+        return NexusProcessNames.Contains(trimmed);
+    }
 
     /// <summary>Pure set diff: names in current not present in previous.</summary>
     internal static List<string> DiffNewApps(HashSet<string> previous, IReadOnlyList<string> current) =>

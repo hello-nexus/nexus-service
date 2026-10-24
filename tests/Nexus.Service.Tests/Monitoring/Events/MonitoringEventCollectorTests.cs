@@ -131,6 +131,36 @@ public class MonitoringEventCollectorTests
         Assert.Equal(new[] { "app.exe" }, names);
     }
 
+    [Theory]
+    [InlineData("nexus-overlay")]
+    [InlineData("nexus-overlay.exe")]
+    [InlineData("Nexus.exe")]
+    [InlineData("OpenRGB-headless")]
+    public void ExtractWindowedAppNames_SkipsNexusOwnProcesses(string nexusName)
+    {
+        var procs = new List<ProcessInfo>
+        {
+            new() { Pid = 1, Name = nexusName, HasWindow = true },
+            new() { Pid = 2, Name = "msedgewebview2.exe", HasWindow = true },
+        };
+
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs);
+
+        Assert.Equal(new[] { "msedgewebview2.exe" }, names);
+    }
+
+    [Fact]
+    public void DetectedAppCandidates_SkipsNexusOwnProcesses()
+    {
+        var candidates = MonitoringEventCollector.DetectedAppCandidates(new List<Detected>
+        {
+            new() { Id = "1", Name = "Nexus" },
+            new() { Id = "2", Name = "Safari" },
+        });
+
+        Assert.Equal(new[] { "Safari" }, candidates.Select(c => c.Name));
+    }
+
     [Fact]
     public void DiffNewApps_ReturnsOnlyNamesNotInPrevious()
     {
