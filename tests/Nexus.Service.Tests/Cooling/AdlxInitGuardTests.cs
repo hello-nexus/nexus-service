@@ -145,7 +145,7 @@ public sealed class AdlxInitGuardTests : IDisposable
         Die(K, "b1");
         AdlxInitGuard.Latched(_dir, K, "b1");
         Die("", "b2");
-        AdlxInitGuard.Latched(_dir, null, "b2");
+        Assert.Equal(AdlxInitGuard.Latch.ThisBoot, AdlxInitGuard.Latched(_dir, null, "b2"));
 
         // Still strike one under K: a second keyed death persists.
         Die(K, "b3");
@@ -163,6 +163,7 @@ public sealed class AdlxInitGuardTests : IDisposable
         Assert.Equal(AdlxInitGuard.Latch.None, AdlxInitGuard.Latched(_dir, K, "b2"));
         AdlxInitGuard.Configure(_dir, K, "b2");
         AdlxInitGuard.Stop(_dir);
+        AdlxInitGuard.ClearFirstStrike(_dir);
         AdlxInitGuard.ResetScopes();
 
         Die(K, "b3");
@@ -179,6 +180,7 @@ public sealed class AdlxInitGuardTests : IDisposable
         AdlxInitGuard.ResetScopes();
         AdlxInitGuard.Configure(_dir, K, "b3");
         AdlxInitGuard.Stop(_dir);
+        AdlxInitGuard.ClearFirstStrike(_dir);
 
         Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b4"));
     }
@@ -191,6 +193,7 @@ public sealed class AdlxInitGuardTests : IDisposable
         AdlxInitGuard.ResetScopes();
         // ADLX never enabled in this process, so no Configure call.
         AdlxInitGuard.Stop(_dir);
+        AdlxInitGuard.ClearFirstStrike(_dir);
         AdlxInitGuard.ResetScopes();
 
         // The crash-every-boot case still reaches strike two.
@@ -199,12 +202,53 @@ public sealed class AdlxInitGuardTests : IDisposable
     }
 
     [Fact]
-    public void Records_are_written_without_leaving_a_temp_file()
+    public void A_latch_write_leaves_no_temp_file()
     {
         Die(K, "b1");
         AdlxInitGuard.Latched(_dir, K, "b1");
 
         Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
+    }
+
+    [Fact]
+    public void A_stop_alone_keeps_a_first_strike_until_teardown_finishes()
+    {
+        Die(K, "b1");
+        AdlxInitGuard.Latched(_dir, K, "b1");
+        AdlxInitGuard.ResetScopes();
+        AdlxInitGuard.Configure(_dir, K, "b2");
+        // The process dies in the fan handback after Stop, before ClearFirstStrike.
+        AdlxInitGuard.Stop(_dir);
+        AdlxInitGuard.ResetScopes();
+
+        Die(K, "b3");
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b3"));
+    }
+
+    [Fact]
+    public void A_run_under_an_unreadable_key_never_clears_a_keyed_first_strike()
+    {
+        Die(K, "b1");
+        AdlxInitGuard.Latched(_dir, K, "b1");
+        AdlxInitGuard.ResetScopes();
+        AdlxInitGuard.Configure(_dir, null, "b2");
+        AdlxInitGuard.Stop(_dir);
+        AdlxInitGuard.ClearFirstStrike(_dir);
+        AdlxInitGuard.ResetScopes();
+
+        Die(K, "b3");
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b3"));
+    }
+
+    [Fact]
+    public void A_death_whose_latch_cannot_be_written_holds_this_boot_and_keeps_the_mark()
+    {
+        Die(K, "b1");
+        // A directory in the latch's place makes the write fail.
+        Directory.CreateDirectory(Path.Combine(_dir, "adlx-init-latched"));
+
+        Assert.Equal(AdlxInitGuard.Latch.ThisBoot, AdlxInitGuard.Latched(_dir, K, "b1"));
+        Assert.True(File.Exists(Path.Combine(_dir, "adlx-init-crashguard")));
     }
 
     [Fact]

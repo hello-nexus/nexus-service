@@ -39,34 +39,44 @@ internal static class AdlxInitGuard
     {
         var mark = Path.Combine(dir, MarkFile);
         var latch = Path.Combine(dir, LatchFile);
+        // A death this boot keeps ADLX off this boot even when it is not recorded (unreadable key beside a keyed record) or the record write fails.
+        var diedThisBoot = false;
         try
         {
             var state = Read(latch, key);
             if (File.Exists(mark))
             {
                 var dead = ReadMark(File.ReadAllText(mark), key);
-                File.Delete(mark);
+                diedThisBoot = dead is { } m && m.Boot == boot;
                 if (dead is { } d && (d.Key.Length > 0 || state is null || state.Value.Key.Length == 0))
                 {
                     var strikes = d.Key.Length > 0 && state is { } s && s.Key == d.Key ? s.Strikes + 1 : 1;
                     state = new State(d.Key, strikes, d.Boot);
                     WriteAtomic(latch, $"{state.Value.Key}\t{state.Value.Strikes}\t{state.Value.Boot}");
                 }
+                // Only after the latch is on disk, so a failed write leaves the mark for the next start.
+                File.Delete(mark);
             }
-            if (state is not { } cur) return Clear(latch);
-            if (key is null)
-            {
-                if (cur.Key.Length > 0 && cur.Strikes >= 2) return Latch.UntilDriverUpdate;
-                return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
-            }
-            if (cur.Key.Length > 0 && cur.Key != key) return Clear(latch);
-            if (cur.Strikes >= 2) return Latch.UntilDriverUpdate;
-            return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
+            var result = Decide(state, key, boot, latch);
+            return result == Latch.None && diedThisBoot ? Latch.ThisBoot : result;
         }
-        catch (Exception) { return Latch.None; }
+        catch (Exception) { return diedThisBoot ? Latch.ThisBoot : Latch.None; }
     }
 
-    // Temp file then move, so a death or power loss mid-write never leaves a torn record.
+    private static Latch Decide(State? state, string? key, string boot, string latch)
+    {
+        if (state is not { } cur) return Clear(latch);
+        if (key is null)
+        {
+            if (cur.Key.Length > 0 && cur.Strikes >= 2) return Latch.UntilDriverUpdate;
+            return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
+        }
+        if (cur.Key.Length > 0 && cur.Key != key) return Clear(latch);
+        if (cur.Strikes >= 2) return Latch.UntilDriverUpdate;
+        return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
+    }
+
+    // Temp file then move, so a process death mid-write never leaves a torn latch.
     private static void WriteAtomic(string path, string text)
     {
         var tmp = path + ".tmp";
@@ -114,12 +124,19 @@ internal static class AdlxInitGuard
     {
         _stopped = true;
         Disarm(dir);
-        // A run that had ADLX enabled and stopped cleanly proves a first strike was not ADLX. A run latched off this boot never enabled it, so it clears nothing.
+    }
+
+    /// <summary>
+    /// Called once teardown finished, fan handback included: a run that had ADLX enabled and stopped cleanly proves a first strike
+    /// was not ADLX. A run latched off this boot never enabled it, and a run under an unreadable key never clears a keyed record.
+    /// </summary>
+    public static void ClearFirstStrike(string dir)
+    {
         if (!_enabled) return;
         try
         {
             var latch = Path.Combine(dir, LatchFile);
-            if (Read(latch, _scopeKey) is { Strikes: < 2 }) File.Delete(latch);
+            if (Read(latch, _scopeKey) is { Strikes: < 2 } s && (s.Key.Length == 0 || s.Key == _scopeKey)) File.Delete(latch);
         }
         catch (Exception) { }
     }
@@ -139,7 +156,8 @@ internal static class AdlxInitGuard
                 Directory.CreateDirectory(dir);
                 _dirReady = dir;
             }
-            WriteAtomic(Path.Combine(dir, MarkFile), $"{key}\t{boot}");
+            // A torn mark reads as no strike, the right answer for a power loss, so it skips the temp-file write.
+            File.WriteAllText(Path.Combine(dir, MarkFile), $"{key}\t{boot}");
         }
         catch (Exception)
         {
