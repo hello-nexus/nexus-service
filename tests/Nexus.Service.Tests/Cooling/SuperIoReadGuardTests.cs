@@ -7,7 +7,7 @@ public class SuperIoReadGuardTests
 {
     private static float?[] A(params float?[] v) => v;
 
-    // The all-ones decode: every control full, every tach zero, every voltage at or above 0.008 * 255.
+    // The all-ones decode: every control full, every tach zero, every voltage at or above the all-ones floor.
     private static SuperIoSnapshot AllOnes() => new(A(100f, 100f, 100f), A(0f, 0f, 0f), A(2.04f, 4.08f, 6.0f, 2.04f));
 
     private static SuperIoSnapshot Normal(float?[]? controls = null, float?[]? fans = null) =>
@@ -33,10 +33,10 @@ public class SuperIoReadGuardTests
     }
 
     [Fact]
-    public void Undecoded_voltages_are_ignored_but_two_must_decode()
+    public void Any_null_voltage_does_not_trip_and_two_voltages_are_required()
     {
-        Assert.True(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f), A(null, 2.04f, 6.0f)), true));
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f), A(null, 2.04f)), true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f), A(null, 2.04f, 6.0f)), true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f), A(2.04f)), true));
         Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f), A()), true));
     }
 

@@ -100,7 +100,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             }
         }
         var result = new List<FanChannel>(mappings.Count);
-        var invalidChips = JudgeSuperIoChips(mappings);
+        var invalidChips = JudgeSuperIoChips(mappings, out var chipValues);
 
         foreach (var m in mappings)
         {
@@ -121,8 +121,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             {
                 Id = m.Id,
                 Name = m.Name,
-                DutyPercent = (int)(m.ControlSensor.Value ?? 0f),
-                Rpm = (int)(m.FanSensor.Value ?? 0f),
+                DutyPercent = (int)(ValueOf(chipValues, m.ControlSensor) ?? 0f),
+                Rpm = (int)(ValueOf(chipValues, m.FanSensor) ?? 0f),
                 Mode = mode,
                 RpmSensorId = m.FanSensorId,
                 IsGpu = m.IsGpu,
@@ -147,9 +147,13 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private static string? SuperIoChip(ChannelMapping m) =>
         !m.IsGpu && m.ControlSensor.Hardware.Identifier.ToString() is { } id && id.StartsWith("/lpc/nct", StringComparison.Ordinal) ? id : null;
 
-    // One sensor sweep per chip per call; the judgement and its log line come from that snapshot.
-    private HashSet<string> JudgeSuperIoChips(IReadOnlyList<ChannelMapping> mappings)
+    private static float? ValueOf(Dictionary<ISensor, float?> snapshot, ISensor sensor) =>
+        snapshot.TryGetValue(sensor, out var v) ? v : sensor.Value;
+
+    // One sensor sweep per chip per call; the verdict and the channel values both come from it.
+    private HashSet<string> JudgeSuperIoChips(IReadOnlyList<ChannelMapping> mappings, out Dictionary<ISensor, float?> values)
     {
+        values = new Dictionary<ISensor, float?>();
         var invalid = new HashSet<string>(StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var m in mappings)
@@ -170,7 +174,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                     SensorType.Voltage => voltages,
                     _ => null,
                 };
-                list?.Add(sensor.Value);
+                var value = sensor.Value;
+                values[sensor] = value;
+                list?.Add(value);
             }
             if (_superIoGuard.Evaluate(chip, new SuperIoSnapshot(controls, fans, voltages)))
             {

@@ -16,7 +16,7 @@ internal sealed class SuperIoReadGuard
 {
     internal const float FullDutyFloor = 99.5f;
 
-    // Register 0xFF decodes to 0.008 * 255 volts and scaling only raises it; a live chip has an unscaled rail (Vcore) below that.
+    // A register reading all ones decodes to at least this floor on every Nuvoton decode path, and board scaling only raises it; a live chip always has an unscaled rail (Vcore) below it.
     internal const float AllOnesVoltageFloor = 2.03f;
 
     private readonly object _lock = new();
@@ -43,20 +43,14 @@ internal sealed class SuperIoReadGuard
                 return false;
             }
         }
-        var decoded = 0;
         foreach (var v in s.Voltages)
         {
-            if (v is not { } volts)
-            {
-                continue;
-            }
-            if (volts < AllOnesVoltageFloor)
+            if (v is not { } volts || volts < AllOnesVoltageFloor)
             {
                 return false;
             }
-            decoded++;
         }
-        return decoded >= 2;
+        return true;
     }
 
     /// <summary>Judges one chip from its snapshot, remembers that a fan has spun, and logs only on a state change. True while the chip reads as all-ones.</summary>
