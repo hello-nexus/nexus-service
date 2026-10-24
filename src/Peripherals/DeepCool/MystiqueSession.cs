@@ -157,20 +157,27 @@ public sealed class MystiqueSession
         string kind = last.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
         var after = source is null ? new MystiqueSourceAfter(kind, true) : source();
         ServiceLog.Info($"[deepcool-mystique] finish sent; source after it: {(after is { } a ? a.Source + (a.Send ? "" : ", not sent") : "none")}");
+        if (after is { Send: true } && last.Kind == MystiqueMedia.KindPicture)
+        {
+            _sleep(AfterPictureGapMs);
+        }
+        SendSourceAfter(after);
+        return packages.Count;
+    }
+
+    /// <summary>Sends the source <paramref name="after"/> names, or counts it as applied when it is not to be sent; false when a sent one was not answered.</summary>
+    public bool SendSourceAfter(MystiqueSourceAfter? after)
+    {
         if (after is { Send: true } send)
         {
-            if (last.Kind == MystiqueMedia.KindPicture)
-            {
-                _sleep(AfterPictureGapMs);
-            }
-            SendSource(send.Source);
+            return SendSource(send.Source);
         }
-        else if (after is { } kept && _applied is not null)
+        if (after is { } kept && _applied is not null)
         {
             _applied.MediaSource = kept.Source;
             _applied.SourceEdited = true;
         }
-        return packages.Count;
+        return true;
     }
 
     /// <summary>Sends the source command; true when the screen answered it.</summary>

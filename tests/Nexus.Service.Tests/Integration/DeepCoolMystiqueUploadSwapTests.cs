@@ -197,11 +197,15 @@ public partial class DeepCoolMystiqueRoutesTests
         await using var screen = await Screen.StartAsync(dir);
         var (low, high) = PicturePair();
         await screen.UploadAsync(low);
+        var before = screen.Pipe;
+        int mark = before.Writes().Count;
         int announces = 0;
         screen.Factory.Pipes.Silence = c => c == MystiqueProtocol.CmdUploadStart && Interlocked.Increment(ref announces) > 1;
 
         var res = await screen.UploadAsync(high);
         screen.Factory.Pipes.Silence = null;
+        await WaitFor(() => screen.Worker.IsConnected && screen.Pipe != before);
+        await TwoTicks(screen);
 
         Assert.False(res.GetProperty("error").GetBoolean());
         Assert.Equal(PictureId(high), res.GetProperty("id").GetString());
@@ -210,7 +214,88 @@ public partial class DeepCoolMystiqueRoutesTests
         Assert.False(m.Media.Single(i => i.Id == PictureId(high)).Unsent);
         Assert.True(m.Media.Single(i => i.Id == PictureId(low)).Unsent);
         Assert.Equal(DeepCoolMystiqueSettings.SourceImages, m.MediaSource);
-        await WaitFor(() => screen.Worker.IsConnected && screen.Pipe.Commands().Contains(MystiqueProtocol.CmdMediaSource));
+        Assert.Equal(0, Commands(before.Writes().Skip(mark).ToList(), MystiqueProtocol.CmdMediaSource));
+        Assert.Equal(1, Commands(screen.Pipe.Writes(), MystiqueProtocol.CmdMediaSource));
+    }
+
+    private const string Slot = "2101b6e6277841daa821e8d79a5c528b";
+    private const string Raised = "acd9325521f3493c86bfc0b0aa85658d";
+
+    /// <summary>A screen holding a picture under <see cref="Slot"/> while a GIF plays, with that applied, and a swap planned into it.</summary>
+    private static async Task<(List<MystiqueMediaPackage>, List<(string, string)>)> SeedSwapAsync(Screen screen)
+    {
+        screen.Store.Update(s =>
+        {
+            var m = s.Devices.DeepCoolMystique;
+            m.Media = new()
+            {
+                new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Slot },
+                new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Raised },
+            };
+            m.PictureIds = new() { Slot, Raised };
+            m.MediaSource = DeepCoolMystiqueSettings.SourceGif;
+            m.SourceEdited = true;
+        });
+        screen.Worker.RequestApply();
+        await TwoTicks(screen);
+        var package = new MystiqueMediaPackage(MystiqueMedia.KindPicture, Slot, new[] { new byte[64] });
+        return (new() { package }, new() { (Raised, Slot) });
+    }
+
+    [Fact]
+    public async Task A_swap_the_busy_screen_never_takes_records_the_held_source_for_one_source_command_and_marks_nothing_unsent()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var swap = await SeedSwapAsync(screen);
+        int mark = screen.Pipe.Writes().Count;
+        screen.Pipe.HoldStream = true;
+        var busy = screen.Worker.UploadAsync(swap.Item1, () => null, CancellationToken.None);
+        Assert.True(await Task.Run(() => screen.Pipe.Streaming.Wait(TimeSpan.FromSeconds(10))));
+
+        await DevicesRoutes.SwapMystiqueUploadAsync(screen.Store, screen.Worker, swap, false, DevicesRoutes.MystiqueSourceChoices, 0, 0, CancellationToken.None);
+        var m = screen.Settings();
+        screen.Pipe.Release.Set();
+        await busy;
+        await TwoTicks(screen);
+
+        Assert.Equal(DeepCoolMystiqueSettings.SourceImages, m.MediaSource);
+        Assert.True(m.Media.TrueForAll(i => !i.Unsent));
+        var writes = WritesSince(screen, mark);
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        var sources = writes.FindAll(w => w.Length == MystiqueProtocol.FrameLength && w[2] == MystiqueProtocol.CmdMediaSource);
+        Assert.Equal(new[] { MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceImages) }, sources);
+    }
+
+    [Fact]
+    public async Task With_no_screen_connected_a_swap_records_the_held_source_and_marks_nothing_unsent()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var swap = await SeedSwapAsync(screen);
+        await screen.Worker.StopAsync(CancellationToken.None);
+
+        await DevicesRoutes.SwapMystiqueUploadAsync(screen.Store, screen.Worker, swap, false, DevicesRoutes.MystiqueSourceChoices, 0, 0, CancellationToken.None);
+
+        var m = screen.Settings();
+        Assert.Equal(DeepCoolMystiqueSettings.SourceImages, m.MediaSource);
+        Assert.True(m.Media.TrueForAll(i => !i.Unsent));
+    }
+
+    [Fact]
+    public async Task A_source_chosen_between_the_upload_and_the_swap_skips_the_swap_and_sends_nothing_over_it()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var swap = await SeedSwapAsync(screen);
+        int mark = screen.Pipe.Writes().Count;
+
+        await DevicesRoutes.SwapMystiqueUploadAsync(screen.Store, screen.Worker, swap, false, DevicesRoutes.MystiqueSourceChoices - 1, 0, 0, CancellationToken.None);
+        await TwoTicks(screen);
+
+        var writes = WritesSince(screen, mark);
+        Assert.Equal(0, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        Assert.Equal(0, Commands(writes, MystiqueProtocol.CmdMediaSource));
+        var m = screen.Settings();
+        Assert.Equal(DeepCoolMystiqueSettings.SourceGif, m.MediaSource);
+        Assert.True(m.Media.TrueForAll(i => !i.Unsent));
     }
 
     [FfmpegFact]
