@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Nexus.Service.Models.Devices;
+using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.CorsairLink;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
 using Nexus.Service.Peripherals.JpegPanels;
@@ -23,33 +24,35 @@ namespace Nexus.Service.Devices;
 /// lianli-wl:tl-v2-led           wireless TL V2 LED fan chain
 /// lianli-wl:tl-v2-lcd           wireless TL V2 LCD fan chain
 /// lianli-wl:tl-flex             wireless TL Flex fan chain
+/// lianli-wl:tl-flex-lcd         wireless TL Flex chain with screens (fans_type sub-index)
 /// lianli-wl:sl-inf              wireless SL-Infinity fan chain
 /// lianli-wl:sl-inf-flex         wireless SL-Infinity Flex fan chain
+/// lianli-wl:sl-inf-flex-lcd     wireless SL-Infinity Flex chain with screens (fans_type sub-index)
 /// lianli-wl:cl                  wireless CL fan chain
 /// lianli-wl:cl-v2               wireless CL V2 fan chain
 /// lianli-wl:rl120               wireless RL120 fan chain
 /// lianli-wl:sl-v4               wireless SL V4 fan chain
 /// lianli-wl:p28-v2              wireless P28 V2 fan chain
 /// lianli:hydroshift2-lcd-c      HydroShift II LCD-C AIO (wireless dev type 10)
-/// lianli:hydroshift2-lcd-s      HydroShift II LCD-S AIO (wireless dev type 11)
-/// lianli:hydroshift-lcd-360s    HydroShift LCD 360S over USB (PID 0x7398)
-/// lianli:hydroshift-lcd-360r    HydroShift LCD 360R over USB (PID 0x7399)
-/// lianli:hydroshift-lcd-360tl   HydroShift LCD 360TL over USB (PID 0x739A)
-/// lianli:galahad2               Galahad II Trinity (PID 0x7373)
-/// lianli:galahad2-perf          Galahad II Trinity Performance (PID 0x7371)
-/// lianli:galahad2-lcd           Galahad II Vision LCD (PID 0x7395)
-/// lianli-uni:sl                 Uni hub SL (also the 0x7750 Uni Hub)
+/// lianli:hydroshift2-lcd-s      HydroShift II LCD-S AIO (wireless dev type 11, or USB)
+/// lianli:hydroshift-lcd-360s    HydroShift LCD 360S over USB
+/// lianli:hydroshift-lcd-360r    HydroShift LCD 360R over USB
+/// lianli:hydroshift-lcd-360tl   HydroShift LCD 360TL over USB
+/// lianli:galahad2               Galahad II Trinity
+/// lianli:galahad2-perf          Galahad II Trinity Performance
+/// lianli:galahad2-lcd           Galahad II Vision LCD
+/// lianli-uni:sl                 Uni hub SL (also the plain Uni Hub)
 /// lianli-uni:al                 Uni hub AL
 /// lianli-uni:sl-v2              Uni hub SL V2
 /// lianli-uni:al-v2              Uni hub AL V2
 /// lianli-uni:sl-inf             Uni hub SL-Infinity
 /// lianli-tl:tl-fan              Uni Fan TL wired controller
-/// nzxt:kraken-elite-v2          Kraken Elite V2 (PID 0x3012)
-/// nzxt:kraken-plus-v2           Kraken Plus V2 (PID 0x3014)
-/// nzxt:kraken-elite-2023        Kraken Elite 2023 (PID 0x300C)
-/// nzxt:kraken-2023              Kraken 2023 (PID 0x300E)
-/// nzxt:kraken-z3                Kraken Z3 (PID 0x3008)
-/// nzxt:kraken-x3                Kraken X3 (PIDs 0x2007, 0x2014)
+/// nzxt:kraken-elite-v2          Kraken Elite V2
+/// nzxt:kraken-plus-v2           Kraken Plus V2
+/// nzxt:kraken-elite-2023        Kraken Elite 2023
+/// nzxt:kraken-2023              Kraken 2023
+/// nzxt:kraken-z3                Kraken Z3
+/// nzxt:kraken-x3                Kraken X3
 /// nzxt:rgb-fan-controller       RGB and Fan Controller
 /// corsair-link:TYPE:MODEL       iCUE LINK device, numeric (type, model) from the hub enumeration
 /// corsair:xc7-elite-lcd         XC7 RGB Elite LCD
@@ -98,10 +101,17 @@ public static class DeviceInventoryMapper
                 });
                 continue;
             }
-            var (suffix, display) = WirelessFamily(Slv3Protocol.ClassifyFanFamily((byte)fan.FanType));
+            var family = Slv3Protocol.ClassifyFanFamily((byte)fan.FanType);
+            var (suffix, display) = WirelessFamily(family);
             if (fan.FanCount <= 0 || suffix.Length == 0)
             {
                 continue;
+            }
+            // Only the Flex fans encode screen presence in the sub-index; the rest of the sub-index meaning is not in the protocol source.
+            if (family is Slv3FanFamily.SlInfFlex or Slv3FanFamily.TlFlex && Slv3FlexLcd.IsLcdFanType(fan.FanType))
+            {
+                suffix += "-lcd";
+                display += " LCD";
             }
             rows.Add(new SystemDeviceDto
             {
@@ -157,9 +167,12 @@ public static class DeviceInventoryMapper
         }
         var max = profile.MaxFans > 0 ? profile.MaxFans : int.MaxValue;
         var total = 0;
+        var defaults = new LianLiSettings();
+        var edited = false;
         for (var port = 0; port < LianLiProtocol.PortCount; port++)
         {
             total += Math.Clamp(fans.GetFans(port), 0, max);
+            edited |= fans.GetFans(port) != defaults.GetFans(port);
         }
         return new SystemDeviceDto
         {
@@ -171,8 +184,9 @@ public static class DeviceInventoryMapper
             Vid = LianLiUniVid,
             Pid = profile.ProductId,
             Family = suffix,
-            Count = total,
-            CountSource = SystemDeviceCountSources.User,
+            // Untouched settings read the defaults, which say nothing about the real chain.
+            Count = edited ? total : null,
+            CountSource = edited ? SystemDeviceCountSources.User : null,
         };
     }
 
@@ -315,7 +329,7 @@ public static class DeviceInventoryMapper
                 ? int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)
                 : (int?)null;
             // The RX360 II is one device that carries all three radiator fans.
-            var threeFans = device.Type == 26 && device.Model == 0;
+            var fanCount = device.Class != CorsairLinkClass.Fan ? 0 : device.Type == 26 && device.Model == 0 ? 3 : 1;
             rows.Add(new SystemDeviceDto
             {
                 Key = "corsair-link:" + (string.IsNullOrEmpty(device.Serial) ? hubId + ":ch" + device.Channel.ToString(CultureInfo.InvariantCulture) : device.Serial),
@@ -325,8 +339,8 @@ public static class DeviceInventoryMapper
                 Model = device.Name,
                 Vid = CorsairVid,
                 RadiatorMm = radiator,
-                Count = threeFans ? 3 : null,
-                CountSource = threeFans ? SystemDeviceCountSources.Detected : null,
+                Count = fanCount > 0 ? fanCount : null,
+                CountSource = fanCount > 0 ? SystemDeviceCountSources.Detected : null,
             });
         }
         return rows;
@@ -388,6 +402,27 @@ public static class DeviceInventoryMapper
             Model = "ROG Ryujin LCD",
             Vid = vendorId,
             Pid = productId,
+        };
+    }
+
+    /// <summary>A HydroShift II on its own USB link, which reads as LCD-C when round and LCD-S when square.</summary>
+    public static SystemDeviceDto? FromHydroShift2Usb(bool connected, bool round, int vendorId, string? serial)
+    {
+        if (!connected)
+        {
+            return null;
+        }
+        var pid = round ? HydroShift2Protocol.ProductIdCircle : HydroShift2Protocol.ProductIdSquare;
+        return new SystemDeviceDto
+        {
+            Key = HydroShift2LcdDriver.Id + ":" + (string.IsNullOrEmpty(serial) ? pid.ToString("x4", CultureInfo.InvariantCulture) : serial),
+            ModelKey = round ? "lianli:hydroshift2-lcd-c" : "lianli:hydroshift2-lcd-s",
+            Category = SystemDeviceCategories.Cooler,
+            Vendor = "Lian Li",
+            Model = round ? "HydroShift II LCD-C" : "HydroShift II LCD-S",
+            Family = "hydroshift2",
+            Vid = vendorId,
+            Pid = pid,
         };
     }
 

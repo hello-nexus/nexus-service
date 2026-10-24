@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Models.Devices;
+using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.CorsairLink;
 using Nexus.Service.Peripherals.Galahad2;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
@@ -82,16 +83,20 @@ public sealed class DeviceInventoryService
             if (handler is JpegPanelHandler jpeg)
             {
                 var hub = jpeg.Hub;
-                if (hydroShiftOnRadio && hub.Model.HandlerId == "lianli-hydroshift-lcd")
-                {
-                    continue;
-                }
                 Add(rows, DeviceInventoryMapper.FromJpegPanel(hub.Model, hub.IsConnected, hub.AttachedProductId, hub.Serial));
             }
             else if (handler is BulkPanelHandler bulk)
             {
                 var hub = bulk.Hub;
                 var driver = hub.Driver;
+                if (driver is HydroShift2LcdDriver hs2)
+                {
+                    if (!hydroShiftOnRadio)
+                    {
+                        Add(rows, DeviceInventoryMapper.FromHydroShift2Usb(hub.IsConnected, hs2.Round, hs2.VendorId, hub.Serial));
+                    }
+                    continue;
+                }
                 Add(rows, DeviceInventoryMapper.FromRyujin(driver.HandlerId, hub.IsConnected, driver.VendorId, driver.ProductIds.Count > 0 ? driver.ProductIds[0] : 0, hub.Serial));
             }
         }

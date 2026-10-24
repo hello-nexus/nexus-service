@@ -35,7 +35,9 @@ public class DeviceInventoryMapperTests
     [InlineData(40, "lianli-wl:rl120")]
     [InlineData(41, "lianli-wl:cl")]
     [InlineData(45, "lianli-wl:sl-inf-flex")]
-    [InlineData(55, "lianli-wl:tl-flex")]
+    [InlineData(43, "lianli-wl:sl-inf-flex-lcd")]
+    [InlineData(55, "lianli-wl:tl-flex-lcd")]
+    [InlineData(53, "lianli-wl:tl-flex")]
     [InlineData(60, "lianli-wl:sl-v4")]
     [InlineData(63, "lianli-wl:p28-v2")]
     [InlineData(126, "lianli-wl:cl-v2")]
@@ -115,6 +117,30 @@ public class DeviceInventoryMapperTests
 
         Assert.Equal(profile.MaxFans, DeviceInventoryMapper.FromUniHub("lianli", true, profile, fans)!.Count);
         Assert.Null(DeviceInventoryMapper.FromUniHub("lianli", false, profile, fans));
+    }
+
+    [Fact]
+    public void Uni_hub_with_untouched_fan_settings_sends_no_count()
+    {
+        Assert.True(LianLiFanProfiles.TryGet(0xA102, out var profile));
+
+        var row = DeviceInventoryMapper.FromUniHub("lianli", true, profile, new LianLiSettings());
+
+        Assert.NotNull(row);
+        Assert.Null(row!.Count);
+        Assert.Null(row.CountSource);
+    }
+
+    [Theory]
+    [InlineData(true, "lianli:hydroshift2-lcd-c")]
+    [InlineData(false, "lianli:hydroshift2-lcd-s")]
+    public void Hydroshift2_over_usb_maps_to_the_ii_keys(bool round, string modelKey)
+    {
+        var row = DeviceInventoryMapper.FromHydroShift2Usb(true, round, 0x1CBE, "S1");
+
+        Assert.Equal(modelKey, row!.ModelKey);
+        Assert.Equal("cooler", row.Category);
+        Assert.Null(DeviceInventoryMapper.FromHydroShift2Usb(false, round, 0x1CBE, "S1"));
     }
 
     [Fact]
@@ -225,6 +251,9 @@ public class DeviceInventoryMapperTests
         Assert.Equal("controller", rows["corsair-link:AD1"].Category);
         Assert.Null(rows["corsair-link:H100"].RadiatorMm);
         Assert.Equal(3, rows["corsair-link:RX360"].Count);
+        Assert.Equal(1, rows["corsair-link:FAN1"].Count);
+        Assert.Equal("detected", rows["corsair-link:FAN1"].CountSource);
+        Assert.Null(rows["corsair-link:AIO1"].Count);
         Assert.All(rows.Values, r => Assert.Null(r.PartOf));
         Assert.DoesNotContain("corsair-link:UNK", rows.Keys);
     }
