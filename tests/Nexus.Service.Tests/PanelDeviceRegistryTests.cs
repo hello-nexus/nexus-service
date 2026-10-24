@@ -625,10 +625,23 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void AlwaysOnTop_DefaultsOn_PatchAppliesOnlyToDisplayBoundRecords()
+    {
+        var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
+        Assert.Null(record.AlwaysOnTop);
+        Assert.True(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { AlwaysOnTop = false });
+
+        Assert.False(patched!.AlwaysOnTop);
+        Assert.False(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
+    }
+
+    [Fact]
     public void ResetToDefaults_DisplayBound_KeepsBindingEnabledAndMonitorSettings()
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
-        _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, BackgroundFrostLevel = 25 });
+        _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, AlwaysOnTop = false, BackgroundFrostLevel = 25 });
 
         var reset = _registry.ResetToDefaults(record.Id);
 
@@ -640,6 +653,8 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.False(reset.AutoOrient);
         Assert.True(reset.KeepCursorOff);
         Assert.True(Assert.Single(_registry.ListAssignments()).KeepCursorOff);
+        Assert.False(reset.AlwaysOnTop);
+        Assert.False(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
         Assert.Null(reset.BackgroundFrostLevel);
     }
 
@@ -647,7 +662,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     public void ResetHardwareSettings_ClearsMonitorBehavior_KeepsPersonalization()
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
-        _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, BackgroundFrostLevel = 25 });
+        _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, AlwaysOnTop = false, BackgroundFrostLevel = 25 });
         _registry.UpdateXeneonEdgeSettings("DISPLAY-1", new XeneonEdgeSettingsDto { Brightness = 5 });
 
         var reset = _registry.ResetHardwareSettings(record.Id);
@@ -657,6 +672,8 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.AutoOrient);
         Assert.Null(reset.KeepCursorOff);
         Assert.False(Assert.Single(_registry.ListAssignments()).KeepCursorOff);
+        Assert.Null(reset.AlwaysOnTop);
+        Assert.True(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
         Assert.Null(reset.XeneonEdgeSettings);
         // Personalization is the other scope; hardware reset keeps it.
         Assert.Equal(25, reset.BackgroundFrostLevel);
