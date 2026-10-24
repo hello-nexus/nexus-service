@@ -34,7 +34,7 @@ void main() {
     vec3 col = sky * (0.75 + 0.5 * uv.y);
 
     // Pixel-size guards: ray frequency never goes finer than about three pixels.
-    float rayFreq = min(26.0, u_resolution.x * 0.3);
+    float rayFreq = min(9.0, u_resolution.x * 0.12);
     float shimFreq = min(30.0, u_resolution.x * 0.4);
     float span = 0.2 + 0.62 * h;
     float width = 0.05 + 0.03 * h;
@@ -60,14 +60,14 @@ void main() {
 
         // Vertical ray pattern along x, drifting slowly.
         float rn = vnoise(vec2(uv.x * rayFreq + fi * 7.3 + warp * 6.0, t * 0.5 + fi * 2.0));
-        float ray = smoothstep(0.3, 0.85, rn);
+        float ray = smoothstep(0.22, 0.85, rn);
 
         float flicker = 1.0;
         if (band > 0.004) {
             flicker = 1.0 + shim * (vnoise(vec2(uv.x * shimFreq + fi * 7.0, t * 4.0 + fi)) - 0.5) * 0.9;
         }
         // Ray texture inside the curtain body.
-        float body = band * flicker * mix(1.0, 0.55 + 0.9 * ray, rays * 0.6);
+        float body = band * flicker * mix(1.0, 0.45 + 1.1 * ray, rays * 0.7);
 
         // Hue comes from the wheel range, not the global tint.
         // Each band takes its own hue from the wheel's range (the lowest band the
@@ -79,16 +79,18 @@ void main() {
         vec3 lc = 1.25 * hsv2rgb(vec3(bandHue, u_aSat, u_aVal));
 
         // Rays stream down from the hem, fading with distance.
-        float len = 0.05 + 0.2 * rays;
+        float len = 0.09 + 0.3 * rays;
         float below = smoothstep(-0.01, 0.03, dy);
         float rayI = rays * ray * exp(-max(dy, 0.0) / len) * below;
+        // Boldness: lift the ray core so beams stay bright against the sky.
+        rayI = min(rayI * 1.35, 1.0);
 
         // Alpha-over instead of additive, so a front band keeps its own hue where
         // bands overlap and the colored sky shows through the gaps. Rays carry
         // their own band's color.
-        float a = clamp(body * 0.95 + rayI * 0.7, 0.0, 1.0);
+        float a = clamp(body * 0.95 + rayI * 0.95, 0.0, 1.0);
         float hemI = hem * (0.2 + 0.9 * ray) * (0.6 + 0.4 * flicker);
-        vec3 lit = lc * (0.75 + 0.5 * body) + mix(lc, vec3(1.0), 0.25) * hemI * 0.6;
+        vec3 lit = lc * (0.75 + 0.5 * body + 0.35 * rayI) + mix(lc, vec3(1.0), 0.25) * hemI * 0.6;
         col = mix(col, lit, clamp(a + hemI * 0.5, 0.0, 1.0));
     }
 
