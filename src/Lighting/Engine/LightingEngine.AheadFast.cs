@@ -23,8 +23,8 @@ public sealed partial class LightingEngine
         public bool Reported;
     }
 
-    /// <summary>Test seam: lets the window path run where the gate is closed because there is no GPU.</summary>
-    internal bool AheadFastForTest;
+    /// <summary>Test seam: true runs the window path where the gate is closed because there is no GPU, false closes it where the gate is open, null defers to the gate.</summary>
+    internal bool? AheadFastForTest;
 
     private AheadSpot? _aheadSpot;
     private long _aheadCounterLogMs;
@@ -102,7 +102,7 @@ public sealed partial class LightingEngine
         var fullFrameAtStart = FullFrameSampling;
         RefreshSamplingModes();
         var areaAtStart = _areaModes;
-        if (!(LedSpaceGate.Enabled || AheadFastForTest) || fullFrameAtStart)
+        if (!(AheadFastForTest ?? LedSpaceGate.Enabled) || fullFrameAtStart)
         {
             return FastWindow.NotUsed;
         }

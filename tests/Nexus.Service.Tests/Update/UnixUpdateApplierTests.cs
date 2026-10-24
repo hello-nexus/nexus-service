@@ -4,7 +4,7 @@ namespace Nexus.Service.Tests.Update;
 
 public class UnixUpdateApplierTests
 {
-    [Fact]
+    [NonWindowsFact]
     public void BundleFromExe_returns_the_app_for_its_main_executable()
     {
         Assert.Equal("/Applications/Nexus.app",
