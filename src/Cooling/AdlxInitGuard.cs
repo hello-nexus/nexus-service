@@ -5,7 +5,7 @@ namespace Nexus.Service.Cooling;
 
 /// <summary>
 /// Marks ADLX init on disk: amdadlx64.dll can abort the process inside ADLXInitialize, so a
-/// start that finds the mark keeps ADLX off for that key instead of dying on every restart.
+/// start that finds the mark keeps ADLX off for that key (the ADLX version) instead of dying on every restart.
 /// </summary>
 internal static class AdlxInitGuard
 {

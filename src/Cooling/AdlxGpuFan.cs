@@ -49,7 +49,7 @@ internal sealed unsafe class AdlxGpuFans
         {
             if (AdlxInitGuard.LatchedOnce(dir, key))
             {
-                ServiceLog.Warn($"[amd-fan] ADLX off until a reboot or driver update: a previous run died inside an ADLX call ({key})");
+                ServiceLog.Warn($"[amd-fan] ADLX off until the driver is updated: a previous run died inside an ADLX call ({key})");
                 return null;
             }
             AdlxInitGuard.Configure(dir, key);
@@ -57,13 +57,13 @@ internal sealed unsafe class AdlxGpuFans
         }
     }
 
-    // A driver update or a reboot can clear a broken ADLX, so either one re-arms it.
+    // Only a driver update re-arms ADLX; a reboot does not, or the crash would repeat after every boot.
     private static string InitGuardKey(string path)
     {
         string? version = null;
         try { version = FileVersionInfo.GetVersionInfo(path).FileVersion; }
         catch (Exception) { }
-        return $"{version ?? "?"}@{GpuRenderSelect.BootStamp()}";
+        return version ?? "?";
     }
 
     private static AdlxGpuFans? Create(string path, Action blockChanged)
