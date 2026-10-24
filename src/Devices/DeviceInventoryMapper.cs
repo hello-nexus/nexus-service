@@ -587,6 +587,7 @@ public static class DeviceInventoryMapper
         IReadOnlyList<UsbDeviceEntry> usb,
         IEnumerable<IDeviceHandler> handlers,
         ISet<string> claimedHandlerIds,
+        ISet<(int Vid, int Pid)> claimedUsbIds,
         IReadOnlyList<SupportedDeviceDto> catalog)
     {
         var byId = new Dictionary<(int, int), SupportedDeviceDto>();
@@ -607,13 +608,19 @@ public static class DeviceInventoryMapper
             {
                 continue;
             }
-            var handler = handlerList.FirstOrDefault(h => h.Identifiers.Any(id => id.VendorId == entry.VendorId && id.ProductId == entry.ProductId));
+            // A row built for a unit of this VID:PID covers it, whichever handler slot the unit is pinned to.
+            if (claimedUsbIds.Contains((entry.VendorId, entry.ProductId)))
+            {
+                continue;
+            }
+            var matching = handlerList.Where(h => h.Identifiers.Any(id => id.VendorId == entry.VendorId && id.ProductId == entry.ProductId)).ToList();
+            var handler = matching.FirstOrDefault();
             byId.TryGetValue((entry.VendorId, entry.ProductId), out var known);
             if (handler is null && known is null)
             {
                 continue;
             }
-            if (handler is not null && claimedHandlerIds.Contains(handler.Id))
+            if (matching.Any(h => claimedHandlerIds.Contains(h.Id)))
             {
                 continue;
             }
@@ -659,6 +666,7 @@ public static class DeviceInventoryMapper
             {
                 continue;
             }
+            var ids = UsbIdFromLocation(device.Location);
             rows.Add(new SystemDeviceDto
             {
                 Key = "openrgb:" + device.StableId,
@@ -666,19 +674,60 @@ public static class DeviceInventoryMapper
                 Category = category,
                 Vendor = device.Vendor,
                 Model = device.Name,
+                Vid = ids?.Vid,
+                Pid = ids?.Pid,
             });
         }
         return rows;
     }
 
-    /// <summary>OpenRGB rows whose device a first-party row already covers by name; the first-party row wins.</summary>
-    public static List<SystemDeviceDto> DropOpenRgbDuplicates(IReadOnlyList<SystemDeviceDto> openRgb, IReadOnlyList<SystemDeviceDto> firstParty)
+    private static readonly Regex s_usbIdInLocation = new(@"vid[_:]([0-9a-f]{4}).{0,3}?pid[_:]([0-9a-f]{4})", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static (int Vid, int Pid)? UsbIdFromLocation(string? location)
     {
-        var names = firstParty.Select(r => Slug(r.Model).Replace("-", "")).Where(n => n.Length >= 4).ToList();
-        return openRgb.Where(r =>
+        if (string.IsNullOrEmpty(location) || s_usbIdInLocation.Match(location) is not { Success: true } m)
         {
-            var n = Slug(r.Model).Replace("-", "");
-            return !names.Any(f => n.Contains(f, StringComparison.Ordinal) || f.Contains(n, StringComparison.Ordinal));
+            return null;
+        }
+        return (int.Parse(m.Groups[1].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture), int.Parse(m.Groups[2].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture));
+    }
+
+    private static string Normalize(string? text) => Slug(text).Replace("-", "");
+
+    /// <summary>
+    /// Merges OpenRGB rows into the rest. An OpenRGB row is dropped when a first-party row (any row not
+    /// keyed <c>usb:</c>) has the same USB VID:PID, which OpenRGB exposes in its location string on some
+    /// platforms, or the same normalized name, exactly. A <c>usb:</c> row that an OpenRGB row still covers
+    /// by VID:PID is dropped instead, since the OpenRGB entry says more.
+    /// </summary>
+    public static List<SystemDeviceDto> MergeOpenRgb(IReadOnlyList<SystemDeviceDto> rows, IReadOnlyList<SystemDeviceDto> openRgb)
+    {
+        var firstParty = rows.Where(r => !r.ModelKey.StartsWith("usb:", StringComparison.Ordinal)).ToList();
+        var kept = openRgb.Where(o =>
+        {
+            var name = Normalize(o.Model);
+            return !firstParty.Any(f =>
+                (o.Vid is not null && o.Vid == f.Vid && o.Pid == f.Pid)
+                || (name.Length > 0 && (name == Normalize(f.Model) || name == Normalize(f.Vendor + f.Model))));
         }).ToList();
+        var result = rows.Where(r => !(r.ModelKey.StartsWith("usb:", StringComparison.Ordinal)
+            && kept.Any(o => o.Vid is not null && o.Vid == r.Vid && o.Pid == r.Pid))).ToList();
+        result.AddRange(kept);
+        return result;
+    }
+
+    /// <summary>
+    /// Replaces every key with <c>source:hash</c>, so no serial, MAC or OpenRGB location leaves the
+    /// service and keys stay short, stable and unique per unit.
+    /// </summary>
+    public static void HashKeys(IEnumerable<SystemDeviceDto> rows)
+    {
+        foreach (var row in rows)
+        {
+            var colon = row.Key.IndexOf(':', StringComparison.Ordinal);
+            var source = colon > 0 ? row.Key[..colon] : "device";
+            var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(row.Key));
+            row.Key = source + ":" + Convert.ToHexString(hash)[..16].ToLowerInvariant();
+        }
     }
 }

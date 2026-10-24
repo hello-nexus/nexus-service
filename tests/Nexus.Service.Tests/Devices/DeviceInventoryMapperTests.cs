@@ -403,7 +403,7 @@ public class DeviceInventoryMapperTests
     {
         var catalog = new[] { Cat("HYTE", "Keeb TKL", "keyboard", 0x3402, 0x0300, "nexus") };
 
-        var row = Assert.Single(DeviceInventoryMapper.FromUsb(new[] { Usb(0x3402, 0x0300) }, new Nexus.Service.Devices.IDeviceHandler[0], new HashSet<string>(), catalog));
+        var row = Assert.Single(DeviceInventoryMapper.FromUsb(new[] { Usb(0x3402, 0x0300) }, new Nexus.Service.Devices.IDeviceHandler[0], new HashSet<string>(), new HashSet<(int, int)>(), catalog));
 
         Assert.Equal("hyte:keeb-tkl", row.ModelKey);
         Assert.Equal("keyboard", row.Category);
@@ -421,7 +421,7 @@ public class DeviceInventoryMapperTests
         };
         var usb = new[] { Usb(0x1B1C, 0x1B2E), Usb(0x0416, 0x8040, "Dongle"), Usb(0x0CF2, 0xA200), Usb(0x046D, 0xC52B, "Receiver") };
 
-        var rows = DeviceInventoryMapper.FromUsb(usb, handlers, new HashSet<string>(), catalog).ToDictionary(r => r.ModelKey);
+        var rows = DeviceInventoryMapper.FromUsb(usb, handlers, new HashSet<string>(), new HashSet<(int, int)>(), catalog).ToDictionary(r => r.ModelKey);
 
         Assert.Equal("mouse", rows["usb:1b1c:1b2e"].Category);
         Assert.Equal("controller", rows["usb:0416:8040"].Category);
@@ -440,9 +440,9 @@ public class DeviceInventoryMapperTests
         var handlers = new Nexus.Service.Devices.IDeviceHandler[] { new FakeHandler("lianli", "hub", (0x0CF2, 0x7750)) };
         var usb = new[] { Usb(0x0B05, 0x1111), Usb(0x0CF2, 0x7750), Usb(0x0CF2, 0x7750) };
 
-        Assert.Empty(DeviceInventoryMapper.FromUsb(usb, handlers, new HashSet<string> { "lianli" }, catalog));
+        Assert.Empty(DeviceInventoryMapper.FromUsb(usb, handlers, new HashSet<string> { "lianli" }, new HashSet<(int, int)>(), catalog));
 
-        var rows = DeviceInventoryMapper.FromUsb(usb, handlers, new HashSet<string>(), catalog);
+        var rows = DeviceInventoryMapper.FromUsb(usb, handlers, new HashSet<string>(), new HashSet<(int, int)>(), catalog);
         Assert.Equal("fan", Assert.Single(rows).Category);
     }
 
@@ -486,10 +486,80 @@ public class DeviceInventoryMapperTests
         });
         Assert.Equal(new[] { "cooler", "fan", "keyboard" }, rows.Select(r => r.Category));
 
-        var firstParty = new[] { new SystemDeviceDto { Model = "Keeb TKL", ModelKey = "hyte:keeb-tkl" } };
-        var kept = DeviceInventoryMapper.DropOpenRgbDuplicates(rows, firstParty);
+        var firstParty = new[] { new SystemDeviceDto { Vendor = "HYTE", Model = "Keeb TKL", ModelKey = "hyte:keeb-tkl" } };
+        var merged = DeviceInventoryMapper.MergeOpenRgb(firstParty, rows);
 
-        Assert.DoesNotContain(kept, r => r.Category == "keyboard");
-        Assert.Equal(2, kept.Count);
+        Assert.DoesNotContain(merged, r => r.Category == "keyboard" && r.ModelKey.StartsWith("openrgb:"));
+        Assert.Equal(3, merged.Count);
+    }
+
+    [Fact]
+    public void Tl_lcd_usb_ids_and_pinned_uni_slots_are_claimed_by_vid_pid()
+    {
+        var handlers = new Nexus.Service.Devices.IDeviceHandler[]
+        {
+            new FakeHandler("lianli", "hub", (0x0CF2, 0x7750)),
+            new FakeHandler("lianli2", "hub", (0x0CF2, 0x7750)),
+            new FakeHandler("lianli-tl-lcd", "cooler", (0x04FC, 0x7393)),
+        };
+        var usb = new[] { Usb(0x0CF2, 0x7750, serial: "A"), Usb(0x04FC, 0x7393, serial: "B") };
+        var claimed = new HashSet<(int, int)> { (0x0CF2, 0x7750), (0x04FC, 0x7393) };
+
+        Assert.Empty(DeviceInventoryMapper.FromUsb(usb, handlers, new HashSet<string> { "lianli2" }, claimed, new SupportedDeviceDto[0]));
+        // Claimed by a later slot's handler id alone: the first matching handler no longer decides.
+        Assert.Empty(DeviceInventoryMapper.FromUsb(usb.Take(1).ToArray(), handlers, new HashSet<string> { "lianli2" }, new HashSet<(int, int)>(), new SupportedDeviceDto[0]));
+    }
+
+    private static SystemDeviceDto FirstParty(string vendor, string model, int? vid = null, int? pid = null) =>
+        new() { Vendor = vendor, Model = model, ModelKey = Slug(vendor, model), Vid = vid, Pid = pid };
+
+    private static string Slug(string vendor, string model) => DeviceInventoryMapper.Slug(vendor) + ":" + DeviceInventoryMapper.Slug(model);
+
+    [Fact]
+    public void OpenRgb_row_is_dropped_by_usb_id_from_its_location_and_by_exact_name_only()
+    {
+        var openRgb = DeviceInventoryMapper.FromOpenRgb(new[]
+        {
+            new RgbDevice { Type = 6, Name = "Corsair M65 PRO RGB", Vendor = "Corsair", Location = @"HID: \\?\hid#vid_1b1c&pid_1b2e&mi_00#7&abc", Serial = "1" },
+            new RgbDevice { Type = 6, Name = "Corsair Dark Core", Vendor = "Corsair", Location = @"HID: \\?\hid#vid_1b1c&pid_1b35&mi_00#7&def", Serial = "2" },
+            new RgbDevice { Type = 5, Name = "HYTE Keeb TKL", Vendor = "HYTE", Serial = "3" },
+            new RgbDevice { Type = 5, Name = "Corsair K70 RGB", Vendor = "Corsair", Serial = "4" },
+        });
+        Assert.Equal(0x1B2E, openRgb[0].Pid);
+
+        var rows = new[] { FirstParty("Corsair", "M65 PRO", 0x1B1C, 0x1B2E), FirstParty("HYTE", "Keeb TKL"), FirstParty("Corsair", "K70") };
+        var merged = DeviceInventoryMapper.MergeOpenRgb(rows, openRgb).Where(r => r.ModelKey.StartsWith("openrgb:")).Select(r => r.Model).ToList();
+
+        // Same VID:PID drops the M65, an exact name drops the Keeb; a name that only contains another stays.
+        Assert.Equal(new[] { "Corsair Dark Core", "Corsair K70 RGB" }, merged);
+    }
+
+    [Fact]
+    public void OpenRgb_covers_a_catalog_usb_row_with_the_same_usb_id()
+    {
+        var usbRow = new SystemDeviceDto { ModelKey = "usb:1b1c:1b2e", Model = "M65 PRO", Vid = 0x1B1C, Pid = 0x1B2E };
+        var openRgb = new SystemDeviceDto { ModelKey = "openrgb:corsair:x", Model = "Corsair M65 PRO RGB", Vid = 0x1B1C, Pid = 0x1B2E };
+
+        var merged = DeviceInventoryMapper.MergeOpenRgb(new[] { usbRow }, new[] { openRgb });
+
+        Assert.Equal("openrgb:corsair:x", Assert.Single(merged).ModelKey);
+    }
+
+    [Fact]
+    public void Hashed_keys_hide_serials_stay_short_and_stable()
+    {
+        var serial = "SERIAL-0123456789-ABCDEF-" + new string('x', 200);
+        SystemDeviceDto Row() => new() { Key = "usb:3402:0300:" + serial, ModelKey = "m", Model = "Keeb" };
+        var a = new[] { Row() };
+        var b = new[] { Row(), new SystemDeviceDto { Key = "usb:3402:0300:other" } };
+
+        DeviceInventoryMapper.HashKeys(a);
+        DeviceInventoryMapper.HashKeys(b);
+
+        Assert.StartsWith("usb:", a[0].Key);
+        Assert.DoesNotContain("SERIAL", a[0].Key);
+        Assert.True(a[0].Key.Length < 64);
+        Assert.Equal(a[0].Key, b[0].Key);
+        Assert.NotEqual(b[0].Key, b[1].Key);
     }
 }

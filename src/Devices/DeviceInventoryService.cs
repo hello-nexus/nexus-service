@@ -134,11 +134,21 @@ public sealed class DeviceInventoryService
             }
         }
 
-        // The shared cached USB list, the same one the Devices tab reads.
-        rows.AddRange(DeviceInventoryMapper.FromUsb(_usb.Enumerate(), _handlers, claimed, AllSupportedDevices.All));
+        // A unit with a row above also covers its VID:PID, however many handler slots share it.
+        var claimedUsb = new HashSet<(int Vid, int Pid)>();
+        foreach (var row in rows)
+        {
+            if (row.Vid is { } vid && row.Pid is { } pid)
+            {
+                claimedUsb.Add((vid, pid));
+            }
+        }
 
-        var openRgb = DeviceInventoryMapper.FromOpenRgb(_rgb.Devices);
-        rows.AddRange(DeviceInventoryMapper.DropOpenRgbDuplicates(openRgb, rows));
+        // The shared cached USB list, the same one the Devices tab reads.
+        rows.AddRange(DeviceInventoryMapper.FromUsb(_usb.Enumerate(), _handlers, claimed, claimedUsb, AllSupportedDevices.All));
+
+        rows = DeviceInventoryMapper.MergeOpenRgb(rows, DeviceInventoryMapper.FromOpenRgb(_rgb.Devices));
+        DeviceInventoryMapper.HashKeys(rows);
 
         return new SystemDevicesResponse { Devices = rows.ToArray() };
     }
