@@ -1,3 +1,4 @@
+using System.Linq;
 using Nexus.Service.Activity;
 using Nexus.Service.Auth;
 using Nexus.Service.Cloud;
@@ -19,6 +20,11 @@ namespace Nexus.Service.Routes;
 
 public static class SystemRoutes
 {
+    private const long MaxPreviewBytes = 2L * 1024 * 1024;
+    private static readonly byte[] PngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    private static bool HasPngSignature(byte[] bytes) => bytes.AsSpan().StartsWith(PngSignature);
+
     public static void MapSystemEndpoints(this WebApplication app)
     {
         // No REST sensor endpoints - all hardware sensor / model data is
@@ -48,6 +54,53 @@ public static class SystemRoutes
             }
             var saved = await cases.SetAsync(body.CaseId, ct).ConfigureAwait(false);
             return Results.Ok(new SystemCaseResponse { CaseId = saved });
+        });
+
+        // Rendered image of this PC for the dashboard Build widget. Desktop-token only. The GET answers
+        // only while the stored image was rendered for the current case, so a case changed elsewhere
+        // drops the widget back to its placeholder.
+        app.MapPut("/system/preview", async (HttpRequest req, string? caseId, SystemPreviewStore previews, CancellationToken ct) =>
+        {
+            if (string.IsNullOrEmpty(caseId) || !SystemCaseService.IsValidCaseId(caseId))
+            {
+                return Results.BadRequest(ApiResponse.Fail("caseId must be 1-64 characters of letters, digits, '.', '_', ':' or '-'."));
+            }
+            if (req.ContentLength is long declared && declared > MaxPreviewBytes)
+            {
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+            var (bytes, tooLarge) = await CloudRoutes.ReadBoundedAsync(req.Body, MaxPreviewBytes, ct).ConfigureAwait(false);
+            if (tooLarge)
+            {
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+            if (bytes is null || !HasPngSignature(bytes))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Body must be a PNG image."));
+            }
+            if (!previews.Save(caseId, bytes))
+            {
+                return Results.Json(ApiResponse.Fail("The preview could not be saved."), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status500InternalServerError);
+            }
+            return Results.NoContent();
+        });
+
+        app.MapGet("/system/preview", async (HttpRequest req, HttpResponse res, SystemPreviewStore previews, SystemCaseService cases, CancellationToken ct) =>
+        {
+            var current = await cases.GetAsync(ct).ConfigureAwait(false);
+            if (previews.TryGet(current) is not { } preview)
+            {
+                return Results.NotFound();
+            }
+            var etag = "\"" + preview.Sha256 + "\"";
+            res.Headers.CacheControl = "no-cache";
+            res.Headers.ETag = etag;
+            if (req.Headers.IfNoneMatch.ToString() is { Length: > 0 } inm
+                && inm.Split(',').Any(t => t.Trim() == etag || t.Trim() == "*"))
+            {
+                return Results.StatusCode(StatusCodes.Status304NotModified);
+            }
+            return Results.Bytes(preview.Bytes, "image/png");
         });
 
         // Whether this machine is listed among the account's Systems. Turning it off removes it from the account.
