@@ -41,7 +41,63 @@ public sealed class HeadlessBrowser : IDisposable
         }
     }
 
-    internal static List<string> Arguments(string profileDir) => new()
+    public GpuTier Tier { get; private init; }
+
+    private const string WebGlRendererProbe =
+        "(() => { const c = document.createElement('canvas');"
+        + " const gl = c.getContext('webgl2') || c.getContext('webgl'); if (!gl) return 'none';"
+        + " const e = gl.getExtension('WEBGL_debug_renderer_info');"
+        + " return String(e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)); })()";
+
+    /// <summary>
+    /// The renderer string the page's WebGL context actually got. A GPU flag is only a request:
+    /// Chromium drops to SwiftShader or llvmpipe when the driver is missing, so the flags alone prove nothing.
+    /// </summary>
+    public async Task<string> ProbeRendererAsync(CancellationToken ct)
+    {
+        var created = await Cdp.SendAsync("Target.createTarget", w =>
+        {
+            w.WriteString("url", "about:blank");
+            w.WriteNumber("width", 64);
+            w.WriteNumber("height", 64);
+            w.WriteBoolean("newWindow", true);
+        }, ct: ct).ConfigureAwait(false);
+        var targetId = created.GetProperty("targetId").GetString();
+        try
+        {
+            var attached = await Cdp.SendAsync("Target.attachToTarget", w =>
+            {
+                w.WriteString("targetId", targetId);
+                w.WriteBoolean("flatten", true);
+            }, ct: ct).ConfigureAwait(false);
+            var session = attached.GetProperty("sessionId").GetString();
+            var result = await Cdp.SendAsync("Runtime.evaluate", w =>
+            {
+                w.WriteString("expression", WebGlRendererProbe);
+                w.WriteBoolean("returnByValue", true);
+            }, session, ct: ct, timeoutMs: 15000).ConfigureAwait(false);
+            return result.TryGetProperty("result", out var r) && r.TryGetProperty("value", out var v)
+                ? v.GetString() ?? "none"
+                : "none";
+        }
+        finally
+        {
+            if (targetId is not null && !Cdp.IsClosed)
+            {
+                Cdp.Post("Target.closeTarget", w => w.WriteString("targetId", targetId));
+            }
+        }
+    }
+
+    internal static List<string> Arguments(string profileDir, GpuTier tier = GpuTier.Software)
+    {
+        var args = BaseArguments(profileDir);
+        // The trailing about:blank stays last.
+        args.InsertRange(args.Count - 1, GpuTiers.Arguments(tier));
+        return args;
+    }
+
+    private static List<string> BaseArguments(string profileDir) => new()
     {
         "--headless=new",
         "--remote-debugging-pipe",
@@ -64,10 +120,10 @@ public sealed class HeadlessBrowser : IDisposable
 
     public static async Task<HeadlessBrowser> LaunchAsync(string browserPath, string profileDir,
         Func<string, List<string>, (string File, List<string> Args)> wrapSpawn,
-        Action<string>? log, CancellationToken ct)
+        Action<string>? log, CancellationToken ct, GpuTier tier = GpuTier.Software)
     {
         var shellArgs = new List<string> { "-c", FdShim, browserPath };
-        shellArgs.AddRange(Arguments(profileDir));
+        shellArgs.AddRange(Arguments(profileDir, tier));
         var (file, args) = wrapSpawn("/bin/sh", shellArgs);
 
         var psi = new ProcessStartInfo
@@ -85,7 +141,7 @@ public sealed class HeadlessBrowser : IDisposable
         }
         var process = Process.Start(psi) ?? throw new IOException($"could not start {browserPath}");
         var cdp = new CdpPipeClient(process.StandardInput.BaseStream, process.StandardOutput.BaseStream);
-        var browser = new HeadlessBrowser(process, cdp, browserPath);
+        var browser = new HeadlessBrowser(process, cdp, browserPath) { Tier = tier };
         _ = DrainStderrAsync(process, log);
         try
         {

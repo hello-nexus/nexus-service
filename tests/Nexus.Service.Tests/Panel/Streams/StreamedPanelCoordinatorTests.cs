@@ -29,6 +29,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     private readonly List<string> _panelChanges = new();
     private StreamedPanelCoordinator? _coordinator;
     private readonly LcdLockState _lock = new();
+    private int? _fpsCap;
 
     public StreamedPanelCoordinatorTests()
     {
@@ -62,7 +63,8 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
             notifyOverlay: null,
             nowMs: () => _nowMs,
             notifyPanelChanged: _panelChanges.Add,
-            lockState: _lock);
+            lockState: _lock,
+            fpsCap: () => _fpsCap);
         _coordinator.FadeRunner.AutoRun = false;
         return _coordinator;
     }
@@ -754,6 +756,43 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.NotEqual(first.SessionId, second.SessionId);
         Assert.Equal(60, second.Fps);
         Assert.Equal(first.PanelDeviceId, second.PanelDeviceId);
+    }
+
+    [Theory]
+    [InlineData(20, 60, 20)]
+    [InlineData(30, 20, 20)]
+    [InlineData(null, 60, 60)]
+    public void Fps_cap_limits_the_assignment_to_the_model_rate(int? cap, int modelFps, int expected)
+    {
+        _fpsCap = cap;
+        _discovery.Devices.Add(Device(fps: modelFps));
+        var coordinator = Coordinator();
+
+        coordinator.TickOnce();
+
+        Assert.Equal(expected, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
+    }
+
+    [Fact]
+    public void Fps_cap_change_remints_live_session_at_the_new_rate()
+    {
+        _fpsCap = 30;
+        _discovery.Devices.Add(Device(fps: 60));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var first = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        _fpsCap = 10;
+        coordinator.TickOnce();
+        var second = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(30, first.Fps);
+        Assert.Equal(10, second.Fps);
+        Assert.NotEqual(first.SessionId, second.SessionId);
+
+        _fpsCap = null;
+        coordinator.TickOnce();
+        Assert.Equal(60, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
     }
 
     private static StreamedPanelDeviceInfo Sized(int width, int height, StreamCodec codec = StreamCodec.RawBgra) => new()
