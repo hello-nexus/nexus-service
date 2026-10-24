@@ -222,7 +222,7 @@ public class BulkPanelDriverTests
     }
 
     [Fact]
-    public void Ryujin_keepalive_is_skipped_while_the_last_push_failed()
+    public void Ryujin_keepalive_ticks_on_static_content_count_toward_the_reopen()
     {
         var driver = new RyujinPanelDriver();
         var pipe = new FakeBulkPipe();
@@ -231,18 +231,26 @@ public class BulkPanelDriverTests
         driver.SendFrame(pipe, hid, Frame(320, 240));
         pipe.FailWrites = true;
         Assert.False(driver.SendFrame(pipe, hid, Frame(320, 240)));
+        Assert.Equal(-1, driver.TakeReopenDelayMs());
+
+        driver.Resend(pipe, hid);
+        driver.Resend(pipe, hid);
+
+        Assert.Equal(1000, driver.TakeReopenDelayMs());
+        Assert.NotNull(driver.LastFailure);
+    }
+
+    [Fact]
+    public void Ryujin_a_successful_push_clears_the_last_failure()
+    {
+        var driver = new RyujinPanelDriver();
+        var pipe = new FakeBulkPipe { FailWrites = true };
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        driver.SendFrame(pipe, hid, Frame(320, 240));
         pipe.FailWrites = false;
-        pipe.Writes.Clear();
-        hid.Writes.Clear();
-
-        Assert.True(driver.Resend(pipe, hid));
-        Assert.Empty(pipe.Writes);
-        Assert.Empty(hid.Writes);
-
         Assert.True(driver.SendFrame(pipe, hid, Frame(320, 240)));
-        pipe.Writes.Clear();
-        Assert.True(driver.Resend(pipe, hid));
-        Assert.NotEmpty(pipe.Writes);
+        Assert.Null(driver.LastFailure);
     }
 
     [Theory]
