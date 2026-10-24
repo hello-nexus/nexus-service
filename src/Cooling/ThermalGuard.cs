@@ -46,10 +46,9 @@ public sealed record ThermalGuardThresholds
     public double FloorStartBelowLimitC { get; init; } = 15;
     /// <summary>Floor duty reached at the limit itself; a curve already at or above it is never touched.</summary>
     public double FloorAtLimitPercent { get; init; } = 60;
-    /// <summary>The floor reaches full duty this far above the limit.</summary>
+    /// <summary>The floor reaches full duty this far above the limit; only reachable in the window before the limit trip fires.</summary>
     public double FloorFullAboveLimitC { get; init; } = 3;
-    /// <summary>The CPU cannot hold its own limit: trip when this far above it for <see cref="LimitSustainMs"/>.</summary>
-    public double LimitTripAboveLimitC { get; init; } = 3;
+    /// <summary>The CPU cannot hold its own limit: trip when at or above it for this long.</summary>
     public long LimitSustainMs { get; init; } = 5000;
     public long CoolingLossWindowMs { get; init; } = 180_000;
     public double CoolingLossRiseCPerMin { get; init; } = 2.0;
@@ -163,10 +162,11 @@ public sealed class ThermalGuard
             return Output(false, false, false, 0);
         }
 
-        // After a long pause in the readings the release timer starts over: it cannot count time nobody observed.
+        // After a long pause in the readings the release and trip timers start over: they cannot count time nobody observed.
         if (_lastStepMs is { } last && nowMs - last > GapResetSpacings * SampleSpacingMs)
         {
             _belowSinceMs = null;
+            _hotSinceMs = null;
         }
         _lastStepMs = nowMs;
         var smooth = Smooth(nowMs, temp);
@@ -178,7 +178,7 @@ public sealed class ThermalGuard
         Record(nowMs, smooth);
 
         string? reason = null;
-        if (temp >= limitC + _t.LimitTripAboveLimitC)
+        if (temp >= limitC)
         {
             _hotSinceMs ??= nowMs;
             if (nowMs - _hotSinceMs.Value >= _t.LimitSustainMs)
