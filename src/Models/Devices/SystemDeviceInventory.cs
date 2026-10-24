@@ -46,6 +46,10 @@ public static class SystemDeviceCategories
     public const string Fan = "fan";
     public const string Lighting = "lighting";
     public const string Controller = "controller";
+    public const string Keyboard = "keyboard";
+    public const string Mouse = "mouse";
+    public const string Headset = "headset";
+    public const string Peripheral = "peripheral";
 }
 
 public static class SystemDeviceCountSources
