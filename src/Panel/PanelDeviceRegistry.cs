@@ -731,8 +731,8 @@ public sealed class PanelDeviceRegistry
                 record.TextColorMode = patch.TextColorMode;
             if (patch.TextColor is not null)
                 record.TextColor = patch.TextColor;
-            if (patch.Font is not null)
-                record.Font = NullIfEmpty(patch.Font);
+            if (patch.Font is not null && PanelFontValue.TryNormalize(patch.Font, out var font))
+                record.Font = font;
             if (patch.ThemeSyncWithDesktop.HasValue)
                 record.ThemeSyncWithDesktop = patch.ThemeSyncWithDesktop.Value;
             if (patch.AccentSyncWithDesktop.HasValue)

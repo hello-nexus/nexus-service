@@ -199,6 +199,17 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_Font_SystemFamilyIsTrimmedAndInvalidValuesKeepTheStoredFont()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+
+        Assert.Equal("system:Segoe UI", _registry.Patch(record.Id, new PanelDevicePatch { Font = "system:  Segoe UI " })!.Font);
+        Assert.Equal("system:Segoe UI", _registry.Patch(record.Id, new PanelDevicePatch { Font = "system:   " })!.Font);
+        Assert.Equal("system:Segoe UI", _registry.Patch(record.Id, new PanelDevicePatch { Font = "system:" + new string('a', 129) })!.Font);
+        Assert.Equal("oswald", _registry.Patch(record.Id, new PanelDevicePatch { Font = "oswald" })!.Font);
+    }
+
+    [Fact]
     public void Patch_Font_RoundTripsAndSurvivesOmission()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));

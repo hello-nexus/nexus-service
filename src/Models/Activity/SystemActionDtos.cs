@@ -64,6 +64,12 @@ public sealed class SystemCaseResponse
     public string? CaseId { get; set; }
 }
 
+/// <summary>Installed font family names of this PC, usable as CSS font-family.</summary>
+public sealed class SystemFontsResponse
+{
+    public IReadOnlyList<string> Families { get; set; } = [];
+}
+
 public sealed class SetSystemCaseBody
 {
     public string? CaseId { get; set; }

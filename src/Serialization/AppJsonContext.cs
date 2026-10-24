@@ -457,6 +457,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudDeviceCasePutRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SetSystemCaseBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SystemCaseResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Activity.SystemFontsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.SystemDevicesResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SetSystemReportBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SystemReportResponse))]
