@@ -49,6 +49,13 @@ Q-series screens.
   items) sample the effect canvas where a camera sees them. The scene lives in
   its own machine-local files; the view (on/off + camera) lives in settings and
   layout presets. Unplaced devices keep their 2D frame.
+- Shared PC setup (`Lighting/Scene/PcSetup*`, `/system/setup`): one record
+  (`pc-setup.json`, machine-local, revisioned) that the Build portal and the
+  3D lighting scene share. Build writes the whole record (`PUT`); lighting may
+  only move and turn existing items (`PATCH /system/setup/placements`). Once the
+  record has resolved objects, `GET /lighting/scene` serves them in place of the
+  scene file's objects. Changes ping the `system/setup` topic, and the record
+  rides the manual profile Back up.
 - Key reactions (`Lighting/KeyReactive/`, `/lighting/key-reactive*`): per-key
   keyboards light up as keys are pressed (ripple, sweeps, heatmap, sparks,
   lightning and more), painted by the engine over any effect. One config per

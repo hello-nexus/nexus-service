@@ -89,6 +89,22 @@ public static class PanelTopics
     /// </summary>
     public const string CloudAccounts = "cloud/accounts";
 
+    /// <summary>
+    /// The shared PC setup record was saved. Subscribers refetch
+    /// GET /system/setup; the frame carries the saved revision so the writer
+    /// can skip its own echo.
+    /// </summary>
+    public const string SystemSetup = "system/setup";
+
+    public static void BroadcastSystemSetup(MultiplexHub hub, int rev)
+    {
+        if (!hub.TopicHasSubscribers(SystemSetup))
+            return;
+        var frame = new Models.Lighting.PcSetupChangedFrame { Rev = rev };
+        var env = WsEnvelope.Build(SystemSetup, frame, AppJsonContext.Default.PcSetupChangedFrame);
+        _ = hub.BroadcastTopicAsync(SystemSetup, env);
+    }
+
     public static void BroadcastCloudAccounts(MultiplexHub hub)
     {
         if (!hub.TopicHasSubscribers(CloudAccounts))
