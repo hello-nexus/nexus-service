@@ -53,7 +53,8 @@ internal sealed unsafe class AdlxGpuFans
             if (latch != AdlxInitGuard.Latch.None)
             {
                 var until = latch == AdlxInitGuard.Latch.UntilDriverUpdate ? "until the driver is updated" : "for this boot";
-                ServiceLog.Warn($"[amd-fan] ADLX off {until}: a previous run died inside an ADLX call ({key ?? "no driver key"})");
+                var why = key is null && latch == AdlxInitGuard.Latch.UntilDriverUpdate ? "the driver version is unreadable, so the persistent latch stays" : "a previous run died inside an ADLX call";
+                ServiceLog.Warn($"[amd-fan] ADLX off {until}: {why} ({key ?? "no driver key"})");
                 return null;
             }
             AdlxInitGuard.Configure(dir, key, boot);

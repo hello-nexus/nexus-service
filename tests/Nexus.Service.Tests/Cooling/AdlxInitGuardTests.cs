@@ -115,21 +115,103 @@ public sealed class AdlxInitGuardTests : IDisposable
     }
 
     [Fact]
-    public void An_unreadable_key_does_not_erase_a_persistent_latch()
+    public void An_unreadable_key_keeps_a_persistent_latch()
     {
         Die(K, "b1");
         AdlxInitGuard.Latched(_dir, K, "b1");
         Die(K, "b2");
         AdlxInitGuard.Latched(_dir, K, "b2");
 
-        Assert.Equal(AdlxInitGuard.Latch.None, AdlxInitGuard.Latched(_dir, null, "b3"));
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, null, "b3"));
         Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b3"));
     }
 
     [Fact]
-    public void BuildKey_sorts_and_dedups_the_driver_versions_and_needs_both_parts()
+    public void A_crash_under_an_unreadable_key_never_overwrites_a_persistent_latch()
     {
-        Assert.Equal("1.4.0.121#5,9", AdlxInitGuard.BuildKey("1.4.0.121", new long[] { 9, 5, 9 }));
+        Die(K, "b1");
+        AdlxInitGuard.Latched(_dir, K, "b1");
+        Die(K, "b2");
+        AdlxInitGuard.Latched(_dir, K, "b2");
+        Die("", "b3");
+
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, null, "b3"));
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b4"));
+    }
+
+    [Fact]
+    public void A_crash_under_an_unreadable_key_never_overwrites_a_first_strike_either()
+    {
+        Die(K, "b1");
+        AdlxInitGuard.Latched(_dir, K, "b1");
+        Die("", "b2");
+        AdlxInitGuard.Latched(_dir, null, "b2");
+
+        // Still strike one under K: a second keyed death persists.
+        Die(K, "b3");
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b3"));
+    }
+
+    [Fact]
+    public void A_clean_stop_of_a_run_that_had_adlx_enabled_clears_a_first_strike()
+    {
+        Die(K, "b1");
+        Assert.Equal(AdlxInitGuard.Latch.ThisBoot, AdlxInitGuard.Latched(_dir, K, "b1"));
+        AdlxInitGuard.ResetScopes();
+
+        // Next boot retries ADLX, runs enabled, stops cleanly.
+        Assert.Equal(AdlxInitGuard.Latch.None, AdlxInitGuard.Latched(_dir, K, "b2"));
+        AdlxInitGuard.Configure(_dir, K, "b2");
+        AdlxInitGuard.Stop(_dir);
+        AdlxInitGuard.ResetScopes();
+
+        Die(K, "b3");
+        Assert.Equal(AdlxInitGuard.Latch.ThisBoot, AdlxInitGuard.Latched(_dir, K, "b3"));
+    }
+
+    [Fact]
+    public void A_clean_stop_never_clears_a_second_strike()
+    {
+        Die(K, "b1");
+        AdlxInitGuard.Latched(_dir, K, "b1");
+        Die(K, "b2");
+        AdlxInitGuard.Latched(_dir, K, "b2");
+        AdlxInitGuard.ResetScopes();
+        AdlxInitGuard.Configure(_dir, K, "b3");
+        AdlxInitGuard.Stop(_dir);
+
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b4"));
+    }
+
+    [Fact]
+    public void A_clean_stop_of_a_run_latched_off_this_boot_keeps_the_first_strike()
+    {
+        Die(K, "b1");
+        Assert.Equal(AdlxInitGuard.Latch.ThisBoot, AdlxInitGuard.Latched(_dir, K, "b1"));
+        AdlxInitGuard.ResetScopes();
+        // ADLX never enabled in this process, so no Configure call.
+        AdlxInitGuard.Stop(_dir);
+        AdlxInitGuard.ResetScopes();
+
+        // The crash-every-boot case still reaches strike two.
+        Die(K, "b2");
+        Assert.Equal(AdlxInitGuard.Latch.UntilDriverUpdate, AdlxInitGuard.Latched(_dir, K, "b2"));
+    }
+
+    [Fact]
+    public void Records_are_written_without_leaving_a_temp_file()
+    {
+        Die(K, "b1");
+        AdlxInitGuard.Latched(_dir, K, "b1");
+
+        Assert.Empty(Directory.GetFiles(_dir, "*.tmp"));
+    }
+
+    [Fact]
+    public void BuildKey_uses_the_highest_driver_version_and_needs_both_parts()
+    {
+        Assert.Equal("1.4.0.121#9", AdlxInitGuard.BuildKey("1.4.0.121", new long[] { 9, 5, 0 }));
+        Assert.Equal("1.4.0.121#9", AdlxInitGuard.BuildKey("1.4.0.121", new long[] { 5, 9 }));
         Assert.Null(AdlxInitGuard.BuildKey(null, new long[] { 5 }));
         Assert.Null(AdlxInitGuard.BuildKey("1.4.0.121", new long[] { 0 }));
         Assert.Null(AdlxInitGuard.BuildKey("1.4.0.121", Array.Empty<long>()));

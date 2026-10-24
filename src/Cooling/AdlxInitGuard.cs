@@ -6,8 +6,9 @@ using System.Linq;
 namespace Nexus.Service.Cooling;
 
 /// <summary>
-/// Marks ADLX init on disk: amdadlx64.dll can abort the process inside ADLXInitialize, so a
-/// start that finds the mark keeps ADLX off for that key (the ADLX version) instead of dying on every restart.
+/// Marks every ADLX call on disk: amdadlx64.dll can abort the process inside ADLXInitialize or a later call, so a
+/// start that finds the mark keeps ADLX off instead of dying on every restart. The first death latches one boot, a second
+/// under the same driver key latches until the key changes, and a clean stop of a run that had ADLX enabled clears a first strike.
 /// </summary>
 internal static class AdlxInitGuard
 {
@@ -19,20 +20,20 @@ internal static class AdlxInitGuard
     private readonly record struct State(string Key, int Strikes, string Boot);
 
     /// <summary>
-    /// Driver key: the ADLX file version plus the AMD adapters' sorted DXGI user-mode driver versions, so a driver
-    /// update changes it even when the ADLX build does not. Null when either part is unavailable, which limits latching to the current boot.
+    /// Driver key: the ADLX file version plus the highest AMD DXGI user-mode driver version (the highest, so a ghost or disabled adapter does not
+    /// move it), so a driver update changes it even when the ADLX build does not. Null when either part is unavailable, which limits latching to the current boot.
     /// </summary>
     internal static string? BuildKey(string? fileVersion, IEnumerable<long> umdVersions)
     {
-        var umd = umdVersions.Where(v => v != 0).Distinct().OrderBy(v => v).ToList();
-        if (string.IsNullOrWhiteSpace(fileVersion) || umd.Count == 0) return null;
-        return $"{fileVersion}#{string.Join(",", umd)}";
+        var umd = umdVersions.Where(v => v != 0).DefaultIfEmpty(0).Max();
+        if (string.IsNullOrWhiteSpace(fileVersion) || umd == 0) return null;
+        return $"{fileVersion}#{umd}";
     }
 
     /// <summary>
     /// Two strikes. A run that died inside ADLX (its mark is still on disk) is a first strike: ADLX stays off for that
     /// boot only, since power loss or another crash can look the same. A second death under the same driver key keeps ADLX off until
-    /// the key changes. A null <paramref name="key"/> never latches past the boot.
+    /// the key changes. A null <paramref name="key"/> never starts a persistent latch, never overwrites a keyed record, and never lifts a persistent one.
     /// </summary>
     public static Latch Latched(string dir, string? key, string boot)
     {
@@ -45,20 +46,32 @@ internal static class AdlxInitGuard
             {
                 var dead = ReadMark(File.ReadAllText(mark), key);
                 File.Delete(mark);
-                if (dead is { } d)
+                if (dead is { } d && (d.Key.Length > 0 || state is null || state.Value.Key.Length == 0))
                 {
                     var strikes = d.Key.Length > 0 && state is { } s && s.Key == d.Key ? s.Strikes + 1 : 1;
-                    state = new State(d.Key, d.Key.Length > 0 ? strikes : 1, d.Boot);
-                    File.WriteAllText(latch, $"{state.Value.Key}\t{state.Value.Strikes}\t{state.Value.Boot}");
+                    state = new State(d.Key, strikes, d.Boot);
+                    WriteAtomic(latch, $"{state.Value.Key}\t{state.Value.Strikes}\t{state.Value.Boot}");
                 }
             }
             if (state is not { } cur) return Clear(latch);
-            if (key is null) return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
+            if (key is null)
+            {
+                if (cur.Key.Length > 0 && cur.Strikes >= 2) return Latch.UntilDriverUpdate;
+                return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
+            }
             if (cur.Key.Length > 0 && cur.Key != key) return Clear(latch);
             if (cur.Strikes >= 2) return Latch.UntilDriverUpdate;
             return cur.Boot == boot ? Latch.ThisBoot : Latch.None;
         }
         catch (Exception) { return Latch.None; }
+    }
+
+    // Temp file then move, so a death or power loss mid-write never leaves a torn record.
+    private static void WriteAtomic(string path, string text)
+    {
+        var tmp = path + ".tmp";
+        File.WriteAllText(tmp, text);
+        File.Move(tmp, path, overwrite: true);
     }
 
     private static Latch Clear(string latch)
@@ -101,7 +114,17 @@ internal static class AdlxInitGuard
     {
         _stopped = true;
         Disarm(dir);
+        // A run that had ADLX enabled and stopped cleanly proves a first strike was not ADLX. A run latched off this boot never enabled it, so it clears nothing.
+        if (!_enabled) return;
+        try
+        {
+            var latch = Path.Combine(dir, LatchFile);
+            if (Read(latch, _scopeKey) is { Strikes: < 2 }) File.Delete(latch);
+        }
+        catch (Exception) { }
     }
+
+    private static bool _enabled;
 
     private static string? _dirReady;
 
@@ -116,7 +139,7 @@ internal static class AdlxInitGuard
                 Directory.CreateDirectory(dir);
                 _dirReady = dir;
             }
-            File.WriteAllText(Path.Combine(dir, MarkFile), $"{key}\t{boot}");
+            WriteAtomic(Path.Combine(dir, MarkFile), $"{key}\t{boot}");
         }
         catch (Exception)
         {
@@ -149,6 +172,7 @@ internal static class AdlxInitGuard
         _scopeDir = dir;
         _scopeKey = key ?? "";
         _scopeBoot = boot;
+        _enabled = true;
     }
 
     /// <summary>
@@ -180,6 +204,8 @@ internal static class AdlxInitGuard
         _scopeDir = null;
         _scopeKey = null;
         _scopeBoot = "";
+        _enabled = false;
+        _stopped = false;
         _latchedOnce = null;
         _dirReady = null;
     }
