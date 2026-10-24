@@ -2501,37 +2501,38 @@ public sealed partial class Slv3Hub : IDisposable
             // A fan the USB path drives is only ever released here, so the USB path can take it over.
             if (IsWiredOwned(macHex) && !IsBoundToUsLocked(existing))
             {
-                if (_owned.ContainsKey(key))
+                if (!_owned.ContainsKey(key))
                 {
-                    // An owned chain whose bind dropped has nothing to release over RF; only the ownership is given up.
-                    _userUnbound.Add(key);
-                    _owned.Remove(key);
-                    _ownedDirty = true;
-                    _intents.Remove(key);
-                    goto flush;
+                    error = WiredOwnedError;
+                    return false;
                 }
-                error = WiredOwnedError;
-                return false;
+                // Nothing to release while it reports unbound; the intent releases a bind that is still in flight.
+                _userUnbound.Add(key);
+                _owned.Remove(key);
+                _ownedDirty = true;
+                _intents[key] = new BindIntent(0) { Unbinding = true, Sends = 1 };
             }
-            if (!IsBoundToUsLocked(existing) && IsLiveMasterLocked(existing.MasterMac))
+            else
             {
-                error = "held by a live master";
-                return false;
+                if (!IsBoundToUsLocked(existing) && IsLiveMasterLocked(existing.MasterMac))
+                {
+                    error = "held by a live master";
+                    return false;
+                }
+                if (_deferredUnbinds.ContainsKey(key))
+                {
+                    return true;
+                }
+                if (IsBoundToUsLocked(existing) && BeginFlexLcdReleaseForUnbindLocked(existing))
+                {
+                    // The screens go back to USB content first; the release frame follows their acknowledgement or the hold.
+                    _deferredUnbinds[key] = new DeferredUnbind(_nowMs() + FlexLcdUnbindHoldMs, macHex);
+                    ServiceLog.Info($"[lianli-wireless] unbind of {key} waits for its wireless theme switch to clear");
+                    return true;
+                }
+                PerformUnbindLocked(key, macHex, existing);
             }
-            if (_deferredUnbinds.ContainsKey(key))
-            {
-                return true;
-            }
-            if (IsBoundToUsLocked(existing) && BeginFlexLcdReleaseForUnbindLocked(existing))
-            {
-                // The screens go back to USB content first; the release frame follows their acknowledgement or the hold.
-                _deferredUnbinds[key] = new DeferredUnbind(_nowMs() + FlexLcdUnbindHoldMs, macHex);
-                ServiceLog.Info($"[lianli-wireless] unbind of {key} waits for its wireless theme switch to clear");
-                return true;
-            }
-            PerformUnbindLocked(key, macHex, existing);
         }
-    flush:
         FlushOwned();
         return true;
     }

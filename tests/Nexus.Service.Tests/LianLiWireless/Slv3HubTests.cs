@@ -599,6 +599,32 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void A_bind_landing_after_the_user_unbound_an_owned_wired_chain_is_released()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, saved, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        hub.SetLockBoundDevices(false);
+        Ticks(hub, 2);
+        Assert.True(hub.Unbind(mac, out var error), error);
+        tx.SentFrames.Clear();
+        fan.MasterMac = net.MasterMac;
+        fan.RxType = 4;
+
+        Ticks(hub, 5);
+
+        Assert.True(CountBindFrames(tx) > 0);
+        Assert.True(Slv3Protocol.MacIsZero(fan.MasterMac));
+        Assert.False(hub.State.Fans[0].BoundToUs);
+        Assert.False(saved.ContainsKey(mac));
+    }
+
+    [Fact]
     public void Unbind_of_a_wired_chain_we_do_not_own_is_still_refused()
     {
         var mac = Convert.ToHexString(FanMac);
