@@ -205,7 +205,7 @@ public sealed class OpenRgbProcessManager : IDisposable
         var list = NativeDetectorClaims.ResolveDisabled(_ => true, macOS);
         if (linux)
         {
-            list.AddRange(OpenRgbGpuI2cDetectors.Names);
+            list.AddRange(OpenRgbAmdGpuI2cDetectors.Names);
         }
         return list.ToArray();
     }
@@ -214,13 +214,17 @@ public sealed class OpenRgbProcessManager : IDisposable
     internal System.Collections.Generic.List<string> ResolveNativeDisabledDetectors()
     {
         var list = NativeDetectorClaims.ResolveDisabled(handler => _gate?.IsChosenOn(handler) == true, OperatingSystem.IsMacOS());
-        if (OperatingSystem.IsLinux())
+        if (HoldAmdGpuDetectorsOff(OperatingSystem.IsLinux(), _store))
         {
-            // Probing the card's I2C buses can hang the amdgpu SMU, so every GPU I2C detector stays off on Linux.
-            list.AddRange(OpenRgbGpuI2cDetectors.Names);
+            // Probing a Radeon's I2C buses can hang the amdgpu SMU, so the AMD GPU I2C detectors stay off on Linux unless the user opted in. NVIDIA cards are not affected.
+            list.AddRange(OpenRgbAmdGpuI2cDetectors.Names);
         }
         return list;
     }
+
+    /// <summary>True when the AMD GPU I2C detectors stay force-disabled: on Linux only, and only while the AMD graphics card lighting setting is off. A persisted value is ignored off Linux.</summary>
+    internal static bool HoldAmdGpuDetectorsOff(bool linux, Nexus.Service.Persistence.IConfigStore? store)
+        => linux && !(store?.Load().AmdGpuLighting ?? false);
 
     private string _appliedNativeSignature = "";
 
@@ -246,7 +250,7 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// DDR5, and each Patriot file defines its own PATRIOT_CONTROLLER_NAME.
     /// Motherboard I2C detectors share the bus and stay enabled. GPU I2C
     /// detectors stay enabled too, except on Linux where
-    /// <see cref="OpenRgbGpuI2cDetectors"/> holds them off in
+    /// <see cref="OpenRgbAmdGpuI2cDetectors"/> holds the AMD ones off in
     /// <see cref="ResolveNativeDisabledDetectors"/>.
     /// </summary>
     internal static readonly string[] SmbusDramDetectors =
@@ -334,10 +338,13 @@ public sealed class OpenRgbProcessManager : IDisposable
     /// </summary>
     /// <param name="nativeDisabledDetectors">Detectors held off for an enabled native driver; null holds every native-claimed detector. A claimed detector outside it and outside the other lists is returned to OpenRGB's default by dropping its entry.</param>
     /// <param name="busDisabledDetectors">Detectors held off because their shared bus is toggled off (<see cref="SmbusDramDetectors"/>). Tracked in the service-owned <c>Detectors.bus_disabled</c> array with the same drop-to-re-enable rule as user exclusions.</param>
+    /// <param name="linux">Overrides the OS check, for tests.</param>
     internal static void EnsureDetectorOverrides(string configDir, System.Collections.Generic.IReadOnlyCollection<string>? placeholderOnlyDetectors,
         System.Collections.Generic.IReadOnlyCollection<string>? busDisabledDetectors = null,
-        System.Collections.Generic.IReadOnlyCollection<string>? nativeDisabledDetectors = null)
+        System.Collections.Generic.IReadOnlyCollection<string>? nativeDisabledDetectors = null,
+        bool? linux = null)
     {
+        var onLinux = linux ?? OperatingSystem.IsLinux();
         try
         {
             var path = Path.Combine(configDir, "OpenRGB.json");
@@ -364,7 +371,7 @@ public sealed class OpenRgbProcessManager : IDisposable
             }
 
             var changed = false;
-            var nativeDisabled = nativeDisabledDetectors ?? BuildDisabledDetectors(OperatingSystem.IsMacOS(), OperatingSystem.IsLinux());
+            var nativeDisabled = nativeDisabledDetectors ?? BuildDisabledDetectors(OperatingSystem.IsMacOS(), onLinux);
             var nativeSet = new System.Collections.Generic.HashSet<string>(nativeDisabled, StringComparer.Ordinal);
             foreach (var name in nativeDisabled)
             {
@@ -482,7 +489,11 @@ public sealed class OpenRgbProcessManager : IDisposable
                 {
                     held.UnionWith(busDisabledDetectors);
                 }
-                foreach (var name in NativeDetectorClaims.Universe())
+                // On Linux the pass also releases stale GPU I2C names.
+                var releasable = onLinux
+                    ? NativeDetectorClaims.Universe().Concat(OpenRgbLegacyGpuI2cDetectors.Names)
+                    : NativeDetectorClaims.Universe();
+                foreach (var name in releasable)
                 {
                     if (!nativeSet.Contains(name) && !held.Contains(name) && map[name] is System.Text.Json.Nodes.JsonValue v
                         && v.TryGetValue<bool>(out var b) && b == false)

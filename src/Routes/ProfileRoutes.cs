@@ -233,6 +233,8 @@ public static class ProfileRoutes
                 StartupDelaySeconds = s.StartupDelaySeconds,
                 DisableGpuMonitoring = s.DisableGpuMonitoring,
                 ReadRamTemperatures = s.ReadRamTemperatures,
+                AmdGpuLighting = OperatingSystem.IsLinux() && s.AmdGpuLighting,
+                AmdGpuLightingApplicable = OperatingSystem.IsLinux(),
                 Features = s.Features,
             };
         }).AllowPanel();
@@ -426,8 +428,9 @@ public static class ProfileRoutes
             }
         });
 
-        app.MapPost("/preferences", (PreferencesPatch body, ProfileManager pm, MultiplexHub hub, Nexus.Service.Lifecycle.FeatureReconciler reconciler, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/preferences", (PreferencesPatch body, ProfileManager pm, MultiplexHub hub, Nexus.Service.Lifecycle.FeatureReconciler reconciler, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Lighting.Rgb.RgbBridge? bridge) =>
         {
+            var amdGpuLightingChanged = false;
             // Captured inside the patch, emitted after it: the current mode
             // also rides the telemetry person profile, but only a recorded
             // transition separates a deliberate switch from the v15 migration
@@ -604,6 +607,11 @@ public static class ProfileRoutes
                 {
                     s.ReadRamTemperatures = readRam;
                 }
+                if (body.AmdGpuLighting is { } amdGpu && OperatingSystem.IsLinux() && amdGpu != s.AmdGpuLighting)
+                {
+                    s.AmdGpuLighting = amdGpu;
+                    amdGpuLightingChanged = true;
+                }
                 if (body.Features is { } features)
                 {
                     if (features.Lighting.HasValue) s.Features.Lighting = features.Lighting.Value;
@@ -665,6 +673,10 @@ public static class ProfileRoutes
             }
             pm.MarkDirty();
             PanelTopics.BroadcastPrefs(hub);
+            if (amdGpuLightingChanged)
+            {
+                bridge?.OnAmdGpuLightingChanged();
+            }
             if (dashboardAfter is not null)
                 Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, dashboardBefore, dashboardAfter, "desktop");
             return ApiResponse.Ok();

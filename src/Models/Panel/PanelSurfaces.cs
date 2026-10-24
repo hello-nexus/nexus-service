@@ -17,12 +17,15 @@ public static class PanelSurfaces
     /// <summary>A user-promoted OS monitor hosting a fullscreen panel kiosk.</summary>
     public const string Monitor = "monitor";
 
-    /// <summary>Round 640x640 glass on an NZXT Kraken, driven by pushed frames.</summary>
-    public const string Kraken = "kraken";
+    /// <summary>
+    /// The surface Kraken records keep persisted, so builds from before the Kraken folded into
+    /// <see cref="LcdRound"/> still find them. Read it as <see cref="LcdRound"/> via <see cref="Canonical"/>.
+    /// </summary>
+    public const string LegacyKraken = "kraken";
 
     /// <summary>
-    /// Round cooler glass driven by pushed JPEG frames. Unlike <see cref="Kraken"/> this
-    /// is not one model's resolution: the panel record carries the real pixel size.
+    /// Round cooler glass driven by pushed frames. Not one model's resolution: the panel
+    /// record carries the real pixel size.
     /// </summary>
     public const string LcdRound = "lcd-round";
 
@@ -47,10 +50,14 @@ public static class PanelSurfaces
     /// keyed by displayId.
     /// </summary>
     public static readonly IReadOnlySet<string> SingleInstance =
-        new HashSet<string>(StringComparer.Ordinal) { Y70, Q60, Kraken, LcdRound, LcdSquare, LcdWide };
+        new HashSet<string>(StringComparer.Ordinal) { Y70, Q60, LcdRound, LcdSquare, LcdWide };
 
     public static bool IsSingleInstance(string? surface) =>
-        surface is not null && SingleInstance.Contains(surface);
+        Canonical(surface) is { } canonical && SingleInstance.Contains(canonical);
+
+    /// <summary>The surface a stored value means today: <see cref="LegacyKraken"/> reads as <see cref="LcdRound"/>.</summary>
+    public static string? Canonical(string? surface) =>
+        string.Equals(surface, LegacyKraken, StringComparison.Ordinal) ? LcdRound : surface;
 }
 
 /// <summary>Canonical <c>PanelDeviceRecord.WidgetSize</c> values.</summary>

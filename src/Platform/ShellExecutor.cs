@@ -46,6 +46,34 @@ public static class ShellExecutor
     }
 
     /// <summary>
+    /// Like <see cref="Run(string, int, string[])"/> but reports whether the process finished in time and exited cleanly, so a caller can refuse to
+    /// keep the truncated output of a run that timed out or failed.
+    /// </summary>
+    public static (string Output, bool Ok) RunChecked(string fileName, int timeoutMs, params string[] args)
+    {
+        try
+        {
+            var psi = BuildPsi(fileName, args);
+            using var proc = Process.Start(psi);
+            if (proc is null)
+                return (string.Empty, false);
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var finished = proc.WaitForExit(timeoutMs);
+            if (!finished)
+            {
+                Console.Error.WriteLine($"[shell] timeout ({timeoutMs}ms) waiting for {fileName} {string.Join(' ', args)}");
+                try { proc.Kill(entireProcessTree: true); } catch { }
+            }
+            var output = stdoutTask.GetAwaiter().GetResult();
+            return (output, finished && proc.ExitCode == 0);
+        }
+        catch
+        {
+            return (string.Empty, false);
+        }
+    }
+
+    /// <summary>
     /// Run a command for its exit status (not its output) - for fire-and-verify
     /// writes where success must be confirmed, not assumed. Returns the process
     /// exit code, or a negative value if it couldn't start / timed out. Drains

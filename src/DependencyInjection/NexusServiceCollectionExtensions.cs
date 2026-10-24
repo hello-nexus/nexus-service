@@ -931,6 +931,33 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
             sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>()));
 
+        // Corsair Galleon 100 SD keyboard (1B1C:2B0C): native direct lighting; the bundled OpenRGB has no detector for this PID.
+        // Its dial lamps (1B1C:2B18, HID LampArray collection) ride on the same lighting provider as a second device.
+        services.AddSingleton<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdHub>();
+        services.AddSingleton<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>();
+        services.AddSingleton<Nexus.Service.Lighting.GalleonSdLightingFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingFrameWriter>());
+        services.AddSingleton<Nexus.Service.Lighting.GalleonSdDialsFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdDialsFrameWriter>());
+        services.AddHostedService(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdHub>(),
+            sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>()));
+        // The dial lamps yield to the Stream Deck driver, which lights the same rings. Registered directly: AddHostedService de-duplicates by implementation type and would drop this second worker.
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService, Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker>(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>(),
+            sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
+            productId: Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.StreamDeckProductId,
+            yieldToHandlerId: Nexus.Service.Devices.Handlers.StreamDeckHandler.HandlerId));
+
         // Stream Deck: gen1-protocol button decks (Mini bench-verified
         // 2026-07-10). Peripheral, not lighting - no frame contributor, no
         // 30 Hz tick. The
@@ -1654,6 +1681,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShiftLcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -1683,6 +1711,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShiftLcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -1699,6 +1728,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KeebHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.IbpKeyboardHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.IbpMouseHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.GalleonSdHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.FanHubHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Aw5Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Np50Handler>();
