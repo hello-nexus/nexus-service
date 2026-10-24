@@ -24,6 +24,8 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private const int SessionStartTimeoutMs = 20_000;
     private const int GpuDemoteAfterFailures = 2;
     private const int MaxSessionRetryMs = 60_000;
+    private const int HealthyAfterMs = 30_000;
+    private const int StderrSettleMs = 300;
     private const int GpuTierBudgetMs = 10_000;
     private const int GpuReprobeMs = 10 * 60_000;
     private const string Tag = "[panel-render]";
@@ -48,7 +50,7 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private long _browserStartedAt;
     private long _browserRetryAfter;
 
-    private sealed record Running(PanelRenderSession Render, RawFrameIngestClient Ingest);
+    private sealed record Running(PanelRenderSession Render, RawFrameIngestClient Ingest, long StartedAt);
 
     public LinuxStreamRenderHost(StreamedPanelCoordinator coordinator, TokenService tokens)
     {
@@ -108,23 +110,30 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             if (running.Render.FramesDelivered > 0)
             {
                 _rapidBrowserFailures = 0;
-                _faultStreak.Remove(id);
+                // One frame then a crash must keep backing off, so the streak resets only after a healthy stretch.
+                if (Environment.TickCount64 - running.StartedAt > HealthyAfterMs)
+                {
+                    _faultStreak.Remove(id);
+                }
             }
             var gone = !wanted.ContainsKey(id);
             if (gone || running.Render.Faulted || running.Ingest.IsFaulted)
             {
                 ServiceLog.Info($"{Tag} session {id} {(gone ? "ended" : "faulted; restarting")} after {running.Render.FramesDelivered} frame(s)");
                 StopSession(id);
-                if (gone)
+                if (!gone)
                 {
-                    _faultStreak.Remove(id);
+                    ScheduleRetry(id);
                 }
-                else
-                {
-                    var streak = _faultStreak.GetValueOrDefault(id) + 1;
-                    _faultStreak[id] = streak;
-                    _retryAfter[id] = Environment.TickCount64 + SessionRetryDelayMs(streak);
-                }
+            }
+        }
+
+        foreach (var id in new List<string>(_retryAfter.Keys))
+        {
+            if (!wanted.ContainsKey(id))
+            {
+                _retryAfter.Remove(id);
+                _faultStreak.Remove(id);
             }
         }
 
@@ -260,13 +269,18 @@ public sealed class LinuxStreamRenderHost : BackgroundService
                 var live = candidate;
                 using var killOnBudget = budget.Token.Register(live.Kill);
                 var renderer = await candidate.ProbeRendererAsync(budget.Token).ConfigureAwait(false);
+                var capturedOk = !GpuTiers.IsSoftwareRenderer(renderer)
+                    && await CapturesCorrectlyAsync(candidate, budget.Token).ConfigureAwait(false);
+                // Lets the stderr reader catch up with the browser before its markers are read.
+                await Task.Delay(StderrSettleMs, budget.Token).ConfigureAwait(false);
                 // Chromium prints the GPU-process markers even when it recovers on another backend in the same
                 // browser, so a tier that logged one is rejected here rather than demoted after acceptance.
-                if (GpuTiers.IsSoftwareRenderer(renderer)
-                    || !await CapturesCorrectlyAsync(candidate, budget.Token).ConfigureAwait(false)
-                    || candidate.GpuProcessFailed)
+                // Unhooked before acceptance so the budget can never kill a browser that was kept; a budget
+                // that already fired rejects the tier.
+                killOnBudget.Dispose();
+                if (!capturedOk || candidate.GpuProcessFailed || budget.IsCancellationRequested)
                 {
-                    DisposeOffLoop(candidate);
+                    await candidate.AbandonAsync().ConfigureAwait(false);
                     return false;
                 }
                 candidate.ClearGpuFailure();
@@ -277,12 +291,12 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 ServiceLog.Info($"{Tag} gpu probe: {candidateTier} timed out");
-                DisposeOffLoop(candidate);
+                await AbandonAsync(candidate).ConfigureAwait(false);
                 return false;
             }
             catch
             {
-                DisposeOffLoop(candidate);
+                await AbandonAsync(candidate).ConfigureAwait(false);
                 throw;
             }
         }, line => ServiceLog.Info($"{Tag} gpu probe: {line}")).ConfigureAwait(false);
@@ -299,17 +313,9 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             line => ServiceLog.Info($"{Tag} {line}"), ct, GpuTier.Software).ConfigureAwait(false);
     }
 
-    private static void DisposeOffLoop(HeadlessBrowser? browser)
-    {
-        if (browser is null)
-        {
-            return;
-        }
-        browser.Kill();
-        _ = Task.Run(browser.Dispose);
-    }
+    private static Task AbandonAsync(HeadlessBrowser? browser) => browser?.AbandonAsync() ?? Task.CompletedTask;
 
-    // Doubles from the base retry up to a minute; a session that delivered a frame starts over.
+    // Doubles from the base retry up to a ceiling; a session that stays healthy for a while starts over.
     internal static int SessionRetryDelayMs(int faultStreak) =>
         (int)Math.Min(MaxSessionRetryMs, (long)SessionRetryMs << Math.Clamp(faultStreak - 1, 0, 8));
 
@@ -377,13 +383,20 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             ServiceLog.Warn($"{Tag} session {a.SessionId} for {a.PanelDeviceId} failed to start: {ex.GetType().Name}: {ex.Message}");
             render.Dispose();
             ingest.Dispose();
-            _retryAfter[a.SessionId] = Environment.TickCount64 + SessionRetryMs;
+            ScheduleRetry(a.SessionId);
             return;
         }
-        _sessions[a.SessionId] = new Running(render, ingest);
+        _sessions[a.SessionId] = new Running(render, ingest, Environment.TickCount64);
         _retryAfter.Remove(a.SessionId);
         ServiceLog.Info($"{Tag} rendering {a.PanelDeviceId} session={a.SessionId} "
             + $"{render.PixelWidth}x{render.PixelHeight}@{render.Fps}");
+    }
+
+    private void ScheduleRetry(string id)
+    {
+        var streak = _faultStreak.GetValueOrDefault(id) + 1;
+        _faultStreak[id] = streak;
+        _retryAfter[id] = Environment.TickCount64 + SessionRetryDelayMs(streak);
     }
 
     private void StopSession(string id)

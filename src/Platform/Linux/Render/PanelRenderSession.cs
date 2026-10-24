@@ -111,7 +111,7 @@ public sealed class PanelRenderSession : IDisposable
             w.WriteNumber("everyNthFrame", 1);
             if (limitInFlight)
             {
-                // Default is 3, which would capture and encode up to 3x the cap.
+                // Chromium defaults to several frames in flight, which would capture and encode above the cap.
                 w.WriteNumber("maxFramesInFlight", 1);
             }
         }
@@ -122,6 +122,7 @@ public sealed class PanelRenderSession : IDisposable
         catch (Exception ex) when (ex is not (OperationCanceledException or IOException or TimeoutException))
         {
             // A Chromium without the parameter may reject the call.
+            ServiceLog.Info($"[panel-render] session {SessionId}: screencast rejected maxFramesInFlight ({ex.GetType().Name}); retrying without it");
             await Send("Page.startScreencast", w => WriteScreencast(w, false), ct).ConfigureAwait(false);
         }
 

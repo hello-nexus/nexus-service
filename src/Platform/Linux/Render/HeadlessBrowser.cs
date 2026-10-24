@@ -86,6 +86,22 @@ public sealed class HeadlessBrowser : IDisposable
         }
     }
 
+    /// <summary>Kills the tree, waits a bounded time for the process to leave (so a relaunch on the same profile is not blocked by its singleton lock), and reaps in the background.</summary>
+    public async Task AbandonAsync()
+    {
+        Kill();
+        try
+        {
+            await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromMilliseconds(AbandonWaitMs)).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+        _ = Task.Run(Dispose);
+    }
+
+    private const int AbandonWaitMs = 2000;
+
     private const string WebGlRendererProbe =
         "(() => { const c = document.createElement('canvas');"
         + " const gl = c.getContext('webgl2') || c.getContext('webgl'); if (!gl) return 'none';"
@@ -195,8 +211,7 @@ public sealed class HeadlessBrowser : IDisposable
         }
         catch
         {
-            browser.Kill();
-            _ = Task.Run(browser.Dispose);
+            await browser.AbandonAsync().ConfigureAwait(false);
             throw;
         }
     }
