@@ -48,8 +48,7 @@ public sealed record ThermalGuardThresholds
     public double FloorAtLimitPercent { get; init; } = 60;
     /// <summary>The floor reaches full duty this far above the limit.</summary>
     public double FloorFullAboveLimitC { get; init; } = 3;
-    /// <summary>The CPU cannot hold its own limit: trip when this far above it for <see cref="LimitSustainMs"/>.</summary>
-    public double LimitTripAboveLimitC { get; init; } = 3;
+    /// <summary>The CPU cannot hold its own limit: trip when at or above it for this long.</summary>
     public long LimitSustainMs { get; init; } = 5000;
     public long CoolingLossWindowMs { get; init; } = 180_000;
     public double CoolingLossRiseCPerMin { get; init; } = 2.0;
@@ -178,7 +177,7 @@ public sealed class ThermalGuard
         Record(nowMs, smooth);
 
         string? reason = null;
-        if (temp >= limitC + _t.LimitTripAboveLimitC)
+        if (temp >= limitC)
         {
             _hotSinceMs ??= nowMs;
             if (nowMs - _hotSinceMs.Value >= _t.LimitSustainMs)

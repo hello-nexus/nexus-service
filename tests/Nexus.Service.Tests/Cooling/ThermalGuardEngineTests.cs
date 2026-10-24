@@ -147,10 +147,10 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void SittingAtTheLimit_DoesNotTrip()
+    public void SittingJustUnderTheLimit_DoesNotTrip()
     {
         var (engine, fans, store, clock) = Build();
-        fans.CpuTemp = 91f;
+        fans.CpuTemp = 89.9f;
         for (var i = 0; i < 20; i++)
         {
             clock[0] += 1000;
@@ -1248,12 +1248,12 @@ public class ThermalGuardEngineTests
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 90f;
+        fans.CpuTemp = 89f;
         mono[0] += 1000;
         e.Tick();
         guard.TickCompleted();
-        Assert.Equal(60, LastDuty(fans, "f1"));
-        var before = fans.Driven.Count(d => d.Id == "f1" && d.Duty == 60);
+        Assert.Equal(56, LastDuty(fans, "f1"));
+        var before = fans.Driven.Count(d => d.Id == "f1" && d.Duty == 56);
 
         guard.WatchdogCheck(mono[0] + 11_000);
         Assert.Equal(1, fans.ReleaseAllCalls);
@@ -1261,7 +1261,7 @@ public class ThermalGuardEngineTests
         guard.TickCompleted();
         e.Tick();
 
-        Assert.True(fans.Driven.Count(d => d.Id == "f1" && d.Duty == 60) > before);
+        Assert.True(fans.Driven.Count(d => d.Id == "f1" && d.Duty == 56) > before);
     }
 
     private static void Stall(Fans fans, CurveEngine e, ThermalGuardController guard, long[] mono)

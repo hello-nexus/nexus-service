@@ -41,36 +41,22 @@ public class ThermalGuardTests
     }
 
     [Fact]
-    public void SittingAtTheLimit_ForAMinute_NeverTripsAndHoldsSixtyPercent()
-    {
-        // Ryzen 7000/9000 and recent Intel sit at their limit under load by design.
-        var g = new ThermalGuard();
-        for (var s = 0; s <= 120; s++)
-        {
-            var o = g.Step(s * 1000L, 95, L, 100, 80);
-            Assert.Equal(ThermalGuardStates.Floor, o.State);
-            Assert.Equal(60, o.FloorDuty);
-            Assert.False(o.TripStarted);
-        }
-    }
-
-    [Fact]
-    public void JustUnderLimitPlusThree_NeverTrips()
+    public void JustUnderLimit_NeverTrips()
     {
         var g = new ThermalGuard();
         for (var s = 0; s <= 120; s++)
         {
-            Assert.False(g.Step(s * 1000L, 97.9, L, 100, 80).TripStarted);
+            Assert.False(g.Step(s * 1000L, 94.9, L, 100, 80).TripStarted);
         }
     }
 
     [Fact]
-    public void LimitTrip_NeedsFiveSecondsSustainedAtLimitPlusThree()
+    public void LimitTrip_NeedsFiveSecondsSustainedAtTheLimit()
     {
         var g = new ThermalGuard();
-        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 98, L, 100, 80).State);
-        Assert.Equal(ThermalGuardStates.Floor, g.Step(4000, 98, L, 100, 80).State);
-        var o = g.Step(5000, 98, L, 100, 80);
+        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 95, L, 100, 80).State);
+        Assert.Equal(ThermalGuardStates.Floor, g.Step(4900, 95, L, 100, 80).State);
+        var o = g.Step(5000, 95, L, 100, 80);
         Assert.Equal(ThermalGuardStates.Tripped, o.State);
         Assert.True(o.TripStarted);
         Assert.True(o.ForceMax);
@@ -79,11 +65,11 @@ public class ThermalGuardTests
     }
 
     [Fact]
-    public void LimitTrip_DipBelowThresholdResetsSustainTimer()
+    public void LimitTrip_DipBelowLimitResetsSustainTimer()
     {
         var g = new ThermalGuard();
         g.Step(0, 99, L, 100, 80);
-        g.Step(3000, 95, L, 100, 80);
+        g.Step(3000, 94.9, L, 100, 80);
         var o = g.Step(6000, 99, L, 100, 80);
         Assert.NotEqual(ThermalGuardStates.Tripped, o.State);
     }
@@ -385,8 +371,8 @@ public class ThermalGuardTests
     public void TheLimitTrip_StillReadsTheRawValue()
     {
         var g = new ThermalGuard();
-        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 98, L, 100, 80).State);
-        var tripped = g.Step(5000, 98, L, 100, 80);
+        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 95, L, 100, 80).State);
+        var tripped = g.Step(5000, 95, L, 100, 80);
         Assert.Equal(ThermalGuardStates.Tripped, tripped.State);
     }
 
