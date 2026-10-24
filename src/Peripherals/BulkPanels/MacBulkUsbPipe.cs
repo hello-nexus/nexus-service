@@ -91,8 +91,10 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
 
     public bool Write(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data) == data.Length;
 
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data, (int)(TransferTimeoutSeconds * 1000));
+
     /// <summary>Bytes the device took, also when the transfer failed part way and IOUSBHost reports a count; -1 when it reports none.</summary>
-    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data)
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs)
     {
         if (_disposed || data.Length == 0)
         {
@@ -120,7 +122,7 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 }
                 try
                 {
-                    int moved = MacUsbHost.Transfer(pipe, nsData, TransferTimeoutSeconds, out _, out int partial);
+                    int moved = MacUsbHost.Transfer(pipe, nsData, Math.Max(1, timeoutMs) / 1000.0, out _, out int partial);
                     return moved >= 0 ? moved : partial > 0 ? partial : -1;
                 }
                 finally

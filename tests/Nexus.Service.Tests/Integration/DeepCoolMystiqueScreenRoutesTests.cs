@@ -78,12 +78,12 @@ public partial class DeepCoolMystiqueRoutesTests
             return body.RootElement.Clone();
         }
 
-        public async Task<JsonElement> UploadAsync(byte[] png, string replace = "")
+        public async Task<JsonElement> UploadAsync(byte[] png, string replace = "", string kind = DeepCoolMystiqueMediaItem.KindPicture)
         {
             using var form = new MultipartFormDataContent
             {
                 { new ByteArrayContent(png), "file", "p.png" },
-                { new StringContent(DeepCoolMystiqueMediaItem.KindPicture), "kind" },
+                { new StringContent(kind), "kind" },
             };
             if (replace != "")
             {
@@ -121,6 +121,13 @@ public partial class DeepCoolMystiqueRoutesTests
     }
 
     private static string PictureId(byte[] png) => MystiqueMedia.IdOf(MystiqueMedia.KindPicture, png);
+
+    private static string GifId(byte[] png) => MystiqueMedia.IdOf(MystiqueMedia.KindGif, png);
+
+    private static Task<JsonElement> UploadGifAsync(Screen screen, byte[] png) => screen.UploadAsync(png, kind: DeepCoolMystiqueMediaItem.KindGif);
+
+    private static int IndexOf(List<byte[]> writes, byte command) =>
+        writes.FindIndex(w => w.Length == MystiqueProtocol.FrameLength && w[2] == command);
 
     /// <summary>Two different pictures, the first with the lower id.</summary>
     private static (byte[] Low, byte[] High) PicturePair()
@@ -262,6 +269,121 @@ public partial class DeepCoolMystiqueRoutesTests
         var m = screen.Settings();
         Assert.Equal(new[] { PictureId(first) }, m.Media.ConvertAll(i => i.Id));
         Assert.Equal((PictureId(first), ""), (m.PictureSlot, m.ShownPicture));
+    }
+
+    [FfmpegFact]
+    public async Task A_gif_change_formats_then_streams_the_gif_and_the_shown_picture_with_one_source_command()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var picture = MystiqueMediaTests.Png(120, 120);
+        var first = MystiqueMediaTests.Png(120, 120, shift: 3);
+        var second = MystiqueMediaTests.Png(120, 120, shift: 9);
+        Assert.True(Ok(await screen.UploadAsync(picture)));
+        Assert.True(Ok(await UploadGifAsync(screen, first)));
+        var pipe = screen.Pipe;
+        int mark = pipe.Writes().Count;
+        int halts = pipe.ClearHalts;
+
+        var res = await UploadGifAsync(screen, second);
+        await TwoTicks(screen);
+
+        Assert.True(Ok(res));
+        var writes = WritesSince(screen, mark);
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdFormat));
+        Assert.Equal(2, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        Assert.True(IndexOf(writes, MystiqueProtocol.CmdFormat) < IndexOf(writes, MystiqueProtocol.CmdUploadStart));
+        AssertOneSourceAfterTheLastStream(writes);
+        Assert.Contains(writes, w => w.SequenceEqual(MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceGif)));
+        var m = screen.Settings();
+        Assert.Equal((GifId(second), GifId(second)), (m.GifSlot, m.ShownGif));
+        Assert.Equal((PictureId(picture), PictureId(picture)), (m.PictureSlot, m.ShownPicture));
+        Assert.Equal(new[] { PictureId(picture), GifId(first), GifId(second) }, m.Media.ConvertAll(i => i.Id));
+        Assert.False(m.GifSlotUnsure);
+        Assert.Equal(halts, pipe.ClearHalts);
+        Assert.All(pipe.Timeouts(), t => Assert.Equal(MystiqueSession.StreamWriteTimeoutMs, t));
+    }
+
+    [FfmpegFact]
+    public async Task A_gif_change_with_no_picture_formats_then_streams_only_the_gif_and_so_does_the_same_gif_again()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var first = MystiqueMediaTests.Png(120, 120, shift: 3);
+        var second = MystiqueMediaTests.Png(120, 120, shift: 9);
+        Assert.True(Ok(await UploadGifAsync(screen, first)));
+        int mark = screen.Pipe.Writes().Count;
+
+        Assert.True(Ok(await UploadGifAsync(screen, second)));
+        await TwoTicks(screen);
+
+        var writes = WritesSince(screen, mark);
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdFormat));
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        AssertOneSourceAfterTheLastStream(writes);
+        var m = screen.Settings();
+        Assert.Equal((GifId(second), GifId(second)), (m.GifSlot, m.ShownGif));
+        Assert.Equal(("", ""), (m.PictureSlot, m.ShownPicture));
+
+        mark = screen.Pipe.Writes().Count;
+        Assert.True(Ok(await UploadGifAsync(screen, second)));
+        await TwoTicks(screen);
+        writes = WritesSince(screen, mark);
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdFormat));
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        AssertOneSourceAfterTheLastStream(writes);
+        Assert.Equal(new[] { GifId(first), GifId(second) }, screen.Settings().Media.ConvertAll(i => i.Id));
+    }
+
+    [FfmpegFact]
+    public async Task A_failed_stream_after_the_format_keeps_the_library_and_leaves_both_slots_to_retry()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var picture = MystiqueMediaTests.Png(120, 120);
+        var first = MystiqueMediaTests.Png(120, 120, shift: 3);
+        var second = MystiqueMediaTests.Png(120, 120, shift: 9);
+        await screen.UploadAsync(picture);
+        await UploadGifAsync(screen, first);
+        var before = screen.Pipe;
+        screen.Factory.Pipes.Silence = c => c == MystiqueProtocol.CmdUploadStart;
+
+        var failed = await UploadGifAsync(screen, second);
+        screen.Factory.Pipes.Silence = null;
+        await WaitFor(() => screen.Worker.IsConnected && screen.Pipe != before);
+
+        Assert.False(Ok(failed));
+        Assert.Equal(1, Commands(before.Writes(), MystiqueProtocol.CmdFormat));
+        var m = screen.Settings();
+        Assert.Equal(new[] { PictureId(picture), GifId(first) }, m.Media.ConvertAll(i => i.Id));
+        Assert.Equal((GifId(second), ""), (m.GifSlot, m.ShownGif));
+        Assert.Equal((PictureId(picture), ""), (m.PictureSlot, m.ShownPicture));
+
+        int mark = screen.Pipe.Writes().Count;
+        Assert.True(Ok(await screen.ShowAsync(GifId(first))));
+        var writes = WritesSince(screen, mark);
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdFormat));
+        Assert.Equal(2, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        m = screen.Settings();
+        Assert.Equal((GifId(first), PictureId(picture)), (m.ShownGif, m.ShownPicture));
+    }
+
+    [FfmpegFact]
+    public async Task A_stream_write_waits_the_long_timeout_and_only_a_failed_one_clears_the_halt_before_the_zero_fill()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var before = screen.Pipe;
+        int mark = before.Writes().Count;
+        int halts = before.ClearHalts;
+        screen.Factory.Pipes.StallTimedWrite = i => i == 0;
+
+        var failed = await UploadGifAsync(screen, MystiqueMediaTests.Png(120, 120, shift: 3));
+        screen.Factory.Pipes.StallTimedWrite = null;
+
+        Assert.False(Ok(failed));
+        Assert.Equal(new[] { MystiqueSession.StreamWriteTimeoutMs }, before.Timeouts());
+        Assert.Equal(halts + 1, before.ClearHalts);
+        var writes = before.Writes().Skip(mark).ToList();
+        Assert.Equal(MystiqueMedia.FinishLength, writes[^1].Length);
+        Assert.True(writes.Count > 2, "the failed frame is filled before the finish packet");
+        Assert.Empty(screen.Settings().Media);
     }
 
     /// <summary>Waits out two worker passes, each of which applies any pending settings before it polls.</summary>

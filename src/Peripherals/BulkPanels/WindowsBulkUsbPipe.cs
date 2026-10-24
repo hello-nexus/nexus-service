@@ -106,7 +106,9 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
 
     public bool Write(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data) == data.Length;
 
-    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data)
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data, (int)TransferTimeoutMs);
+
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs)
     {
         if (_disposed || data.Length == 0)
         {
@@ -116,12 +118,36 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
         {
             // Re-checked inside the lock: writing through a handle Dispose already freed is
             // an access violation, not an exception.
-            fixed (byte* p = data)
+            if (_disposed)
             {
-                return _disposed ? -1 : TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, TransferTimeoutMs, write: true);
+                return -1;
+            }
+            // The opened write pipe carries a WinUSB timeout policy, which would end a longer transfer first.
+            bool policy = pipeId == _writePipeId && timeoutMs != TransferTimeoutMs;
+            if (policy)
+            {
+                SetWriteTimeoutPolicy((uint)timeoutMs);
+            }
+            try
+            {
+                fixed (byte* p = data)
+                {
+                    return TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, (uint)Math.Max(1, timeoutMs), write: true);
+                }
+            }
+            finally
+            {
+                if (policy)
+                {
+                    SetWriteTimeoutPolicy(TransferTimeoutMs);
+                }
             }
         }
     }
+
+    private void SetWriteTimeoutPolicy(uint timeoutMs) =>
+        Slv3WinUsbInterop.WinUsb_SetPipePolicy(
+            _winUsbHandle, _writePipeId, Slv3WinUsbInterop.PIPE_TRANSFER_TIMEOUT, sizeof(uint), ref timeoutMs);
 
     public bool ClearHalt(byte pipeId)
     {

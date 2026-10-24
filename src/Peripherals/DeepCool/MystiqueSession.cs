@@ -35,6 +35,11 @@ public sealed class MystiqueSession
     // zero-length packet without SHORT_PACKET_TERMINATE.
     private const int StreamChunkBytes = 16 * 1024;
 
+    // A stream write waits this long for the screen to take it, as the screen stops taking data while it stores.
+    // A stall cut short at five seconds left a screen hung until its power was removed (customer report), and the
+    // longest stall seen to end on its own was over within half a minute.
+    internal const int StreamWriteTimeoutMs = 60_000;
+
     // Recovery writes stop this long after a failure, so a stalled screen frees the worker; a recorded
     // picture frame streamed in about half of it, the screen's stall included.
     private const int RecoveryBudgetMs = 2000;
@@ -228,7 +233,7 @@ public sealed class MystiqueSession
             }
         }
         var finish = MystiqueMedia.FinishPacket();
-        return _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish) == finish.Length;
+        return _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish, StreamWriteTimeoutMs) == finish.Length;
     }
 
     /// <summary>
@@ -237,7 +242,7 @@ public sealed class MystiqueSession
     /// </summary>
     private int WriteChunk(ReadOnlySpan<byte> chunk)
     {
-        int landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk);
+        int landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk, StreamWriteTimeoutMs);
         if (landed == 0)
         {
             landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk);
@@ -248,8 +253,9 @@ public sealed class MystiqueSession
     /// <summary>
     /// Completes the failed frame with zeros and sends the finish packet, so the screen meets a failing byte
     /// sum (assumed, unverified, to drop the item and return to commands) instead of reading the reopen's
-    /// commands as stream. Later GIF frames are skipped: only their own headers carry their lengths. A halt
-    /// the failed transfer left would refuse every fill write, so it is cleared first.
+    /// commands as stream. Later GIF frames are skipped: only their own headers carry their lengths. Reached only
+    /// after a transfer error or a whole <see cref="StreamWriteTimeoutMs"/>; a halt the failed transfer left would
+    /// refuse every fill write, so it is cleared first.
     /// </summary>
     private void AbandonStream(int frameIndex, int remaining)
     {

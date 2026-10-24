@@ -272,6 +272,9 @@ public class MystiqueWorkerTests
         /// <summary>Commands whose reply is withheld.</summary>
         public Func<byte, bool>? Silence;
 
+        /// <summary>Picks, by index on its pipe, a timed write the screen never takes.</summary>
+        public Func<int, bool>? StallTimedWrite;
+
         public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId)
         {
             Interlocked.Increment(ref Opens);
@@ -303,6 +306,39 @@ public class MystiqueWorkerTests
         }
 
         public bool Write(ReadOnlySpan<byte> data) => Write(MystiqueProtocol.LiveWritePipe, data);
+
+        private readonly List<int> _timeouts = new();
+        public int ClearHalts;
+
+        /// <summary>The timeout of every write that carried its own.</summary>
+        public List<int> Timeouts()
+        {
+            lock (_lock)
+            {
+                return _timeouts.ToList();
+            }
+        }
+
+        public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs)
+        {
+            int index;
+            lock (_lock)
+            {
+                index = _timeouts.Count;
+                _timeouts.Add(timeoutMs);
+            }
+            if (factory.StallTimedWrite?.Invoke(index) == true)
+            {
+                return -1;
+            }
+            return Write(pipeId, data) ? data.Length : -1;
+        }
+
+        public bool ClearHalt(byte pipeId)
+        {
+            Interlocked.Increment(ref ClearHalts);
+            return true;
+        }
 
         /// <summary>When set, the first stream write signals <see cref="Streaming"/> and waits for <see cref="Release"/>.</summary>
         public bool HoldStream { get; set; }
