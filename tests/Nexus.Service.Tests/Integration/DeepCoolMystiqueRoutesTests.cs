@@ -285,7 +285,7 @@ public class DeepCoolMystiqueRoutesTests
     private const string Third = "83182dc7830844c89ca5f01e57f63ad9";
 
     [Fact]
-    public void Without_a_recorded_order_the_newest_place_is_the_last_listed_pictures_own_id_while_the_screen_holds_it()
+    public void Without_a_recorded_order_pictures_keep_list_order_under_their_own_id_while_the_screen_holds_it()
     {
         var m = new DeepCoolMystiqueSettings();
         Assert.Null(DevicesRoutes.MystiquePictureSlot(m));
@@ -300,7 +300,7 @@ public class DeepCoolMystiqueRoutesTests
         m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third, ScreenId = First });
 
         Assert.Equal(new[] { Clicked, First, Third }, DevicesRoutes.MystiquePictureOrder(m));
-        Assert.Equal(First, DevicesRoutes.MystiqueShownPicture(m));
+        Assert.Equal(Third, DevicesRoutes.MystiqueShownPicture(m));
 
         // A picture that went up under a reused id adds no place; the id it holds goes first.
         m.Media[3].Id = Other;
@@ -316,11 +316,11 @@ public class DeepCoolMystiqueRoutesTests
         m.Freed.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third });
 
         Assert.Equal(new[] { First, Clicked }, DevicesRoutes.MystiquePictureOrder(m));
-        Assert.Equal(Clicked, DevicesRoutes.MystiquePictureSlot(m));
+        Assert.Equal(First, DevicesRoutes.MystiquePictureSlot(m));
     }
 
     [Fact]
-    public void Only_an_id_the_screen_did_not_hold_becomes_the_newest_place()
+    public void Only_an_id_the_screen_did_not_hold_is_added_to_the_order()
     {
         var m = new DeepCoolMystiqueSettings();
         m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Clicked });
@@ -333,31 +333,48 @@ public class DeepCoolMystiqueRoutesTests
         DevicesRoutes.NoteMystiquePictureStored(m, Third);
         m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = Third });
         Assert.Equal(new[] { First, Clicked, Third }, m.PictureIds);
-        Assert.Equal(Third, DevicesRoutes.MystiquePictureSlot(m));
+        Assert.Equal(First, DevicesRoutes.MystiquePictureSlot(m));
     }
 
-    [Fact]
-    public void Three_pictures_each_show_from_the_newest_place_and_swaps_keep_it_there()
+    [Theory]
+    [InlineData("d0000000000000000000000000000001", "20000000000000000000000000000002", "f0000000000000000000000000000003")] // second upload holds the lowest id
+    [InlineData("90000000000000000000000000000001", "b0000000000000000000000000000002", "20000000000000000000000000000003")] // third upload holds the lowest id
+    public void Each_click_shows_the_clicked_picture_from_the_lowest_stored_id(string p1, string p2, string p3)
     {
         var m = new DeepCoolMystiqueSettings();
-        foreach (var id in new[] { Clicked, First, Third })
+        void Upload(string id)
         {
             DevicesRoutes.NoteMystiquePictureStored(m, id);
             m.Media.Add(new DeepCoolMystiqueMediaItem { Kind = "picture", Id = id });
+            string lowest = m.Media.ConvertAll(DevicesRoutes.MystiqueScreenId).Min(StringComparer.Ordinal)!;
+            Assert.Equal(lowest, DevicesRoutes.MystiquePictureSlot(m));
+            Assert.Equal(m.Media.Find(i => DevicesRoutes.MystiqueScreenId(i) == lowest)!.Id, DevicesRoutes.MystiqueShownPicture(m));
+        }
+        void Click(string id)
+        {
+            string slot = DevicesRoutes.MystiquePictureSlot(m)!;
+            Show(m, id, int.MaxValue);
+            Assert.Equal(slot, DevicesRoutes.MystiquePictureSlot(m));
+            Assert.Equal(id, DevicesRoutes.MystiqueShownPicture(m));
+            Assert.Equal(0, Show(m, id, int.MaxValue));
         }
 
-        Assert.Equal(0, Show(m, Third, int.MaxValue));
-        Assert.Equal(Third, DevicesRoutes.MystiqueShownPicture(m));
-        foreach (var clicked in new[] { Clicked, First, Third, First })
+        Upload(p1);
+        Upload(p2);
+        foreach (var clicked in new[] { p1, p2, p1 })
         {
-            Show(m, clicked, int.MaxValue);
-            Assert.Equal(clicked, DevicesRoutes.MystiqueShownPicture(m));
-            Assert.Equal(new[] { Clicked, First, Third }, m.PictureIds);
+            Click(clicked);
         }
+        Upload(p3);
+        foreach (var clicked in new[] { p1, p3, p2, p3 })
+        {
+            Click(clicked);
+        }
+        Assert.Equal(new[] { p1, p2, p3 }, m.PictureIds);
     }
 
-    private const string Clicked = "2101b6e6277841daa821e8d79a5c528b";
-    private const string First = "acd9325521f3493c86bfc0b0aa85658d";
+    private const string Clicked = "acd9325521f3493c86bfc0b0aa85658d";
+    private const string First = "2101b6e6277841daa821e8d79a5c528b";
     private const string Other = "41c9bf307cba45a1aa3a1d92bbe93b96";
 
     private static DeepCoolMystiqueSettings Pictures(bool displacedListed)
@@ -771,7 +788,7 @@ public class DeepCoolMystiqueRoutesTests
         Assert.Equal(new[] { ("picture", "acd9325521f3493c86bfc0b0aa85658d") }, m.Freed.Select(i => (i.Kind, i.Id)));
         Assert.Single(m.Media);
         Assert.True(m.Media[0].Unsent);
-        Assert.Equal("acd9325521f3493c86bfc0b0aa85658d", DevicesRoutes.MystiquePictureSlot(m));
+        Assert.Equal("2101b6e6277841daa821e8d79a5c528b", DevicesRoutes.MystiquePictureSlot(m));
         Assert.Equal((MystiqueMedia.IdOf(MystiqueMedia.KindPicture, new byte[] { 7 }), "acd9325521f3493c86bfc0b0aa85658d"), DevicesRoutes.MystiqueUploadId(store, "picture", new byte[] { 7 }, ""));
     }
 

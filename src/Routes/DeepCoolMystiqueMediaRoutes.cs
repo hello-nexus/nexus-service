@@ -78,11 +78,11 @@ public static partial class DevicesRoutes
     /// <summary>The id the screen holds an item under: a picture's moves when a click swaps it into the first place.</summary>
     internal static string MystiqueScreenId(DeepCoolMystiqueMediaItem item) => MystiqueMedia.IsId(item.ScreenId) ? item.ScreenId : item.Id;
 
-    /// <summary>The newest id the screen stored, where it starts the pictures and a click swaps the chosen one; null with no picture.</summary>
+    /// <summary>The lowest stored picture id by ordinal order, where the screen starts the pictures and a click swaps the chosen one; null with no picture.</summary>
     internal static string? MystiquePictureSlot(DeepCoolMystiqueSettings m)
     {
         var order = MystiquePictureOrder(m);
-        return order.Count > 0 ? order[^1] : null;
+        return order.Count > 0 ? order.Min(StringComparer.Ordinal) : null;
     }
 
     /// <summary>
@@ -257,7 +257,8 @@ public static partial class DevicesRoutes
         string slot = MystiqueShowSlot(m, item);
         Nexus.Service.Platform.ServiceLog.Info("[deepcool-mystique] picture ids oldest first: "
             + string.Join(", ", order.Select(id => $"{id}={m.Media.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindPicture && MystiqueScreenId(i) == id)?.Id ?? "freed"}"))
-            + $"; recorded {m.PictureIds.Count > 0}, highest {(order.Count > 0 ? order.Max(StringComparer.Ordinal) : "none")}, slot {slot}");
+            + $"; recorded {m.PictureIds.Count > 0}, lowest {(order.Count > 0 ? order.Min(StringComparer.Ordinal) : "none")}"
+            + $", highest {(order.Count > 0 ? order.Max(StringComparer.Ordinal) : "none")}, slot {slot}");
         void Playing() => store.Update(s =>
         {
             var d = s.Devices.DeepCoolMystique;
