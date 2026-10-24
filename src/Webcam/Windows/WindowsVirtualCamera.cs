@@ -20,6 +20,7 @@ public sealed class WindowsVirtualCamera : IVirtualCamera
     private readonly IVCamControl _control;
     private readonly IVCamFrameRingFactory _rings;
     private readonly IWindowsVideoDecoderFactory _decoders;
+    private readonly Func<bool> _grantConsentAndRestartFrameServer;
     private readonly object _stateLock = new();
 
     private IVCamFrameRing? _ring;
@@ -30,11 +31,28 @@ public sealed class WindowsVirtualCamera : IVirtualCamera
 
     public WindowsVirtualCamera() : this(CreateControl(), CreateRingFactory(), CreateDecoderFactory()) { }
 
-    internal WindowsVirtualCamera(IVCamControl control, IVCamFrameRingFactory rings, IWindowsVideoDecoderFactory decoders)
+    internal WindowsVirtualCamera(
+        IVCamControl control,
+        IVCamFrameRingFactory rings,
+        IWindowsVideoDecoderFactory decoders,
+        Func<bool>? grantConsentAndRestartFrameServer = null)
     {
         _control = control;
         _rings = rings;
         _decoders = decoders;
+        _grantConsentAndRestartFrameServer = grantConsentAndRestartFrameServer ?? GrantConsentAndRestartFrameServer;
+    }
+
+    // The platform guard keeps the analyzer honest; unit tests inject their own
+    // delegate so they never reach the registry or the Frame Server.
+    private static bool GrantConsentAndRestartFrameServer()
+    {
+        if (!OperatingSystem.IsWindows() || !NexusVCamControl.EnsureDesktopCameraConsent())
+        {
+            return false;
+        }
+        RestartFrameServer();
+        return true;
     }
 
     public string Name => WebcamDefaults.CameraName;
@@ -62,12 +80,9 @@ public sealed class WindowsVirtualCamera : IVirtualCamera
             // Frame Server so it re-reads the fresh Allow, then surface a
             // retriable signal; the next start creates cleanly (the web widget
             // retries once so it's seamless). Only ever happens once per machine,
-            // on the user's opt-in - never at install. The platform guard
-            // keeps the analyzer honest; cross-platform unit tests drive this
-            // class through fakes and never reach the registry.
-            if (OperatingSystem.IsWindows() && NexusVCamControl.EnsureDesktopCameraConsent())
+            // on the user's opt-in - never at install.
+            if (_grantConsentAndRestartFrameServer())
             {
-                RestartFrameServer();
                 throw new InvalidOperationException(
                     "Enabling camera access for this PC; start the camera again to begin.");
             }

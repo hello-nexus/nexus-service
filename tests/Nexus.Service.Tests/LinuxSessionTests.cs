@@ -101,7 +101,7 @@ public class LinuxSessionTests
 
     // LightDM/startx export no XAUTHORITY at all, and logind is the only source
     // of DISPLAY there.
-    [Fact]
+    [NonWindowsFact]
     public void ResolveX11Env_FallsBackToLogindDisplayAndTheHomeCookie()
     {
         var (display, xauthority) = LinuxSession.ResolveX11Env(

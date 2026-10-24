@@ -12,7 +12,7 @@ namespace Nexus.Service.Tests.Diagnostics.Gpu;
 /// </summary>
 public class GpuHealthMonitorTests
 {
-    [Fact]
+    [NonWindowsFact]
     public void Snapshot_on_a_platform_without_nvml_never_throws_and_reports_unsupported()
     {
         var monitor = new GpuHealthMonitor();

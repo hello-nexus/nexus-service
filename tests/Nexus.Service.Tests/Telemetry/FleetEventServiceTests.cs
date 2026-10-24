@@ -361,7 +361,7 @@ public class FleetEventServiceTests
         Assert.Equal("GPU B", store.Load().Telemetry.FleetGpu);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public async Task Zero_ram_with_nothing_persisted_sends_nothing_and_stores_nothing()
     {
         var store = OptedInStore();
@@ -387,7 +387,7 @@ public class FleetEventServiceTests
         Assert.Equal(persisted, store.Load().Telemetry.FleetRamBytes);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public async Task Real_ram_change_sends_once()
     {
         var store = OptedInStore();

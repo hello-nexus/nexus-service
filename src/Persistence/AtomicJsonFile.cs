@@ -33,17 +33,39 @@ public static class AtomicJsonFile
     {
         var tmp = TempPathFor(path);
         // FileMode.Create truncates an existing tmp in place, keeping any ACL set on it beforehand.
-        using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        Retry(() =>
         {
+            using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None);
             fs.Write(contents, 0, contents.Length);
             if (flushToDisk)
             {
                 fs.Flush(flushToDisk: true);
             }
+        });
+        Retry(() =>
+        {
+            if (File.Exists(path))
+                File.Replace(tmp, path, keepBackup ? BackupPathFor(path) : null);
+            else
+                File.Move(tmp, path);
+        });
+    }
+
+    // A virus scanner or indexer can hold a just-written file for a moment on Windows; that is a
+    // sharing violation, not a failed write, so it gets a short bounded retry.
+    private static void Retry(Action step)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                step();
+                return;
+            }
+            catch (IOException ex) when (attempt < 6 && ex is not (DirectoryNotFoundException or FileNotFoundException))
+            {
+                Thread.Sleep(25 * (attempt + 1));
+            }
         }
-        if (File.Exists(path))
-            File.Replace(tmp, path, keepBackup ? BackupPathFor(path) : null);
-        else
-            File.Move(tmp, path);
     }
 }
