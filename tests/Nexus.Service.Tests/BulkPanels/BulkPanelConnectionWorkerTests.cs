@@ -45,6 +45,35 @@ public class BulkPanelConnectionWorkerTests
     }
 
     [Fact]
+    public async Task A_driver_that_wants_a_reopen_gets_a_fresh_pipe_after_its_backoff()
+    {
+        var usb = new SwitchableUsb { Present = true };
+        var driver = new FakeDriver();
+        var hub = new BulkPanelHub(driver);
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Devices.NexusControlEnabled.Add(driver.HandlerId));
+        var pipes = new PipeFactory();
+        var worker = new BulkPanelConnectionWorker(
+            new NoHid(), pipes, hub, new DeviceControlGate(store), new HardwarePresence(usb),
+            connectPollMs: 100, presencePollMs: 50);
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.True(await Eventually(() => hub.IsConnected));
+            Assert.Single(pipes.Opened);
+
+            driver.WantsReopen = true;
+            Assert.True(await Eventually(() => pipes.Opened.Count == 2 && hub.IsConnected));
+            Assert.Equal(1, driver.Disconnects);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task A_pipe_whose_device_is_gone_is_reopened_while_presence_never_misses()
     {
         var usb = new SwitchableUsb { Present = true };
@@ -157,6 +186,17 @@ public class BulkPanelConnectionWorkerTests
         public const int Pid = 0x5678;
 
         public int Disconnects;
+        public volatile bool WantsReopen;
+
+        public int TakeReopenDelayMs()
+        {
+            if (!WantsReopen)
+            {
+                return -1;
+            }
+            WantsReopen = false;
+            return 10;
+        }
 
         public string HandlerId => "fake-bulk";
         public string Name => "Fake bulk panel";

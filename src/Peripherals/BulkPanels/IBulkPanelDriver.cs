@@ -88,6 +88,16 @@ public interface IBulkPanelDriver
     /// <summary>Re-sends the last frame <see cref="SendFrame"/> pushed. False means the link is gone.</summary>
     bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => true;
 
+    /// <summary>Which half of the last failed push broke, for the rejection log; null when none or not tracked.</summary>
+    string? LastFailure => null;
+
+    /// <summary>
+    /// Asks the connection worker to drop the session and reopen the panel. Returns the delay
+    /// in ms to wait before the reopen, or -1 when the link is fine. Each true answer counts as
+    /// one recovery attempt.
+    /// </summary>
+    int TakeReopenDelayMs() => -1;
+
     bool SupportsBrightness => false;
 
     /// <summary>Sets the backlight, 0-100.</summary>
