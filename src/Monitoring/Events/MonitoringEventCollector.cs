@@ -290,7 +290,7 @@ public sealed class MonitoringEventCollector : BackgroundService
     {
         if (_useWindowedProcesses)
         {
-            return ExtractWindowedAppNames(procs, Environment.ProcessId).Select(n => new AppCandidate(n, null)).ToList();
+            return ExtractWindowedAppNames(procs, Environment.ProcessId, IsOwnNexusImage).Select(n => new AppCandidate(n, null)).ToList();
         }
 
         if (nowUtc - _lastDetectedPollUtc < DetectedAppPollInterval)
@@ -337,8 +337,8 @@ public sealed class MonitoringEventCollector : BackgroundService
     /// ProcessAggregation.GroupByName - the same isApp notion
     /// MonitoringBroadcaster.BuildProcessFrame uses - rather than
     /// re-deriving it.</summary>
-    internal static IReadOnlyList<string> ExtractWindowedAppNames(IReadOnlyList<ProcessInfo> procs, int selfPid) =>
-        ProcessAggregation.GroupByName(procs.Where(p => p.Pid != selfPid).ToList()).Where(kv => kv.Value.HasWindow && !IsNexusProcess(kv.Key)).Select(kv => kv.Key).ToList();
+    internal static IReadOnlyList<string> ExtractWindowedAppNames(IReadOnlyList<ProcessInfo> procs, int selfPid, Func<int, bool> isOwnNexusImage) =>
+        ProcessAggregation.GroupByName(procs.Where(p => p.Pid != selfPid && !(p.HasWindow && IsNexusExeName(p.Name) && isOwnNexusImage(p.Pid))).ToList()).Where(kv => kv.Value.HasWindow && !IsNexusProcess(kv.Key)).Select(kv => kv.Key).ToList();
 
     // Our own service is matched by pid; only uniquely named exes are matched
     // by name, since other products ship a Nexus.exe. Not an exe path:
@@ -348,6 +348,30 @@ public sealed class MonitoringEventCollector : BackgroundService
     {
         "nexus-overlay", "nexus-overlay-helper", "OpenRGB-headless", "NexusUpdater",
     };
+
+    // The user-session helper is Nexus.exe under another pid and can show an unowned file dialog.
+    // Only the image path tells it from another product's Nexus.exe, so it is read for Nexus-named windowed processes alone.
+    private static bool IsNexusExeName(string name) =>
+        string.Equals(name.Trim(), "Nexus", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name.Trim(), "Nexus.exe", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsOwnNexusImage(int pid)
+    {
+#if WINDOWS
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                return OwnNexusExe.IsOwn(OwnNexusExe.ImagePathOf(pid), OwnNexusExe.Known());
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+#endif
+        return false;
+    }
 
     /// <summary>True for a process Nexus ships; its windows appearing (the
     /// dashboard opening) are not user apps opening.</summary>

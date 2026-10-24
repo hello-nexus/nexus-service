@@ -112,7 +112,7 @@ public class MonitoringEventCollectorTests
             new() { Pid = 2, Name = "svchost.exe", HasWindow = false },
         };
 
-        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1);
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1, _ => false);
 
         Assert.Equal(new[] { "notepad.exe" }, names);
     }
@@ -126,7 +126,7 @@ public class MonitoringEventCollectorTests
             new() { Pid = 2, Name = "app.exe", HasWindow = true },
         };
 
-        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1);
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1, _ => false);
 
         Assert.Equal(new[] { "app.exe" }, names);
     }
@@ -144,9 +144,24 @@ public class MonitoringEventCollectorTests
             new() { Pid = 2, Name = "msedgewebview2.exe", HasWindow = true },
         };
 
-        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1);
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1, _ => false);
 
         Assert.Equal(new[] { "msedgewebview2.exe" }, names);
+    }
+
+    [Fact]
+    public void ExtractWindowedAppNames_SkipsNexusExeWhoseImageIsOurs_ButKeepsAnotherProductsNexusExe()
+    {
+        var procs = new List<ProcessInfo>
+        {
+            new() { Pid = 30, Name = "Nexus.exe", HasWindow = true },
+            new() { Pid = 40, Name = "Nexus.exe", HasWindow = true },
+        };
+
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1, pid => pid == 30);
+
+        Assert.Equal(new[] { "Nexus.exe" }, names);
+        Assert.Empty(MonitoringEventCollector.ExtractWindowedAppNames(new[] { procs[0] }, selfPid: -1, pid => pid == 30));
     }
 
     [Fact]
@@ -158,8 +173,8 @@ public class MonitoringEventCollectorTests
             new() { Pid = 20, Name = "Nexus.exe", HasWindow = true },
         };
 
-        Assert.Empty(MonitoringEventCollector.ExtractWindowedAppNames(new[] { procs[0] }, selfPid: 10));
-        Assert.Equal(new[] { "Nexus.exe" }, MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: 10));
+        Assert.Empty(MonitoringEventCollector.ExtractWindowedAppNames(new[] { procs[0] }, selfPid: 10, _ => false));
+        Assert.Equal(new[] { "Nexus.exe" }, MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: 10, _ => false));
     }
 
     [Fact]
