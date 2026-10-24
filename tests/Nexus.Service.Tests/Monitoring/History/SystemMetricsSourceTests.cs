@@ -71,6 +71,7 @@ public class SystemMetricsSourceTests
     {
         public SmartSnapshot Result { get; set; } = new() { Supported = false, Drives = Array.Empty<SmartDriveInfo>() };
         public SmartSnapshot Snapshot() => Result;
+        public void ForceRefresh() { }
     }
 
     private static HardwareSensor Sensor(string name, string type, float value) => new()
