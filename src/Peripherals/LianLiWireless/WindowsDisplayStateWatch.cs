@@ -11,7 +11,8 @@ internal sealed unsafe partial class WindowsDisplayStateWatch : IDisposable
     private const uint DeviceNotifyCallback = 2;
     // winuser.h PBT_POWERSETTINGCHANGE
     private const uint PbtPowerSettingChange = 0x8013;
-    // POWERBROADCAST_SETTING: GUID (16) + DataLength (4), then Data
+    // POWERBROADCAST_SETTING: the setting GUID, then DataLength, then Data
+    private const int DataLengthOffset = 16;
     private const int DataOffset = 20;
 
     private static readonly Guid ConsoleDisplayState = new("6FE69556-704A-47A0-8F24-C28D936FDA47");
@@ -59,7 +60,7 @@ internal sealed unsafe partial class WindowsDisplayStateWatch : IDisposable
             if (type == PbtPowerSettingChange && context != 0 && setting != 0
                 && GCHandle.FromIntPtr(context).Target is WindowsDisplayStateWatch watch
                 && *(Guid*)setting == ConsoleDisplayState
-                && *(uint*)(setting + 16) >= sizeof(int))
+                && *(uint*)(setting + DataLengthOffset) >= sizeof(int))
             {
                 watch._onState(*(int*)(setting + DataOffset));
             }
@@ -78,7 +79,7 @@ internal sealed unsafe partial class WindowsDisplayStateWatch : IDisposable
             PowerSettingUnregisterNotification(_registration);
             _registration = 0;
         }
-        Release();
+        // The handle and parameters stay allocated: unregister is not documented to wait for an in-flight callback.
     }
 
     private void Release()

@@ -279,9 +279,12 @@ public sealed partial class Slv3Hub : IDisposable
     internal const long PortCycleWindowMs = 86_400_000;
     // No cycle until this long after a resume: the TX is re-enumerating on its own.
     internal const long PortCycleResumeQuietMs = 120_000;
-    // Display state (0 off, 1 on, 2 dimmed, -1 unknown): Modern Standby always turns the display off first
+    // Display state: Modern Standby always turns the display off first
     // and may raise no suspend event, so cycling is held while it is anything but on, and after it returns.
     internal const int DisplayUnknown = -1;
+    internal const int DisplayOff = 0;
+    internal const int DisplayOn = 1;
+    internal const int DisplayDimmed = 2;
     private int _displayState = DisplayUnknown;
     private long _displayQuietUntilMs;
     private readonly object _portCycleGate = new();
@@ -732,7 +735,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return "display state unknown";
         }
-        if (display != 1)
+        if (display != DisplayOn)
         {
             return "display off";
         }
@@ -841,11 +844,11 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    /// <summary>Console display state from the OS: 0 off, 1 on, 2 dimmed. Cycling waits out a quiet period after it returns to on.</summary>
+    /// <summary>Console display state from the OS (the Display constants). Cycling waits out a quiet period after it returns to on.</summary>
     public void OnDisplayState(int state)
     {
         var previous = Interlocked.Exchange(ref _displayState, state);
-        if (state == 1 && previous != 1 && previous != DisplayUnknown)
+        if (state == DisplayOn && previous != DisplayOn && previous != DisplayUnknown)
         {
             Volatile.Write(ref _displayQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
         }
