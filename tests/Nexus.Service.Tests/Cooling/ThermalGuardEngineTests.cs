@@ -99,6 +99,18 @@ public class ThermalGuardEngineTests
         engine.Tick();
     }
 
+    // A slow climb at low fan duty and unknown load, until the guard declares lost cooling.
+    private static void TripOnCoolingLoss(CurveEngine engine, Fans fans, InMemoryConfigStore store, long[] clock)
+    {
+        for (var s = 0; s < 400 && store.Load().Cooling.LastThermalTrip is null; s++)
+        {
+            fans.CpuTemp = 70f + s * 0.1f;
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.Equal(ThermalTripReasons.CoolingLoss, store.Load().Cooling.LastThermalTrip!.Reason);
+    }
+
     // Ticks once a second, as the engine does, until the guard has had time to release.
     private static void CoolDown(CurveEngine engine, long[] clock)
     {
@@ -288,6 +300,35 @@ public class ThermalGuardEngineTests
         store4.Update(s => s.Cooling.LastThermalTrip = Open());
         new CurveEngine(fans4, store4, new MultiplexHub(), null, guard4).Tick();
         Assert.NotNull(store4.Load().Cooling.LastThermalTrip!.EndedAtUtcMs);
+    }
+
+    [Fact]
+    public void LimitTripEnd_LeavesCurvesAndManualSpeedsUntouched()
+    {
+        var (engine, fans, store, clock) = Build();
+        Trip(engine, fans, clock);
+        fans.CpuTemp = 50f;
+        engine.Tick();
+        CoolDown(engine, clock);
+        var cooling = store.Load().Cooling;
+        Assert.NotNull(cooling.LastThermalTrip!.EndedAtUtcMs);
+        Assert.Equal(ThermalTripReasons.Limit, cooling.LastThermalTrip.Reason);
+        Assert.Null(cooling.HealSnapshot);
+        Assert.Equal(10, Assert.Single(cooling.Curves).Flat!.Speed);
+        Assert.Equal(30, cooling.ManualSpeeds["f2"]);
+    }
+
+    [Fact]
+    public void CoolingLossTripEnd_HealsTheCurves()
+    {
+        var (engine, fans, store, clock) = Build();
+        TripOnCoolingLoss(engine, fans, store, clock);
+        fans.CpuTemp = 50f;
+        engine.Tick();
+        CoolDown(engine, clock);
+        var cooling = store.Load().Cooling;
+        Assert.NotNull(cooling.LastThermalTrip!.EndedAtUtcMs);
+        Assert.NotNull(cooling.HealSnapshot);
     }
 
     [Fact]
@@ -798,7 +839,7 @@ public class ThermalGuardEngineTests
 
         // The trip-end auto-heal does not consult the setting: the config here has a hazard.
         var e = new CurveEngine(fans, store, new MultiplexHub(), null, guard) { Clock = () => clock[0] };
-        Trip(e, fans, clock);
+        TripOnCoolingLoss(e, fans, store, clock);
         fans.CpuTemp = 50f;
         e.Tick();
         CoolDown(e, clock);
