@@ -14,14 +14,14 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
 {
     // Failed pushes in a row before the session is reopened.
     private const int StreakToReopen = 3;
-    // A pipe write that burns the transport's full timeout is a wedged link on its own.
+    // A pipe write that burns the transport's full timeout is a wedged link on its own. Each
+    // pipe class keeps that timeout private, so this stays a margin under it by hand.
     private const long StallMs = 4000;
     private static readonly int[] ReopenBackoffMs = { 1000, 2000, 5000 };
 
     private readonly byte[] _bgr = new byte[RyujinProtocol.FrameBytes];
     private readonly Func<long> _clock;
     private bool _hasFrame;
-    private volatile bool _lastPushFailed;
     private volatile string? _lastFailure;
     private volatile bool _reopenWanted;
     private int _failStreak;
@@ -64,9 +64,8 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
             return -1;
         }
         _reopenWanted = false;
-        int delay = ReopenBackoffMs[Math.Min(_attempts, ReopenBackoffMs.Length - 1)];
-        _attempts++;
-        return delay;
+        int attempt = Interlocked.Increment(ref _attempts) - 1;
+        return ReopenBackoffMs[Math.Min(attempt, ReopenBackoffMs.Length - 1)];
     }
 
     /// <summary>Fixed geometry: this panel neither reports nor negotiates a size.</summary>
@@ -77,7 +76,7 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
             return null;
         }
         _hasFrame = false;
-        _lastPushFailed = false;
+        _lastFailure = null;
         _failStreak = 0;
         _reopenWanted = false;
         foreach (var command in RyujinProtocol.EncodeLiveStart())
@@ -102,9 +101,9 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
         return Push(pipe, hid);
     }
 
-    // A failed link is retried by real frames only; a keepalive on top would double the traffic into it.
-    public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) =>
-        !_hasFrame || _lastPushFailed || (hid is not null && Push(pipe, hid));
+    // Still pushes after a failure: on static content the keepalive is the only retry, and a
+    // failed one has to count toward the reopen streak.
+    public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => !_hasFrame || (hid is not null && Push(pipe, hid));
 
     private bool Push(IBulkUsbPipe pipe, IHidDevice hid)
     {
@@ -127,12 +126,11 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
         }
         if (failure is null)
         {
-            _lastPushFailed = false;
+            _lastFailure = null;
             _failStreak = 0;
-            _attempts = 0;
+            Volatile.Write(ref _attempts, 0);
             return true;
         }
-        _lastPushFailed = true;
         _lastFailure = failure;
         _failStreak++;
         if (_failStreak >= StreakToReopen || _clock() - start >= StallMs)
