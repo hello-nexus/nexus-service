@@ -76,8 +76,8 @@ public sealed class DeviceInventoryService
         Add(rows, DeviceInventoryMapper.FromNzxtFanController(_nzxtFans.IsConnected, _nzxtFans.Fans));
         Add(rows, DeviceInventoryMapper.FromQSeries(_qSeries.IsConnected, _qSeries.Variant, _qSeries.State.Serial));
 
-        // A HydroShift II on both the radio and USB is one unit, listed once from the radio.
-        var hydroShiftOnRadio = wireless.Fans.Any(f => f.UsbConnected && Slv3Protocol.IsHydroShiftDevType((byte)f.DevType));
+        // A HydroShift II on both the radio and USB is one unit, listed once from the radio (see RadioCoversUsbHydroShift2).
+        var hydroShiftOnRadio = DeviceInventoryMapper.RadioCoversUsbHydroShift2(wireless);
         foreach (var handler in _handlers)
         {
             if (handler is JpegPanelHandler jpeg)

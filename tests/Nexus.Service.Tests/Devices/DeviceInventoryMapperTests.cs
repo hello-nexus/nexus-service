@@ -143,6 +143,21 @@ public class DeviceInventoryMapperTests
         Assert.Null(DeviceInventoryMapper.FromHydroShift2Usb(false, round, 0x1CBE, "S1"));
     }
 
+    [Theory]
+    [InlineData(1, true, true)]
+    [InlineData(1, false, true)]
+    [InlineData(0, true, false)]
+    [InlineData(2, true, false)]
+    public void Radio_covers_the_usb_hydroshift_only_when_it_lists_exactly_one(int bound, bool usbConnected, bool covers)
+    {
+        var fans = Enumerable.Range(0, bound).Select(i => { var f = Chain("0" + i, 0, 0, 10); f.UsbConnected = usbConnected; return f; }).ToList();
+        var unbound = Chain("FF", 0, 0, 10, bound: false);
+        unbound.UsbConnected = true;
+        fans.Add(unbound);
+
+        Assert.Equal(covers, DeviceInventoryMapper.RadioCoversUsbHydroShift2(new Slv3State { Fans = fans.ToArray() }));
+    }
+
     [Fact]
     public void Tl_hub_counts_channels()
     {

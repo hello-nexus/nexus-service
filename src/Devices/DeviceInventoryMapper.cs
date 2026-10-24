@@ -75,13 +75,32 @@ public static class DeviceInventoryMapper
 
     private static readonly Regex s_radiator = new(@"\bTITAN (240|280|360|420)\b", RegexOptions.CultureInvariant);
 
+    private static bool IsListedOnRadio(Slv3FanInfo fan) => fan.BoundToUs && !fan.WiredOwned && !string.IsNullOrEmpty(fan.Mac);
+
+    /// <summary>
+    /// True when the radio lists exactly one HydroShift II, which then stands for a USB-linked one too.
+    /// With none listed the USB unit is the only entry; with several the USB one cannot be matched, so both list.
+    /// </summary>
+    public static bool RadioCoversUsbHydroShift2(Slv3State state)
+    {
+        var listed = 0;
+        foreach (var fan in state.Fans)
+        {
+            if (IsListedOnRadio(fan) && Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
+            {
+                listed++;
+            }
+        }
+        return listed == 1;
+    }
+
     public static List<SystemDeviceDto> FromWireless(Slv3State state)
     {
         var rows = new List<SystemDeviceDto>();
         foreach (var fan in state.Fans)
         {
             // Unbound chains may belong to a neighbor, and wired-owned ones list under their own handler.
-            if (!fan.BoundToUs || fan.WiredOwned || string.IsNullOrEmpty(fan.Mac))
+            if (!IsListedOnRadio(fan))
             {
                 continue;
             }
