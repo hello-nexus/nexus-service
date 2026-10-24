@@ -79,7 +79,6 @@ internal static partial class MacGpuStats
     {
         var statsKey = CFStringCreateWithCString(IntPtr.Zero, "PerformanceStatistics", KCfStringEncodingUtf8);
         var utilKey = CFStringCreateWithCString(IntPtr.Zero, "Device Utilization %", KCfStringEncodingUtf8);
-        // Owned by the caller (create rule); released below.
         var stats = IntPtr.Zero;
         try
         {
@@ -88,8 +87,6 @@ internal static partial class MacGpuStats
                 return null;
             }
 
-            // Fetching the one dictionary avoids copying the accelerator's whole
-            // property table, which costs far more than the single read needs.
             stats = IORegistryEntryCreateCFProperty(service, statsKey, IntPtr.Zero, 0);
 
             // The generic IOAccelerator match covers every vendor's

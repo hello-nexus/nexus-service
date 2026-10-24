@@ -7,8 +7,8 @@ namespace Nexus.Service.Platform.Mac;
 /// <summary>
 /// Sums cumulative disk bytes read/written across every IOBlockStorageDriver
 /// registry entry's Statistics dictionary - the same counters Activity
-/// Monitor's disk history uses. Stateless: every read matches, copies the
-/// properties, and releases everything; DiskRateReader diffs consecutive
+/// Monitor's disk history uses. Stateless: every read matches, fetches the
+/// statistics dictionary, and releases everything; DiskRateReader diffs consecutive
 /// reads into a byte rate.
 /// </summary>
 internal static partial class MacDiskStats
@@ -87,7 +87,6 @@ internal static partial class MacDiskStats
         var statsKey = CFStringCreateWithCString(IntPtr.Zero, StatisticsKey, KCfStringEncodingUtf8);
         var readKey = CFStringCreateWithCString(IntPtr.Zero, BytesReadKey, KCfStringEncodingUtf8);
         var writtenKey = CFStringCreateWithCString(IntPtr.Zero, BytesWrittenKey, KCfStringEncodingUtf8);
-        // Owned by the caller (create rule); released below.
         var stats = IntPtr.Zero;
         try
         {
@@ -96,7 +95,6 @@ internal static partial class MacDiskStats
                 return false;
             }
 
-            // Fetching the one dictionary avoids copying the driver's whole property table.
             stats = IORegistryEntryCreateCFProperty(service, statsKey, IntPtr.Zero, 0);
 
             // A wrong CF type handed to the typed CF calls crashes in
