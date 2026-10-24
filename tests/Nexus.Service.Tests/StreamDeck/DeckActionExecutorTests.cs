@@ -273,7 +273,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Equal("steam", _shortcuts.Launched);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Hotkey_ParsesChordAndSendsDownThenUp()
     {
         await Run(new DeckAction { Type = "hotkey", Keys = "ctrl+shift+m" });
@@ -294,7 +294,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Null(_inputter.Last);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Hotkey_PrintScreen_ParsesToThePrintScreenKey()
     {
         await Run(new DeckAction { Type = "hotkey", Keys = "printscreen" });
@@ -302,7 +302,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Equal("PrintScreen", _inputter.Last!.Strokes[0].Key);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Hotkey_MetaPeriod_ParsesToThePeriodKeyWithMeta()
     {
         await Run(new DeckAction { Type = "hotkey", Keys = "meta+." });
@@ -311,7 +311,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.True(_inputter.Last.Strokes[0].Meta);
     }
 
-    [Theory]
+    [InteractiveSessionTheory]
     [InlineData(",", "Comma")]
     [InlineData("/", "Slash")]
     [InlineData(";", "Semicolon")]
@@ -330,7 +330,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.True(_inputter.Last.Strokes[0].Ctrl);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Text_SetsClipboardAndPastes()
     {
         await Run(new DeckAction { Type = "text", Text = "hello world" });
@@ -345,7 +345,7 @@ public sealed class DeckActionExecutorTests : IDisposable
     /// paste chord is skipped and the dispatch reports outcome=failed with
     /// the response's own error text, not outcome=ok.
     /// </summary>
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Text_ClipboardSetFails_ReportsFailedOutcomeAndSkipsThePaste()
     {
         _clipboard.ShouldFail = true;
@@ -848,7 +848,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Equal("dev", _deckSurface.LastAsleepSerial);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task HotkeySwitch_AlternatesBetweenKeysAAndKeysBPerPress()
     {
         var action = new DeckAction { Type = "hotkeySwitch", KeysA = "ctrl+shift+m", KeysB = "ctrl+shift+n" };
@@ -863,7 +863,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Equal("KeyM", _inputter.Last!.Strokes[0].Key);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task HotkeySwitch_LatchIsPerKeyNotGlobal()
     {
         var action = new DeckAction { Type = "hotkeySwitch", KeysA = "ctrl+shift+m", KeysB = "ctrl+shift+n" };

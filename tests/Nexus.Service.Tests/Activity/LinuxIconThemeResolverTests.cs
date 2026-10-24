@@ -69,7 +69,7 @@ public class LinuxIconThemeResolverTests : IDisposable
         Assert.Empty(bytes);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void ResolvePng_AbsolutePngPath_ReadsItDirectly()
     {
         Directory.CreateDirectory(_root);

@@ -99,7 +99,7 @@ public class DeckActionRoutesTests
 
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task InputKeys_chord_expands_to_down_and_up_strokes()
     {
         var (factory, client) = Boot();
@@ -143,7 +143,7 @@ public class DeckActionRoutesTests
         }
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task InputText_SetsClipboardAndPastes()
     {
         var (factory, client) = Boot();
