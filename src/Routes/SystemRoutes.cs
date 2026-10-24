@@ -2,6 +2,7 @@ using System.Linq;
 using Nexus.Service.Activity;
 using Nexus.Service.Auth;
 using Nexus.Service.Cloud;
+using Nexus.Service.Devices;
 using Nexus.Service.Fps;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models;
@@ -40,6 +41,11 @@ public static class SystemRoutes
         // names. Subsequent calls hit the cache and return in microseconds.
         app.MapGet("/system/specs", (SystemSpecsCollector collector, HttpContext ctx) =>
             collector.GetAsync(ctx.RequestAborted)).AllowPanel();
+
+        // Detected coolers, fans and controllers from the hubs' cached state, for the Build page's
+        // My Systems list. Desktop-token only; no device I/O.
+        app.MapGet("/system/devices", (DeviceInventoryService inventory) =>
+            Results.Json(inventory.Build(), AppJsonContext.Default.SystemDevicesResponse));
 
         // This machine's PC case (catalog part id), picked in the Build page's
         // My Systems frame. Desktop-token only: the pick is machine config.
