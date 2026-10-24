@@ -114,6 +114,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Lighting.Scene.LightingSceneDoc))]
 [JsonSerializable(typeof(Nexus.Service.Lighting.Scene.PcSetupFile))]
 [JsonSerializable(typeof(Nexus.Service.Lighting.Scene.PcSetup))]
+[JsonSerializable(typeof(Nexus.Service.Cooling.CoolingLayoutFile))]
 [JsonSerializable(typeof(Nexus.Service.Lighting.CustomEffects.CustomEffectsDoc))]
 // QSeriesTransportStore: (USB-serial → TCP transport record). Lets the
 // service remember which Q-series devices have been promoted to

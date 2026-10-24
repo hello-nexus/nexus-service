@@ -698,6 +698,7 @@ app.MapBenchmarkEndpoints();
 app.MapLightingEndpoints();
 app.MapLightingSceneEndpoints();
 app.MapPcSetupEndpoints();
+app.MapCoolingLayoutEndpoints();
 app.MapKeyReactiveEndpoints();
 app.MapWebcamEndpoints();
 app.MapObsEndpoints();

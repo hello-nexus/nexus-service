@@ -631,6 +631,7 @@ public static class NexusServiceCollectionExtensions
         {
             var scene = new Nexus.Service.Lighting.Scene.LightingSceneStore();
             Nexus.Service.Routes.PcSetupRoutes.WireTopic(scene.Setup, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
+            Nexus.Service.Routes.CoolingLayoutRoutes.WireTopic(scene.Cooling, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
             return scene;
         });
         services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Setup);

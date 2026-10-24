@@ -29,12 +29,16 @@ public sealed class LightingSceneStore
         _docPath = Path.Combine(dir, "lighting-scene.json");
         _modelPath = Path.Combine(dir, "lighting-scene.glb");
         Setup = new PcSetupStore(dir, Load);
+        Cooling = new Nexus.Service.Cooling.CoolingLayoutStore(dir);
         // A record save re-applies the scene: the engine samples from the record's resolved objects.
         Setup.Changed += _ => Changed?.Invoke();
     }
 
     /// <summary>The shared PC setup, in the same directory.</summary>
     public PcSetupStore Setup { get; }
+
+    /// <summary>The 3D cooling layout, in the same directory.</summary>
+    public Nexus.Service.Cooling.CoolingLayoutStore Cooling { get; }
 
     /// <summary>
     /// <see cref="Load"/> with the objects replaced by the saved PC setup's
