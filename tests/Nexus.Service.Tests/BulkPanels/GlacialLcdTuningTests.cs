@@ -38,6 +38,8 @@ public sealed class GlacialLcdTuningTests : IDisposable
         Assert.True(v.ReplyDriven);
         Assert.True(v.CloseWriteMode);
         Assert.False(v.RawStream);
+        Assert.False(v.UpdateInPlace);
+        Assert.False(v.RawProbe);
         Assert.Equal(30, v.MaxFps);
     }
 

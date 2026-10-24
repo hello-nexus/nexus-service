@@ -7,7 +7,7 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>The effective upload knobs for one upload, with the id of the settings version they came from.</summary>
 public sealed record GlacialLcdTuningValues(
-    int Id, double MaxFps, int PacePercent, bool ReplyDriven, int ScalePercent, string ScaleMode, int JpegQuality, int ChunkKb, bool DoubleBuffer, bool CloseWriteMode, bool RawStream);
+    int Id, double MaxFps, int PacePercent, bool ReplyDriven, int ScalePercent, string ScaleMode, int JpegQuality, int ChunkKb, bool DoubleBuffer, bool CloseWriteMode, bool RawStream, bool UpdateInPlace, bool RawProbe);
 
 /// <summary>A partial change to the knobs; only the fields set are applied.</summary>
 public sealed class GlacialLcdTuningChange
@@ -22,6 +22,8 @@ public sealed class GlacialLcdTuningChange
     public bool? DoubleBuffer { get; set; }
     public bool? CloseWriteMode { get; set; }
     public bool? RawStream { get; set; }
+    public bool? UpdateInPlace { get; set; }
+    public bool? RawProbe { get; set; }
 }
 
 /// <summary>Counters of the display's replies: how many arrived, how many waits ran out, and how long the last upload spent waiting.</summary>
@@ -92,7 +94,7 @@ public sealed class GlacialLcdTuning
     {
         double? maxFps = null;
         int? pace = null, scale = null, quality = null, chunk = null;
-        bool? replyDriven = null, doubleBuffer = null, closeWriteMode = null, rawStream = null;
+        bool? replyDriven = null, doubleBuffer = null, closeWriteMode = null, rawStream = null, updateInPlace = null, rawProbe = null;
         string? scaleMode = null;
         int legacyPace = 0;
         _store.Read(s =>
@@ -107,6 +109,8 @@ public sealed class GlacialLcdTuning
             doubleBuffer = t?.DoubleBuffer;
             closeWriteMode = t?.CloseWriteMode;
             rawStream = t?.RawStream;
+            updateInPlace = t?.UpdateInPlace;
+            rawProbe = t?.RawProbe;
             scaleMode = t?.ScaleMode;
             legacyPace = s.Devices.GlacialLcdUploadPacePercent;
         });
@@ -126,7 +130,9 @@ public sealed class GlacialLcdTuning
             Math.Clamp(chunk ?? DefaultChunkKb, 1, MaxChunkKb),
             doubleBuffer ?? false,
             closeWriteMode ?? true,
-            rawStream ?? false);
+            rawStream ?? false,
+            updateInPlace ?? false,
+            rawProbe ?? false);
     }
 
     /// <summary>The message for the first field out of range, or null when the change is valid.</summary>
@@ -176,6 +182,8 @@ public sealed class GlacialLcdTuning
             if (c.DoubleBuffer.HasValue) { t.DoubleBuffer = c.DoubleBuffer; }
             if (c.CloseWriteMode.HasValue) { t.CloseWriteMode = c.CloseWriteMode; }
             if (c.RawStream.HasValue) { t.RawStream = c.RawStream; }
+            if (c.UpdateInPlace.HasValue) { t.UpdateInPlace = c.UpdateInPlace; }
+            if (c.RawProbe.HasValue) { t.RawProbe = c.RawProbe; }
         });
         int version;
         lock (_lock)
@@ -198,6 +206,8 @@ public sealed class GlacialLcdTuning
         Diff(changes, "doubleBuffer", before.DoubleBuffer, after.DoubleBuffer);
         Diff(changes, "closeWriteMode", before.CloseWriteMode, after.CloseWriteMode);
         Diff(changes, "rawStream", before.RawStream, after.RawStream);
+        Diff(changes, "updateInPlace", before.UpdateInPlace, after.UpdateInPlace);
+        Diff(changes, "rawProbe", before.RawProbe, after.RawProbe);
         GlacialLcdLog.Write($"settings id={version} changed: {(changes.Count == 0 ? "nothing" : string.Join(", ", changes))}");
         return after;
     }

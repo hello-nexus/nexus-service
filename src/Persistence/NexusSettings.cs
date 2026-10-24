@@ -2203,6 +2203,8 @@ public sealed class GlacialLcdTuningSettings
     public bool? DoubleBuffer { get; set; }
     public bool? CloseWriteMode { get; set; }
     public bool? RawStream { get; set; }
+    public bool? UpdateInPlace { get; set; }
+    public bool? RawProbe { get; set; }
 }
 
 /// <summary>One hardware-monitor widget: the sensor it shows and the label sent to the panel.</summary>

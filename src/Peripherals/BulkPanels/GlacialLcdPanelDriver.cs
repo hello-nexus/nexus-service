@@ -292,6 +292,13 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     }
     private const int RawFailuresBeforeOff = 3;
     internal const int RawMinFrameIntervalMs = 500;
+
+    /// <summary>The probe lowers the floor between changed frames to this.</summary>
+    internal const int RawProbeMinFrameIntervalMs = 250;
+    private const int RawProbeDcWaitMs = 800;
+
+    /// <summary>How long replies are watched after the end report when the picture is updated in place, to see whether the panel reloads it by itself.</summary>
+    internal const int PostCommitWatchMs = 1500;
     private const int RawEnterSettleMs = 100;
 
     /// <summary>Test seam: sees every line this driver logs at info level.</summary>
@@ -403,7 +410,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         _tuning?.Current() ?? new GlacialLcdTuningValues(
             0, GlacialLcdTuning.MaxMaxFps, Math.Clamp(_paceScalePercent, 0, MaxPaceScalePercent), false,
             GlacialLcdTuning.DefaultScalePercent, GlacialLcdTuning.ScaleSend, GlacialLcdProtocol.StreamJpegQuality,
-            GlacialLcdProtocol.ChunkBytes / 1024, true, false, false);
+            GlacialLcdProtocol.ChunkBytes / 1024, true, false, false, false, false);
 
     public void StreamClosed(object stream)
     {
@@ -810,10 +817,15 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
 
         int targetSlot;
         int generation;
+        bool inPlace = false;
         lock (_stateLock)
         {
+            // Probe: with a picture known to be on display and no show owed, the slot on display is rewritten and no show follows.
+            inPlace = cfg.UpdateInPlace && _lastHash is not null && !_link.ShowPending;
             // The slot on display is never written when two are in use: the new picture goes to the other one and is shown when complete.
-            targetSlot = !cfg.DoubleBuffer
+            targetSlot = inPlace
+                ? _shownSlot
+                : !cfg.DoubleBuffer
                 ? GlacialLcdProtocol.CustomSlots[^1]
                 : _shownSlot == GlacialLcdProtocol.CustomSlots[0] ? GlacialLcdProtocol.CustomSlots[1] : GlacialLcdProtocol.CustomSlots[0];
             generation = _pictureGeneration;
@@ -822,8 +834,8 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         Volatile.Write(ref _inflightEstimateMs, estimateMs);
         _nextStartMs = cfg.MaxFps >= GlacialLcdTuning.MaxMaxFps ? 0 : _clock() + (long)(1000.0 / cfg.MaxFps);
         int seq = Interlocked.Increment(ref _uploadSeq);
-        GlacialLcdLog.Write($"u{seq} start settings={cfg.Id} frame={encW}x{encH} jpegBytes={jpeg.Length} encodeMs={encodeMs} slot={targetSlot} pace={cfg.PacePercent} chunkKb={cfg.ChunkKb} q={cfg.JpegQuality} scale={cfg.ScalePercent}/{cfg.ScaleMode} replyDriven={cfg.ReplyDriven} closeWriteMode={cfg.CloseWriteMode} doubleBuffer={cfg.DoubleBuffer} maxFps={cfg.MaxFps} estimateMs={estimateMs}");
-        var run = new UploadRun { Seq = seq };
+        GlacialLcdLog.Write($"u{seq} start settings={cfg.Id} frame={encW}x{encH} jpegBytes={jpeg.Length} encodeMs={encodeMs} slot={targetSlot} pace={cfg.PacePercent} chunkKb={cfg.ChunkKb} q={cfg.JpegQuality} scale={cfg.ScalePercent}/{cfg.ScaleMode} replyDriven={cfg.ReplyDriven} closeWriteMode={cfg.CloseWriteMode} doubleBuffer={cfg.DoubleBuffer} inPlace={inPlace} maxFps={cfg.MaxFps} estimateMs={estimateMs}");
+        var run = new UploadRun { Seq = seq, InPlace = inPlace };
         var outcome = UploadOutcome.Failed;
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
@@ -1090,6 +1102,28 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
     }
 
     /// <summary>Drops input left over from earlier traffic; a failing read just ends the drain.</summary>
+    /// <summary>Drains like <see cref="DrainInput"/> but logs every report it throws away, so the log shows what the panel sends during raw mode.</summary>
+    private void DrainInputLogged(IHidDevice hid, string where)
+    {
+        var buffer = new byte[GlacialLcdProtocol.ReportBytes];
+        try
+        {
+            int n;
+            for (int i = 0; i < 64 && (n = hid.Read(buffer, 0)) > 0; i++)
+            {
+                int last = n;
+                while (last > 0 && buffer[last - 1] == 0)
+                {
+                    last--;
+                }
+                GlacialLcdLog.Write($"r{Volatile.Read(ref _uploadSeq)} RX drained {where}: {Convert.ToHexString(buffer.AsSpan(0, last))}");
+            }
+        }
+        catch (Exception)
+        {
+        }
+    }
+
     private void DrainInput(IHidDevice hid)
     {
         var buffer = new byte[GlacialLcdProtocol.ReportBytes];
@@ -1152,6 +1186,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         public string? Error { get; set; }
 
         /// <summary>Per step type: whether the upload still waits for the panel's replies; cleared when they stop coming.</summary>
+        public bool InPlace { get; set; }
         public bool Probe { get; set; }
 
         /// <summary>The upload was given up after the flush with nothing stored, so the picture on display is the earlier one.</summary>
@@ -1183,7 +1218,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         long fixedGaps = (long)(GlacialLcdProtocol.PreludeGapTotalMs + GlacialLcdProtocol.ChunkLeadMs + GlacialLcdProtocol.FinishSettleMs) * cfg.PacePercent / 100;
         // Both state queries may run their full retries, and each prelude step waits for its report.
         long waits = 2L * StallDcTries * DefaultStallReplyMs + PreludeSteps * ReplyWaitMs;
-        return (int)Math.Min(int.MaxValue / 2, fixedGaps + chunks * ChunkGapMs(cfg.PacePercent, chunkBytes) + FinishReplyWaitMs + waits);
+        return (int)Math.Min(int.MaxValue / 2, fixedGaps + chunks * ChunkGapMs(cfg.PacePercent, chunkBytes) + FinishReplyWaitMs + waits + PostCommitWatchMs);
     }
 
     private void Tx(UploadRun run, System.Diagnostics.Stopwatch sinceStart, string step) =>
@@ -1581,6 +1616,24 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             Tx(run, sinceStart, "close write mode 72");
             Reply(state, ReplyWaitMs, "close write mode 72", "close", sinceStart);
         }
+        if (run.InPlace)
+        {
+            // No show and no state query: what the panel sends after the end report shows whether it reloads the picture by itself.
+            var watchAfter = System.Diagnostics.Stopwatch.StartNew();
+            while (watchAfter.ElapsedMilliseconds < PostCommitWatchMs && !state.Stop)
+            {
+                if (Reply(state, FinishReplySliceMs, "post-commit", "postcommit", sinceStart, out bool readFailed) is not null)
+                {
+                    continue;
+                }
+                if (readFailed)
+                {
+                    break;
+                }
+            }
+            GlacialLcdLog.Write($"u{run.Seq} updated in place, no show sent");
+            return state.Stop ? UploadOutcome.Cancelled : UploadOutcome.Done;
+        }
         if (!HidWrite(state, GlacialLcdProtocol.EncodeQuery()))
         {
             return Fail("write failed at DC before show");
@@ -1624,6 +1677,17 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             return;
         }
+        if (_rawActive && cfg.RawProbe)
+        {
+            // Between frames: whatever the panel volunteers is logged when it is seen, not only at the next frame.
+            lock (_hidLock)
+            {
+                if (_hid is { } idleHid)
+                {
+                    DrainInputLogged(idleHid, "between frames");
+                }
+            }
+        }
         if (!_rawActive)
         {
             long now = _clock();
@@ -1634,7 +1698,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                     return;
                 }
             }
-            if (!EnterRaw(state))
+            if (!EnterRaw(state, cfg))
             {
                 return;
             }
@@ -1645,12 +1709,12 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
     }
 
-    private bool EnterRaw(WorkerState state)
+    private bool EnterRaw(WorkerState state, GlacialLcdTuningValues cfg)
     {
         bool entryFailed = false;
         try
         {
-            return EnterRawLocked(state, ref entryFailed);
+            return EnterRawLocked(state, cfg, ref entryFailed);
         }
         finally
         {
@@ -1662,7 +1726,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
     }
 
-    private bool EnterRawLocked(WorkerState state, ref bool entryFailed)
+    private bool EnterRawLocked(WorkerState state, GlacialLcdTuningValues cfg, ref bool entryFailed)
     {
         lock (_link.Sync)
         {
@@ -1674,7 +1738,17 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 if (_hid is { } hid)
                 {
-                    DrainInput(hid);
+                    DrainInputLogged(hid, "before the mode select");
+                }
+            }
+            if (cfg.RawProbe)
+            {
+                // Probe: a state query goes ahead of the mode select, and its reply is waited for.
+                var dcWatch = System.Diagnostics.Stopwatch.StartNew();
+                if (HidWrite(state, GlacialLcdProtocol.EncodeQuery()))
+                {
+                    bool answered = AwaitAnyReply(state, RawProbeDcWaitMs, "raw probe DC", dcWatch);
+                    GlacialLcdLog.Write($"raw stream: state query before the mode select {(answered ? "answered" : "unanswered")} after {dcWatch.ElapsedMilliseconds}ms");
                 }
             }
             // Owed before the write and refused once a shutdown has begun, so the shutdown wait cannot return while the panel is about to be put in stream mode.
@@ -1697,7 +1771,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
             {
                 if (_hid is { } hid)
                 {
-                    DrainInput(hid);
+                    DrainInputLogged(hid, "after the mode select");
                 }
             }
             if (state.Stop)
@@ -1790,6 +1864,14 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
                     cache.Snapshot = new byte[_latest.Length];
                 }
                 _latest.CopyTo(cache.Snapshot, 0);
+                if (cfg.RawProbe)
+                {
+                    // Probe: every pixel fully opaque.
+                    for (int i = 3; i < cache.Snapshot.Length; i += 4)
+                    {
+                        cache.Snapshot[i] = 0xFF;
+                    }
+                }
                 _pending = false;
             }
         }
@@ -1814,7 +1896,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         }
         _abort.Reset();
         long start = _clock();
-        _nextStartMs = start + Math.Max(RawMinFrameIntervalMs, (long)(1000.0 / cfg.MaxFps));
+        _nextStartMs = start + Math.Max(cfg.RawProbe ? RawProbeMinFrameIntervalMs : RawMinFrameIntervalMs, (long)(1000.0 / cfg.MaxFps));
         int seq = Interlocked.Increment(ref _uploadSeq);
         Interlocked.Increment(ref _uploadAttempts);
         var run = new UploadRun { Seq = seq };
@@ -1896,7 +1978,7 @@ public sealed class GlacialLcdPanelDriver : IBulkPanelDriver
         {
             if (_hid is { } hid)
             {
-                DrainInput(hid);
+                DrainInputLogged(hid, "before the frame announce");
             }
         }
         if (_rawNeedsSync)

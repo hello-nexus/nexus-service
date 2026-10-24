@@ -1642,6 +1642,143 @@ public class GlacialLcdDriverTests
     }
 
     [Fact]
+    public void An_in_place_update_rewrites_the_slot_on_display_and_sends_no_show_and_logs_what_follows_the_end_report()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "glacial-inplace-" + Guid.NewGuid().ToString("N")[..8]);
+        GlacialLcdLog.UseDirectory(dir);
+        try
+        {
+            var tuning = NewTuning(out _);
+            tuning.Apply(new GlacialLcdTuningChange { UpdateInPlace = true, DoubleBuffer = true, PacePercent = 0 });
+            var driver = Fast();
+            driver.BindTuning(tuning);
+            var pipe = new FakePipe();
+            var hid = new FakeHid();
+            driver.Connect(pipe, hid);
+
+            // Nothing is showing yet: the first upload alternates and shows as usual.
+            driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 1));
+            Assert.True(WaitUntil(() => driver.UploadsCompleted == 1));
+            int firstSlot = hid.Writes.Where(w => w[1] == 0x72 && w[3] == 0x01).Select(w => (int)w[4]).Single();
+            int shows = hid.Writes.Count(w => w[1] == 0x51);
+            Assert.Equal(1, shows);
+            int writesBefore = hid.Writes.Count;
+            hid.OnWrite = w =>
+            {
+                if (w[1] == 0x73 && w[2] == 0xFF)
+                {
+                    hid.Enqueue(Report("EE 20 00 01"));
+                }
+            };
+
+            driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: 2));
+            Assert.True(WaitUntil(() => driver.UploadsCompleted == 2));
+
+            var second = hid.Writes.Skip(writesBefore).ToList();
+            Assert.Equal(firstSlot, second.Where(w => w[1] == 0x72 && w[3] == 0x01).Select(w => (int)w[4]).Single());
+            Assert.DoesNotContain(second, w => w[1] == 0x51);
+            int end = second.FindIndex(w => w[1] == 0x73 && w[2] == 0xFF);
+            Assert.DoesNotContain(second.Skip(end + 1), w => w[1] == 0xDC);
+            driver.Disconnect(pipe, hid);
+            GlacialLcdLog.Flush();
+            string text = File.ReadAllText(Path.Combine(dir, GlacialLcdLog.FileName));
+            Assert.Contains("EE200001", text);
+            Assert.Contains("updated in place, no show sent", text);
+        }
+        finally
+        {
+            GlacialLcdLogTestSetup.Restore();
+        }
+    }
+
+    [Fact]
+    public void Without_the_in_place_probe_the_picture_is_shown_after_every_upload()
+    {
+        var tuning = NewTuning(out _);
+        var driver = Fast();
+        driver.BindTuning(tuning);
+        var pipe = new FakePipe();
+        var hid = new FakeHid();
+        driver.Connect(pipe, hid);
+        for (int i = 1; i <= 2; i++)
+        {
+            driver.SendFrame(pipe, hid, Frame(noiseRows: 4, seed: i));
+            Assert.True(WaitUntil(() => driver.UploadsCompleted == i));
+        }
+        Assert.Equal(2, hid.Writes.Count(w => w[1] == 0x51));
+        driver.Disconnect(pipe, hid);
+    }
+
+    [Fact]
+    public void The_raw_probe_queries_the_panel_first_forces_every_pixel_opaque_logs_what_it_drains_and_lowers_the_frame_floor()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "glacial-rawprobe-" + Guid.NewGuid().ToString("N")[..8]);
+        GlacialLcdLog.UseDirectory(dir);
+        try
+        {
+            var clock = new FakeClock();
+            var tuning = NewTuning(out _);
+            tuning.Apply(new GlacialLcdTuningChange { RawStream = true, RawProbe = true });
+            var driver = Fast(clock: clock);
+            driver.BindTuning(tuning);
+            var pipe = new FakePipe();
+            var hid = new FakeHid { Echo = false };
+            hid.OnWrite = w =>
+            {
+                if (w[1] == 0xDC)
+                {
+                    hid.Enqueue(Report("EC 5C 00"));
+                }
+                else if (w[1] == 0x7F && w[2] == 0x03)
+                {
+                    hid.Enqueue(Report("EC 7F 00"));
+                }
+            };
+            driver.Connect(pipe, hid);
+            Assert.True(WaitUntilTicking(clock, () => hid.Writes.Any(w => w[1] == 0x51 && w[2] == 0x20), advanceMs: 5));
+            // Let the entry finish, then let the panel volunteer a report between frames.
+            int settled = driver.Ticks;
+            Assert.True(WaitUntilTicking(clock, () => driver.Ticks >= settled + 3, advanceMs: 5));
+            hid.Enqueue(Report("EE 20 00"));
+            int seen = driver.Ticks;
+            Assert.True(WaitUntilTicking(clock, () => driver.Ticks >= seen + 3, advanceMs: 5));
+
+            var frame = Frame(noiseRows: 2);
+            for (int i = 3; i < frame.Length; i += 4)
+            {
+                frame[i] = 0x00;
+            }
+            driver.SendFrame(pipe, hid, frame);
+            Assert.True(WaitUntilTicking(clock, () => pipe.Writes.Count == 1, advanceMs: 5));
+
+            var writes = hid.Writes;
+            Assert.True(writes.FindIndex(w => w[1] == 0xDC) < writes.FindIndex(w => w[1] == 0x51 && w[2] == 0x20));
+            var sent = pipe.Writes.Single();
+            for (int i = 3; i < sent.Length; i += 4)
+            {
+                Assert.Equal(0xFF, sent[i]);
+            }
+
+            // Past the lowered floor but short of the usual one.
+            driver.SendFrame(pipe, hid, Frame(noiseRows: 2, seed: 5));
+            Thread.Sleep(300);
+            Assert.Single(pipe.Writes);
+            clock.Advance(GlacialLcdPanelDriver.RawProbeMinFrameIntervalMs + 10);
+            Assert.True(WaitUntil(() => pipe.Writes.Count == 2));
+            driver.Disconnect(pipe, hid);
+
+            GlacialLcdLog.Flush();
+            string text = File.ReadAllText(Path.Combine(dir, GlacialLcdLog.FileName));
+            Assert.Contains("RX drained between frames: EE20", text);
+            Assert.Contains("state query before the mode select answered", text);
+        }
+        finally
+        {
+            GlacialLcdLogTestSetup.Restore();
+        }
+    }
+
+    [Fact]
     public void Leaving_the_nexus_panel_ends_the_raw_stream_without_overriding_the_mode_the_native_path_sets()
     {
         var clock = new FakeClock();

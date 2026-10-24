@@ -36,6 +36,8 @@ public static partial class DevicesRoutes
                 DoubleBuffer = body.DoubleBuffer,
                 CloseWriteMode = body.CloseWriteMode,
                 RawStream = body.RawStream,
+                UpdateInPlace = body.UpdateInPlace,
+                RawProbe = body.RawProbe,
             };
             if (GlacialLcdTuning.Validate(change) is { } error)
             {
@@ -199,6 +201,8 @@ public static partial class DevicesRoutes
                 DoubleBuffer = v.DoubleBuffer,
                 CloseWriteMode = v.CloseWriteMode,
                 RawStream = v.RawStream,
+                UpdateInPlace = v.UpdateInPlace,
+                RawProbe = v.RawProbe,
             },
             Stats = new GlacialLcdTuningStatsDto
             {
@@ -310,6 +314,8 @@ public sealed class GlacialLcdTuningSettingsDto
     public bool DoubleBuffer { get; set; }
     public bool CloseWriteMode { get; set; }
     public bool RawStream { get; set; }
+    public bool UpdateInPlace { get; set; }
+    public bool RawProbe { get; set; }
 }
 
 public sealed class GlacialLcdTuningStatsDto
@@ -354,4 +360,6 @@ public sealed class GlacialLcdTuningRequest
     public bool? DoubleBuffer { get; set; }
     public bool? CloseWriteMode { get; set; }
     public bool? RawStream { get; set; }
+    public bool? UpdateInPlace { get; set; }
+    public bool? RawProbe { get; set; }
 }
