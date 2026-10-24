@@ -155,16 +155,15 @@ public class GlWorkQueueTests
     }
 
     [Fact]
-    public void Take_blocks_until_a_lone_deferred_job_is_due_then_returns_it()
+    public async System.Threading.Tasks.Task Take_blocks_until_a_lone_deferred_job_is_due_then_returns_it()
     {
         var q = new GlWorkQueue();
         var ran = new List<string>();
         q.AddDeferred(() => ran.Add("later"), TimeSpan.FromMilliseconds(50));
 
         // The timeout only guards against a hang; no assertion depends on how long Take waited.
-        var task = System.Threading.Tasks.Task.Run(() => q.Take());
-        Assert.True(task.Wait(TimeSpan.FromSeconds(5)));
-        task.Result.Work();
+        var job = await System.Threading.Tasks.Task.Run(() => q.Take()).WaitAsync(TimeSpan.FromSeconds(5));
+        job.Work();
 
         Assert.Equal(new[] { "later" }, ran);
     }
