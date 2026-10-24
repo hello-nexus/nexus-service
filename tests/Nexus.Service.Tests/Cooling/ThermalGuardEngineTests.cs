@@ -90,7 +90,7 @@ public class ThermalGuardEngineTests
         return (engine, fans, store, clock);
     }
 
-    // Default limit without a sensor provider is 90 C; the limit trip is 93 C held for 5 s.
+    // Default limit without a sensor provider is 90 C; the limit trip is the limit held for 5 s.
     private static void Trip(CurveEngine engine, Fans fans, long[] clock)
     {
         fans.CpuTemp = 99f;
@@ -1280,7 +1280,7 @@ public class ThermalGuardEngineTests
         var (e, guard, mono) = WatchdogRig(fans, store);
         var alerts = new List<string>();
         guard.AlertSink = n => alerts.Add(n.Title);
-        fans.CpuTemp = 90f;
+        fans.CpuTemp = 89f;
 
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
@@ -1313,7 +1313,7 @@ public class ThermalGuardEngineTests
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 90f;
+        fans.CpuTemp = 89f;
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
@@ -1345,7 +1345,7 @@ public class ThermalGuardEngineTests
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 90f;
+        fans.CpuTemp = 89f;
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
@@ -1367,7 +1367,7 @@ public class ThermalGuardEngineTests
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 90f;
+        fans.CpuTemp = 89f;
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
@@ -1385,7 +1385,7 @@ public class ThermalGuardEngineTests
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
-        fans.CpuTemp = 90f;
+        fans.CpuTemp = 89f;
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
@@ -1413,7 +1413,7 @@ public class ThermalGuardEngineTests
         var (e, guard, mono) = WatchdogRig(fans, store);
         var alerts = new List<string>();
         guard.AlertSink = n => alerts.Add(n.Title);
-        fans.CpuTemp = 90f;
+        fans.CpuTemp = 89f;
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
         Stall(fans, e, guard, mono);
@@ -1459,7 +1459,7 @@ public class ThermalGuardEngineTests
         var mono = new long[] { 1_000 };
         var guard = new ThermalGuardController(blocking, store) { MonotonicMs = () => mono[0] };
         var e = new CurveEngine(blocking, store, new MultiplexHub(), null, guard) { Clock = () => mono[0] };
-        fans.CpuTemp = 90f;
+        fans.CpuTemp = 89f;
         mono[0] += 1000;
         e.Tick();
         guard.TickCompleted();
@@ -1668,8 +1668,8 @@ public class ThermalGuardEngineTests
         }
         Assert.Equal(40, LastDuty(fans, "f1"));
 
-        // 99 C held for longer than the trip sustain: past the default limit's trip point, not this one.
-        fans.CpuTemp = 99f;
+        // 99 C is past the default limit but under the overridden one: no trip however long.
+        fans.CpuTemp = 99.9f;
         for (var i = 0; i < 8; i++)
         {
             clock[0] += 1000;
@@ -1677,11 +1677,14 @@ public class ThermalGuardEngineTests
         }
         Assert.Null(store.Load().Cooling.LastThermalTrip);
 
-        // 104 C is beyond the overridden limit plus its margin.
-        fans.CpuTemp = 104f;
+        // At the overridden limit the trip needs the full sustain.
+        fans.CpuTemp = 100f;
         clock[0] += 1000;
         e.Tick();
-        clock[0] += 5000;
+        clock[0] += 4000;
+        e.Tick();
+        Assert.Null(store.Load().Cooling.LastThermalTrip);
+        clock[0] += 1000;
         e.Tick();
         Assert.NotNull(store.Load().Cooling.LastThermalTrip);
         Assert.Equal(100, LastDuty(fans, "f1"));

@@ -54,14 +54,28 @@ public class ThermalGuardTests
     public void LimitTrip_NeedsFiveSecondsSustainedAtTheLimit()
     {
         var g = new ThermalGuard();
-        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 95, L, 100, 80).State);
-        Assert.Equal(ThermalGuardStates.Floor, g.Step(4900, 95, L, 100, 80).State);
+        var start = g.Step(0, 95, L, 100, 80);
+        Assert.Equal(ThermalGuardStates.Floor, start.State);
+        Assert.Equal(60, start.FloorDuty);
+        var late = g.Step(4900, 95, L, 100, 80);
+        Assert.Equal(ThermalGuardStates.Floor, late.State);
+        Assert.Equal(60, late.FloorDuty);
         var o = g.Step(5000, 95, L, 100, 80);
         Assert.Equal(ThermalGuardStates.Tripped, o.State);
         Assert.True(o.TripStarted);
         Assert.True(o.ForceMax);
         Assert.Equal(100, o.FloorDuty);
         Assert.Equal(ThermalTripReasons.Limit, o.TripReason);
+    }
+
+    [Fact]
+    public void LimitTrip_ReadingGapRestartsTheSustainTimer()
+    {
+        var g = new ThermalGuard();
+        g.Step(0, 95, L, 100, 80);
+        Assert.False(g.Step(60_000, 95, L, 100, 80).TripStarted);
+        Assert.False(g.Step(64_900, 95, L, 100, 80).TripStarted);
+        Assert.True(g.Step(65_000, 95, L, 100, 80).TripStarted);
     }
 
     [Fact]
