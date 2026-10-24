@@ -505,10 +505,53 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_wired_fan_not_bound_to_us_is_left_alone_by_reconcile()
+    public void An_owned_chain_that_drops_its_bind_while_wired_is_rebound_with_the_lock_on()
     {
         var mac = Convert.ToHexString(FanMac);
         var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        tx.SentFrames.Clear();
+
+        Ticks(hub, 3);
+
+        Assert.True(CountBindFrames(tx) > 0);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(4, hub.State.Fans[0].Slot);
+    }
+
+    [Fact]
+    public void A_wired_chain_the_user_unbound_is_not_rebound_when_the_lock_comes_back_on()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        var fan = new SimulatedFan { Mac = FanMac };
+        net.Fans.Add(fan);
+        Assert.True(hub.DriveTick());
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        hub.SetLockBoundDevices(false);
+        Assert.True(hub.Unbind(mac, out var error), error);
+        Ticks(hub, 3);
+        hub.SetLockBoundDevices(true);
+        tx.SentFrames.Clear();
+
+        Ticks(hub, 5);
+
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.False(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
+    public void A_wired_fan_we_do_not_own_and_not_bound_to_us_is_left_alone_by_reconcile()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub();
         hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
         net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 254, Channel = 11 });
         tx.SentFrames.Clear();

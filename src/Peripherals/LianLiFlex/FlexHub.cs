@@ -147,6 +147,7 @@ public sealed class FlexHub : IDisposable
             {
                 _links[mac].Dispose();
                 _links.Remove(mac);
+                ServiceLog.Info($"[lianli-flex] receiver for {mac} left the USB bus");
                 changed = true;
             }
             foreach (var stale in _failedPaths.Keys.Where(p => !present.Contains(p)).ToList())
@@ -179,6 +180,7 @@ public sealed class FlexHub : IDisposable
                         link.DesiredDuty = wanted;
                     }
                     _links[info.Mac] = link;
+                    ServiceLog.Info($"[lianli-flex] receiver opened for {info.Mac}, rfBound {info.RfBound}");
                     changed = true;
                 }
                 else
@@ -307,6 +309,10 @@ public sealed class FlexHub : IDisposable
             return;
         }
         link.Missed = 0;
+        if (link.Info is { } before && before.RfBound != info.RfBound)
+        {
+            ServiceLog.Info($"[lianli-flex] {info.Mac} rfBound {before.RfBound} -> {info.RfBound}");
+        }
         link.Info = info;
     }
 
@@ -333,6 +339,7 @@ public sealed class FlexHub : IDisposable
                     if (link.Info is { } gone)
                     {
                         _links.Remove(gone.Mac);
+                        ServiceLog.Info($"[lianli-flex] receiver for {gone.Mac} stopped answering, dropped");
                     }
                 }
                 link.Dispose();

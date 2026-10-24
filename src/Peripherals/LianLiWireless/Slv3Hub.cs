@@ -1038,15 +1038,16 @@ public sealed partial class Slv3Hub : IDisposable
         var merged = new Dictionary<string, Slv3DeviceRecord>(StringComparer.Ordinal);
         foreach (var record in _lastFanRecords)
         {
-            if (!IsWiredOwned(Convert.ToHexString(record.Mac)) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(Convert.ToHexString(record.Mac))) || IsReleasingLocked(Convert.ToHexString(record.Mac)))
+            var key = Convert.ToHexString(record.Mac);
+            if (!IsWiredOwned(key) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(key)) || IsReleasingLocked(key) || IsLockedOwnedLocked(key))
             {
-                merged[Convert.ToHexString(record.Mac)] = record;
+                merged[key] = record;
             }
         }
         foreach (var record in _pollRecords)
         {
             var key = Convert.ToHexString(record.Mac);
-            if ((!IsWiredOwned(key) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(key)) || IsReleasingLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
+            if ((!IsWiredOwned(key) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(key)) || IsReleasingLocked(key) || IsLockedOwnedLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
             {
                 merged[key] = record;
             }
@@ -1113,6 +1114,9 @@ public sealed partial class Slv3Hub : IDisposable
             }
         }
     }
+
+    // With the lock on a chain this hub owns is steered back even while its USB receiver is open: the receiver re-enumerating drops the RF bind and nothing else restores it.
+    private bool IsLockedOwnedLocked(string key) => _lockBound && _owned.ContainsKey(key) && !_userUnbound.Contains(key);
 
     // L-Connect adoption: with the lock on, a chain reporting our master is steered from its first sight and an
     // owned chain is steered whatever it reports. A chain this hub unbound that still reports our master is cleared again.
