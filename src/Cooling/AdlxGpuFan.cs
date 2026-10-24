@@ -9,6 +9,7 @@ using Nexus.Service.Lighting.Engine.Gpu;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Cooling;
 
@@ -44,23 +45,35 @@ internal sealed unsafe class AdlxGpuFans
 
         var dir = NexusDataPaths.NexusRoot();
         var key = InitGuardKey(path);
-        if (AdlxInitGuard.Latched(dir, key))
+        var boot = GpuRenderSelect.BootStamp();
+        // Under Sync so rediscovery cannot read a live scope's mark; the latch is read once per process.
+        lock (Sync)
         {
-            ServiceLog.Warn($"[amd-fan] ADLX off until a reboot or driver update: a previous run died inside ADLX init ({key})");
-            return null;
+            var latch = AdlxInitGuard.LatchedOnce(dir, key, boot);
+            if (latch != AdlxInitGuard.Latch.None)
+            {
+                var until = latch == AdlxInitGuard.Latch.UntilDriverUpdate ? "until the driver is updated" : "for this boot";
+                var why = key is null && latch == AdlxInitGuard.Latch.UntilDriverUpdate ? "the driver version is unreadable, so the persistent latch stays" : "a previous run died inside an ADLX call";
+                ServiceLog.Warn($"[amd-fan] ADLX off {until}: {why} ({key ?? "no driver key"})");
+                return null;
+            }
+            AdlxInitGuard.Configure(dir, key, boot);
+            using (AdlxInitGuard.Scope()) return Create(path, blockChanged);
         }
-        AdlxInitGuard.Arm(dir, key);
-        try { return Create(path, blockChanged); }
-        finally { AdlxInitGuard.Disarm(dir); }
     }
 
-    // A driver update or a reboot can clear a broken ADLX, so either one re-arms it.
-    private static string InitGuardKey(string path)
+    // Null when the driver version cannot be read, which keeps the latch to one boot.
+    private static string? InitGuardKey(string path)
     {
         string? version = null;
         try { version = FileVersionInfo.GetVersionInfo(path).FileVersion; }
         catch (Exception) { }
-        return $"{version ?? "?"}@{GpuRenderSelect.BootStamp()}";
+        try
+        {
+            var amd = GpuAdapterLuids.Enumerate().Where(a => a.VendorId == 0x1002).Select(a => a.UmdVersion);
+            return AdlxInitGuard.BuildKey(version, amd);
+        }
+        catch (Exception) { return null; }
     }
 
     private static AdlxGpuFans? Create(string path, Action blockChanged)
@@ -133,18 +146,21 @@ internal sealed unsafe class AdlxGpuFans
     {
         lock (Sync)
         {
-            var gpu = _gpus.FirstOrDefault(g => PnpMatches(g.Pnp, lhmPnp));
-            pnpMatched = gpu is not null;
-            if (gpu is null || !gpu.FanTuning)
+            using (AdlxInitGuard.Scope())
             {
-                ServiceLog.Info($"[amd-fan] no ADLX fan tuning for {lhmPnp} ({(gpu is null ? "no PNP match" : $"'{gpu.Name}' unsupported")}); keeping the Overdrive5 path");
-                return null;
-            }
+                var gpu = _gpus.FirstOrDefault(g => PnpMatches(g.Pnp, lhmPnp));
+                pnpMatched = gpu is not null;
+                if (gpu is null || !gpu.FanTuning)
+                {
+                    ServiceLog.Info($"[amd-fan] no ADLX fan tuning for {lhmPnp} ({(gpu is null ? "no PNP match" : $"'{gpu.Name}' unsupported")}); keeping the Overdrive5 path");
+                    return null;
+                }
 
-            if (_opened.TryGetValue(gpu.Ptr, out var opened)) return opened;
-            var fan = AdlxGpuFan.TryOpen(_tuning, gpu.Ptr, gpu.Name, gpu.Pnp, _blockChanged);
-            if (fan is not null) _opened[gpu.Ptr] = fan;
-            return fan;
+                if (_opened.TryGetValue(gpu.Ptr, out var opened)) return opened;
+                var fan = AdlxGpuFan.TryOpen(_tuning, gpu.Ptr, gpu.Name, gpu.Pnp, _blockChanged);
+                if (fan is not null) _opened[gpu.Ptr] = fan;
+                return fan;
+            }
         }
     }
 
@@ -251,14 +267,17 @@ internal sealed unsafe class AdlxGpuFan
     {
         lock (AdlxGpuFans.Sync)
         {
-            if (!_takenOver && !TakeOver()) return false;
-            _duty = duty;
-            _releaseRetryAtMs = null;
-            _releaseRequested = false;
+            using (AdlxInitGuard.Scope())
+            {
+                if (!_takenOver && !TakeOver()) return false;
+                _duty = duty;
+                _releaseRetryAtMs = null;
+                _releaseRequested = false;
 
-            // Zero RPM stops the fan below the driver's threshold whatever the curve says.
-            var ok = !_zeroRpmSupported || WriteZeroRpm(duty == 0);
-            return WriteCurve("set", null, AdlxFanCurve.Speed(duty, _speed)) == Write.Ok && ok;
+                // Zero RPM stops the fan below the driver's threshold whatever the curve says.
+                var ok = !_zeroRpmSupported || WriteZeroRpm(duty == 0);
+                return WriteCurve("set", null, AdlxFanCurve.Speed(duty, _speed)) == Write.Ok && ok;
+            }
         }
     }
 
@@ -288,36 +307,39 @@ internal sealed unsafe class AdlxGpuFan
     {
         lock (AdlxGpuFans.Sync)
         {
-            if (!_takenOver) return true;
-            // Released from here on, whatever the driver does: a calibration lease must not re-take the old duty.
-            _duty = null;
-            var zeroRpm = _savedZeroRpm;
-            var result = WriteCurve("restore", _saved, 0);
-            // A driver update can change the point count or ranges, so the snapshot never fits again.
-            if (result == Write.Unfit && _fan1 != 0 && ReadCurve(_fan1, 23) is { } defaults) // GetDefaultFanTuningStates
+            using (AdlxInitGuard.Scope())
             {
-                WarnOnce("restore:defaults", "saved curve no longer fits the driver; restoring the driver's default curve");
-                result = WriteCurve("restore-defaults", defaults, 0);
-                zeroRpm = ReadZeroRpm(_fan1, 27) ?? zeroRpm; // GetDefaultZeroRPMState
-            }
-            if (result == Write.Unfit)
-            {
-                ServiceLog.Warn($"[amd-fan] '{_name}': no curve the driver accepts is left to restore; reset fan tuning in Radeon Software");
-                if (_zeroRpmSupported && zeroRpm is bool restore) WriteZeroRpm(restore);
-                AdlxTakeovers.Clear(_pnp);
-                Forget();
-                return false;
-            }
-            if (result != Write.Ok || (_zeroRpmSupported && zeroRpm is bool z && !WriteZeroRpm(z)))
-            {
-                _releaseRetryAtMs = Environment.TickCount64 + RetryMs;
-                return false;
-            }
+                if (!_takenOver) return true;
+                // Released from here on, whatever the driver does: a calibration lease must not re-take the old duty.
+                _duty = null;
+                var zeroRpm = _savedZeroRpm;
+                var result = WriteCurve("restore", _saved, 0);
+                // A driver update can change the point count or ranges, so the snapshot never fits again.
+                if (result == Write.Unfit && _fan1 != 0 && ReadCurve(_fan1, 23) is { } defaults) // GetDefaultFanTuningStates
+                {
+                    WarnOnce("restore:defaults", "saved curve no longer fits the driver; restoring the driver's default curve");
+                    result = WriteCurve("restore-defaults", defaults, 0);
+                    zeroRpm = ReadZeroRpm(_fan1, 27) ?? zeroRpm; // GetDefaultZeroRPMState
+                }
+                if (result == Write.Unfit)
+                {
+                    ServiceLog.Warn($"[amd-fan] '{_name}': no curve the driver accepts is left to restore; reset fan tuning in Radeon Software");
+                    if (_zeroRpmSupported && zeroRpm is bool restore) WriteZeroRpm(restore);
+                    AdlxTakeovers.Clear(_pnp);
+                    Forget();
+                    return false;
+                }
+                if (result != Write.Ok || (_zeroRpmSupported && zeroRpm is bool z && !WriteZeroRpm(z)))
+                {
+                    _releaseRetryAtMs = Environment.TickCount64 + RetryMs;
+                    return false;
+                }
 
-            AdlxTakeovers.Clear(_pnp);
-            ServiceLog.Info($"[amd-fan] '{_name}': released, curve {Describe(_saved)} zeroRpm={_savedZeroRpm?.ToString() ?? "n/a"}");
-            Forget();
-            return true;
+                AdlxTakeovers.Clear(_pnp);
+                ServiceLog.Info($"[amd-fan] '{_name}': released, curve {Describe(_saved)} zeroRpm={_savedZeroRpm?.ToString() ?? "n/a"}");
+                Forget();
+                return true;
+            }
         }
     }
 
@@ -327,6 +349,7 @@ internal sealed unsafe class AdlxGpuFan
         if (!Monitor.TryEnter(AdlxGpuFans.Sync, wait))
         {
             _releaseRequested = true;
+            AdlxInitGuard.NoteSkippedRelease();
             return false;
         }
         try { return Release(); }
