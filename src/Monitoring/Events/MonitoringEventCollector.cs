@@ -341,8 +341,7 @@ public sealed class MonitoringEventCollector : BackgroundService
         ProcessAggregation.GroupByName(procs.Where(p => p.Pid != selfPid && !(p.HasWindow && IsNexusExeName(p.Name) && isOwnNexusImage(p.Pid))).ToList()).Where(kv => kv.Value.HasWindow && !IsNexusProcess(kv.Key)).Select(kv => kv.Key).ToList();
 
     // Our own service is matched by pid; only uniquely named exes are matched
-    // by name, since other products ship a Nexus.exe. Not an exe path:
-    // resolving one per candidate every tick is real process I/O.
+    // by name, since other products ship a Nexus.exe.
     // msedgewebview2 is deliberately absent (shared with other apps).
     private static readonly HashSet<string> NexusProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -362,7 +361,8 @@ public sealed class MonitoringEventCollector : BackgroundService
         {
             try
             {
-                return OwnNexusExe.IsOwn(OwnNexusExe.ImagePathOf(pid), OwnNexusExe.Known());
+                var image = OwnNexusExe.ImagePathOf(pid);
+                return OwnNexusExe.IsOwn(image, OwnNexusExe.Known()) || OwnNexusExe.HasOurPayload(image);
             }
             catch (Exception)
             {

@@ -156,12 +156,13 @@ public class MonitoringEventCollectorTests
         {
             new() { Pid = 30, Name = "Nexus.exe", HasWindow = true },
             new() { Pid = 40, Name = "Nexus.exe", HasWindow = true },
+            new() { Pid = 50, Name = "Nexus", HasWindow = true },
         };
 
-        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1, pid => pid == 30);
+        var names = MonitoringEventCollector.ExtractWindowedAppNames(procs, selfPid: -1, pid => pid is 30 or 50);
 
         Assert.Equal(new[] { "Nexus.exe" }, names);
-        Assert.Empty(MonitoringEventCollector.ExtractWindowedAppNames(new[] { procs[0] }, selfPid: -1, pid => pid == 30));
+        Assert.Empty(MonitoringEventCollector.ExtractWindowedAppNames(new[] { procs[0], procs[2] }, selfPid: -1, pid => pid is 30 or 50));
     }
 
     [Fact]
