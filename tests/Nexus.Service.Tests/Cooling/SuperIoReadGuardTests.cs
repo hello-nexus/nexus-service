@@ -7,53 +7,67 @@ public class SuperIoReadGuardTests
 {
     private static float?[] A(params float?[] v) => v;
 
+    // The all-ones decode: every control full, every tach zero, every voltage at or above 0.008 * 255.
+    private static SuperIoSnapshot AllOnes() => new(A(100f, 100f, 100f), A(0f, 0f, 0f), A(2.04f, 4.08f, 6.0f, 2.04f));
+
+    private static SuperIoSnapshot Normal(float?[]? controls = null, float?[]? fans = null) =>
+        new(controls ?? A(100f, 100f, 100f), fans ?? A(0f, 0f, 0f), A(1.1f, 4.9f, 3.3f, 12.1f));
+
     [Fact]
-    public void All_full_duty_and_zero_rpm_after_a_spin_trips()
+    public void All_ones_signature_after_a_spin_trips()
     {
-        Assert.True(SuperIoReadGuard.IsAllOnesRead(A(100f, 100f, 100f), A(0f, 0f, 0f), true));
+        Assert.True(SuperIoReadGuard.IsAllOnesRead(AllOnes(), true));
     }
 
     [Fact]
-    public void Duty_of_exactly_the_floor_trips_and_just_below_does_not()
+    public void Sole_pump_death_with_every_header_at_full_duty_and_normal_voltages_does_not_trip()
     {
-        Assert.True(SuperIoReadGuard.IsAllOnesRead(A(99.5f, 100f), A(0f), true));
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(A(99.4f, 100f), A(0f), true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(Normal(), true));
     }
 
     [Fact]
-    public void Single_pump_stall_with_other_fans_at_varied_duty_does_not_trip()
+    public void One_voltage_below_the_all_ones_code_does_not_trip()
     {
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(A(100f, 45f, 60f), A(0f, 900f, 1100f), true));
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(A(100f, 45f, 60f), A(0f, 0f, 0f), true));
+        var s = new SuperIoSnapshot(A(100f, 100f), A(0f), A(2.04f, 1.2f, 6.0f));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(s, true));
     }
 
     [Fact]
-    public void Unpopulated_headers_at_zero_rpm_with_normal_duty_do_not_trip()
+    public void Undecoded_voltages_are_ignored_but_two_must_decode()
     {
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(A(40f, 40f, 40f), A(0f, 0f, 0f), true));
+        Assert.True(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f), A(null, 2.04f, 6.0f)), true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f), A(null, 2.04f)), true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f), A()), true));
     }
 
     [Fact]
-    public void Nonzero_rpm_anywhere_does_not_trip()
+    public void Duty_floor_edge()
     {
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(A(100f, 100f), A(0f, 700f), true));
+        var at = new SuperIoSnapshot(A(99.5f, 100f), A(0f), A(2.04f, 6.0f));
+        var below = new SuperIoSnapshot(A(99.4f, 100f), A(0f), A(2.04f, 6.0f));
+        Assert.True(SuperIoReadGuard.IsAllOnesRead(at, true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(below, true));
     }
 
     [Fact]
-    public void No_prior_spin_does_not_trip()
+    public void Varied_duty_nonzero_rpm_no_prior_spin_and_single_control_do_not_trip()
     {
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(A(100f, 100f), A(0f, 0f), false));
+        var v = A(2.04f, 6.0f);
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 45f), A(0f, 0f), v), true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, 100f), A(0f, 700f), v), true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(AllOnes(), false));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f), A(0f), v), true));
+        Assert.False(SuperIoReadGuard.IsAllOnesRead(new SuperIoSnapshot(A(100f, null), A(0f), v), true));
     }
 
     [Fact]
-    public void Single_control_chip_does_not_trip()
+    public void Evaluate_needs_an_earlier_spin_on_the_same_chip_and_clears_on_a_valid_sweep()
     {
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(A(100f), A(0f), true));
-    }
-
-    [Fact]
-    public void Missing_duty_reading_does_not_trip()
-    {
-        Assert.False(SuperIoReadGuard.IsAllOnesRead(A(100f, null), A(0f), true));
+        var guard = new SuperIoReadGuard();
+        Assert.False(guard.Evaluate("/lpc/nct6701d/0", AllOnes()));
+        Assert.False(guard.Evaluate("/lpc/nct6701d/0", Normal(A(40f, 40f), A(900f, 0f))));
+        Assert.False(guard.Evaluate("/lpc/nct6799d/0", AllOnes()));
+        Assert.True(guard.Evaluate("/lpc/nct6701d/0", AllOnes()));
+        Assert.False(guard.Evaluate("/lpc/nct6701d/0", Normal(A(40f, 40f), A(900f, 0f))));
     }
 }

@@ -1,37 +1,90 @@
+using System;
 using System.Collections.Generic;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Cooling;
 
+/// <summary>One sweep of a Super I/O chip's sensor values, read once so every judgement uses the same instant.</summary>
+internal sealed record SuperIoSnapshot(IReadOnlyList<float?> Controls, IReadOnlyList<float?> Fans, IReadOnlyList<float?> Voltages);
+
 /// <summary>
-/// Detects a Super I/O whose hardware-monitor window stopped decoding. Another vendor service
-/// can leave the window dead, every register then reads all ones, and the library reports every
-/// control at full duty and every tach at zero. That reading is not a stalled fan.
+/// Detects a Nuvoton Super I/O whose hardware-monitor window stopped decoding (all registers read ones:
+/// every control full, every tach zero). Duty and tach alone also fit a real pump death with every header
+/// at full, so the all-ones voltage decode is required too.
 /// </summary>
-internal static class SuperIoReadGuard
+internal sealed class SuperIoReadGuard
 {
     internal const float FullDutyFloor = 99.5f;
 
-    /// <summary>True when every control reads full duty, every fan reads zero, the chip has several controls, and a fan on it has spun before.</summary>
-    internal static bool IsAllOnesRead(IReadOnlyList<float?> controls, IReadOnlyList<float?> fans, bool fanSpunBefore)
+    // Register 0xFF decodes to 0.008 * 255 volts and scaling only raises it; a live chip has an unscaled rail (Vcore) below that.
+    internal const float AllOnesVoltageFloor = 2.03f;
+
+    private readonly object _lock = new();
+    private readonly HashSet<string> _spun = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _invalid = new(StringComparer.Ordinal);
+
+    internal static bool IsAllOnesRead(SuperIoSnapshot s, bool fanSpunBefore)
     {
-        if (!fanSpunBefore || controls.Count < 2 || fans.Count == 0)
+        if (!fanSpunBefore || s.Controls.Count < 2 || s.Fans.Count == 0 || s.Voltages.Count < 2)
         {
             return false;
         }
-        foreach (var c in controls)
+        foreach (var c in s.Controls)
         {
             if (c is not { } duty || duty < FullDutyFloor)
             {
                 return false;
             }
         }
-        foreach (var f in fans)
+        foreach (var f in s.Fans)
         {
             if ((f ?? 0f) != 0f)
             {
                 return false;
             }
         }
-        return true;
+        var decoded = 0;
+        foreach (var v in s.Voltages)
+        {
+            if (v is not { } volts)
+            {
+                continue;
+            }
+            if (volts < AllOnesVoltageFloor)
+            {
+                return false;
+            }
+            decoded++;
+        }
+        return decoded >= 2;
+    }
+
+    /// <summary>Judges one chip from its snapshot, remembers that a fan has spun, and logs only on a state change. True while the chip reads as all-ones.</summary>
+    internal bool Evaluate(string chipId, SuperIoSnapshot snapshot)
+    {
+        lock (_lock)
+        {
+            if (IsAllOnesRead(snapshot, _spun.Contains(chipId)))
+            {
+                if (_invalid.Add(chipId))
+                {
+                    ServiceLog.Warn($"[fan-control] super-io {chipId} reads all-0xFF, fan stall alerts suppressed for it");
+                }
+                return true;
+            }
+            if (_invalid.Remove(chipId))
+            {
+                ServiceLog.Info($"[fan-control] super-io {chipId} reads valid again");
+            }
+            foreach (var f in snapshot.Fans)
+            {
+                if (f is > 0f)
+                {
+                    _spun.Add(chipId);
+                    break;
+                }
+            }
+            return false;
+        }
     }
 }

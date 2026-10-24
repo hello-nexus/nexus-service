@@ -65,13 +65,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private static readonly TimeSpan AmdReleaseWait = TimeSpan.FromSeconds(2);
 
     private readonly MultiplexHub _hub;
-
-    // Super I/O chips (LHM hardware id) that have reported a spinning fan, the chips
-    // currently reading as all-ones, and the last good duty and RPM per channel.
-    private readonly object _guardLock = new();
-    private readonly HashSet<string> _chipsSpun = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _chipsInvalid = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, (int Duty, int Rpm)> _lastGood = new(StringComparer.Ordinal);
+    private readonly SuperIoReadGuard _superIoGuard = new();
 
     public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config, MultiplexHub hub)
     {
@@ -106,7 +100,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             }
         }
         var result = new List<FanChannel>(mappings.Count);
-        var invalidChips = UpdateSuperIoGuard(mappings);
+        var invalidChips = JudgeSuperIoChips(mappings);
 
         foreach (var m in mappings)
         {
@@ -135,27 +129,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                 DeviceId = m.DeviceId,
                 DeviceName = m.DeviceName,
                 ControlBlocked = m.AmdFan?.ControlBlocked,
+                SuperIoReadInvalid = SuperIoChip(m) is { } chip && invalidChips.Contains(chip),
             };
-            if (SuperIoChip(m) is { } chip)
-            {
-                lock (_guardLock)
-                {
-                    if (invalidChips.Contains(chip))
-                    {
-                        // Hold the last good sample; RpmUnavailable keeps the stall detector off it.
-                        ch.RpmUnavailable = true;
-                        if (_lastGood.TryGetValue(m.Id, out var good))
-                        {
-                            ch.DutyPercent = good.Duty;
-                            ch.Rpm = good.Rpm;
-                        }
-                    }
-                    else
-                    {
-                        _lastGood[m.Id] = (ch.DutyPercent, ch.Rpm);
-                    }
-                }
-            }
             if (calibrations.TryGetValue(m.Id, out var cal))
             {
                 ch.MinRpm = cal.MinRpm;
@@ -170,49 +145,36 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     }
 
     private static string? SuperIoChip(ChannelMapping m) =>
-        !m.IsGpu && m.ControlSensor.Hardware.Identifier.ToString() is { } id && id.StartsWith("/lpc/", StringComparison.Ordinal) ? id : null;
+        !m.IsGpu && m.ControlSensor.Hardware.Identifier.ToString() is { } id && id.StartsWith("/lpc/nct", StringComparison.Ordinal) ? id : null;
 
-    // Evaluates each Super I/O chip once per call and logs only on a transition.
-    private HashSet<string> UpdateSuperIoGuard(IReadOnlyList<ChannelMapping> mappings)
+    // One sensor sweep per chip per call; the judgement and its log line come from that snapshot.
+    private HashSet<string> JudgeSuperIoChips(IReadOnlyList<ChannelMapping> mappings)
     {
-        var chips = new Dictionary<string, IHardware>(StringComparer.Ordinal);
+        var invalid = new HashSet<string>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var m in mappings)
         {
-            if (SuperIoChip(m) is { } chip)
+            if (SuperIoChip(m) is not { } chip || !seen.Add(chip))
             {
-                chips[chip] = m.ControlSensor.Hardware;
+                continue;
             }
-        }
-        var invalid = new HashSet<string>(StringComparer.Ordinal);
-        lock (_guardLock)
-        {
-            foreach (var (chip, hw) in chips)
+            var controls = new List<float?>();
+            var fans = new List<float?>();
+            var voltages = new List<float?>();
+            foreach (var sensor in m.ControlSensor.Hardware.Sensors)
             {
-                var controls = new List<float?>();
-                var fans = new List<float?>();
-                foreach (var sensor in hw.Sensors)
+                var list = sensor.SensorType switch
                 {
-                    if (sensor.SensorType == SensorType.Control) controls.Add(sensor.Value);
-                    else if (sensor.SensorType == SensorType.Fan) fans.Add(sensor.Value);
-                }
-                var bad = SuperIoReadGuard.IsAllOnesRead(controls, fans, _chipsSpun.Contains(chip));
-                if (bad)
-                {
-                    invalid.Add(chip);
-                    if (_chipsInvalid.Add(chip))
-                    {
-                        ServiceLog.Warn($"[fan-control] super-io {chip} reads all-0xFF (all controls full, all fans 0), holding last good values");
-                    }
-                    continue;
-                }
-                if (_chipsInvalid.Remove(chip))
-                {
-                    ServiceLog.Info($"[fan-control] super-io {chip} reads valid again");
-                }
-                if (fans.Exists(f => (f ?? 0f) > 0f))
-                {
-                    _chipsSpun.Add(chip);
-                }
+                    SensorType.Control => controls,
+                    SensorType.Fan => fans,
+                    SensorType.Voltage => voltages,
+                    _ => null,
+                };
+                list?.Add(sensor.Value);
+            }
+            if (_superIoGuard.Evaluate(chip, new SuperIoSnapshot(controls, fans, voltages)))
+            {
+                invalid.Add(chip);
             }
         }
         return invalid;

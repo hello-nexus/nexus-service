@@ -317,6 +317,8 @@ public sealed class CoolingStallFeeder : BackgroundService
             // agreed polls, SLV3 chains) carries Rpm = 0 with no fan stopped;
             // leave it unobserved so it ages out instead of reading as a stall.
             if (ch.RpmUnavailable) continue;
+            // A Super I/O reading all ones reports every tach as 0; that is the read, not a stopped fan.
+            if (ch.SuperIoReadInvalid) continue;
             var type = string.Equals(ch.Kind, FanKinds.Pump, StringComparison.Ordinal) ? "pump" : "fan";
             _detector.Observe(ch.Id, ch.Name, type, ch.Rpm, ch.DutyPercent, now);
         }

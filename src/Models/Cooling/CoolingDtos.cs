@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace Nexus.Service.Models.Cooling;
 
@@ -151,6 +152,9 @@ public sealed class FanChannel
     public bool ReadOnly { get; set; }
     /// <summary>Duty is controllable but RPM cannot be read (SLV3 wireless chain whose controller does not enumerate its fans; MiniHub, whose tach bytes never track the fans); the card shows a "no RPM" indicator instead of a number.</summary>
     public bool RpmUnavailable { get; set; }
+    /// <summary>The chip's registers all read as ones (a vendor service left its I/O window dead), so a zero tach here says nothing about the fan. Read by the stall detector only, never serialized.</summary>
+    [JsonIgnore]
+    public bool SuperIoReadInvalid { get; set; }
     /// <summary>Why the driver currently refuses Nexus's writes to this fan, one of <see cref="FanControlBlocks"/>; null while writes land. Read from hardware.</summary>
     public string? ControlBlocked { get; set; }
     public int? MinRpm { get; set; }
