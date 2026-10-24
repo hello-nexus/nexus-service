@@ -7,7 +7,7 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 /// <summary>
 /// IOCTL_USB_HUB_CYCLE_PORT on the TX's own port, no pnputil fallback. The instance id is
 /// read back from the discovered interface, its VID/PID must be the TX, and its parent must
-/// be a hub; anything else is refused. <see cref="QSeriesUsbPortCycle"/> then resolves the
+/// be on the USB enumerator, and the cycle itself needs a hub interface on it; anything else is refused. <see cref="QSeriesUsbPortCycle"/> then resolves the
 /// hub and port from that same instance id, so it cannot reach a different device.
 /// </summary>
 internal sealed class WindowsSlv3TxPortCycler : ISlv3TxPortCycler
@@ -31,9 +31,9 @@ internal sealed class WindowsSlv3TxPortCycler : ISlv3TxPortCycler
             target = $"no hub port for {id}";
             return false;
         }
-        if (!Slv3TxPortIdentity.IsUsbHubInstanceId(hub))
+        if (!Slv3TxPortIdentity.IsUsbEnumeratedInstanceId(hub))
         {
-            target = $"{id} sits on {hub}, not a USB hub";
+            target = $"{id} sits on {hub}, not on the USB enumerator";
             return false;
         }
         instanceId = id;

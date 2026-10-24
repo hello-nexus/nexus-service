@@ -266,23 +266,32 @@ public sealed partial class Slv3Hub : IDisposable
     private long _nextTxRecoveryMs;
 
     // Last resort for a TX that ignores the RX reset: cycle the one hub port the TX
-    // devnode sits on. Needs this many RX resets sent and this long since the first,
-    // with the TX never leaving the bus in between: a TX that recovers does so on the
-    // first or second reset within seconds, so five resets over five minutes is a
-    // device that will not come back on its own.
+    // devnode sits on. It needs several RX resets sent and a minimum elapsed time since
+    // the first, with the TX enumerated and never answering a probe in between. A TX
+    // that recovers on its own does so on the first resets, long before either floor.
     internal const int TxResetsBeforePortCycle = 5;
     internal const long TxHangMinMsBeforePortCycle = 300_000;
-    // Spacing between cycles, and the cap per hang episode. An episode ends when the
-    // TX answers; past the cap only a physical replug is left.
+    // Spacing between cycles, and a rolling cap that no answer resets: a TX that
+    // answers once and hangs again must not be cycled forever. Past the cap only a
+    // physical replug is left.
     internal const long PortCycleSpacingMs = 600_000;
-    internal const int MaxPortCyclesPerEpisode = 3;
+    internal const int MaxPortCyclesPerWindow = 3;
+    internal const long PortCycleWindowMs = 86_400_000;
     // No cycle until this long after a resume: the TX is re-enumerating on its own.
     internal const long PortCycleResumeQuietMs = 120_000;
+    // Modern Standby may raise no suspend or resume event. The worker passes every few
+    // seconds, so a longer gap between two passes means the process was frozen and the
+    // same quiet period applies.
+    internal const long PortCyclePassGapMs = 90_000;
+    private readonly Queue<long> _portCycleTimesMs = new();
+    private bool _portCycleCapLogged;
+    private bool _portCycleQuietLogged;
+    private long _lastCyclePassMs;
+    private long _gapQuietUntilMs;
     private int _txHungResets;
     private long _txHungSinceMs;
     private int _portCycles;
     private long _nextPortCycleMs;
-    private bool _portCycleGaveUp;
     private int _portCycleInFlight;
     private long _powerQuietUntilMs;
 
@@ -704,13 +713,18 @@ public sealed partial class Slv3Hub : IDisposable
         _txHungResets = 0;
         _txHungSinceMs = 0;
         _portCycles = 0;
-        _portCycleGaveUp = false;
     }
 
     // Called with the TX this pass found enumerated, or null when it is not. A TX
     // that left the bus was re-enumerated, which is not a hang the RX reset ignored.
     private void ConsiderTxPortCycleLocked(Slv3PortInfo? txPort, long nowMs)
     {
+        var passGap = _lastCyclePassMs != 0 && nowMs - _lastCyclePassMs > PortCyclePassGapMs;
+        _lastCyclePassMs = nowMs;
+        if (passGap)
+        {
+            _gapQuietUntilMs = nowMs + PortCycleResumeQuietMs;
+        }
         if (txPort is null)
         {
             _txHungResets = 0;
@@ -722,23 +736,40 @@ public sealed partial class Slv3Hub : IDisposable
             || _txHungResets < TxResetsBeforePortCycle
             || nowMs - _txHungSinceMs < TxHangMinMsBeforePortCycle
             || nowMs < _nextPortCycleMs
-            || nowMs < Volatile.Read(ref _powerQuietUntilMs)
             || Volatile.Read(ref _portCycleInFlight) != 0)
         {
             return;
         }
-        if (_portCycleGaveUp)
+        var powerQuietUntil = Volatile.Read(ref _powerQuietUntilMs);
+        if (nowMs < powerQuietUntil || nowMs < _gapQuietUntilMs)
         {
+            if (!_portCycleQuietLogged)
+            {
+                _portCycleQuietLogged = true;
+                ServiceLog.Info(powerQuietUntil == long.MaxValue
+                    ? "[lianli-wireless] TX port cycle held back: suspend seen without a resume"
+                    : "[lianli-wireless] TX port cycle held back: recent power transition");
+            }
             return;
         }
-        if (_portCycles >= MaxPortCyclesPerEpisode)
+        _portCycleQuietLogged = false;
+        while (_portCycleTimesMs.Count > 0 && nowMs - _portCycleTimesMs.Peek() >= PortCycleWindowMs)
         {
-            _portCycleGaveUp = true;
-            ServiceLog.Warn($"[lianli-wireless] TX still hung after {_portCycles} port cycle(s), giving up: unplug and replug the module");
+            _portCycleTimesMs.Dequeue();
+        }
+        if (_portCycleTimesMs.Count >= MaxPortCyclesPerWindow)
+        {
+            if (!_portCycleCapLogged)
+            {
+                _portCycleCapLogged = true;
+                ServiceLog.Warn($"[lianli-wireless] TX still hung after {_portCycleTimesMs.Count} port cycle(s) in the last day, giving up: unplug and replug the module");
+            }
             return;
         }
+        _portCycleCapLogged = false;
+        _portCycleTimesMs.Enqueue(nowMs);
         _portCycles++;
-        var episode = _portCycles;
+        var episode = _portCycleTimesMs.Count;
         var resets = _txHungResets;
         var hungMinutes = (nowMs - _txHungSinceMs) / 60_000;
         _nextPortCycleMs = nowMs + PortCycleSpacingMs;
@@ -762,7 +793,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 return;
             }
-            ServiceLog.Warn($"[lianli-wireless] TX ignored {resets} RX reset(s) over {hungMinutes} min, cycling its USB port {target} ({episode}/{MaxPortCyclesPerEpisode})");
+            ServiceLog.Warn($"[lianli-wireless] TX ignored {resets} RX reset(s) over {hungMinutes} min, cycling its USB port {target} ({episode}/{MaxPortCyclesPerWindow} today)");
             var ok = cycler.TryCycle(instanceId, out var detail);
             ServiceLog.Warn($"[lianli-wireless] TX port cycle {(ok ? "done" : "failed")}: {detail}");
         }
@@ -850,6 +881,9 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
         probe = TxProbe.Answered;
+        // A reply of any kind means the TX is not hung, whatever it says about the master.
+        _txHungResets = 0;
+        _txHungSinceMs = 0;
         if (Slv3Protocol.MacIsZero(mac))
         {
             return false;

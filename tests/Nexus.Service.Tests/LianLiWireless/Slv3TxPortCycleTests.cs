@@ -35,17 +35,17 @@ public partial class Slv3HubTests
     }
 
     // A TX the RX reset never revives, driven through connect attempts one reset window apart.
-    private (Slv3Hub Hub, ManualClock Clock, FakeSlv3Network Net, FakeTxPortCycler Cycler, ToggleDiscovery Discovery) HungTxHub()
+    private (Slv3Hub Hub, ManualClock Clock, FakeSlv3Network Net, FakeTxPortCycler Cycler, ToggleDiscovery Discovery) HungTxHub(bool answersWithZeroMac = false, Action<Action>? run = null)
     {
         var clock = new ManualClock();
-        var net = new FakeSlv3Network { TxWedged = true, TxIgnoresReset = true };
+        var net = new FakeSlv3Network { TxWedged = !answersWithZeroMac, TxIgnoresReset = true };
         var rx = new FakeRxTransport(net);
         var discovery = new ToggleDiscovery();
         var cycler = new FakeTxPortCycler();
-        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? new FakeTxTransport(net) : rx, clock.NowMs)
+        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? new FakeTxTransport(net) { MasterChannel = answersWithZeroMac ? (byte)250 : Slv3Protocol.DefaultChannel } : rx, clock.NowMs)
         {
             ConfirmNewChains = false,
-            RunPortCycle = work => work(),
+            RunPortCycle = run ?? (work => work()),
             TxPortCycler = cycler,
         };
         return (hub, clock, net, cycler, discovery);
@@ -77,7 +77,7 @@ public partial class Slv3HubTests
     {
         var (hub, clock, _, cycler, _) = HungTxHub();
 
-        // Four resets are below the reset threshold however long they take.
+        // Fewer resets than the threshold never qualify, however long they take.
         Attempts(hub, clock, 4, 400_000);
         Assert.Empty(cycler.Cycled);
     }
@@ -87,9 +87,10 @@ public partial class Slv3HubTests
     {
         var (hub, clock, _, cycler, _) = HungTxHub();
 
-        // Reset backoff tops out at 60 s, so the fifth reset lands well inside the five-minute floor.
+        // The reset backoff is short, so the threshold count is reached inside the minimum hang time.
+        var start = clock.NowMs();
         Attempts(hub, clock, 12, 10_000);
-        Assert.True(clock.NowMs() - 1_000_000 < Slv3Hub.TxHangMinMsBeforePortCycle);
+        Assert.True(clock.NowMs() - start < Slv3Hub.TxHangMinMsBeforePortCycle);
         Assert.Empty(cycler.Cycled);
     }
 
@@ -102,7 +103,7 @@ public partial class Slv3HubTests
         Attempts(hub, clock, 400);
 
         Assert.Empty(cycler.Cycled);
-        Assert.Equal(Slv3Hub.MaxPortCyclesPerEpisode, cycler.Resolves);
+        Assert.Equal(Slv3Hub.MaxPortCyclesPerWindow, cycler.Resolves);
     }
 
     [Fact]
@@ -112,7 +113,7 @@ public partial class Slv3HubTests
 
         Attempts(hub, clock, 400);
 
-        Assert.Equal(Slv3Hub.MaxPortCyclesPerEpisode, cycler.Cycled.Count);
+        Assert.Equal(Slv3Hub.MaxPortCyclesPerWindow, cycler.Cycled.Count);
     }
 
     [Fact]
@@ -133,12 +134,12 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void An_answering_tx_ends_the_episode_and_restores_the_cycle_budget()
+    public void An_answer_does_not_restore_the_cycle_budget()
     {
         var (hub, clock, net, cycler, _) = HungTxHub();
 
         Attempts(hub, clock, 400);
-        Assert.Equal(Slv3Hub.MaxPortCyclesPerEpisode, cycler.Cycled.Count);
+        Assert.Equal(Slv3Hub.MaxPortCyclesPerWindow, cycler.Cycled.Count);
 
         net.TxWedged = false;
         clock.AdvanceMs(65_000);
@@ -146,9 +147,46 @@ public partial class Slv3HubTests
 
         hub.Disconnect();
         net.TxWedged = true;
-        var before = cycler.Cycled.Count;
         Attempts(hub, clock, 400);
-        Assert.Equal(before + Slv3Hub.MaxPortCyclesPerEpisode, cycler.Cycled.Count);
+        Assert.Equal(Slv3Hub.MaxPortCyclesPerWindow, cycler.Cycled.Count);
+    }
+
+    [Fact]
+    public void The_cycle_budget_returns_after_the_rolling_window()
+    {
+        var (hub, clock, _, cycler, _) = HungTxHub();
+
+        Attempts(hub, clock, 400);
+        Assert.Equal(Slv3Hub.MaxPortCyclesPerWindow, cycler.Cycled.Count);
+
+        clock.AdvanceMs(Slv3Hub.PortCycleWindowMs);
+        Attempts(hub, clock, 400);
+        Assert.True(cycler.Cycled.Count > Slv3Hub.MaxPortCyclesPerWindow);
+    }
+
+    [Fact]
+    public void A_tx_that_answers_with_no_master_is_never_cycled()
+    {
+        var (hub, clock, _, cycler, _) = HungTxHub(answersWithZeroMac: true);
+
+        Attempts(hub, clock, 400);
+
+        Assert.Empty(cycler.Cycled);
+    }
+
+    [Fact]
+    public void A_long_gap_between_passes_holds_cycling_for_the_quiet_period()
+    {
+        var (hub, clock, _, cycler, _) = HungTxHub();
+        Attempts(hub, clock, 6);
+        Assert.Empty(cycler.Cycled);
+
+        Attempts(hub, clock, 1, Slv3Hub.PortCyclePassGapMs + 1);
+        Assert.Empty(cycler.Cycled);
+
+        Attempts(hub, clock, 1, Slv3Hub.PortCycleResumeQuietMs + 1);
+        Attempts(hub, clock, 30);
+        Assert.NotEmpty(cycler.Cycled);
     }
 
     [Fact]
@@ -189,7 +227,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void No_cycle_around_suspend_and_resume_or_after_dispose()
+    public void No_cycle_around_suspend_and_resume_and_cycling_returns_afterwards()
     {
         var (hub, clock, _, cycler, _) = HungTxHub();
         _ = hub.OnSystemSuspending();
@@ -197,14 +235,26 @@ public partial class Slv3HubTests
         Assert.Empty(cycler.Cycled);
 
         hub.OnSystemResumed();
-        Attempts(hub, clock, 1, Slv3Hub.PortCycleResumeQuietMs - 1);
+        Attempts(hub, clock, 1, Slv3Hub.PortCycleResumeQuietMs / 2);
         Assert.Empty(cycler.Cycled);
 
-        var (disposed, clock2, _, cycler2, _) = HungTxHub();
-        Attempts(disposed, clock2, 3);
-        disposed.Dispose();
-        Attempts(disposed, clock2, 100);
-        Assert.Empty(cycler2.Cycled);
+        Attempts(hub, clock, 30);
+        Assert.NotEmpty(cycler.Cycled);
+    }
+
+    [Fact]
+    public void A_cycle_pending_when_the_hub_is_disposed_is_not_run()
+    {
+        Action? pending = null;
+        var (hub, clock, _, cycler, _) = HungTxHub(run: work => pending = work);
+
+        Attempts(hub, clock, 30);
+        Assert.NotNull(pending);
+
+        hub.Dispose();
+        pending!();
+
+        Assert.Empty(cycler.Cycled);
     }
 
     [Theory]
@@ -226,5 +276,5 @@ public partial class Slv3HubTests
     [InlineData(@"USB\VID_1A86&PID_8091\6&1&0&13", true)]
     [InlineData(@"PCI\VEN_8086&DEV_1\3&1", false)]
     public void The_parent_must_be_a_usb_hub_devnode(string instanceId, bool expected) =>
-        Assert.Equal(expected, Slv3TxPortIdentity.IsUsbHubInstanceId(instanceId));
+        Assert.Equal(expected, Slv3TxPortIdentity.IsUsbEnumeratedInstanceId(instanceId));
 }

@@ -29,11 +29,13 @@ internal static class Slv3TxPortIdentity
         }
         var serial = instanceId.AsSpan(TxInstancePrefix.Length);
         return serial.Length > 0
-            && serial.IndexOf('\\') < 0
-            && !serial.Contains("&MI_", StringComparison.OrdinalIgnoreCase);
+            && serial.IndexOf('\\') < 0;
     }
 
-    /// <summary>The parent must be a USB hub devnode (root hub or external hub).</summary>
-    internal static bool IsUsbHubInstanceId(string instanceId) =>
+    /// <summary>
+    /// Coarse sanity check that the parent devnode is on the USB enumerator. The real hub
+    /// check is the hub-interface lookup in <c>QSeriesUsbPortCycle.TryCycle</c>.
+    /// </summary>
+    internal static bool IsUsbEnumeratedInstanceId(string instanceId) =>
         instanceId.StartsWith(@"USB\", StringComparison.OrdinalIgnoreCase);
 }
