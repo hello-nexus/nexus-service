@@ -1160,6 +1160,9 @@ public static class NexusServiceCollectionExtensions
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3Transport(port.PortName, port.Role),
 #endif
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>());
+#if WINDOWS
+            wirelessHub.TxPortCycler = new Nexus.Service.Peripherals.LianLiWireless.WindowsSlv3TxPortCycler();
+#endif
             wirelessHub.WiredOwned = mac => sp.GetService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>()?.Find(mac) is not null;
             return wirelessHub;
         });

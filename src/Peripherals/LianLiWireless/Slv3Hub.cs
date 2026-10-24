@@ -265,6 +265,32 @@ public sealed partial class Slv3Hub : IDisposable
     private int _txRecoveries;
     private long _nextTxRecoveryMs;
 
+    // Last resort for a TX that ignores the RX reset: cycle the one hub port the TX
+    // devnode sits on. Needs this many RX resets sent and this long since the first,
+    // with the TX never leaving the bus in between: a TX that recovers does so on the
+    // first or second reset within seconds, so five resets over five minutes is a
+    // device that will not come back on its own.
+    internal const int TxResetsBeforePortCycle = 5;
+    internal const long TxHangMinMsBeforePortCycle = 300_000;
+    // Spacing between cycles, and the cap per hang episode. An episode ends when the
+    // TX answers; past the cap only a physical replug is left.
+    internal const long PortCycleSpacingMs = 600_000;
+    internal const int MaxPortCyclesPerEpisode = 3;
+    // No cycle until this long after a resume: the TX is re-enumerating on its own.
+    internal const long PortCycleResumeQuietMs = 120_000;
+    private int _txHungResets;
+    private long _txHungSinceMs;
+    private int _portCycles;
+    private long _nextPortCycleMs;
+    private bool _portCycleGaveUp;
+    private int _portCycleInFlight;
+    private long _powerQuietUntilMs;
+
+    /// <summary>Windows only; null leaves the TX reset to the RX alone.</summary>
+    internal ISlv3TxPortCycler? TxPortCycler { get; set; }
+
+    internal Action<Action> RunPortCycle { get; init; } = work => _ = Task.Run(work);
+
     // The transport keeps a TX handle open through write timeouts, so a TX that
     // sends nothing back to the once-a-second GetMac this many times in a row is
     // closed here; the reopen path then counts toward the reset above.
@@ -407,6 +433,7 @@ public sealed partial class Slv3Hub : IDisposable
                     rxPort ??= port;
                 }
             }
+            ConsiderTxPortCycleLocked(txPort, _nowMs());
             if (txPort is null || rxPort is null)
             {
                 // The module presents TX and RX as two WinUSB devices behind its
@@ -432,6 +459,7 @@ public sealed partial class Slv3Hub : IDisposable
                     _txFails = 0;
                     _txRecoveries = 0;
                     _nextTxRecoveryMs = 0;
+                    ClearPortCycleEpisodeLocked();
                 }
                 return false;
             }
@@ -563,6 +591,7 @@ public sealed partial class Slv3Hub : IDisposable
                 rxPort ??= port;
             }
         }
+        ConsiderTxPortCycleLocked(txPort, nowMs);
         if (txPort is null && rxPort is null)
         {
             if (_bothAbsentSinceMs == 0)
@@ -576,6 +605,7 @@ public sealed partial class Slv3Hub : IDisposable
                 _txFails = 0;
                 _txRecoveries = 0;
                 _nextTxRecoveryMs = 0;
+                ClearPortCycleEpisodeLocked();
                 return false;
             }
         }
@@ -642,7 +672,8 @@ public sealed partial class Slv3Hub : IDisposable
 
     private void ResetTxViaRxLocked(long nowMs, string reason)
     {
-        if (nowMs < _nextTxRecoveryMs)
+        // The port cycle owns the TX while it runs.
+        if (nowMs < _nextTxRecoveryMs || Volatile.Read(ref _portCycleInFlight) != 0)
         {
             return;
         }
@@ -657,12 +688,97 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         _txRecoveries++;
+        if (_txHungResets++ == 0)
+        {
+            _txHungSinceMs = nowMs;
+        }
         _nextTxRecoveryMs = nowMs + RecoveryBackoffFor(_txRecoveries);
         ServiceLog.Warn($"[lianli-wireless] {reason}, resetting TX via RX ({_txRecoveries})");
     }
 
     private static long RecoveryBackoffFor(int recoveries) =>
         Math.Min(RecoveryBackoffMs << Math.Min(recoveries - 1, 4), RecoveryBackoffMaxMs);
+
+    private void ClearPortCycleEpisodeLocked()
+    {
+        _txHungResets = 0;
+        _txHungSinceMs = 0;
+        _portCycles = 0;
+        _portCycleGaveUp = false;
+    }
+
+    // Called with the TX this pass found enumerated, or null when it is not. A TX
+    // that left the bus was re-enumerated, which is not a hang the RX reset ignored.
+    private void ConsiderTxPortCycleLocked(Slv3PortInfo? txPort, long nowMs)
+    {
+        if (txPort is null)
+        {
+            _txHungResets = 0;
+            _txHungSinceMs = 0;
+            return;
+        }
+        var cycler = TxPortCycler;
+        if (cycler is null || _disposed || txPort.Role != Slv3DongleRole.Tx
+            || _txHungResets < TxResetsBeforePortCycle
+            || nowMs - _txHungSinceMs < TxHangMinMsBeforePortCycle
+            || nowMs < _nextPortCycleMs
+            || nowMs < Volatile.Read(ref _powerQuietUntilMs)
+            || Volatile.Read(ref _portCycleInFlight) != 0)
+        {
+            return;
+        }
+        if (_portCycleGaveUp)
+        {
+            return;
+        }
+        if (_portCycles >= MaxPortCyclesPerEpisode)
+        {
+            _portCycleGaveUp = true;
+            ServiceLog.Warn($"[lianli-wireless] TX still hung after {_portCycles} port cycle(s), giving up: unplug and replug the module");
+            return;
+        }
+        _portCycles++;
+        var episode = _portCycles;
+        var resets = _txHungResets;
+        var hungMinutes = (nowMs - _txHungSinceMs) / 60_000;
+        _nextPortCycleMs = nowMs + PortCycleSpacingMs;
+        _txHungResets = 0;
+        _txHungSinceMs = 0;
+        Volatile.Write(ref _portCycleInFlight, 1);
+        RunPortCycle(() => CycleTxPort(cycler, txPort, episode, resets, hungMinutes));
+    }
+
+    // Runs without _lock: the hub IOCTL and the re-arrival wait can block for seconds.
+    private void CycleTxPort(ISlv3TxPortCycler cycler, Slv3PortInfo txPort, int episode, int resets, long hungMinutes)
+    {
+        try
+        {
+            if (!cycler.TryResolve(txPort, out var instanceId, out var target))
+            {
+                ServiceLog.Warn($"[lianli-wireless] TX port cycle refused: {target}");
+                return;
+            }
+            if (_disposed || _nowMs() < Volatile.Read(ref _powerQuietUntilMs))
+            {
+                return;
+            }
+            ServiceLog.Warn($"[lianli-wireless] TX ignored {resets} RX reset(s) over {hungMinutes} min, cycling its USB port {target} ({episode}/{MaxPortCyclesPerEpisode})");
+            var ok = cycler.TryCycle(instanceId, out var detail);
+            ServiceLog.Warn($"[lianli-wireless] TX port cycle {(ok ? "done" : "failed")}: {detail}");
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] TX port cycle failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _portCycleInFlight, 0);
+        }
+    }
+
+    /// <summary>The system resumed: no TX port cycle until it has had time to re-enumerate on its own.</summary>
+    public void OnSystemResumed() =>
+        Volatile.Write(ref _powerQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
 
     private bool MasterInitLocked(out bool anyWritten)
     {
@@ -738,13 +854,18 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return false;
         }
-        if (_txRecoveries > 0)
+        if (_portCycles > 0)
+        {
+            ServiceLog.Info($"[lianli-wireless] TX answered after port cycle ({_portCycles}), {_txRecoveries} reset(s) via RX");
+        }
+        else if (_txRecoveries > 0)
         {
             ServiceLog.Info($"[lianli-wireless] TX answered after {_txRecoveries} reset(s) via RX");
         }
         _txFails = 0;
         _txRecoveries = 0;
         _nextTxRecoveryMs = 0;
+        ClearPortCycleEpisodeLocked();
         _txMissedProbes = 0;
         _txProbeWriteFailures = 0;
         if (!Slv3Protocol.MacIsZero(_masterMac) && !Slv3Protocol.MacEquals(_masterMac, mac))
@@ -3129,6 +3250,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public Task OnSystemSuspending()
     {
+        Volatile.Write(ref _powerQuietUntilMs, long.MaxValue);
         if (_disposed || !IsConnected)
         {
             return Task.CompletedTask;
