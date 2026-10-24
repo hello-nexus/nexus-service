@@ -12,7 +12,7 @@ public sealed class PanelRenderSession : IDisposable
 {
     public const int MaxFps = 60;
 
-    // Panel transports re-encode at 85, so a near-lossless capture keeps the second pass cheap in quality.
+    // Panel transports re-encode, so a near-lossless capture keeps the double-compression loss low.
     internal const int JpegQuality = 90;
 
     private readonly CdpPipeClient _cdp;
@@ -185,8 +185,15 @@ public sealed class PanelRenderSession : IDisposable
                 await _frameReady.WaitAsync(ct).ConfigureAwait(false);
                 var started = Environment.TickCount64;
                 var pending = Interlocked.Exchange(ref _latestFrame, null);
+                // Acked on take, so Chromium's next capture overlaps the pacing delay; the pump
+                // still takes one frame per period, which is what bounds the capture rate.
+                while (_owedAcks.TryDequeue(out var owed))
+                {
+                    Ack(owed);
+                }
                 if (pending is not null)
                 {
+                    Ack(pending.Ack);
                     var frame = DecodeToBgra(pending.Data, PixelWidth, PixelHeight);
                     if (frame is not null)
                     {
@@ -199,18 +206,15 @@ public sealed class PanelRenderSession : IDisposable
                 {
                     await Task.Delay((int)(periodMs - spent), ct).ConfigureAwait(false);
                 }
-                while (_owedAcks.TryDequeue(out var owed))
-                {
-                    Ack(owed);
-                }
-                if (pending is not null)
-                {
-                    Ack(pending.Ack);
-                }
             }
         }
         catch (OperationCanceledException)
         {
+        }
+        catch (Exception ex)
+        {
+            Faulted = true;
+            ServiceLog.Warn($"[panel-render] session {SessionId} pump failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

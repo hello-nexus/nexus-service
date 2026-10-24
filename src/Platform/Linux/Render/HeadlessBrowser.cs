@@ -43,6 +43,18 @@ public sealed class HeadlessBrowser : IDisposable
 
     public GpuTier Tier { get; private init; }
 
+    /// <summary>
+    /// Best effort: set when browser stderr reports the GPU process dying or being unusable. Chromium
+    /// does not promise to print these, so a false value proves nothing.
+    /// </summary>
+    public bool GpuProcessFailed => Volatile.Read(ref _gpuProcessFailed) != 0;
+    private int _gpuProcessFailed;
+
+    private static readonly string[] GpuFailureMarkers =
+    {
+        "GPU process exited unexpectedly", "GPU process isn't usable", "Exiting GPU process",
+    };
+
     private const string WebGlRendererProbe =
         "(() => { const c = document.createElement('canvas');"
         + " const gl = c.getContext('webgl2') || c.getContext('webgl'); if (!gl) return 'none';"
@@ -142,7 +154,7 @@ public sealed class HeadlessBrowser : IDisposable
         var process = Process.Start(psi) ?? throw new IOException($"could not start {browserPath}");
         var cdp = new CdpPipeClient(process.StandardInput.BaseStream, process.StandardOutput.BaseStream);
         var browser = new HeadlessBrowser(process, cdp, browserPath) { Tier = tier };
-        _ = DrainStderrAsync(process, log);
+        _ = DrainStderrAsync(process, log, browser);
         try
         {
             var version = await cdp.SendAsync("Browser.getVersion", ct: ct, timeoutMs: 20000).ConfigureAwait(false);
@@ -157,7 +169,7 @@ public sealed class HeadlessBrowser : IDisposable
         }
     }
 
-    private static async Task DrainStderrAsync(Process process, Action<string>? log)
+    private static async Task DrainStderrAsync(Process process, Action<string>? log, HeadlessBrowser browser)
     {
         var logged = 0;
         try
@@ -165,6 +177,13 @@ public sealed class HeadlessBrowser : IDisposable
             string? line;
             while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) is not null)
             {
+                foreach (var marker in GpuFailureMarkers)
+                {
+                    if (line.Contains(marker, StringComparison.Ordinal))
+                    {
+                        Volatile.Write(ref browser._gpuProcessFailed, 1);
+                    }
+                }
                 if (logged < StderrLinesLogged && !string.IsNullOrWhiteSpace(line))
                 {
                     logged++;

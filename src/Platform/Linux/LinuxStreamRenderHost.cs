@@ -23,6 +23,8 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private const int RapidExitMs = 60_000;
     private const int SessionStartTimeoutMs = 20_000;
     private const int GpuDemoteAfterFailures = 2;
+    private const int GpuTierBudgetMs = 10_000;
+    private const int GpuReprobeMs = 10 * 60_000;
     private const string Tag = "[panel-render]";
 
     private static int _servicePort = ServiceLaunchIntent.DefaultServicePort;
@@ -30,6 +32,8 @@ public sealed class LinuxStreamRenderHost : BackgroundService
 
     // Decided once per process by probing the GPU tiers, then reused by every browser relaunch.
     private static GpuTier? s_tier;
+    // Software is never cached as an answer; it only pauses probing, so a transient failure heals.
+    private static long s_noProbeUntil;
 
     private readonly StreamedPanelCoordinator _coordinator;
     private readonly TokenService _tokens;
@@ -133,6 +137,12 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         }
         _idleSince = -1;
 
+        // A GPU process that died under a live browser: the next launch uses the CPU path.
+        if (_browser is { GpuProcessFailed: true, Tier: not GpuTier.Software } && s_tier is { } live)
+        {
+            ServiceLog.Warn($"{Tag} browser reported a GPU process failure on {live}; the next launch uses software rendering");
+            DemoteGpu();
+        }
         if (_browser is { HasExited: true })
         {
             ServiceLog.Warn($"{Tag} headless browser exited; restarting");
@@ -204,7 +214,10 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             _browser = s_tier is { } tier
                 ? await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
                     line => ServiceLog.Info($"{Tag} {line}"), ct, tier).ConfigureAwait(false)
-                : await LaunchProbingGpuAsync(browser, profileDir, ct).ConfigureAwait(false);
+                : Environment.TickCount64 < s_noProbeUntil
+                    ? await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+                        line => ServiceLog.Info($"{Tag} {line}"), ct, GpuTier.Software).ConfigureAwait(false)
+                    : await LaunchProbingGpuAsync(browser, profileDir, ct).ConfigureAwait(false);
             _browserStartedAt = Environment.TickCount64;
             ServiceLog.Info($"{Tag} headless browser rendering tier: {_browser.Tier}");
             return true;
@@ -226,12 +239,16 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         HeadlessBrowser? kept = null;
         var tier = await GpuTiers.SelectAsync(async candidateTier =>
         {
-            var candidate = await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
-                null, ct, candidateTier).ConfigureAwait(false);
+            // One budget covers launch, renderer probe and capture check, so a wedged driver costs one tier's budget.
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(GpuTierBudgetMs);
+            HeadlessBrowser? candidate = null;
             try
             {
-                var renderer = await candidate.ProbeRendererAsync(ct).ConfigureAwait(false);
-                if (GpuTiers.IsSoftwareRenderer(renderer) || !await CapturesCorrectlyAsync(candidate, ct).ConfigureAwait(false))
+                candidate = await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+                    line => ServiceLog.Info($"{Tag} {line}"), budget.Token, candidateTier).ConfigureAwait(false);
+                var renderer = await candidate.ProbeRendererAsync(budget.Token).ConfigureAwait(false);
+                if (GpuTiers.IsSoftwareRenderer(renderer) || !await CapturesCorrectlyAsync(candidate, budget.Token).ConfigureAwait(false))
                 {
                     candidate.Dispose();
                     return false;
@@ -240,14 +257,27 @@ public sealed class LinuxStreamRenderHost : BackgroundService
                 kept = candidate;
                 return true;
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                ServiceLog.Info($"{Tag} gpu probe: {candidateTier} timed out");
+                candidate?.Dispose();
+                return false;
+            }
             catch
             {
-                candidate.Dispose();
+                candidate?.Dispose();
                 throw;
             }
         }, line => ServiceLog.Info($"{Tag} gpu probe: {line}")).ConfigureAwait(false);
 
-        s_tier = tier;
+        if (tier == GpuTier.Software)
+        {
+            s_noProbeUntil = Environment.TickCount64 + GpuReprobeMs;
+        }
+        else
+        {
+            s_tier = tier;
+        }
         return kept ?? await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
             line => ServiceLog.Info($"{Tag} {line}"), ct, GpuTier.Software).ConfigureAwait(false);
     }
@@ -282,11 +312,17 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     // A GPU tier that keeps killing the browser is dropped for the CPU path instead of exhausting the retry cap.
     private void DemoteGpuIfUnstable()
     {
-        if (s_tier is { } tier && tier != GpuTier.Software && _rapidBrowserFailures >= GpuDemoteAfterFailures)
+        if (s_tier is { } tier && _rapidBrowserFailures >= GpuDemoteAfterFailures)
         {
             ServiceLog.Warn($"{Tag} browser unstable on {tier}; falling back to software rendering");
-            s_tier = GpuTier.Software;
+            DemoteGpu();
         }
+    }
+
+    private static void DemoteGpu()
+    {
+        s_tier = null;
+        s_noProbeUntil = Environment.TickCount64 + GpuReprobeMs;
     }
 
     private async Task StartSessionAsync(StreamAssignmentDto a, CancellationToken ct)

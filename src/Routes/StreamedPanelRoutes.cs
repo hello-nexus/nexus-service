@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
 using Nexus.Service.Auth;
@@ -34,15 +35,23 @@ public static class StreamedPanelRoutes
             return Results.Json(new StreamSettingsDto { FpsCap = config.Load().StreamedPanelFpsCap }, AppJsonContext.Default.StreamSettingsDto);
         });
 
-        app.MapPut("/panel/streams/settings", (StreamSettingsDto body, HttpContext ctx, IConfigStore config, StreamedPanelCoordinator coordinator, TokenService tokens) =>
+        app.MapPut("/panel/streams/settings", (JsonElement body, HttpContext ctx, IConfigStore config, StreamedPanelCoordinator coordinator, TokenService tokens) =>
         {
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
-            if (!StreamFpsCap.IsValid(body.FpsCap))
+            // Only an explicit null means Off; an absent key (a typo) must not silently switch the cap off.
+            if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("fpsCap", out var cap))
+                return Results.BadRequest(ApiResponse.Fail("fpsCap is required"));
+            int? value = null;
+            if (cap.ValueKind == JsonValueKind.Number && cap.TryGetInt32(out var n))
+                value = n;
+            else if (cap.ValueKind != JsonValueKind.Null)
                 return Results.BadRequest(ApiResponse.Fail("fpsCap must be one of 30, 20, 15, 10, 5, 1 or null"));
-            config.Update(s => s.StreamedPanelFpsCap = body.FpsCap);
+            if (!StreamFpsCap.IsValid(value))
+                return Results.BadRequest(ApiResponse.Fail("fpsCap must be one of 30, 20, 15, 10, 5, 1 or null"));
+            config.Update(s => s.StreamedPanelFpsCap = value);
             coordinator.Wake();
-            return Results.Json(new StreamSettingsDto { FpsCap = body.FpsCap }, AppJsonContext.Default.StreamSettingsDto);
+            return Results.Json(new StreamSettingsDto { FpsCap = value }, AppJsonContext.Default.StreamSettingsDto);
         });
 
         // One long-lived chunked POST per stream session carrying framed

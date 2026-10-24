@@ -60,6 +60,10 @@ public sealed class StreamedPanelSettingsRouteTests : IDisposable
     [InlineData("{\"fpsCap\":25}")]
     [InlineData("{\"fpsCap\":0}")]
     [InlineData("{\"fpsCap\":60}")]
+    [InlineData("{}")]
+    [InlineData("{\"fpscap\":null}")]
+    [InlineData("{\"fpsCap\":\"20\"}")]
+    [InlineData("{\"fpsCap\":20.5}")]
     public async Task Put_rejects_values_outside_the_allowed_set(string json)
     {
         var response = await Client().PutAsync("/panel/streams/settings", Body(json));
