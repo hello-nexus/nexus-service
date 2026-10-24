@@ -1115,7 +1115,8 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    // With the lock on a chain this hub owns is steered back even while its USB receiver is open: the receiver re-enumerating drops the RF bind and nothing else restores it.
+    // With the lock on, an owned chain is steered back even while its USB receiver is open:
+    // the receiver re-enumerating drops the RF bind and nothing else restores it.
     private bool IsLockedOwnedLocked(string key) => _lockBound && _owned.ContainsKey(key) && !_userUnbound.Contains(key);
 
     // L-Connect adoption: with the lock on, a chain reporting our master is steered from its first sight and an
@@ -2500,6 +2501,15 @@ public sealed partial class Slv3Hub : IDisposable
             // A fan the USB path drives is only ever released here, so the USB path can take it over.
             if (IsWiredOwned(macHex) && !IsBoundToUsLocked(existing))
             {
+                if (_owned.ContainsKey(key))
+                {
+                    // An owned chain whose bind dropped has nothing to release over RF; only the ownership is given up.
+                    _userUnbound.Add(key);
+                    _owned.Remove(key);
+                    _ownedDirty = true;
+                    _intents.Remove(key);
+                    goto flush;
+                }
                 error = WiredOwnedError;
                 return false;
             }
@@ -2521,6 +2531,7 @@ public sealed partial class Slv3Hub : IDisposable
             }
             PerformUnbindLocked(key, macHex, existing);
         }
+    flush:
         FlushOwned();
         return true;
     }

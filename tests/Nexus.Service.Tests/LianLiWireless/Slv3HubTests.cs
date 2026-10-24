@@ -548,18 +548,68 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_wired_fan_we_do_not_own_and_not_bound_to_us_is_left_alone_by_reconcile()
+    public void A_wired_fan_the_user_released_that_still_reports_our_master_is_left_alone_once_the_release_is_given_up()
     {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        Assert.True(ManualBind(hub, Convert.ToHexString(FanMac)));
+        Assert.True(hub.DriveTick());
         var mac = Convert.ToHexString(FanMac);
-        var (hub, net, tx, _, _) = CreateOwnershipHub();
         hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
-        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 254, Channel = 11 });
+        hub.SetLockBoundDevices(false);
+        var fan = net.Fans[0];
+        net.Fans.Clear();
+        Assert.True(hub.Unbind(mac, out _));
+        for (var i = 0; i < Slv3Hub.WiredReleaseMaxSends + 5; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+        net.Fans.Add(fan);
+        hub.SetLockBoundDevices(true);
         tx.SentFrames.Clear();
 
-        Ticks(hub, 3);
+        Ticks(hub, 5);
 
         Assert.Equal(0, CountBindFrames(tx));
-        Assert.Equal(11, hub.State.Fans[0].Channel);
+    }
+
+    [Fact]
+    public void Unbind_of_an_owned_wired_chain_whose_bind_dropped_gives_up_ownership_without_rf_frames()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, saved, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        hub.SetLockBoundDevices(false);
+        Ticks(hub, 2);
+        tx.SentFrames.Clear();
+
+        Assert.True(hub.Unbind(mac, out var error), error);
+        hub.SetLockBoundDevices(true);
+        Ticks(hub, 5);
+
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.False(saved.ContainsKey(mac));
+        Assert.False(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
+    public void Unbind_of_a_wired_chain_we_do_not_own_is_still_refused()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, _, _, _) = CreateOwnershipHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 254 });
+        Ticks(hub, 2);
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        hub.SetLockBoundDevices(false);
+
+        Assert.False(hub.Unbind(mac, out var error));
+        Assert.Equal(Slv3Hub.WiredOwnedError, error);
     }
 
     [Fact]
