@@ -154,6 +154,10 @@ public sealed class MystiqueSession
         long started = _monotonicMs();
         for (int p = 0; p < packages.Count; p++)
         {
+            if (_stop.IsCancellationRequested)
+            {
+                return p;
+            }
             if (p > 0 && packages[p - 1].Kind == MystiqueMedia.KindPicture)
             {
                 _sleep(AfterPictureGapMs);

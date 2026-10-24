@@ -317,10 +317,11 @@ public sealed class MystiqueWorker : BackgroundService
         {
             int misses = 0;
             long nextPresenceMs = Environment.TickCount64 + PresencePollMs;
-            while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(HandlerId))
+            // A cancelled stop ends the session even when control is back on, so the next one gets a live token.
+            while (!stop.IsCancellationRequested && _gate.IsEnabled(HandlerId))
             {
                 await _wake.WaitAsync(_tickMs, stoppingToken).ConfigureAwait(false);
-                if (!_gate.IsEnabled(HandlerId))
+                if (stop.IsCancellationRequested || !_gate.IsEnabled(HandlerId))
                 {
                     break;
                 }

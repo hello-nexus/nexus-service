@@ -485,7 +485,7 @@ public partial class DeepCoolMystiqueRoutesTests
         var before = screen.Pipe;
         int mark = before.Writes().Count;
         int halts = before.ClearHalts;
-        screen.Factory.Pipes.BlockTimedWrite = i => i == 0;
+        screen.Factory.Pipes.BlockTimedWrite = (i, _) => i == 0;
 
         var upload = UploadGifAsync(screen, MystiqueMediaTests.Png(120, 120, shift: 3));
         Assert.True(screen.Factory.Pipes.Blocked.Wait(TimeSpan.FromSeconds(10)));
@@ -506,6 +506,46 @@ public partial class DeepCoolMystiqueRoutesTests
         var writes = before.Writes().Skip(mark).ToList();
         Assert.Equal(MystiqueMedia.FinishLength, writes[^1].Length);
         Assert.True(writes.Count > 2, "the stopped frame is filled before the finish packet");
+    }
+
+    [FfmpegFact]
+    public async Task A_stop_after_the_picture_landed_sends_no_gif_announce()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        var picture = MystiqueMediaTests.Png(120, 120);
+        await screen.UploadAsync(picture);
+        await UploadGifAsync(screen, MystiqueMediaTests.Png(120, 120, shift: 3));
+        var before = screen.Pipe;
+        int mark = before.Writes().Count;
+        int next = before.Timeouts().Count;
+        int blocked = 0;
+        screen.Factory.Pipes.BlockTimedWrite = (i, length) =>
+            i >= next && length == MystiqueMedia.FinishLength && Interlocked.Exchange(ref blocked, 1) == 0;
+
+        var upload = UploadGifAsync(screen, MystiqueMediaTests.Png(120, 120, shift: 9));
+        Assert.True(screen.Factory.Pipes.Blocked.Wait(TimeSpan.FromSeconds(10)));
+        screen.Factory.Services.GetRequiredService<DeviceControlGate>().SetEnabled(MystiqueWorker.HandlerId, false);
+        var failed = await upload.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(Ok(failed));
+        var writes = before.Writes().Skip(mark).ToList();
+        Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdUploadStart));
+        Assert.Equal(MystiqueMedia.FinishLength, writes[^1].Length);
+        Assert.Equal(PictureId(picture), screen.Settings().ShownPicture);
+    }
+
+    [FfmpegFact]
+    public async Task Control_turned_off_and_straight_back_on_reopens_the_session_so_uploads_still_go_through()
+    {
+        await using var screen = await Screen.StartAsync(MediaRoot());
+        int opens = screen.Factory.Pipes.Opens;
+        var gate = screen.Factory.Services.GetRequiredService<DeviceControlGate>();
+
+        gate.SetEnabled(MystiqueWorker.HandlerId, false);
+        gate.SetEnabled(MystiqueWorker.HandlerId, true);
+        await WaitFor(() => screen.Factory.Pipes.Opens > opens && screen.Worker.IsConnected);
+
+        Assert.True(Ok(await screen.UploadAsync(MystiqueMediaTests.Png(120, 120))));
     }
 
     /// <summary>Waits out two worker passes, each of which applies any pending settings before it polls.</summary>

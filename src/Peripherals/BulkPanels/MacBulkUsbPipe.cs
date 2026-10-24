@@ -130,6 +130,11 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 }
                 try
                 {
+                    // A cancel between the check above and the registration aborted no transfer.
+                    if (ct.IsCancellationRequested)
+                    {
+                        return 0;
+                    }
                     int moved = MacUsbHost.Transfer(pipe, nsData, Math.Max(1, timeoutMs) / 1000.0, out _, out int partial);
                     return moved >= 0 ? moved : partial > 0 ? partial : -1;
                 }

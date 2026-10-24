@@ -275,8 +275,8 @@ public class MystiqueWorkerTests
         /// <summary>Picks, by index on its pipe, a timed write the screen never takes.</summary>
         public Func<int, bool>? StallTimedWrite;
 
-        /// <summary>Picks, by index on its pipe, a timed write that waits until it is cancelled; <see cref="Blocked"/> is set while it waits.</summary>
-        public Func<int, bool>? BlockTimedWrite;
+        /// <summary>Picks, by index on its pipe and length, a timed write that waits until it is cancelled; <see cref="Blocked"/> is set while it waits.</summary>
+        public Func<int, int, bool>? BlockTimedWrite;
         public ManualResetEventSlim Blocked { get; } = new();
 
         public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId)
@@ -339,7 +339,7 @@ public class MystiqueWorkerTests
             {
                 return -1;
             }
-            if (factory.BlockTimedWrite?.Invoke(index) == true)
+            if (factory.BlockTimedWrite?.Invoke(index, data.Length) == true)
             {
                 factory.Blocked.Set();
                 ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(10));
