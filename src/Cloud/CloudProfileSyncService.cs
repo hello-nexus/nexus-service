@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
+using Nexus.Service.Lighting.Scene;
 using Nexus.Service.Models.Cloud;
 using Nexus.Service.Models.Profiles;
 using Nexus.Service.Models.Widgets;
@@ -37,6 +38,7 @@ public sealed class CloudProfileSyncService : BackgroundService
     private readonly IConfigStore _store;
     private readonly IFanControlProvider _fans;
     private readonly AppDataStore _appData;
+    private readonly PcSetupStore? _pcSetup;
     private readonly TimeProvider _clock;
 
     private readonly SemaphoreSlim _syncGate = new(1, 1);
@@ -47,13 +49,14 @@ public sealed class CloudProfileSyncService : BackgroundService
     private volatile string _lastSyncAt = "";
     private volatile string? _syncedAccountId;
 
-    public CloudProfileSyncService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, IFanControlProvider fans, AppDataStore appData)
-        : this(api, accounts, profiles, store, fans, appData, TimeProvider.System)
+    public CloudProfileSyncService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, IFanControlProvider fans, AppDataStore appData, PcSetupStore? pcSetup = null)
+        : this(api, accounts, profiles, store, fans, appData, TimeProvider.System, pcSetup)
     {
     }
 
-    internal CloudProfileSyncService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, IFanControlProvider fans, AppDataStore appData, TimeProvider clock)
+    internal CloudProfileSyncService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, IFanControlProvider fans, AppDataStore appData, TimeProvider clock, PcSetupStore? pcSetup = null)
     {
+        _pcSetup = pcSetup;
         _api = api;
         _accounts = accounts;
         _profiles = profiles;
@@ -186,7 +189,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             Name = conflict.Name,
             BaseRevision = conflict.CloudRevision,
             Payload = localExport,
-            AppData = appData,
+            AppData = PcSetupBackup.Attach(appData, _pcSetup),
         };
         var result = await _accounts.WithAuthAsync(accountId, token => _api.PutProfileAsync(token, OwnInstallId(), profileId, request, ct), ct).ConfigureAwait(false);
 
@@ -476,7 +479,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             Name = name,
             BaseRevision = baseRevision,
             Payload = payload,
-            AppData = appData,
+            AppData = PcSetupBackup.Attach(appData, _pcSetup),
         };
         var result = await _accounts.WithAuthAsync(accountId, token => _api.PutProfileAsync(token, OwnInstallId(), profileId, request, ct), ct).ConfigureAwait(false);
 
@@ -512,7 +515,8 @@ public sealed class CloudProfileSyncService : BackgroundService
         }
 
         var dto = result.Value;
-        var cloudAppData = ProfileBundle.Sanitize(dto.AppData);
+        // The PC setup in the bundle is applied only by a manual restore; a background pull must neither store it as app data nor hash it.
+        var cloudAppData = PcSetupBackup.Detach(ProfileBundle.Sanitize(dto.AppData), out _)!;
         var hash = HashPayload(dto.Payload!, cloudAppData);
         var name = string.IsNullOrEmpty(dto.Name) ? (dto.Payload!.Name ?? "Imported") : dto.Name;
         try
@@ -714,7 +718,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             // Auth/PrimaryProfileId/SharedCategories in place - the cloud
             // payload should already arrive stripped, but hashing first
             // avoids relying on that mutation ordering for correctness.
-            var cloudAppData = ProfileBundle.Sanitize(profileResult.Value.AppData);
+            var cloudAppData = PcSetupBackup.Detach(ProfileBundle.Sanitize(profileResult.Value.AppData), out _)!;
             var hash = HashPayload(profileResult.Value.Payload, cloudAppData);
             pulled.Add((row.ProfileId, row.Name, profileResult.Value.Payload.Settings!, cloudAppData, hash));
         }

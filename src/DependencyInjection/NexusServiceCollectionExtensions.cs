@@ -627,7 +627,13 @@ public static class NexusServiceCollectionExtensions
             engine.SamplingModeSource = () => modeStore.Load().Devices.SamplingModes;
             return engine;
         });
-        services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>();
+        services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>(sp =>
+        {
+            var scene = new Nexus.Service.Lighting.Scene.LightingSceneStore();
+            Nexus.Service.Routes.PcSetupRoutes.WireTopic(scene.Setup, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
+            return scene;
+        });
+        services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Setup);
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomEffectStore>();
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomFragCompiler>(sp =>
         {

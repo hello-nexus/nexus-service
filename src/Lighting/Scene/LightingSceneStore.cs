@@ -26,6 +26,27 @@ public sealed class LightingSceneStore
     {
         _docPath = Path.Combine(dir, "lighting-scene.json");
         _modelPath = Path.Combine(dir, "lighting-scene.glb");
+        Setup = new PcSetupStore(dir, Load);
+        // A record save re-applies the scene: the engine samples from the record's resolved objects.
+        Setup.Changed += _ => Changed?.Invoke();
+    }
+
+    /// <summary>The shared PC setup, in the same directory.</summary>
+    public PcSetupStore Setup { get; }
+
+    /// <summary>
+    /// <see cref="Load"/> with the objects replaced by the saved PC setup's
+    /// resolved objects when there are any; the scene file's own objects
+    /// otherwise. Bindings are always the scene's.
+    /// </summary>
+    public LightingSceneDoc LoadEffective()
+    {
+        var doc = Load();
+        if (Setup.LoadSaved() is { Setup.Resolved.Objects.Count: > 0 } saved)
+        {
+            doc.Objects = saved.Setup.Resolved.Objects;
+        }
+        return doc;
     }
 
     /// <summary>Raised after every successful write, outside the store lock.</summary>
