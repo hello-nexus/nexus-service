@@ -122,4 +122,33 @@ public class SystemFontCatalogTests
         Assert.Equal(["Arial", "Menlo"], families);
         Assert.Equal(1, calls);
     }
+
+    [Fact]
+    public void FailedFirstLoad_LeavesTheCatalogUnloaded()
+    {
+        var catalog = new SystemFontCatalog(() => []);
+
+        Assert.Empty(catalog.Load());
+        var (families, loaded) = catalog.Peek();
+
+        Assert.False(loaded);
+        Assert.Empty(families);
+    }
+
+    [Fact]
+    public void FailedReload_KeepsTheLastGoodListForPeek()
+    {
+        var results = new Queue<string[]>([["Arial"], []]);
+        var now = DateTime.UtcNow;
+        var catalog = new SystemFontCatalog(() => results.Dequeue(), () => now);
+
+        Assert.Equal(["Arial"], catalog.Load());
+        now += TimeSpan.FromHours(1);
+
+        Assert.Equal(["Arial"], catalog.Load());
+        var (families, loaded) = catalog.Peek();
+
+        Assert.True(loaded);
+        Assert.Equal(["Arial"], families);
+    }
 }

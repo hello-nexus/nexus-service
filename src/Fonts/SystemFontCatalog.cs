@@ -15,14 +15,17 @@ public sealed class SystemFontCatalog
     private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(30);
 
     private readonly Func<IReadOnlyList<string>> _enumerate;
+    private readonly Func<DateTime> _utcNow;
     private readonly object _gate = new();
     private IReadOnlyList<string> _cached = [];
+    private IReadOnlyList<string> _lastGood = [];
     private DateTime _validUntilUtc = DateTime.MinValue;
     private bool _loaded;
 
-    public SystemFontCatalog(Func<IReadOnlyList<string>> enumerate)
+    public SystemFontCatalog(Func<IReadOnlyList<string>> enumerate, Func<DateTime>? utcNow = null)
     {
         _enumerate = enumerate;
+        _utcNow = utcNow ?? (() => DateTime.UtcNow);
     }
 
     /// <summary>
@@ -35,39 +38,49 @@ public sealed class SystemFontCatalog
         {
             lock (_gate)
             {
-                var now = DateTime.UtcNow;
+                var now = _utcNow();
                 if (now < _validUntilUtc)
                 {
                     return _cached;
                 }
                 var result = _enumerate();
                 _cached = result;
+                if (result.Count > 0)
+                {
+                    _lastGood = result;
+                }
                 _validUntilUtc = now + (result.Count > 0 ? SuccessTtl : FailureBackoff);
                 return result;
             }
         }
     }
 
-    /// <summary>Enumerates (within the cache rules) and marks the catalog loaded until the process exits.</summary>
+    /// <summary>
+    /// Enumerates (within the cache rules) and, once a load produced fonts, marks the catalog loaded
+    /// until the process exits. A failed load leaves it unloaded so the next call retries.
+    /// </summary>
     public IReadOnlyList<string> Load()
     {
         var families = Families;
         lock (_gate)
         {
-            _loaded = true;
+            if (families.Count > 0)
+            {
+                _loaded = true;
+            }
+            return families.Count > 0 ? families : _lastGood;
         }
-        return families;
     }
 
     /// <summary>
-    /// Never enumerates. After a load it returns the last list even past the TTL, so reopening a
+    /// Never enumerates. After a load it returns the last non-empty list even past the TTL or a failed refresh, so reopening a
     /// window cannot trigger a scan; a new <see cref="Load"/> refreshes it.
     /// </summary>
     public (IReadOnlyList<string> Families, bool Loaded) Peek()
     {
         lock (_gate)
         {
-            return _loaded ? (_cached, true) : ([], false);
+            return _loaded ? (_lastGood, true) : ([], false);
         }
     }
 

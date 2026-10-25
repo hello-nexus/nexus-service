@@ -56,7 +56,8 @@ public static class SystemRoutes
             }
             else
             {
-                response = new SystemFontsResponse { Families = catalog.Load(), Loaded = true };
+                var loadedFamilies = catalog.Load();
+                response = new SystemFontsResponse { Families = loadedFamilies, Loaded = catalog.Peek().Loaded };
             }
             return Results.Json(response, AppJsonContext.Default.SystemFontsResponse);
         }).AllowPanel();
