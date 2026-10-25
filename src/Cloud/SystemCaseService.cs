@@ -31,6 +31,9 @@ public sealed class SystemCaseService
     private readonly SemaphoreSlim _push = new(1, 1);
     private long _lastAttemptTicks;
 
+    /// <summary>Raised after the stored case changed, whether by a pick, the local auto-assign or an adopted account value.</summary>
+    public event Action<string?>? Changed;
+
     public SystemCaseService(MachineCaseStore store, CloudAccountService accounts, ICloudApiClient api)
         : this(store, accounts, api, TimeProvider.System, () => Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
     {
@@ -89,12 +92,27 @@ public sealed class SystemCaseService
     public Task<string?> SetAsync(string? caseId, CancellationToken ct)
     {
         _store.Save(caseId, pending: true);
+        RaiseChanged(caseId);
         if (_accounts.ActiveAccountId is { } accountId && !_networkHeld())
         {
             MarkAttempt();
             Launch(() => PushPendingAsync(accountId));
         }
         return Task.FromResult(_store.Load().CaseId);
+    }
+
+    /// <summary>Saves an automatic pick on this machine only: no account call now or later, and an account value never replaces it. A manual pick lifts that.</summary>
+    public string? SetLocalOnly(string? caseId)
+    {
+        _store.Save(caseId, pending: false, localOnly: true);
+        RaiseChanged(caseId);
+        return caseId;
+    }
+
+    private void RaiseChanged(string? caseId)
+    {
+        try { Changed?.Invoke(caseId); }
+        catch (Exception ex) { Console.Error.WriteLine($"[system-case] change notify failed: {ex.GetType().Name}: {ex.Message}"); }
     }
 
     /// <summary>Pushes a pending pick right after a device report succeeded, when the device row is known to exist.</summary>
@@ -175,7 +193,7 @@ public sealed class SystemCaseService
     private async Task PushLockedAsync(string accountId)
     {
         var local = _store.Load();
-        if (!local.Pending || accountId != _accounts.ActiveAccountId)
+        if (!local.Pending || local.LocalOnly || accountId != _accounts.ActiveAccountId)
         {
             return;
         }
@@ -192,6 +210,10 @@ public sealed class SystemCaseService
 
     private async Task PullLockedAsync(string accountId)
     {
+        if (_store.Load().LocalOnly)
+        {
+            return;
+        }
         var installId = _accounts.ResolveStableInstallId();
         var result = await _accounts.WithAuthAsync(accountId, token => _api.ListDevicesAsync(token, CancellationToken.None), CancellationToken.None).ConfigureAwait(false);
         if (!result.Success || result.Value is null || accountId != _accounts.ActiveAccountId)
@@ -208,13 +230,18 @@ public sealed class SystemCaseService
         // the account lacks is pushed instead.
         if (device.CaseId is null || !IsValidCaseId(device.CaseId))
         {
-            var after = _store.Update(f => f.Pending || f.CaseId is null ? f : new MachineCaseFile { CaseId = f.CaseId, Pending = true });
+            var after = _store.Update(f => f.Pending || f.LocalOnly || f.CaseId is null ? f : new MachineCaseFile { CaseId = f.CaseId, Pending = true });
             if (after.Pending)
             {
                 await PushLockedAsync(accountId).ConfigureAwait(false);
             }
             return;
         }
-        _store.Update(f => f.Pending || f.CaseId == device.CaseId ? f : new MachineCaseFile { CaseId = device.CaseId, Pending = false });
+        var before = _store.Load().CaseId;
+        var adopted = _store.Update(f => f.Pending || f.LocalOnly || f.CaseId == device.CaseId ? f : new MachineCaseFile { CaseId = device.CaseId, Pending = false });
+        if (adopted.CaseId != before)
+        {
+            RaiseChanged(adopted.CaseId);
+        }
     }
 }

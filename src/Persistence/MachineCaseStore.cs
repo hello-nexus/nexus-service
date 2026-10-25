@@ -12,6 +12,9 @@ public sealed class MachineCaseFile
 
     /// <summary>True while the pick has not reached the active cloud account.</summary>
     public bool Pending { get; set; }
+
+    /// <summary>True for an automatic pick that stays on this machine: never pushed to, or overwritten from, a cloud account. A manual pick clears it.</summary>
+    public bool LocalOnly { get; set; }
 }
 
 /// <summary>
@@ -40,11 +43,11 @@ public sealed class MachineCaseStore
         }
     }
 
-    public void Save(string? caseId, bool pending)
+    public void Save(string? caseId, bool pending, bool localOnly = false)
     {
         lock (_lock)
         {
-            WriteUnlocked(new MachineCaseFile { CaseId = caseId, Pending = pending });
+            WriteUnlocked(new MachineCaseFile { CaseId = caseId, Pending = pending, LocalOnly = localOnly });
         }
     }
 

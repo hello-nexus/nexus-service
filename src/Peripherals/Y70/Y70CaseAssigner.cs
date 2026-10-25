@@ -53,7 +53,7 @@ public sealed class Y70CaseAssigner
         {
             return false;
         }
-        _cases.SetAsync(DefaultCaseId, CancellationToken.None).GetAwaiter().GetResult();
+        _cases.SetLocalOnly(DefaultCaseId);
         ServiceLog.Info("[y70-case] Y70 display detected; case set to the Y70 Touch Infinite");
         return true;
     }

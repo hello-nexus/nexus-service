@@ -40,7 +40,10 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     private const string OtherCase = "not-a-y70-case";
     private const string Y70Variant = "ef06ada1-e96d-42ee-8726-05942881d65b";
 
-    private (Y70DisplayHeartbeatWorker Worker, FakeY70Provider Y70, MachineCaseStore Store) BuildWithCase(string? stored)
+    private (Y70DisplayHeartbeatWorker Worker, FakeY70Provider Y70, MachineCaseStore Store) BuildWithCase(string? stored) =>
+        BuildWithCase(stored, out _, out _);
+
+    private (Y70DisplayHeartbeatWorker Worker, FakeY70Provider Y70, MachineCaseStore Store) BuildWithCase(string? stored, out FakeCloudApiClient api, out List<string?> changes)
     {
         var store = new MachineCaseStore(Path.Combine(_dir, "system-case.json"));
         if (stored is not null)
@@ -48,8 +51,11 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
             store.Save(stored, pending: false);
         }
         var config = new InMemoryConfigStore();
-        var api = new FakeCloudApiClient();
+        api = new FakeCloudApiClient();
         var cases = new SystemCaseService(store, new CloudAccountService(api, config), api);
+        var seen = new List<string?>();
+        cases.Changed += seen.Add;
+        changes = seen;
         var y70 = new FakeY70Provider { Connected = true };
         var hub = new Y70DisplayHub(
             new StubY70DisplayPortDiscovery(),
@@ -68,6 +74,20 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
 
         Assert.Equal(Y70CaseAssigner.DefaultCaseId, store.Load().CaseId);
         Assert.True(Y70CaseAssigner.IsY70Case(store.Load().CaseId));
+    }
+
+    [Fact]
+    public void Auto_assign_makes_no_account_call_and_notifies_clients()
+    {
+        var (worker, _, store) = BuildWithCase(null, out var api, out var changes);
+
+        worker.Tick();
+
+        Assert.Equal(0, api.SetDeviceCaseCalls);
+        Assert.Equal(0, api.ListDevicesCalls);
+        Assert.False(store.Load().Pending);
+        Assert.True(store.Load().LocalOnly);
+        Assert.Equal(new[] { Y70CaseAssigner.DefaultCaseId }, changes);
     }
 
     [Fact]

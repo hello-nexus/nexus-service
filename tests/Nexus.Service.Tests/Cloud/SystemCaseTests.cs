@@ -122,6 +122,30 @@ public sealed class SystemCaseTests : IDisposable
     }
 
     [Fact]
+    public async Task LocalOnly_pick_is_never_pushed_or_replaced_by_the_account_and_a_manual_pick_lifts_it()
+    {
+        var rig = Make();
+        var changes = new List<string?>();
+        rig.Svc.Changed += changes.Add;
+
+        rig.Svc.SetLocalOnly("auto-case");
+        rig.Clock.Advance(TimeSpan.FromMinutes(5));
+        await rig.Svc.GetAsync(CancellationToken.None);
+        await rig.Svc.IdleAsync();
+
+        Assert.Equal(0, rig.Api.SetDeviceCaseCalls);
+        Assert.Equal(0, rig.Api.ListDevicesCalls);
+        Assert.Equal("auto-case", rig.Store.Load().CaseId);
+
+        await rig.Svc.SetAsync("manual", CancellationToken.None);
+        await rig.Svc.IdleAsync();
+
+        Assert.False(rig.Store.Load().LocalOnly);
+        Assert.Equal(1, rig.Api.SetDeviceCaseCalls);
+        Assert.Equal(new[] { "auto-case", "manual" }, changes);
+    }
+
+    [Fact]
     public async Task Set_signed_in_pushes_with_the_install_id_and_clears_pending()
     {
         var rig = Make();

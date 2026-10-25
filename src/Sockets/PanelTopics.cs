@@ -105,6 +105,18 @@ public static class PanelTopics
         _ = hub.BroadcastTopicAsync(SystemSetup, env);
     }
 
+    /// <summary>This machine's case changed. Subscribers refetch GET /system/case.</summary>
+    public const string SystemCase = "system/case";
+
+    public static void BroadcastSystemCase(MultiplexHub hub, string? caseId)
+    {
+        if (!hub.TopicHasSubscribers(SystemCase))
+            return;
+        var frame = new Models.Activity.SystemCaseResponse { CaseId = caseId };
+        var env = WsEnvelope.Build(SystemCase, frame, AppJsonContext.Default.SystemCaseResponse);
+        _ = hub.BroadcastTopicAsync(SystemCase, env);
+    }
+
     public static void BroadcastCloudAccounts(MultiplexHub hub)
     {
         if (!hub.TopicHasSubscribers(CloudAccounts))
