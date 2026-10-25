@@ -90,6 +90,8 @@ public sealed class LianLiFlexChainLightingDto
 {
     public string Mac { get; set; } = "";
     public string Kind { get; set; } = "fans";
+    /// <summary>"tlFlex", "slInfFlex" or "p28v2".</summary>
+    public string Family { get; set; } = "";
     public int DevType { get; set; }
     public string Model { get; set; } = "";
     public int FanType { get; set; }
@@ -455,7 +457,7 @@ public static partial class LianLiFlexRoutes
                 Stale = u.Stale,
                 PwmCableConnected = u.Info.PwmLinePresent,
                 EffectIndex = u.Info.EffectIndex,
-                Family = u.Family == FlexFamily.SlInfFlex ? "slInfFlex" : "tlFlex",
+                Family = FamilyKey(u.Family),
                 ScreenSerial = u.ScreenSerial,
                 LcdFirmware = screens?.VersionOf(u.ScreenSerial) ?? "",
                 LcdRestarting = u.LcdRestarting,
@@ -476,6 +478,8 @@ public static partial class LianLiFlexRoutes
             ScreenOnlySerials = screenOnly,
         };
     }
+
+    internal static string FamilyKey(FlexFamily family) => family switch { FlexFamily.SlInfFlex => "slInfFlex", FlexFamily.P28V2 => "p28v2", _ => "tlFlex" };
 
     internal static LianLiFlexModeDto[] ModesOf(FlexFamily family)
     {
@@ -567,20 +571,22 @@ public static partial class LianLiFlexRoutes
             chains.Add(new LianLiFlexChainLightingDto
             {
                 Mac = u.Mac,
+                Family = FamilyKey(u.Family),
                 DevType = u.Info.DevType,
                 Model = Nexus.Service.Lighting.FlexLightingDeviceProvider.ModelName(u.Family),
                 FanType = u.Info.FansType,
                 FanCount = u.Fans,
                 Modes = modes,
-                Mode = ls.Mode,
-                EffectMode = ls.Mode != LianLiWirelessChainLighting.ModeCustom ? ls.Mode : ls.EffectMode ?? DefaultEffect,
+                Mode = u.Family == FlexFamily.P28V2 ? LianLiWirelessChainLighting.ModeCustom : ls.Mode,
+                EffectMode = u.Family == FlexFamily.P28V2 ? LianLiWirelessChainLighting.ModeCustom : ls.Mode != LianLiWirelessChainLighting.ModeCustom ? ls.Mode : ls.EffectMode ?? DefaultEffect,
                 Speed = ls.Speed,
                 Direction = ls.Direction,
                 Brightness = ls.Brightness,
                 Colors = ls.Colors.ToArray(),
                 Merge = ls.Merge,
                 MotherboardArgb = ls.MotherboardArgb,
-                ArgbCableConnected = u.Info.ArgbCableConnected,
+                ArgbCableConnected = u.Family != FlexFamily.P28V2 && u.Info.ArgbCableConnected,
+                SupportsZones = u.Family != FlexFamily.P28V2,
                 PlayingMotherboardArgb = u.Info.PlayingMotherboardArgb,
                 Zones = zones,
                 UpDownSwap = u.Family == FlexFamily.TlFlex ? ls.UpDownSwap : null,
@@ -613,6 +619,11 @@ public static partial class LianLiFlexRoutes
         if (body.SortIndex is < 0)
         {
             return "sortIndex must not be negative";
+        }
+        if (family == FlexFamily.P28V2
+            && (body.Mode == LianLiFlexUnitSettings.ModePerZone || body.Merge == true || body.MotherboardArgb == true))
+        {
+            return "not supported for this fan";
         }
         if (body.UpDownSwap is not null && family != FlexFamily.TlFlex)
         {
