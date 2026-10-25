@@ -163,6 +163,11 @@ public static class FlexStoredLook
 
     public static Package? Build(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null)
     {
+        // P28 accepts stored packages, but only streaming is implemented for it.
+        if (unit.Family == FlexFamily.P28V2)
+        {
+            return null;
+        }
         try
         {
             if (InGroup(group, unit.Mac))

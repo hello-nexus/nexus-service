@@ -365,6 +365,7 @@ namespace Nexus.Service.Serialization;
 // Streamed panels (off-screen render in the overlay, H.264 to a USB device).
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamAssignmentDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamAssignmentsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamSettingsDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayStateResponse))]
 
 // Weather
@@ -457,6 +458,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Cloud.CloudDeviceCasePutRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SetSystemCaseBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SystemCaseResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Activity.SystemFontsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Devices.SystemDevicesResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SetSystemReportBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Activity.SystemReportResponse))]

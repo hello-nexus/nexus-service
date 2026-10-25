@@ -32,6 +32,27 @@ public sealed class CoolingLayoutStore
         }
     }
 
+    /// <summary>The saved layout, or null when no client has saved one yet.</summary>
+    public CoolingLayoutFile? LoadSaved()
+    {
+        lock (_lock)
+        {
+            return SavedUnlocked() is { } file ? Clone(file) : null;
+        }
+    }
+
+    /// <summary>Saves <paramref name="next"/> over whatever is there (a backup restore).</summary>
+    public CoolingLayoutFile Replace(CoolingLayout next)
+    {
+        CoolingLayoutFile saved;
+        lock (_lock)
+        {
+            saved = WriteUnlocked((SavedUnlocked() ?? new CoolingLayoutFile()).Rev, next);
+        }
+        Changed?.Invoke(saved.Rev);
+        return Clone(saved);
+    }
+
     /// <summary>Saves <paramref name="next"/> as revision current + 1 when the current revision is <paramref name="baseRev"/>; otherwise returns false with the current file.</summary>
     public bool TrySave(int baseRev, CoolingLayout next, out CoolingLayoutFile current)
     {

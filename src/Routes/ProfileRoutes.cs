@@ -147,7 +147,7 @@ public static class ProfileRoutes
         {
             // The PC setup rides in the app-data bundle; the file names this machine so an import can tell it from another's.
             var json = AppDataStore.IsValidProfileId(id)
-                ? pm.ExportProfileJson(id, Nexus.Service.Cloud.PcSetupBackup.Attach(appDataStore.ReadProfile(id), scene.Setup, out _), Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()))
+                ? pm.ExportProfileJson(id, Nexus.Service.Cloud.CoolingLayoutBackup.Attach(Nexus.Service.Cloud.PcSetupBackup.Attach(appDataStore.ReadProfile(id), scene.Setup, out _), scene.Cooling, out _), Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()))
                 : null;
             return json == null
                 ? Results.NotFound(ApiResponse.Fail("Profile not found."))
@@ -183,23 +183,36 @@ public static class ProfileRoutes
                 if (!skipAppData)
                 {
                     var rest = Nexus.Service.Cloud.PcSetupBackup.Detach(parsed.AppData, out var setup);
+                    rest = Nexus.Service.Cloud.CoolingLayoutBackup.Detach(rest, out var coolingLayout);
                     appDataStore.ReplaceApps(entry.Id, rest);
-                    if (setup is not null)
+                    if (setup is not null || coolingLayout is not null)
                     {
-                        // Machine scope: only a replace of a profile from a file this machine exported (or one naming no machine) may replace this machine's setup; a new profile never touches it.
+                        // Machine scope: only a replace of a profile from a file this machine exported (or one naming no machine) may replace this machine's setup and cooling layout; a new profile never touches them.
+                        string outcome;
                         if (replace != true)
                         {
-                            setupOutcome = "skipped_new_profile";
+                            outcome = "skipped_new_profile";
                         }
                         else if (parsed.InstallDigest is not null
                             && !string.Equals(parsed.InstallDigest, Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()), StringComparison.Ordinal))
                         {
-                            setupOutcome = "skipped_other_machine";
+                            outcome = "skipped_other_machine";
                         }
                         else
                         {
-                            scene.Setup.Replace(setup);
-                            setupOutcome = parsed.InstallDigest is null ? "applied_unknown_machine" : "applied";
+                            if (setup is not null)
+                            {
+                                scene.Setup.Replace(setup);
+                            }
+                            if (coolingLayout is not null)
+                            {
+                                scene.Cooling.Replace(coolingLayout);
+                            }
+                            outcome = parsed.InstallDigest is null ? "applied_unknown_machine" : "applied";
+                        }
+                        if (setup is not null)
+                        {
+                            setupOutcome = outcome;
                         }
                     }
                 }
@@ -583,6 +596,13 @@ public static class ProfileRoutes
                     if (ui.ShowUncontrolledDevices.HasValue) s.Ui.ShowUncontrolledDevices = ui.ShowUncontrolledDevices.Value;
                     if (ui.ShowUncontrolledLightingDevices.HasValue) s.Ui.ShowUncontrolledLightingDevices = ui.ShowUncontrolledLightingDevices.Value;
                     if (ui.ShowUncontrolledCoolingDevices.HasValue) s.Ui.ShowUncontrolledCoolingDevices = ui.ShowUncontrolledCoolingDevices.Value;
+                    if (ui.LightingView3d.HasValue) s.Ui.LightingView3d = ui.LightingView3d.Value;
+                    if (ui.CoolingView3d.HasValue) s.Ui.CoolingView3d = ui.CoolingView3d.Value;
+                    if (ui.CoolingCollisionShapes.HasValue) s.Ui.CoolingCollisionShapes = ui.CoolingCollisionShapes.Value;
+                    if (ui.CoolingFlowMode is "both" or "case" or "airflow")
+                    {
+                        s.Ui.CoolingFlowMode = ui.CoolingFlowMode;
+                    }
                     if (ui.HiddenSidebarDevices is not null)
                     {
                         s.Ui.HiddenSidebarDevices = ui.HiddenSidebarDevices

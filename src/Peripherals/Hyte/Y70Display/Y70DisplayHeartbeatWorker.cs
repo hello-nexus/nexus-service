@@ -22,7 +22,10 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private readonly HardwarePresence _presence;
     private readonly DeviceControlGate _gate;
     private readonly IY70Provider _y70;
+    private readonly Y70CaseAssigner? _caseAssigner;
     private bool _wasDetected;
+    private bool _caseHandled;
+    private int _caseAbsentTicks;
 
     /// <summary>A HYTE panel is attached; drives the overlay supervisor.</summary>
     public bool Detected { get; private set; }
@@ -35,8 +38,9 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private int _absentTicks;
     private const int DetectDropTicks = 3;
 
-    public Y70DisplayHeartbeatWorker(Y70DisplayHub hub, HardwarePresence presence, DeviceControlGate gate, IY70Provider y70)
+    public Y70DisplayHeartbeatWorker(Y70DisplayHub hub, HardwarePresence presence, DeviceControlGate gate, IY70Provider y70, Y70CaseAssigner? caseAssigner = null)
     {
+        _caseAssigner = caseAssigner;
         _hub = hub;
         _presence = presence;
         _gate = gate;
@@ -56,11 +60,32 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         _hub.Disconnect();
     }
 
+    // Once per detection event, independent of the control gate: assigning the case is not device control.
+    private void AssignCaseOnDetection()
+    {
+        if (Detected)
+        {
+            _caseAbsentTicks = 0;
+            if (_caseHandled)
+            {
+                return;
+            }
+            try { _caseHandled = _caseAssigner?.OnDetected() ?? true; }
+            catch (Exception ex) { ServiceLog.Error($"[y70-case] assign failed: {ex.GetType().Name}: {ex.Message}"); }
+        }
+        else if (_caseHandled && ++_caseAbsentTicks >= DetectDropTicks)
+        {
+            _caseHandled = false;
+            _caseAbsentTicks = 0;
+        }
+    }
+
     public void Tick()
     {
         // Read before the gate: the panel kiosk is a display surface, not
         // device control, so it must still open when Nexus Control is off.
         Detected = _y70.IsConnected();
+        AssignCaseOnDetection();
 
         if (!_gate.IsEnabled(Y70Handler.HandlerId))
         {

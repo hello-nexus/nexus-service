@@ -42,6 +42,26 @@ public static class SystemRoutes
         app.MapGet("/system/specs", (SystemSpecsCollector collector, HttpContext ctx) =>
             collector.GetAsync(ctx.RequestAborted)).AllowPanel();
 
+        // Installed font families of this PC for the panel font picker. Family names only, so panel sessions may read it.
+        // Empty on failure or an unsupported OS. ?peek=true never enumerates and reports whether a
+        // client has loaded the list since the service started.
+        app.MapGet("/system/fonts", (bool? peek) =>
+        {
+            var catalog = Nexus.Service.Fonts.SystemFontCatalog.Shared;
+            SystemFontsResponse response;
+            if (peek == true)
+            {
+                var (cachedFamilies, loaded) = catalog.Peek();
+                response = new SystemFontsResponse { Families = cachedFamilies, Loaded = loaded };
+            }
+            else
+            {
+                var loadedFamilies = catalog.Load();
+                response = new SystemFontsResponse { Families = loadedFamilies, Loaded = catalog.Peek().Loaded };
+            }
+            return Results.Json(response, AppJsonContext.Default.SystemFontsResponse);
+        }).AllowPanel();
+
         // Detected coolers, fans and controllers from the hubs' cached state, for the Build page's
         // My Systems list. Desktop-token only; no device I/O.
         app.MapGet("/system/devices", (DeviceInventoryService inventory) =>
