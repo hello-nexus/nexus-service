@@ -192,6 +192,48 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_FileWithoutViewPrefs_LeavesThemUnset()
+    {
+        File.WriteAllText(_settingsPath, "{ \"schemaVersion\": 25, \"ui\": { \"sidebarCollapsed\": true } }");
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var s = store.Load();
+            Assert.True(s.Ui.SidebarCollapsed);
+            Assert.Null(s.Ui.LightingView3d);
+            Assert.Null(s.Ui.CoolingView3d);
+            Assert.Null(s.Ui.CoolingFlowMode);
+            Assert.Null(s.Ui.CoolingCollisionShapes);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_FileWithViewPrefs_ReadsThem()
+    {
+        File.WriteAllText(_settingsPath,
+            "{ \"schemaVersion\": 25, \"ui\": { \"lightingView3d\": true, \"coolingView3d\": false, \"coolingFlowMode\": \"case\", \"coolingCollisionShapes\": true } }");
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var s = store.Load();
+            Assert.True(s.Ui.LightingView3d);
+            Assert.False(s.Ui.CoolingView3d);
+            Assert.Equal("case", s.Ui.CoolingFlowMode);
+            Assert.True(s.Ui.CoolingCollisionShapes);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
     public void Load_V14_MigratesDashboardModesForExistingInstall()
     {
         var json = """

@@ -555,6 +555,15 @@ public sealed class UiSettings
     public bool? ShowUncontrolledLightingDevices { get; set; }
     /// <inheritdoc cref="ShowUncontrolledLightingDevices"/>
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    /// <summary>True opens that page on its 3D view. Null until the user picks a view, so the client keeps its own default.</summary>
+    public bool? LightingView3d { get; set; }
+    /// <inheritdoc cref="LightingView3d"/>
+    public bool? CoolingView3d { get; set; }
+    /// <summary>What the cooling 3D scene draws, one of <see cref="CoolingFlowModes"/>. Null until chosen.</summary>
+    public string? CoolingFlowMode { get; set; }
+    /// <summary>True draws collision shapes in the cooling 3D scene. Null until chosen.</summary>
+    public bool? CoolingCollisionShapes { get; set; }
+    public static readonly string[] CoolingFlowModes = { "both", "case", "airflow" };
     /// <summary>Sidebar DEVICES row keys the user hid. A row is omitted only while its Nexus Control is also off. Workstation-level: no profile category carries it. Non-null so the client always receives a list.</summary>
     public List<string> HiddenSidebarDevices { get; set; } = new();
 }
@@ -581,6 +590,10 @@ public sealed class UiSettingsPatch
     public bool? ShowUncontrolledDevices { get; set; }
     public bool? ShowUncontrolledLightingDevices { get; set; }
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    public bool? LightingView3d { get; set; }
+    public bool? CoolingView3d { get; set; }
+    public string? CoolingFlowMode { get; set; }
+    public bool? CoolingCollisionShapes { get; set; }
     public List<string>? HiddenSidebarDevices { get; set; }
 }
 
