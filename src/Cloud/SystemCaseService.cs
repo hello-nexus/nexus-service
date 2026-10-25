@@ -31,6 +31,7 @@ public sealed class SystemCaseService
     private readonly SemaphoreSlim _push = new(1, 1);
     private long _lastAttemptTicks;
     private bool _pullSettled;
+    private int _generation;
 
     /// <summary>Raised after the stored case changed, whether by a pick, the local auto-assign or an adopted account value.</summary>
     public event Action<string?>? Changed;
@@ -53,6 +54,7 @@ public sealed class SystemCaseService
         _accounts.OnAccountActivated += _ =>
         {
             Volatile.Write(ref _lastAttemptTicks, 0);
+            Interlocked.Increment(ref _generation);
             Volatile.Write(ref _pullSettled, false);
         };
     }
@@ -88,7 +90,8 @@ public sealed class SystemCaseService
         if (_accounts.ActiveAccountId is { } accountId && !_networkHeld() && DueForNetwork())
         {
             MarkAttempt();
-            Launch(() => ReconcileAsync(accountId));
+            var generation = Volatile.Read(ref _generation);
+            Launch(() => ReconcileAsync(accountId, generation));
         }
         return Task.FromResult(_store.Load().CaseId);
     }
@@ -114,7 +117,7 @@ public sealed class SystemCaseService
     public bool TryAutoAssign(string caseId, Func<string?, bool> isProtected)
     {
         var current = _store.Load();
-        if (current.Pending || (current.CaseId is not null && current.Origin != MachineCaseOrigin.Auto) || isProtected(current.CaseId))
+        if (current.Pending || IsUserChoice(current) || isProtected(current.CaseId))
         {
             return true;
         }
@@ -126,7 +129,7 @@ public sealed class SystemCaseService
         var assigned = false;
         _store.Update(f =>
         {
-            if (f.Pending || (f.CaseId is not null && f.Origin != MachineCaseOrigin.Auto) || isProtected(f.CaseId))
+            if (f.Pending || IsUserChoice(f) || isProtected(f.CaseId))
             {
                 return f;
             }
@@ -139,6 +142,9 @@ public sealed class SystemCaseService
         }
         return true;
     }
+
+    // A manual clear is stored as a manual record with no case, so only a missing record or an auto value is open to auto-assign.
+    private static bool IsUserChoice(MachineCaseFile f) => f.Origin != MachineCaseOrigin.Auto && (f.CaseId is not null || f.Origin is not null);
 
     private void RaiseChanged(string? caseId)
     {
@@ -190,7 +196,7 @@ public sealed class SystemCaseService
 
     private void MarkAttempt() => Volatile.Write(ref _lastAttemptTicks, _clock.GetUtcNow().UtcTicks);
 
-    private async Task ReconcileAsync(string accountId)
+    private async Task ReconcileAsync(string accountId, int generation)
     {
         await _push.WaitAsync().ConfigureAwait(false);
         try
@@ -204,7 +210,11 @@ public sealed class SystemCaseService
         }
         finally
         {
-            Volatile.Write(ref _pullSettled, true);
+            // A pull begun before an account switch must not settle the new account.
+            if (generation == Volatile.Read(ref _generation))
+            {
+                Volatile.Write(ref _pullSettled, true);
+            }
             _push.Release();
         }
     }
