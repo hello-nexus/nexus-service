@@ -16,7 +16,7 @@ namespace Nexus.Service.Cooling;
 public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
 {
     private const string IdPrefix = "lianli-flex:";
-    private const string PortMarker = ":port";
+    private const string PortSuffix = ":port0";
 
     private readonly FlexHub _hub;
     private readonly Nexus.Service.Persistence.IConfigStore? _store;
@@ -44,7 +44,7 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     public static bool IsFlexId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith(IdPrefix, StringComparison.Ordinal);
 
-    public static string ChannelId(string mac, int port = 0) => $"{IdPrefix}{mac}{PortMarker}{port}";
+    public static string ChannelId(string mac) => $"{IdPrefix}{mac}{PortSuffix}";
 
     private static string DeviceId(string mac) => $"{IdPrefix}{mac}";
 
@@ -144,17 +144,17 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
         return components;
     }
 
-    private List<CoolingDevice> DevicesOf(FlexUnit unit)
+    private List<CoolingDevice> DevicesOf(FlexUnit unit) => new()
     {
-        var pwm = _hub.PendingDuty(unit.Mac) is { } shown ? Math.Max(shown, 0) : Duty(unit);
-        var ports = unit.Family == FlexFamily.P28V2 ? Math.Min(unit.Fans, unit.Info.Rpm.Length) : 1;
-        var devices = new List<CoolingDevice>();
-        for (var i = 0; i < ports; i++)
+        new CoolingDevice
         {
-            devices.Add(new CoolingDevice { Id = i == 0 ? ChannelId(unit.Mac) : $"{ChannelId(unit.Mac)}:fan{i}", Name = ports > 1 ? $"Fan {i + 1}" : "Fan", Type = "Fan", Rpm = Rpm(unit, i), Pwm = pwm });
-        }
-        return devices;
-    }
+            Id = ChannelId(unit.Mac),
+            Name = "Fan",
+            Type = "Fan",
+            Rpm = Rpm(unit, 0),
+            Pwm = _hub.PendingDuty(unit.Mac) is { } shown ? Math.Max(shown, 0) : Duty(unit),
+        },
+    };
 
     private void Write(string channelId, int percent)
     {
@@ -167,12 +167,11 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private static bool TryParse(string id, out string mac)
     {
         mac = "";
-        var at = id.LastIndexOf(PortMarker, StringComparison.Ordinal);
-        if (!IsFlexId(id) || at < 0 || !int.TryParse(id.AsSpan(at + PortMarker.Length), out var port) || port is < 0 or > 3)
+        if (!IsFlexId(id) || !id.EndsWith(PortSuffix, StringComparison.Ordinal))
         {
             return false;
         }
-        mac = id.Substring(IdPrefix.Length, at - IdPrefix.Length);
+        mac = id.Substring(IdPrefix.Length, id.Length - IdPrefix.Length - PortSuffix.Length);
         return mac.Length == 12;
     }
 }

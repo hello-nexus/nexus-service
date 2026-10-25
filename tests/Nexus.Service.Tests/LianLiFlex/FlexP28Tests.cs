@@ -266,7 +266,6 @@ public class FlexP28Tests
         var f = FakeFlexTransport.InfoFrame(Mac, 0, FlexProtocol.UnboundRxType, 100, 0);
         f[31] = 0x50;
         Assert.True(FlexProtocol.ParseInfo(f, FlexFamily.P28V2)!.IsP28);
-        Assert.True(FlexProtocol.ParseInfo(f, FlexFamily.P28V2)!.IsP28);
         Assert.False(FlexProtocol.ParseInfo(f, FlexFamily.TlFlex)!.IsP28);
         var p28Type = FakeFlexTransport.InfoFrame(Mac, FlexProtocol.P28FansType, FlexProtocol.UnboundRxType, 100, 0);
         Assert.False(FlexProtocol.ParseInfo(p28Type, FlexFamily.SlInfFlex)!.IsP28);
@@ -323,8 +322,6 @@ public class FlexP28Tests
         Assert.Equal(new[] { 1640, 1636, 1621, 0 }, hub.Units.Single().Info.Rpm);
         provider.SetFanSpeed(channel.Id, 40);
         Assert.Equal(40, hub.PendingDuty(Mac));
-        var devices = provider.GetAll().Single().Devices;
-        Assert.Equal(new int?[] { 1640, 1636, 1621 }, devices.Select(d => d.Rpm).ToArray());
     }
 
     [Fact]
