@@ -363,7 +363,7 @@ public class DeviceInventoryMapperTests
     {
         var row = DeviceInventoryMapper.FromTlLcd(4);
 
-        Assert.Equal("lianli:tl-lcd", row!.ModelKey);
+        Assert.Equal("lianli:uni-fan-tl-lcd", row!.ModelKey);
         Assert.Equal(4, row.Count);
         Assert.Null(DeviceInventoryMapper.FromTlLcd(0));
     }
@@ -410,6 +410,33 @@ public class DeviceInventoryMapperTests
         Assert.Equal("usb:3402:0300", row.Key);
     }
 
+    [Theory]
+    [InlineData("Stream Deck +", "stream-deck-plus")]
+    [InlineData("Stream Deck", "stream-deck")]
+    [InlineData("NZXT Hue+", "nzxt-hue-plus")]
+    [InlineData("Acme & Co. #1", "acme-co-1")]
+    public void Slug_keeps_plus_as_a_word_and_drops_other_symbols(string text, string slug)
+    {
+        Assert.Equal(slug, DeviceInventoryMapper.Slug(text));
+    }
+
+    [Fact]
+    public void Usb_lian_li_catalog_rows_share_the_lianli_prefix_and_tl_lcds_stay_distinct()
+    {
+        var catalog = new[]
+        {
+            Cat("Lian Li", "TL-LCD", "light", 0x1CBE, 0x0006, "nexus"),
+            Cat("Lian Li", "Uni Fan TL LCD", "light", 0x04FC, 0x7393, "nexus"),
+            Cat("Lian Li", "SL-LCD", "light", 0x1CBE, 0x0005, "nexus"),
+        };
+        var usb = new[] { Usb(0x1CBE, 0x0006), Usb(0x04FC, 0x7393), Usb(0x1CBE, 0x0005) };
+
+        var keys = DeviceInventoryMapper.FromUsb(usb, new Nexus.Service.Devices.IDeviceHandler[0], new HashSet<string>(), new HashSet<(int, int)>(), catalog).Select(r => r.ModelKey).ToList();
+
+        Assert.Equal(new[] { "lianli:tl-lcd-1cbe-0006", "lianli:uni-fan-tl-lcd", "lianli:sl-lcd" }, keys);
+        Assert.NotEqual(DeviceInventoryMapper.FromTlLcd(1)!.ModelKey, keys[0]);
+    }
+
     [Fact]
     public void Usb_catalog_only_and_handler_only_devices_key_by_vid_pid_under_their_category()
     {
@@ -453,6 +480,9 @@ public class DeviceInventoryMapperTests
     [InlineData(4u, "lighting")]
     [InlineData(11u, "lighting")]
     [InlineData(10u, "peripheral")]
+    [InlineData(16u, "headset")]
+    [InlineData(17u, "peripheral")]
+    [InlineData(21u, "controller")]
     [InlineData(99u, "controller")]
     public void OpenRgb_maps_device_type_to_category(uint type, string category)
     {
@@ -470,6 +500,9 @@ public class DeviceInventoryMapperTests
     [InlineData(13u)]
     [InlineData(14u)]
     [InlineData(15u)]
+    [InlineData(18u)]
+    [InlineData(19u)]
+    [InlineData(20u)]
     public void OpenRgb_skips_parts_build_lists_and_virtual_devices(uint type)
     {
         Assert.Empty(DeviceInventoryMapper.FromOpenRgb(new[] { new RgbDevice { Type = type, Name = "Part", Vendor = "V" } }));
