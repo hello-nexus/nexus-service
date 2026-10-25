@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using Nexus.Service.Cloud;
+using Nexus.Service.Tests.Cloud;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
@@ -15,8 +18,15 @@ namespace Nexus.Service.Tests;
 /// per newly-detected edge, since the heartbeat's serial poll below is gated
 /// on USB presence and never sees it.
 /// </summary>
-public class Y70DisplayHeartbeatWorkerTests
+public class Y70DisplayHeartbeatWorkerTests : IDisposable
 {
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "nexus-y70case-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); } catch { /* already gone */ }
+    }
+
     private static Y70DisplayHeartbeatWorker Build(FakeY70Provider y70)
     {
         var hub = new Y70DisplayHub(
@@ -25,6 +35,102 @@ public class Y70DisplayHeartbeatWorkerTests
         var presence = new HardwarePresence(new EmptyUsbEnumerator());
         var gate = new DeviceControlGate(new InMemoryConfigStore());
         return new Y70DisplayHeartbeatWorker(hub, presence, gate, y70);
+    }
+
+    private const string OtherCase = "not-a-y70-case";
+    private const string Y70Variant = "ef06ada1-e96d-42ee-8726-05942881d65b";
+
+    private (Y70DisplayHeartbeatWorker Worker, FakeY70Provider Y70, MachineCaseStore Store) BuildWithCase(string? stored)
+    {
+        var store = new MachineCaseStore(Path.Combine(_dir, "system-case.json"));
+        if (stored is not null)
+        {
+            store.Save(stored, pending: false);
+        }
+        var config = new InMemoryConfigStore();
+        var api = new FakeCloudApiClient();
+        var cases = new SystemCaseService(store, new CloudAccountService(api, config), api);
+        var y70 = new FakeY70Provider { Connected = true };
+        var hub = new Y70DisplayHub(
+            new StubY70DisplayPortDiscovery(),
+            _ => throw new InvalidOperationException("Y70 transport is not expected in these tests"));
+        var worker = new Y70DisplayHeartbeatWorker(
+            hub, new HardwarePresence(new EmptyUsbEnumerator()), new DeviceControlGate(config), y70, new Y70CaseAssigner(cases));
+        return (worker, y70, store);
+    }
+
+    [Fact]
+    public void Detected_with_no_case_assigns_the_y70()
+    {
+        var (worker, _, store) = BuildWithCase(null);
+
+        worker.Tick();
+
+        Assert.Equal(Y70CaseAssigner.DefaultCaseId, store.Load().CaseId);
+        Assert.True(Y70CaseAssigner.IsY70Case(store.Load().CaseId));
+    }
+
+    [Fact]
+    public void Detected_with_another_case_replaces_it_with_the_y70()
+    {
+        var (worker, _, store) = BuildWithCase(OtherCase);
+
+        worker.Tick();
+
+        Assert.Equal(Y70CaseAssigner.DefaultCaseId, store.Load().CaseId);
+    }
+
+    [Fact]
+    public void Detected_with_a_y70_variant_already_set_leaves_it()
+    {
+        var (worker, _, store) = BuildWithCase(Y70Variant);
+
+        worker.Tick();
+
+        Assert.Equal(Y70Variant, store.Load().CaseId);
+    }
+
+    [Fact]
+    public void Not_detected_changes_nothing()
+    {
+        var (worker, y70, store) = BuildWithCase(OtherCase);
+        y70.Connected = false;
+
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Equal(OtherCase, store.Load().CaseId);
+    }
+
+    [Fact]
+    public void Repeated_detection_does_not_write_again()
+    {
+        var (worker, _, store) = BuildWithCase(null);
+        worker.Tick();
+        // The user picks another case after the automatic assignment.
+        store.Save(OtherCase, pending: false);
+
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Equal(OtherCase, store.Load().CaseId);
+    }
+
+    [Fact]
+    public void Detection_after_a_sustained_disconnect_is_a_new_event()
+    {
+        var (worker, y70, store) = BuildWithCase(null);
+        worker.Tick();
+        store.Save(OtherCase, pending: false);
+        y70.Connected = false;
+        worker.Tick();
+        worker.Tick();
+        worker.Tick();
+        y70.Connected = true;
+
+        worker.Tick();
+
+        Assert.Equal(Y70CaseAssigner.DefaultCaseId, store.Load().CaseId);
     }
 
     [Fact]

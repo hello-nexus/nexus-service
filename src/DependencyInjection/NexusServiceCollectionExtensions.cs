@@ -2767,6 +2767,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Persistence.MachineCaseStore>();
         services.AddSingleton<Nexus.Service.Persistence.SystemPreviewStore>();
         services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>();
+        services.AddSingleton<Nexus.Service.Peripherals.Y70.Y70CaseAssigner>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileSyncService>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileLibraryService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Cloud.CloudProfileSyncService>());
