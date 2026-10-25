@@ -359,6 +359,16 @@ public class FlexP28Tests
     }
 
     [Fact]
+    public void P28_identify_frame_is_capped_and_mirrored()
+    {
+        var wire = Enumerable.Repeat((byte)255, 27).ToArray();
+        wire[7 * 3] = 10;
+        Nexus.Service.Lighting.FlexLightingFrameWriter.FinishP28Wire(wire, 1);
+        Assert.Equal(254, wire[0]);
+        Assert.Equal(10, wire[8 * 3]);
+    }
+
+    [Fact]
     public void Catalog_lists_the_p28_v2_fan_without_a_screen()
     {
         var row = LightingDevicesCatalog.All.Single(d => d.Source == "nexus" && d.Model == "P28 V2 Fan");
