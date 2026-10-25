@@ -402,7 +402,7 @@ public sealed class CloudProfileSyncService : BackgroundService
             // setup-only change shows up here instead: a manual Back up uploads it, a background pass never does.
             if (action == CloudSyncAction.None && manual && localEntry is not null && localExport is not null
                 && cloudRow is not null && syncRecord is not null
-                && PcSetupBackup.Digest(_pcSetup) is { } setupDigest && setupDigest != syncRecord.LastPushedSetupHash)
+                && PcSetupBackup.Digest(_pcSetup) is not null && !PcSetupBackup.Matches(_pcSetup, syncRecord.LastPushedSetupHash, out _))
             {
                 action = CloudSyncAction.Push;
             }
@@ -486,12 +486,13 @@ public sealed class CloudProfileSyncService : BackgroundService
         }
         var pushed = _store.Load().Auth?.CloudAccounts.FirstOrDefault(a => a.AccountId == accountId)
             ?.ProfileSync.GetValueOrDefault(profileId)?.LastPushedSetupHash ?? "";
-        if (pushed.Length > 0 && PcSetupBackup.Digest(_pcSetup) == pushed)
+        if (pushed.Length > 0 && PcSetupBackup.Matches(_pcSetup, pushed, out var current))
         {
             var withSetup = PcSetupBackup.Attach(appData, _pcSetup, out var digest);
-            if (digest == pushed)
+            if (digest == current)
             {
-                pushedSetup = pushed;
+                // A hash stored in the older full form is rewritten in the current form here.
+                pushedSetup = digest;
                 return withSetup;
             }
         }

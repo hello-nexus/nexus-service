@@ -315,4 +315,249 @@ public sealed class PcSetupBackupTests : IDisposable
         Assert.Empty(rest!);
         Assert.Equal("ok", Assert.Single(setup!.Items).Id);
     }
+
+    private static PcSetup WithLayout(string id, string layoutJson)
+    {
+        var setup = Setup(id);
+        setup.Resolved.CaseLayout = JsonDocument.Parse(layoutJson).RootElement.Clone();
+        return setup;
+    }
+
+    private static JsonElement Raw(string json) => JsonDocument.Parse(json).RootElement.Clone();
+
+    private static PcSetup WithCatalogItem(string id, string specsJson)
+    {
+        var setup = Setup(id);
+        setup.Items[0].Catalog = new PcSetupCatalog { Category = "monitor", PartId = "m-1", Title = "Screen", Specs = Raw(specsJson) };
+        return setup;
+    }
+
+    [Fact]
+    public void Attach_sends_user_choices_only_without_resolved_or_specs()
+    {
+        var setup = WithCatalogItem("kb", """{"widthMm":600}""");
+        setup.Resolved.CaseLayout = Raw("""{"slots":[1,2,3]}""");
+        setup.Resolved.Objects.Add(new SceneObject { Id = "case", Kind = "case", Source = "user", Position = [0f, 0f, 0f] });
+        _scene.Setup.TrySave(0, setup, out _);
+
+        var result = PcSetupBackup.Attach(new(), _scene.Setup, out _);
+
+        var doc = result[PcSetupBackup.AppId][PcSetupBackup.Key];
+        Assert.Equal(0, doc.GetProperty("resolved").GetProperty("objects").GetArrayLength());
+        Assert.False(doc.GetProperty("resolved").TryGetProperty("caseLayout", out var layout) && layout.ValueKind != JsonValueKind.Null);
+        var catalog = doc.GetProperty("items")[0].GetProperty("catalog");
+        Assert.Equal("m-1", catalog.GetProperty("partId").GetString());
+        Assert.False(catalog.TryGetProperty("specs", out var specs) && specs.ValueKind != JsonValueKind.Null);
+        Assert.NotNull(_scene.Setup.Load().Setup.Resolved.CaseLayout);
+        Assert.NotNull(_scene.Setup.Load().Setup.Items[0].Catalog!.Specs);
+    }
+
+    [Fact]
+    public void The_digest_ignores_resolved_and_specs_changes_but_not_user_choices()
+    {
+        _scene.Setup.TrySave(0, WithCatalogItem("kb", """{"widthMm":1}"""), out _);
+        var before = PcSetupBackup.Digest(_scene.Setup);
+
+        var changed = WithCatalogItem("kb", """{"widthMm":999}""");
+        changed.Resolved.CaseLayout = Raw("""{"slots":[1,2,3,4]}""");
+        changed.Resolved.Objects.Add(new SceneObject { Id = "x", Kind = "box", Source = "user", Position = [0f, 0f, 0f] });
+        _scene.Setup.TrySave(1, changed, out _);
+
+        Assert.Equal(before, PcSetupBackup.Digest(_scene.Setup));
+        _scene.Setup.TrySave(2, WithCatalogItem("other", """{"widthMm":999}"""), out _);
+        Assert.NotEqual(before, PcSetupBackup.Digest(_scene.Setup));
+    }
+
+    [Fact]
+    public void A_restore_keeps_the_local_resolved_block_and_specs_and_ignores_those_in_an_old_backup()
+    {
+        var local = WithCatalogItem("kb", """{"widthMm":600}""");
+        local.Resolved.CaseLayout = Raw("""{"local":true}""");
+        local.Resolved.Objects.Add(new SceneObject { Id = "kb", Kind = "keyboard", Source = "user", Position = [1f, 0f, 2f] });
+        _scene.Setup.TrySave(0, local, out _);
+
+        var old = WithCatalogItem("kb", """{"widthMm":1}""");
+        old.Items.Add(new PcSetupItem { Id = "new", Kind = "mouse", Catalog = new PcSetupCatalog { Category = "mouse", PartId = "p", Title = "T", Specs = Raw("""{"a":1}""") } });
+        old.Resolved.CaseLayout = Raw("""{"old":true}""");
+        PcSetupBackup.Detach(BundleWith(old), out var fromOldBackup);
+        _scene.Setup.Replace(fromOldBackup!);
+
+        var now = _scene.Setup.Load().Setup;
+        Assert.Equal("""{"local":true}""", JsonSerializer.Serialize(now.Resolved.CaseLayout!.Value));
+        Assert.Equal("kb", Assert.Single(now.Resolved.Objects).Id);
+        Assert.Equal("""{"widthMm":600}""", JsonSerializer.Serialize(now.Items[0].Catalog!.Specs!.Value));
+        Assert.Null(now.Items[1].Catalog!.Specs);
+    }
+
+    [Fact]
+    public void A_restore_with_no_local_record_leaves_resolved_empty_and_still_validates()
+    {
+        var skinny = WithCatalogItem("kb", """{"widthMm":1}""");
+        skinny.Items[0].Catalog!.Specs = null;
+        Assert.Null(PcSetupValidation.Validate(skinny));
+
+        _scene.Setup.Replace(WithLayout("restored", """{"old":true}"""));
+
+        var now = _scene.Setup.Load().Setup;
+        Assert.Null(now.Resolved.CaseLayout);
+        Assert.Empty(now.Resolved.Objects);
+    }
+
+    [Fact]
+    public void A_realistic_full_setup_backs_up_in_under_8_KB()
+    {
+        var setup = new PcSetup { Case = new PcSetupCase { Place = new PcSetupPlace { X = -300.5f, Z = 40.25f, Yaw = 90f } } };
+        var parts = string.Join(",", Enumerable.Range(0, 15).Select(i => $$"""{"slot":"part-{{i}}","partId":"catalog-part-{{i:D4}}","category":"cat{{i}}","note":"user pick {{i}}"}"""));
+        setup.Parts = Raw("{\"corrections\":{\"case\":{\"widthMm\":230}},\"more\":[" + parts + "]}");
+        var kinds = new[] { "keyboard", "mouse", "mousepad", "monitor", "monitor", "speaker", "headset", "desk" };
+        for (var i = 0; i < 8; i++)
+        {
+            setup.Items.Add(new PcSetupItem
+            {
+                Id = "item-" + i,
+                Kind = kinds[i],
+                Owned = true,
+                Catalog = new PcSetupCatalog { Category = kinds[i], PartId = "catalog-item-" + i.ToString("D4"), Title = "Some Vendor " + kinds[i] + " Model " + i, Specs = Raw("""{"dimensions":[600,30,350],"screenSize":27,"aspect":"16:9"}""") },
+                Custom = new PcSetupCustom { Name = "My " + kinds[i], WidthMm = 440.5f, DepthMm = 140.25f },
+                Detected = new PcSetupDetected { Key = "device-key-" + i },
+                Place = new PcSetupPlace { X = 10.5f * i, Z = 150.25f, Yaw = 15f },
+            });
+            setup.Resolved.Objects.Add(new SceneObject { Id = "item-" + i, Kind = "keyboard", Source = "user", Position = [1f, 0f, 2f] });
+        }
+        var slots = string.Join(",", Enumerable.Range(0, 400).Select(i => "{\"k\":" + i + ",\"p\":[1.5,2.5,3.5]}"));
+        setup.Resolved.CaseLayout = Raw("{\"slots\":[" + slots + "]}");
+        _scene.Setup.TrySave(0, setup, out _);
+
+        var doc = PcSetupBackup.Attach(new(), _scene.Setup, out _)[PcSetupBackup.AppId][PcSetupBackup.Key];
+
+        var bytes = System.Text.Encoding.UTF8.GetByteCount(doc.GetRawText());
+        Assert.InRange(bytes, 1, 8 * 1024 - 1);
+        Assert.True(bytes * 4 < PcSetupValidation.Size(_scene.Setup.Load().Setup), $"{bytes} B is not under a quarter of the full record");
+    }
+
+    [Fact]
+    public async Task A_stored_full_form_hash_still_matches_so_the_background_push_keeps_the_setup_and_rewrites_the_hash()
+    {
+        var profileId = SeedSyncedProfile();
+        var setup = WithCatalogItem("kb", """{"widthMm":600}""");
+        setup.Resolved.CaseLayout = Raw("""{"slots":[1]}""");
+        _scene.Setup.TrySave(0, setup, out _);
+        var legacy = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(_scene.Setup.Load().Setup, PersistenceJsonContext.Default.PcSetup))));
+        Assert.NotEqual(legacy, PcSetupBackup.Digest(_scene.Setup));
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[profileId].LastPushedSetupHash = legacy);
+        _store.Update(s => s.Lighting.GlobalBrightness = 0.4f);
+        _store.FlushNow();
+        CloudPutProfileRequest? sent = null;
+        _api.OnPutProfile = (_, _, _, body) =>
+        {
+            sent = body;
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 2 });
+        };
+
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: false);
+        _clock.Advance(TimeSpan.FromSeconds(61));
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: false);
+
+        Assert.NotNull(sent);
+        Assert.Contains(PcSetupBackup.AppId, sent!.AppData!.Keys);
+        Assert.Equal(PcSetupBackup.Digest(_scene.Setup), _store.Load().Auth!.CloudAccounts[0].ProfileSync[profileId].LastPushedSetupHash);
+    }
+
+    [Fact]
+    public void An_old_backup_with_an_invalid_resolved_block_and_oversized_specs_still_restores()
+    {
+        var old = WithCatalogItem("kb", """{"widthMm":1}""");
+        old.Resolved.Objects.Add(new SceneObject { Id = "bad", Kind = "monitor", Source = "user", Position = [0f, 0f, 0f], Curve = new SceneCurve { RadiusMm = 5f } });
+        old.Items[0].Catalog!.Specs = Raw("{\"x\":\"" + new string('a', PcSetupValidation.MaxOpaqueSpecs + 10) + "\"}");
+        Assert.NotNull(PcSetupValidation.Validate(old));
+
+        PcSetupBackup.Detach(BundleWith(old), out var setup);
+
+        Assert.NotNull(setup);
+        Assert.Empty(setup!.Resolved.Objects);
+        Assert.Null(setup.Items[0].Catalog!.Specs);
+    }
+
+    [Fact]
+    public void A_migrated_items_height_and_curve_radius_move_onto_the_item_in_the_backup_copy()
+    {
+        var setup = Setup("scr");
+        setup.Items[0].Kind = "monitor";
+        setup.Items[0].Custom!.SceneKind = "monitor";
+        setup.Items[0].Custom!.WidthMm = 600f;
+        setup.Resolved.Objects.Add(new SceneObject { Id = "scr", Kind = "monitor", Source = "user", Position = [0f, 0f, 0f], Size = [600f, 380f, 60f], Curve = new SceneCurve { RadiusMm = 1500f } });
+        // A Build-made item keeps nothing extra: its object is derived.
+        setup.Items.Add(new PcSetupItem { Id = "kb", Kind = "keyboard", Custom = new PcSetupCustom { Name = "Keys" } });
+        setup.Resolved.Objects.Add(new SceneObject { Id = "kb", Kind = "keyboard", Source = "build", Position = [0f, 0f, 0f], Size = [440f, 35f, 140f] });
+        _scene.Setup.TrySave(0, setup, out _);
+
+        var doc = PcSetupBackup.Attach(new(), _scene.Setup, out _)[PcSetupBackup.AppId][PcSetupBackup.Key];
+
+        var custom = doc.GetProperty("items")[0].GetProperty("custom");
+        Assert.Equal(380f, custom.GetProperty("heightMm").GetSingle());
+        Assert.Equal(1500f, custom.GetProperty("curveRadiusMm").GetSingle());
+        Assert.False(doc.GetProperty("items")[1].GetProperty("custom").TryGetProperty("heightMm", out var h) && h.ValueKind != JsonValueKind.Null);
+        // Restoring it keeps them, and they pass validation.
+        PcSetupBackup.Detach(BundleWith(JsonSerializer.Deserialize(doc.GetRawText(), PersistenceJsonContext.Default.PcSetup)!), out var restored);
+        Assert.Equal(1500f, restored!.Items[0].Custom!.CurveRadiusMm);
+    }
+
+    [Fact]
+    public void An_old_backup_with_an_out_of_range_radius_restores_with_the_field_absent()
+    {
+        var old = Setup("scr");
+        old.Items[0].Custom!.SceneKind = "monitor";
+        old.Resolved.Objects.Add(new SceneObject { Id = "scr", Kind = "monitor", Source = "user", Position = [0f, 0f, 0f], Size = [600f, 380f, 60f], Curve = new SceneCurve { RadiusMm = 5f } });
+
+        PcSetupBackup.Detach(BundleWith(old), out var setup);
+
+        Assert.NotNull(setup);
+        Assert.Null(setup!.Items[0].Custom!.CurveRadiusMm);
+        Assert.Equal(380f, setup.Items[0].Custom!.HeightMm);
+    }
+
+
+    [Fact]
+    public void A_restore_over_the_cap_drops_local_specs_first_keeps_the_mesh_and_validates()
+    {
+        string Specs() => "{\"x\":\"" + new string('a', PcSetupValidation.MaxOpaqueSpecs - 100) + "\"}";
+        PcSetupItem Item(int i, bool specs) => new()
+        {
+            Id = "i" + i,
+            Kind = "keyboard",
+            Catalog = new PcSetupCatalog { Category = "c", PartId = "p" + i, Title = "T", Specs = specs ? Raw(Specs()) : null },
+        };
+        var local = new PcSetup();
+        local.Items.AddRange(Enumerable.Range(0, 60).Select(i => Item(i, true)));
+        local.Resolved.CaseLayout = Raw("{\"s\":\"" + new string('a', 60 * 1024) + "\"}");
+        local.Resolved.Objects.Add(new SceneObject { Id = "i0", Kind = "keyboard", Source = "user", Position = [0f, 0f, 0f] });
+        Assert.Null(PcSetupValidation.Validate(local));
+        _scene.Setup.TrySave(0, local, out _);
+        var incoming = new PcSetup { Parts = Raw("\"" + new string('p', PcSetupValidation.MaxOpaqueParts - 100) + "\"") };
+        incoming.Items.AddRange(Enumerable.Range(0, 60).Select(i => Item(i, false)));
+
+        var saved = _scene.Setup.Replace(incoming);
+
+        Assert.Null(PcSetupValidation.Validate(saved.Setup));
+        Assert.All(saved.Setup.Items, i => Assert.Null(i.Catalog!.Specs));
+        Assert.NotNull(saved.Setup.Resolved.CaseLayout);
+        Assert.Single(saved.Setup.Resolved.Objects);
+    }
+
+    [Theory]
+    [InlineData("build", false)]
+    [InlineData("user", true)]
+    public void Height_and_radius_are_taken_only_from_a_user_sourced_resolved_object(string source, bool copied)
+    {
+        var old = Setup("scr");
+        old.Items[0].Custom!.SceneKind = "monitor";
+        old.Resolved.Objects.Add(new SceneObject { Id = "scr", Kind = "monitor", Source = source, Position = [0f, 0f, 0f], Size = [600f, 380f, 60f], Curve = new SceneCurve { RadiusMm = 1500f } });
+
+        PcSetupBackup.Detach(BundleWith(old), out var setup);
+
+        var custom = setup!.Items[0].Custom!;
+        Assert.Equal(copied ? 380f : null, custom.HeightMm);
+        Assert.Equal(copied ? 1500f : null, custom.CurveRadiusMm);
+    }
 }

@@ -64,17 +64,52 @@ public sealed class PcSetupStore
         return true;
     }
 
-    /// <summary>Saves <paramref name="next"/> over whatever is there (a backup restore).</summary>
+    /// <summary>Saves a backup's <paramref name="next"/> over the user choices, keeping the local resolved block and specs snapshots.</summary>
     public PcSetupFile Replace(PcSetup next)
     {
         PcSetupFile saved;
         lock (_lock)
         {
             var existing = SavedUnlocked() ?? Migrated();
+            // A backup carries user choices only: resolved and each item's specs come from the local record (empty when there is none), and any an old backup carries are ignored.
+            var local = SavedUnlocked()?.Setup;
+            next.Resolved = local?.Resolved ?? new PcSetupResolved();
+            foreach (var item in next.Items)
+            {
+                if (item?.Catalog is { } catalog)
+                {
+                    catalog.Specs = local?.Items.Find(i => i?.Id == item.Id)?.Catalog?.Specs;
+                }
+            }
+            // Local pieces that do not fit beside the restored choices go in this order: specs, case mesh, objects. Build rewrites them on open.
+            Func<PcSetup, bool> fits = x => PcSetupValidation.Validate(x) is null;
+            if (!fits(next))
+            {
+                ClearSpecs(next);
+            }
+            if (!fits(next))
+            {
+                next.Resolved = new PcSetupResolved { Objects = next.Resolved.Objects };
+            }
+            if (!fits(next))
+            {
+                next.Resolved = new PcSetupResolved();
+            }
             saved = WriteUnlocked(existing.Rev, next);
         }
         Changed?.Invoke(saved.Rev);
         return Clone(saved);
+    }
+
+    private static void ClearSpecs(PcSetup setup)
+    {
+        foreach (var item in setup.Items)
+        {
+            if (item?.Catalog is { } catalog)
+            {
+                catalog.Specs = null;
+            }
+        }
     }
 
     /// <summary>Forgets the saved record, file included, so a shared test host starts each test clean.</summary>

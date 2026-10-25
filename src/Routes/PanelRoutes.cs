@@ -352,6 +352,10 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
+            if (body.Font is not null && !Nexus.Service.Panel.PanelFontValue.TryNormalize(body.Font, out _))
+            {
+                return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
             var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
             var updated = registry.Patch(id, body);
             if (updated is null)
