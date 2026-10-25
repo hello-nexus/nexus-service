@@ -33,6 +33,9 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
     private DBusConnection? _dbus;
     private CancellationTokenSource? _cts;
 
+    /// <summary>Raised on logind's PrepareForSleep(true), before the machine suspends.</summary>
+    public event Action? Suspending;
+
     public LinuxResumeListener(RgbBridge bridge, Nexus.Service.QSeries.QSeriesPortWatcher? qseries = null, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null)
     {
         _bridge = bridge;
@@ -96,6 +99,7 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
                     // resume, the only edge that needs the bridge bounced.
                     if (new DBusReader(signal.Body).ReadBool())
                     {
+                        Suspending?.Invoke();
                         _qseries?.OnHostSuspending();
                     }
                     else

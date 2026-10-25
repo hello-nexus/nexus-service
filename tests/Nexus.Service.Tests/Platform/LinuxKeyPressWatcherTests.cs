@@ -123,7 +123,7 @@ public sealed class LinuxKeyPressWatcherTests : IDisposable
 
     private sealed class Rig
     {
-        public readonly Dictionary<string, int> WriteEnds = new();
+        public readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> WriteEnds = new();
         public readonly List<string> Presses = new();
         public int Opens;
         public int AllowedChecks;
@@ -316,16 +316,28 @@ public sealed class LinuxKeyPressWatcherTests : IDisposable
         if (OperatingSystem.IsWindows()) return;
         var first = AddInput("event3", "120013", FullKeyboardKeys, "First");
         var rig = new Rig();
-        using var watcher = Build(rig);
+        var firstOpens = 0;
+        // An empty regular file polls readable and reads EOF at once, which is how a node that
+        // vanished looks to the reader. (A pipe hang-up depends on no child process inheriting its write end.)
+        var emptyFile = Path.Combine(_root, "empty");
+        Directory.CreateDirectory(_root);
+        File.WriteAllBytes(emptyFile, Array.Empty<byte>());
+        using var watcher = Build(rig, open: node =>
+        {
+            if (node == first && Interlocked.Increment(ref firstOpens) == 1) return openFile(emptyFile, 0);
+            var fds = new int[2];
+            Assert.Equal(0, pipe(fds));
+            lock (_fds) { _fds.Add(fds[1]); }
+            rig.WriteEnds[node] = fds[1];
+            return fds[0];
+        });
+
         watcher.SetArmed(true);
-        Assert.True(await WaitFor(() => watcher.OpenCount == 1));
+        // The gone node is dropped and, still listed, opened again on a later rescan.
+        Assert.True(await WaitFor(() => Volatile.Read(ref firstOpens) >= 2 && watcher.OpenCount == 1));
 
         var second = AddInput("event4", "120013", FullKeyboardKeys, "Second");
         Assert.True(await WaitFor(() => watcher.OpenCount == 2));
-
-        // Closing the write end hangs up the read end, like an unplugged board.
-        close(rig.WriteEnds[first]);
-        Assert.True(await WaitFor(() => watcher.OpenCount == 1));
         Send(rig.WriteEnds[second], KeyEvent(KeyA, 1));
         Assert.True(await WaitFor(() => PressCount(rig) == 1));
     }
@@ -372,4 +384,7 @@ public sealed class LinuxKeyPressWatcherTests : IDisposable
 
     [DllImport("libc", SetLastError = true)]
     private static extern int close(int fd);
+
+    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+    private static extern int openFile([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
 }

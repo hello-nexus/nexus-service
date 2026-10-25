@@ -123,8 +123,9 @@ public class LinuxKeyInputGateTests
         using var gate = new LinuxKeyInputGate(
             () => Interlocked.Increment(ref seatReads) == 1 ? first.Task : never.Task,
             () => Task.FromResult<bool?>(null),
-            () => { published.Release(); return SessionUser; },
+            () => SessionUser,
             intervalMs: 10);
+        gate.AfterPublish = () => published.Release();
 
         gate.SetActive(true);
         Assert.True(await WaitFor(() => Volatile.Read(ref seatReads) == 1));
@@ -134,22 +135,113 @@ public class LinuxKeyInputGateTests
 
         first.SetResult(Seat());
         Assert.True(await published.WaitAsync(5000));
-        // The stale loop publishes right after reading the expected user; a regression would show here.
-        await Task.Delay(50);
         Assert.False(gate.Allowed);
     }
 
-    [Fact]
-    public async Task Locker_ErrorsBlockAndAbsenceDoesNot()
-    {
-        using var gate = new LinuxKeyInputGate(
-            () => Task.FromResult<LinuxKeyInputGate.SeatState?>(Seat()), () => Task.FromResult<bool?>(null), () => SessionUser, 10);
-        const string gnome = "org.gnome.ScreenSaver";
+    private static LinuxKeyInputGate NewGate()
+        => new(() => Task.FromResult<LinuxKeyInputGate.SeatState?>(Seat()), () => Task.FromResult<bool?>(null), () => SessionUser, 10);
 
-        Assert.Null(await gate.CheckLockerAsync(_ => Task.FromResult(false), _ => Task.FromResult(true)));
-        Assert.False(await gate.CheckLockerAsync(n => Task.FromResult(n == gnome), _ => Task.FromResult(false)));
-        Assert.True(await gate.CheckLockerAsync(n => Task.FromResult(n == gnome), _ => Task.FromResult(true)));
-        Assert.True(await gate.CheckLockerAsync(n => Task.FromResult(n == gnome), _ => throw new TimeoutException()));
-        Assert.True(await gate.CheckLockerAsync(_ => throw new TimeoutException(), _ => Task.FromResult(false)));
+    private const string Gnome = "org.gnome.ScreenSaver";
+    private const string Freedesktop = "org.freedesktop.ScreenSaver";
+
+    [Fact]
+    public async Task Locker_AbsentIsNullAndTheEmptyLookupIsCached()
+    {
+        using var gate = NewGate();
+        var lookups = 0;
+        Task<bool> None(string _) { lookups++; return Task.FromResult(false); }
+
+        Assert.Null(await gate.CheckLockerAsync(None, _ => Task.FromResult(true)));
+        var afterFirst = lookups;
+        Assert.Null(await gate.CheckLockerAsync(None, _ => Task.FromResult(true)));
+
+        Assert.True(afterFirst > 0);
+        Assert.Equal(afterFirst, lookups);
+    }
+
+    [Fact]
+    public async Task Locker_ReportsItsAnswer()
+    {
+        using var inactive = NewGate();
+        Assert.False(await inactive.CheckLockerAsync(n => Task.FromResult(n == Gnome), _ => Task.FromResult(false)));
+        using var active = NewGate();
+        Assert.True(await active.CheckLockerAsync(n => Task.FromResult(n == Gnome), _ => Task.FromResult(true)));
+    }
+
+    [Fact]
+    public async Task Locker_TimeoutsAndOtherErrorsBlock()
+    {
+        using var queryFails = NewGate();
+        Assert.True(await queryFails.CheckLockerAsync(n => Task.FromResult(n == Gnome), _ => throw new TimeoutException()));
+        using var otherError = NewGate();
+        Assert.True(await otherError.CheckLockerAsync(
+            n => Task.FromResult(n == Gnome),
+            _ => throw new InvalidOperationException("D-Bus error org.freedesktop.DBus.Error.AccessDenied: no")));
+        using var lookupFails = NewGate();
+        Assert.True(await lookupFails.CheckLockerAsync(_ => throw new TimeoutException(), _ => Task.FromResult(false)));
+    }
+
+    [Theory]
+    [InlineData("org.freedesktop.DBus.Error.UnknownMethod")]
+    [InlineData("org.freedesktop.DBus.Error.UnknownInterface")]
+    public async Task Locker_OwnerWithoutGetActiveIsNotALocker(string error)
+    {
+        using var only = NewGate();
+        Assert.Null(await only.CheckLockerAsync(
+            n => Task.FromResult(n == Freedesktop),
+            _ => throw new InvalidOperationException($"D-Bus error {error}: x")));
+
+        using var withReal = NewGate();
+        Assert.True(await withReal.CheckLockerAsync(
+            n => Task.FromResult(n is Gnome or Freedesktop),
+            l => l.Name == Freedesktop ? throw new InvalidOperationException($"D-Bus error {error}: x") : Task.FromResult(true)));
+    }
+
+    [Fact]
+    public async Task ForceBlocked_ClosesAtOnceAndDiscardsAReadInFlight_ThenPollingReopens()
+    {
+        var reads = 0;
+        var slow = new TaskCompletionSource<LinuxKeyInputGate.SeatState?>();
+        var published = new SemaphoreSlim(0);
+        using var gate = new LinuxKeyInputGate(
+            () => Interlocked.Increment(ref reads) switch
+            {
+                1 => Task.FromResult<LinuxKeyInputGate.SeatState?>(Seat()),
+                2 => slow.Task,
+                _ => Task.FromResult<LinuxKeyInputGate.SeatState?>(Seat()),
+            },
+            () => Task.FromResult<bool?>(null), () => SessionUser, intervalMs: 10);
+        gate.SetActive(true);
+        Assert.True(await WaitFor(() => gate.Allowed));
+        Assert.True(await WaitFor(() => Volatile.Read(ref reads) == 2));
+
+        gate.ForceBlocked();
+        Assert.False(gate.Allowed);
+
+        // The in-flight read began before the lock, so its allowed result must not reopen the gate.
+        gate.AfterPublish = () => published.Release();
+        slow.SetResult(Seat());
+        Assert.True(await published.WaitAsync(5000));
+        Assert.False(gate.Allowed);
+
+        // The next poll starts after the lock and may reopen it.
+        Assert.True(await WaitFor(() => gate.Allowed));
+    }
+
+    [Fact]
+    public async Task Loop_ACancellationNotFromItsTokenEndsBlocked()
+    {
+        var calls = 0;
+        using var gate = new LinuxKeyInputGate(
+            () => Interlocked.Increment(ref calls) == 1
+                ? Task.FromResult<LinuxKeyInputGate.SeatState?>(Seat())
+                : throw new OperationCanceledException(),
+            () => Task.FromResult<bool?>(null), () => SessionUser, intervalMs: 10);
+
+        var sawAllowed = false;
+        gate.AfterPublish = () => { if (gate.Allowed) sawAllowed = true; };
+
+        gate.SetActive(true);
+        Assert.True(await WaitFor(() => Volatile.Read(ref sawAllowed) && !gate.Allowed));
     }
 }

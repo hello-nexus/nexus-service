@@ -13,10 +13,11 @@ namespace Nexus.Service.Platform.Linux;
 /// another user's session is ever read. Fails closed: until a first successful
 /// logind read, and whenever logind is unreachable, nothing is allowed.
 /// Lockers that expose neither logind's LockedHint nor a ScreenSaver D-Bus
-/// interface (swaylock, i3lock, xsecurelock) are not detected. State is polled:
-/// the repo's D-Bus client only offers one-shot signal waiters whose timeout
-/// drops a replacement waiter on the same key, which is too fragile for
-/// PropertiesChanged subscriptions.
+/// interface (swaylock, i3lock, xsecurelock) are not detected. State is polled
+/// every second, and <see cref="ForceBlocked"/> closes the gate at once on a
+/// session lock or suspend (wired from the existing listeners); the repo's D-Bus
+/// client only has one-shot signal waiters, too fragile for PropertiesChanged
+/// subscriptions.
 /// </summary>
 public sealed partial class LinuxKeyInputGate : IDisposable
 {
@@ -46,10 +47,12 @@ public sealed partial class LinuxKeyInputGate : IDisposable
     private CancellationTokenSource? _cts;
     // Bumped on every start and stop; a loop publishes only while its generation is current.
     private int _generation;
+    // Bumped by ForceBlocked; a read that began before it is stale and is not published.
+    private int _epoch;
     private volatile bool _allowed;
     private string _lastReason = "";
-    private (string Name, string Path)? _locker;
-    private long _lockerLookedUpAt = long.MinValue;
+    private (string Name, string Path)[]? _lockers;
+    private long _lockersLookedUpAt;
 
     /// <param name="session">The session-bus connection used to ask a screen locker whether it is active; null skips that check.</param>
     public LinuxKeyInputGate(DBusConnection? session)
@@ -70,6 +73,9 @@ public sealed partial class LinuxKeyInputGate : IDisposable
     }
 
     public bool Allowed => _allowed;
+
+    /// <summary>Test seam: runs at the end of every publish attempt, current or stale.</summary>
+    internal Action? AfterPublish { get; set; }
 
     /// <summary>What logind reports about seat0's active session; <c>HasActiveSession</c> false at a greeter or on a bare console.</summary>
     internal readonly record struct SeatState(bool HasActiveSession, string? Class, bool? LockedHint, uint? Uid);
@@ -114,39 +120,70 @@ public sealed partial class LinuxKeyInputGate : IDisposable
         }
     }
 
-    private async Task LoopAsync(CancellationToken ct, int generation)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            try
-            {
-                var seat = await _readSeat().ConfigureAwait(false);
-                var locker = seat is null ? null : await _readLocker().ConfigureAwait(false);
-                var (allowed, reason) = Decide(seat, locker, _expectedUid());
-                Publish(generation, allowed, reason);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                Publish(generation, false, "gate check failed");
-                ServiceLog.Warn($"[key-press] input gate check failed: {ex.GetType().Name}");
-            }
-            try { await Task.Delay(_intervalMs, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
-        }
-    }
-
-    private void Publish(int generation, bool allowed, string reason)
+    /// <summary>Closes the gate now and discards any read already in flight; the next poll reopens it if the session is usable.</summary>
+    public void ForceBlocked()
     {
         lock (_lock)
         {
-            if (generation != _generation) return;
-            _allowed = allowed;
-            if (reason == _lastReason) return;
-            _lastReason = reason;
+            _epoch++;
+            _allowed = false;
+            _lastReason = "";
         }
-        ServiceLog.Info(allowed
-            ? "[key-press] key reactions resumed"
-            : $"[key-press] key reactions paused: {reason}");
+    }
+
+    private async Task LoopAsync(CancellationToken ct, int generation)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                int epoch;
+                lock (_lock)
+                {
+                    epoch = _epoch;
+                }
+                try
+                {
+                    var seat = await _readSeat().ConfigureAwait(false);
+                    var locker = seat is null ? null : await _readLocker().ConfigureAwait(false);
+                    var (allowed, reason) = Decide(seat, locker, _expectedUid());
+                    Publish(generation, epoch, allowed, reason);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Publish(generation, epoch, false, "gate check failed");
+                    ServiceLog.Warn($"[key-press] input gate check failed: {ex.GetType().Name}");
+                }
+                try { await Task.Delay(_intervalMs, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+            }
+        }
+        finally
+        {
+            // Any exit, including a stray cancellation, leaves the gate closed for this generation.
+            Publish(generation, null, false, "gate stopped");
+        }
+    }
+
+    private void Publish(int generation, int? epoch, bool allowed, string reason)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                if (generation != _generation || (epoch is { } e && e != _epoch)) return;
+                _allowed = allowed;
+                if (reason == _lastReason) return;
+                _lastReason = reason;
+            }
+            ServiceLog.Info(allowed
+                ? "[key-press] key reactions resumed"
+                : $"[key-press] key reactions paused: {reason}");
+        }
+        finally
+        {
+            AfterPublish?.Invoke();
+        }
     }
 
     private async Task<SeatState?> ReadSeatAsync()
@@ -211,7 +248,7 @@ public sealed partial class LinuxKeyInputGate : IDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // No session bus to ask: logind's LockedHint is the only signal.
-            _locker = null;
+            _lockers = null;
             return null;
         }
         return await CheckLockerAsync(
@@ -230,8 +267,10 @@ public sealed partial class LinuxKeyInputGate : IDisposable
     }
 
     /// <summary>
-    /// Null when no locker owns a known name. A failed or unanswered query blocks (true): a locker
-    /// that cannot be asked is treated as up, never as absent.
+    /// Null when no locker owns a known name or none answers GetActive. A failed or unanswered query
+    /// blocks (true): a locker that cannot be asked is treated as up, never as absent. An owner that
+    /// lacks the method (an inhibit-only ScreenSaver service) is skipped. The owner list, including an
+    /// empty one, is cached so the name lookups do not run every poll.
     /// </summary>
     internal async Task<bool?> CheckLockerAsync(
         Func<string, Task<bool>> nameHasOwner, Func<(string Name, string Path), Task<bool>> getActive)
@@ -239,28 +278,45 @@ public sealed partial class LinuxKeyInputGate : IDisposable
         try
         {
             var now = Environment.TickCount64;
-            if (_locker is null || now - _lockerLookedUpAt > LockerLookupMs)
+            if (_lockers is null || now - _lockersLookedUpAt > LockerLookupMs)
             {
-                _lockerLookedUpAt = now;
-                _locker = null;
+                var owners = new System.Collections.Generic.List<(string Name, string Path)>();
                 foreach (var candidate in Lockers)
                 {
                     if (await nameHasOwner(candidate.Name).ConfigureAwait(false))
                     {
-                        _locker = candidate;
-                        break;
+                        owners.Add(candidate);
                     }
                 }
+                _lockers = owners.ToArray();
+                _lockersLookedUpAt = now;
             }
-            if (_locker is not { } locker) return null;
-            return await getActive(locker).ConfigureAwait(false);
+            bool? answer = null;
+            foreach (var locker in _lockers)
+            {
+                try
+                {
+                    if (await getActive(locker).ConfigureAwait(false)) return true;
+                    answer = false;
+                }
+                catch (Exception ex) when (IsMissingMethod(ex))
+                {
+                }
+            }
+            return answer;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _locker = null;
+            _lockers = null;
             return true;
         }
     }
+
+    // CallAsync surfaces a D-Bus error reply as InvalidOperationException carrying the error name.
+    private static bool IsMissingMethod(Exception ex)
+        => ex is InvalidOperationException
+            && (ex.Message.Contains("org.freedesktop.DBus.Error.UnknownMethod", StringComparison.Ordinal)
+                || ex.Message.Contains("org.freedesktop.DBus.Error.UnknownInterface", StringComparison.Ordinal));
 
     private static async Task<(string Signature, DBusReader Reader)> GetAsync(
         DBusConnection bus, string path, string iface, string property)

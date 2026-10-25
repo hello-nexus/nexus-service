@@ -614,10 +614,25 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.LedColorLockTracker>();
         services.AddSingleton<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
 #if LINUX
-        services.AddHostedService(sp => new Nexus.Service.Platform.Linux.LinuxKeyPressWatcher(
-            sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>(),
-            new Nexus.Service.Platform.Linux.LinuxKeyInputGate(
-                sp.GetService<Nexus.Service.Platform.Linux.DBus.DBusConnection>())));
+        services.AddHostedService(sp =>
+        {
+            var gate = new Nexus.Service.Platform.Linux.LinuxKeyInputGate(
+                sp.GetService<Nexus.Service.Platform.Linux.DBus.DBusConnection>());
+            // Block at once on a lock or suspend; polling reopens once logind says the session is unlocked.
+            if (sp.GetService<Nexus.Service.Lighting.SessionLockListener>() is { } lockListener)
+            {
+                lockListener.LockChanged += locked =>
+                {
+                    if (locked) gate.ForceBlocked();
+                };
+            }
+            if (sp.GetService<Nexus.Service.Platform.Linux.LinuxResumeListener>() is { } resume)
+            {
+                resume.Suspending += gate.ForceBlocked;
+            }
+            return new Nexus.Service.Platform.Linux.LinuxKeyPressWatcher(
+                sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>(), gate);
+        });
 #endif
         services.AddSingleton<LightingEngine>(sp =>
         {
@@ -2734,7 +2749,9 @@ public static class NexusServiceCollectionExtensions
 #if LINUX
         services.AddSingleton<Nexus.Service.Platform.Linux.DBus.DBusConnection>();
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxTrayService>();
-        services.AddHostedService<Nexus.Service.Platform.Linux.LinuxResumeListener>();
+        // Singleton so the key-press gate can subscribe to Suspending.
+        services.AddSingleton<Nexus.Service.Platform.Linux.LinuxResumeListener>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Platform.Linux.LinuxResumeListener>());
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxIdleDimWatch>();
 #endif
         return services;
