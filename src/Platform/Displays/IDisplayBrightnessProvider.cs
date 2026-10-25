@@ -44,4 +44,7 @@ public interface IDisplayBrightnessProvider
     /// by its controller name rather than a user-facing display id.
     /// </summary>
     string? FindDisplayIdByHardwareName(IReadOnlyList<string> nameFragments);
+
+    /// <summary>Asks a caching provider to rescan on its next lookup; the provider rate-limits the scan.</summary>
+    void RequestRescan() { }
 }

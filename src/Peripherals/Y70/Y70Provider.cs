@@ -462,6 +462,8 @@ public sealed class Y70Provider : IY70Provider, IDisposable
             var reusable = _ddcIdChecked && now - _ddcIdCheckedAt < DdcLookupTtlMs && (_ddcId is not null || reuseMiss);
             if (!reusable)
             {
+                if (!reuseMiss)
+                    _ddc.RequestRescan();
                 _ddcId = _ddc.FindDisplayIdByHardwareName(Y70DisplayProtocol.DdcPanelHardwareNames);
                 _ddcIdCheckedAt = now;
                 _ddcIdChecked = true;
