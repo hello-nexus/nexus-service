@@ -44,7 +44,10 @@ public static class FlexProtocol
 
     public const int TlLedsPerFan = 26;
     public const int SlInfLedsPerFan = 44;
+    /// <summary>Wire LEDs per fan; the last one mirrors <see cref="P28LogicalLedsPerFan"/> - 1 (capture: equal in every frame).</summary>
     public const int P28LedsPerFan = 9;
+    public const int P28LogicalLedsPerFan = 8;
+    public const byte P28MaxChannel = 254;
     public const int P28MaxFans = 4;
 
     /// <summary>The first fan-type byte of a P28 unit in the 0x12 reply.</summary>
@@ -170,13 +173,14 @@ public static class FlexProtocol
     public static int DecodeDuty(int wire) =>
         Math.Clamp((int)Math.Round(Math.Clamp(wire, 0, 255) * 100.0 / 255.0), 0, 100);
 
-    public static byte[] BuildSetPwm(byte duty)
+    /// <param name="activeFans">Slots to fill; the rest stay 0, as L-Connect sends for a P28 with fewer than four fans. Default fills all four.</param>
+    public static byte[] BuildSetPwm(byte duty, int activeFans = 4)
     {
         var f = NewFrame(CmdSetPwm);
-        f[1] = duty;
-        f[2] = duty;
-        f[3] = duty;
-        f[4] = duty;
+        for (var i = 0; i < Math.Clamp(activeFans, 1, 4); i++)
+        {
+            f[1 + i] = duty;
+        }
         return f;
     }
 
@@ -306,7 +310,7 @@ public static class FlexProtocol
             (FlexFamily.SlInfFlex, "center") => Range(0, 8),
             (FlexFamily.SlInfFlex, "inner") => Concat(Range(8, 10), Range(26, 10)),
             (FlexFamily.SlInfFlex, "outer") => Concat(Range(18, 8), Range(36, 8)),
-            (FlexFamily.P28V2, "fan") => Range(0, P28LedsPerFan),
+            (FlexFamily.P28V2, "fan") => Range(0, P28LogicalLedsPerFan),
             _ => Array.Empty<int>(),
         };
     }
@@ -358,9 +362,7 @@ public sealed class FlexReceiverInfo
 
     public bool IsP28 { get; init; }
 
-    /// <summary>P28 only: the sync line is on when bit 7 of byte 31 is clear. Its flag bits never reach <see cref="Rpm"/>.</summary>
+    /// <summary>P28 only: the sync line is on when bit 7 of byte 31 is clear. Unconfirmed against hardware. Its flag bits never reach <see cref="Rpm"/>.</summary>
     public bool P28SyncLineOn => IsP28 && PortFlags.Length > 1 && (PortFlags[1] & 0x8) == 0;
 
-    /// <summary>P28 only: gear from bits 4 to 6 of byte 31.</summary>
-    public int P28Gear => IsP28 && PortFlags.Length > 1 ? PortFlags[1] & 0x7 : 0;
 }

@@ -230,7 +230,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             {
                 continue;
             }
-            // P28 has no stored effect tables, so it always streams the engine's frames.
+            // P28 accepts stored packages too, but only streaming is implemented for it.
             if (look.Mode == LianLiWirelessChainLighting.ModeCustom || unit.Family == FlexFamily.P28V2)
             {
                 st.PendingSignature = "";
@@ -358,6 +358,22 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
                     _wire[o] = buf[src].R;
                     _wire[o + 1] = buf[src].G;
                     _wire[o + 2] = buf[src].B;
+                }
+            }
+        }
+        if (family == FlexFamily.P28V2)
+        {
+            for (var f = 0; f < fans; f++)
+            {
+                var o = f * perFan * 3;
+                // The 9th wire LED repeats the 8th, and L-Connect never sends a channel above the cap.
+                for (var c = 0; c < 3; c++)
+                {
+                    _wire[o + (8 * 3) + c] = _wire[o + (7 * 3) + c];
+                }
+                for (var k = 0; k < perFan * 3; k++)
+                {
+                    _wire[o + k] = Math.Min(_wire[o + k], FlexProtocol.P28MaxChannel);
                 }
             }
         }

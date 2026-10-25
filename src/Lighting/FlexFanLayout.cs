@@ -22,7 +22,7 @@ internal static class FlexFanLayout
         if (family == FlexFamily.P28V2)
         {
             // Single ring, LED 0 at the bottom, ascending clockwise; the real order is unconfirmed.
-            var a = (Math.PI / 2.0) + (wireIndex * 2.0 * Math.PI / perFan);
+            var a = (Math.PI / 2.0) + (wireIndex * 2.0 * Math.PI / FlexProtocol.P28LogicalLedsPerFan);
             return (0.5f + (P28RingRadius * (float)Math.Cos(a)), 0.5f + (P28RingRadius * (float)Math.Sin(a)));
         }
         if (family == FlexFamily.TlFlex)

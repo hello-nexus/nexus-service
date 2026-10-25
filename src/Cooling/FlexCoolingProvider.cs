@@ -62,7 +62,21 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private static int Duty(FlexUnit unit) =>
         Follows(unit) ? 0 : FlexProtocol.DecodeDuty(unit.Info.Pwm.Length > 0 ? unit.Info.Pwm[0] : 0);
 
-    private static int Rpm(FlexUnit unit) => unit.Info.Rpm.Length > 0 ? unit.Info.Rpm[0] : 0;
+    // A P28 fan has its own tach: the channel shows the mean of the connected fans.
+    private static int Rpm(FlexUnit unit)
+    {
+        if (unit.Family != FlexFamily.P28V2)
+        {
+            return unit.Info.Rpm.Length > 0 ? unit.Info.Rpm[0] : 0;
+        }
+        var n = Math.Min(unit.Fans, unit.Info.Rpm.Length);
+        var sum = 0;
+        for (var i = 0; i < n; i++)
+        {
+            sum += unit.Info.Rpm[i];
+        }
+        return n > 0 ? sum / n : 0;
+    }
 
     public IReadOnlyList<FanChannel> GetFanChannels()
     {
@@ -137,20 +151,33 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
                 Id = DeviceId(unit.Mac),
                 Name = NameOf(unit, order),
                 Type = "LianLiFlex",
-                Devices = new List<CoolingDevice>
-                {
-                    new CoolingDevice
-                    {
-                        Id = ChannelId(unit.Mac),
-                        Name = "Fan",
-                        Type = "Fan",
-                        Rpm = Rpm(unit),
-                        Pwm = _hub.PendingDuty(unit.Mac) is { } shown ? Math.Max(shown, 0) : Duty(unit),
-                    },
-                },
+                Devices = DevicesOf(unit),
             });
         }
         return components;
+    }
+
+    private List<CoolingDevice> DevicesOf(FlexUnit unit)
+    {
+        var pwm = _hub.PendingDuty(unit.Mac) is { } shown ? Math.Max(shown, 0) : Duty(unit);
+        if (unit.Family != FlexFamily.P28V2)
+        {
+            return new List<CoolingDevice> { new() { Id = ChannelId(unit.Mac), Name = "Fan", Type = "Fan", Rpm = Rpm(unit), Pwm = pwm } };
+        }
+        // One shared duty drives every P28 fan; each reports its own tach.
+        var devices = new List<CoolingDevice>();
+        for (var i = 0; i < Math.Min(unit.Fans, unit.Info.Rpm.Length); i++)
+        {
+            devices.Add(new CoolingDevice
+            {
+                Id = i == 0 ? ChannelId(unit.Mac) : $"{ChannelId(unit.Mac)}:fan{i}",
+                Name = $"Fan {i + 1}",
+                Type = "Fan",
+                Rpm = unit.Info.Rpm[i],
+                Pwm = pwm,
+            });
+        }
+        return devices;
     }
 
     private void Write(string channelId, int percent)

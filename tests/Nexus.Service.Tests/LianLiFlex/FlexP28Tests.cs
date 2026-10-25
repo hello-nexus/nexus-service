@@ -55,7 +55,6 @@ public class FlexP28Tests
         Assert.Equal(2, info.Fans);
         Assert.Equal((0x9 << 8) | 0xC4, info.Rpm[1]);
         Assert.True(info.P28SyncLineOn);
-        Assert.Equal(5, info.P28Gear);
 
         f[31] = 0x80 | 0x9;
         info = FlexProtocol.ParseInfo(f)!;
@@ -70,7 +69,6 @@ public class FlexP28Tests
         f[31] = 0x50;
         var info = FlexProtocol.ParseInfo(f)!;
         Assert.False(info.P28SyncLineOn);
-        Assert.Equal(0, info.P28Gear);
     }
 
     [Theory]
@@ -168,8 +166,8 @@ public class FlexP28Tests
     {
         var structure = FlexLightingDeviceProvider.BuildStructure(Mac, FlexFamily.P28V2, 3);
         var segment = Assert.Single(structure.Segments);
-        Assert.Equal(27, segment.LedCount);
-        Assert.Equal(27, segment.DefaultU!.Length);
+        Assert.Equal(24, segment.LedCount);
+        Assert.Equal(24, segment.DefaultU!.Length);
         var zone = Assert.Single(structure.DefaultZones);
         Assert.Equal($"lianli-flex:{Mac}:fan", zone.Id);
         Assert.Equal("Lian Li P28 V2 Fan", structure.Name);
@@ -205,13 +203,14 @@ public class FlexP28Tests
     }
 
     [Fact]
-    public void P28_cooling_reads_rpm_from_the_first_slot_and_ignores_byte_31_flags()
+    public void P28_cooling_reads_a_single_fans_rpm_and_ignores_byte_31_flags()
     {
-        var (hub, tx, _) = P28Hub(2);
+        var (hub, tx, clock) = P28Hub(1);
         tx.Info[29] = 0x20 | 0x04;
         tx.Info[30] = 0xB0;
         tx.Info[31] = 0x70 | 0x02;
         tx.Info[32] = 0x10;
+        clock.Now += 1000;
         hub.Tick();
         var provider = new FlexCoolingProvider(hub);
         Assert.Equal((0x04 << 8) | 0xB0, provider.GetFanChannels().Single().Rpm);
@@ -267,7 +266,7 @@ public class FlexP28Tests
         var f = FakeFlexTransport.InfoFrame(Mac, 0, FlexProtocol.UnboundRxType, 100, 0);
         f[31] = 0x50;
         Assert.True(FlexProtocol.ParseInfo(f, FlexFamily.P28V2)!.IsP28);
-        Assert.Equal(5, FlexProtocol.ParseInfo(f, FlexFamily.P28V2)!.P28Gear);
+        Assert.True(FlexProtocol.ParseInfo(f, FlexFamily.P28V2)!.IsP28);
         Assert.False(FlexProtocol.ParseInfo(f, FlexFamily.TlFlex)!.IsP28);
         var p28Type = FakeFlexTransport.InfoFrame(Mac, FlexProtocol.P28FansType, FlexProtocol.UnboundRxType, 100, 0);
         Assert.False(FlexProtocol.ParseInfo(p28Type, FlexFamily.SlInfFlex)!.IsP28);
@@ -305,6 +304,57 @@ public class FlexP28Tests
         Assert.Equal("slInfFlex", Nexus.Service.Routes.LianLiFlexRoutes.FamilyKey(FlexFamily.SlInfFlex));
         Assert.Equal("tlFlex", Nexus.Service.Routes.LianLiFlexRoutes.FamilyKey(FlexFamily.TlFlex));
         Assert.Contains("\"family\":\"p28v2\"", System.Text.Json.JsonSerializer.Serialize(chain, Nexus.Service.Serialization.AppJsonContext.Default.LianLiFlexChainLightingDto));
+    }
+
+    [Fact]
+    public void P28_cooling_exposes_each_fans_rpm_and_the_mean_on_the_channel()
+    {
+        var (hub, tx, clock) = P28Hub(3);
+        foreach (var (slot, rpm) in new[] { (0, 1640), (1, 1636), (2, 1621) })
+        {
+            tx.Info[29 + (slot * 2)] = (byte)(0x20 | (rpm >> 8));
+            tx.Info[30 + (slot * 2)] = (byte)rpm;
+        }
+        clock.Now += 1000;
+        hub.Tick();
+        var provider = new FlexCoolingProvider(hub);
+        Assert.Equal((1640 + 1636 + 1621) / 3, provider.GetFanChannels().Single().Rpm);
+        var devices = provider.GetAll().Single().Devices;
+        Assert.Equal(new int?[] { 1640, 1636, 1621 }, devices.Select(d => d.Rpm).ToArray());
+    }
+
+    [Fact]
+    public void P28_pwm_fills_only_connected_fan_slots_and_other_families_still_fill_four()
+    {
+        Assert.Equal(new byte[] { 0x82, 0x82, 0x82, 0 }, FlexProtocol.BuildSetPwm(0x82, 3)[1..5]);
+        Assert.Equal(new byte[] { 0x82, 0x82, 0x82, 0x82 }, FlexProtocol.BuildSetPwm(0x82)[1..5]);
+        var (hub, tx, clock) = P28Hub(3);
+        new FlexCoolingProvider(hub).SetFanSpeed("lianli-flex:" + Mac + ":port0", 50);
+        clock.Now += 1000;
+        hub.Tick();
+        Assert.Equal(new byte[] { 128, 128, 128, 0 }, tx.Of(FlexProtocol.CmdSetPwm).Single()[1..5]);
+    }
+
+    [Fact]
+    public void P28_wire_mirrors_led_seven_into_eight_and_caps_channels()
+    {
+        var structure = FlexLightingDeviceProvider.BuildStructure(Mac, FlexFamily.P28V2, 1);
+        Assert.Equal(8, structure.Segments[0].LedCount);
+        var writer = (Nexus.Service.Lighting.FlexLightingFrameWriter)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(Nexus.Service.Lighting.FlexLightingFrameWriter));
+        var field = typeof(Nexus.Service.Lighting.FlexLightingFrameWriter).GetField("_segmentBuffers", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var buf = new Nexus.Service.Peripherals.Hyte.Np50.RgbColor[8];
+        for (var i = 0; i < 8; i++)
+        {
+            buf[i] = new Nexus.Service.Peripherals.Hyte.Np50.RgbColor((byte)(i + 1), 255, 0);
+        }
+        field.SetValue(writer, new[] { buf });
+        var wireField = typeof(Nexus.Service.Lighting.FlexLightingFrameWriter).GetField("_wire", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        wireField.SetValue(writer, Array.Empty<byte>());
+        var total = writer.FillWire(FlexFamily.P28V2, 1, structure, false);
+        var wire = (byte[])wireField.GetValue(writer)!;
+        Assert.Equal(9, total);
+        Assert.Equal(new byte[] { 8, 254, 0 }, wire[(7 * 3)..(8 * 3)]);
+        Assert.Equal(wire[(7 * 3)..(8 * 3)], wire[(8 * 3)..(9 * 3)]);
     }
 
     [Fact]

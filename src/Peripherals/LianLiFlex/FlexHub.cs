@@ -371,7 +371,7 @@ public sealed class FlexHub : IDisposable
         var family = link.Port.Family;
         var frame = want == -1
             ? FlexProtocol.BuildFollowMotherboard()
-            : FlexProtocol.BuildSetPwm(FlexProtocol.EncodeDuty(family, want));
+            : FlexProtocol.BuildSetPwm(FlexProtocol.EncodeDuty(family, want), family == FlexFamily.P28V2 ? info.Fans : 4);
         // An upload holds the receiver; the wanted duty stays set and goes out on the next pass.
         if (!Monitor.TryEnter(link.Io))
         {
