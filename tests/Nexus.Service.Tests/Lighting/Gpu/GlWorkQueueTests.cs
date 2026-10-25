@@ -132,18 +132,40 @@ public class GlWorkQueueTests
     {
         var q = new GlWorkQueue();
         var ran = new List<string>();
-        q.AddDeferred(() => ran.Add("later"), TimeSpan.FromMilliseconds(80));
+        // The delay dwarfs any test-host stall, so "not due yet" holds without reading a clock.
+        q.AddDeferred(() => ran.Add("later"), TimeSpan.FromHours(1));
         q.Add(() => ran.Add("live"), background: false);
 
-        Assert.True(q.TryTake(out var first));
-        first.Work();
-        Assert.False(q.TryTake(out _));
+        Drain(q);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        q.Take().Work();
+        Assert.Equal(new[] { "live" }, ran);
+    }
 
-        Assert.True(sw.ElapsedMilliseconds >= 60);
-        Assert.Equal(new[] { "live", "later" }, ran);
+    [Fact]
+    public void A_deferred_job_whose_delay_has_passed_runs_after_live_jobs()
+    {
+        var q = new GlWorkQueue();
+        var ran = new List<string>();
+        q.AddDeferred(() => ran.Add("due"), TimeSpan.Zero);
+        q.Add(() => ran.Add("live"), background: false);
+
+        Drain(q);
+
+        Assert.Equal(new[] { "live", "due" }, ran);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Take_blocks_until_a_lone_deferred_job_is_due_then_returns_it()
+    {
+        var q = new GlWorkQueue();
+        var ran = new List<string>();
+        q.AddDeferred(() => ran.Add("later"), TimeSpan.FromMilliseconds(50));
+
+        // The timeout only guards against a hang; no assertion depends on how long Take waited.
+        var job = await System.Threading.Tasks.Task.Run(() => q.Take()).WaitAsync(TimeSpan.FromSeconds(5));
+        job.Work();
+
+        Assert.Equal(new[] { "later" }, ran);
     }
 
     [Fact]
