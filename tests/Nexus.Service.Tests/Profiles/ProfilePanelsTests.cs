@@ -577,6 +577,73 @@ public class ProfilePanelsTests : IDisposable
         Assert.Equal("#abc", y.PanelDevices["y-new"].AccentColor);
     }
 
+    private static PanelDeviceRecord Kraken(string id, string surface, string? accent = null) => new()
+    {
+        Id = id,
+        Capabilities = new PanelDeviceCapabilities { Surface = surface, Family = "nzxt-kraken" },
+        AccentColor = accent,
+    };
+
+    [Fact]
+    public void A_look_saved_under_the_legacy_kraken_surface_reaches_the_folded_live_kraken()
+    {
+        var saved = new PanelDeviceRecord
+        {
+            Id = "old",
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken },
+            AccentColor = "#abc",
+        };
+        var live = new NexusSettings();
+        live.PanelDevices["k"] = Kraken("k", PanelSurfaces.LcdRound);
+
+        ProfileSharing.ApplyCategory(live, FileWith(saved), ProfileSharing.Panels);
+
+        Assert.Equal("#abc", live.PanelDevices["k"].AccentColor);
+    }
+
+    [Fact]
+    public void A_kraken_look_never_pairs_with_another_round_cooler()
+    {
+        var saved = new PanelDeviceRecord
+        {
+            Id = "old",
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken },
+            AccentColor = "#abc",
+        };
+        var live = new NexusSettings();
+        live.PanelDevices["other"] = Lcd("other", "#keep");
+
+        ProfileSharing.ApplyCategory(live, FileWith(saved), ProfileSharing.Panels);
+
+        Assert.Equal("#keep", live.PanelDevices["other"].AccentColor);
+    }
+
+    [Fact]
+    public void A_live_kraken_is_written_under_the_legacy_surface_so_older_builds_still_match_it()
+    {
+        var source = new NexusSettings();
+        source.PanelDevices["k"] = Kraken("k", PanelSurfaces.LcdRound, "#abc");
+        var file = new NexusSettings();
+
+        ProfileSharing.WriteCategory(file, source, ProfileSharing.Panels);
+
+        Assert.Equal(PanelSurfaces.LegacyKraken, file.PanelDevices["k"].Capabilities!.Surface);
+        Assert.Equal("#abc", file.PanelDevices["k"].AccentColor);
+    }
+
+    [Fact]
+    public void An_unattached_legacy_kraken_record_still_matches_its_saved_look()
+    {
+        var live = new NexusSettings();
+        live.PanelDevices["k"] = Kraken("k", PanelSurfaces.LegacyKraken);
+        var saved = Kraken("old", PanelSurfaces.LcdRound, "#abc");
+        saved.Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken };
+
+        ProfileSharing.ApplyCategory(live, FileWith(saved), ProfileSharing.Panels);
+
+        Assert.Equal("#abc", live.PanelDevices["k"].AccentColor);
+    }
+
     [Fact]
     public void Identical_monitors_without_a_serial_are_not_matched_across_ids()
     {

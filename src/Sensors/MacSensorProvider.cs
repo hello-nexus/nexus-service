@@ -582,7 +582,7 @@ public sealed class MacSensorProvider : ISensorProvider, IDisposable
         // On Apple Silicon SPMemoryDataType is terse ("Memory: 16 GB, Type: LPDDR5")
         // and there's no user-replaceable DIMM to brand. Fall back to chip info so
         // the System Builder still gets a reasonable "model" string to match on.
-        var output = ShellOut("/usr/sbin/system_profiler", 10000, "SPMemoryDataType");
+        var output = MacProfilerCache.Get("SPMemoryDataType");
         // Intel-era DIMMs expose Manufacturer + Part Number blocks per slot.
         var mfg = Regex.Match(output, @"Manufacturer:\s*(?!0x[0-9A-Fa-f]+$)(.+)");
         var part = Regex.Match(output, @"Part Number:\s*(?!0x[0-9A-Fa-f]+$)(.+)");
@@ -612,14 +612,14 @@ public sealed class MacSensorProvider : ISensorProvider, IDisposable
         // NVMe drives (modern Macs) surface via SPNVMeDataType with "Model:" lines.
         // SATA / external drives surface via SPSerialATADataType / SPStorageDataType.
         // Prefer NVMe since every Apple Silicon / modern Intel Mac is NVMe internal.
-        var nvme = ShellOut("/usr/sbin/system_profiler", 10000, "SPNVMeDataType");
+        var nvme = MacProfilerCache.Get("SPNVMeDataType");
         var nvmeMatch = Regex.Match(nvme, @"Model:\s*(.+)");
         if (nvmeMatch.Success)
         {
             _storageBrandModel = nvmeMatch.Groups[1].Value.Trim();
             return _storageBrandModel;
         }
-        var sata = ShellOut("/usr/sbin/system_profiler", 10000, "SPSerialATADataType");
+        var sata = MacProfilerCache.Get("SPSerialATADataType");
         var sataMatch = Regex.Match(sata, @"Model:\s*(.+)");
         _storageBrandModel = sataMatch.Success ? sataMatch.Groups[1].Value.Trim() : "";
         return _storageBrandModel;

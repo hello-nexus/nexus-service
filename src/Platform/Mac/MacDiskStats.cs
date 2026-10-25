@@ -7,8 +7,8 @@ namespace Nexus.Service.Platform.Mac;
 /// <summary>
 /// Sums cumulative disk bytes read/written across every IOBlockStorageDriver
 /// registry entry's Statistics dictionary - the same counters Activity
-/// Monitor's disk history uses. Stateless: every read matches, copies the
-/// properties, and releases everything; DiskRateReader diffs consecutive
+/// Monitor's disk history uses. Stateless: every read matches, fetches the
+/// statistics dictionary, and releases everything; DiskRateReader diffs consecutive
 /// reads into a byte rate.
 /// </summary>
 internal static partial class MacDiskStats
@@ -84,58 +84,49 @@ internal static partial class MacDiskStats
     {
         bytesRead = 0;
         bytesWritten = 0;
-        if (IORegistryEntryCreateCFProperties(service, out var props, IntPtr.Zero, 0) != 0 ||
-            props == IntPtr.Zero)
-        {
-            return false;
-        }
-
+        var statsKey = CFStringCreateWithCString(IntPtr.Zero, StatisticsKey, KCfStringEncodingUtf8);
+        var readKey = CFStringCreateWithCString(IntPtr.Zero, BytesReadKey, KCfStringEncodingUtf8);
+        var writtenKey = CFStringCreateWithCString(IntPtr.Zero, BytesWrittenKey, KCfStringEncodingUtf8);
+        var stats = IntPtr.Zero;
         try
         {
-            var statsKey = CFStringCreateWithCString(IntPtr.Zero, StatisticsKey, KCfStringEncodingUtf8);
-            var readKey = CFStringCreateWithCString(IntPtr.Zero, BytesReadKey, KCfStringEncodingUtf8);
-            var writtenKey = CFStringCreateWithCString(IntPtr.Zero, BytesWrittenKey, KCfStringEncodingUtf8);
-            try
+            if (statsKey == IntPtr.Zero || readKey == IntPtr.Zero || writtenKey == IntPtr.Zero)
             {
-                if (statsKey == IntPtr.Zero || readKey == IntPtr.Zero || writtenKey == IntPtr.Zero)
-                {
-                    return false;
-                }
-
-                // A wrong CF type handed to the typed CF calls crashes in
-                // native code where managed catch cannot reach - gate each
-                // value on CFGetTypeID before use. CFDictionaryGetValue
-                // returns unretained references owned by the properties
-                // dictionary; only the created keys and the dictionary
-                // itself are released.
-                var stats = CFDictionaryGetValue(props, statsKey);
-                if (stats == IntPtr.Zero || CFGetTypeID(stats) != CFDictionaryGetTypeID())
-                {
-                    return false;
-                }
-
-                return TryReadNumber(stats, readKey, out bytesRead) &
-                       TryReadNumber(stats, writtenKey, out bytesWritten);
+                return false;
             }
-            finally
+
+            stats = IORegistryEntryCreateCFProperty(service, statsKey, IntPtr.Zero, 0);
+
+            // A wrong CF type handed to the typed CF calls crashes in
+            // native code where managed catch cannot reach - gate each
+            // value on CFGetTypeID before use. CFDictionaryGetValue
+            // returns unretained references owned by the statistics dictionary.
+            if (stats == IntPtr.Zero || CFGetTypeID(stats) != CFDictionaryGetTypeID())
             {
-                if (statsKey != IntPtr.Zero)
-                {
-                    CFRelease(statsKey);
-                }
-                if (readKey != IntPtr.Zero)
-                {
-                    CFRelease(readKey);
-                }
-                if (writtenKey != IntPtr.Zero)
-                {
-                    CFRelease(writtenKey);
-                }
+                return false;
             }
+
+            return TryReadNumber(stats, readKey, out bytesRead) &
+                   TryReadNumber(stats, writtenKey, out bytesWritten);
         }
         finally
         {
-            CFRelease(props);
+            if (stats != IntPtr.Zero)
+            {
+                CFRelease(stats);
+            }
+            if (statsKey != IntPtr.Zero)
+            {
+                CFRelease(statsKey);
+            }
+            if (readKey != IntPtr.Zero)
+            {
+                CFRelease(readKey);
+            }
+            if (writtenKey != IntPtr.Zero)
+            {
+                CFRelease(writtenKey);
+            }
         }
     }
 
@@ -162,8 +153,8 @@ internal static partial class MacDiskStats
     [LibraryImport(IOKitFramework, EntryPoint = "IOObjectRelease")]
     private static partial int IOObjectRelease(uint obj);
 
-    [LibraryImport(IOKitFramework, EntryPoint = "IORegistryEntryCreateCFProperties")]
-    private static partial int IORegistryEntryCreateCFProperties(uint entry, out IntPtr properties, IntPtr allocator, uint options);
+    [LibraryImport(IOKitFramework, EntryPoint = "IORegistryEntryCreateCFProperty")]
+    private static partial IntPtr IORegistryEntryCreateCFProperty(uint entry, IntPtr key, IntPtr allocator, uint options);
 
     [LibraryImport(CoreFoundation, EntryPoint = "CFStringCreateWithCString", StringMarshalling = StringMarshalling.Utf8)]
     private static partial IntPtr CFStringCreateWithCString(IntPtr allocator, string str, uint encoding);

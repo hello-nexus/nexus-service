@@ -8,6 +8,8 @@ public enum FlexFamily
 {
     TlFlex,
     SlInfFlex,
+    /// <summary>Screenless P28 V2 fan: one zone, streamed live only.</summary>
+    P28V2,
 }
 
 /// <summary>Which LEDs of a fan an effect fills. Whole fan, or one zone of it.</summary>

@@ -61,6 +61,9 @@ public sealed class NexusSettings
     public AstralSettings Astral { get; set; } = new();
     /// <summary>ROG Astral Level Sense calibrations keyed by AstralGpuSupplement.CalibrationKey. NOT profile-scoped: it describes how the card sits in this case.</summary>
     public Dictionary<string, AstralCalibration> AstralLevelSense { get; set; } = new();
+    /// <summary>Global frame-rate cap in Hz for every streamed panel (Kraken LCD, fan LCDs, JPEG panels, ...); null runs each panel at its own model rate. A stored null is "off" (written explicitly, since the context drops nulls by default), an absent key is the default. NOT profile-scoped: it is a property of this workstation.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public int? StreamedPanelFpsCap { get; set; } = 30;
 
     /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
     public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();
@@ -118,6 +121,9 @@ public sealed class NexusSettings
 
     /// <summary>False stops LHM from reading DIMM SPD temperatures, independent of the memory device's Nexus Control toggle. Applies live. NOT profile-scoped: workstation-level.</summary>
     public bool ReadRamTemperatures { get; set; } = true;
+
+    /// <summary>Linux only. False keeps the AMD GPU I2C detectors force-disabled in OpenRGB; true lifts that hold. Ignored on every other OS. Applies live. NOT profile-scoped: workstation-level.</summary>
+    public bool AmdGpuLighting { get; set; }
 
     /// <summary>True once the desktop first-run welcome screen has been shown and
     /// dismissed. Install-scoped, not cloud profile synced: excluded from
@@ -321,6 +327,24 @@ public sealed class TelemetrySettings
 
     /// <summary>Last non-empty GPU list (sorted, " + " joined); bridges reads where GPU enumeration came back empty.</summary>
     public string FleetGpu { get; set; } = "";
+
+    /// <summary>Last non-empty GPU board list sent in fleet specs; reused with <see cref="FleetGpu"/> when a read comes back without GPUs.</summary>
+    public List<Nexus.Service.Telemetry.FleetEventGpuCard> FleetGpuCards { get; set; } = new();
+
+    /// <summary>Last non-empty RAM module list sent in fleet specs; bridges a boot where the platform read came back empty so the stored inventory is not overwritten with nothing.</summary>
+    public List<Nexus.Service.Telemetry.FleetEventRamModule> FleetRamModules { get; set; } = new();
+
+    /// <summary>Populated module count that went with <see cref="FleetRamModules"/>, before its cap.</summary>
+    public int FleetRamModuleTotal { get; set; }
+
+    /// <summary>Last non-empty physical drive list sent in fleet specs; same role as <see cref="FleetRamModules"/>.</summary>
+    public List<Nexus.Service.Telemetry.FleetEventDrive> FleetDrives { get; set; } = new();
+
+    /// <summary>Round-trip UTC timestamp of the last process whose read returned RAM modules; <see cref="FleetRamModules"/> stops being reused once this is older than the fleet service's expiry.</summary>
+    public string FleetRamReadAt { get; set; } = "";
+
+    /// <summary>Same role as <see cref="FleetRamReadAt"/> for <see cref="FleetDrives"/>; the two lists expire independently.</summary>
+    public string FleetDrivesReadAt { get; set; } = "";
 
     /// <summary>Latched true by SystemProfileService the first time the Y70 handler reports connected; sent in fleet specs as y70Seen.</summary>
     public bool FleetY70Seen { get; set; }
@@ -2457,6 +2481,12 @@ public sealed class CloudProfileSyncRecord
     public int Revision { get; set; }
     public string LastSyncedAt { get; set; } = "";
     public string LastSyncedHash { get; set; } = "";
+
+    /// <summary>Digest of the PC setup record as last attached to a push of this profile; empty when none was. Only a manual Back up compares it.</summary>
+    public string LastPushedSetupHash { get; set; } = "";
+
+    /// <summary>Same as <see cref="LastPushedSetupHash"/> for the cooling layout document.</summary>
+    public string LastPushedCoolingHash { get; set; } = "";
 }
 
 public sealed class PairBroadcastSettings

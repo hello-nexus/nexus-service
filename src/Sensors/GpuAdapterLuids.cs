@@ -178,15 +178,31 @@ internal static class GpuAdapterLuids
             var rawName = rawNames.TryGetValue(g.Id, out var n) ? n : g.Name;
             if (PickAdapter(adapters, used, kernelLuids,
                     x => string.Equals(x.Description.Trim(), rawName.Trim(), StringComparison.OrdinalIgnoreCase)) is { } a)
-            { g.AdapterLuid = a.Luid; used.Add(a.Luid); }
+            { Apply(g, a); used.Add(a.Luid); }
         }
         foreach (var g in gpus)
         {
             if (g.AdapterLuid.Length > 0) continue;
             if (PickAdapter(adapters, used, kernelLuids,
                     x => VendorMatches(g.Vendor, x.VendorId) && (x.DedicatedVramMb >= DedicatedVramMinMb) == !g.Integrated) is { } a)
-            { g.AdapterLuid = a.Luid; used.Add(a.Luid); }
+            { Apply(g, a); used.Add(a.Luid); }
         }
+    }
+
+    private static void Apply(GpuReadout g, Adapter a)
+    {
+        g.AdapterLuid = a.Luid;
+        (g.SubsystemVendorId, g.SubsystemDeviceId) = SplitSubsystemId(a.SubSysId);
+    }
+
+    /// <summary>
+    /// DXGI packs the PCI subsystem dword: vendor in the low word, device in the high word (the SUBSYS_ part of a
+    /// device instance path reads device then vendor for the same reason). An unprogrammed or failed read gives (0, 0).
+    /// </summary>
+    internal static (int Vendor, int Device) SplitSubsystemId(uint subSysId)
+    {
+        var vendor = (int)(subSysId & 0xFFFF);
+        return GpuBoardPartners.IsPlausibleVendorId(vendor) ? (vendor, (int)(subSysId >> 16)) : (0, 0);
     }
 
     // Among unused adapters (non-empty LUID) passing the predicate, the first one

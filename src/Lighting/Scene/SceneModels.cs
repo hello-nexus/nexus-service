@@ -46,7 +46,16 @@ public sealed class SceneObject
     /// <summary>True when the imported case model draws this object rather than a plain box.</summary>
     public bool HasModel { get; set; }
 
+    /// <summary>A curved monitor's screen radius; null for a flat object. Kept and drawn by clients only: LED sampling stays flat.</summary>
+    public SceneCurve? Curve { get; set; }
+
     public List<SceneAnchor> Anchors { get; set; } = new();
+}
+
+public sealed class SceneCurve
+{
+    /// <summary>Radius of the screen's curve in millimeters, <see cref="SceneValidation.MinCurveRadiusMm"/> to <see cref="SceneValidation.MaxCurveRadiusMm"/>.</summary>
+    public float RadiusMm { get; set; }
 }
 
 /// <summary>A flat surface a device's LED map is laid onto: u runs along <see cref="Right"/>, v runs against <see cref="Up"/>.</summary>

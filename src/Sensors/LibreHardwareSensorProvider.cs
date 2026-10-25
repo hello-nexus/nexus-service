@@ -127,6 +127,19 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 
     public IReadOnlyList<HardwareSensor> GetGpuSensors() => GetGpus().SelectMany(g => g.Sensors).ToList();
 
+    private static readonly Lazy<bool> Portable = new(() => PortableChassis.IsPortable(WindowsSpecsNative.ReadChassisType()));
+
+    public IReadOnlyList<GpuBoard> GetGpuBoards() => BoardsOfThisMachine(GetGpus());
+
+    public IReadOnlyList<GpuCard> GetGpuCards()
+    {
+        var gpus = GetGpus();
+        return GpuBoardPartners.Resolve(gpus.Select(g => g.Name).ToList(), BoardsOfThisMachine(gpus));
+    }
+
+    private static IReadOnlyList<GpuBoard> BoardsOfThisMachine(IReadOnlyList<GpuReadout> gpus) =>
+        Portable.Value ? Array.Empty<GpuBoard>() : GpuBoardPartners.BoardsOf(gpus);
+
     public IReadOnlyList<GpuReadout> GetGpus()
     {
         _lhm.Update();

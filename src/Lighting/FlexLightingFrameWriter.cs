@@ -92,6 +92,10 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         if (on)
         {
             Array.Fill(frame, (byte)255);
+            if (unit.Family == FlexFamily.P28V2)
+            {
+                FinishP28Wire(frame, unit.Fans);
+            }
         }
         _hub.SendLive(unit.Mac, frame);
         return true;
@@ -214,7 +218,10 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             }
             settings.Devices.FlexUnits.TryGetValue(unit.Mac, out var look);
             look ??= new LianLiFlexUnitSettings();
-            ReconcileMotherboardArgb(unit, look, now);
+            if (unit.Family != FlexFamily.P28V2)
+            {
+                ReconcileMotherboardArgb(unit, look, now);
+            }
             if (FlexLightingDeviceProvider.PlaysMotherboardArgb(unit, settings.Devices.FlexUnits))
             {
                 // The unit shows its ARGB input: it takes no stored uploads, no live frames and no identify flash.
@@ -227,7 +234,8 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             {
                 continue;
             }
-            if (look.Mode == LianLiWirelessChainLighting.ModeCustom)
+            // P28 accepts stored packages too, but only streaming is implemented for it.
+            if (look.Mode == LianLiWirelessChainLighting.ModeCustom || unit.Family == FlexFamily.P28V2)
             {
                 st.PendingSignature = "";
                 TickStream(unit, st, settings, now);
@@ -357,7 +365,31 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
                 }
             }
         }
+        if (family == FlexFamily.P28V2)
+        {
+            FinishP28Wire(_wire, fans);
+        }
         return total;
+    }
+
+    // The last wire LED repeats the last logical one, and no channel goes above the cap, as the vendor software sends.
+    internal static void FinishP28Wire(byte[] wire, int fans)
+    {
+        const int perFan = FlexProtocol.P28LedsPerFan;
+        for (var f = 0; f < fans; f++)
+        {
+            var o = f * perFan * 3;
+            var last = o + ((perFan - 1) * 3);
+            var source = o + ((FlexProtocol.P28LogicalLedsPerFan - 1) * 3);
+            for (var c = 0; c < 3; c++)
+            {
+                wire[last + c] = wire[source + c];
+            }
+            for (var k = 0; k < perFan * 3; k++)
+            {
+                wire[o + k] = Math.Min(wire[o + k], FlexProtocol.P28MaxChannel);
+            }
+        }
     }
 
     private static int HashOf(ReadOnlySpan<byte> data)

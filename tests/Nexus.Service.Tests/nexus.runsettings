@@ -22,5 +22,9 @@
 <RunSettings>
   <RunConfiguration>
     <TestCaseFilter>Category!=Manual</TestCaseFilter>
+    <EnvironmentVariables>
+      <!-- Many ANGLE contexts live in this one process; with the driver's own worker thread on, the test host dies with a native access violation inside glDrawArrays on some GPUs. -->
+      <NEXUS_D3D_PREVENT_THREADING>1</NEXUS_D3D_PREVENT_THREADING>
+    </EnvironmentVariables>
   </RunConfiguration>
 </RunSettings>

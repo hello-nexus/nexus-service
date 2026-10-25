@@ -54,7 +54,7 @@ public sealed class LinuxUsbSysfsTests : IDisposable
         Assert.Empty(LinuxUsbSysfs.Find(Path.Combine(_root, "absent"), 0x1CBE, new[] { 0x0006 }));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void FindInterfaceWithEndpoint_ReturnsInterfaceNumber()
     {
         var dir = AddDevice("1-2", "1cbe", "a088", 1, 7);
@@ -123,7 +123,7 @@ public sealed class LinuxUsbSysfsTests : IDisposable
         Assert.Equal(expected, LinuxBulkUsbPipeFactory.Supports(vid, pid));
     }
 
-    [Theory]
+    [NonWindowsTheory]
     [InlineData(null, "/home/u", "/root", "/root/nexus-panel-render")]
     [InlineData(1000u, "/home/u", "/root", "/home/u/nexus-panel-render")]
     [InlineData(1000u, null, "/root", null)]

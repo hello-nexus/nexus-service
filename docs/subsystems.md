@@ -49,6 +49,13 @@ Q-series screens.
   items) sample the effect canvas where a camera sees them. The scene lives in
   its own machine-local files; the view (on/off + camera) lives in settings and
   layout presets. Unplaced devices keep their 2D frame.
+- Shared PC setup (`Lighting/Scene/PcSetup*`, `/system/setup`): one record
+  (`pc-setup.json`, machine-local, revisioned) that the Build portal and the
+  3D lighting scene share. Build writes the whole record (`PUT`); lighting may
+  only move and turn existing items (`PATCH /system/setup/placements`). Once the
+  record has resolved objects, `GET /lighting/scene` serves them in place of the
+  scene file's objects. Changes ping the `system/setup` topic, and the record
+  rides the manual profile Back up.
 - Key reactions (`Lighting/KeyReactive/`, `/lighting/key-reactive*`): per-key
   keyboards light up as keys are pressed (ripple, sweeps, heatmap, sparks,
   lightning and more), painted by the engine over any effect. One config per
@@ -73,7 +80,8 @@ Q-series screens.
   where that app is installed.
 - First-party drivers under `Peripherals/`: HYTE Keeb, CNVS, hubs, Y70,
   Q-series; iBUYPOWER keyboards and mice; the Lian Li Uni fan family, Galahad
-  II AIO, Strimer, SL wireless; Corsair iCUE LINK and Xeneon Edge; NZXT Kraken;
+  II AIO, Strimer, SL wireless; Corsair iCUE LINK and Xeneon Edge; NZXT Kraken and RGB & Fan
+  Controller (fans);
   iBUYPOWER AW5; Tryx; Nollie ARGB channel controllers (the 32-channel
   board's two Strimer connectors present as one port each, pre-wired with
   the Lian Li cable; what a board runs once Nexus lets go is set through
@@ -102,7 +110,7 @@ media uploads via `POST /tryx/media`.
   elgato-streamdeck references.
 - Dials, touch strip and screens: Plus and Plus XL (dials under an
   800x100 / 1200x100 touch strip), Neo (info screen and two touch keys),
-  Studio (two dials with LED rings) and the Corsair Galleon K100 SD (screen
+  Studio (two dials with LED rings) and the Corsair Galleon 100 SD (screen
   and two dials). A `DeckPage` or folder carries `dials`; the connection
   worker dispatches turns, presses and touches (`StreamDeckConnectionWorker.
   Dials.cs`), `Rendering/DeckStripRenderer.cs` draws the segments, and

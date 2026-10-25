@@ -131,7 +131,7 @@ public static class ConflictAppCatalog
             DisplayName = "NZXT CAM",
             Category = "lighting",
             AlsoCategory = "cooling",
-            AlsoHandlers = new[] { "nzxt-kraken" },
+            AlsoHandlers = new[] { "nzxt-kraken", "nzxt-fan-controller" },
             DisplayHandlers = new[] { "nzxt-kraken" },
             ProcessNames = new[] { "NZXT CAM", "CAM", "NZXT CAM Beta", "NZXT CAM Service", "NZXTCAM" },
             Signers = new[] { "NZXT" },

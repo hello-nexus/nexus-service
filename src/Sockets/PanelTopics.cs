@@ -89,6 +89,46 @@ public static class PanelTopics
     /// </summary>
     public const string CloudAccounts = "cloud/accounts";
 
+    /// <summary>
+    /// The shared PC setup record was saved. Subscribers refetch
+    /// GET /system/setup; the frame carries the saved revision so the writer
+    /// can skip its own echo.
+    /// </summary>
+    public const string SystemSetup = "system/setup";
+
+    public static void BroadcastSystemSetup(MultiplexHub hub, int rev)
+    {
+        if (!hub.TopicHasSubscribers(SystemSetup))
+            return;
+        var frame = new Models.Lighting.PcSetupChangedFrame { Rev = rev };
+        var env = WsEnvelope.Build(SystemSetup, frame, AppJsonContext.Default.PcSetupChangedFrame);
+        _ = hub.BroadcastTopicAsync(SystemSetup, env);
+    }
+
+    /// <summary>The 3D cooling layout was saved. Subscribers refetch GET /cooling/layout.</summary>
+    public const string CoolingLayout = "cooling/layout";
+
+    public static void BroadcastCoolingLayout(MultiplexHub hub, int rev)
+    {
+        if (!hub.TopicHasSubscribers(CoolingLayout))
+            return;
+        var frame = new Models.Cooling.CoolingLayoutChangedFrame { Rev = rev };
+        var env = WsEnvelope.Build(CoolingLayout, frame, AppJsonContext.Default.CoolingLayoutChangedFrame);
+        _ = hub.BroadcastTopicAsync(CoolingLayout, env);
+    }
+
+    /// <summary>This machine's case changed. Subscribers refetch GET /system/case.</summary>
+    public const string SystemCase = "system/case";
+
+    public static void BroadcastSystemCase(MultiplexHub hub, string? caseId)
+    {
+        if (!hub.TopicHasSubscribers(SystemCase))
+            return;
+        var frame = new Models.Activity.SystemCaseResponse { CaseId = caseId };
+        var env = WsEnvelope.Build(SystemCase, frame, AppJsonContext.Default.SystemCaseResponse);
+        _ = hub.BroadcastTopicAsync(SystemCase, env);
+    }
+
     public static void BroadcastCloudAccounts(MultiplexHub hub)
     {
         if (!hub.TopicHasSubscribers(CloudAccounts))

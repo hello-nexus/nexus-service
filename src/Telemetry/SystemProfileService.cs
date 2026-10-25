@@ -116,7 +116,7 @@ internal sealed class SystemProfileService : BackgroundService
         var props = new List<(string, object?)> { ("version", BuildInfo.Version), ("os", TelemetryPlatform.OsTag()) };
         Add(props, "os_build", specs.OsBuild);
         Add(props, "cpu", specs.Processor);
-        Add(props, "gpu", specs.GraphicsCard);
+        Add(props, "gpu", ChipOnlyGraphics(specs));
         Add(props, "ram", specs.Memory);
         if (ParseRamGb(specs.Memory) is int ramGb) props.Add(("ram_amount", ramGb));
         Add(props, "motherboard", specs.Motherboard);
@@ -310,6 +310,10 @@ internal sealed class SystemProfileService : BackgroundService
         string[] a => string.Join('\u001f', a),
         _ => value.ToString() ?? "",
     };
+
+    /// <summary>The analytics gpu value stays the chips alone, whatever maker prefix graphicsCard carries.</summary>
+    internal static string ChipOnlyGraphics(Nexus.Service.Models.Sensors.SystemSpecsResponse specs) =>
+        specs.GpuCards.Count > 0 ? string.Join(" + ", specs.GpuCards.Select(c => c.Chip)) : specs.GraphicsCard;
 
     private static void Add(List<(string, object?)> props, string key, string value)
     {

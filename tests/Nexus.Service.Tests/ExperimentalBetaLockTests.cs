@@ -98,7 +98,7 @@ public class ExperimentalBetaLockTests : IDisposable
         Assert.Empty(DeviceControlPolicy.HandlersFor("icue"));
         Assert.DoesNotContain(DeviceControlPolicy.HandlersWithConflictApp(), DeviceControlPolicy.IsExperimental);
         Assert.Equal("nzxt-cam", DeviceControlPolicy.ConflictAppFor("nzxt-kraken"));
-        Assert.Equal(new[] { "nzxt-kraken" }, DeviceControlPolicy.HandlersFor("nzxt-cam"));
+        Assert.Equal(new[] { "nzxt-kraken", "nzxt-fan-controller" }, DeviceControlPolicy.HandlersFor("nzxt-cam"));
     }
 
     [Fact]

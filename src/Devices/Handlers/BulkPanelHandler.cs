@@ -13,6 +13,8 @@ public sealed class BulkPanelHandler : IDeviceHandler
 {
     private readonly BulkPanelHub _hub;
 
+    public BulkPanelHub Hub => _hub;
+
     public BulkPanelHandler(BulkPanelHub hub)
     {
         _hub = hub;
