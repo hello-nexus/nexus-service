@@ -14,10 +14,17 @@ namespace Nexus.Service.Lighting;
 internal static class FlexFanLayout
 {
     private const float BladeRingRadius = 0.25f;
+    private const float P28RingRadius = 0.35f;
 
     public static (float U, float V) Position(FlexFamily family, int wireIndex, bool swap = false)
     {
         var perFan = FlexProtocol.LedsPerFan(family);
+        if (family == FlexFamily.P28V2)
+        {
+            // Single ring, LED 0 at the bottom, ascending clockwise; the real order is unconfirmed.
+            var a = (Math.PI / 2.0) + (wireIndex * 2.0 * Math.PI / FlexProtocol.P28LogicalLedsPerFan);
+            return (0.5f + (P28RingRadius * (float)Math.Cos(a)), 0.5f + (P28RingRadius * (float)Math.Sin(a)));
+        }
         if (family == FlexFamily.TlFlex)
         {
             var idx = swap ? (wireIndex + (perFan / 2)) % perFan : wireIndex;
