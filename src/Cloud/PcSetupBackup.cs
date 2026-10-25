@@ -63,8 +63,8 @@ public static class PcSetupBackup
             {
                 catalog.Specs = null;
             }
-            // A migrated scene item's height and screen radius live only in its resolved object, so they move onto the item before resolved is dropped.
-            if (item?.Custom is { SceneKind: not null } custom && copy.Resolved?.Objects?.Find(o => o?.Id == item.Id) is { } obj)
+            // A migrated scene item's height and screen radius live only in its hand-placed (user) object, so they move onto the item before resolved is dropped; a Build object is derived (its size includes the stand), so nothing is taken from it.
+            if (item?.Custom is { SceneKind: not null } custom && copy.Resolved?.Objects?.Find(o => o?.Id == item.Id && o.Source == "user") is { } obj)
             {
                 // Only values Validate would accept are copied, so a bad old object leaves the field absent instead of failing the restore.
                 custom.HeightMm ??= obj.Size is { Length: 3 } && PcSetupValidation.IsValidHeight(obj.Size[1]) ? obj.Size[1] : null;

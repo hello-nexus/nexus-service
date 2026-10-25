@@ -544,4 +544,20 @@ public sealed class PcSetupBackupTests : IDisposable
         Assert.NotNull(saved.Setup.Resolved.CaseLayout);
         Assert.Single(saved.Setup.Resolved.Objects);
     }
+
+    [Theory]
+    [InlineData("build", false)]
+    [InlineData("user", true)]
+    public void Height_and_radius_are_taken_only_from_a_user_sourced_resolved_object(string source, bool copied)
+    {
+        var old = Setup("scr");
+        old.Items[0].Custom!.SceneKind = "monitor";
+        old.Resolved.Objects.Add(new SceneObject { Id = "scr", Kind = "monitor", Source = source, Position = [0f, 0f, 0f], Size = [600f, 380f, 60f], Curve = new SceneCurve { RadiusMm = 1500f } });
+
+        PcSetupBackup.Detach(BundleWith(old), out var setup);
+
+        var custom = setup!.Items[0].Custom!;
+        Assert.Equal(copied ? 380f : null, custom.HeightMm);
+        Assert.Equal(copied ? 1500f : null, custom.CurveRadiusMm);
+    }
 }
