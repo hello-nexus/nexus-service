@@ -415,9 +415,24 @@ public class DeviceInventoryMapperTests
     [InlineData("Stream Deck", "stream-deck")]
     [InlineData("NZXT Hue+", "nzxt-hue-plus")]
     [InlineData("Acme & Co. #1", "acme-co-1")]
+    [InlineData("A+B", "a-plus-b")]
+    [InlineData("++", "plus-plus")]
+    [InlineData("+ Deck", "plus-deck")]
     public void Slug_keeps_plus_as_a_word_and_drops_other_symbols(string text, string slug)
     {
         Assert.Equal(slug, DeviceInventoryMapper.Slug(text));
+    }
+
+    [Fact]
+    public void OpenRgb_keys_keep_openrgb_vendor_slug_and_plus()
+    {
+        var rows = DeviceInventoryMapper.FromOpenRgb(new[]
+        {
+            new RgbDevice { Type = 4, Name = "Strimer", Vendor = "Lian Li", Serial = "1" },
+            new RgbDevice { Type = 4, Name = "NZXT Hue+", Vendor = "NZXT", Serial = "2" },
+        });
+
+        Assert.Equal(new[] { "openrgb:lian-li:strimer", "openrgb:nzxt:nzxt-hue-plus" }, rows.Select(r => r.ModelKey).ToArray());
     }
 
     [Fact]
@@ -433,7 +448,7 @@ public class DeviceInventoryMapperTests
 
         var keys = DeviceInventoryMapper.FromUsb(usb, new Nexus.Service.Devices.IDeviceHandler[0], new HashSet<string>(), new HashSet<(int, int)>(), catalog).Select(r => r.ModelKey).ToList();
 
-        Assert.Equal(new[] { "lianli:tl-lcd-1cbe-0006", "lianli:uni-fan-tl-lcd", "lianli:sl-lcd" }, keys);
+        Assert.Equal(new[] { "lianli:tl-lcd-wireless", "lianli:uni-fan-tl-lcd", "lianli:sl-lcd" }, keys);
         Assert.NotEqual(DeviceInventoryMapper.FromTlLcd(1)!.ModelKey, keys[0]);
     }
 

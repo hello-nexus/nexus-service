@@ -66,7 +66,7 @@ namespace Nexus.Service.Devices;
 /// asus:rog-strix-slc4-lcd       ROG Strix SLC IV LCD
 /// asus:ryujin-lcd               ROG Ryujin LCD
 /// lianli:uni-fan-tl-lcd         Uni Fan TL LCD screens (wired, USB 04FC:7393)
-/// lianli:tl-lcd-1cbe-0006       TL-LCD screen from the catalog (USB 1CBE:0006)
+/// lianli:tl-lcd-wireless        TL-LCD Wireless fan screen from the catalog (USB 1CBE:0006)
 /// lianli-wl:strimer-N           wireless Strimer cable, N is the dev type (lighting)
 /// lianli-wl:unknown-N           wireless fan chain with an unmapped fans_type N (fan)
 /// VENDOR:MODEL                  first-party peripheral from the catalog (Source nexus), e.g. hyte:keeb-tkl
@@ -516,10 +516,10 @@ public static class DeviceInventoryMapper
         };
     }
 
-    // The 1CBE:0006 screen slugs to the same word as the wired 04FC:7393 one, so it gets a fixed name.
+    // Fixed name: the former lianli:tl-lcd key meant the wired 04FC:7393 screen, so the 1CBE:0006 slug must not reuse it.
     private static readonly Dictionary<(int Vid, int Pid), string> s_catalogSlugOverrides = new()
     {
-        [(0x1CBE, 0x0006)] = "tl-lcd-1cbe-0006",
+        [(0x1CBE, 0x0006)] = "tl-lcd-wireless",
     };
 
     /// <summary>Vendor half of a catalog key. Lian Li keeps one prefix with the dedicated lianli keys.</summary>
@@ -703,6 +703,7 @@ public static class DeviceInventoryMapper
             rows.Add(new SystemDeviceDto
             {
                 Key = "openrgb:" + device.StableId,
+                // The vendor half is OpenRGB's own vendor name, so it is not folded to the lianli prefix.
                 ModelKey = "openrgb:" + Slug(device.Vendor) + ":" + Slug(device.Name),
                 Category = category,
                 Vendor = device.Vendor,
