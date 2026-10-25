@@ -184,6 +184,7 @@ public class LinuxKeyInputGateTests
     [Theory]
     [InlineData("org.freedesktop.DBus.Error.UnknownMethod")]
     [InlineData("org.freedesktop.DBus.Error.UnknownInterface")]
+    [InlineData("org.freedesktop.DBus.Error.UnknownObject")]
     public async Task Locker_OwnerWithoutGetActiveIsNotALocker(string error)
     {
         using var only = NewGate();
@@ -195,6 +196,15 @@ public class LinuxKeyInputGateTests
         Assert.True(await withReal.CheckLockerAsync(
             n => Task.FromResult(n is Gnome or Freedesktop),
             l => l.Name == Freedesktop ? throw new InvalidOperationException($"D-Bus error {error}: x") : Task.FromResult(true)));
+    }
+
+    [Fact]
+    public async Task Locker_ErrorNameMustLeadTheMessage()
+    {
+        using var gate = NewGate();
+        Assert.True(await gate.CheckLockerAsync(
+            n => Task.FromResult(n == Gnome),
+            _ => throw new InvalidOperationException("D-Bus error org.example.Error: org.freedesktop.DBus.Error.UnknownMethod")));
     }
 
     [Fact]
@@ -215,14 +225,21 @@ public class LinuxKeyInputGateTests
         Assert.True(await WaitFor(() => gate.Allowed));
         Assert.True(await WaitFor(() => Volatile.Read(ref reads) == 2));
 
-        gate.ForceBlocked();
+        gate.ForceBlocked("locked");
         Assert.False(gate.Allowed);
 
         // The in-flight read began before the lock, so its allowed result must not reopen the gate.
-        gate.AfterPublish = () => published.Release();
+        var allowedAtStalePublish = true;
+        var captured = 0;
+        gate.AfterPublish = () =>
+        {
+            if (Interlocked.Exchange(ref captured, 1) != 0) return;
+            allowedAtStalePublish = gate.Allowed;
+            published.Release();
+        };
         slow.SetResult(Seat());
         Assert.True(await published.WaitAsync(5000));
-        Assert.False(gate.Allowed);
+        Assert.False(allowedAtStalePublish);
 
         // The next poll starts after the lock and may reopen it.
         Assert.True(await WaitFor(() => gate.Allowed));

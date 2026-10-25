@@ -99,7 +99,8 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
                     // resume, the only edge that needs the bridge bounced.
                     if (new DBusReader(signal.Body).ReadBool())
                     {
-                        Suspending?.Invoke();
+                        try { Suspending?.Invoke(); }
+                        catch (Exception ex) { Console.Error.WriteLine($"[power-events] suspend subscriber failed: {ex.GetType().Name}"); }
                         _qseries?.OnHostSuspending();
                     }
                     else

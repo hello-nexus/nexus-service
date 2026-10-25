@@ -623,12 +623,12 @@ public static class NexusServiceCollectionExtensions
             {
                 lockListener.LockChanged += locked =>
                 {
-                    if (locked) gate.ForceBlocked();
+                    if (locked) gate.ForceBlocked("locked");
                 };
             }
             if (sp.GetService<Nexus.Service.Platform.Linux.LinuxResumeListener>() is { } resume)
             {
-                resume.Suspending += gate.ForceBlocked;
+                resume.Suspending += () => gate.ForceBlocked("suspending");
             }
             return new Nexus.Service.Platform.Linux.LinuxKeyPressWatcher(
                 sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>(), gate);

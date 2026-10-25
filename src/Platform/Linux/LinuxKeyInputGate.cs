@@ -13,8 +13,8 @@ namespace Nexus.Service.Platform.Linux;
 /// another user's session is ever read. Fails closed: until a first successful
 /// logind read, and whenever logind is unreachable, nothing is allowed.
 /// Lockers that expose neither logind's LockedHint nor a ScreenSaver D-Bus
-/// interface (swaylock, i3lock, xsecurelock) are not detected. State is polled
-/// every second, and <see cref="ForceBlocked"/> closes the gate at once on a
+/// interface (swaylock, i3lock, xsecurelock) are not detected. State is polled,
+/// and <see cref="ForceBlocked"/> closes the gate at once on a
 /// session lock or suspend (wired from the existing listeners); the repo's D-Bus
 /// client only has one-shot signal waiters, too fragile for PropertiesChanged
 /// subscriptions.
@@ -121,14 +121,15 @@ public sealed partial class LinuxKeyInputGate : IDisposable
     }
 
     /// <summary>Closes the gate now and discards any read already in flight; the next poll reopens it if the session is usable.</summary>
-    public void ForceBlocked()
+    public void ForceBlocked(string reason)
     {
         lock (_lock)
         {
             _epoch++;
             _allowed = false;
-            _lastReason = "";
+            _lastReason = reason;
         }
+        ServiceLog.Info($"[key-press] key reactions paused: {reason}");
     }
 
     private async Task LoopAsync(CancellationToken ct, int generation)
@@ -278,7 +279,8 @@ public sealed partial class LinuxKeyInputGate : IDisposable
         try
         {
             var now = Environment.TickCount64;
-            if (_lockers is null || now - _lockersLookedUpAt > LockerLookupMs)
+            var lockers = _lockers;
+            if (lockers is null || now - _lockersLookedUpAt > LockerLookupMs)
             {
                 var owners = new System.Collections.Generic.List<(string Name, string Path)>();
                 foreach (var candidate in Lockers)
@@ -288,11 +290,12 @@ public sealed partial class LinuxKeyInputGate : IDisposable
                         owners.Add(candidate);
                     }
                 }
-                _lockers = owners.ToArray();
+                lockers = owners.ToArray();
+                _lockers = lockers;
                 _lockersLookedUpAt = now;
             }
             bool? answer = null;
-            foreach (var locker in _lockers)
+            foreach (var locker in lockers)
             {
                 try
                 {
@@ -312,11 +315,12 @@ public sealed partial class LinuxKeyInputGate : IDisposable
         }
     }
 
-    // CallAsync surfaces a D-Bus error reply as InvalidOperationException carrying the error name.
+    // CallAsync surfaces a D-Bus error reply as InvalidOperationException whose message starts with the error name.
     private static bool IsMissingMethod(Exception ex)
         => ex is InvalidOperationException
-            && (ex.Message.Contains("org.freedesktop.DBus.Error.UnknownMethod", StringComparison.Ordinal)
-                || ex.Message.Contains("org.freedesktop.DBus.Error.UnknownInterface", StringComparison.Ordinal));
+            && (ex.Message.StartsWith("D-Bus error org.freedesktop.DBus.Error.UnknownMethod:", StringComparison.Ordinal)
+                || ex.Message.StartsWith("D-Bus error org.freedesktop.DBus.Error.UnknownInterface:", StringComparison.Ordinal)
+                || ex.Message.StartsWith("D-Bus error org.freedesktop.DBus.Error.UnknownObject:", StringComparison.Ordinal));
 
     private static async Task<(string Signature, DBusReader Reader)> GetAsync(
         DBusConnection bus, string path, string iface, string property)
