@@ -76,6 +76,7 @@ public sealed record SmartNvmeWire
 public interface ISmartHealthSource
 {
     SmartSnapshot Snapshot();
+    void ForceRefresh();
 }
 
 #if WINDOWS

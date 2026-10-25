@@ -29,7 +29,11 @@ public sealed class UpdateServiceDownloadTierTests
             new UpdateDownloader(new ThrowingHttpClientFactory()),
             store,
             TestFirmwareFlasher.Create(),
-            new MultiplexHub());
+            new MultiplexHub()
+#if WINDOWS
+            , new Nexus.Service.Helper.HelperRegistry()
+#endif
+            );
 
     [Fact]
     public async Task Status_ReportsDownloadTier_WhenNewerReleaseExists()
@@ -57,13 +61,12 @@ public sealed class UpdateServiceDownloadTierTests
         Assert.True(status.UpdateAvailable);
         Assert.Equal(NewerVersion, status.LatestVersion);
         Assert.Equal(AssetUrl, status.DownloadUrl);
-        // This suite never runs on a Windows host (CI's service job is
-        // ubuntu-latest; dev runs are macOS), so this exercises the real
-        // off-Windows branch of OperatingSystem.IsWindows() at the call site.
-        Assert.False(status.CanAutoInstall);
+        // Windows hands the download to its installer; the other hosts this
+        // suite runs on (CI is ubuntu, dev runs are macOS) only link it.
+        Assert.Equal(OperatingSystem.IsWindows(), status.CanAutoInstall);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public async Task AutoStage_NeverTriggers_OffWindows_EvenInAlwaysMode()
     {
         var store = new InMemoryConfigStore();

@@ -193,6 +193,20 @@ protocol constants or frame layouts taken from OpenRGB device controllers:
   `CorsairLinkLcd.cs` is byte-identical to that project's `transferToLcd`, and
   the pump/AIO minimum-duty floors mirror its manual-write behaviour.
 
+## i2c-tools (JEDEC JEP106 vendor names)
+
+- **Upstream**: https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git
+  (commit `24553dbf9ca2`)
+- **License**: GNU General Public License version 2 or later
+  (GPL-2.0-or-later); the license header of `eeprom/decode-dimms`, the file
+  the data comes from, reads "version 2 of the License, or (at your option)
+  any later version". Copyright 1998, 1999 Philip Edelbrock and
+  Copyright (C) 2005-2020 Jean Delvare, with other contributors named there.
+- `src/Sensors/JedecVendorTable.cs` is the manufacturer-name list from that
+  file's `@vendors` array (the JEDEC JEP106 bank and id assignments), copied
+  without the trailing "(former ...)" notes. Only names are copied; no code.
+  Used to turn a memory module's JEDEC manufacturer id into a vendor name.
+
 ## Code ported from MIT projects
 
 ### lian-li-linux (MIT)

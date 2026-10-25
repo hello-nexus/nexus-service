@@ -54,6 +54,9 @@ public class SystemSpecsResponse
     // adapter. GraphicsCard lists every adapter " + "-joined, iGPU included,
     // and on AMD-iGPU-first rigs the iGPU comes first.
     public string PrimaryGpu { get; set; } = "";
+    // Per-adapter chip and board maker behind GraphicsCard; in-process only (the fleet event and cloud spec map read it).
+    [JsonIgnore]
+    public List<GpuCard> GpuCards { get; set; } = new();
     public string Monitor { get; set; } = "";
     public string SoundCard { get; set; } = "";
     public string NetworkCard { get; set; } = "";

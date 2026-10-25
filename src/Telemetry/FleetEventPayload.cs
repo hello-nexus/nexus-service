@@ -33,6 +33,86 @@ public sealed class FleetEventSpecs
 
     /// <summary>SMBIOS system manufacturer is iBUYPOWER - the same match that unlocks the iBUYPOWER app.</summary>
     public bool IbuypowerSystem { get; set; }
+
+    /// <summary>Populated DIMM count; null when the platform exposes no per-module data (Apple Silicon unified memory, unreadable SMBIOS).</summary>
+    public int? RamModuleCount { get; set; }
+
+    /// <summary>One entry per populated module, capped at <see cref="Nexus.Service.Sensors.HardwareInventoryCollector.MaxRamModules"/>; null when unavailable.</summary>
+    public System.Collections.Generic.List<FleetEventRamModule>? RamModules { get; set; }
+
+    /// <summary>One entry per physical drive, never volumes or partitions; capped at <see cref="Nexus.Service.Sensors.HardwareInventoryCollector.MaxDrives"/>; null when unavailable.</summary>
+    public System.Collections.Generic.List<FleetEventDrive>? StorageDrives { get; set; }
+
+    /// <summary>Board-level identity of each discrete GPU whose PCI subsystem could be read, capped at <see cref="FleetEventGpuCard.MaxCards"/>; <see cref="Gpu"/> keeps the adapter names as reported, without the maker prefix. Null when none could be read.</summary>
+    public System.Collections.Generic.List<FleetEventGpuCard>? GpuCards { get; set; }
+}
+
+/// <summary>
+/// One discrete GPU as its board partner built it. Chip is the matching <see cref="FleetEventSpecs.Gpu"/> entry, which on Windows may already lead with a partner name.
+/// The ids are the PCI subsystem vendor and device as lowercase four-digit hex; Maker is this client's name for the
+/// vendor id and is absent when the id is not in its table. No serial number.
+/// </summary>
+public sealed class FleetEventGpuCard
+{
+    /// <summary>Bounds the specs event; nexus-api cuts a longer list to the same size.</summary>
+    internal const int MaxCards = 8;
+    internal const int MaxChipLength = 128;
+
+    public string Chip { get; set; } = "";
+    public string? Maker { get; set; }
+    public string? SubsystemVendorId { get; set; }
+    public string? SubsystemDeviceId { get; set; }
+
+    internal static FleetEventGpuCard From(Nexus.Service.Models.Sensors.GpuCard card) => new()
+    {
+        Chip = card.Chip.Length > MaxChipLength ? card.Chip[..MaxChipLength] : card.Chip,
+        Maker = card.Maker,
+        SubsystemVendorId = card.SubsystemVendorId.ToString("x4", System.Globalization.CultureInfo.InvariantCulture),
+        SubsystemDeviceId = card.SubsystemDeviceId.ToString("x4", System.Globalization.CultureInfo.InvariantCulture),
+    };
+}
+
+/// <summary>
+/// One populated memory module. Every field is absent rather than guessed when the platform cannot
+/// supply it. No serial number: it identifies the module, not the model.
+/// </summary>
+public sealed class FleetEventRamModule
+{
+    /// <summary>Decoded JEDEC vendor name, or the SMBIOS string when it was already a name.</summary>
+    public string? Manufacturer { get; set; }
+
+    /// <summary>The raw JEDEC id (continuation byte then id byte, hex) when one was reported; lets nexus-api resolve vendors this client could not name.</summary>
+    public string? ManufacturerId { get; set; }
+    public string? PartNumber { get; set; }
+    public long? CapacityBytes { get; set; }
+
+    /// <summary>Speed the module runs at now, MT/s.</summary>
+    public int? ConfiguredSpeedMts { get; set; }
+
+    /// <summary>Speed the module is rated for, MT/s.</summary>
+    public int? RatedSpeedMts { get; set; }
+
+    /// <summary>DDR3, DDR4, DDR5, LPDDR4 and so on.</summary>
+    public string? Generation { get; set; }
+}
+
+/// <summary>
+/// One physical drive. No serial number, volume label, mount path or user-chosen name:
+/// only the model string the drive firmware reports.
+/// </summary>
+public sealed class FleetEventDrive
+{
+    public string? Model { get; set; }
+
+    /// <summary>Only when the platform reports the vendor separately from the model; transport tags such as ATA are dropped.</summary>
+    public string? Vendor { get; set; }
+    public long? CapacityBytes { get; set; }
+
+    /// <summary>Lowercase transport: nvme, sata, ata, sas, scsi, raid. USB-attached and removable drives are not reported.</summary>
+    public string? Bus { get; set; }
+
+    /// <summary>ssd or hdd.</summary>
+    public string? Media { get; set; }
 }
 
 /// <summary>

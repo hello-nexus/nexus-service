@@ -1,6 +1,8 @@
+using System.Linq;
 using Nexus.Service.Activity;
 using Nexus.Service.Auth;
 using Nexus.Service.Cloud;
+using Nexus.Service.Devices;
 using Nexus.Service.Fps;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models;
@@ -19,6 +21,11 @@ namespace Nexus.Service.Routes;
 
 public static class SystemRoutes
 {
+    private const long MaxPreviewBytes = 2L * 1024 * 1024;
+    private static readonly byte[] PngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    private static bool HasPngSignature(byte[] bytes) => bytes.AsSpan().StartsWith(PngSignature);
+
     public static void MapSystemEndpoints(this WebApplication app)
     {
         // No REST sensor endpoints - all hardware sensor / model data is
@@ -35,6 +42,31 @@ public static class SystemRoutes
         app.MapGet("/system/specs", (SystemSpecsCollector collector, HttpContext ctx) =>
             collector.GetAsync(ctx.RequestAborted)).AllowPanel();
 
+        // Installed font families of this PC for the panel font picker. Family names only, so panel sessions may read it.
+        // Empty on failure or an unsupported OS. ?peek=true never enumerates and reports whether a
+        // client has loaded the list since the service started.
+        app.MapGet("/system/fonts", (bool? peek) =>
+        {
+            var catalog = Nexus.Service.Fonts.SystemFontCatalog.Shared;
+            SystemFontsResponse response;
+            if (peek == true)
+            {
+                var (cachedFamilies, loaded) = catalog.Peek();
+                response = new SystemFontsResponse { Families = cachedFamilies, Loaded = loaded };
+            }
+            else
+            {
+                var loadedFamilies = catalog.Load();
+                response = new SystemFontsResponse { Families = loadedFamilies, Loaded = catalog.Peek().Loaded };
+            }
+            return Results.Json(response, AppJsonContext.Default.SystemFontsResponse);
+        }).AllowPanel();
+
+        // Detected coolers, fans and controllers from the hubs' cached state, for the Build page's
+        // My Systems list. Desktop-token only; no device I/O.
+        app.MapGet("/system/devices", (DeviceInventoryService inventory) =>
+            Results.Json(inventory.Build(), AppJsonContext.Default.SystemDevicesResponse));
+
         // This machine's PC case (catalog part id), picked in the Build page's
         // My Systems frame. Desktop-token only: the pick is machine config.
         app.MapGet("/system/case", async (SystemCaseService cases, CancellationToken ct) =>
@@ -48,6 +80,53 @@ public static class SystemRoutes
             }
             var saved = await cases.SetAsync(body.CaseId, ct).ConfigureAwait(false);
             return Results.Ok(new SystemCaseResponse { CaseId = saved });
+        });
+
+        // Rendered image of this PC for the dashboard Build widget. Desktop-token only. The GET answers
+        // only while the stored image was rendered for the current case, so a case changed elsewhere
+        // drops the widget back to its placeholder.
+        app.MapPut("/system/preview", async (HttpRequest req, string? caseId, SystemPreviewStore previews, CancellationToken ct) =>
+        {
+            if (string.IsNullOrEmpty(caseId) || !SystemCaseService.IsValidCaseId(caseId))
+            {
+                return Results.BadRequest(ApiResponse.Fail("caseId must be 1-64 characters of letters, digits, '.', '_', ':' or '-'."));
+            }
+            if (req.ContentLength is long declared && declared > MaxPreviewBytes)
+            {
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+            var (bytes, tooLarge) = await CloudRoutes.ReadBoundedAsync(req.Body, MaxPreviewBytes, ct).ConfigureAwait(false);
+            if (tooLarge)
+            {
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+            if (bytes is null || !HasPngSignature(bytes))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Body must be a PNG image."));
+            }
+            if (!previews.Save(caseId, bytes))
+            {
+                return Results.Json(ApiResponse.Fail("The preview could not be saved."), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status500InternalServerError);
+            }
+            return Results.NoContent();
+        });
+
+        app.MapGet("/system/preview", async (HttpRequest req, HttpResponse res, SystemPreviewStore previews, SystemCaseService cases, CancellationToken ct) =>
+        {
+            var current = await cases.GetAsync(ct).ConfigureAwait(false);
+            if (previews.TryGet(current) is not { } preview)
+            {
+                return Results.NotFound();
+            }
+            var etag = "\"" + preview.Sha256 + "\"";
+            res.Headers.CacheControl = "no-cache";
+            res.Headers.ETag = etag;
+            if (req.Headers.IfNoneMatch.ToString() is { Length: > 0 } inm
+                && inm.Split(',').Any(t => t.Trim() == etag || t.Trim() == "*"))
+            {
+                return Results.StatusCode(StatusCodes.Status304NotModified);
+            }
+            return Results.Bytes(preview.Bytes, "image/png");
         });
 
         // Whether this machine is listed among the account's Systems. Turning it off removes it from the account.

@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Sensors;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Platform;
 using Nexus.Service.Platform.Linux;
 
@@ -25,6 +26,13 @@ public sealed class LinuxSensorProvider : ISensorProvider
 {
     private static readonly IReadOnlyList<HardwareSensor> EmptySensors = Array.Empty<HardwareSensor>();
     private static readonly IReadOnlyList<string> EmptyStrings = Array.Empty<string>();
+
+    private readonly KrakenHub? _krakenHub;
+
+    public LinuxSensorProvider(KrakenHub? krakenHub = null)
+    {
+        _krakenHub = krakenHub;
+    }
 
     // Linux hardware reads are shell / sysfs-driven and synchronous - Get*
     // methods cache lazily on first call. No async warmup window to wait on.
@@ -60,6 +68,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
     private readonly Dictionary<string, (ulong Rx, ulong Tx, DateTime At)> _prevNetStats = new();
 
     private List<string>? _gpuModels;
+    private List<GpuBoard>? _gpuBoards;
     private string _gpuSmiCsv = "";
     private DateTime _gpuSmiFetchedAt;
 
@@ -244,15 +253,17 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
 
         var models = new List<string>();
+        var boards = new List<GpuBoard>();
         try
         {
-            var csv = ShellOut("/usr/bin/nvidia-smi", 2000, "--query-gpu=name", "--format=csv,noheader");
+            var csv = ShellOut("/usr/bin/nvidia-smi", 2000, "--query-gpu=name,pci.bus_id", "--format=csv,noheader");
             foreach (var line in csv.Split('\n'))
             {
-                var name = line.Trim();
+                var (name, busId) = LinuxPciSubsystem.ParseSmiRow(line);
                 if (name.Length > 0)
                 {
                     models.Add(name);
+                    AddBoard(boards, name, busId);
                 }
             }
 
@@ -260,23 +271,38 @@ public sealed class LinuxSensorProvider : ISensorProvider
             {
                 // Fallback: parse lspci for VGA/3D controllers
                 var lspci = ShellOut("/usr/bin/lspci", 2000, "-mm");
-                foreach (var line in lspci.Split('\n'))
+                foreach (var (name, slot) in LinuxPciSubsystem.ParseLspciGpus(lspci))
                 {
-                    if (line.Contains("\"VGA compatible controller\"") || line.Contains("\"3D controller\""))
-                    {
-                        var parts = line.Split('"');
-                        if (parts.Length >= 6)
-                        {
-                            models.Add($"{parts[3]} {parts[5]}".Trim());
-                        }
-                    }
+                    models.Add(name);
+                    AddBoard(boards, name, slot);
                 }
             }
         }
         catch { }
 
+        _gpuBoards = boards;
         _gpuModels = models;
         return _gpuModels;
+    }
+
+    public IReadOnlyList<GpuBoard> GetGpuBoards()
+    {
+        GetGpuModels();
+        return _gpuBoards ?? new List<GpuBoard>();
+    }
+
+    // An integrated adapter carries the motherboard's subsystem, not a card maker's; only functions proven discrete are kept.
+    private static void AddBoard(List<GpuBoard> boards, string name, string? busId)
+    {
+        if (!LinuxPciSubsystem.IsDiscrete(LinuxPciSubsystem.DevicesRoot, busId, name))
+        {
+            return;
+        }
+
+        if (LinuxPciSubsystem.Read(LinuxPciSubsystem.DevicesRoot, busId) is { } ids)
+        {
+            boards.Add(new GpuBoard(name, ids.Vendor, ids.Device));
+        }
     }
 
     public IReadOnlyList<HardwareSensor> GetGpuSensors() => GetGpus().SelectMany(g => g.Sensors).ToList();
@@ -583,18 +609,21 @@ public sealed class LinuxSensorProvider : ISensorProvider
             sensors.Add(MakeSensor("mobo/model", "Model Identifier", "Factor", 0, "", model));
         }
 
-        foreach (var (name, idFrag, rpm) in EnumerateHwmonFans())
+        var hidden = _krakenHub?.ClaimedHwmonName;
+        foreach (var (name, idFrag, rpm) in EnumerateHwmonFans(hidden))
         {
             sensors.Add(MakeSensor($"mobo/fan/{idFrag}", name, "Fan", rpm, "RPM", model));
         }
 
-        foreach (var (name, idFrag, millivolts) in EnumerateHwmonVoltages())
+        foreach (var (name, idFrag, millivolts) in EnumerateHwmonVoltages(hidden))
         {
             sensors.Add(MakeSensor($"mobo/voltage/{idFrag}", name, "Voltage", millivolts / 1000f, "V", model));
         }
 
         // Non-CPU/non-GPU temps from hwmon (e.g. nct6687 VRM temps, chipset temps).
-        foreach (var (name, idFrag, tempC) in EnumerateHwmonTemps(excludedNames: new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu" }))
+        foreach (var (name, idFrag, tempC) in EnumerateHwmonTemps(excludedNames: hidden is null
+            ? new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu" }
+            : new[] { "k10temp", "coretemp", "zenpower", "nvme", "amdgpu", hidden }))
         {
             sensors.Add(MakeSensor($"mobo/temp/{idFrag}", name, "Temperature", tempC, "°C", model));
         }
@@ -1121,7 +1150,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
     }
 
-    private static IEnumerable<(string Name, string IdFrag, float Rpm)> EnumerateHwmonFans()
+    private static IEnumerable<(string Name, string IdFrag, float Rpm)> EnumerateHwmonFans(string? hidden)
     {
         IEnumerable<string> dirs;
         try
@@ -1137,6 +1166,10 @@ public sealed class LinuxSensorProvider : ISensorProvider
         {
             var hwmonName = TryRead(Path.Combine(dir, "name"));
             if (string.IsNullOrEmpty(hwmonName))
+            {
+                continue;
+            }
+            if (hwmonName == hidden)
             {
                 continue;
             }
@@ -1172,7 +1205,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
         }
     }
 
-    private static IEnumerable<(string Name, string IdFrag, float MilliVolts)> EnumerateHwmonVoltages()
+    private static IEnumerable<(string Name, string IdFrag, float MilliVolts)> EnumerateHwmonVoltages(string? hidden)
     {
         IEnumerable<string> dirs;
         try
@@ -1188,6 +1221,10 @@ public sealed class LinuxSensorProvider : ISensorProvider
         {
             var hwmonName = TryRead(Path.Combine(dir, "name"));
             if (string.IsNullOrEmpty(hwmonName))
+            {
+                continue;
+            }
+            if (hwmonName == hidden)
             {
                 continue;
             }

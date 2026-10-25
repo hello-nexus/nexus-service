@@ -157,6 +157,8 @@ public sealed class DisplayAssignmentDto
     public string Backdrop { get; set; } = "";
     /// <summary>Per-panel "keep the mouse off the panel" (record setting; default false).</summary>
     public bool KeepCursorOff { get; set; }
+    /// <summary>Per-panel "keep the panel above other windows" (record setting; default true).</summary>
+    public bool AlwaysOnTop { get; set; } = true;
 }
 
 /// <summary>Body for POST /displays/{id}/rotation.</summary>

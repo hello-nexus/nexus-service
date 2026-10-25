@@ -31,6 +31,7 @@ public static class OpenRgbProtocol
 
     /// <summary>ACK status codes (NetPacketStatus).</summary>
     public const uint StatusOk = 0;
+    public const uint StatusUnsupported = 2;
     public const uint StatusInvalidId = 4;
     public const uint StatusInvalidData = 5;
     public static readonly byte[] MagicBytes = new byte[] { 0x4F, 0x52, 0x47, 0x42 }; // "ORGB"
@@ -57,6 +58,9 @@ public static class OpenRgbProtocol
         RgbControllerUpdateLeds = 1050,
         RgbControllerUpdateZoneLeds = 1051,
         RgbControllerResizeZone = 1000,
+        // Nexus extension of the bundled daemon (see NexusCoolingProtocol); an upstream daemon ACKs these as unsupported.
+        NexusCoolingGetStatus = 40000,
+        NexusCoolingSetDuties = 40001,
     }
 
     /// <summary>

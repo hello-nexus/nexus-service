@@ -40,7 +40,7 @@ internal static class FactoryReset
     public const string RestartFlag = "--restart-finalize";
 
     // A data tree to wipe, plus the names of any immediate children to skip.
-    private sealed record Root(string Path, string[] Preserve);
+    private sealed record Root(string Path, string[] Preserve, bool PerUser = false);
 
     /// Entries under %ProgramData%\Nexus a wipe leaves alone: the kernel driver,
     /// and the remembered render GPU (see Roots).
@@ -68,7 +68,7 @@ internal static class FactoryReset
             // ai-history binary stores), devices/ (device media + records),
             // media/ (lighting content), drivers/, firmware,
             // logs (nexus-service/overlay/tray/helper/volume/gpu/pawnio),
-            // https cert, ffmpeg-pids, DesktopWebView2, openrgb-config. Whole-tree
+            // https cert, ffmpeg-pids, openrgb-config, the legacy DesktopWebView2. Whole-tree
             // wipe, so the grouped subdirs need no per-name upkeep here.
             // Preserve PawnIO\ (kernel driver) and gpu-render-state (which card
             // yields a working GL context - a hardware fact, not user data; a
@@ -78,7 +78,8 @@ internal static class FactoryReset
             // Per-user data the daemon can't reach via GetFolderPath: it runs as
             // LocalSystem, so LocalApplicationData resolves to the SYSTEM profile.
             // dashboard-bounds.json (written by the user-session overlay) lands in
-            // a real user's Local\Nexus; current SDK-app installs go to
+            // a real user's Local\Nexus, as does the per-user DesktopWebView2
+            // profile (localStorage, cached auth token); current SDK-app installs go to
             // %ProgramData%\Nexus\apps (wiped above), but older installs may
             // linger in a profile's Roaming\Nexus. WindowsUserProfiles() returns
             // BOTH every C:\Users\* profile AND the system profile, so each one's
@@ -86,9 +87,9 @@ internal static class FactoryReset
             // gets wiped.
             foreach (var profile in WindowsUserProfiles())
             {
-                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "Local", "Nexus"), Array.Empty<string>()));
-                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "Roaming", "Nexus"), Array.Empty<string>()));
-                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "LocalLow", "Nexus"), Array.Empty<string>()));
+                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "Local", "Nexus"), Array.Empty<string>(), PerUser: true));
+                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "Roaming", "Nexus"), Array.Empty<string>(), PerUser: true));
+                roots.Add(new Root(System.IO.Path.Combine(profile, "AppData", "LocalLow", "Nexus"), Array.Empty<string>(), PerUser: true));
             }
         }
         else if (OperatingSystem.IsMacOS())
@@ -129,7 +130,7 @@ internal static class FactoryReset
 
     // Every user profile on the machine (C:\Users\* plus the LocalSystem
     // profile), so the LocalSystem finalizer can wipe per-user AppData\Nexus.
-    private static IEnumerable<string> WindowsUserProfiles()
+    internal static IEnumerable<string> WindowsUserProfiles()
     {
         var profiles = new List<string>();
         var systemDrive = Environment.GetEnvironmentVariable("SystemDrive") ?? "C:";
@@ -257,7 +258,7 @@ internal static class FactoryReset
 #endif
 
 #if WINDOWS
-        // A wipe deletes %ProgramData%\Nexus\DesktopWebView2 /
+        // A wipe deletes each user's %LocalAppData%\Nexus\DesktopWebView2 /
         // \DashboardEdge (the dashboard's WebView2/Edge profiles, holding
         // localStorage's cached auth token) out from under the overlay and
         // helper if either is still running - they survive a plain service
@@ -296,7 +297,9 @@ internal static class FactoryReset
 
         if (wipe)
         {
-            DeleteRoots();
+            // Nothing in the wipe may skip RestartService below, or the service stays down until reboot.
+            try { DeleteRoots(); }
+            catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] wipe aborted: {ex.Message}"); }
         }
 #if WINDOWS
         // The reopen flag lives under %ProgramData%\Nexus, so it must be
@@ -307,7 +310,8 @@ internal static class FactoryReset
         // is ready.
         if (wipe)
         {
-            DashboardReopenFlag.Write();
+            try { DashboardReopenFlag.Write(); }
+            catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] reopen flag failed: {ex.Message}"); }
         }
 #endif
         RestartService();
@@ -351,6 +355,17 @@ internal static class FactoryReset
         foreach (var root in Roots())
         {
             if (!Directory.Exists(root.Path)) continue;
+            if (root.PerUser)
+            {
+                // The finalizer runs as SYSTEM on folders a user controls: a junction in the way would
+                // redirect the delete, so such roots are skipped (static junctions only; see UserDataSafety).
+                // IsSafeUserTree never throws, so one hostile root cannot abort the sweep.
+                if (!UserDataSafety.IsSafeUserTree(root.Path))
+                {
+                    Console.Error.WriteLine($"[factory-reset] skipping {root.Path}: unreadable or behind a reparse point");
+                    continue;
+                }
+            }
             DeleteSettingsFiles(root.Path);
             try
             {

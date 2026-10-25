@@ -26,6 +26,8 @@ public static class SupportBundleBuilder
     public sealed class Sources
     {
         public string LogsDirectory { get; init; } = "";
+        /// <summary>Per-user fallback log dirs (user-session writers land there when the shared dir is not writable for them), keyed by user label.</summary>
+        public IReadOnlyList<(string Label, string Directory)> UserLogDirectories { get; init; } = Array.Empty<(string, string)>();
         /// <summary>The OTA staging dir: a failed silent install leaves its only trace in the Inno log there.</summary>
         public string UpdatesDirectory { get; init; } = "";
         public string OpenRgbConfigDirectory { get; init; } = "";
@@ -57,6 +59,25 @@ public static class SupportBundleBuilder
             }
             WriteText(zip, "system-profile.txt", src.StartupSnapshot);
             AddLogs(zip, "logs/", src.LogsDirectory, "*.log");
+            foreach (var (label, dir) in src.UserLogDirectories)
+            {
+                // SYSTEM reads user-controlled folders here: one user's folder must never break the export
+                // for everyone, so any failure skips that user. Junctioned dirs and linked files are
+                // refused, and each opened file must still resolve under the expected dir.
+                try
+                {
+                    if (Lifecycle.UserDataSafety.ChainHasReparsePoint(dir, 4))
+                    {
+                        continue;
+                    }
+                    var profile = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(dir))));
+                    var prefix = profile is null ? null : Lifecycle.UserDataSafety.ExpectedFinalPrefix(profile, Path.Combine("AppData", "Local", "Nexus", "logs"));
+                    AddLogs(zip, $"logs/user-{label}/", dir, "*.log", mustBeUnder: true, expectedPrefix: prefix);
+                }
+                catch (Exception)
+                {
+                }
+            }
             AddLogs(zip, "updates/", src.UpdatesDirectory, Update.UpdateInstaller.InstallLogGlob);
             AddFile(zip, "updates/" + Update.StagedInstallMarkerStore.MarkerFileName, Path.Combine(src.UpdatesDirectory, Update.StagedInstallMarkerStore.MarkerFileName));
             AddLogs(zip, "openrgb/logs/", Path.Combine(src.OpenRgbConfigDirectory, "logs"), "OpenRGB_*.log");
@@ -110,7 +131,25 @@ public static class SupportBundleBuilder
         return copy;
     }
 
-    private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern)
+    /// <summary>The per-user fallback log dir of every profile, deduplicated, labeled by profile folder name.</summary>
+    internal static List<(string Label, string Directory)> UserLogDirectoriesFor(IEnumerable<string> profiles)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<(string, string)>();
+        foreach (var profile in profiles)
+        {
+            var trimmed = profile.TrimEnd('\\', '/');
+            if (trimmed.Length == 0 || !seen.Add(trimmed))
+            {
+                continue;
+            }
+            var label = Path.GetFileName(trimmed);
+            result.Add((label.Length == 0 ? "user" : label, Path.Combine(trimmed, "AppData", "Local", "Nexus", "logs")));
+        }
+        return result;
+    }
+
+    private static void AddLogs(ZipArchive zip, string prefix, string dir, string pattern, bool mustBeUnder = false, string? expectedPrefix = null)
     {
         if (!Directory.Exists(dir))
         {
@@ -118,12 +157,16 @@ public static class SupportBundleBuilder
         }
         foreach (var path in Directory.EnumerateFiles(dir, pattern).OrderBy(p => p, StringComparer.Ordinal))
         {
-            AddFile(zip, prefix + Path.GetFileName(path), path);
+            if (mustBeUnder && Lifecycle.UserDataSafety.IsReparsePoint(path))
+            {
+                continue;
+            }
+            AddFile(zip, prefix + Path.GetFileName(path), path, mustBeUnder, expectedPrefix);
         }
     }
 
     /// <summary>Copies a file that the service may still be writing; a file past <see cref="MaxLogBytes"/> ships as its tail behind one header line.</summary>
-    private static void AddFile(ZipArchive zip, string name, string path)
+    private static void AddFile(ZipArchive zip, string name, string path, bool mustBeUnder = false, string? expectedPrefix = null)
     {
         if (!File.Exists(path))
         {
@@ -132,6 +175,10 @@ public static class SupportBundleBuilder
         try
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (mustBeUnder && !Lifecycle.UserDataSafety.HandleIsUnder(stream.SafeFileHandle, expectedPrefix))
+            {
+                return;
+            }
             var entry = zip.CreateEntry(name);
             using var output = entry.Open();
             if (stream.Length > MaxLogBytes)
