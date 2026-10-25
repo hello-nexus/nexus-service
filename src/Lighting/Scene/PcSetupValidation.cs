@@ -22,7 +22,7 @@ public static partial class PcSetupValidation
     public const int MaxPartId = 64;
     public const int MaxOpaqueParts = 96 * 1024;
     public const int MaxOpaqueSpecs = 2 * 1024;
-    public const int MaxOpaqueCaseLayout = 32 * 1024;
+    public const int MaxOpaqueCaseLayout = 64 * 1024;
     public const int MaxOpaqueKeptSize = 256;
     public const int MaxRecordBytes = 224 * 1024;
     public const string CaseId = "case";
