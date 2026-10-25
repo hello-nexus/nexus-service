@@ -44,6 +44,45 @@ public static class KeyNames
         return ScanToName.TryGetValue(makeCode | (e0 ? 0xE000 : 0), out var name) ? name : null;
     }
 
+    /// <summary>Canonical name for a Linux evdev key code (input-event-codes.h), or null for a code with no LED-bearing key.</summary>
+    public static string? FromLinuxKeyCode(int code)
+    {
+        // Codes 1-88 are the set 1 make codes.
+        if (code is >= 1 and <= 88) return FromScanCode(code, e0: false);
+        if (code is >= 183 and <= 193) return FromScanCode(0x64 + (code - 183), e0: false);
+        return code switch
+        {
+            194 => FromScanCode(0x76, e0: false),
+            96 => FromScanCode(0x1C, e0: true),
+            97 => FromScanCode(0x1D, e0: true),
+            98 => FromScanCode(0x35, e0: true),
+            99 => FromScanCode(0x37, e0: true),
+            100 => FromScanCode(0x38, e0: true),
+            102 => FromScanCode(0x47, e0: true),
+            103 => FromScanCode(0x48, e0: true),
+            104 => FromScanCode(0x49, e0: true),
+            105 => FromScanCode(0x4B, e0: true),
+            106 => FromScanCode(0x4D, e0: true),
+            107 => FromScanCode(0x4F, e0: true),
+            108 => FromScanCode(0x50, e0: true),
+            109 => FromScanCode(0x51, e0: true),
+            110 => FromScanCode(0x52, e0: true),
+            111 => FromScanCode(0x53, e0: true),
+            113 => FromScanCode(0x20, e0: true),
+            114 => FromScanCode(0x2E, e0: true),
+            115 => FromScanCode(0x30, e0: true),
+            119 => "Pause/Break",
+            125 => FromScanCode(0x5B, e0: true),
+            126 => FromScanCode(0x5C, e0: true),
+            127 => FromScanCode(0x5D, e0: true),
+            163 => FromScanCode(0x19, e0: true),
+            164 or 200 or 201 => FromScanCode(0x22, e0: true),
+            165 => FromScanCode(0x10, e0: true),
+            166 => FromScanCode(0x24, e0: true),
+            _ => null,
+        };
+    }
+
     /// <summary>The names to try for a press, canonical first.</summary>
     public static IEnumerable<string> Candidates(string canonical)
     {

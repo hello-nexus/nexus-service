@@ -613,6 +613,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.DevicePinTracker>();
         services.AddSingleton<Nexus.Service.Lighting.LedColorLockTracker>();
         services.AddSingleton<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
+#if LINUX
+        services.AddHostedService(sp => new Nexus.Service.Platform.Linux.LinuxKeyPressWatcher(
+            sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>(),
+            new Nexus.Service.Platform.Linux.LinuxKeyInputGate(
+                sp.GetService<Nexus.Service.Platform.Linux.DBus.DBusConnection>())));
+#endif
         services.AddSingleton<LightingEngine>(sp =>
         {
             // Property, not ctor: the engine is constructed directly in tests
