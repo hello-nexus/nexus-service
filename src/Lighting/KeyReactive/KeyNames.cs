@@ -47,7 +47,7 @@ public static class KeyNames
     /// <summary>Canonical name for a Linux evdev key code (input-event-codes.h), or null for a code with no LED-bearing key.</summary>
     public static string? FromLinuxKeyCode(int code)
     {
-        // Codes 1-88 are the set 1 make codes.
+        // The low codes coincide with the set 1 make codes.
         if (code is >= 1 and <= 88) return FromScanCode(code, e0: false);
         if (code is >= 183 and <= 193) return FromScanCode(0x64 + (code - 183), e0: false);
         return code switch

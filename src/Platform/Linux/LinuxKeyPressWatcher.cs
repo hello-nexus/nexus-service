@@ -22,14 +22,12 @@ namespace Nexus.Service.Platform.Linux;
 /// </summary>
 public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
 {
-    internal const int PollMs = 500;
-    internal const long RescanMs = 2000;
     // One physical key can arrive on two nodes of the same board.
     internal const long DuplicateMs = 30;
     private const long ProbeEveryMs = 10_000;
 
     internal const ushort EV_KEY = 1;
-    // struct input_event on 64-bit: 16-byte timeval, u16 type, u16 code, s32 value.
+    // struct input_event on 64-bit: timeval, type, code, value.
     internal const int EventSize = 24;
 
     private const int O_RDONLY = 0;
@@ -63,6 +61,8 @@ public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
     private readonly object _lock = new();
     private CancellationTokenSource? _run;
     private int _openCount;
+    private bool _stopped;
+    private int _rescans;
     private long _probedAt = long.MinValue;
     private volatile bool _probeResult;
 
@@ -84,6 +84,20 @@ public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
         _openNode = openNode;
     }
 
+    /// <summary>Poll timeout and idle wait; the longest a disarm or a gate change goes unnoticed.</summary>
+    internal int PollMs { get; set; } = 500;
+
+    /// <summary>How often the keyboard list is re-read for hotplug.</summary>
+    internal int RescanMs { get; set; } = 2000;
+
+    /// <summary>Wait before the reader restarts after an unexpected failure.</summary>
+    internal int RecoverMs { get; set; } = 2000;
+
+    internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
+
+    /// <summary>Keyboard lists read so far.</summary>
+    internal int Rescans => Volatile.Read(ref _rescans);
+
     internal bool Watching => Volatile.Read(ref _run) is not null;
 
     /// <summary>Evdev nodes currently held open.</summary>
@@ -91,53 +105,76 @@ public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        if (_overlay is not null)
+        if (_overlay is null) return Task.CompletedTask;
+        lock (_lock)
         {
+            _stopped = false;
             _overlay.InputAvailable = InputAvailable;
-            _overlay.ArmedChanged += SetArmed;
-            if (_overlay.Armed)
-            {
-                SetArmed(true);
-            }
+            _overlay.ArmedChanged += OnArmedChanged;
+            Apply(_overlay.Armed);
         }
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        _overlay?.ArmedChanged -= SetArmed;
-        SetArmed(false);
+        Stop();
         return Task.CompletedTask;
     }
 
     public void Dispose()
     {
-        SetArmed(false);
+        Stop();
         _gate?.Dispose();
     }
 
-    /// <summary>Starts or stops the reader. Returns at once; the reader thread closes the nodes within one poll interval.</summary>
+    private void Stop()
+    {
+        lock (_lock)
+        {
+            _stopped = true;
+            _overlay?.ArmedChanged -= OnArmedChanged;
+            Apply(false);
+        }
+    }
+
+    // Re-reads the overlay under the lock, so a late or reordered event cannot leave the nodes in a stale state.
+    private void OnArmedChanged(bool armed)
+    {
+        lock (_lock)
+        {
+            Apply(_overlay?.Armed ?? armed);
+        }
+    }
+
+    /// <summary>Starts or stops the reader without an overlay; the overlay path goes through <see cref="OnArmedChanged"/>.</summary>
     internal void SetArmed(bool armed)
     {
         lock (_lock)
         {
-            if (armed)
-            {
-                if (_run is not null) return;
-                var cts = new CancellationTokenSource();
-                _run = cts;
-                _gate?.SetActive(true);
-                new Thread(() => Run(cts.Token)) { IsBackground = true, Name = "key-press-watcher" }.Start();
-                ServiceLog.Info("[key-press] key reactions on");
-                return;
-            }
-            var run = _run;
-            if (run is null) return;
-            _run = null;
-            run.Cancel();
-            _gate?.SetActive(false);
-            ServiceLog.Info("[key-press] key reactions off");
+            Apply(armed);
         }
+    }
+
+    // Returns at once; the reader thread closes the nodes within one poll interval. Caller holds _lock.
+    private void Apply(bool armed)
+    {
+        if (armed && !_stopped)
+        {
+            if (_run is not null) return;
+            var cts = new CancellationTokenSource();
+            _run = cts;
+            _gate?.SetActive(true);
+            new Thread(() => Run(cts.Token)) { IsBackground = true, Name = "key-press-watcher" }.Start();
+            ServiceLog.Info("[key-press] key reactions on");
+            return;
+        }
+        var run = _run;
+        if (run is null) return;
+        _run = null;
+        run.Cancel();
+        _gate?.SetActive(false);
+        ServiceLog.Info("[key-press] key reactions off");
     }
 
     /// <summary>True when at least one keyboard node is readable; probed at most every few seconds and never opens a node.</summary>
@@ -165,7 +202,25 @@ public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
         public required int Fd;
     }
 
+    // An unexpected failure must not leave an armed watcher dead, so the reader restarts after a pause.
     private void Run(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                RunOnce(token);
+            }
+            catch (Exception ex)
+            {
+                // Type only: nothing derived from key input may reach the log.
+                ServiceLog.Warn($"[key-press] keyboard watch failed, restarting: {ex.GetType().Name}");
+                token.WaitHandle.WaitOne(RecoverMs);
+            }
+        }
+    }
+
+    private void RunOnce(CancellationToken token)
     {
         var open = new Dictionary<string, Device>(StringComparer.Ordinal);
         // Nodes that refused to open; not retried until they leave /sys/class/input or the watcher restarts.
@@ -197,6 +252,7 @@ public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
                 if (now >= nextScan)
                 {
                     nextScan = now + RescanMs;
+                    Interlocked.Increment(ref _rescans);
                     if (Rescan(open, denied))
                     {
                         devices = Snapshot(open);
@@ -258,10 +314,6 @@ public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
                     fds = new PollFd[devices.Length];
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            ServiceLog.Warn($"[key-press] keyboard watch stopped: {ex.GetType().Name}: {ex.Message}");
         }
         finally
         {
@@ -329,9 +381,9 @@ public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
         return errno is EAGAIN or EINTR;
     }
 
-    private void Deliver(List<int> codes, Dictionary<string, long> recent, CancellationToken token)
+    internal void Deliver(List<int> codes, Dictionary<string, long> recent, CancellationToken token)
     {
-        var now = Environment.TickCount64;
+        var now = Clock();
         foreach (var code in codes)
         {
             var name = KeyNames.FromLinuxKeyCode(code);
@@ -373,7 +425,7 @@ public sealed partial class LinuxKeyPressWatcher : IHostedService, IDisposable
         try
         {
             if (!Directory.Exists(sysInput)) return found;
-            entries = Directory.EnumerateDirectories(sysInput, "event*");
+            entries = Directory.GetDirectories(sysInput, "event*");
         }
         catch (IOException) { return found; }
         catch (UnauthorizedAccessException) { return found; }
