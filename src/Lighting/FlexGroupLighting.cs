@@ -46,7 +46,8 @@ public sealed partial class FlexGroupLighting
         var members = new List<FlexSyncMember>();
         foreach (var u in _hub.Units)
         {
-            if (!u.Controllable)
+            // P28 has no shared effect set to sync.
+            if (!u.Controllable || u.Family == FlexFamily.P28V2)
             {
                 continue;
             }

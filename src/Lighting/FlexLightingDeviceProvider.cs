@@ -132,13 +132,23 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     public static string ZoneIdFor(string mac, string zone) => $"{IdPrefix}{mac}:{zone}";
 
     /// <summary>Zone ids of a family in zone order.</summary>
-    public static IReadOnlyList<string> ZonesOf(FlexFamily family) =>
-        family == FlexFamily.SlInfFlex ? SlInfZones : TlZones;
+    public static IReadOnlyList<string> ZonesOf(FlexFamily family) => family switch
+    {
+        FlexFamily.SlInfFlex => SlInfZones,
+        FlexFamily.P28V2 => P28Zones,
+        _ => TlZones,
+    };
 
     private static readonly string[] TlZones = { "up", "down" };
     private static readonly string[] SlInfZones = { "center", "inner", "outer" };
+    private static readonly string[] P28Zones = { "fan" };
 
-    public static string ModelName(FlexFamily family) => family == FlexFamily.SlInfFlex ? "Lian Li SL-INF LCD Flex" : "Lian Li TL LCD Flex";
+    public static string ModelName(FlexFamily family) => family switch
+    {
+        FlexFamily.SlInfFlex => "Lian Li SL-INF LCD Flex",
+        FlexFamily.P28V2 => "Lian Li P28 V2 Fan",
+        _ => "Lian Li TL LCD Flex",
+    };
 
     internal static string ZoneLabel(string zone) => zone switch
     {
@@ -147,6 +157,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
         "center" => "Center",
         "inner" => "Inner",
         "outer" => "Outer",
+        "fan" => "Fan",
         _ => zone,
     };
 
@@ -351,7 +362,7 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
 
     /// <summary>The unit plays its motherboard ARGB input: the saved choice, or with none saved, what the unit reports.</summary>
     internal static bool PlaysMotherboardArgb(FlexUnit unit, IReadOnlyDictionary<string, LianLiFlexUnitSettings> stored) =>
-        (stored.TryGetValue(unit.Mac, out var look) ? look.MotherboardArgb : null) ?? unit.Info.PlayingMotherboardArgb;
+        unit.Family != FlexFamily.P28V2 && ((stored.TryGetValue(unit.Mac, out var look) ? look.MotherboardArgb : null) ?? unit.Info.PlayingMotherboardArgb);
 
     private List<DeviceStructure> BuildStructures(bool playsArgb)
     {
@@ -374,7 +385,12 @@ public sealed class FlexLightingDeviceProvider : ILightingDeviceProvider, ILight
     internal static DeviceStructure BuildStructure(string mac, FlexFamily family, int fans, bool swap = false)
     {
         var deviceId = DeviceIdFor(mac);
-        var pid = family == FlexFamily.SlInfFlex ? FlexProtocol.SlInfReceiverProductId : FlexProtocol.TlReceiverProductId;
+        var pid = family switch
+        {
+            FlexFamily.SlInfFlex => FlexProtocol.SlInfReceiverProductId,
+            FlexFamily.P28V2 => FlexProtocol.P28ReceiverProductId,
+            _ => FlexProtocol.TlReceiverProductId,
+        };
         var structure = new DeviceStructure
         {
             DeviceId = deviceId,
