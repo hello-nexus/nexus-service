@@ -84,7 +84,7 @@ public class MystiqueSessionTests
         Assert.True(session.Upload(package));
 
         var expected = new List<byte[]> { MystiqueProtocol.BuildUploadStart() };
-        expected.AddRange(package.Frames.SelectMany(MystiqueMedia.Packets));
+        expected.AddRange(package.Frames.SelectMany(StreamWrites));
         expected.Add(MystiqueMedia.FinishPacket());
         expected.Add(MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceGif));
         Assert.All(pipe.Writes, w => Assert.Equal(MystiqueProtocol.SettingsWritePipe, w.Pipe));
@@ -99,26 +99,32 @@ public class MystiqueSessionTests
     }
 
     [Fact]
-    public void A_frame_streams_one_packet_per_write_header_first_and_reports_the_bytes_after_each()
+    public void A_frame_streams_its_header_alone_then_whole_packet_writes_of_up_to_16_KiB_and_reports_the_bytes_after_each()
     {
         var pipe = new FakePipe();
         var session = new MystiqueSession(pipe, sleep: NoSleep);
         Assert.True(session.Open(new DeepCoolMystiqueSettings(), Now));
         pipe.Writes.Clear();
-        var package = MystiqueMedia.BuildPicture(new byte[40_010], "2101b6e6277841daa821e8d79a5c528b");
+        var package = MystiqueMedia.BuildPicture(new byte[40_000], "2101b6e6277841daa821e8d79a5c528b");
         var reported = new List<long>();
 
         Assert.True(session.Upload(package, progress: reported.Add));
 
         var stream = pipe.Writes.Skip(1).TakeWhile(w => w.Frame.Length != MystiqueMedia.FinishLength).ToList();
-        var frame = package.Frames[0];
-        Assert.Equal(frame.Length / 64 + 1, stream.Count);
-        Assert.All(stream.SkipLast(1), w => Assert.Equal(64, w.Frame.Length));
-        Assert.Equal(frame.Length % 64, stream[^1].Frame.Length);
-        Assert.Equal(frame[..MystiqueMedia.HeaderLength], stream[0].Frame);
-        Assert.Equal(frame, stream.SelectMany(w => w.Frame));
-        Assert.Equal(stream.Count, reported.Count);
-        Assert.Equal(frame.Length, reported[^1]);
+        Assert.Equal(new[] { 64, 16_384, 16_384, 40_000 - 32_768 }, stream.ConvertAll(w => w.Frame.Length));
+        Assert.Equal(package.Frames[0][..MystiqueMedia.HeaderLength], stream[0].Frame);
+        Assert.Equal(package.Frames[0], stream.SelectMany(w => w.Frame));
+        Assert.Equal(new long[] { 64, 16_448, 32_832, 40_064 }, reported);
+    }
+
+    /// <summary>The writes a frame streams as: its header, then the rest in whole-packet writes of up to 16 KiB.</summary>
+    private static IEnumerable<byte[]> StreamWrites(byte[] frame)
+    {
+        yield return frame[..MystiqueMedia.HeaderLength];
+        for (int at = MystiqueMedia.HeaderLength; at < frame.Length; at += 16_384)
+        {
+            yield return frame[at..Math.Min(frame.Length, at + 16_384)];
+        }
     }
 
     [Fact]
@@ -137,8 +143,9 @@ public class MystiqueSessionTests
         Assert.False(session.Upload(package));
 
         var body = pipe.Writes.Skip(1).SkipLast(1).SelectMany(w => w.Frame).ToArray();
-        Assert.Equal(package.Frames[0][..128], body[..128]);
-        Assert.All(body[128..], b => Assert.Equal(0, b));
+        int good = MystiqueMedia.HeaderLength + 16_384;
+        Assert.Equal(package.Frames[0][..good], body[..good]);
+        Assert.All(body[good..], b => Assert.Equal(0, b));
         Assert.Equal(MystiqueMedia.FinishLength, pipe.Writes[^1].Frame.Length);
     }
 
@@ -175,10 +182,10 @@ public class MystiqueSessionTests
         Assert.Equal(2, session.Upload(new[] { first, second }, progress: reported.Add));
 
         var expected = new List<byte[]> { MystiqueProtocol.BuildUploadStart() };
-        expected.AddRange(MystiqueMedia.Packets(first.Frames[0]));
+        expected.AddRange(StreamWrites(first.Frames[0]));
         expected.Add(MystiqueMedia.FinishPacket());
         expected.Add(MystiqueProtocol.BuildUploadStart());
-        expected.AddRange(MystiqueMedia.Packets(second.Frames[0]));
+        expected.AddRange(StreamWrites(second.Frames[0]));
         expected.Add(MystiqueMedia.FinishPacket());
         expected.Add(MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceImages));
         Assert.Equal(expected.ConvertAll(Convert.ToHexString), pipe.Writes.ConvertAll(w => Convert.ToHexString(w.Frame)));
@@ -332,7 +339,7 @@ public class MystiqueSessionTests
     [Theory]
     [InlineData("unknown", 0)]
     [InlineData("zero", 0)]
-    [InlineData("partial", 40)]
+    [InlineData("partial", 1024)]
     public void A_failed_write_ends_the_frame_with_zeros_after_what_landed_then_the_finish_packet(string failure, int landed)
     {
         var pipe = new FakePipe();
@@ -362,7 +369,7 @@ public class MystiqueSessionTests
         Assert.Equal(MystiqueMedia.FinishLength, stream[^1].Frame.Length);
         var body = stream.SkipLast(1).SelectMany(w => w.Frame).ToArray();
         var frame = package.Frames[0];
-        int good = 2 * MystiqueMedia.PacketLength + landed;
+        int good = MystiqueMedia.HeaderLength + 16_384 + landed;
         Assert.Equal(frame.Length, body.Length);
         Assert.Equal(frame[..good], body[..good]);
         Assert.All(body[good..], b => Assert.Equal(0, b));

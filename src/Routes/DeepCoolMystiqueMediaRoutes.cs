@@ -740,9 +740,15 @@ public static partial class DevicesRoutes
         DeepCoolMystiqueMediaItem item, string screenId, bool rotate, Action<int, int>? converting, CancellationToken ct)
     {
         var package = LoadMystiqueStream(item, screenId, out bool rotated);
-        return package is not null && rotated == rotate
-            ? package
-            : await ReencodeMystiqueMediaAsync(item, screenId, rotate, converting, ct);
+        if (package is not null && rotated == rotate)
+        {
+            return package;
+        }
+        if (File.Exists(MystiqueStreamPath(item.Id)))
+        {
+            Nexus.Service.Platform.ServiceLog.Info($"[deepcool-mystique] kept frames of {item.Id} not used ({(package is null ? "not loadable" : "other turn")}); encoding again");
+        }
+        return await ReencodeMystiqueMediaAsync(item, screenId, rotate, converting, ct);
     }
 
     /// <summary>The frames kept for <paramref name="item"/>, rebuilt to go up under <paramref name="screenId"/>; null when none are kept.</summary>

@@ -173,12 +173,16 @@ public class MystiqueMediaTests
         new Random(7).NextBytes(rgbx.AsSpan(0, rgbx.Length / 3));
         Assert.True(MystiqueMediaEncoder.EncodeJpeg(rgbx, 95).Length > MystiqueMediaEncoder.GifFrameJpegTarget);
 
-        var jpeg = MystiqueMediaEncoder.EncodeGifFrame(rgbx, 95);
+        var jpeg = MystiqueMediaEncoder.EncodeGifFrame(rgbx, 0, out int reached);
 
         Assert.InRange(jpeg.Length, 1, MystiqueMediaEncoder.GifFrameJpegTarget);
         AssertRecordedLayout(jpeg);
+        Assert.True(reached > 0);
+        Assert.Equal(jpeg, MystiqueMediaEncoder.EncodeGifFrame(rgbx, reached, out int again));
+        Assert.Equal(reached, again);
         var flat = new byte[rgbx.Length];
-        Assert.Equal(MystiqueMediaEncoder.EncodeJpeg(flat, 95), MystiqueMediaEncoder.EncodeGifFrame(flat, 95));
+        Assert.Equal(MystiqueMediaEncoder.EncodeJpeg(flat, 95), MystiqueMediaEncoder.EncodeGifFrame(flat, 0, out int top));
+        Assert.Equal(0, top);
     }
 
     [Theory]

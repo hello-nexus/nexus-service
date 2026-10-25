@@ -32,12 +32,13 @@ public sealed class MystiqueSession
     // software does (capture 2), which follows a GIF far sooner.
     private const int AfterPictureGapMs = 410;
 
-    // One packet per write, as the screen's own software streams (capture 4): each frame's header goes alone, then its data.
-    private const int StreamChunkBytes = MystiqueMedia.PacketLength;
+    // A whole number of the endpoint's packets, which the transport splits each write into; WinUSB adds no
+    // zero-length packet without SHORT_PACKET_TERMINATE. Each frame's header goes in a write of its own first, as the
+    // screen's own software sends it (capture 4).
+    private const int StreamChunkBytes = 16 * 1024;
 
-    // A stream with no write taken for this long has stalled: capture 4 never left 0.7 s between writes, and a stall
-    // waited out for a minute did not end (customer report).
-    internal const int StreamStallMs = 5000;
+    // A stream with no write taken for this long has stalled; shorter stalls have ended on their own.
+    internal const int StreamStallMs = 30_000;
 
     // Recovery writes stop this long after a failure, so a stalled screen frees the worker; a recorded
     // picture frame streamed in about half of it, the screen's stall included.
@@ -234,7 +235,7 @@ public sealed class MystiqueSession
                     AbandonStream(f, frame.Length, streamed, frame.Length - sent, stopped: true);
                     return false;
                 }
-                int length = Math.Min(StreamChunkBytes, frame.Length - sent);
+                int length = sent == 0 ? MystiqueMedia.HeaderLength : Math.Min(StreamChunkBytes, frame.Length - sent);
                 int landed = WriteChunk(frame.AsSpan(sent, length), tookAt + StreamStallMs);
                 if (landed != length)
                 {

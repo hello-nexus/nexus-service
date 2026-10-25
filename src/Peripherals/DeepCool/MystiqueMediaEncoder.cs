@@ -113,8 +113,11 @@ public static partial class MystiqueMediaEncoder
                     return MystiqueEncodeResult.Failure("ffmpeg produced no frames.");
                 }
                 bool frameTooLarge = false;
-                foreach (int q in Qualities)
+                // The quality each frame last fit at, so a later pass never tries a higher one for it.
+                var reached = new int[decoded];
+                for (int qi = 0; qi < Qualities.Length; qi++)
                 {
+                    int q = Qualities[qi];
                     var encoded = new List<byte[]>(decoded);
                     byte[]? upright = null;
                     bool still = true;
@@ -133,7 +136,8 @@ public static partial class MystiqueMediaEncoder
                         {
                             Rotate180(frame);
                         }
-                        var jpeg = EncodeGifFrame(frame, q);
+                        int at = encoded.Count;
+                        var jpeg = EncodeGifFrame(frame, Math.Max(qi, reached[at]), out reached[at]);
                         if (jpeg.Length == 0)
                         {
                             return MystiqueEncodeResult.Failure(NoEncoder);
@@ -286,27 +290,24 @@ public static partial class MystiqueMediaEncoder
     private const string NoEncoder = "The JPEG encoder is unavailable.";
 
     /// <summary>
-    /// Baseline 4:2:0 JPEG of one RGBX frame at the screen size, or empty without turbojpeg. Skia's encoder
-    /// is not a fallback: it optimizes the Huffman tables, a layout the screen has never been seen to take.
+    /// A GIF frame at <see cref="Qualities"/>[<paramref name="from"/>], or at the first lower one that fits
+    /// <see cref="GifFrameJpegTarget"/>, with the index it was encoded at; the lowest quality's encode when none fits.
     /// </summary>
-    /// <summary>A GIF frame at <paramref name="quality"/>, or at the first lower one that fits <see cref="GifFrameJpegTarget"/>; the lowest quality's encode when none does.</summary>
-    internal static byte[] EncodeGifFrame(byte[] rgbx, int quality)
+    internal static byte[] EncodeGifFrame(byte[] rgbx, int from, out int reached)
     {
-        var jpeg = EncodeJpeg(rgbx, quality);
-        foreach (int q in Qualities)
+        reached = Math.Clamp(from, 0, Qualities.Length - 1);
+        var jpeg = EncodeJpeg(rgbx, Qualities[reached]);
+        while (jpeg.Length > GifFrameJpegTarget && reached < Qualities.Length - 1)
         {
-            if (jpeg.Length <= GifFrameJpegTarget)
-            {
-                break;
-            }
-            if (q < quality)
-            {
-                jpeg = EncodeJpeg(rgbx, q);
-            }
+            jpeg = EncodeJpeg(rgbx, Qualities[++reached]);
         }
         return jpeg;
     }
 
+    /// <summary>
+    /// Baseline 4:2:0 JPEG of one RGBX frame at the screen size, or empty without turbojpeg. Skia's encoder
+    /// is not a fallback: it optimizes the Huffman tables, a layout the screen has never been seen to take.
+    /// </summary>
     internal static byte[] EncodeJpeg(byte[] rgbx, int quality) =>
         TurboJpegOneShot.TryCompress(rgbx, MystiqueMedia.Width, MystiqueMedia.Height, TurboJpeg.PixelFormatRgbx, quality) ?? Array.Empty<byte>();
 

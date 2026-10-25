@@ -38,7 +38,7 @@ public static class MystiqueMedia
     public const int MaxPictureJpegBytes = 145_654;
     public const int MaxGifStreamBytes = 10_982_436;
 
-    // The largest recorded GIF frame (capture 4: 86,316 bytes with its header); nothing larger is sent.
+    // The largest recorded GIF frame (capture 4); nothing larger is sent.
     public const int MaxGifFrameJpegBytes = 86_252;
 
     // Library cap per kind in Nexus, matching the slots the screen's own software offers.
