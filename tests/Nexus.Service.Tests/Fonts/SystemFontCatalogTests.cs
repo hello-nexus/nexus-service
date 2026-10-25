@@ -65,7 +65,7 @@ public class SystemFontCatalogTests
     [Fact]
     public void Families_NeverThrowsAndIsSorted()
     {
-        var families = SystemFontCatalog.Families;
+        var families = SystemFontCatalog.Shared.Families;
 #if MACOS || WINDOWS
         Assert.NotEmpty(families);
 #endif
@@ -94,5 +94,32 @@ public class SystemFontCatalogTests
     {
         Assert.True(PanelFontValue.TryNormalize("system:" + new string('a', 128), out _));
         Assert.False(PanelFontValue.TryNormalize("system:" + new string('a', 129), out _));
+    }
+
+    [Fact]
+    public void Peek_BeforeLoadNeverEnumerates()
+    {
+        var calls = 0;
+        var catalog = new SystemFontCatalog(() => { calls++; return ["Arial"]; });
+
+        var (families, loaded) = catalog.Peek();
+
+        Assert.False(loaded);
+        Assert.Empty(families);
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public void Load_SetsTheFlagAndPeekThenReturnsTheListWithoutEnumeratingAgain()
+    {
+        var calls = 0;
+        var catalog = new SystemFontCatalog(() => { calls++; return ["Arial", "Menlo"]; });
+
+        Assert.Equal(["Arial", "Menlo"], catalog.Load());
+        var (families, loaded) = catalog.Peek();
+
+        Assert.True(loaded);
+        Assert.Equal(["Arial", "Menlo"], families);
+        Assert.Equal(1, calls);
     }
 }

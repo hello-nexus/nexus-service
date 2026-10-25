@@ -4,33 +4,43 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Fonts;
 
 /// <summary>
-/// Installed font family names of the host OS, enumerated once and cached for the
-/// life of the process. Any failure or unsupported OS yields an empty list.
+/// Installed font family names of the host OS, cached in memory. Any failure or unsupported OS
+/// yields an empty list. Callers opt in with <see cref="Load"/>; <see cref="Peek"/> never enumerates.
 /// </summary>
-public static class SystemFontCatalog
+public sealed class SystemFontCatalog
 {
+    public static SystemFontCatalog Shared { get; } = new(EnumerateNative);
+
     private static readonly TimeSpan SuccessTtl = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(30);
-    private static readonly object Gate = new();
-    private static IReadOnlyList<string> _cached = [];
-    private static DateTime _validUntilUtc = DateTime.MinValue;
+
+    private readonly Func<IReadOnlyList<string>> _enumerate;
+    private readonly object _gate = new();
+    private IReadOnlyList<string> _cached = [];
+    private DateTime _validUntilUtc = DateTime.MinValue;
+    private bool _loaded;
+
+    public SystemFontCatalog(Func<IReadOnlyList<string>> enumerate)
+    {
+        _enumerate = enumerate;
+    }
 
     /// <summary>
     /// A non-empty result is cached for a while (the console user's fonts can appear later); an
     /// empty or failed one is retried after a short backoff so a request storm cannot re-enumerate.
     /// </summary>
-    public static IReadOnlyList<string> Families
+    public IReadOnlyList<string> Families
     {
         get
         {
-            lock (Gate)
+            lock (_gate)
             {
                 var now = DateTime.UtcNow;
                 if (now < _validUntilUtc)
                 {
                     return _cached;
                 }
-                var result = Enumerate();
+                var result = _enumerate();
                 _cached = result;
                 _validUntilUtc = now + (result.Count > 0 ? SuccessTtl : FailureBackoff);
                 return result;
@@ -38,7 +48,30 @@ public static class SystemFontCatalog
         }
     }
 
-    private static IReadOnlyList<string> Enumerate()
+    /// <summary>Enumerates (within the cache rules) and marks the catalog loaded until the process exits.</summary>
+    public IReadOnlyList<string> Load()
+    {
+        var families = Families;
+        lock (_gate)
+        {
+            _loaded = true;
+        }
+        return families;
+    }
+
+    /// <summary>
+    /// Never enumerates. After a load it returns the last list even past the TTL, so reopening a
+    /// window cannot trigger a scan; a new <see cref="Load"/> refreshes it.
+    /// </summary>
+    public (IReadOnlyList<string> Families, bool Loaded) Peek()
+    {
+        lock (_gate)
+        {
+            return _loaded ? (_cached, true) : ([], false);
+        }
+    }
+
+    private static IReadOnlyList<string> EnumerateNative()
     {
         try
         {

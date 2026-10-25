@@ -68,6 +68,8 @@ public sealed class SystemCaseResponse
 public sealed class SystemFontsResponse
 {
     public IReadOnlyList<string> Families { get; set; } = [];
+    /// <summary>True once a client has loaded the list since the service started.</summary>
+    public bool Loaded { get; set; }
 }
 
 public sealed class SetSystemCaseBody
