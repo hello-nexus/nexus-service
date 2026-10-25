@@ -449,8 +449,8 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
 
     // ---- PATCH radiator ----
 
-    private static string RadiatorSetup(string? mount) =>
-        SetupJson().Replace("\"case\":{", "\"case\":{" + (mount is null ? "" : $"\"radiatorMount\":\"{mount}\",")); 
+    private static string RadiatorSetup(string mount) =>
+        SetupJson().Replace("\"case\":{", $"\"case\":{{\"radiatorMount\":\"{mount}\",");
 
     [Fact]
     public async Task Radiator_patch_sets_only_the_mount_and_bumps_the_rev()
@@ -499,6 +499,11 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
     [InlineData("\"\"")]
     [InlineData("\"top2\"")]
     [InlineData("\"a b\"")]
+    [InlineData("\"top\\n\"")]
+    [InlineData("\"-\"")]
+    [InlineData("\"---\"")]
+    [InlineData("\"-top\"")]
+    [InlineData("\"top-\"")]
     public async Task Radiator_patch_with_a_bad_mount_is_400_and_changes_nothing(string mount)
     {
         var rev = await Seed();
@@ -533,6 +538,34 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         Assert.False(setup.GetProperty("case").TryGetProperty("radiatorMount", out _));
     }
 
+    [Theory]
+    [InlineData("""{"baseRev":1}""")]
+    [InlineData("""{"baseRev":1,"mounts":"top"}""")]
+    public async Task Radiator_patch_without_the_mount_key_is_400_and_keeps_the_saved_choice(string body)
+    {
+        await Seed();
+        await Patch(Desktop(), "/system/setup/radiator", """{"baseRev":1,"mount":"top"}""");
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", body.Replace("\"baseRev\":1", "\"baseRev\":2"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        var setup = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup");
+        Assert.Equal("top", setup.GetProperty("case").GetProperty("radiatorMount").GetString());
+    }
+
+    [Fact]
+    public async Task Radiator_patch_that_would_push_the_record_over_the_cap_is_400_record_too_large()
+    {
+        var setup = new PcSetup();
+        setup.Parts = JsonDocument.Parse("{\"x\":\"" + new string('a', PcSetupValidation.MaxRecordBytes) + "\"}").RootElement.Clone();
+        Scene.Setup.TrySave(0, setup, out var saved);
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", $$"""{"baseRev":{{saved.Rev}},"mount":"top"}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal("record_too_large", (await Body(res)).GetProperty("code").GetString());
+    }
+
     [Fact]
     public async Task Radiator_patch_requires_a_base_rev_and_the_desktop_token()
     {
@@ -558,29 +591,52 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
     }
 
     [Fact]
-    public void A_radiator_patch_pings_the_system_setup_topic()
+    public async Task A_radiator_patch_pings_the_system_setup_topic()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "nexus-pc-setup-radiator-" + Guid.NewGuid().ToString("N"));
+        var rev = await Seed();
+        var hub = _factory.Services.GetRequiredService<MultiplexHub>();
+        // The test factory swaps in its own store, so the production wiring in the DI registration is repeated here.
+        PcSetupRoutes.WireTopic(Scene.Setup, hub);
+        var captured = new List<string>();
+        void Capture(string topic, ReadOnlyMemory<byte> payload)
+        {
+            if (topic == PanelTopics.SystemSetup)
+            {
+                lock (captured)
+                {
+                    captured.Add(Encoding.UTF8.GetString(payload.ToArray()));
+                }
+            }
+        }
+        hub.OnBroadcastForTest += Capture;
         try
         {
-            var store = new LightingSceneStore(dir);
-            store.Setup.TrySave(0, new PcSetup(), out _);
-            var hub = new MultiplexHub();
-            PcSetupRoutes.WireTopic(store.Setup, hub);
-            var captured = new List<string>();
-            hub.OnBroadcastForTest += (_, payload) => captured.Add(Encoding.UTF8.GetString(payload.ToArray()));
             using var sub = hub.AddTestSubscription(PanelTopics.SystemSetup);
-            var next = store.Setup.Load().Setup;
-            next.Case.RadiatorMount = "top";
 
-            store.Setup.TrySave(1, next, out _);
+            var res = await Patch(Desktop(), "/system/setup/radiator", $$"""{"baseRev":{{rev}},"mount":"top"}""");
 
-            Assert.Single(captured);
-            Assert.Contains("\"rev\":2", captured[0]);
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            // The broadcast is fire-and-forget, so it may land just after the response.
+            for (var i = 0; i < 100; i++)
+            {
+                lock (captured)
+                {
+                    if (captured.Count > 0)
+                    {
+                        break;
+                    }
+                }
+                await Task.Delay(20);
+            }
+            lock (captured)
+            {
+                Assert.Single(captured);
+                Assert.Contains($"\"rev\":{rev + 1}", captured[0]);
+            }
         }
         finally
         {
-            try { Directory.Delete(dir, recursive: true); } catch { /* never created */ }
+            hub.OnBroadcastForTest -= Capture;
         }
     }
 

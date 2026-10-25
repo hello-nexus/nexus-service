@@ -152,6 +152,10 @@ public static class PcSetupRoutes
                 }
                 var next = current.Setup;
                 next.Case.RadiatorMount = body.Mount;
+                if (PcSetupValidation.Size(next) > PcSetupValidation.MaxRecordBytes)
+                {
+                    return Fail(new("record_too_large", $"the record is over {PcSetupValidation.MaxRecordBytes / 1024} KiB"));
+                }
                 return scene.Setup.TrySave(baseRev, next, out var saved)
                     ? Results.Json(new PcSetupRevResponse { Rev = saved.Rev }, AppJsonContext.Default.PcSetupRevResponse)
                     : Conflict(saved);

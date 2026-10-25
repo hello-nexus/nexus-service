@@ -34,6 +34,9 @@ public sealed class PatchPcSetupPlacementsBody
 public sealed class PatchPcSetupRadiatorBody
 {
     public int? BaseRev { get; set; }
+
+    /// <summary>Required key, so a missing or misspelled one is refused instead of clearing the choice; null is allowed.</summary>
+    [System.Text.Json.Serialization.JsonRequired]
     public string? Mount { get; set; }
 }
 
