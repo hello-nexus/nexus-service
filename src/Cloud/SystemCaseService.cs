@@ -87,10 +87,11 @@ public sealed class SystemCaseService
     /// </summary>
     public Task<string?> GetAsync(CancellationToken ct)
     {
+        // Generation first: an activation sets the account before it bumps the generation, so a newer generation always pairs with the newer account.
+        var generation = Volatile.Read(ref _generation);
         if (_accounts.ActiveAccountId is { } accountId && !_networkHeld() && DueForNetwork())
         {
             MarkAttempt();
-            var generation = Volatile.Read(ref _generation);
             Launch(() => ReconcileAsync(accountId, generation));
         }
         return Task.FromResult(_store.Load().CaseId);

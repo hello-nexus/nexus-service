@@ -206,6 +206,8 @@ public sealed class SystemCaseTests : IDisposable
 
         await rig.Svc.SetAsync(null, CancellationToken.None);
         await rig.Svc.IdleAsync();
+        // Signed in, the push has settled and Pending is clear, so only IsUserChoice keeps the clear.
+        Assert.Equal(!signedIn, rig.Store.Load().Pending);
         Assert.True(await DetectUntilDecidedAsync(rig));
 
         Assert.Null(rig.Store.Load().CaseId);
