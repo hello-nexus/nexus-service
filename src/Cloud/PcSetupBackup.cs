@@ -33,7 +33,22 @@ public static class PcSetupBackup
         store?.LoadSaved() is { } saved ? Digest(saved.Setup) : null;
 
     private static string Digest(PcSetup setup) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(setup, PersistenceJsonContext.Default.PcSetup))));
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Skinny(setup), PersistenceJsonContext.Default.PcSetup))));
+
+    // The Back up copy is user choices only: Build recomputes resolved (objects and case mesh) and re-reads each item's specs by part id.
+    private static PcSetup Skinny(PcSetup setup)
+    {
+        var copy = JsonSerializer.Deserialize(JsonSerializer.Serialize(setup, PersistenceJsonContext.Default.PcSetup), PersistenceJsonContext.Default.PcSetup) ?? new PcSetup();
+        copy.Resolved = new PcSetupResolved();
+        foreach (var item in copy.Items)
+        {
+            if (item?.Catalog is { } catalog)
+            {
+                catalog.Specs = null;
+            }
+        }
+        return copy;
+    }
 
     /// <summary>
     /// A copy of <paramref name="appData"/> with the record added, or the input
@@ -50,7 +65,7 @@ public static class PcSetupBackup
         {
             return appData;
         }
-        var doc = JsonSerializer.SerializeToElement(saved.Setup, PersistenceJsonContext.Default.PcSetup);
+        var doc = JsonSerializer.SerializeToElement(Skinny(saved.Setup), PersistenceJsonContext.Default.PcSetup);
         var withSetup = new Dictionary<string, Dictionary<string, JsonElement>>(appData, System.StringComparer.Ordinal)
         {
             [AppId] = new Dictionary<string, JsonElement>(System.StringComparer.Ordinal) { [Key] = doc },

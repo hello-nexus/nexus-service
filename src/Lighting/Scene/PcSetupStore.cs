@@ -64,13 +64,23 @@ public sealed class PcSetupStore
         return true;
     }
 
-    /// <summary>Saves <paramref name="next"/> over whatever is there (a backup restore).</summary>
+    /// <summary>Saves a backup's <paramref name="next"/> over the user choices, keeping the local resolved block and specs snapshots.</summary>
     public PcSetupFile Replace(PcSetup next)
     {
         PcSetupFile saved;
         lock (_lock)
         {
             var existing = SavedUnlocked() ?? Migrated();
+            // A backup carries user choices only: resolved and each item's specs come from the local record (empty when there is none), and any an old backup carries are ignored.
+            var local = SavedUnlocked()?.Setup;
+            next.Resolved = local?.Resolved ?? new PcSetupResolved();
+            foreach (var item in next.Items)
+            {
+                if (item?.Catalog is { } catalog)
+                {
+                    catalog.Specs = local?.Items.Find(i => i?.Id == item.Id)?.Catalog?.Specs;
+                }
+            }
             saved = WriteUnlocked(existing.Rev, next);
         }
         Changed?.Invoke(saved.Rev);
