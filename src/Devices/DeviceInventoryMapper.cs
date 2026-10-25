@@ -65,7 +65,8 @@ namespace Nexus.Service.Devices;
 /// asrock:lcd                    ASRock LCD
 /// asus:rog-strix-slc4-lcd       ROG Strix SLC IV LCD
 /// asus:ryujin-lcd               ROG Ryujin LCD
-/// lianli:tl-lcd                 Uni Fan TL LCD screens (wired)
+/// lianli:uni-fan-tl-lcd         Uni Fan TL LCD screens (wired, USB 04FC:7393)
+/// lianli:tl-lcd-wireless        TL-LCD Wireless fan screen from the catalog (USB 1CBE:0006)
 /// lianli-wl:strimer-N           wireless Strimer cable, N is the dev type (lighting)
 /// lianli-wl:unknown-N           wireless fan chain with an unmapped fans_type N (fan)
 /// VENDOR:MODEL                  first-party peripheral from the catalog (Source nexus), e.g. hyte:keeb-tkl
@@ -81,6 +82,11 @@ public static class DeviceInventoryMapper
     private const int LianLiUniVid = 0x0CF2;
     private const int NzxtVid = 0x1E71;
     private const int CorsairVid = 0x1B1C;
+
+    // OpenRGB device_type values past accessory, from RGBControllerInterface.h. None are matchable parts.
+    private const uint OpenRgbTypeKeypad = 18;
+    private const uint OpenRgbTypeLaptop = 19;
+    private const uint OpenRgbTypeMonitor = 20;
 
     private static readonly Regex s_radiator = new(@"\bTITAN (240|280|360|420)\b", RegexOptions.CultureInvariant);
 
@@ -499,7 +505,7 @@ public static class DeviceInventoryMapper
         return new SystemDeviceDto
         {
             Key = "lianli-tl-lcd",
-            ModelKey = "lianli:tl-lcd",
+            ModelKey = "lianli:uni-fan-tl-lcd",
             Category = SystemDeviceCategories.Fan,
             Vendor = "Lian Li",
             Model = "Uni Fan TL LCD",
@@ -508,6 +514,19 @@ public static class DeviceInventoryMapper
             Count = attachedScreens,
             CountSource = SystemDeviceCountSources.Detected,
         };
+    }
+
+    // Fixed name: the former lianli:tl-lcd key meant the wired 04FC:7393 screen, so the 1CBE:0006 slug must not reuse it.
+    private static readonly Dictionary<(int Vid, int Pid), string> s_catalogSlugOverrides = new()
+    {
+        [(0x1CBE, 0x0006)] = "tl-lcd-wireless",
+    };
+
+    /// <summary>Vendor half of a catalog key. Lian Li keeps one prefix with the dedicated lianli keys.</summary>
+    internal static string VendorSlug(string? vendor)
+    {
+        var slug = Slug(vendor);
+        return slug == "lian-li" ? "lianli" : slug;
     }
 
     public static string Slug(string? text)
@@ -524,6 +543,16 @@ public static class DeviceInventoryMapper
                 }
                 dash = false;
                 sb.Append(char.ToLowerInvariant(c));
+            }
+            else if (c == '+')
+            {
+                // A plus names the model ("Stream Deck +"), so it stays as a word.
+                if (sb.Length > 0)
+                {
+                    sb.Append('-');
+                }
+                sb.Append("plus");
+                dash = true;
             }
             else
             {
@@ -635,7 +664,7 @@ public static class DeviceInventoryMapper
             rows.Add(new SystemDeviceDto
             {
                 Key = "usb:" + unit + (string.IsNullOrEmpty(entry.Serial) ? "" : ":" + entry.Serial),
-                ModelKey = firstParty ? Slug(vendor) + ":" + Slug(model) : "usb:" + unit,
+                ModelKey = firstParty ? VendorSlug(vendor) + ":" + (s_catalogSlugOverrides.TryGetValue((entry.VendorId, entry.ProductId), out var forced) ? forced : Slug(model)) : "usb:" + unit,
                 Category = category,
                 Vendor = vendor,
                 Model = model,
@@ -655,6 +684,10 @@ public static class DeviceInventoryMapper
         var rows = new List<SystemDeviceDto>();
         foreach (var device in devices)
         {
+            if (device.Type is OpenRgbTypeKeypad or OpenRgbTypeLaptop or OpenRgbTypeMonitor)
+            {
+                continue;
+            }
             var typeName = Nexus.Service.Lighting.Rgb.OpenRgbZoneSupport.OpenRgbTypeName(device.Type);
             if (typeName is "motherboard" or "dram" or "gpu" or "case" or "storage" or "virtual")
             {
@@ -670,6 +703,7 @@ public static class DeviceInventoryMapper
             rows.Add(new SystemDeviceDto
             {
                 Key = "openrgb:" + device.StableId,
+                // The vendor half is OpenRGB's own vendor name, so it is not folded to the lianli prefix.
                 ModelKey = "openrgb:" + Slug(device.Vendor) + ":" + Slug(device.Name),
                 Category = category,
                 Vendor = device.Vendor,

@@ -2768,7 +2768,17 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Cloud.CloudAccountService>();
         services.AddSingleton<Nexus.Service.Persistence.MachineCaseStore>();
         services.AddSingleton<Nexus.Service.Persistence.SystemPreviewStore>();
-        services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>();
+        services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>(sp =>
+        {
+            var cases = new Nexus.Service.Cloud.SystemCaseService(
+                sp.GetRequiredService<Nexus.Service.Persistence.MachineCaseStore>(),
+                sp.GetRequiredService<Nexus.Service.Cloud.CloudAccountService>(),
+                sp.GetRequiredService<Nexus.Service.Cloud.ICloudApiClient>());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            cases.Changed += id => Nexus.Service.Sockets.PanelTopics.BroadcastSystemCase(hub, id);
+            return cases;
+        });
+        services.AddSingleton<Nexus.Service.Peripherals.Y70.Y70CaseAssigner>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileSyncService>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileLibraryService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Cloud.CloudProfileSyncService>());
