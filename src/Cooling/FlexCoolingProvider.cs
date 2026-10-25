@@ -16,7 +16,7 @@ namespace Nexus.Service.Cooling;
 public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
 {
     private const string IdPrefix = "lianli-flex:";
-    private const string PortSuffix = ":port0";
+    private const string PortMarker = ":port";
 
     private readonly FlexHub _hub;
     private readonly Nexus.Service.Persistence.IConfigStore? _store;
@@ -44,7 +44,7 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     public static bool IsFlexId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith(IdPrefix, StringComparison.Ordinal);
 
-    public static string ChannelId(string mac) => $"{IdPrefix}{mac}{PortSuffix}";
+    public static string ChannelId(string mac, int port = 0) => $"{IdPrefix}{mac}{PortMarker}{port}";
 
     private static string DeviceId(string mac) => $"{IdPrefix}{mac}";
 
@@ -62,21 +62,7 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private static int Duty(FlexUnit unit) =>
         Follows(unit) ? 0 : FlexProtocol.DecodeDuty(unit.Info.Pwm.Length > 0 ? unit.Info.Pwm[0] : 0);
 
-    // A P28 fan has its own tach: the channel shows the mean of the connected fans.
-    private static int Rpm(FlexUnit unit)
-    {
-        if (unit.Family != FlexFamily.P28V2)
-        {
-            return unit.Info.Rpm.Length > 0 ? unit.Info.Rpm[0] : 0;
-        }
-        var n = Math.Min(unit.Fans, unit.Info.Rpm.Length);
-        var sum = 0;
-        for (var i = 0; i < n; i++)
-        {
-            sum += unit.Info.Rpm[i];
-        }
-        return n > 0 ? sum / n : 0;
-    }
+    private static int Rpm(FlexUnit unit, int port = 0) => port < unit.Info.Rpm.Length ? unit.Info.Rpm[port] : 0;
 
     public IReadOnlyList<FanChannel> GetFanChannels()
     {
@@ -90,12 +76,13 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
             }
             var unitName = NameOf(unit, order);
             var pending = _hub.PendingDuty(unit.Mac);
+            // One control channel; a P28 reports its per-fan tachs through the component's devices and the state route.
             result.Add(new FanChannel
             {
                 Id = ChannelId(unit.Mac),
                 Name = "Fan",
                 DutyPercent = pending is { } p ? Math.Max(p, 0) : Duty(unit),
-                Rpm = Rpm(unit),
+                Rpm = Rpm(unit, 0),
                 Mode = pending is { } wanted ? (wanted == -1 ? FanModes.Auto : FanModes.Manual) : (Follows(unit) ? FanModes.Auto : FanModes.Manual),
                 MinDuty = MinDuty(unit.Family),
                 DeviceId = DeviceId(unit.Mac),
@@ -160,22 +147,11 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private List<CoolingDevice> DevicesOf(FlexUnit unit)
     {
         var pwm = _hub.PendingDuty(unit.Mac) is { } shown ? Math.Max(shown, 0) : Duty(unit);
-        if (unit.Family != FlexFamily.P28V2)
-        {
-            return new List<CoolingDevice> { new() { Id = ChannelId(unit.Mac), Name = "Fan", Type = "Fan", Rpm = Rpm(unit), Pwm = pwm } };
-        }
-        // One shared duty drives every P28 fan; each reports its own tach.
+        var ports = unit.Family == FlexFamily.P28V2 ? Math.Min(unit.Fans, unit.Info.Rpm.Length) : 1;
         var devices = new List<CoolingDevice>();
-        for (var i = 0; i < Math.Min(unit.Fans, unit.Info.Rpm.Length); i++)
+        for (var i = 0; i < ports; i++)
         {
-            devices.Add(new CoolingDevice
-            {
-                Id = i == 0 ? ChannelId(unit.Mac) : $"{ChannelId(unit.Mac)}:fan{i}",
-                Name = $"Fan {i + 1}",
-                Type = "Fan",
-                Rpm = unit.Info.Rpm[i],
-                Pwm = pwm,
-            });
+            devices.Add(new CoolingDevice { Id = i == 0 ? ChannelId(unit.Mac) : $"{ChannelId(unit.Mac)}:fan{i}", Name = ports > 1 ? $"Fan {i + 1}" : "Fan", Type = "Fan", Rpm = Rpm(unit, i), Pwm = pwm });
         }
         return devices;
     }
@@ -191,11 +167,12 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private static bool TryParse(string id, out string mac)
     {
         mac = "";
-        if (!IsFlexId(id) || !id.EndsWith(PortSuffix, StringComparison.Ordinal))
+        var at = id.LastIndexOf(PortMarker, StringComparison.Ordinal);
+        if (!IsFlexId(id) || at < 0 || !int.TryParse(id.AsSpan(at + PortMarker.Length), out var port) || port is < 0 or > 3)
         {
             return false;
         }
-        mac = id.Substring(IdPrefix.Length, id.Length - IdPrefix.Length - PortSuffix.Length);
+        mac = id.Substring(IdPrefix.Length, at - IdPrefix.Length);
         return mac.Length == 12;
     }
 }

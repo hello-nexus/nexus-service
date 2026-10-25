@@ -307,7 +307,7 @@ public class FlexP28Tests
     }
 
     [Fact]
-    public void P28_cooling_exposes_each_fans_rpm_and_the_mean_on_the_channel()
+    public void P28_cooling_exposes_one_channel_and_per_fan_rpm()
     {
         var (hub, tx, clock) = P28Hub(3);
         foreach (var (slot, rpm) in new[] { (0, 1640), (1, 1636), (2, 1621) })
@@ -318,7 +318,11 @@ public class FlexP28Tests
         clock.Now += 1000;
         hub.Tick();
         var provider = new FlexCoolingProvider(hub);
-        Assert.Equal((1640 + 1636 + 1621) / 3, provider.GetFanChannels().Single().Rpm);
+        var channel = Assert.Single(provider.GetFanChannels());
+        Assert.Equal(1640, channel.Rpm);
+        Assert.Equal(new[] { 1640, 1636, 1621, 0 }, hub.Units.Single().Info.Rpm);
+        provider.SetFanSpeed(channel.Id, 40);
+        Assert.Equal(40, hub.PendingDuty(Mac));
         var devices = provider.GetAll().Single().Devices;
         Assert.Equal(new int?[] { 1640, 1636, 1621 }, devices.Select(d => d.Rpm).ToArray());
     }
