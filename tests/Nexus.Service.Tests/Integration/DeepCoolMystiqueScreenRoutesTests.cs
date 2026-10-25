@@ -300,7 +300,7 @@ public partial class DeepCoolMystiqueRoutesTests
         Assert.Equal(new[] { PictureId(picture), GifId(first), GifId(second) }, m.Media.ConvertAll(i => i.Id));
         Assert.False(m.GifSlotUnsure);
         Assert.Equal(halts, pipe.ClearHalts);
-        Assert.All(pipe.Timeouts(), t => Assert.Equal(MystiqueSession.StreamWriteTimeoutMs, t));
+        Assert.All(pipe.Timeouts(), t => Assert.Equal(MystiqueSession.StreamStallMs, t));
     }
 
     [FfmpegFact]
@@ -366,7 +366,7 @@ public partial class DeepCoolMystiqueRoutesTests
     }
 
     [FfmpegFact]
-    public async Task A_stream_write_waits_the_long_timeout_and_only_a_failed_one_clears_the_halt_before_the_zero_fill()
+    public async Task A_stream_write_waits_the_stall_time_and_only_a_failed_one_clears_the_halt_before_the_zero_fill()
     {
         await using var screen = await Screen.StartAsync(MediaRoot());
         var before = screen.Pipe;
@@ -378,7 +378,9 @@ public partial class DeepCoolMystiqueRoutesTests
         screen.Factory.Pipes.StallTimedWrite = null;
 
         Assert.False(Ok(failed));
-        Assert.Equal(new[] { MystiqueSession.StreamWriteTimeoutMs }, before.Timeouts());
+        var timeouts = before.Timeouts();
+        Assert.Equal(MystiqueSession.StreamStallMs, timeouts[0]);
+        Assert.All(timeouts.Skip(1), t => Assert.InRange(t, 1, MystiqueSession.RecoveryBudgetMs));
         Assert.Equal(halts + 1, before.ClearHalts);
         var writes = before.Writes().Skip(mark).ToList();
         Assert.Equal(MystiqueMedia.FinishLength, writes[^1].Length);

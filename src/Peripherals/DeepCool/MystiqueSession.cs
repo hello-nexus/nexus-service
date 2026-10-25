@@ -32,18 +32,16 @@ public sealed class MystiqueSession
     // software does (capture 2), which follows a GIF far sooner.
     private const int AfterPictureGapMs = 410;
 
-    // A whole number of the endpoint's packets, which the transport splits each write into; WinUSB adds no
-    // zero-length packet without SHORT_PACKET_TERMINATE.
-    private const int StreamChunkBytes = 16 * 1024;
+    // One packet per write, as the screen's own software streams (capture 4): each frame's header goes alone, then its data.
+    private const int StreamChunkBytes = MystiqueMedia.PacketLength;
 
-    // A stream write waits this long for the screen to take it, as the screen stops taking data while it stores.
-    // A stall cut short at five seconds left a screen hung until its power was removed (customer report), and the
-    // longest stall seen to end on its own was over within half a minute.
-    internal const int StreamWriteTimeoutMs = 60_000;
+    // A stream with no write taken for this long has stalled: capture 4 never left 0.7 s between writes, and a stall
+    // waited out for a minute did not end (customer report).
+    internal const int StreamStallMs = 5000;
 
     // Recovery writes stop this long after a failure, so a stalled screen frees the worker; a recorded
     // picture frame streamed in about half of it, the screen's stall included.
-    private const int RecoveryBudgetMs = 2000;
+    internal const int RecoveryBudgetMs = 2000;
 
     private readonly IBulkUsbPipe _pipe;
     private readonly Func<long> _monotonicMs;
@@ -224,6 +222,7 @@ public sealed class MystiqueSession
             ServiceLog.Warn("[deepcool-mystique] upload refused: the screen did not answer the announce");
             return false;
         }
+        long tookAt = _monotonicMs();
         for (int f = 0; f < package.Frames.Count; f++)
         {
             var frame = package.Frames[f];
@@ -232,23 +231,24 @@ public sealed class MystiqueSession
             {
                 if (_stop.IsCancellationRequested)
                 {
-                    AbandonStream(f, frame.Length - sent, stopped: true);
+                    AbandonStream(f, frame.Length, streamed, frame.Length - sent, stopped: true);
                     return false;
                 }
                 int length = Math.Min(StreamChunkBytes, frame.Length - sent);
-                int landed = WriteChunk(frame.AsSpan(sent, length));
+                int landed = WriteChunk(frame.AsSpan(sent, length), tookAt + StreamStallMs);
                 if (landed != length)
                 {
-                    AbandonStream(f, frame.Length - sent - Math.Max(landed, 0), stopped: _stop.IsCancellationRequested);
+                    AbandonStream(f, frame.Length, streamed, frame.Length - sent - Math.Max(landed, 0), stopped: _stop.IsCancellationRequested);
                     return false;
                 }
                 sent += landed;
                 streamed += landed;
+                tookAt = _monotonicMs();
                 progress?.Invoke(streamed);
             }
         }
         var finish = MystiqueMedia.FinishPacket();
-        int took = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish, StreamWriteTimeoutMs, _stop);
+        int took = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish, StreamStallMs, _stop);
         if (took == 0 && _stop.IsCancellationRequested)
         {
             took = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish);
@@ -258,14 +258,15 @@ public sealed class MystiqueSession
 
     /// <summary>
     /// One stream write, resent once only when the transport knows none of it went out, so the stream
-    /// keeps matching its headers. Returns the bytes the screen took, or -1 when unknown.
+    /// keeps matching its headers, and only before <paramref name="stallAt"/>. Returns the bytes the screen took, or -1 when unknown.
     /// </summary>
-    private int WriteChunk(ReadOnlySpan<byte> chunk)
+    private int WriteChunk(ReadOnlySpan<byte> chunk, long stallAt)
     {
-        int landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk, StreamWriteTimeoutMs, _stop);
-        if (landed == 0 && !_stop.IsCancellationRequested)
+        int landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk, StreamStallMs, _stop);
+        long left = stallAt - _monotonicMs();
+        if (landed == 0 && !_stop.IsCancellationRequested && left > 0)
         {
-            landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk);
+            landed = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, chunk, (int)left, _stop);
         }
         return landed;
     }
@@ -274,10 +275,10 @@ public sealed class MystiqueSession
     /// Completes the failed frame with zeros and sends the finish packet, so the screen meets a failing byte
     /// sum (assumed, unverified, to drop the item and return to commands) instead of reading the reopen's
     /// commands as stream. Later GIF frames are skipped: only their own headers carry their lengths. After a transfer
-    /// error or a whole <see cref="StreamWriteTimeoutMs"/> a halt the failed transfer left would refuse every fill write,
+    /// error or a whole <see cref="StreamStallMs"/> a halt the failed transfer left would refuse every fill write,
     /// so it is cleared first; a <paramref name="stopped"/> stream left no halt.
     /// </summary>
-    private void AbandonStream(int frameIndex, int remaining, bool stopped)
+    private void AbandonStream(int frameIndex, int frameLength, long streamed, int remaining, bool stopped)
     {
         long deadline = _monotonicMs() + RecoveryBudgetMs;
         if (!stopped)
@@ -288,7 +289,7 @@ public sealed class MystiqueSession
         bool filled = true;
         foreach (var zeros in MystiqueMedia.Packets(new byte[Math.Max(remaining, 0)]))
         {
-            if (_monotonicMs() >= deadline || _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, zeros) != zeros.Length)
+            if (_monotonicMs() >= deadline || RecoveryWrite(zeros, deadline) != zeros.Length)
             {
                 filled = false;
                 break;
@@ -297,12 +298,16 @@ public sealed class MystiqueSession
         if (filled && _monotonicMs() < deadline)
         {
             var finish = MystiqueMedia.FinishPacket();
-            finished = _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, finish) == finish.Length;
+            finished = RecoveryWrite(finish, deadline) == finish.Length;
         }
+        string where = $"in frame {frameIndex} ({frameLength} bytes, {streamed} streamed)";
         ServiceLog.Warn(finished
-            ? $"[deepcool-mystique] upload {(stopped ? "stopped" : "failed")} in frame {frameIndex}; filled {remaining} bytes with zeros and sent the finish packet"
-            : $"[deepcool-mystique] upload {(stopped ? "stopped" : "failed")} in frame {frameIndex}; the pipe stopped taking writes, so the screen may stay in upload mode until power cycled");
+            ? $"[deepcool-mystique] upload {(stopped ? "stopped" : "failed")} {where}; filled {remaining} bytes with zeros and sent the finish packet"
+            : $"[deepcool-mystique] upload {(stopped ? "stopped" : "failed")} {where}; the pipe stopped taking writes, so the screen may stay in upload mode until power cycled");
     }
+
+    private int RecoveryWrite(byte[] data, long deadline) =>
+        _pipe.WriteCounted(MystiqueProtocol.SettingsWritePipe, data, (int)Math.Max(1, deadline - _monotonicMs()), CancellationToken.None);
 
     /// <summary>Erases every stored picture and GIF; true only when the screen answered.</summary>
     public bool Format() =>

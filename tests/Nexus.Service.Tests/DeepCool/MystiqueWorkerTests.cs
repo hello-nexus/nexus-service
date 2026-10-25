@@ -297,7 +297,7 @@ public class MystiqueWorkerTests
         {
             lock (_lock)
             {
-                return _writes.Select(w => w[2]).ToArray();
+                return _writes.Select(Cmd).ToArray();
             }
         }
 
@@ -359,6 +359,9 @@ public class MystiqueWorkerTests
         public ManualResetEventSlim Streaming { get; } = new();
         public ManualResetEventSlim Release { get; } = new();
 
+        // A packet's tail write can be shorter than a command's header.
+        private static byte Cmd(byte[] w) => w.Length > 2 ? w[2] : (byte)0;
+
         public bool Write(byte pipeId, ReadOnlySpan<byte> data)
         {
             if (HoldStream && data.Length > MystiqueMedia.FinishLength && !Streaming.IsSet)
@@ -375,7 +378,7 @@ public class MystiqueWorkerTests
             lock (_lock)
             {
                 _writes.Add(data.ToArray());
-                _pending = silent ? null : MystiqueProtocol.BuildFrame(data[2], ReadOnlySpan<byte>.Empty, MystiqueProtocol.DeviceMagic);
+                _pending = silent ? null : MystiqueProtocol.BuildFrame(Cmd(data.ToArray()), ReadOnlySpan<byte>.Empty, MystiqueProtocol.DeviceMagic);
             }
             return true;
         }
