@@ -1012,8 +1012,8 @@ public sealed partial class ProfileManager : IDisposable
         { TryFlushActiveProfile(); }
     }
 
-    // Another process holding a profile file open without delete sharing fails
-    // File.Replace; _dirty stays set, so the next background tick retries.
+    // A profile file held open without delete sharing past AtomicJsonFile's
+    // short retry fails the write; _dirty stays set, so the next tick retries.
     private void TryFlushActiveProfile()
     {
         try
@@ -1291,16 +1291,7 @@ public sealed partial class ProfileManager : IDisposable
     {
         var dir = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
-        var tmp = path + ".tmp";
-        File.WriteAllText(tmp, content);
-        if (File.Exists(path))
-        {
-            File.Replace(tmp, path, null);
-        }
-        else
-        {
-            File.Move(tmp, path);
-        }
+        AtomicJsonFile.Write(path, content);
     }
 
     private string ManifestPath() => Path.Combine(_dataDir, "profiles.json");
