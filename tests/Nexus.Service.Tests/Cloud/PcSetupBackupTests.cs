@@ -432,6 +432,91 @@ public sealed class PcSetupBackupTests : IDisposable
 
         var bytes = System.Text.Encoding.UTF8.GetByteCount(doc.GetRawText());
         Assert.InRange(bytes, 1, 8 * 1024 - 1);
-        Assert.Equal(6187, bytes);
+        Assert.True(bytes * 4 < PcSetupValidation.Size(_scene.Setup.Load().Setup), $"{bytes} B is not under a quarter of the full record");
+    }
+
+    [Fact]
+    public async Task A_stored_full_form_hash_still_matches_so_the_background_push_keeps_the_setup_and_rewrites_the_hash()
+    {
+        var profileId = SeedSyncedProfile();
+        var setup = WithCatalogItem("kb", """{"widthMm":600}""");
+        setup.Resolved.CaseLayout = Raw("""{"slots":[1]}""");
+        _scene.Setup.TrySave(0, setup, out _);
+        var legacy = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(_scene.Setup.Load().Setup, PersistenceJsonContext.Default.PcSetup))));
+        Assert.NotEqual(legacy, PcSetupBackup.Digest(_scene.Setup));
+        _store.Update(s => s.Auth!.CloudAccounts[0].ProfileSync[profileId].LastPushedSetupHash = legacy);
+        _store.Update(s => s.Lighting.GlobalBrightness = 0.4f);
+        _store.FlushNow();
+        CloudPutProfileRequest? sent = null;
+        _api.OnPutProfile = (_, _, _, body) =>
+        {
+            sent = body;
+            return CloudApiResult<CloudPutProfileResult>.Ok(new CloudPutProfileResult { Revision = 2 });
+        };
+
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: false);
+        _clock.Advance(TimeSpan.FromSeconds(61));
+        await _sync.RunSyncPassAsync("acct-1", CancellationToken.None, manual: false);
+
+        Assert.NotNull(sent);
+        Assert.Contains(PcSetupBackup.AppId, sent!.AppData!.Keys);
+        Assert.Equal(PcSetupBackup.Digest(_scene.Setup), _store.Load().Auth!.CloudAccounts[0].ProfileSync[profileId].LastPushedSetupHash);
+    }
+
+    [Fact]
+    public void An_old_backup_with_an_invalid_resolved_block_and_oversized_specs_still_restores()
+    {
+        var old = WithCatalogItem("kb", """{"widthMm":1}""");
+        old.Resolved.Objects.Add(new SceneObject { Id = "bad", Kind = "monitor", Source = "user", Position = [0f, 0f, 0f], Curve = new SceneCurve { RadiusMm = 5f } });
+        old.Items[0].Catalog!.Specs = Raw("{\"x\":\"" + new string('a', PcSetupValidation.MaxOpaqueSpecs + 10) + "\"}");
+        Assert.NotNull(PcSetupValidation.Validate(old));
+
+        PcSetupBackup.Detach(BundleWith(old), out var setup);
+
+        Assert.NotNull(setup);
+        Assert.Empty(setup!.Resolved.Objects);
+        Assert.Null(setup.Items[0].Catalog!.Specs);
+    }
+
+    [Fact]
+    public void A_migrated_items_height_and_curve_radius_move_onto_the_item_in_the_backup_copy()
+    {
+        var setup = Setup("scr");
+        setup.Items[0].Kind = "monitor";
+        setup.Items[0].Custom!.SceneKind = "monitor";
+        setup.Items[0].Custom!.WidthMm = 600f;
+        setup.Resolved.Objects.Add(new SceneObject { Id = "scr", Kind = "monitor", Source = "user", Position = [0f, 0f, 0f], Size = [600f, 380f, 60f], Curve = new SceneCurve { RadiusMm = 1500f } });
+        // A Build-made item keeps nothing extra: its object is derived.
+        setup.Items.Add(new PcSetupItem { Id = "kb", Kind = "keyboard", Custom = new PcSetupCustom { Name = "Keys" } });
+        setup.Resolved.Objects.Add(new SceneObject { Id = "kb", Kind = "keyboard", Source = "build", Position = [0f, 0f, 0f], Size = [440f, 35f, 140f] });
+        _scene.Setup.TrySave(0, setup, out _);
+
+        var doc = PcSetupBackup.Attach(new(), _scene.Setup, out _)[PcSetupBackup.AppId][PcSetupBackup.Key];
+
+        var custom = doc.GetProperty("items")[0].GetProperty("custom");
+        Assert.Equal(380f, custom.GetProperty("heightMm").GetSingle());
+        Assert.Equal(1500f, custom.GetProperty("curveRadiusMm").GetSingle());
+        Assert.False(doc.GetProperty("items")[1].GetProperty("custom").TryGetProperty("heightMm", out var h) && h.ValueKind != JsonValueKind.Null);
+        // Restoring it keeps them, and they pass validation.
+        PcSetupBackup.Detach(BundleWith(JsonSerializer.Deserialize(doc.GetRawText(), PersistenceJsonContext.Default.PcSetup)!), out var restored);
+        Assert.Equal(1500f, restored!.Items[0].Custom!.CurveRadiusMm);
+    }
+
+    [Fact]
+    public void A_restore_whose_merged_record_would_be_over_the_cap_drops_the_case_mesh_first()
+    {
+        var local = Setup("kb");
+        local.Resolved.CaseLayout = Raw("{\"s\":\"" + new string('a', 60 * 1024) + "\"}");
+        local.Resolved.Objects.Add(new SceneObject { Id = "kb", Kind = "keyboard", Source = "user", Position = [0f, 0f, 0f] });
+        _scene.Setup.TrySave(0, local, out _);
+        var incoming = Setup("kb");
+        incoming.Parts = Raw("\"" + new string('p', PcSetupValidation.MaxRecordBytes - 30 * 1024) + "\"");
+
+        var saved = _scene.Setup.Replace(incoming);
+
+        Assert.True(PcSetupValidation.Size(saved.Setup) <= PcSetupValidation.MaxRecordBytes);
+        Assert.Null(saved.Setup.Resolved.CaseLayout);
+        Assert.Single(saved.Setup.Resolved.Objects);
     }
 }

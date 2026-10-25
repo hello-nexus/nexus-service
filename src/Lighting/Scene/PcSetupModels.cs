@@ -64,6 +64,11 @@ public sealed class PcSetupCustom
     public string Name { get; set; } = "";
     public float? WidthMm { get; set; }
     public float? DepthMm { get; set; }
+
+    /// <summary>A migrated scene item's height and screen radius: choices the lighting scene held only in its objects, kept here so a backup carries them.</summary>
+    public float? HeightMm { get; set; }
+    public float? CurveRadiusMm { get; set; }
+
     public float? Price { get; set; }
 
     /// <summary>"straight" (default when absent) or "l". Only a desk uses it.</summary>

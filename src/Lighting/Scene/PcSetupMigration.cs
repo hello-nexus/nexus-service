@@ -39,6 +39,8 @@ public static class PcSetupMigration
                     WidthMm = o.Size.Length == 3 && o.Size[0] > 0f ? o.Size[0] : null,
                     DepthMm = o.Size.Length == 3 && o.Size[2] > 0f ? o.Size[2] : null,
                     SceneKind = PcSetupValidation.IsSceneKind(o.Kind) ? o.Kind : null,
+                    HeightMm = PcSetupValidation.IsSceneKind(o.Kind) && o.Size.Length == 3 && o.Size[1] > 0f ? o.Size[1] : null,
+                    CurveRadiusMm = PcSetupValidation.IsSceneKind(o.Kind) ? o.Curve?.RadiusMm : null,
                 },
                 Owned = true,
                 Place = PlaceOf(o),

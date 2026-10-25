@@ -26,11 +26,29 @@ public static class PcSetupBackup
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("nexus-profile-file-machine-v1:" + installId)));
 
     /// <summary>
-    /// Hash of the saved record's own canonical serialization, so "changed since
-    /// the last Back up" never depends on the api's copy. Null with no saved record.
+    /// Hash of the saved record's skinny serialization, so "changed since the last Back up"
+    /// never depends on the api's copy. Null with no saved record.
     /// </summary>
     public static string? Digest(PcSetupStore? store) =>
         store?.LoadSaved() is { } saved ? Digest(saved.Setup) : null;
+
+    /// <summary>
+    /// Whether <paramref name="stored"/> is the current record's digest in the skinny form or in the full form
+    /// older builds stored, so an upgrade neither drops the cloud copy nor re-uploads it. <paramref name="current"/> is the skinny digest.
+    /// </summary>
+    public static bool Matches(PcSetupStore? store, string stored, out string? current)
+    {
+        current = null;
+        if (store?.LoadSaved() is not { } saved)
+        {
+            return false;
+        }
+        current = Digest(saved.Setup);
+        return stored == current || stored == FullDigest(saved.Setup);
+    }
+
+    private static string FullDigest(PcSetup setup) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(setup, PersistenceJsonContext.Default.PcSetup))));
 
     private static string Digest(PcSetup setup) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Skinny(setup), PersistenceJsonContext.Default.PcSetup))));
@@ -39,14 +57,20 @@ public static class PcSetupBackup
     private static PcSetup Skinny(PcSetup setup)
     {
         var copy = JsonSerializer.Deserialize(JsonSerializer.Serialize(setup, PersistenceJsonContext.Default.PcSetup), PersistenceJsonContext.Default.PcSetup) ?? new PcSetup();
-        copy.Resolved = new PcSetupResolved();
         foreach (var item in copy.Items)
         {
             if (item?.Catalog is { } catalog)
             {
                 catalog.Specs = null;
             }
+            // A migrated scene item's height and screen radius live only in its resolved object, so they move onto the item before resolved is dropped.
+            if (item?.Custom is { SceneKind: not null } custom && copy.Resolved?.Objects?.Find(o => o?.Id == item.Id) is { } obj)
+            {
+                custom.HeightMm ??= obj.Size is { Length: 3 } && obj.Size[1] > 0f ? obj.Size[1] : null;
+                custom.CurveRadiusMm ??= obj.Curve?.RadiusMm;
+            }
         }
+        copy.Resolved = new PcSetupResolved();
         return copy;
     }
 
@@ -95,7 +119,8 @@ public static class PcSetupBackup
         {
             try
             {
-                var parsed = doc.Deserialize(PersistenceJsonContext.Default.PcSetup);
+                // Old backups carry resolved and specs; they are dropped before validating so they can neither fail nor bloat the restore.
+                var parsed = doc.Deserialize(PersistenceJsonContext.Default.PcSetup) is { } raw ? Skinny(raw) : null;
                 if (PcSetupValidation.Validate(parsed) is null)
                 {
                     setup = parsed;

@@ -152,6 +152,15 @@ public static partial class PcSetupValidation
             {
                 return new("non_finite_number", $"item {item.Id}: width and depth must be finite and positive");
             }
+            if (!Dimension(custom.HeightMm))
+            {
+                return new("non_finite_number", $"item {item.Id}: height must be finite and positive");
+            }
+            if (custom.CurveRadiusMm is { } radius
+                && !(float.IsFinite(radius) && radius >= SceneValidation.MinCurveRadiusMm && radius <= SceneValidation.MaxCurveRadiusMm))
+            {
+                return new("invalid_curve", $"item {item.Id}: curve radius is out of range");
+            }
             if (custom.Shape is not null && custom.Shape is not ("straight" or "l"))
             {
                 return new("invalid_item", $"item {item.Id}: shape must be straight or l");

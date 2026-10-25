@@ -81,6 +81,15 @@ public sealed class PcSetupStore
                     catalog.Specs = local?.Items.Find(i => i?.Id == item.Id)?.Catalog?.Specs;
                 }
             }
+            if (PcSetupValidation.Size(next) > PcSetupValidation.MaxRecordBytes)
+            {
+                // The local resolved block no longer fits beside the restored choices: drop the case mesh, then the objects, which Build rewrites on open.
+                next.Resolved = new PcSetupResolved { Objects = next.Resolved.Objects };
+                if (PcSetupValidation.Size(next) > PcSetupValidation.MaxRecordBytes)
+                {
+                    next.Resolved = new PcSetupResolved();
+                }
+            }
             saved = WriteUnlocked(existing.Rev, next);
         }
         Changed?.Invoke(saved.Rev);
