@@ -22,7 +22,6 @@ public sealed class PcSetupCaseLayoutCapTests
     [Fact]
     public void A_case_layout_at_64_KiB_is_accepted_and_one_byte_over_is_rejected()
     {
-        Assert.Equal(64 * 1024, PcSetupValidation.MaxOpaqueCaseLayout);
         Assert.Null(Validate(64 * 1024));
         Assert.Equal("value_too_large", Validate(64 * 1024 + 1)?.Code);
     }
