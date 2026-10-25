@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -157,6 +158,7 @@ public sealed class FanLcdStreamingWorker : BackgroundService
         // Animation phase resets on every (re)connect and content-type switch;
         // continuity across a reconnect is not required.
         var animationStartUtc = DateTime.UtcNow;
+        using var clock = new FanLcdFrameClock();
 
         try
         {
@@ -220,7 +222,7 @@ public sealed class FanLcdStreamingWorker : BackgroundService
                                 await IdleAsync(serial, pick, IdlePollMs, ct).ConfigureAwait(false);
                                 continue;
                             }
-                            await StreamAnimatedAsync(serial, loadedImage, pick, ct).ConfigureAwait(false);
+                            await StreamAnimatedAsync(serial, loadedImage, pick, clock, ct).ConfigureAwait(false);
                             break;
 
                         case "sensor":
@@ -305,17 +307,33 @@ public sealed class FanLcdStreamingWorker : BackgroundService
         }
     }
 
-    /// <summary>Plays one loop of the clip, stopping at the next frame once the screen's settings change.</summary>
-    private async Task StreamAnimatedAsync(string serial, Slv3LcdImageData image, ScreenPick pick, CancellationToken ct)
+    /// <summary>
+    /// Plays one loop of the clip on its own clock (see <see cref="FanLcdClipTiming"/>), no faster
+    /// than the screen shows frames, stopping at the next frame once the screen's settings change.
+    /// </summary>
+    private async Task StreamAnimatedAsync(string serial, Slv3LcdImageData image, ScreenPick pick, FanLcdFrameClock clock, CancellationToken ct)
     {
-        foreach (var frame in image.Frames)
+        var delays = new int[image.Frames.Length];
+        for (var i = 0; i < delays.Length; i++)
+        {
+            delays[i] = image.Frames[i].DelayMs;
+        }
+        var starts = FanLcdClipTiming.Starts(delays);
+        var clipStart = Stopwatch.GetTimestamp();
+        var frame = 0;
+        while (frame < image.Frames.Length)
         {
             if (ct.IsCancellationRequested || !StillShowing(serial, pick))
             {
                 break;
             }
-            _screens.PushImage(serial, frame.JpegBytes);
-            await Task.Delay(Math.Max(10, frame.DelayMs), ct).ConfigureAwait(false);
+            var pushedAtMs = Stopwatch.GetElapsedTime(clipStart).TotalMilliseconds;
+            _screens.PushImage(serial, image.Frames[frame].JpegBytes);
+            // Asked after the push: a screen's model is known once it has been opened.
+            var frameMs = 1000.0 / Math.Max(1, _screens.MaxFps(serial));
+            var (next, dueMs) = FanLcdClipTiming.Next(starts, frame, pushedAtMs + frameMs);
+            await clock.WaitUntilAsync(clipStart + (long)(dueMs * Stopwatch.Frequency / 1000), ct).ConfigureAwait(false);
+            frame = next;
         }
     }
 }
