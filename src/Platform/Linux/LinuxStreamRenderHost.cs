@@ -22,15 +22,26 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private const int BrowserBackoffMaxMs = 60_000;
     private const int RapidExitMs = 60_000;
     private const int SessionStartTimeoutMs = 20_000;
+    private const int GpuDemoteAfterFailures = 2;
+    private const int MaxSessionRetryMs = 60_000;
+    private const int HealthyAfterMs = 30_000;
+    private const int GpuTierBudgetMs = 10_000;
+    private const int GpuReprobeMs = 10 * 60_000;
     private const string Tag = "[panel-render]";
 
     private static int _servicePort = ServiceLaunchIntent.DefaultServicePort;
     public static void Configure(int servicePort) => _servicePort = servicePort;
 
+    // Set only when a probe proved a GPU tier; reused by every browser relaunch until it is demoted.
+    private static GpuTier? s_tier;
+    // Software is never cached as an answer; it only pauses probing, so a transient failure heals.
+    private static long s_noProbeUntil;
+
     private readonly StreamedPanelCoordinator _coordinator;
     private readonly TokenService _tokens;
     private readonly Dictionary<string, Running> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _retryAfter = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _faultStreak = new(StringComparer.Ordinal);
     private readonly HashSet<string> _loggedOnce = new(StringComparer.Ordinal);
     private HeadlessBrowser? _browser;
     private long _idleSince = -1;
@@ -38,7 +49,7 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private long _browserStartedAt;
     private long _browserRetryAfter;
 
-    private sealed record Running(PanelRenderSession Render, RawFrameIngestClient Ingest);
+    private sealed record Running(PanelRenderSession Render, RawFrameIngestClient Ingest, long StartedAt);
 
     public LinuxStreamRenderHost(StreamedPanelCoordinator coordinator, TokenService tokens)
     {
@@ -98,6 +109,11 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             if (running.Render.FramesDelivered > 0)
             {
                 _rapidBrowserFailures = 0;
+                // One frame then a crash must keep backing off, so the streak resets only after a healthy stretch.
+                if (Environment.TickCount64 - running.StartedAt > HealthyAfterMs)
+                {
+                    _faultStreak.Remove(id);
+                }
             }
             var gone = !wanted.ContainsKey(id);
             if (gone || running.Render.Faulted || running.Ingest.IsFaulted)
@@ -106,8 +122,23 @@ public sealed class LinuxStreamRenderHost : BackgroundService
                 StopSession(id);
                 if (!gone)
                 {
-                    _retryAfter[id] = Environment.TickCount64 + SessionRetryMs;
+                    ScheduleRetry(id);
                 }
+            }
+        }
+
+        foreach (var id in new List<string>(_retryAfter.Keys))
+        {
+            if (!wanted.ContainsKey(id))
+            {
+                _retryAfter.Remove(id);
+            }
+        }
+        foreach (var id in new List<string>(_faultStreak.Keys))
+        {
+            if (!wanted.ContainsKey(id) && !_sessions.ContainsKey(id))
+            {
+                _faultStreak.Remove(id);
             }
         }
 
@@ -129,6 +160,12 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         }
         _idleSince = -1;
 
+        // A GPU process that died under a live browser: the next launch uses the CPU path.
+        if (_browser is { GpuProcessFailed: true, Tier: not GpuTier.Software } && s_tier is { } live)
+        {
+            ServiceLog.Warn($"{Tag} browser reported a GPU process failure on {live}; the next launch uses software rendering");
+            DemoteGpu();
+        }
         if (_browser is { HasExited: true })
         {
             ServiceLog.Warn($"{Tag} headless browser exited; restarting");
@@ -136,6 +173,7 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             StopAll();
             _rapidBrowserFailures = lived < RapidExitMs ? _rapidBrowserFailures + 1 : 1;
             _browserRetryAfter = Environment.TickCount64 + BackoffMs();
+            DemoteGpuIfUnstable();
         }
         if (_browser is null && !await EnsureBrowserAsync(ct).ConfigureAwait(false))
         {
@@ -196,18 +234,137 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         }
         try
         {
-            _browser = await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
-                line => ServiceLog.Info($"{Tag} {line}"), ct).ConfigureAwait(false);
+            _browser = s_tier is { } tier
+                ? await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+                    line => ServiceLog.Info($"{Tag} {line}"), ct, tier).ConfigureAwait(false)
+                : !ProbeDue(Environment.TickCount64, s_noProbeUntil)
+                    ? await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+                        line => ServiceLog.Info($"{Tag} {line}"), ct, GpuTier.Software).ConfigureAwait(false)
+                    : await LaunchProbingGpuAsync(browser, profileDir, ct).ConfigureAwait(false);
             _browserStartedAt = Environment.TickCount64;
+            ServiceLog.Info($"{Tag} headless browser rendering tier: {_browser.Tier}");
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _rapidBrowserFailures++;
             _browserRetryAfter = Environment.TickCount64 + BackoffMs();
+            DemoteGpuIfUnstable();
             ServiceLog.Warn($"{Tag} could not start {browser} headless: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+    }
+
+    // Try Vulkan, then EGL, each only trusted once the page's WebGL renderer is a real GPU, a captured
+    // frame has the right pixels and stderr shows no GPU process failure; else the CPU path.
+    private static async Task<HeadlessBrowser> LaunchProbingGpuAsync(string browser, string profileDir, CancellationToken ct)
+    {
+        HeadlessBrowser? kept = null;
+        var tier = await GpuTiers.SelectAsync(async candidateTier =>
+        {
+            // One budget covers launch, renderer probe and capture check, so a wedged driver costs one tier's budget.
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(GpuTierBudgetMs);
+            HeadlessBrowser? candidate = null;
+            try
+            {
+                candidate = await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+                    line => ServiceLog.Info($"{Tag} {line}"), budget.Token, candidateTier).ConfigureAwait(false);
+                // A wedged driver must not hold the loop: past the budget the tree is killed at once and reaped later.
+                var live = candidate;
+                using var killOnBudget = budget.Token.Register(live.Kill);
+                var renderer = await candidate.ProbeRendererAsync(budget.Token).ConfigureAwait(false);
+                var capturedOk = !GpuTiers.IsSoftwareRenderer(renderer)
+                    && await CapturesCorrectlyAsync(candidate, budget.Token).ConfigureAwait(false);
+                // Chromium prints the GPU-process markers even when it recovers on another backend in the same
+                // browser, so a tier that logged one is rejected here rather than demoted after acceptance.
+                // Unhooked before acceptance so the budget can never kill a browser that was kept; a budget
+                // that already fired rejects the tier.
+                killOnBudget.Dispose();
+                if (!capturedOk || candidate.GpuProcessFailed || budget.IsCancellationRequested)
+                {
+                    await candidate.AbandonAsync().ConfigureAwait(false);
+                    return false;
+                }
+                candidate.ClearGpuFailure();
+                ServiceLog.Info($"{Tag} {candidateTier} renderer: {renderer}");
+                kept = candidate;
+                return true;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                ServiceLog.Info($"{Tag} gpu probe: {candidateTier} timed out");
+                await AbandonAsync(candidate).ConfigureAwait(false);
+                return false;
+            }
+            catch
+            {
+                await AbandonAsync(candidate).ConfigureAwait(false);
+                throw;
+            }
+        }, line => ServiceLog.Info($"{Tag} gpu probe: {line}")).ConfigureAwait(false);
+
+        if (tier == GpuTier.Software)
+        {
+            s_noProbeUntil = Environment.TickCount64 + GpuReprobeMs;
+        }
+        else
+        {
+            s_tier = tier;
+        }
+        return kept ?? await HeadlessBrowser.LaunchAsync(browser, profileDir, LinuxSession.WrapSpawnAsSessionUser,
+            line => ServiceLog.Info($"{Tag} {line}"), ct, GpuTier.Software).ConfigureAwait(false);
+    }
+
+    private static Task AbandonAsync(HeadlessBrowser? browser) => browser?.AbandonAsync() ?? Task.CompletedTask;
+
+    // Doubles from the base retry up to a ceiling; a session that stays healthy for a while starts over.
+    internal static int SessionRetryDelayMs(int faultStreak) =>
+        (int)Math.Min(MaxSessionRetryMs, (long)SessionRetryMs << Math.Clamp(faultStreak - 1, 0, 8));
+
+    internal static bool ProbeDue(long now, long noProbeUntil) => now >= noProbeUntil;
+
+    // A flat-color page must come back green; a GPU path that captures black or garbage fails here.
+    internal static async Task<bool> CapturesCorrectlyAsync(HeadlessBrowser browser, CancellationToken ct)
+    {
+        const int size = 64;
+        var frame = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            using var check = new PanelRenderSession(browser.Cdp, "gpu-check",
+                "data:text/html,<html><body style=\"margin:0;background:%2300ff00\"></body></html>", size, size, 1.0, 10);
+            check.FrameSink = f => frame.TrySetResult(f);
+            await check.StartAsync(ct).ConfigureAwait(false);
+            var bgra = await frame.Task.WaitAsync(TimeSpan.FromSeconds(8), ct).ConfigureAwait(false);
+            return IsGreen(bgra, size);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ServiceLog.Info($"{Tag} gpu probe: capture check failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    internal static bool IsGreen(byte[] bgra, int size)
+    {
+        var i = (size / 2 * size + size / 2) * 4;
+        return bgra.Length >= i + 4 && bgra[i] < 60 && bgra[i + 1] > 200 && bgra[i + 2] < 60;
+    }
+
+    // A GPU tier that keeps killing the browser is dropped for the CPU path instead of exhausting the retry cap.
+    private void DemoteGpuIfUnstable()
+    {
+        if (s_tier is { } tier && _rapidBrowserFailures >= GpuDemoteAfterFailures)
+        {
+            ServiceLog.Warn($"{Tag} browser unstable on {tier}; falling back to software rendering");
+            DemoteGpu();
+        }
+    }
+
+    private static void DemoteGpu()
+    {
+        s_tier = null;
+        s_noProbeUntil = Environment.TickCount64 + GpuReprobeMs;
     }
 
     private async Task StartSessionAsync(StreamAssignmentDto a, CancellationToken ct)
@@ -229,13 +386,20 @@ public sealed class LinuxStreamRenderHost : BackgroundService
             ServiceLog.Warn($"{Tag} session {a.SessionId} for {a.PanelDeviceId} failed to start: {ex.GetType().Name}: {ex.Message}");
             render.Dispose();
             ingest.Dispose();
-            _retryAfter[a.SessionId] = Environment.TickCount64 + SessionRetryMs;
+            ScheduleRetry(a.SessionId);
             return;
         }
-        _sessions[a.SessionId] = new Running(render, ingest);
+        _sessions[a.SessionId] = new Running(render, ingest, Environment.TickCount64);
         _retryAfter.Remove(a.SessionId);
         ServiceLog.Info($"{Tag} rendering {a.PanelDeviceId} session={a.SessionId} "
             + $"{render.PixelWidth}x{render.PixelHeight}@{render.Fps}");
+    }
+
+    private void ScheduleRetry(string id)
+    {
+        var streak = _faultStreak.GetValueOrDefault(id) + 1;
+        _faultStreak[id] = streak;
+        _retryAfter[id] = Environment.TickCount64 + SessionRetryDelayMs(streak);
     }
 
     private void StopSession(string id)
