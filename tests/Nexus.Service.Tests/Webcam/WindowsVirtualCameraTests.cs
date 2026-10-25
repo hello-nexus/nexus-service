@@ -12,7 +12,7 @@ public class WindowsVirtualCameraTests
     private static readonly WebcamFormat Format = new(1920, 1080, WebcamCodec.Mjpeg);
 
     private static WindowsVirtualCamera Make(FakeControl control, FakeDecoderFactory? decoders = null) =>
-        new(control, new FakeRingFactory(), decoders ?? new FakeDecoderFactory());
+        new(control, new FakeRingFactory(), decoders ?? new FakeDecoderFactory(), () => false);
 
     [Fact]
     public async Task Start_CreateFailure_SurfacesActionableError()

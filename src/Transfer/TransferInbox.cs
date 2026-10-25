@@ -252,14 +252,16 @@ public sealed class TransferInbox
                     // for the real content atomically.
                     using (new FileStream(dest, FileMode.CreateNew, FileAccess.Write)) { }
                 }
-                // Name taken concurrently - take the next free one.
-                catch (IOException) when (attempt < 50)
+                // Name taken concurrently - take the next free one. Windows reports a name
+                // another save is replacing at that instant as access denied, not as in use.
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException && attempt < 50)
                 {
+                    await Task.Delay(attempt < 3 ? 0 : 5, ct);
                     continue;
                 }
                 try
                 {
-                    File.Move(partial, dest, overwrite: true);
+                    await MoveOverClaimAsync(partial, dest, ct);
                 }
                 catch
                 {
@@ -273,6 +275,24 @@ public sealed class TransferInbox
         {
             try { File.Delete(partial); } catch { }
             throw;
+        }
+    }
+
+    // Windows refuses the replace for a moment while a racing same-name save is probing the claimed
+    // name or a scanner holds it, so a sharing violation gets a short bounded retry.
+    private static async Task MoveOverClaimAsync(string partial, string dest, CancellationToken ct)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Move(partial, dest, overwrite: true);
+                return;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException && attempt < 10)
+            {
+                await Task.Delay(25, ct);
+            }
         }
     }
 

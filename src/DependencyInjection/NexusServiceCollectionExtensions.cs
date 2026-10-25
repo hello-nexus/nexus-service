@@ -627,7 +627,15 @@ public static class NexusServiceCollectionExtensions
             engine.SamplingModeSource = () => modeStore.Load().Devices.SamplingModes;
             return engine;
         });
-        services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>();
+        services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>(sp =>
+        {
+            var scene = new Nexus.Service.Lighting.Scene.LightingSceneStore();
+            Nexus.Service.Routes.PcSetupRoutes.WireTopic(scene.Setup, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
+            Nexus.Service.Routes.CoolingLayoutRoutes.WireTopic(scene.Cooling, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
+            return scene;
+        });
+        services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Setup);
+        services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Cooling);
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomEffectStore>();
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomFragCompiler>(sp =>
         {
@@ -1160,6 +1168,10 @@ public static class NexusServiceCollectionExtensions
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3Transport(port.PortName, port.Role),
 #endif
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>());
+#if WINDOWS
+            wirelessHub.TxPortCycler = new Nexus.Service.Peripherals.LianLiWireless.WindowsSlv3TxPortCycler();
+            wirelessHub.DisplayWatch = new Nexus.Service.Peripherals.LianLiWireless.WindowsDisplayStateWatch(wirelessHub.OnDisplayState);
+#endif
             wirelessHub.WiredOwned = mac => sp.GetService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>()?.Find(mac) is not null;
             return wirelessHub;
         });
@@ -1360,6 +1372,7 @@ public static class NexusServiceCollectionExtensions
 
         // NZXT RGB & Fan Controller: fans only. Its lighting stays with OpenRGB.
         services.AddSingleton<Nexus.Service.Peripherals.Nzxt.NzxtFanControllerHub>();
+        services.AddSingleton<Nexus.Service.Devices.DeviceInventoryService>();
         services.AddSingleton<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>();
         services.AddHostedService<Nexus.Service.Peripherals.Nzxt.NzxtFanControllerConnectionWorker>();
 
@@ -2756,7 +2769,18 @@ public static class NexusServiceCollectionExtensions
         }
         services.AddSingleton<Nexus.Service.Cloud.CloudAccountService>();
         services.AddSingleton<Nexus.Service.Persistence.MachineCaseStore>();
-        services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>();
+        services.AddSingleton<Nexus.Service.Persistence.SystemPreviewStore>();
+        services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>(sp =>
+        {
+            var cases = new Nexus.Service.Cloud.SystemCaseService(
+                sp.GetRequiredService<Nexus.Service.Persistence.MachineCaseStore>(),
+                sp.GetRequiredService<Nexus.Service.Cloud.CloudAccountService>(),
+                sp.GetRequiredService<Nexus.Service.Cloud.ICloudApiClient>());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            cases.Changed += id => Nexus.Service.Sockets.PanelTopics.BroadcastSystemCase(hub, id);
+            return cases;
+        });
+        services.AddSingleton<Nexus.Service.Peripherals.Y70.Y70CaseAssigner>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileSyncService>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileLibraryService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Cloud.CloudProfileSyncService>());

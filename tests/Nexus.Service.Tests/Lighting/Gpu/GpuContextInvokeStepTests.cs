@@ -36,21 +36,22 @@ public class GpuContextInvokeStepTests
     public void A_background_step_is_requeued_until_it_finishes_and_the_caller_waits()
     {
         using var gpu = Started();
+        const int ReadyOnCall = 6;
         var calls = 0;
-        var readyAt = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 20;
-
         var sw = Stopwatch.StartNew();
+
         using (GpuContext.BeginBackground())
         {
             gpu.InvokeStep(() =>
             {
                 calls++;
-                return Stopwatch.GetTimestamp() >= readyAt ? StepState.Done : StepState.Poll;
+                return calls >= ReadyOnCall ? StepState.Done : StepState.Poll;
             });
         }
 
-        Assert.True(sw.ElapsedMilliseconds >= 40);
-        Assert.True(calls > 2);
+        Assert.Equal(ReadyOnCall, calls);
+        // Each requeue is deferred by at least one poll interval.
+        Assert.True(sw.Elapsed >= (ReadyOnCall - 2) * GpuContext.StepPollInterval);
     }
 
     [Fact]

@@ -697,6 +697,8 @@ app.MapCoolingEndpoints();
 app.MapBenchmarkEndpoints();
 app.MapLightingEndpoints();
 app.MapLightingSceneEndpoints();
+app.MapPcSetupEndpoints();
+app.MapCoolingLayoutEndpoints();
 app.MapKeyReactiveEndpoints();
 app.MapWebcamEndpoints();
 app.MapObsEndpoints();
@@ -1016,6 +1018,7 @@ static void FastServiceShutdown(WebApplication app)
         ? Nexus.Service.Lifecycle.HostShutdown.OsShutdownTeardownBudget
         : Nexus.Service.Lifecycle.HostShutdown.FastTeardownBudget).TotalMilliseconds);
     Console.Error.WriteLine($"[shutdown] fast teardown {(done ? "complete" : "TIMED OUT")} in {sw.ElapsedMilliseconds}ms");
+    if (done) Nexus.Service.Cooling.AdlxInitGuard.ClearFirstStrike(Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
     cloudQuiesce.Wait();
 }
 

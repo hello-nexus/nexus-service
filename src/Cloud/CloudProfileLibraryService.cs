@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Nexus.Service.Lighting.Scene;
 using Nexus.Service.Models.Cloud;
 using Nexus.Service.Models.Profiles;
 using Nexus.Service.Persistence;
@@ -31,9 +32,13 @@ public sealed class CloudProfileLibraryService
     private readonly ProfileManager _profiles;
     private readonly IConfigStore _store;
     private readonly AppDataStore _appData;
+    private readonly PcSetupStore? _pcSetup;
+    private readonly Nexus.Service.Cooling.CoolingLayoutStore? _cooling;
 
-    public CloudProfileLibraryService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, AppDataStore appData)
+    public CloudProfileLibraryService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, AppDataStore appData, PcSetupStore? pcSetup = null, Nexus.Service.Cooling.CoolingLayoutStore? cooling = null)
     {
+        _pcSetup = pcSetup;
+        _cooling = cooling;
         _api = api;
         _accounts = accounts;
         _profiles = profiles;
@@ -108,7 +113,7 @@ public sealed class CloudProfileLibraryService
                 Revision = r.Revision,
                 SizeBytes = r.SizeBytes,
                 UpdatedAt = r.UpdatedAt,
-                AppIds = r.AppIds ?? new List<string>(),
+                AppIds = (r.AppIds ?? new List<string>()).Where(id => id != PcSetupBackup.AppId && id != CoolingLayoutBackup.AppId).ToList(),
             })
             .ToList();
 
@@ -139,6 +144,9 @@ public sealed class CloudProfileLibraryService
 
         var sourceName = string.IsNullOrWhiteSpace(fetched.Value.Name) ? "Imported" : fetched.Value.Name;
         var appData = request.IncludeAppData ? ProfileBundle.Sanitize(fetched.Value.AppData) : null;
+        // The PC setup rides in the app-data bundle, under the same toggle; it is machine scope, so it is applied once the profile has landed.
+        appData = PcSetupBackup.Detach(appData, out var restoredSetup);
+        appData = CoolingLayoutBackup.Detach(appData, out var restoredCooling);
         LastImportReplacedActive = false;
 
         // Restoring this machine's own backup keeps the original profileId and
@@ -150,8 +158,13 @@ public sealed class CloudProfileLibraryService
             {
                 var restored = _profiles.ImportProfileWithId(request.ProfileId, sourceName, settings, absorbPanelLooks: true);
                 _appData.ReplaceApps(restored.Id, appData);
+                var setupOutcome = RestoreSetup(restoredSetup, ownMachine: true);
+                if (restoredCooling is not null)
+                {
+                    _cooling?.Replace(restoredCooling);
+                }
                 LastImportReplacedActive = restored.Id == _profiles.ActiveProfileId;
-                return CloudActionResult.Ok();
+                return CloudActionResult.Ok(setupOutcome);
             }
             catch (InvalidOperationException)
             {
@@ -166,8 +179,9 @@ public sealed class CloudProfileLibraryService
         {
             var entry = _profiles.ImportProfile(name, settings, request.ReplaceExisting);
             _appData.ReplaceApps(entry.Id, appData);
+            var setupOutcome = RestoreSetup(restoredSetup, ownMachine: false);
             LastImportReplacedActive = entry.Id == _profiles.ActiveProfileId;
-            return CloudActionResult.Ok();
+            return CloudActionResult.Ok(setupOutcome);
         }
         catch (ProfileNameConflictException)
         {
@@ -180,6 +194,22 @@ public sealed class CloudProfileLibraryService
         {
             return CloudActionResult.Fail("profile_limit_reached", "This computer already has the maximum number of profiles.", 400);
         }
+    }
+
+    /// <summary>What the import did with a PC setup in the backup: "applied", "skipped_other_machine", or null when it carried none.</summary>
+    private string? RestoreSetup(PcSetup? setup, bool ownMachine)
+    {
+        if (setup is null)
+        {
+            return null;
+        }
+        // Machine scope: only a backup this machine made may replace this machine's setup.
+        if (!ownMachine)
+        {
+            return "skipped_other_machine";
+        }
+        _pcSetup?.Replace(setup);
+        return "applied";
     }
 
     /// <summary>Removes a profile from the account's backup. The local profile, if any, is untouched.</summary>

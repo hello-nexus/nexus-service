@@ -69,7 +69,7 @@ public class DiagnosticsAlertServiceTests
         var configStore = new Nexus.Service.Tests.InMemoryConfigStore();
         configStore.Update(s => s.Features.Diagnostics = false);
         var health = new DiagnosticsHealthModel(
-            new SmartHealthMonitor(),
+            new UnsupportedSmartHealthSource(),
             new CoolingStallDetector(),
             new GpuHealthMonitor(),
             new EventLogMonitor(),

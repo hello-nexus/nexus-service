@@ -191,6 +191,13 @@ public sealed class CloudImportConflictResponse : ApiResponse
     public string Name { get; set; } = "";
 }
 
+/// <summary>200 body of an import whose backup carried a PC setup.</summary>
+public sealed class CloudImportResponse : ApiResponse
+{
+    /// <summary>"applied", or "skipped_other_machine" when the backup came from another computer and this machine's setup was left alone.</summary>
+    public string? PcSetup { get; set; }
+}
+
 /// <summary>Copies another machine's profile in as a NEW local profile; nothing existing is touched, so there is nothing to select.</summary>
 public sealed class CloudImportRequest
 {

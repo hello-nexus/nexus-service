@@ -112,7 +112,9 @@ public class ExternalToolManagerTests : IDisposable
             .ResolveAsync(Spec());
         Assert.NotNull(online);
 
-        var offline = new ExternalToolManager(new HttpClient(new OfflineHandler()), _root);
+        var offline = new ExternalToolManager(
+            new IToolInstallStrategy[] { new HostExeInstallStrategy() },
+            new HttpClient(new OfflineHandler()), _root, _ => true);
 
         Assert.Equal(online, await offline.ResolveAsync(Spec()));
     }
@@ -147,7 +149,9 @@ public class ExternalToolManagerTests : IDisposable
         // Same size, different content: the hash is what rejects it, not the size pre-check.
         await File.WriteAllBytesAsync(cached!, new byte[payload.Length]);
 
-        var offline = new ExternalToolManager(new HttpClient(new OfflineHandler()), _root);
+        var offline = new ExternalToolManager(
+            new IToolInstallStrategy[] { new HostExeInstallStrategy() },
+            new HttpClient(new OfflineHandler()), _root, _ => true);
 
         Assert.Null(await offline.ResolveAsync(Spec()));
     }

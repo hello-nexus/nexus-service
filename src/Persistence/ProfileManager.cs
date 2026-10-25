@@ -472,7 +472,7 @@ public sealed partial class ProfileManager : IDisposable
         }
     }
 
-    public string? ExportProfileJson(string profileId, Dictionary<string, Dictionary<string, JsonElement>>? appData = null)
+    public string? ExportProfileJson(string profileId, Dictionary<string, Dictionary<string, JsonElement>>? appData = null, string? installDigest = null)
     {
         var data = ExportProfile(profileId);
         if (data is null)
@@ -486,7 +486,7 @@ public sealed partial class ProfileManager : IDisposable
             name = _manifest.Profiles.FirstOrDefault(p => p.Id == profileId)?.Name ?? "Default";
         }
 
-        var wrapper = new ProfileExport { Name = name, Settings = data, AppData = appData };
+        var wrapper = new ProfileExport { Name = name, Settings = data, AppData = appData, InstallDigest = installDigest };
         return JsonSerializer.Serialize(wrapper, PersistenceJsonContext.Default.ProfileExport);
     }
 
