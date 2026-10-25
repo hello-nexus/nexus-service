@@ -461,7 +461,7 @@ public class LightingSleepBlackoutTests : IDisposable
 
         coordinator.OnSessionLocked();
 
-        // Returning with the devices still lit is the proof it did not wait out the ramp; no wall-clock bound, which a loaded host breaks.
+        // Returning with the devices still lit is the proof it did not wait out the ramp.
         Assert.True(engine.Blackout);
         Assert.False(AllBlack(devices[0]));
         Assert.True(engine.WaitForBlackout(SleepBlackoutCoordinator.LockFadeDuration + TimeSpan.FromSeconds(1)));
