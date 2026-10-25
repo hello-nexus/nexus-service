@@ -60,9 +60,9 @@ public static partial class Slv3FanEffects
             ["mopUp"] = InfMopUp,
             ["meteorRainbow"] = InfMeteorRainbow,
             ["colorfulMeteor"] = InfColorfulMeteor,
-            ["lottery"] = TlLottery,
+            ["lottery"] = InfLottery,
             ["warning"] = InfWarning,
-            ["voice"] = TlVoice,
+            ["voice"] = InfVoice,
             ["mixing"] = SlMixing,
             ["tide"] = SlTide,
             ["scan"] = InfScan,
@@ -71,7 +71,7 @@ public static partial class Slv3FanEffects
             ["meteorMix"] = InfMeteorMix,
             ["returnArc"] = InfReturnArc,
             ["doubleArc"] = InfDoubleArc,
-            ["door"] = TlDoor,
+            ["door"] = InfDoor,
             ["heartBeat"] = InfHeartBeat,
             ["heartBeatRunway"] = InfHeartBeatRunway,
             ["disco"] = InfDisco,
@@ -498,6 +498,79 @@ public static partial class Slv3FanEffects
                 {
                     var block = ringPos / blockLen;
                     SetRing(buf, f, ctx, fan, ringPos, ctx.Colors[palette[pick, block]]);
+                }
+            }
+        });
+    }
+
+    /// <summary>No live audio input is available to a pre-rendered loop; stands in with an irregular pulse sequence.</summary>
+    private static RawAnimation InfVoice(FanEffectContext ctx)
+    {
+        const int frameCount = 32;
+        var rng = new DeterministicRandom(0x707CE1CEUL);
+        var level = new double[frameCount];
+        var current = 0.3;
+        var peak = 0.0;
+        for (var i = 0; i < frameCount; i++)
+        {
+            current = current * 0.5 + rng.NextDouble() * 0.5;
+            level[i] = current;
+            peak = Math.Max(peak, current);
+        }
+        for (var i = 0; i < frameCount; i++)
+        {
+            level[i] /= peak;
+        }
+        return RingLoop(frameCount, ctx, Slv3StrimerEffects.ScaledInterval(ctx.Speed, 16.0), (buf, f) =>
+        {
+            var color = Slv3WirelessEffectMath.Scale(ctx.Colors[0], 0.1 + 0.9 * level[f]);
+            for (var fan = 0; fan < ctx.FanCount; fan++)
+            {
+                for (var ringPos = 0; ringPos < ctx.RingLen; ringPos++)
+                {
+                    SetRing(buf, f, ctx, fan, ringPos, color);
+                }
+            }
+        });
+    }
+
+    /// <summary>Two halves of the ring split open from the center and close again, like sliding doors.</summary>
+    private static RawAnimation InfDoor(FanEffectContext ctx)
+    {
+        const int frameCount = 40;
+        var half = ctx.RingLen / 2.0;
+        return RingLoop(frameCount, ctx, Slv3StrimerEffects.ScaledInterval(ctx.Speed, 12.0), (buf, f) =>
+        {
+            var opened = Slv3WirelessEffectMath.BounceTravel((double)f / frameCount) * half;
+            for (var fan = 0; fan < ctx.FanCount; fan++)
+            {
+                for (var ringPos = 0; ringPos < ctx.RingLen; ringPos++)
+                {
+                    var distFromCenter = Math.Abs(ringPos - (ctx.RingLen - 1) / 2.0);
+                    if (distFromCenter <= opened)
+                    {
+                        SetRing(buf, f, ctx, fan, ringPos, ctx.Colors[0]);
+                    }
+                }
+            }
+        });
+    }
+
+    /// <summary>Random colours settle, slot-machine style, into one final colour by the end of the loop.</summary>
+    private static RawAnimation InfLottery(FanEffectContext ctx)
+    {
+        const int frameCount = 40;
+        var rng = new DeterministicRandom(0x107E5701UL);
+        return RingLoop(frameCount, ctx, Slv3StrimerEffects.ScaledInterval(ctx.Speed, 11.0), (buf, f) =>
+        {
+            var settleFrac = (double)f / (frameCount - 1);
+            for (var fan = 0; fan < ctx.FanCount; fan++)
+            {
+                for (var ringPos = 0; ringPos < ctx.RingLen; ringPos++)
+                {
+                    var settled = rng.NextDouble() < settleFrac * settleFrac;
+                    var color = settled ? ctx.Colors[0] : ctx.Colors[rng.NextInt(6)];
+                    SetRing(buf, f, ctx, fan, ringPos, color);
                 }
             }
         });

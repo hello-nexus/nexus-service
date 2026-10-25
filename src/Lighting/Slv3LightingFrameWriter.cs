@@ -883,7 +883,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             {
                 animation = isStrimer
                     ? RenderStrimerPreset(lighting, lanes, ledsPerLane)
-                    : Slv3FanEffects.Render(family, lighting.Mode, fanCount, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors), lighting.Merge);
+                    : Slv3FanEffects.Render(
+                        family, lighting.Mode, fanCount, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors), lighting.Merge,
+                        ScopeFor(family, lighting));
             }
             catch (ArgumentException)
             {
@@ -915,6 +917,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         return Slv3StrimerEffects.Render(lighting.Mode, lanes, ledsPerLane, lighting.Speed, lighting.Direction, ParseColors(lighting.Colors));
     }
 
+    // Only an effect that offers a scope (the TL ones) is kept to one half; any other plays as before.
+    private static Slv3FanScope ScopeFor(Slv3FanFamily family, LianLiWirelessChainLighting lighting) =>
+        Slv3FanEffects.Find(family, lighting.Mode)?.HasScope == true ? Slv3FanEffects.ParseScope(lighting.Scope) : Slv3FanScope.All;
+
     private static List<RgbColor> ParseColors(List<string> hexes)
     {
         var colors = new List<RgbColor>(hexes.Count);
@@ -940,6 +946,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         hc.Add(lighting.Speed);
         hc.Add(lighting.Direction);
         hc.Add(lighting.Merge);
+        hc.Add(lighting.Scope);
         hc.Add(brightnessPercent);
         hc.Add(ledCount);
         foreach (var c in lighting.Colors)

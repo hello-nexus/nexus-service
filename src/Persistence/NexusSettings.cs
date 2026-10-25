@@ -1895,6 +1895,9 @@ public sealed class LianLiWirelessChainLighting
 {
     public const string ModeCustom = "custom";
     public const string ModePerLane = "perLane";
+    public const string ScopeAll = "all";
+    public const string ScopeTop = "top";
+    public const string ScopeBottom = "bottom";
 
     public string Mode { get; set; } = ModeCustom;
     /// <summary>Last mode other than the Lighting page one, restored when Lighting page control is turned off.</summary>
@@ -1909,6 +1912,12 @@ public sealed class LianLiWirelessChainLighting
     public List<string> Colors { get; set; } = new();
     /// <summary>A mergeable effect runs as one animation across the chain's fans instead of one per fan.</summary>
     public bool Merge { get; set; }
+    /// <summary>
+    /// <see cref="ScopeAll"/> lights the whole of each fan; <see cref="ScopeTop"/> or <see cref="ScopeBottom"/>
+    /// keeps an effect that has a scope to that half of each TL fan, as L-Connect can (and as the wired
+    /// TL controller's scope does).
+    /// </summary>
+    public string Scope { get; set; } = ScopeAll;
     /// <summary>One entry per lane, used by <see cref="ModePerLane"/>.</summary>
     public List<LianLiWirelessLane> Lanes { get; set; } = new();
     /// <summary>The chain plays the motherboard ARGB header through its sync cable instead of Nexus; null leaves the chain's own state alone.</summary>

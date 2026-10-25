@@ -28,6 +28,8 @@ public sealed class Slv3LightingModeDto
     public int ColorsMin { get; set; }
     public int ColorsMax { get; set; }
     public bool Mergeable { get; set; }
+    /// <summary>The effect can run on one half of each fan; see <see cref="Slv3ChainLightingDto.Scope"/>.</summary>
+    public bool HasScope { get; set; }
 }
 
 public sealed class Slv3LaneDto
@@ -60,6 +62,8 @@ public sealed class Slv3ChainLightingDto
     public int Brightness { get; set; }
     public string[] Colors { get; set; } = Array.Empty<string>();
     public bool Merge { get; set; }
+    /// <summary>"all", "top" or "bottom": the part of each fan an effect with <see cref="Slv3LightingModeDto.HasScope"/> lights.</summary>
+    public string Scope { get; set; } = LianLiWirelessChainLighting.ScopeAll;
     public Slv3LaneDto[] LaneSettings { get; set; } = Array.Empty<Slv3LaneDto>();
     /// <summary>Saved choice to play the motherboard ARGB header through the chain's sync cable; null when never chosen.</summary>
     public bool? MotherboardArgb { get; set; }
@@ -84,6 +88,8 @@ public sealed class Slv3ChainLightingRequest
     public int? Brightness { get; set; }
     public string[]? Colors { get; set; }
     public bool? Merge { get; set; }
+    /// <summary>"all", "top" or "bottom".</summary>
+    public string? Scope { get; set; }
     public Slv3LaneDto[]? LaneSettings { get; set; }
     public bool? MotherboardArgb { get; set; }
 }
@@ -328,6 +334,7 @@ public static partial class Slv3Routes
                         Brightness = body.Brightness.HasValue ? Math.Clamp(body.Brightness.Value, 0, 4) : old.Brightness,
                         Colors = body.Colors is not null ? new List<string>(body.Colors) : old.Colors,
                         Merge = body.Merge ?? old.Merge,
+                        Scope = body.Scope ?? old.Scope,
                         Lanes = lanes,
                         MotherboardArgb = body.MotherboardArgb ?? old.MotherboardArgb,
                     },
@@ -437,6 +444,13 @@ public static partial class Slv3Routes
                 if (!HexColor().IsMatch(c)) return "invalid color";
             }
         }
+        if (body.Scope is not null
+            && body.Scope != LianLiWirelessChainLighting.ScopeAll
+            && body.Scope != LianLiWirelessChainLighting.ScopeTop
+            && body.Scope != LianLiWirelessChainLighting.ScopeBottom)
+        {
+            return "invalid scope";
+        }
         if (body.LaneSettings is not null)
         {
             if (!perLane)
@@ -482,6 +496,7 @@ public static partial class Slv3Routes
                     ColorsMin = m.ColorsMin,
                     ColorsMax = m.ColorsMax,
                     Mergeable = m.Mergeable,
+                    HasScope = m.HasScope,
                 };
             }
             var laneDtos = new Slv3LaneDto[ls.Lanes.Count];
@@ -508,6 +523,7 @@ public static partial class Slv3Routes
                 Brightness = ls.Brightness,
                 Colors = ls.Colors.ToArray(),
                 Merge = ls.Merge,
+                Scope = ls.Scope,
                 LaneSettings = laneDtos,
                 MotherboardArgb = ls.MotherboardArgb,
                 ArgbCableConnected = fan.ArgbCableConnected,
