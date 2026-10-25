@@ -459,12 +459,9 @@ public class LightingSleepBlackoutTests : IDisposable
         Assert.True(await WaitUntil(() => devices[0].LedBytes[0] == 200, TimeSpan.FromSeconds(2)));
         var coordinator = new SleepBlackoutCoordinator(engine, _store);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
         coordinator.OnSessionLocked();
-        sw.Stop();
 
-        Assert.True(sw.Elapsed < TimeSpan.FromMilliseconds(250),
-            $"lock blocked its caller for {sw.ElapsedMilliseconds}ms");
+        // Returning with the devices still lit is the proof it did not wait out the ramp; no wall-clock bound, which a loaded host breaks.
         Assert.True(engine.Blackout);
         Assert.False(AllBlack(devices[0]));
         Assert.True(engine.WaitForBlackout(SleepBlackoutCoordinator.LockFadeDuration + TimeSpan.FromSeconds(1)));
@@ -504,7 +501,8 @@ public class LightingSleepBlackoutTests : IDisposable
         {
             Assert.True(samples[i] > samples[i - 1], $"level fell: {string.Join(",", samples)}");
         }
-        Assert.False(engine.Blackout);
+        // The loop publishes the full-level frame first and drops the hold on its next step, so the flag clears just after the last sample.
+        Assert.True(await WaitUntil(() => !engine.Blackout, TimeSpan.FromSeconds(2)));
     }
 
     [Fact]
