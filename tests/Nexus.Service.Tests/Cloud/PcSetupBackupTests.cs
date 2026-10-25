@@ -504,19 +504,44 @@ public sealed class PcSetupBackupTests : IDisposable
     }
 
     [Fact]
-    public void A_restore_whose_merged_record_would_be_over_the_cap_drops_the_case_mesh_first()
+    public void An_old_backup_with_an_out_of_range_radius_restores_with_the_field_absent()
     {
-        var local = Setup("kb");
+        var old = Setup("scr");
+        old.Items[0].Custom!.SceneKind = "monitor";
+        old.Resolved.Objects.Add(new SceneObject { Id = "scr", Kind = "monitor", Source = "user", Position = [0f, 0f, 0f], Size = [600f, 380f, 60f], Curve = new SceneCurve { RadiusMm = 5f } });
+
+        PcSetupBackup.Detach(BundleWith(old), out var setup);
+
+        Assert.NotNull(setup);
+        Assert.Null(setup!.Items[0].Custom!.CurveRadiusMm);
+        Assert.Equal(380f, setup.Items[0].Custom!.HeightMm);
+    }
+
+
+    [Fact]
+    public void A_restore_over_the_cap_drops_local_specs_first_keeps_the_mesh_and_validates()
+    {
+        string Specs() => "{\"x\":\"" + new string('a', PcSetupValidation.MaxOpaqueSpecs - 100) + "\"}";
+        PcSetupItem Item(int i, bool specs) => new()
+        {
+            Id = "i" + i,
+            Kind = "keyboard",
+            Catalog = new PcSetupCatalog { Category = "c", PartId = "p" + i, Title = "T", Specs = specs ? Raw(Specs()) : null },
+        };
+        var local = new PcSetup();
+        local.Items.AddRange(Enumerable.Range(0, 60).Select(i => Item(i, true)));
         local.Resolved.CaseLayout = Raw("{\"s\":\"" + new string('a', 60 * 1024) + "\"}");
-        local.Resolved.Objects.Add(new SceneObject { Id = "kb", Kind = "keyboard", Source = "user", Position = [0f, 0f, 0f] });
+        local.Resolved.Objects.Add(new SceneObject { Id = "i0", Kind = "keyboard", Source = "user", Position = [0f, 0f, 0f] });
+        Assert.Null(PcSetupValidation.Validate(local));
         _scene.Setup.TrySave(0, local, out _);
-        var incoming = Setup("kb");
-        incoming.Parts = Raw("\"" + new string('p', PcSetupValidation.MaxRecordBytes - 30 * 1024) + "\"");
+        var incoming = new PcSetup { Parts = Raw("\"" + new string('p', PcSetupValidation.MaxOpaqueParts - 100) + "\"") };
+        incoming.Items.AddRange(Enumerable.Range(0, 60).Select(i => Item(i, false)));
 
         var saved = _scene.Setup.Replace(incoming);
 
-        Assert.True(PcSetupValidation.Size(saved.Setup) <= PcSetupValidation.MaxRecordBytes);
-        Assert.Null(saved.Setup.Resolved.CaseLayout);
+        Assert.Null(PcSetupValidation.Validate(saved.Setup));
+        Assert.All(saved.Setup.Items, i => Assert.Null(i.Catalog!.Specs));
+        Assert.NotNull(saved.Setup.Resolved.CaseLayout);
         Assert.Single(saved.Setup.Resolved.Objects);
     }
 }

@@ -66,8 +66,9 @@ public static class PcSetupBackup
             // A migrated scene item's height and screen radius live only in its resolved object, so they move onto the item before resolved is dropped.
             if (item?.Custom is { SceneKind: not null } custom && copy.Resolved?.Objects?.Find(o => o?.Id == item.Id) is { } obj)
             {
-                custom.HeightMm ??= obj.Size is { Length: 3 } && obj.Size[1] > 0f ? obj.Size[1] : null;
-                custom.CurveRadiusMm ??= obj.Curve?.RadiusMm;
+                // Only values Validate would accept are copied, so a bad old object leaves the field absent instead of failing the restore.
+                custom.HeightMm ??= obj.Size is { Length: 3 } && PcSetupValidation.IsValidHeight(obj.Size[1]) ? obj.Size[1] : null;
+                custom.CurveRadiusMm ??= obj.Curve is { } curve && PcSetupValidation.IsValidCurveRadius(curve.RadiusMm) ? curve.RadiusMm : null;
             }
         }
         copy.Resolved = new PcSetupResolved();

@@ -65,7 +65,7 @@ public sealed class PcSetupCustom
     public float? WidthMm { get; set; }
     public float? DepthMm { get; set; }
 
-    /// <summary>A migrated scene item's height and screen radius: choices the lighting scene held only in its objects, kept here so a backup carries them.</summary>
+    /// <summary>Contract: a migrated scene item's height and screen radius, kept on the item so a backup carries them; nexus-build reads both when it rebuilds the item.</summary>
     public float? HeightMm { get; set; }
     public float? CurveRadiusMm { get; set; }
 

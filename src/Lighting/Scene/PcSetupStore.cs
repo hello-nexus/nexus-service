@@ -81,19 +81,35 @@ public sealed class PcSetupStore
                     catalog.Specs = local?.Items.Find(i => i?.Id == item.Id)?.Catalog?.Specs;
                 }
             }
-            if (PcSetupValidation.Size(next) > PcSetupValidation.MaxRecordBytes)
+            // Local pieces that do not fit beside the restored choices go in this order: specs, case mesh, objects. Build rewrites them on open.
+            Func<PcSetup, bool> fits = x => PcSetupValidation.Validate(x) is null;
+            if (!fits(next))
             {
-                // The local resolved block no longer fits beside the restored choices: drop the case mesh, then the objects, which Build rewrites on open.
+                ClearSpecs(next);
+            }
+            if (!fits(next))
+            {
                 next.Resolved = new PcSetupResolved { Objects = next.Resolved.Objects };
-                if (PcSetupValidation.Size(next) > PcSetupValidation.MaxRecordBytes)
-                {
-                    next.Resolved = new PcSetupResolved();
-                }
+            }
+            if (!fits(next))
+            {
+                next.Resolved = new PcSetupResolved();
             }
             saved = WriteUnlocked(existing.Rev, next);
         }
         Changed?.Invoke(saved.Rev);
         return Clone(saved);
+    }
+
+    private static void ClearSpecs(PcSetup setup)
+    {
+        foreach (var item in setup.Items)
+        {
+            if (item?.Catalog is { } catalog)
+            {
+                catalog.Specs = null;
+            }
+        }
     }
 
     /// <summary>Forgets the saved record, file included, so a shared test host starts each test clean.</summary>
