@@ -2477,6 +2477,9 @@ public sealed class CloudProfileSyncRecord
 
     /// <summary>Digest of the PC setup record as last attached to a push of this profile; empty when none was. Only a manual Back up compares it.</summary>
     public string LastPushedSetupHash { get; set; } = "";
+
+    /// <summary>Same as <see cref="LastPushedSetupHash"/> for the cooling layout document.</summary>
+    public string LastPushedCoolingHash { get; set; } = "";
 }
 
 public sealed class PairBroadcastSettings

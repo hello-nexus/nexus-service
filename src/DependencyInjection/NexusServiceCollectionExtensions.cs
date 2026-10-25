@@ -635,6 +635,7 @@ public static class NexusServiceCollectionExtensions
             return scene;
         });
         services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Setup);
+        services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Cooling);
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomEffectStore>();
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomFragCompiler>(sp =>
         {

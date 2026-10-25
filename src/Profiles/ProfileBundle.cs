@@ -139,7 +139,7 @@ public static class ProfileBundle
         var ids = new List<string>();
         foreach (var (appId, docs) in appData)
         {
-            if (docs.Count > 0 && appId != Nexus.Service.Cloud.PcSetupBackup.AppId)
+            if (docs.Count > 0 && appId != Nexus.Service.Cloud.PcSetupBackup.AppId && appId != Nexus.Service.Cloud.CoolingLayoutBackup.AppId)
             {
                 ids.Add(appId);
             }
