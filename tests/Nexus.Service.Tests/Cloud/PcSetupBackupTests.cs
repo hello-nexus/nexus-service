@@ -353,6 +353,36 @@ public sealed class PcSetupBackupTests : IDisposable
     }
 
     [Fact]
+    public void The_backup_copy_keeps_the_radiator_mount()
+    {
+        var setup = WithCatalogItem("kb", """{"widthMm":1}""");
+        setup.Case.RadiatorMount = "top";
+        _scene.Setup.TrySave(0, setup, out _);
+
+        var withSetup = PcSetupBackup.Attach(new Dictionary<string, Dictionary<string, JsonElement>>(), _scene.Setup, out var digest);
+
+        Assert.NotNull(digest);
+        var doc = withSetup[PcSetupBackup.AppId][PcSetupBackup.Key];
+        Assert.Equal("top", doc.GetProperty("case").GetProperty("radiatorMount").GetString());
+    }
+
+    [Fact]
+    public void A_record_without_a_radiator_mount_serializes_without_the_field_so_its_digest_is_unchanged()
+    {
+        var setup = WithCatalogItem("kb", """{"widthMm":1}""");
+        _scene.Setup.TrySave(0, setup, out _);
+        var plain = PcSetupBackup.Digest(_scene.Setup);
+
+        var withSetup = PcSetupBackup.Attach(new Dictionary<string, Dictionary<string, JsonElement>>(), _scene.Setup, out _);
+
+        Assert.DoesNotContain("radiatorMount", withSetup[PcSetupBackup.AppId][PcSetupBackup.Key].GetRawText());
+        var withMount = WithCatalogItem("kb", """{"widthMm":1}""");
+        withMount.Case.RadiatorMount = "top";
+        _scene.Setup.TrySave(1, withMount, out _);
+        Assert.NotEqual(plain, PcSetupBackup.Digest(_scene.Setup));
+    }
+
+    [Fact]
     public void The_digest_ignores_resolved_and_specs_changes_but_not_user_choices()
     {
         _scene.Setup.TrySave(0, WithCatalogItem("kb", """{"widthMm":1}"""), out _);

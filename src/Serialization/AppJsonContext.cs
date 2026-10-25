@@ -664,6 +664,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.PcSetupRevResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.PutPcSetupBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.PatchPcSetupPlacementsBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.PatchPcSetupRadiatorBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.PcSetupErrorResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.PcSetupChangedFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Cooling.CoolingLayoutResponse))]
