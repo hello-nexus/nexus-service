@@ -62,6 +62,8 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     /// <summary>Linux only: gate IsConnected on USB presence and cache DDC lookups.</summary>
     internal bool LimitDdcScans { get; init; } = OperatingSystem.IsLinux();
 
+    internal Func<long> Clock { get; init; } = () => Environment.TickCount64;
+
     public Y70Provider(
         Y70DisplayHub hub,
         IConfigStore store,
@@ -457,12 +459,12 @@ public sealed class Y70Provider : IY70Provider, IDisposable
             return _ddc.FindDisplayIdByHardwareName(Y70DisplayProtocol.DdcPanelHardwareNames);
         lock (_ddcIdLock)
         {
-            var now = Environment.TickCount64;
+            var now = Clock();
             // A cached miss serves only the heartbeat; a write retries so a freshly attached display is reachable at once.
             var reusable = _ddcIdChecked && now - _ddcIdCheckedAt < DdcLookupTtlMs && (_ddcId is not null || reuseMiss);
             if (!reusable)
             {
-                if (!reuseMiss)
+                if (!reuseMiss && (_ddcId is null || !_ddcIdChecked))
                     _ddc.RequestRescan();
                 _ddcId = _ddc.FindDisplayIdByHardwareName(Y70DisplayProtocol.DdcPanelHardwareNames);
                 _ddcIdCheckedAt = now;

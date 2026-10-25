@@ -45,6 +45,6 @@ public interface IDisplayBrightnessProvider
     /// </summary>
     string? FindDisplayIdByHardwareName(IReadOnlyList<string> nameFragments);
 
-    /// <summary>Asks a caching provider to rescan on its next lookup; the provider rate-limits the scan.</summary>
+    /// <summary>Asks a caching provider to rescan now, on the calling thread; the provider drops the request when it scanned recently.</summary>
     void RequestRescan() { }
 }

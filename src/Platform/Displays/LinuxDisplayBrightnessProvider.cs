@@ -212,7 +212,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         {
             if (_targets.TryGetValue(id, out var t))
                 return t;
-            // A missed id costs one forced scan per signature; a stale caller must not keep scanning.
+            // A missed id is not retried until a scan runs; a forced scan never starts within the rate limit of the last one.
             if (_missedIds.Contains(id))
                 return null;
         }

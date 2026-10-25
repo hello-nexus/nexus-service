@@ -324,7 +324,7 @@ public class LinuxDisplayBrightnessTests
     public void RememberBrightness_DoesNotMutateDtoAlreadyReturned()
     {
         var f = new ScanFixture();
-        var before = f.Provider.Enumerate().Single();
+        var before = f.Provider.Enumerate().Single(d => d.Id == "linux-ddc-i2c-5");
         f.Provider.RememberBrightness("linux-ddc-i2c-5", 77);
         Assert.Equal(40, before.BrightnessControl.Current);
     }

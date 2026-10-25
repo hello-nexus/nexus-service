@@ -119,6 +119,17 @@ public class Y70ProviderTests
 
     // ── Linux DDC scan limiting ──
 
+    private static Y70Provider BuildLimited(CountingDdcProvider ddc, Func<long> clock)
+        => new(
+            new Y70DisplayHub(
+                new StubY70DisplayPortDiscovery(),
+                _ => throw new InvalidOperationException("Y70 transport is not expected in these tests")),
+            new InMemoryY70ConfigStore(),
+            new FakeY70OrientationProvider(),
+            ddc,
+            new HardwarePresence(new FixedUsbEnumerator()))
+        { LimitDdcScans = true, Clock = clock };
+
     private static Y70Provider BuildLimited(CountingDdcProvider ddc, params UsbDeviceEntry[] usb)
         => new(
             new Y70DisplayHub(
@@ -190,6 +201,21 @@ public class Y70ProviderTests
 
         provider.SetToggle(true);
         Assert.Equal(1, ddc.RescanCalls);
+    }
+
+    [Fact]
+    public void Write_with_a_valid_cached_id_after_the_ttl_requests_no_rescan()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = "display-rtk0004" };
+        long now = 1_000;
+        var provider = BuildLimited(ddc, () => now);
+        Assert.True(provider.IsConnected());
+
+        now += 120_000;
+        provider.SetToggle(true);
+
+        Assert.Equal(0, ddc.RescanCalls);
+        Assert.Equal(2, ddc.FindCalls);
     }
 
     [Fact]
