@@ -70,8 +70,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
             {
                 return;
             }
-            _caseHandled = true;
-            try { _caseAssigner?.OnDetected(); }
+            try { _caseHandled = _caseAssigner?.OnDetected() ?? true; }
             catch (Exception ex) { ServiceLog.Error($"[y70-case] assign failed: {ex.GetType().Name}: {ex.Message}"); }
         }
         else if (_caseHandled && ++_caseAbsentTicks >= DetectDropTicks)

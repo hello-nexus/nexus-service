@@ -121,28 +121,91 @@ public sealed class SystemCaseTests : IDisposable
         Assert.Equal("case-1", await rig.Svc.GetAsync(CancellationToken.None));
     }
 
+    private const string SnowWhiteY70 = "0a4e3be9-0866-411f-a1be-dcb4055b767e";
+
+    private static async Task<bool> DetectUntilDecidedAsync(Rig rig)
+    {
+        var assigner = new Nexus.Service.Peripherals.Y70.Y70CaseAssigner(rig.Svc);
+        for (var i = 0; i < 3; i++)
+        {
+            if (assigner.OnDetected())
+            {
+                return true;
+            }
+            await rig.Svc.IdleAsync();
+        }
+        return false;
+    }
+
     [Fact]
-    public async Task LocalOnly_pick_is_never_pushed_or_replaced_by_the_account_and_a_manual_pick_lifts_it()
+    public async Task Fresh_install_with_an_account_y70_adopts_it_as_account_origin()
     {
         var rig = Make();
-        var changes = new List<string?>();
-        rig.Svc.Changed += changes.Add;
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = SnowWhiteY70 } });
 
-        rig.Svc.SetLocalOnly("auto-case");
+        Assert.True(await DetectUntilDecidedAsync(rig));
+
+        Assert.Equal(SnowWhiteY70, rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Account, rig.Store.Load().Origin);
+        Assert.Equal(0, rig.Api.SetDeviceCaseCalls);
+    }
+
+    [Fact]
+    public async Task Fresh_install_with_a_non_y70_account_case_adopts_it_and_does_not_auto_assign()
+    {
+        var rig = Make();
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = "other-case" } });
+
+        Assert.True(await DetectUntilDecidedAsync(rig));
+
+        Assert.Equal("other-case", rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Account, rig.Store.Load().Origin);
+    }
+
+    [Fact]
+    public async Task Fresh_install_signed_out_assigns_pitch_black_at_once_with_no_api_call()
+    {
+        var rig = Make(activeAccount: null);
+
+        Assert.True(new Nexus.Service.Peripherals.Y70.Y70CaseAssigner(rig.Svc).OnDetected());
+
+        Assert.Equal(Nexus.Service.Peripherals.Y70.Y70CaseAssigner.DefaultCaseId, rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Auto, rig.Store.Load().Origin);
+        Assert.Equal(0, rig.Api.SetDeviceCaseCalls);
+        Assert.Equal(0, rig.Api.ListDevicesCalls);
+        await rig.Svc.IdleAsync();
+    }
+
+    [Fact]
+    public async Task Auto_value_is_replaced_by_a_later_account_pull_and_never_pushed()
+    {
+        var rig = Make();
+        rig.Store.Save("auto-case", pending: false, MachineCaseOrigin.Auto);
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = null } });
+        await rig.Svc.GetAsync(CancellationToken.None);
+        await rig.Svc.IdleAsync();
+        Assert.Equal("auto-case", rig.Store.Load().CaseId);
+        Assert.Equal(0, rig.Api.SetDeviceCaseCalls);
+
         rig.Clock.Advance(TimeSpan.FromMinutes(5));
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = SnowWhiteY70 } });
         await rig.Svc.GetAsync(CancellationToken.None);
         await rig.Svc.IdleAsync();
 
-        Assert.Equal(0, rig.Api.SetDeviceCaseCalls);
-        Assert.Equal(0, rig.Api.ListDevicesCalls);
-        Assert.Equal("auto-case", rig.Store.Load().CaseId);
+        Assert.Equal(SnowWhiteY70, rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Account, rig.Store.Load().Origin);
+    }
 
-        await rig.Svc.SetAsync("manual", CancellationToken.None);
-        await rig.Svc.IdleAsync();
+    [Fact]
+    public void Pending_manual_pick_is_left_alone_by_auto_assign()
+    {
+        var rig = Make(activeAccount: null);
+        rig.Store.Save("manual-case", pending: true);
 
-        Assert.False(rig.Store.Load().LocalOnly);
-        Assert.Equal(1, rig.Api.SetDeviceCaseCalls);
-        Assert.Equal(new[] { "auto-case", "manual" }, changes);
+        Assert.True(new Nexus.Service.Peripherals.Y70.Y70CaseAssigner(rig.Svc).OnDetected());
+
+        Assert.Equal("manual-case", rig.Store.Load().CaseId);
+        Assert.True(rig.Store.Load().Pending);
     }
 
     [Fact]

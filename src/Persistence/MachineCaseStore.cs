@@ -5,6 +5,13 @@ using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Persistence;
 
+public static class MachineCaseOrigin
+{
+    public const string Manual = "manual";
+    public const string Account = "account";
+    public const string Auto = "auto";
+}
+
 /// <summary>On-disk shape of the machine-local case pick.</summary>
 public sealed class MachineCaseFile
 {
@@ -13,8 +20,8 @@ public sealed class MachineCaseFile
     /// <summary>True while the pick has not reached the active cloud account.</summary>
     public bool Pending { get; set; }
 
-    /// <summary>True for an automatic pick that stays on this machine: never pushed to, or overwritten from, a cloud account. A manual pick clears it.</summary>
-    public bool LocalOnly { get; set; }
+    /// <summary>Who chose the case: manual, account or auto. A stored case with no origin predates this field and counts as manual.</summary>
+    public string? Origin { get; set; }
 }
 
 /// <summary>
@@ -43,11 +50,11 @@ public sealed class MachineCaseStore
         }
     }
 
-    public void Save(string? caseId, bool pending, bool localOnly = false)
+    public void Save(string? caseId, bool pending, string? origin = MachineCaseOrigin.Manual)
     {
         lock (_lock)
         {
-            WriteUnlocked(new MachineCaseFile { CaseId = caseId, Pending = pending, LocalOnly = localOnly });
+            WriteUnlocked(new MachineCaseFile { CaseId = caseId, Pending = pending, Origin = origin });
         }
     }
 

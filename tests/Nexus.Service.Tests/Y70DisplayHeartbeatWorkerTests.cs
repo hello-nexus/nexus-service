@@ -40,15 +40,15 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     private const string OtherCase = "not-a-y70-case";
     private const string Y70Variant = "ef06ada1-e96d-42ee-8726-05942881d65b";
 
-    private (Y70DisplayHeartbeatWorker Worker, FakeY70Provider Y70, MachineCaseStore Store) BuildWithCase(string? stored) =>
-        BuildWithCase(stored, out _, out _);
+    private (Y70DisplayHeartbeatWorker Worker, FakeY70Provider Y70, MachineCaseStore Store) BuildWithCase(string? stored, string origin = MachineCaseOrigin.Manual, bool pending = false) =>
+        BuildWithCase(stored, origin, pending, out _, out _);
 
-    private (Y70DisplayHeartbeatWorker Worker, FakeY70Provider Y70, MachineCaseStore Store) BuildWithCase(string? stored, out FakeCloudApiClient api, out List<string?> changes)
+    private (Y70DisplayHeartbeatWorker Worker, FakeY70Provider Y70, MachineCaseStore Store) BuildWithCase(string? stored, string origin, bool pending, out FakeCloudApiClient api, out List<string?> changes)
     {
         var store = new MachineCaseStore(Path.Combine(_dir, "system-case.json"));
         if (stored is not null)
         {
-            store.Save(stored, pending: false);
+            store.Save(stored, pending, origin);
         }
         var config = new InMemoryConfigStore();
         api = new FakeCloudApiClient();
@@ -79,25 +79,57 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     [Fact]
     public void Auto_assign_makes_no_account_call_and_notifies_clients()
     {
-        var (worker, _, store) = BuildWithCase(null, out var api, out var changes);
+        var (worker, _, store) = BuildWithCase(null, MachineCaseOrigin.Manual, false, out var api, out var changes);
 
         worker.Tick();
 
         Assert.Equal(0, api.SetDeviceCaseCalls);
         Assert.Equal(0, api.ListDevicesCalls);
         Assert.False(store.Load().Pending);
-        Assert.True(store.Load().LocalOnly);
+        Assert.Equal(MachineCaseOrigin.Auto, store.Load().Origin);
         Assert.Equal(new[] { Y70CaseAssigner.DefaultCaseId }, changes);
     }
 
     [Fact]
-    public void Detected_with_another_case_replaces_it_with_the_y70()
+    public void Detected_with_an_earlier_auto_non_y70_case_assigns_the_y70()
+    {
+        var (worker, _, store) = BuildWithCase(OtherCase, MachineCaseOrigin.Auto);
+
+        worker.Tick();
+
+        Assert.Equal(Y70CaseAssigner.DefaultCaseId, store.Load().CaseId);
+    }
+
+    [Fact]
+    public void Restart_with_a_manual_non_y70_pick_changes_nothing()
     {
         var (worker, _, store) = BuildWithCase(OtherCase);
 
         worker.Tick();
 
-        Assert.Equal(Y70CaseAssigner.DefaultCaseId, store.Load().CaseId);
+        Assert.Equal(OtherCase, store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Manual, store.Load().Origin);
+    }
+
+    [Fact]
+    public void Legacy_stored_case_without_an_origin_counts_as_manual()
+    {
+        var (worker, _, store) = BuildWithCase(OtherCase, origin: null!);
+
+        worker.Tick();
+
+        Assert.Equal(OtherCase, store.Load().CaseId);
+    }
+
+    [Fact]
+    public void A_pending_manual_push_survives_detection()
+    {
+        var (worker, _, store) = BuildWithCase(OtherCase, MachineCaseOrigin.Manual, pending: true);
+
+        worker.Tick();
+
+        Assert.Equal(OtherCase, store.Load().CaseId);
+        Assert.True(store.Load().Pending);
     }
 
     [Fact]
@@ -128,7 +160,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         var (worker, _, store) = BuildWithCase(null);
         worker.Tick();
         // The user picks another case after the automatic assignment.
-        store.Save(OtherCase, pending: false);
+        store.Save(OtherCase, pending: false, MachineCaseOrigin.Manual);
 
         worker.Tick();
         worker.Tick();
@@ -141,7 +173,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     {
         var (worker, y70, store) = BuildWithCase(null);
         worker.Tick();
-        store.Save(OtherCase, pending: false);
+        store.Save(OtherCase, pending: false, MachineCaseOrigin.Auto);
         y70.Connected = false;
         worker.Tick();
         worker.Tick();

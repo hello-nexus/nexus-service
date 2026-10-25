@@ -1,17 +1,12 @@
 using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
-using System.Threading;
 using Nexus.Service.Cloud;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.Y70;
 
-/// <summary>
-/// Sets this PC's case to a HYTE Y70 when a Y70 touch display is detected and
-/// the stored case is not already a Y70 model. Detection carries no color or
-/// edition signal, so a Y70 model of any color already stored is left alone.
-/// </summary>
+/// <summary>Fills in the Y70 case when a Y70 touch display is detected and the user has chosen no case.</summary>
 public sealed class Y70CaseAssigner
 {
     /// <summary>Touch Infinite, Pitch Black. The detection signals cannot tell colors apart.</summary>
@@ -45,16 +40,14 @@ public sealed class Y70CaseAssigner
 
     public static bool IsY70Case(string? caseId) => caseId is not null && Y70CaseIds.Contains(caseId);
 
-    /// <summary>Call once per detection event. Returns true when the case was changed.</summary>
+    /// <summary>Call per detection event until it returns true (decided). False means the first account pull is still settling.</summary>
     public bool OnDetected()
     {
-        var current = _cases.GetAsync(CancellationToken.None).GetAwaiter().GetResult();
-        if (IsY70Case(current))
+        if (!_cases.TryAutoAssign(DefaultCaseId, IsY70Case))
         {
             return false;
         }
-        _cases.SetLocalOnly(DefaultCaseId);
-        ServiceLog.Info("[y70-case] Y70 display detected; case set to the Y70 Touch Infinite");
+        ServiceLog.Info("[y70-case] Y70 display detected; case checked");
         return true;
     }
 }

@@ -30,6 +30,7 @@ public sealed class SystemCaseService
     private readonly object _sync = new();
     private readonly SemaphoreSlim _push = new(1, 1);
     private long _lastAttemptTicks;
+    private bool _pullSettled;
 
     /// <summary>Raised after the stored case changed, whether by a pick, the local auto-assign or an adopted account value.</summary>
     public event Action<string?>? Changed;
@@ -49,7 +50,11 @@ public sealed class SystemCaseService
         // A different account may carry a different website pick: let the next
         // GET compare against it instead of waiting out the pull interval. A
         // still-pending local pick is pushed by the device-report flush.
-        _accounts.OnAccountActivated += _ => Volatile.Write(ref _lastAttemptTicks, 0);
+        _accounts.OnAccountActivated += _ =>
+        {
+            Volatile.Write(ref _lastAttemptTicks, 0);
+            Volatile.Write(ref _pullSettled, false);
+        };
     }
 
     /// <summary>Null, or 1-64 characters of letters, digits, '.', '_', ':' and '-'. Same rule as the cloud api.</summary>
@@ -91,7 +96,7 @@ public sealed class SystemCaseService
     /// <summary>Saves locally first (always pending) and returns; the active account is pushed in the background.</summary>
     public Task<string?> SetAsync(string? caseId, CancellationToken ct)
     {
-        _store.Save(caseId, pending: true);
+        _store.Save(caseId, pending: true, MachineCaseOrigin.Manual);
         RaiseChanged(caseId);
         if (_accounts.ActiveAccountId is { } accountId && !_networkHeld())
         {
@@ -101,12 +106,38 @@ public sealed class SystemCaseService
         return Task.FromResult(_store.Load().CaseId);
     }
 
-    /// <summary>Saves an automatic pick on this machine only: no account call now or later, and an account value never replaces it. A manual pick lifts that.</summary>
-    public string? SetLocalOnly(string? caseId)
+    /// <summary>
+    /// Fills in an automatic case only when the user has made no choice: none stored, or an earlier auto value, and not already
+    /// <paramref name="isProtected"/>. Returns false while a signed-in machine has not settled its first account pull, so the
+    /// caller retries; true once decided. The auto value is local: it is never pushed, and a later account pull replaces it.
+    /// </summary>
+    public bool TryAutoAssign(string caseId, Func<string?, bool> isProtected)
     {
-        _store.Save(caseId, pending: false, localOnly: true);
-        RaiseChanged(caseId);
-        return caseId;
+        var current = _store.Load();
+        if (current.Pending || (current.CaseId is not null && current.Origin != MachineCaseOrigin.Auto) || isProtected(current.CaseId))
+        {
+            return true;
+        }
+        if (_accounts.ActiveAccountId is not null && !_networkHeld() && !Volatile.Read(ref _pullSettled))
+        {
+            GetAsync(CancellationToken.None).GetAwaiter().GetResult();
+            return false;
+        }
+        var assigned = false;
+        _store.Update(f =>
+        {
+            if (f.Pending || (f.CaseId is not null && f.Origin != MachineCaseOrigin.Auto) || isProtected(f.CaseId))
+            {
+                return f;
+            }
+            assigned = true;
+            return new MachineCaseFile { CaseId = caseId, Pending = false, Origin = MachineCaseOrigin.Auto };
+        });
+        if (assigned)
+        {
+            RaiseChanged(caseId);
+        }
+        return true;
     }
 
     private void RaiseChanged(string? caseId)
@@ -173,6 +204,7 @@ public sealed class SystemCaseService
         }
         finally
         {
+            Volatile.Write(ref _pullSettled, true);
             _push.Release();
         }
     }
@@ -193,7 +225,7 @@ public sealed class SystemCaseService
     private async Task PushLockedAsync(string accountId)
     {
         var local = _store.Load();
-        if (!local.Pending || local.LocalOnly || accountId != _accounts.ActiveAccountId)
+        if (!local.Pending || accountId != _accounts.ActiveAccountId)
         {
             return;
         }
@@ -205,15 +237,11 @@ public sealed class SystemCaseService
             return;
         }
         // A newer pick saved while the call was in flight stays pending.
-        _store.Update(f => f.Pending && f.CaseId == pushed ? new MachineCaseFile { CaseId = f.CaseId, Pending = false } : f);
+        _store.Update(f => f.Pending && f.CaseId == pushed ? new MachineCaseFile { CaseId = f.CaseId, Pending = false, Origin = f.Origin } : f);
     }
 
     private async Task PullLockedAsync(string accountId)
     {
-        if (_store.Load().LocalOnly)
-        {
-            return;
-        }
         var installId = _accounts.ResolveStableInstallId();
         var result = await _accounts.WithAuthAsync(accountId, token => _api.ListDevicesAsync(token, CancellationToken.None), CancellationToken.None).ConfigureAwait(false);
         if (!result.Success || result.Value is null || accountId != _accounts.ActiveAccountId)
@@ -230,7 +258,7 @@ public sealed class SystemCaseService
         // the account lacks is pushed instead.
         if (device.CaseId is null || !IsValidCaseId(device.CaseId))
         {
-            var after = _store.Update(f => f.Pending || f.LocalOnly || f.CaseId is null ? f : new MachineCaseFile { CaseId = f.CaseId, Pending = true });
+            var after = _store.Update(f => f.Pending || f.CaseId is null || f.Origin == MachineCaseOrigin.Auto ? f : new MachineCaseFile { CaseId = f.CaseId, Pending = true, Origin = f.Origin });
             if (after.Pending)
             {
                 await PushLockedAsync(accountId).ConfigureAwait(false);
@@ -238,7 +266,7 @@ public sealed class SystemCaseService
             return;
         }
         var before = _store.Load().CaseId;
-        var adopted = _store.Update(f => f.Pending || f.LocalOnly || f.CaseId == device.CaseId ? f : new MachineCaseFile { CaseId = device.CaseId, Pending = false });
+        var adopted = _store.Update(f => f.Pending || f.CaseId == device.CaseId ? f : new MachineCaseFile { CaseId = device.CaseId, Pending = false, Origin = MachineCaseOrigin.Account });
         if (adopted.CaseId != before)
         {
             RaiseChanged(adopted.CaseId);
