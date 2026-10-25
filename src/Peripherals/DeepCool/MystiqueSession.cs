@@ -215,7 +215,7 @@ public sealed class MystiqueSession
     private bool Stream(MystiqueMediaPackage package, ref long streamed, Action<long>? progress)
     {
         string kind = package.Kind == MystiqueMedia.KindGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
-        ServiceLog.Info($"[deepcool-mystique] upload {kind} {package.Id}, {package.Frames.Count} frames");
+        ServiceLog.Info($"[deepcool-mystique] upload {kind} {package.Id}, {package.Frames.Count} frames, largest {package.Frames.Max(f => f.Length)} bytes");
         if (!Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, MystiqueProtocol.BuildUploadStart(), out _, out bool announced)
             || !announced)
         {

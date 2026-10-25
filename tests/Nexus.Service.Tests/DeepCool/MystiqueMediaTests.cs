@@ -141,6 +141,44 @@ public class MystiqueMediaTests
         Assert.Throws<ArgumentException>(() => MystiqueMedia.BuildGif(Enumerable.Repeat(new byte[100], MystiqueMedia.MaxGifFrames + 1).ToList(), GifId));
         Assert.Throws<ArgumentException>(() => MystiqueMedia.BuildGif(Enumerable.Repeat(new byte[74_000], MystiqueMedia.MaxGifFrames).ToList(), GifId));
         Assert.Throws<ArgumentException>(() => MystiqueMedia.BuildPicture(new byte[100], "2101B6E6277841DAA821E8D79A5C528B"));
+        var frames = Enumerable.Repeat(new byte[MystiqueMedia.MaxGifFrameJpegBytes], MystiqueMedia.GifFrames).ToList();
+        Assert.Equal(MystiqueMedia.GifFrames, MystiqueMedia.BuildGif(frames, GifId).Frames.Count);
+        frames[3] = new byte[MystiqueMedia.MaxGifFrameJpegBytes + 1];
+        Assert.Throws<ArgumentException>(() => MystiqueMedia.BuildGif(frames, GifId));
+    }
+
+    [Fact]
+    public void A_kept_gif_with_a_frame_over_the_recorded_frame_size_is_not_loaded()
+    {
+        static byte[] Kept(int largeAt)
+        {
+            var saved = new List<byte>("NXMG\x01"u8.ToArray()) { 0, 0x10, 0x00 };
+            for (int i = 0; i < MystiqueMedia.GifFrames; i++)
+            {
+                int length = i == largeAt ? MystiqueMedia.MaxGifFrameJpegBytes + 1 : 100;
+                saved.AddRange(BitConverter.GetBytes(length));
+                saved.AddRange(new byte[length]);
+            }
+            return saved.ToArray();
+        }
+
+        Assert.NotNull(MystiqueMedia.LoadGif(Kept(-1), GifId, out _));
+        Assert.Null(MystiqueMedia.LoadGif(Kept(3), GifId, out _));
+    }
+
+    [Fact]
+    public void A_gif_frame_over_the_recorded_frame_size_steps_down_alone_to_fit()
+    {
+        var rgbx = new byte[MystiqueMedia.Width * MystiqueMedia.Height * 4];
+        new Random(7).NextBytes(rgbx.AsSpan(0, rgbx.Length / 3));
+        Assert.True(MystiqueMediaEncoder.EncodeJpeg(rgbx, 95).Length > MystiqueMediaEncoder.GifFrameJpegTarget);
+
+        var jpeg = MystiqueMediaEncoder.EncodeGifFrame(rgbx, 95);
+
+        Assert.InRange(jpeg.Length, 1, MystiqueMediaEncoder.GifFrameJpegTarget);
+        AssertRecordedLayout(jpeg);
+        var flat = new byte[rgbx.Length];
+        Assert.Equal(MystiqueMediaEncoder.EncodeJpeg(flat, 95), MystiqueMediaEncoder.EncodeGifFrame(flat, 95));
     }
 
     [Theory]

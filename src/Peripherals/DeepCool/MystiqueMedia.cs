@@ -38,6 +38,9 @@ public static class MystiqueMedia
     public const int MaxPictureJpegBytes = 145_654;
     public const int MaxGifStreamBytes = 10_982_436;
 
+    // The largest recorded GIF frame (capture 4: 86,316 bytes with its header); nothing larger is sent.
+    public const int MaxGifFrameJpegBytes = 86_252;
+
     // Library cap per kind in Nexus, matching the slots the screen's own software offers.
     public const int MaxPictures = 9;
     public const int MaxGifs = 9;
@@ -130,6 +133,10 @@ public static class MystiqueMedia
         long total = 0;
         for (int i = 0; i < jpegs.Count; i++)
         {
+            if (jpegs[i].Length > MaxGifFrameJpegBytes)
+            {
+                throw new ArgumentException("GIF frame outside the recorded size", nameof(jpegs));
+            }
             frames.Add(BuildFrame(KindGif, jpegs[i], id, jpegs.Count, durationMs, i));
             total += frames[^1].Length;
         }
@@ -197,7 +204,8 @@ public static class MystiqueMedia
             jpegs.Add(saved.Slice(at + 4, length).ToArray());
             at += 4 + length;
         }
-        if (jpegs.Count < GifFrames || durationMs < 1 || StreamLength(jpegs) > MaxGifStreamBytes)
+        if (jpegs.Count < GifFrames || durationMs < 1 || StreamLength(jpegs) > MaxGifStreamBytes
+            || jpegs.Exists(j => j.Length > MaxGifFrameJpegBytes))
         {
             return null;
         }

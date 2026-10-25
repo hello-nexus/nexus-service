@@ -25,7 +25,7 @@ public readonly record struct MystiqueEncodeResult(MystiqueMediaPackage? Package
 /// Converts an image, GIF or video to the screen's stream: ffmpeg crops and scales to raw frames, then
 /// turbojpeg encodes each one with the segment layout and standard Huffman tables of the recorded
 /// uploads. Quality steps down, then for a GIF detail is reduced, until the stream fits the recorded
-/// sizes; a source that never fits is refused.
+/// sizes; a GIF frame over the recorded frame size alone steps down further. A source that never fits is refused.
 /// </summary>
 public static partial class MystiqueMediaEncoder
 {
@@ -43,6 +43,9 @@ public static partial class MystiqueMediaEncoder
 
     private static string Soften(int width, int height) =>
         $",scale={width}:{height}:flags=area,scale={MystiqueMedia.Width}:{MystiqueMedia.Height}:flags=bicubic";
+
+    // GIF frames are encoded a little under the largest recorded one.
+    internal const int GifFrameJpegTarget = 84_000;
 
     private const int TimeoutSeconds = 120;
     private const int FrameBytes = MystiqueMedia.Width * MystiqueMedia.Height * 4;
@@ -109,6 +112,7 @@ public static partial class MystiqueMediaEncoder
                 {
                     return MystiqueEncodeResult.Failure("ffmpeg produced no frames.");
                 }
+                bool frameTooLarge = false;
                 foreach (int q in Qualities)
                 {
                     var encoded = new List<byte[]>(decoded);
@@ -129,10 +133,16 @@ public static partial class MystiqueMediaEncoder
                         {
                             Rotate180(frame);
                         }
-                        var jpeg = EncodeJpeg(frame, q);
+                        var jpeg = EncodeGifFrame(frame, q);
                         if (jpeg.Length == 0)
                         {
                             return MystiqueEncodeResult.Failure(NoEncoder);
+                        }
+                        // Over the frame size even at the lowest quality: only less detail can fit it.
+                        if (jpeg.Length > GifFrameJpegTarget)
+                        {
+                            frameTooLarge = true;
+                            break;
                         }
                         encoded.Add(jpeg);
                         frameEncoded?.Invoke(encoded.Count, decoded);
@@ -142,6 +152,10 @@ public static partial class MystiqueMediaEncoder
                         {
                             break;
                         }
+                    }
+                    if (frameTooLarge)
+                    {
+                        break;
                     }
                     if (!still && streamBytes > MystiqueMedia.MaxGifStreamBytes)
                     {
@@ -275,6 +289,24 @@ public static partial class MystiqueMediaEncoder
     /// Baseline 4:2:0 JPEG of one RGBX frame at the screen size, or empty without turbojpeg. Skia's encoder
     /// is not a fallback: it optimizes the Huffman tables, a layout the screen has never been seen to take.
     /// </summary>
+    /// <summary>A GIF frame at <paramref name="quality"/>, or at the first lower one that fits <see cref="GifFrameJpegTarget"/>; the lowest quality's encode when none does.</summary>
+    internal static byte[] EncodeGifFrame(byte[] rgbx, int quality)
+    {
+        var jpeg = EncodeJpeg(rgbx, quality);
+        foreach (int q in Qualities)
+        {
+            if (jpeg.Length <= GifFrameJpegTarget)
+            {
+                break;
+            }
+            if (q < quality)
+            {
+                jpeg = EncodeJpeg(rgbx, q);
+            }
+        }
+        return jpeg;
+    }
+
     internal static byte[] EncodeJpeg(byte[] rgbx, int quality) =>
         TurboJpegOneShot.TryCompress(rgbx, MystiqueMedia.Width, MystiqueMedia.Height, TurboJpeg.PixelFormatRgbx, quality) ?? Array.Empty<byte>();
 
