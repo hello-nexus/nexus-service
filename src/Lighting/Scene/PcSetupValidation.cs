@@ -32,6 +32,13 @@ public static partial class PcSetupValidation
     [GeneratedRegex("^[a-z0-9_-]{1,32}$")]
     private static partial Regex KindPattern();
 
+    [GeneratedRegex("^[a-z-]{1,32}$")]
+    private static partial Regex MountPattern();
+
+    /// <summary>Null when <paramref name="mount"/> is absent or a valid radiator face name.</summary>
+    public static PcSetupError? RadiatorMount(string? mount) =>
+        mount is null || MountPattern().IsMatch(mount) ? null : new("bad_radiator_mount", "radiatorMount must be 1 to 32 characters of a-z and -");
+
     public static PcSetupError? Validate(PcSetup? setup)
     {
         if (setup is null)
@@ -53,6 +60,10 @@ public static partial class PcSetupValidation
         if (Place(setup.Case.Place, "case") is { } casePlace)
         {
             return casePlace;
+        }
+        if (RadiatorMount(setup.Case.RadiatorMount) is { } mountError)
+        {
+            return mountError;
         }
         if (Opaque(setup.Parts, MaxOpaqueParts, "parts") is { } parts)
         {

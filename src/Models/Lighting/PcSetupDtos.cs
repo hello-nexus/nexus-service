@@ -30,6 +30,13 @@ public sealed class PatchPcSetupPlacementsBody
     public List<PcSetupPlacement>? Places { get; set; }
 }
 
+/// <summary>The Cooling page's radiator face pick: sets only <c>case.radiatorMount</c>. A null <c>mount</c> clears it.</summary>
+public sealed class PatchPcSetupRadiatorBody
+{
+    public int? BaseRev { get; set; }
+    public string? Mount { get; set; }
+}
+
 /// <summary>An item id, or <c>case</c>, and its new footprint center and yaw (units and direction in <see cref="PcSetup"/>).</summary>
 public sealed class PcSetupPlacement
 {

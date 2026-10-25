@@ -123,6 +123,40 @@ public static class PcSetupRoutes
                     : Conflict(saved);
             }
         });
+
+        app.MapPatch("/system/setup/radiator", async (HttpContext ctx, LightingSceneStore scene) =>
+        {
+            var body = await ReadBodyAsync(ctx, AppJsonContext.Default.PatchPcSetupRadiatorBody);
+            if (body is null)
+            {
+                return Fail(new("bad_body", "body is malformed or over the size cap"));
+            }
+            if (body.BaseRev is not { } baseRev)
+            {
+                return Fail(new("base_rev_required", "baseRev is required"));
+            }
+            if (PcSetupValidation.RadiatorMount(body.Mount) is { } error)
+            {
+                return Fail(error);
+            }
+            lock (SetupWriteLock)
+            {
+                var current = scene.Setup.Load();
+                if (current.Rev == 0)
+                {
+                    return Fail(new("no_record", "no saved setup to change"));
+                }
+                if (current.Rev != baseRev)
+                {
+                    return Conflict(current);
+                }
+                var next = current.Setup;
+                next.Case.RadiatorMount = body.Mount;
+                return scene.Setup.TrySave(baseRev, next, out var saved)
+                    ? Results.Json(new PcSetupRevResponse { Rev = saved.Rev }, AppJsonContext.Default.PcSetupRevResponse)
+                    : Conflict(saved);
+            }
+        });
     }
 
     /// <summary>Pings the <c>system/setup</c> topic after every save, whichever path made it (a route or a backup restore).</summary>
