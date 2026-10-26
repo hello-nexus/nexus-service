@@ -167,7 +167,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
             // draw a proportional gauge without juggling sibling lookups.
             float vramTotalMb = hw.Sensors
                 .Where(s => s.SensorType == SensorType.Data && s.Name.Contains("Total", StringComparison.OrdinalIgnoreCase))
-                .Select(s => LhmDataSensors.BytesToMb(SensorValueSanitizer.Sanitize(s.Value ?? 0f)))
+                .Select(s => LhmDataSensors.BytesToMb(HeldValue(s)))
                 .FirstOrDefault();
             if (vramTotalMb > 0)
             {
@@ -228,11 +228,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
             // sensors self-describing.
             float used = hw.Sensors
                 .Where(s => s.SensorType == SensorType.Data && s.Name.Contains("Used", StringComparison.OrdinalIgnoreCase))
-                .Select(s => LhmDataSensors.BytesToGb(SensorValueSanitizer.Sanitize(s.Value ?? 0f)))
+                .Select(s => LhmDataSensors.BytesToGb(HeldValue(s)))
                 .FirstOrDefault();
             float avail = hw.Sensors
                 .Where(s => s.SensorType == SensorType.Data && s.Name.Contains("Available", StringComparison.OrdinalIgnoreCase))
-                .Select(s => LhmDataSensors.BytesToGb(SensorValueSanitizer.Sanitize(s.Value ?? 0f)))
+                .Select(s => LhmDataSensors.BytesToGb(HeldValue(s)))
                 .FirstOrDefault();
             float total = used + avail;
             if (total > 0)
@@ -489,6 +489,8 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
 
     private static readonly SensorHoldLast Hold = new();
 
+    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), s.Value, Environment.TickCount64, out _);
+
     private static List<HardwareSensor> MapSensors(IHardware hw)
     {
         var isGpu = hw.HardwareType is HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel;
@@ -499,10 +501,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
             var value = Hold.Resolve(key, s.Value, now, out var missed);
             if (missed && isGpu)
             {
-                var count = Hold.NoteMiss(key, now);
+                var hwKey = hw.Identifier.ToString();
+                var count = Hold.NoteMiss(hwKey, now);
                 if (count > 0)
                 {
-                    ServiceLog.Warn($"[lhm] GPU sensor {key} read null or non-finite, {count} miss(es) since last log");
+                    ServiceLog.Warn($"[lhm] GPU {hwKey} sensor {key} read null or non-finite, {count} null read(s) across its sensors since last log");
                 }
             }
             var min = SensorValueSanitizer.Sanitize(s.Min ?? 0f);

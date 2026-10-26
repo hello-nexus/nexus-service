@@ -24,7 +24,8 @@ public class SensorHoldLastTests
     [Fact]
     public void Null_with_no_history_returns_zero()
     {
-        Assert.Equal(0f, new SensorHoldLast().Resolve("a", null, 1000, out _));
+        Assert.Equal(0f, new SensorHoldLast().Resolve("a", null, 1000, out var missed));
+        Assert.False(missed);
     }
 
     [Theory]
