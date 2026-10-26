@@ -810,6 +810,8 @@ public sealed class PanelDeviceRegistry
                 record.AlwaysOnTop = patch.AlwaysOnTop.Value;
             if (patch.ClickThrough.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.ClickThrough = patch.ClickThrough.Value;
+            if (patch.WidgetsLocked.HasValue && !string.IsNullOrEmpty(record.DisplayId))
+                record.WidgetsLocked = patch.WidgetsLocked.Value;
             // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
             if (patch.GridSlots is <= 0)
                 record.GridSlots = null;
@@ -835,7 +837,7 @@ public sealed class PanelDeviceRegistry
                 record.Portrait = patch.Portrait.Value;
             if (patch.HighResolution.HasValue)
                 record.HighResolution = patch.HighResolution.Value;
-            if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.Small)
+            if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.Small or PanelWidgetSizes.XSmall)
                 record.WidgetSize = patch.WidgetSize;
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
@@ -1303,6 +1305,7 @@ public sealed class PanelDeviceRegistry
             // Hosted wins when set; otherwise Enabled passes through, so an untouched record still reads as uncustomized.
             Enabled = r.Hosted ?? r.Enabled,
             ClickThrough = r.ClickThrough,
+            WidgetsLocked = r.WidgetsLocked,
             GridSlots = r.GridSlots is > 0 ? r.GridSlots : null,
             DesktopImport = r.DesktopImport,
         };

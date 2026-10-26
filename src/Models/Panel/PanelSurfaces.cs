@@ -65,4 +65,5 @@ public static class PanelWidgetSizes
 {
     public const string Large = "large";
     public const string Small = "small";
+    public const string XSmall = "xsmall";
 }

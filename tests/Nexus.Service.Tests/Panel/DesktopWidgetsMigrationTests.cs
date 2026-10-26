@@ -283,6 +283,20 @@ public class DesktopWidgetsMigrationTests
     }
 
     [Fact]
+    public void The_import_leaves_grid_slots_unset_and_carries_the_cell_size_for_the_web_to_pick_a_widget_size()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        m.Run(One());
+
+        var r = Only(store);
+        Assert.Null(r.GridSlots);
+        Assert.Null(r.WidgetSize);
+        Assert.Null(r.WidgetsLocked);
+        Assert.True(r.DesktopImport!.CellPx > 0);
+        Assert.Equal("device", r.DesktopImport.CellUnits);
+    }
+
+    [Fact]
     public void An_unset_legacy_opacity_gives_full_widget_opacity()
     {
         var (m, store, _) = Build(HostOs.Windows, Widget("a"));

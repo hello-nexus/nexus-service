@@ -147,6 +147,9 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Empty space passes input through to the desktop. Honored only while <see cref="Backdrop"/> is "desktop"
     /// on a display-bound record; null = false.</summary>
     public bool? ClickThrough { get; set; }
+    /// <summary>The panel's widgets cannot be moved or resized while true. Display-bound records only; null = unlocked.
+    /// Per-widget locks stay stored but the panel lock is what the page honors.</summary>
+    public bool? WidgetsLocked { get; set; }
     /// <summary>Short-axis cell count of the page grid, even and within <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MinGridSlots"/> to <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MaxGridSlots"/>. Overrides the count <see cref="WidgetSize"/>
     /// would derive; null = derive from <see cref="WidgetSize"/>.</summary>
     public int? GridSlots { get; set; }
@@ -181,7 +184,7 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
+    /// <summary>"large" (fewer, bigger widgets), "small" or "xsmall" (a denser grid); null = the panel's
     /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
     public string? WidgetSize { get; set; }
     /// <summary>Profile files only: hash of the monitor fingerprint this record was saved from (see <see cref="Nexus.Service.Persistence.PanelProfileData"/>). Never set on a live record.</summary>
@@ -468,6 +471,8 @@ public sealed class PanelDevicePatch
     public bool? AlwaysOnTop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
     public bool? ClickThrough { get; set; }
+    /// <summary>Display-bound records only; ignored for other panels.</summary>
+    public bool? WidgetsLocked { get; set; }
     /// <summary>Even and within the registry's grid slot bounds; anything else is ignored.</summary>
     public int? GridSlots { get; set; }
     /// <summary>True drops the record's pending <see cref="PanelDeviceRecord.DesktopImport"/>; sent with the planned Layout and GridSlots.</summary>
@@ -493,8 +498,7 @@ public sealed class PanelDevicePatch
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
-    /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
+    /// <summary>"large", "small" or "xsmall"; anything else is ignored. Null = leave it.</summary>
     public string? WidgetSize { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
 }
