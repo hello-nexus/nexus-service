@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace Nexus.Service.Platform.Linux;
 
@@ -23,32 +24,49 @@ internal static partial class LinuxSysfs
     }
 
     /// <summary>
-    /// True when the path, symlinks followed, is a regular file. Uses statx, whose layout is the same on every
-    /// architecture, so a FIFO or device is classified without being opened.
+    /// Opens the path, symlinks followed, for reading only if it is a regular file; null otherwise. The open is
+    /// non-blocking and the type is checked on the open descriptor (statx, whose layout is the same on every
+    /// architecture), so a FIFO swapped in after any earlier check cannot block the caller.
     /// </summary>
-    internal static bool IsRegularFile(string path)
+    internal static FileStream? OpenRegularFile(string path)
     {
         if (!OperatingSystem.IsLinux())
-            return File.Exists(path);
+            return File.Exists(path) ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) : null;
+        var fd = open(path, ORdOnly | ONonBlock | OCloExec);
+        if (fd < 0)
+            return null;
+        var handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
         try
         {
             var buffer = new byte[StatxSize];
-            if (statx(AtFdCwd, path, 0, StatxType, buffer) != 0)
-                return false;
-            return (BitConverter.ToUInt16(buffer, StatxModeOffset) & SIfMt) == SIfReg;
+            if (statx(fd, "", AtEmptyPath, StatxType, buffer) != 0
+                || (BitConverter.ToUInt16(buffer, StatxModeOffset) & SIfMt) != SIfReg)
+            {
+                handle.Dispose();
+                return null;
+            }
+            return new FileStream(handle, FileAccess.Read, 1, isAsync: false);
         }
         catch
         {
-            return false;
+            handle.Dispose();
+            return null;
         }
     }
 
-    private const int AtFdCwd = -100;
+    // Linux generic values (x86, arm); statx(2) layout is fixed across architectures.
+    private const int ORdOnly = 0;
+    private const int ONonBlock = 0x800;
+    private const int OCloExec = 0x80000;
+    private const int AtEmptyPath = 0x1000;
     private const uint StatxType = 1;
     private const int StatxSize = 256;
     private const int StatxModeOffset = 28;
     private const int SIfMt = 0xF000;
     private const int SIfReg = 0x8000;
+
+    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int open(string path, int flags);
 
     [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int statx(int dirfd, string path, int flags, uint mask, byte[] buffer);

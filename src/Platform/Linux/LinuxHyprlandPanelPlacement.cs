@@ -191,6 +191,7 @@ internal static class LinuxHyprlandPanelPlacement
         var previousFocus = HyprlandIpc.ParseActiveAddress(send("j/activewindow"));
         var fullscreenTries = 0;
         (int X, int Y)? cursor = null;
+        (int X, int Y)? warped = null;
         for (var attempt = 0; attempt < PollAttempts; attempt++)
         {
             var step = Plan(HyprlandIpc.ParseClients(send("j/clients")), HyprlandIpc.ParseMonitors(send("j/monitors")), connector,
@@ -198,8 +199,10 @@ internal static class LinuxHyprlandPanelPlacement
             switch (step.Kind)
             {
                 case StepKind.Done:
+                    // Restored only if the cursor is still where the focus warp left it; a user move or another warp wins.
+                    var cursorUntouched = cursor is not null && warped is not null && HyprlandIpc.ParseCursor(send("j/cursorpos")) == warped;
                     RestoreFocus(send, step.Window.Address, previousFocus);
-                    if (cursor is { } c)
+                    if (cursorUntouched && cursor is { } c)
                         send($"/dispatch movecursor {c.X} {c.Y}");
                     Console.Error.WriteLine(fullscreenTries >= MaxFullscreenTries
                         ? $"[panel-kiosk] Hyprland kiosk on {connector}; fullscreen was not confirmed"
@@ -218,6 +221,7 @@ internal static class LinuxHyprlandPanelPlacement
                             && HyprlandIpc.ParseActiveAddress(send("j/activewindow")) == step.Window.Address)
                         {
                             send(FullscreenLegacy());
+                            warped = HyprlandIpc.ParseCursor(send("j/cursorpos"));
                         }
                     }
                     break;

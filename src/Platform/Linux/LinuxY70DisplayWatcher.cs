@@ -82,7 +82,7 @@ public sealed class LinuxY70DisplayWatcher : BackgroundService
         }
         // The topology is cached for a few seconds, so a read right after a change can predate it; recheck on later ticks.
         var present = _present();
-        _recheck = present ? 0 : _recheck - 1;
+        _recheck--;
         var reconcile = ShouldReconcile(true, present, _wasPresent);
         _wasPresent = present;
         if (reconcile)

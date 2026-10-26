@@ -88,9 +88,9 @@ internal static class LinuxHyprlandTouchMap
 
     private static string ReadCapped(string path)
     {
-        if (!LinuxSysfs.IsRegularFile(path))
+        using var stream = LinuxSysfs.OpenRegularFile(path);
+        if (stream is null)
             return "";
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         var buffer = new byte[MaxConfigFileBytes];
         var read = 0;
         while (read < buffer.Length)

@@ -198,6 +198,8 @@ public class HyprlandPanelTests
         public bool LuaAccepted = true;
         public bool FullscreenWorks = true;
         public bool FocusWorks = true;
+        public (int X, int Y) Cursor = (100, 200);
+        public bool UserMovesCursor;
         public string ActiveAddress = "0xbeef";
         public readonly List<string> Sent = [];
 
@@ -210,6 +212,8 @@ public class HyprlandPanelTests
                 return MonitorsJson;
             if (request == "j/clients")
             {
+                if (UserMovesCursor && Fullscreen == 2 && ActiveAddress == "0xa1")
+                    Cursor = (5, 5);
                 return "[" + Clients("0xa1", "nexus-panel-y70", KioskMonitor, Fullscreen).Trim('[', ']')
                     + ",{\"address\":\"0xbeef\",\"mapped\":true,\"class\":\"kitty\",\"initialClass\":\"kitty\",\"monitor\":0,\"fullscreen\":0,\"fullscreenClient\":0}]";
             }
@@ -235,11 +239,20 @@ public class HyprlandPanelTests
                 Fullscreen = 2;
                 return "ok";
             }
+            if (request == "j/cursorpos")
+                return $$"""{"x": {{Cursor.X}}, "y": {{Cursor.Y}}}""";
+            if (request.StartsWith("/dispatch movecursor ", StringComparison.Ordinal))
+            {
+                var parts = request.Split(' ');
+                Cursor = (int.Parse(parts[2]), int.Parse(parts[3]));
+                return "ok";
+            }
             if (request.StartsWith("/dispatch focuswindow address:", StringComparison.Ordinal) && !FocusWorks)
                 return "unknown request";
             if (request.StartsWith("/dispatch focuswindow address:", StringComparison.Ordinal))
             {
                 ActiveAddress = request["/dispatch focuswindow address:".Length..];
+                Cursor = ActiveAddress == "0xa1" ? (9000, 500) : Cursor;
                 return "ok";
             }
             if (request == "/dispatch fullscreen 0" && !FullscreenWorks)
@@ -297,6 +310,16 @@ public class HyprlandPanelTests
         Assert.Equal(3, fake.Sent.Count(r => r == "/dispatch fullscreen 0"));
     }
 
+    [Theory]
+    [InlineData(false, 100, 200)]
+    [InlineData(true, 5, 5)]
+    public async Task PlaceAsync_RestoresTheCursorOnlyWhenTheFocusWarpLeftItAlone(bool userMoves, int x, int y)
+    {
+        var fake = new FakeHyprland { LuaAccepted = false, KioskMonitor = 1, Fullscreen = 0, UserMovesCursor = userMoves };
+        await LinuxHyprlandPanelPlacement.PlaceAsync(fake.Send, "DP-2", _ => Task.CompletedTask);
+        Assert.Equal((x, y), fake.Cursor);
+    }
+
     [Fact]
     public async Task PlaceAsync_NeverTogglesFullscreenWithoutConfirmedFocus()
     {
@@ -320,16 +343,17 @@ public class HyprlandPanelTests
     }
 
     [Fact]
-    public void IsRegularFile_AcceptsFilesAndRejectsDirectories()
+    public void OpenRegularFile_AcceptsFilesAndRejectsDirectoriesAndMissing()
     {
         var dir = Directory.CreateTempSubdirectory("reg").FullName;
         try
         {
             var file = Path.Combine(dir, "a.conf");
             File.WriteAllText(file, "x");
-            Assert.True(LinuxSysfs.IsRegularFile(file));
-            Assert.False(LinuxSysfs.IsRegularFile(dir));
-            Assert.False(LinuxSysfs.IsRegularFile(Path.Combine(dir, "missing")));
+            using (var stream = LinuxSysfs.OpenRegularFile(file))
+                Assert.NotNull(stream);
+            Assert.Null(LinuxSysfs.OpenRegularFile(dir));
+            Assert.Null(LinuxSysfs.OpenRegularFile(Path.Combine(dir, "missing")));
         }
         finally
         {
@@ -500,6 +524,26 @@ public class HyprlandPanelTests
     }
 
     [Fact]
+    public void Watcher_ReconcilesOnAReplugAfterAnUnplugWithAStaleCache()
+    {
+        var present = true;
+        var connectors = "a,b";
+        var reconciles = 0;
+        var watcher = new LinuxY70DisplayWatcher(() => true, () => present, () => reconciles++, () => connectors);
+        watcher.Tick();
+        Assert.Equal(1, reconciles);
+        connectors = "a";
+        watcher.Tick();
+        present = false;
+        watcher.Tick();
+        watcher.Tick();
+        present = true;
+        connectors = "a,b";
+        watcher.Tick();
+        Assert.Equal(2, reconciles);
+    }
+
+    [Fact]
     public void Watcher_ReconcilesOnceWhenTheDisplayAppears()
     {
         var present = false;
@@ -517,7 +561,7 @@ public class HyprlandPanelTests
         watcher.Tick();
         watcher.Tick();
         Assert.Equal(1, reconciles);
-        Assert.Equal(3, scans);
+        Assert.Equal(4, scans);
         wanted = false;
         watcher.Tick();
         wanted = true;
