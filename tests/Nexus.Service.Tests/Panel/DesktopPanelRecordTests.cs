@@ -179,6 +179,13 @@ public class DesktopPanelRecordTests
     }
 
     [Fact]
+    public void Widget_opacity_defaults_to_full_in_the_settings_type_and_the_install_defaults()
+    {
+        Assert.Equal(1.0, new PanelSettings().WidgetOpacity);
+        Assert.Equal(1.0, Nexus.Service.Defaults.InstallDefaults.Panel.WidgetOpacity);
+    }
+
+    [Fact]
     public void Primary_panel_on_an_opaque_host_skips_the_see_through_flags()
     {
         var (registry, _) = Build(seeThrough: false);

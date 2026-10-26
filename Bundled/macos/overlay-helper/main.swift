@@ -110,7 +110,9 @@ final class OverlayWebViewDelegate: NSObject, WKNavigationDelegate {
 // the window never holds focus, so other apps' click chains aren't
 // disturbed.
 final class OverlayPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
+    /// True only while the page has a text field open (a widget edit sheet): keystrokes need a key window.
+    var activatable = false
+    override var canBecomeKey: Bool { activatable }
     override var canBecomeMain: Bool { false }
 }
 
@@ -228,6 +230,10 @@ final class KioskState {
     /// What the page last reported without a lease: full capture or these rects. A lease overlays it.
     var baseFull = false
     var baseRects: [CGRect] = []
+    /// Frost cards currently placed behind the web view, reused across updates.
+    var frostViews: [FrostView] = []
+    /// The app that was frontmost before the page asked for keyboard focus, given back when it lets go.
+    var previousApp: NSRunningApplication?
     /// Expiry of the page's transient full capture (edit sheet, catalog, drag); renewed by the page.
     var leaseExpiry: DispatchWorkItem?
 
@@ -245,6 +251,13 @@ final class KioskState {
     }
 
     var seeThrough: Bool { backdrop == "desktop" }
+}
+
+/// Frosted backing for a widget card: blurs the desktop behind the transparent window. It must never take
+/// input; the hit region logic stays the only input path.
+final class FrostView: NSVisualEffectView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override var acceptsFirstResponder: Bool { false }
 }
 
 /// "nexusPanel" script messages from the kiosk page: hit region and raise requests.
@@ -274,9 +287,27 @@ final class KioskPanelBridge: NSObject, WKScriptMessageHandler {
                 }
             }
             DispatchQueue.main.async { [weak self] in self?.owner?.applyHitTest(webView, full: mode == "full", lease: lease, rects: rects) }
+        case "nexus.panel.frost":
+            let level = (obj["level"] as? String) ?? "none"
+            let radius = (obj["radius"] as? NSNumber)?.doubleValue ?? 0
+            let percent = (obj["percent"] as? NSNumber)?.doubleValue
+            var cards: [CGRect] = []
+            for d in (obj["rects"] as? [[String: Any]]) ?? [] {
+                if let x = (d["x"] as? NSNumber)?.doubleValue,
+                   let y = (d["y"] as? NSNumber)?.doubleValue,
+                   let w = (d["w"] as? NSNumber)?.doubleValue,
+                   let h = (d["h"] as? NSNumber)?.doubleValue,
+                   w > 0, h > 0 {
+                    cards.append(CGRect(x: x, y: y, width: w, height: h))
+                }
+            }
+            DispatchQueue.main.async { [weak self] in self?.owner?.applyFrost(webView, level: level, percent: percent, radius: CGFloat(radius), rects: cards) }
         case "nexus.panel.raise":
             let value = (obj["value"] as? Bool) ?? false
             DispatchQueue.main.async { [weak self] in self?.owner?.applyRaise(webView, value) }
+        case "nexus.panel.activatable":
+            let value = (obj["value"] as? Bool) ?? false
+            DispatchQueue.main.async { [weak self] in self?.owner?.applyActivatable(webView, value) }
         default:
             break
         }
@@ -431,6 +462,8 @@ final class KioskController {
     private func resetRegion(for webView: WKWebView) {
         guard let state = state(for: webView) else { return }
         clearRegion(state)
+        clearFrost(state)
+        releaseKeyboard(state)
         state.raised = false
         applyLevel(state)
         evaluateCursor()
@@ -485,6 +518,67 @@ final class KioskController {
             applyRegion(state, leaseActive: false)
         }
         evaluateCursor()
+    }
+
+    /// Places one blurred card behind the transparent web view per rect. Points equal CSS px, so the rects
+    /// need no dpr scaling; the hit view is flipped, matching the page's top-left origin.
+    func applyFrost(_ webView: WKWebView, level: String, percent: Double?, radius: CGFloat, rects: [CGRect]) {
+        guard let state = state(for: webView), state.seeThrough else { return }
+        if level == "none" || rects.isEmpty {
+            clearFrost(state)
+            return
+        }
+        let material: NSVisualEffectView.Material = level == "heavy" ? .hudWindow : .underWindowBackground
+        // The page's 0-100 slider scales the effect; the level alone only decides when no percent came.
+        let strength = CGFloat(max(0, min(100, percent ?? (level == "heavy" ? 100 : 60))) / 100)
+        while state.frostViews.count > rects.count {
+            state.frostViews.removeLast().removeFromSuperview()
+        }
+        while state.frostViews.count < rects.count {
+            let v = FrostView(frame: .zero)
+            v.blendingMode = .behindWindow
+            v.state = .active
+            v.wantsLayer = true
+            v.layer?.masksToBounds = true
+            state.hitView.addSubview(v, positioned: .below, relativeTo: state.webView)
+            state.frostViews.append(v)
+        }
+        for (i, rect) in rects.enumerated() {
+            let v = state.frostViews[i]
+            if v.material != material { v.material = material }
+            if v.frame != rect { v.frame = rect }
+            if v.alphaValue != strength { v.alphaValue = strength }
+            v.layer?.cornerRadius = radius
+        }
+    }
+
+    private func clearFrost(_ state: KioskState) {
+        for v in state.frostViews { v.removeFromSuperview() }
+        state.frostViews.removeAll()
+    }
+
+    /// While a text field is open the kiosk takes keyboard focus; letting go returns it to the app the user was in.
+    func applyActivatable(_ webView: WKWebView, _ value: Bool) {
+        guard let state = state(for: webView), let panel = state.window as? OverlayPanel else { return }
+        if value {
+            if panel.activatable { return }
+            let front = NSWorkspace.shared.frontmostApplication
+            if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { state.previousApp = front }
+            panel.activatable = true
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKey()
+            panel.makeFirstResponder(webView)
+        } else {
+            releaseKeyboard(state)
+        }
+    }
+
+    private func releaseKeyboard(_ state: KioskState) {
+        guard let panel = state.window as? OverlayPanel, panel.activatable else { return }
+        panel.activatable = false
+        panel.resignKey()
+        state.previousApp?.activate(options: [])
+        state.previousApp = nil
     }
 
     func applyRaise(_ webView: WKWebView, _ value: Bool) {

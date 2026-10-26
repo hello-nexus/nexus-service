@@ -207,6 +207,9 @@ public sealed class PanelDeviceRegistry
         };
     }
 
+    /// <summary>Widget card opacity a migrated desktop overlay gets when it never set one.</summary>
+    public const double FullWidgetOpacity = 1.0;
+
     /// <summary>Minimum gap between two identical weak plans before the second applies.</summary>
     internal const long WeakRelinkConfirmMs = 5000;
 

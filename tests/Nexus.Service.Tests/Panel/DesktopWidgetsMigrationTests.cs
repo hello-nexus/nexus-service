@@ -282,6 +282,17 @@ public class DesktopWidgetsMigrationTests
         Assert.False(r.DesktopImport!.Merge);
     }
 
+    [Fact]
+    public void An_unset_legacy_opacity_gives_full_widget_opacity()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.Overlay.Opacity = null);
+
+        m.Run(One());
+
+        Assert.Equal(1.0, Only(store).WidgetOpacity);
+    }
+
     [Theory]
     [InlineData(50, 43.0)]
     [InlineData(100, 86.0)]

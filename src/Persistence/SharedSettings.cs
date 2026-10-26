@@ -84,7 +84,7 @@ public sealed class PanelSettings
     /// from BackgroundOpacity which is the dim of the background effect over the
     /// panel's widgets. Surfaced as "Panel Opacity" on monitor-style panels only.</summary>
     public double PanelOpacity { get; set; } = 1.0;
-    public double WidgetOpacity { get; set; } = 0.7;
+    public double WidgetOpacity { get; set; } = 1.0;
     public bool WidgetLabels { get; set; } = false;
     /// <summary>Layout seeds for new device records + first-time desktop dashboard. Populated in install-defaults; null in the live profile (the embedded install-defaults table remains the source of truth for seeding new device records).</summary>
     public PanelLayoutsDefaults? Layouts { get; set; }

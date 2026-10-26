@@ -259,7 +259,7 @@ public sealed class DesktopWidgetsMigration
         record.AlwaysOnTop = overlay.AlwaysOnTop ?? false;
         record.ReserveMonitor = false;
         record.KeepCursorOff = false;
-        record.WidgetOpacity = Math.Clamp(overlay.Opacity ?? 1.0, 0, 1);
+        record.WidgetOpacity = Math.Clamp(overlay.Opacity ?? PanelDeviceRegistry.FullWidgetOpacity, 0, 1);
         record.ThemeSyncWithDesktop = true;
         record.AccentSyncWithDesktop = true;
         record.Hosted = overlay.Enabled ?? false;
