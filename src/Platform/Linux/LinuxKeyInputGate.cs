@@ -270,7 +270,7 @@ public sealed partial class LinuxKeyInputGate : IDisposable
     /// <summary>
     /// Null when no locker owns a known name or none answers GetActive. A failed or unanswered query
     /// blocks (true): a locker that cannot be asked is treated as up, never as absent. An owner that
-    /// answers GetActive with a D-Bus error (an inhibit-only ScreenSaver service) is skipped. The owner list, including an
+    /// lacks the method (an inhibit-only ScreenSaver service) is skipped. The owner list, including an
     /// empty one, is cached so the name lookups do not run every poll.
     /// </summary>
     internal async Task<bool?> CheckLockerAsync(
@@ -316,12 +316,13 @@ public sealed partial class LinuxKeyInputGate : IDisposable
     }
 
     // CallAsync surfaces a D-Bus error reply as InvalidOperationException whose message starts with the error name.
-    // Any error reply means the owner answered without a locked state (Cinnamon's csd-screensaver-proxy owns
-    // org.freedesktop.ScreenSaver and answers GetActive with org.freedesktop.DBus.Error.NotSupported), so it is
-    // skipped; only a timeout or transport failure leaves the locker unknown and blocks.
+    // NotSupported is what Cinnamon's csd-screensaver-proxy answers for GetActive on org.freedesktop.ScreenSaver.
     private static bool IsMissingMethod(Exception ex)
         => ex is InvalidOperationException
-            && ex.Message.StartsWith("D-Bus error ", StringComparison.Ordinal);
+            && (ex.Message.StartsWith("D-Bus error org.freedesktop.DBus.Error.UnknownMethod:", StringComparison.Ordinal)
+                || ex.Message.StartsWith("D-Bus error org.freedesktop.DBus.Error.UnknownInterface:", StringComparison.Ordinal)
+                || ex.Message.StartsWith("D-Bus error org.freedesktop.DBus.Error.UnknownObject:", StringComparison.Ordinal)
+                || ex.Message.StartsWith("D-Bus error org.freedesktop.DBus.Error.NotSupported:", StringComparison.Ordinal));
 
     private static async Task<(string Signature, DBusReader Reader)> GetAsync(
         DBusConnection bus, string path, string iface, string property)

@@ -173,6 +173,10 @@ public class LinuxKeyInputGateTests
     {
         using var queryFails = NewGate();
         Assert.True(await queryFails.CheckLockerAsync(n => Task.FromResult(n == Gnome), _ => throw new TimeoutException()));
+        using var otherError = NewGate();
+        Assert.True(await otherError.CheckLockerAsync(
+            n => Task.FromResult(n == Gnome),
+            _ => throw new InvalidOperationException("D-Bus error org.freedesktop.DBus.Error.AccessDenied: no")));
         using var transport = NewGate();
         Assert.True(await transport.CheckLockerAsync(
             n => Task.FromResult(n == Gnome),
@@ -186,7 +190,6 @@ public class LinuxKeyInputGateTests
     [InlineData("org.freedesktop.DBus.Error.UnknownInterface")]
     [InlineData("org.freedesktop.DBus.Error.UnknownObject")]
     [InlineData("org.freedesktop.DBus.Error.NotSupported")]
-    [InlineData("org.freedesktop.DBus.Error.AccessDenied")]
     public async Task Locker_OwnerWithoutGetActiveIsNotALocker(string error)
     {
         using var only = NewGate();
@@ -198,6 +201,15 @@ public class LinuxKeyInputGateTests
         Assert.True(await withReal.CheckLockerAsync(
             n => Task.FromResult(n is Gnome or Freedesktop),
             l => l.Name == Freedesktop ? throw new InvalidOperationException($"D-Bus error {error}: x") : Task.FromResult(true)));
+    }
+
+    [Fact]
+    public async Task Locker_ErrorNameMustLeadTheMessage()
+    {
+        using var gate = NewGate();
+        Assert.True(await gate.CheckLockerAsync(
+            n => Task.FromResult(n == Gnome),
+            _ => throw new InvalidOperationException("D-Bus error org.example.Error: org.freedesktop.DBus.Error.UnknownMethod")));
     }
 
     [Fact]
