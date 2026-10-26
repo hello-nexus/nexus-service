@@ -728,6 +728,24 @@ final class KioskController {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil)
         startCursorTracking()
+        // Dock moves and menu bar auto-hide change the visible frame without always posting a screen
+        // parameter change; a cheap check refits the primary kiosk.
+        visibleFrameTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            self?.refitIfVisibleFrameChanged()
+        }
+    }
+
+    private var visibleFrameTimer: Timer?
+
+    private func refitIfVisibleFrameChanged() {
+        let screens = screensByStableId()
+        for (displayId, state) in kiosks where state.isPrimary {
+            guard let screen = screens[displayId] else { continue }
+            if state.window.frame != KioskController.kioskFrame(screen, primary: true) {
+                refresh()
+                return
+            }
+        }
     }
 
     @objc private func screensChanged() {
@@ -964,7 +982,7 @@ final class KioskController {
                 || screen == nil
                 || want!.panelDeviceId != entry.deviceId
                 || want!.backdrop != entry.backdrop
-                || entry.window.frame != screen!.frame
+                || entry.window.frame != KioskController.kioskFrame(screen!, primary: want!.isPrimary)
             if stale {
                 entry.window.orderOut(nil)
                 entry.window.close()
@@ -1105,10 +1123,15 @@ final class KioskController {
 
     // MARK: window creation
 
+    /// The primary display's kiosk stops at the menu bar and Dock; every other display is covered whole.
+    static func kioskFrame(_ screen: NSScreen, primary: Bool) -> NSRect {
+        primary ? screen.visibleFrame : screen.frame
+    }
+
     private func makeKioskWindow(for screen: NSScreen, assignment a: KioskAssignment, touchViaPointer: Bool) -> KioskState {
         let deviceId = a.panelDeviceId
         let seeThrough = a.backdrop == "desktop"
-        let frame = screen.frame
+        let frame = KioskController.kioskFrame(screen, primary: a.isPrimary)
         // Non-activating panel for the same reason as the widget overlay:
         // the kiosk must take clicks without ever stealing key/main status
         // from the user's apps (Windows parity: WS_EX_NOACTIVATE).
