@@ -554,6 +554,13 @@ public static class ProfileRoutes
                     if (ui.ShowUncontrolledDevices.HasValue) s.Ui.ShowUncontrolledDevices = ui.ShowUncontrolledDevices.Value;
                     if (ui.ShowUncontrolledLightingDevices.HasValue) s.Ui.ShowUncontrolledLightingDevices = ui.ShowUncontrolledLightingDevices.Value;
                     if (ui.ShowUncontrolledCoolingDevices.HasValue) s.Ui.ShowUncontrolledCoolingDevices = ui.ShowUncontrolledCoolingDevices.Value;
+                    if (ui.LightingView3d.HasValue) s.Ui.LightingView3d = ui.LightingView3d.Value;
+                    if (ui.CoolingView3d.HasValue) s.Ui.CoolingView3d = ui.CoolingView3d.Value;
+                    if (ui.CoolingCollisionShapes.HasValue) s.Ui.CoolingCollisionShapes = ui.CoolingCollisionShapes.Value;
+                    if (ui.CoolingFlowMode is "both" or "case" or "airflow")
+                    {
+                        s.Ui.CoolingFlowMode = ui.CoolingFlowMode;
+                    }
                     if (ui.HiddenSidebarDevices is not null)
                     {
                         s.Ui.HiddenSidebarDevices = ui.HiddenSidebarDevices

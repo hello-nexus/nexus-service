@@ -447,6 +447,199 @@ public sealed class PcSetupRoutesTests : IClassFixture<LightingSceneAppFactory>
         Assert.Equal("kbd-1", body.GetProperty("bindings")[0].GetProperty("deviceId").GetString());
     }
 
+    // ---- PATCH radiator ----
+
+    private static string RadiatorSetup(string mount) =>
+        SetupJson().Replace("\"case\":{", $"\"case\":{{\"radiatorMount\":\"{mount}\",");
+
+    [Fact]
+    public async Task Radiator_patch_sets_only_the_mount_and_bumps_the_rev()
+    {
+        var rev = await Seed();
+        var before = await Body(await Desktop().GetAsync("/system/setup"));
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", $$"""{"baseRev":{{rev}},"mount":"right"}""");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal(rev + 1, (await Body(res)).GetProperty("rev").GetInt32());
+        var after = await Body(await Desktop().GetAsync("/system/setup"));
+        var b = before.GetProperty("setup");
+        var a = after.GetProperty("setup");
+        Assert.Equal("right", a.GetProperty("case").GetProperty("radiatorMount").GetString());
+        Assert.Equal(b.GetProperty("items").GetRawText(), a.GetProperty("items").GetRawText());
+        Assert.Equal(b.GetProperty("resolved").GetRawText(), a.GetProperty("resolved").GetRawText());
+        Assert.Equal(b.GetProperty("parts").GetRawText(), a.GetProperty("parts").GetRawText());
+        Assert.Equal(b.GetProperty("case").GetProperty("place").GetRawText(), a.GetProperty("case").GetProperty("place").GetRawText());
+    }
+
+    [Fact]
+    public async Task Radiator_patch_with_a_stale_rev_is_409_with_the_current_record()
+    {
+        var rev = await Seed();
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", $$"""{"baseRev":{{rev - 1}},"mount":"top"}""");
+
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+        var body = await Body(res);
+        Assert.Equal(rev, body.GetProperty("rev").GetInt32());
+        Assert.False(body.GetProperty("setup").GetProperty("case").TryGetProperty("radiatorMount", out _));
+    }
+
+    [Fact]
+    public async Task Radiator_patch_without_a_saved_record_is_400_no_record()
+    {
+        var res = await Patch(Desktop(), "/system/setup/radiator", """{"baseRev":0,"mount":"top"}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal("no_record", (await Body(res)).GetProperty("code").GetString());
+    }
+
+    [Theory]
+    [InlineData("\"Top\"")]
+    [InlineData("\"\"")]
+    [InlineData("\"top2\"")]
+    [InlineData("\"a b\"")]
+    [InlineData("\"top\\n\"")]
+    [InlineData("\"-\"")]
+    [InlineData("\"---\"")]
+    [InlineData("\"-top\"")]
+    [InlineData("\"top-\"")]
+    public async Task Radiator_patch_with_a_bad_mount_is_400_and_changes_nothing(string mount)
+    {
+        var rev = await Seed();
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", $$"""{"baseRev":{{rev}},"mount":{{mount}}}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal(rev, (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("rev").GetInt32());
+    }
+
+    [Fact]
+    public async Task Radiator_patch_with_a_mount_over_32_characters_is_400()
+    {
+        var rev = await Seed();
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", $$"""{"baseRev":{{rev}},"mount":"{{new string('a', 33)}}"}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Radiator_patch_with_a_null_mount_clears_it()
+    {
+        await Seed();
+        var set = await Patch(Desktop(), "/system/setup/radiator", """{"baseRev":1,"mount":"top"}""");
+        Assert.Equal(HttpStatusCode.OK, set.StatusCode);
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", """{"baseRev":2,"mount":null}""");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var setup = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup");
+        Assert.False(setup.GetProperty("case").TryGetProperty("radiatorMount", out _));
+    }
+
+    [Theory]
+    [InlineData("""{"baseRev":1}""")]
+    [InlineData("""{"baseRev":1,"mounts":"top"}""")]
+    public async Task Radiator_patch_without_the_mount_key_is_400_and_keeps_the_saved_choice(string body)
+    {
+        await Seed();
+        await Patch(Desktop(), "/system/setup/radiator", """{"baseRev":1,"mount":"top"}""");
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", body.Replace("\"baseRev\":1", "\"baseRev\":2"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        var setup = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup");
+        Assert.Equal("top", setup.GetProperty("case").GetProperty("radiatorMount").GetString());
+    }
+
+    [Fact]
+    public async Task Radiator_patch_that_would_push_the_record_over_the_cap_is_400_record_too_large()
+    {
+        var setup = new PcSetup();
+        setup.Parts = JsonDocument.Parse("{\"x\":\"" + new string('a', PcSetupValidation.MaxRecordBytes) + "\"}").RootElement.Clone();
+        Scene.Setup.TrySave(0, setup, out var saved);
+
+        var res = await Patch(Desktop(), "/system/setup/radiator", $$"""{"baseRev":{{saved.Rev}},"mount":"top"}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal("record_too_large", (await Body(res)).GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Radiator_patch_requires_a_base_rev_and_the_desktop_token()
+    {
+        await Seed();
+
+        var missing = await Patch(Desktop(), "/system/setup/radiator", """{"mount":"top"}""");
+        var anon = await Patch(_factory.CreateClient(), "/system/setup/radiator", """{"baseRev":1,"mount":"top"}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, anon.StatusCode);
+    }
+
+    [Fact]
+    public async Task Put_round_trips_the_radiator_mount_and_rejects_a_bad_one()
+    {
+        var ok = await Desktop().PutAsync("/system/setup", Json(Put(0, RadiatorSetup("top"))));
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        var setup = (await Body(await Desktop().GetAsync("/system/setup"))).GetProperty("setup");
+        Assert.Equal("top", setup.GetProperty("case").GetProperty("radiatorMount").GetString());
+
+        var bad = await Desktop().PutAsync("/system/setup", Json(Put(1, RadiatorSetup("Top-1"))));
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_radiator_patch_pings_the_system_setup_topic()
+    {
+        var rev = await Seed();
+        var hub = _factory.Services.GetRequiredService<MultiplexHub>();
+        // The test factory swaps in its own store, so the production wiring in the DI registration is repeated here.
+        PcSetupRoutes.WireTopic(Scene.Setup, hub);
+        var captured = new List<string>();
+        void Capture(string topic, ReadOnlyMemory<byte> payload)
+        {
+            if (topic == PanelTopics.SystemSetup)
+            {
+                lock (captured)
+                {
+                    captured.Add(Encoding.UTF8.GetString(payload.ToArray()));
+                }
+            }
+        }
+        hub.OnBroadcastForTest += Capture;
+        try
+        {
+            using var sub = hub.AddTestSubscription(PanelTopics.SystemSetup);
+
+            var res = await Patch(Desktop(), "/system/setup/radiator", $$"""{"baseRev":{{rev}},"mount":"top"}""");
+
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            // The broadcast is fire-and-forget, so it may land just after the response.
+            for (var i = 0; i < 100; i++)
+            {
+                lock (captured)
+                {
+                    if (captured.Count > 0)
+                    {
+                        break;
+                    }
+                }
+                await Task.Delay(20);
+            }
+            lock (captured)
+            {
+                Assert.Single(captured);
+                Assert.Contains($"\"rev\":{rev + 1}", captured[0]);
+            }
+        }
+        finally
+        {
+            hub.OnBroadcastForTest -= Capture;
+        }
+    }
+
     // ---- topic ----
 
     [Fact]

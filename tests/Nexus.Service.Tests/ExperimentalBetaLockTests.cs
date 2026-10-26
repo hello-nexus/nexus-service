@@ -38,6 +38,7 @@ public class ExperimentalBetaLockTests : IDisposable
     [InlineData("smbus-dram")]
     [InlineData("asus-ryujin-lcd")]
     [InlineData("asus-glacial-lcd")]
+    [InlineData("deepcool-mystique")]
     public void RequiresBeta_FirstPartyOrStableHandler_IsFalse(string handlerId)
     {
         Assert.False(DeviceControlPolicy.RequiresBeta(handlerId));

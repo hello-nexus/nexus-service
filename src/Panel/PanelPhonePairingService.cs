@@ -49,6 +49,7 @@ public sealed class PanelPhonePairingService
 
     private readonly IConfigStore _store;
     private readonly MultiplexHub _hub;
+    private readonly Nexus.Service.Telemetry.ITelemetry? _telemetry;
     private readonly object _lock = new();
     private readonly Dictionary<string, DateTime> _pairTokens = new(StringComparer.Ordinal);
 
@@ -93,10 +94,11 @@ public sealed class PanelPhonePairingService
     /// </summary>
     public string MachineName => ResolveMachineName();
 
-    public PanelPhonePairingService(IConfigStore store, MultiplexHub hub)
+    public PanelPhonePairingService(IConfigStore store, MultiplexHub hub, Nexus.Service.Telemetry.ITelemetry? telemetry = null)
     {
         _store = store;
         _hub = hub;
+        _telemetry = telemetry;
 
         // Retain the currently-pending pair request so a dashboard that
         // connects mid-handshake (e.g. one opened from the tray pairing
@@ -417,6 +419,14 @@ public sealed class PanelPhonePairingService
         public static ClaimResult Fail(string error) => new(false, "", "", "", error, false, "", "", 0);
     }
 
+    /// <summary>True while a session is still inside its own idle limit (long for HTTPS-claimed, short for plain HTTP).</summary>
+    internal static bool IsSessionLive(PanelPhoneSessionToken session, long nowMs)
+    {
+        var lastSeen = session.LastSeenAt > 0 ? session.LastSeenAt : session.CreatedAt;
+        var idleLimit = session.ClaimedOverHttps ? SessionIdleMs : HttpSessionIdleMs;
+        return lastSeen > 0 && nowMs - lastSeen <= idleLimit;
+    }
+
     private bool AlreadyPaired(string deviceId, string fingerprint)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -427,9 +437,7 @@ public sealed class PanelPhonePairingService
         }
         foreach (var session in sessions)
         {
-            var lastSeen = session.LastSeenAt > 0 ? session.LastSeenAt : session.CreatedAt;
-            var idleLimit = session.ClaimedOverHttps ? SessionIdleMs : HttpSessionIdleMs;
-            if (lastSeen <= 0 || now - lastSeen > idleLimit)
+            if (!IsSessionLive(session, now))
             {
                 continue;
             }
@@ -628,6 +636,8 @@ public sealed class PanelPhonePairingService
             });
             NormalizeSessionList(s.Auth.PanelPhoneSessions, now);
         });
+
+        _telemetry?.Capture(Nexus.Service.Telemetry.TelemetryEvents.PairCompleted, ("transport", overRelay ? "relay" : "lan"));
 
         return new ClaimResult(
             Ok: true,
@@ -1891,6 +1901,9 @@ public sealed class PanelPhonePairingService
             });
             NormalizeSessionList(s.Auth.PanelPhoneSessions, nowMs);
         });
+
+        // The approved pair-code claim is always a LAN HTTPS one.
+        _telemetry?.Capture(Nexus.Service.Telemetry.TelemetryEvents.PairCompleted, ("transport", "lan"));
 
         return (sessionToken, NormalizeMachineName(MachineName));
     }

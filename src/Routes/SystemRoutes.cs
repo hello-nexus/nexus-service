@@ -70,7 +70,10 @@ public static class SystemRoutes
         // This machine's PC case (catalog part id), picked in the Build page's
         // My Systems frame. Desktop-token only: the pick is machine config.
         app.MapGet("/system/case", async (SystemCaseService cases, CancellationToken ct) =>
-            new SystemCaseResponse { CaseId = await cases.GetAsync(ct).ConfigureAwait(false) });
+        {
+            var (caseId, auto) = await cases.GetWithOriginAsync(ct).ConfigureAwait(false);
+            return new SystemCaseResponse { CaseId = caseId, Auto = auto };
+        });
 
         app.MapPut("/system/case", async (SetSystemCaseBody body, SystemCaseService cases, CancellationToken ct) =>
         {

@@ -48,6 +48,7 @@ public class DeviceControlPolicyTests
     [InlineData("nollie")]
     [InlineData("asus-ryujin-lcd")]
     [InlineData("asus-glacial-lcd")]
+    [InlineData("deepcool-mystique")]
     [InlineData("asrock-lcd")]
     [InlineData("asus-slc4-lcd")]
     [InlineData("thermalright-lcd")]
