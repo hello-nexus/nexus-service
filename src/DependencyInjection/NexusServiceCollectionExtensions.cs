@@ -2631,6 +2631,8 @@ public static class NexusServiceCollectionExtensions
 #if LINUX
         Nexus.Service.Platform.Linux.LinuxPanelKioskHost.Configure(servicePort);
         services.AddSingleton<Nexus.Service.Platform.Linux.LinuxPanelKioskHost>();
+        services.AddHostedService(sp => new Nexus.Service.Platform.Linux.LinuxY70DisplayWatcher(
+            sp.GetRequiredService<Nexus.Service.Platform.Linux.LinuxPanelKioskHost>()));
         Nexus.Service.Platform.Linux.LinuxStreamRenderHost.Configure(servicePort);
         services.AddHostedService(sp => new Nexus.Service.Platform.Linux.LinuxStreamRenderHost(
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(),

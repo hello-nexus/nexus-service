@@ -94,6 +94,12 @@ public sealed class LinuxPanelKioskHost : IDisposable
     // Read from the settings-store change handler on route threads: must not
     // wait behind a CloseKiosk that is killing a flatpak process tree under _lock.
     private volatile bool _y70Running;
+
+    internal bool WantsY70DisplayWatch()
+        => !_y70Running && _store.Load().Panel.AutoLaunch && (!LinuxSession.IsRootDaemon || LinuxSession.SessionUid is not null);
+
+    internal bool Y70DisplayPresent() => _topology.HasY70Display();
+
     private bool _y70WasDesired;
 
     public bool Y70Running => _y70Running;
@@ -335,8 +341,9 @@ public sealed class LinuxPanelKioskHost : IDisposable
         // KDE places the window on the primary screen; the script moves it to
         // the Y70. Loaded before the spawn so windowAdded catches this window.
         var isY70 = string.Equals(displayId, Y70Slot, StringComparison.Ordinal);
+        var y70Connector = isY70 ? LinuxX11Outputs.ConnectorFromDisplayId(_topology.Y70DisplayId()) : "";
         if (isY70)
-            _ = LinuxKWinPanelPlacement.EnsureLoadedAsync(_dbus, LinuxX11Outputs.ConnectorFromDisplayId(_topology.Y70DisplayId()));
+            _ = LinuxKWinPanelPlacement.EnsureLoadedAsync(_dbus, y70Connector);
 
         var url = KioskUrl(_servicePort, deviceId, _tokens.Token);
         var flatpakApp = LinuxBrowsers.FlatpakAppId(browser);
@@ -372,6 +379,7 @@ public sealed class LinuxPanelKioskHost : IDisposable
             _running[displayId] = new Kiosk(proc, deviceId, DateTime.UtcNow, flatpakApp);
             if (isY70)
             {
+                LinuxHyprlandPanelPlacement.Start(y70Connector);
                 _y70Running = true;
                 _ = LinuxScreenInhibit.AcquireAsync(_dbus);
             }
