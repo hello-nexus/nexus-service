@@ -631,9 +631,11 @@ public static class NexusServiceCollectionExtensions
         {
             var scene = new Nexus.Service.Lighting.Scene.LightingSceneStore();
             Nexus.Service.Routes.PcSetupRoutes.WireTopic(scene.Setup, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
+            Nexus.Service.Routes.CoolingLayoutRoutes.WireTopic(scene.Cooling, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
             return scene;
         });
         services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Setup);
+        services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Cooling);
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomEffectStore>();
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomFragCompiler>(sp =>
         {
@@ -2680,6 +2682,7 @@ public static class NexusServiceCollectionExtensions
             }
 #endif
             var sockets = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            var configStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
             return new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
                 sp.GetServices<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(),
                 sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>(),
@@ -2689,7 +2692,8 @@ public static class NexusServiceCollectionExtensions
                 notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id),
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
-                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
+                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized,
+                fpsCap: () => configStore.Load().StreamedPanelFpsCap);
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());
@@ -2766,7 +2770,17 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Cloud.CloudAccountService>();
         services.AddSingleton<Nexus.Service.Persistence.MachineCaseStore>();
         services.AddSingleton<Nexus.Service.Persistence.SystemPreviewStore>();
-        services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>();
+        services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>(sp =>
+        {
+            var cases = new Nexus.Service.Cloud.SystemCaseService(
+                sp.GetRequiredService<Nexus.Service.Persistence.MachineCaseStore>(),
+                sp.GetRequiredService<Nexus.Service.Cloud.CloudAccountService>(),
+                sp.GetRequiredService<Nexus.Service.Cloud.ICloudApiClient>());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            cases.Changed += id => Nexus.Service.Sockets.PanelTopics.BroadcastSystemCase(hub, id);
+            return cases;
+        });
+        services.AddSingleton<Nexus.Service.Peripherals.Y70.Y70CaseAssigner>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileSyncService>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileLibraryService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Cloud.CloudProfileSyncService>());

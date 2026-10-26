@@ -152,6 +152,14 @@ public static partial class PcSetupValidation
             {
                 return new("non_finite_number", $"item {item.Id}: width and depth must be finite and positive");
             }
+            if (custom.HeightMm is { } height && !IsValidHeight(height))
+            {
+                return new("non_finite_number", $"item {item.Id}: height must be finite and positive");
+            }
+            if (custom.CurveRadiusMm is { } radius && !IsValidCurveRadius(radius))
+            {
+                return new("invalid_curve", $"item {item.Id}: curve radius is out of range");
+            }
             if (custom.Shape is not null && custom.Shape is not ("straight" or "l"))
             {
                 return new("invalid_item", $"item {item.Id}: shape must be straight or l");
@@ -202,6 +210,13 @@ public static partial class PcSetupValidation
             ? new("value_too_large", $"{what} is over {maxBytes} bytes")
             : null;
     }
+
+    /// <summary>The bounds <see cref="Validate"/> applies to a custom item's height.</summary>
+    public static bool IsValidHeight(float v) => float.IsFinite(v) && v > 0f && v <= MaxExtentMm;
+
+    /// <summary>The bounds <see cref="Validate"/> applies to a custom item's screen radius.</summary>
+    public static bool IsValidCurveRadius(float v) =>
+        float.IsFinite(v) && v >= SceneValidation.MinCurveRadiusMm && v <= SceneValidation.MaxCurveRadiusMm;
 
     private static bool Dimension(float? v) => v is null || (float.IsFinite(v.Value) && v.Value > 0f && v.Value <= MaxExtentMm);
 

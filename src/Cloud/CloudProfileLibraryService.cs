@@ -33,10 +33,12 @@ public sealed class CloudProfileLibraryService
     private readonly IConfigStore _store;
     private readonly AppDataStore _appData;
     private readonly PcSetupStore? _pcSetup;
+    private readonly Nexus.Service.Cooling.CoolingLayoutStore? _cooling;
 
-    public CloudProfileLibraryService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, AppDataStore appData, PcSetupStore? pcSetup = null)
+    public CloudProfileLibraryService(ICloudApiClient api, CloudAccountService accounts, ProfileManager profiles, IConfigStore store, AppDataStore appData, PcSetupStore? pcSetup = null, Nexus.Service.Cooling.CoolingLayoutStore? cooling = null)
     {
         _pcSetup = pcSetup;
+        _cooling = cooling;
         _api = api;
         _accounts = accounts;
         _profiles = profiles;
@@ -111,7 +113,7 @@ public sealed class CloudProfileLibraryService
                 Revision = r.Revision,
                 SizeBytes = r.SizeBytes,
                 UpdatedAt = r.UpdatedAt,
-                AppIds = (r.AppIds ?? new List<string>()).Where(id => id != PcSetupBackup.AppId).ToList(),
+                AppIds = (r.AppIds ?? new List<string>()).Where(id => id != PcSetupBackup.AppId && id != CoolingLayoutBackup.AppId).ToList(),
             })
             .ToList();
 
@@ -144,6 +146,7 @@ public sealed class CloudProfileLibraryService
         var appData = request.IncludeAppData ? ProfileBundle.Sanitize(fetched.Value.AppData) : null;
         // The PC setup rides in the app-data bundle, under the same toggle; it is machine scope, so it is applied once the profile has landed.
         appData = PcSetupBackup.Detach(appData, out var restoredSetup);
+        appData = CoolingLayoutBackup.Detach(appData, out var restoredCooling);
         LastImportReplacedActive = false;
 
         // Restoring this machine's own backup keeps the original profileId and
@@ -156,6 +159,10 @@ public sealed class CloudProfileLibraryService
                 var restored = _profiles.ImportProfileWithId(request.ProfileId, sourceName, settings, absorbPanelLooks: true);
                 _appData.ReplaceApps(restored.Id, appData);
                 var setupOutcome = RestoreSetup(restoredSetup, ownMachine: true);
+                if (restoredCooling is not null)
+                {
+                    _cooling?.Replace(restoredCooling);
+                }
                 LastImportReplacedActive = restored.Id == _profiles.ActiveProfileId;
                 return CloudActionResult.Ok(setupOutcome);
             }

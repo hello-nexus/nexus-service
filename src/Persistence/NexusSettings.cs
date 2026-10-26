@@ -57,6 +57,9 @@ public sealed class NexusSettings
     public SentrySettings Sentry { get; set; } = new();
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
+    /// <summary>Global frame-rate cap in Hz for every streamed panel (Kraken LCD, fan LCDs, JPEG panels, ...); null runs each panel at its own model rate. A stored null is "off" (written explicitly, since the context drops nulls by default), an absent key is the default. NOT profile-scoped: it is a property of this workstation.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
+    public int? StreamedPanelFpsCap { get; set; } = 30;
 
     /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
     public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();
@@ -2477,6 +2480,9 @@ public sealed class CloudProfileSyncRecord
 
     /// <summary>Digest of the PC setup record as last attached to a push of this profile; empty when none was. Only a manual Back up compares it.</summary>
     public string LastPushedSetupHash { get; set; } = "";
+
+    /// <summary>Same as <see cref="LastPushedSetupHash"/> for the cooling layout document.</summary>
+    public string LastPushedCoolingHash { get; set; } = "";
 }
 
 public sealed class PairBroadcastSettings

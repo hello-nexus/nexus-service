@@ -51,6 +51,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly PanelDeviceRegistry _registry;
     private readonly Func<string, bool> _removePanel;
     private readonly Func<string, bool> _isCustomized;
+    private readonly Func<int?>? _fpsCap;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
@@ -77,8 +78,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Action<string>? notifyPanelChanged = null,
         LcdLockState? lockState = null,
         Func<string, bool>? removePanel = null,
-        Func<string, bool>? isCustomized = null)
+        Func<string, bool>? isCustomized = null,
+        Func<int?>? fpsCap = null)
     {
+        _fpsCap = fpsCap;
         _removePanel = removePanel ?? registry.Remove;
         _isCustomized = isCustomized ?? registry.IsCustomized;
         _discoveries = discoveries.ToList();
@@ -469,7 +472,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             {
                 DeviceSession? existing;
                 lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
-                var info = existing is null ? found : WithRenderScale(found, existing.Session.PanelDeviceId);
+                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId));
                 string? remintedPanelId = null;
                 if (existing is not null && !ProfilesEqual(existing.Info.Profile, info.Profile))
                 {
@@ -718,7 +721,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ServiceLog.Error($"[streamed-panel] record allocation failed serial={info.Serial}: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
-        info = WithRenderScale(info, panelDeviceId);
+        info = WithFpsCap(WithRenderScale(info, panelDeviceId));
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
         var ds = new DeviceSession
@@ -1075,6 +1078,15 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         return scale.Equals(profile.RenderScale)
             ? info
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
+    }
+
+    // The cap is part of the profile, so changing it re-mints live sessions through the "profile changed" path in TickOnce.
+    private StreamedPanelDeviceInfo WithFpsCap(StreamedPanelDeviceInfo info)
+    {
+        var fps = StreamFpsCap.Effective(info.Profile.Fps, _fpsCap?.Invoke());
+        return fps == info.Profile.Fps
+            ? info
+            : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = info.Profile with { Fps = fps }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
     }
 
     internal static bool ProfilesEqual(StreamedPanelProfile a, StreamedPanelProfile b)
