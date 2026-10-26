@@ -180,12 +180,13 @@ public sealed class DisplayTopologyService : IDisposable
         lock (_cacheLock) return _y70DisplayId;
     }
 
-    /// <summary>Whether <paramref name="displayId"/> is the OS primary display, from the same short-lived cache.</summary>
+    /// <summary>
+    /// Whether <paramref name="displayId"/> is the OS primary display, from the last enumeration whatever its
+    /// age. Never enumerates: a helper round trip does not belong in a request handler.
+    /// </summary>
     public bool IsPrimaryDisplay(string displayId)
     {
         if (string.IsNullOrEmpty(displayId)) return false;
-        if (!TryGetCached(out _, out _, out _))
-            CacheAttachedIds(_provider.Enumerate());
         lock (_cacheLock) return _primaryDisplayId.Length > 0 && string.Equals(_primaryDisplayId, displayId, StringComparison.Ordinal);
     }
 

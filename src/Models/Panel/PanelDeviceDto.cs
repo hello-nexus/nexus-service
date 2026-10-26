@@ -147,7 +147,7 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Empty space passes input through to the desktop. Honored only while <see cref="Backdrop"/> is "desktop"
     /// on a display-bound record; null = false.</summary>
     public bool? ClickThrough { get; set; }
-    /// <summary>Short-axis cell count of the page grid, even, 2-64. Overrides the count <see cref="WidgetSize"/>
+    /// <summary>Short-axis cell count of the page grid, even and within <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MinGridSlots"/> to <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MaxGridSlots"/>. Overrides the count <see cref="WidgetSize"/>
     /// would derive; null = derive from <see cref="WidgetSize"/>.</summary>
     public int? GridSlots { get; set; }
     /// <summary>Downgrade guard. When non-null it replaces <see cref="Enabled"/> (see <see cref="Nexus.Service.Panel.PanelHosting"/>)
@@ -468,7 +468,7 @@ public sealed class PanelDevicePatch
     public bool? AlwaysOnTop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
     public bool? ClickThrough { get; set; }
-    /// <summary>Even, 2-64; anything else is ignored.</summary>
+    /// <summary>Even and within the registry's grid slot bounds; anything else is ignored.</summary>
     public int? GridSlots { get; set; }
     /// <summary>True drops the record's pending <see cref="PanelDeviceRecord.DesktopImport"/>; sent with the planned Layout and GridSlots.</summary>
     public bool? ClearDesktopImport { get; set; }

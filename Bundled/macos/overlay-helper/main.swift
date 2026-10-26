@@ -103,10 +103,12 @@ final class OverlayWebViewDelegate: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        onReset?(webView)
         FileHandle.standardError.write("[overlay-helper] navigation failed: \(error.localizedDescription)\n".data(using: .utf8)!)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        onReset?(webView)
         FileHandle.standardError.write("[overlay-helper] navigation error: \(error.localizedDescription)\n".data(using: .utf8)!)
     }
 }
@@ -592,6 +594,11 @@ final class KioskState {
     var isPrimary: Bool
     /// The page asked to sit above app windows while a menu, sheet or drag is open.
     var raised = false
+    /// What the page last reported without a lease: full capture or these rects. A lease overlays it.
+    var baseFull = false
+    var baseRects: [CGRect] = []
+    /// Expiry of the page's transient full capture (edit sheet, catalog, drag); renewed by the page.
+    var leaseExpiry: DispatchWorkItem?
 
     init(window: NSWindow, deviceId: String, touchViaPointer: Bool, backdrop: String,
          hitView: HitTestView, webView: WKWebView, alwaysOnTop: Bool, clickThrough: Bool, isPrimary: Bool) {
@@ -607,8 +614,6 @@ final class KioskState {
     }
 
     var seeThrough: Bool { backdrop == "desktop" }
-    /// Click-through only exists on a see-through window.
-    var passesThrough: Bool { seeThrough && clickThrough }
 }
 
 /// "nexusPanel" script messages from the kiosk page: hit region and raise requests.
@@ -626,6 +631,7 @@ final class KioskPanelBridge: NSObject, WKScriptMessageHandler {
         switch type {
         case "nexus.panel.hitTest":
             let mode = (obj["mode"] as? String) ?? "region"
+            let lease = (obj["lease"] as? Bool) ?? false
             var rects: [CGRect] = []
             for d in (obj["rects"] as? [[String: Any]]) ?? [] {
                 if let x = (d["x"] as? NSNumber)?.doubleValue,
@@ -636,7 +642,7 @@ final class KioskPanelBridge: NSObject, WKScriptMessageHandler {
                     rects.append(CGRect(x: x, y: y, width: w, height: h))
                 }
             }
-            DispatchQueue.main.async { [weak self] in self?.owner?.applyHitTest(webView, full: mode == "full", rects: rects) }
+            DispatchQueue.main.async { [weak self] in self?.owner?.applyHitTest(webView, full: mode == "full", lease: lease, rects: rects) }
         case "nexus.panel.raise":
             let value = (obj["value"] as? Bool) ?? false
             DispatchQueue.main.async { [weak self] in self?.owner?.applyRaise(webView, value) }
@@ -692,7 +698,7 @@ final class KioskController {
     // MARK: click-through gating
     //
     // Same constraint as the widget overlay: a nil hitTest does not let a nonactivating panel pass clicks
-    // on, so ignoresMouseEvents follows the cursor. A click-through kiosk takes clicks only while the
+    // on, so ignoresMouseEvents follows the cursor. A see-through kiosk takes clicks only while the
     // cursor is inside a rect its page reported (or everywhere in full mode).
 
     private func startCursorTracking() {
@@ -718,19 +724,14 @@ final class KioskController {
     func evaluateCursor() {
         let mouse = NSEvent.mouseLocation
         for state in kiosks.values {
-            let capture: Bool
-            if state.passesThrough {
-                let windowPoint = state.window.convertPoint(fromScreen: mouse)
-                capture = state.hitView.containsPoint(state.hitView.convert(windowPoint, from: nil))
-            } else {
-                capture = true
-            }
+            let windowPoint = state.window.convertPoint(fromScreen: mouse)
+            let capture = state.hitView.containsPoint(state.hitView.convert(windowPoint, from: nil))
             if state.window.ignoresMouseEvents != !capture { state.window.ignoresMouseEvents = !capture }
         }
     }
 
     private func dismissRaisedPanels() {
-        for state in kiosks.values where state.passesThrough && state.raised {
+        for state in kiosks.values where state.seeThrough && state.raised {
             state.webView.evaluateJavaScript(OverlayController.dismissJS, completionHandler: nil)
         }
     }
@@ -744,25 +745,61 @@ final class KioskController {
         webView.evaluateJavaScript("window.__nexusPanelHost?.requestHitTest()", completionHandler: nil)
     }
 
-    /// The page is gone or reloading: nothing it reported holds. A click-through kiosk goes back to an
-    /// empty region (every click passes), so a dead page can never block the desktop.
+    /// The page is gone or reloading: nothing it reported holds. A see-through kiosk goes back to an empty
+    /// region (every click passes), so a dead page can never block the desktop.
     private func resetRegion(for webView: WKWebView) {
         guard let state = state(for: webView) else { return }
-        state.hitView.setRects([], popoverActive: false)
-        state.hitView.captureAll = !state.passesThrough
+        clearRegion(state)
         state.raised = false
         applyLevel(state)
         evaluateCursor()
     }
 
-    func applyHitTest(_ webView: WKWebView, full: Bool, rects: [CGRect]) {
-        guard let state = state(for: webView) else { return }
-        // Points equal CSS px on macOS, so the reported rects need no dpr scaling.
-        if state.passesThrough {
-            state.hitView.captureAll = full
-            state.hitView.setRects(full ? [] : rects, popoverActive: false)
-        } else {
+    private func clearRegion(_ state: KioskState) {
+        state.leaseExpiry?.cancel()
+        state.leaseExpiry = nil
+        state.baseFull = false
+        state.baseRects = []
+        applyRegion(state, leaseActive: false)
+    }
+
+    /// An opaque kiosk always takes every click; a see-through one takes what its page reported.
+    private func applyRegion(_ state: KioskState, leaseActive: Bool) {
+        if !state.seeThrough {
             state.hitView.captureAll = true
+            return
+        }
+        let full = leaseActive || state.baseFull
+        state.hitView.captureAll = full
+        state.hitView.setRects(full ? [] : state.baseRects, popoverActive: false)
+    }
+
+    private static let leaseTimeout: TimeInterval = 6
+
+    func applyHitTest(_ webView: WKWebView, full: Bool, lease: Bool, rects: [CGRect]) {
+        guard let state = state(for: webView), state.seeThrough else { return }
+        // Points equal CSS px on macOS, so the reported rects need no dpr scaling.
+        if full && lease {
+            // Transient full capture: the page renews it, and without a renewal the host falls back to the
+            // last regular region and lowers any raise.
+            state.leaseExpiry?.cancel()
+            let item = DispatchWorkItem { [weak self, weak state] in
+                guard let self = self, let state = state else { return }
+                state.leaseExpiry = nil
+                self.applyRegion(state, leaseActive: false)
+                state.raised = false
+                self.applyLevel(state)
+                self.evaluateCursor()
+            }
+            state.leaseExpiry = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + KioskController.leaseTimeout, execute: item)
+            applyRegion(state, leaseActive: true)
+        } else {
+            state.leaseExpiry?.cancel()
+            state.leaseExpiry = nil
+            state.baseFull = full
+            state.baseRects = full ? [] : rects
+            applyRegion(state, leaseActive: false)
         }
         evaluateCursor()
     }
@@ -797,8 +834,7 @@ final class KioskController {
         if state.clickThrough != want.clickThrough {
             state.clickThrough = want.clickThrough
             // The old region described a different mode: start empty (or full) and let the page re-report.
-            state.hitView.setRects([], popoverActive: false)
-            state.hitView.captureAll = !state.passesThrough
+            clearRegion(state)
             evaluateCursor()
             KioskController.requestHitTest(state.webView)
         }
@@ -1069,14 +1105,13 @@ final class KioskController {
             webView.setValue(true, forKey: "_developerExtrasEnabled")
         }
 
-        // A click-through kiosk starts with an empty hit region (every click passes) until its page
-        // reports one; any other kiosk takes every click.
+        // A see-through kiosk starts with an empty hit region (every click passes) until its page
+        // reports one; an opaque kiosk takes every click.
         let hit = HitTestView(frame: NSRect(origin: .zero, size: frame.size))
         hit.autoresizingMask = [.width, .height]
         hit.addSubview(webView)
-        let passesThrough = seeThrough && a.clickThrough
-        hit.captureAll = !passesThrough
-        win.ignoresMouseEvents = passesThrough
+        hit.captureAll = !seeThrough
+        win.ignoresMouseEvents = seeThrough
         win.contentView = hit
         win.setFrame(frame, display: true)
 

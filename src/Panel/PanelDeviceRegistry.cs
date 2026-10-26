@@ -134,21 +134,7 @@ public sealed class PanelDeviceRegistry
     public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities, Nexus.Service.Models.Displays.DisplayFingerprint? fingerprint = null, bool primary = false)
     {
         var record = NewDisplayRecord(displayId, displayName, capabilities, fingerprint);
-        // The primary display is the one the user works on: a new panel there behaves like the desktop
-        // (see-through, click-through, under windows, no guards) rather than a dedicated screen.
-        if (primary)
-        {
-            if (SeeThroughHost)
-            {
-                record.Backdrop = "desktop";
-                record.ClickThrough = true;
-            }
-            record.AlwaysOnTop = false;
-            record.ReserveMonitor = false;
-            record.KeepCursorOff = false;
-            record.Hosted = true;
-            record.Enabled = false;
-        }
+        if (primary) ApplyPrimaryDefaults(record);
         var now = record.FirstSeenAt;
 
         PanelDeviceRecord? result = null;
@@ -164,7 +150,8 @@ public sealed class PanelDeviceRegistry
                     // theme, name, and reserve persist through off/on
                     // cycles. Viewport hints refresh from the current OS
                     // facts (resolution/scale/touch may have changed).
-                    PanelHosting.Set(candidate, true);
+                    if (primary) ApplyPrimaryDefaults(candidate);
+                    else PanelHosting.Set(candidate, true);
                     candidate.Capabilities = capabilities ?? candidate.Capabilities;
                     candidate.LastSeenAt = now;
                     candidate.DisplayFingerprint ??= fingerprint;
@@ -184,6 +171,26 @@ public sealed class PanelDeviceRegistry
         if (activated) DisplayRecordReady?.Invoke(result!);
         return (result!, activated);
     }
+
+    // The primary display is the one the user works on: a panel there behaves like the desktop
+    // (see-through, click-through, under windows, no guards) rather than a dedicated screen. Hosting goes
+    // through Hosted so a build without it never sees a fullscreen kiosk on the primary display.
+    private void ApplyPrimaryDefaults(PanelDeviceRecord record)
+    {
+        if (SeeThroughHost)
+        {
+            record.Backdrop = "desktop";
+            record.ClickThrough = true;
+        }
+        record.AlwaysOnTop = false;
+        record.ReserveMonitor = false;
+        record.KeepCursorOff = false;
+        record.Hosted = true;
+        record.Enabled = false;
+    }
+
+    public const int MinGridSlots = 2;
+    public const int MaxGridSlots = 64;
 
     internal static PanelDeviceRecord NewDisplayRecord(string displayId, string? displayName, PanelDeviceCapabilities? capabilities, Nexus.Service.Models.Displays.DisplayFingerprint? fingerprint)
     {
@@ -787,7 +794,7 @@ public sealed class PanelDeviceRegistry
                 record.AlwaysOnTop = patch.AlwaysOnTop.Value;
             if (patch.ClickThrough.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.ClickThrough = patch.ClickThrough.Value;
-            if (patch.GridSlots is { } slots && slots is >= 2 and <= 64 && slots % 2 == 0)
+            if (patch.GridSlots is { } slots && slots is >= MinGridSlots and <= MaxGridSlots && slots % 2 == 0)
                 record.GridSlots = slots;
             if (patch.ClearDesktopImport == true)
                 record.DesktopImport = null;

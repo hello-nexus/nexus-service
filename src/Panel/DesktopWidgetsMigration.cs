@@ -21,12 +21,18 @@ public sealed class DesktopWidgetsMigration
 
     /// <summary>The legacy overlay cell edge before <c>Overlay.Scale</c>.</summary>
     internal const double LegacyCellPx = 86;
+    internal const int MinScalePercent = 50;
+    internal const int MaxScalePercent = 200;
+    /// <summary>How long a legacy monitor index may stay absent (a sleeping or unplugged display) before the primary stands in.</summary>
+    internal const long MissingMonitorGraceMs = 24L * 60 * 60 * 1000;
 
     private readonly IConfigStore _store;
     private readonly OverlayMonitorMap _monitors;
     private readonly DisplayTopologyService? _topology;
     private readonly MultiplexHub? _hub;
     private readonly object _lock = new();
+
+    internal Func<long> NowMs { get; set; } = () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     internal HostOs Os { get; init; } =
         OperatingSystem.IsWindows() ? HostOs.Windows : OperatingSystem.IsMacOS() ? HostOs.MacOS : HostOs.Linux;
@@ -68,6 +74,9 @@ public sealed class DesktopWidgetsMigration
         lock (_lock)
         {
             if (Os == HostOs.Linux) return null;
+            // The monitor map is how a new Windows overlay host announces itself. An older host keeps
+            // drawing the legacy widgets, so nothing may be handed over or hidden until the map arrives.
+            if (Os == HostOs.Windows && !_monitors.HasMap) return null;
             var settings = _store.Load();
             if (settings.Overlay.MigratedToPanels) return null;
 
@@ -80,7 +89,8 @@ public sealed class DesktopWidgetsMigration
 
             topology ??= _topology?.GetTopology();
             if (topology is null || topology.Displays.Count == 0) return null;
-            var target = ResolveTarget(settings.Overlay, topology);
+            var target = ResolveTarget(settings.Overlay, topology, out var indexMissing);
+            if (indexMissing) NoteMissingMonitor(settings.Overlay);
             if (target is null) return null;
 
             string? recordId = null;
@@ -120,13 +130,14 @@ public sealed class DesktopWidgetsMigration
                 record.DesktopImport = new DesktopImportDto
                 {
                     Version = 1,
-                    CellPx = existing?.CellPx ?? LegacyCellPx * Math.Clamp(overlay.Scale, 50, 200) / 100.0,
+                    CellPx = existing?.CellPx ?? LegacyCellPx * Math.Clamp(overlay.Scale, MinScalePercent, MaxScalePercent) / 100.0,
                     CellUnits = existing?.CellUnits ?? (Os == HostOs.Windows ? "device" : "css"),
                     Merge = merge || existing?.Merge == true,
                     Widgets = existing is null ? widgets : existing.Widgets.Concat(widgets).ToList(),
                 };
                 overlay.MigratedToPanels = true;
                 overlay.MigratedRecordId = record.Id;
+                overlay.MonitorMissingSinceMs = null;
                 recordId = record.Id;
             });
             Finish(recordId);
@@ -134,8 +145,12 @@ public sealed class DesktopWidgetsMigration
         }
     }
 
-    private DisplayTopologyEntryDto? ResolveTarget(OverlaySettings overlay, DisplayTopologyResponse topology)
+    // Windows only reaches here with a posted map. A legacy index the map or the topology does not hold
+    // yet (a secondary asleep at boot) waits, so the widgets do not land on the wrong display; the primary
+    // stands in once the index has been missing for the grace period.
+    private DisplayTopologyEntryDto? ResolveTarget(OverlaySettings overlay, DisplayTopologyResponse topology, out bool indexMissing)
     {
+        indexMissing = false;
         var displays = topology.Displays;
         var primary = displays.FirstOrDefault(d => d.IsPrimary) ?? (displays.Count == 1 ? displays[0] : null);
         DisplayTopologyEntryDto? target;
@@ -143,22 +158,30 @@ public sealed class DesktopWidgetsMigration
         {
             target = primary;
         }
-        else if (_monitors.HasMap)
-        {
-            var id = _monitors.DisplayIdForIndex(overlay.Monitor);
-            target = id is null ? primary : displays.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.Ordinal)) ?? primary;
-        }
-        else if (displays.Count == 1)
-        {
-            target = displays[0];
-        }
         else
         {
-            return null;
+            var id = _monitors.DisplayIdForIndex(overlay.Monitor);
+            target = id is null ? null : displays.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.Ordinal));
+            if (target is null)
+            {
+                indexMissing = true;
+                var since = overlay.MonitorMissingSinceMs;
+                if (since is null || NowMs() - since.Value < MissingMonitorGraceMs) return null;
+                indexMissing = false;
+                target = primary;
+            }
         }
 
         if (target is { IsY70: true } || target is { HostingSupported: false }) target = primary;
         return target is null || target.IsY70 || !target.HostingSupported ? null : target;
+    }
+
+    private void NoteMissingMonitor(OverlaySettings overlay)
+    {
+        if (overlay.MonitorMissingSinceMs is not null) return;
+        var now = NowMs();
+        _store.Update(s => s.Overlay.MonitorMissingSinceMs ??= now);
+        _store.FlushNow();
     }
 
     private static void ApplyDesktopFlags(PanelDeviceRecord record, OverlaySettings overlay)

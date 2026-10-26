@@ -1059,7 +1059,8 @@ public sealed partial class ProfileManager : IDisposable
 
         _store.Update(s =>
         {
-            var overlayWasMigrated = s.Overlay.MigratedToPanels;
+            // The record id, not the marker: an empty-layout profile sets the marker without handing anything over.
+            var overlayWasMigrated = s.Overlay.MigratedRecordId is not null;
             Nexus.Service.Lighting.PinMigration.Apply(data);
             s.Lighting = data.Lighting ?? new LightingSettings { FreeRotationLayouts = true };
             // Pre-v10 profile files (local, imported, or cloud-synced) carry

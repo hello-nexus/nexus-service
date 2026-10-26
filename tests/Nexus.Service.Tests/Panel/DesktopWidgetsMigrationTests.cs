@@ -51,7 +51,17 @@ public class DesktopWidgetsMigrationTests
         Config = config,
     };
 
+    private static OverlayMonitorDto[] Seeded() => new[]
+    {
+        new OverlayMonitorDto { Index = 0, DisplayId = Primary, Primary = true },
+        new OverlayMonitorDto { Index = 1, DisplayId = Second },
+    };
+
+    // Windows has a posted map (a new overlay host) unless a test says otherwise.
     private static (DesktopWidgetsMigration Migration, InMemoryConfigStore Store, OverlayMonitorMap Map) Build(HostOs os, params OverlayWidgetDto[] widgets)
+        => Build(os, postMap: os == HostOs.Windows, widgets);
+
+    private static (DesktopWidgetsMigration Migration, InMemoryConfigStore Store, OverlayMonitorMap Map) Build(HostOs os, bool postMap, params OverlayWidgetDto[] widgets)
     {
         var store = new InMemoryConfigStore();
         store.Update(s =>
@@ -60,6 +70,7 @@ public class DesktopWidgetsMigrationTests
             s.Overlay.Layout.AddRange(widgets);
         });
         var map = new OverlayMonitorMap();
+        if (postMap) map.Set(Seeded());
         return (new DesktopWidgetsMigration(store, map, null, null) { Os = os }, store, map);
     }
 
@@ -103,46 +114,66 @@ public class DesktopWidgetsMigrationTests
     }
 
     [Fact]
-    public void Index_resolves_through_the_posted_map_and_an_unknown_index_falls_back_to_primary()
-    {
-        var (m, store, map) = Build(HostOs.Windows, Widget("a"));
-        store.Update(s => s.Overlay.Monitor = 1);
-        map.Set(new[]
-        {
-            new OverlayMonitorDto { Index = 0, DisplayId = Primary, Primary = true },
-            new OverlayMonitorDto { Index = 1, DisplayId = Second },
-        });
-        m.Run(Two());
-        Assert.Equal(Second, Only(store).DisplayId);
-
-        var (m2, store2, map2) = Build(HostOs.Windows, Widget("a"));
-        store2.Update(s => s.Overlay.Monitor = 5);
-        map2.Set(new[] { new OverlayMonitorDto { Index = 0, DisplayId = Primary, Primary = true } });
-        m2.Run(Two());
-        Assert.Equal(Primary, Only(store2).DisplayId);
-    }
-
-    [Fact]
-    public void Windows_with_several_displays_and_no_map_defers_without_a_marker()
+    public void Index_resolves_through_the_posted_map()
     {
         var (m, store, _) = Build(HostOs.Windows, Widget("a"));
         store.Update(s => s.Overlay.Monitor = 1);
 
-        Assert.Null(m.Run(Two()));
+        m.Run(Two());
 
+        Assert.Equal(Second, Only(store).DisplayId);
+    }
+
+    [Fact]
+    public void Windows_without_a_posted_map_always_defers_even_for_primary_single_display_and_empty_layouts()
+    {
+        var (m, store, _) = Build(HostOs.Windows, postMap: false, Widget("a"));
+        Assert.Null(m.Run(One()));
+        Assert.Null(m.Run(Two()));
+        store.Update(s => s.Overlay.Monitor = 1);
+        Assert.Null(m.Run(Two()));
         Assert.False(store.Load().Overlay.MigratedToPanels);
         Assert.Empty(store.Load().PanelDevices);
+
+        var (m2, store2, _) = Build(HostOs.Windows, postMap: false);
+        Assert.Null(m2.Run(One()));
+        Assert.False(store2.Load().Overlay.MigratedToPanels);
     }
 
     [Fact]
-    public void Windows_with_one_display_resolves_it_without_a_map()
+    public void A_missing_index_waits_for_the_grace_period_then_falls_back_to_primary()
+    {
+        var clock = 1_000L;
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        m.NowMs = () => clock;
+        store.Update(s => s.Overlay.Monitor = 5);
+
+        Assert.Null(m.Run(Two()));
+        Assert.Equal(1_000L, store.Load().Overlay.MonitorMissingSinceMs);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+
+        clock += DesktopWidgetsMigration.MissingMonitorGraceMs - 1;
+        Assert.Null(m.Run(Two()));
+        Assert.Equal(1_000L, store.Load().Overlay.MonitorMissingSinceMs);
+
+        clock += 1;
+        Assert.NotNull(m.Run(Two()));
+        Assert.Equal(Primary, Only(store).DisplayId);
+        Assert.Null(store.Load().Overlay.MonitorMissingSinceMs);
+    }
+
+    [Fact]
+    public void A_mapped_display_that_is_not_attached_waits_and_migrates_when_it_returns()
     {
         var (m, store, _) = Build(HostOs.Windows, Widget("a"));
-        store.Update(s => s.Overlay.Monitor = 3);
+        store.Update(s => s.Overlay.Monitor = 1);
 
-        m.Run(One());
+        Assert.Null(m.Run(One()));
+        Assert.NotNull(store.Load().Overlay.MonitorMissingSinceMs);
 
-        Assert.Equal(Primary, Only(store).DisplayId);
+        Assert.NotNull(m.Run(Two()));
+        Assert.Equal(Second, Only(store).DisplayId);
+        Assert.Null(store.Load().Overlay.MonitorMissingSinceMs);
     }
 
     [Fact]
@@ -150,7 +181,7 @@ public class DesktopWidgetsMigrationTests
     {
         var (m, store, map) = Build(HostOs.MacOS, Widget("a"));
         store.Update(s => s.Overlay.Monitor = 1);
-        map.Set(new[] { new OverlayMonitorDto { Index = 1, DisplayId = Second } });
+        map.Set(Seeded());
 
         m.Run(Two());
 
@@ -182,9 +213,8 @@ public class DesktopWidgetsMigrationTests
     [Fact]
     public void Y70_target_falls_back_to_the_primary()
     {
-        var (m, store, map) = Build(HostOs.Windows, Widget("a"));
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
         store.Update(s => s.Overlay.Monitor = 1);
-        map.Set(new[] { new OverlayMonitorDto { Index = 1, DisplayId = Second } });
 
         m.Run(Topology(Display(Primary, true), Display(Second, false, y70: true)));
 
@@ -369,11 +399,11 @@ public class DesktopWidgetsMigrationTests
     [Fact]
     public void Posting_the_monitor_map_after_a_deferral_migrates()
     {
-        var (m, store, map) = Build(HostOs.Windows, Widget("a"));
+        var (m, store, map) = Build(HostOs.Windows, postMap: false, Widget("a"));
         store.Update(s => s.Overlay.Monitor = 1);
         Assert.Null(m.Run(Two()));
 
-        map.Set(new[] { new OverlayMonitorDto { Index = 1, DisplayId = Second } });
+        map.Set(Seeded());
 
         Assert.NotNull(m.Run(Two()));
         Assert.Equal(Second, Only(store).DisplayId);
@@ -388,7 +418,7 @@ public class DesktopWidgetsMigrationTests
         public ProfileManager Profiles { get; }
         public string TargetId { get; }
 
-        public ProfileFixture(bool panelsShared)
+        public ProfileFixture(bool panelsShared, string? priorRecordId = "prev")
         {
             System.IO.Directory.CreateDirectory(Dir);
             Store = new JsonConfigStore(System.IO.Path.Combine(Dir, "settings.json"));
@@ -399,6 +429,7 @@ public class DesktopWidgetsMigrationTests
             Store.Update(s =>
             {
                 s.Overlay.MigratedToPanels = true;
+                s.Overlay.MigratedRecordId = priorRecordId;
                 s.SharedCategories = panelsShared ? new List<string> { ProfileSharing.Panels } : new List<string>();
             });
             System.IO.File.WriteAllText(
@@ -414,6 +445,26 @@ public class DesktopWidgetsMigrationTests
         }
     }
 
+    private static OverlayMonitorMap MappedWindows()
+    {
+        var map = new OverlayMonitorMap();
+        map.Set(Seeded());
+        return map;
+    }
+
+    [Fact]
+    public void A_shared_profile_with_widgets_after_an_empty_one_is_imported()
+    {
+        using var f = new ProfileFixture(panelsShared: true, priorRecordId: null);
+
+        f.Profiles.SwitchProfile(f.TargetId);
+
+        Assert.False(f.Store.Load().Overlay.MigratedToPanels);
+        var m = new DesktopWidgetsMigration(f.Store, MappedWindows(), null, null) { Os = HostOs.Windows };
+        Assert.NotNull(m.Run(One()));
+        Assert.Equal("x", Assert.Single(Assert.Single(f.Store.Load().PanelDevices.Values).DesktopImport!.Widgets).Id);
+    }
+
     [Fact]
     public void A_later_profile_with_shared_panels_gets_only_the_marker()
     {
@@ -423,7 +474,7 @@ public class DesktopWidgetsMigrationTests
 
         Assert.True(f.Store.Load().Overlay.MigratedToPanels);
         Assert.Single(f.Store.Load().Overlay.Layout);
-        var m = new DesktopWidgetsMigration(f.Store, new OverlayMonitorMap(), null, null) { Os = HostOs.Windows };
+        var m = new DesktopWidgetsMigration(f.Store, MappedWindows(), null, null) { Os = HostOs.Windows };
         Assert.Null(m.Run(One()));
         Assert.Empty(f.Store.Load().PanelDevices);
     }
@@ -436,7 +487,7 @@ public class DesktopWidgetsMigrationTests
         f.Profiles.SwitchProfile(f.TargetId);
 
         Assert.False(f.Store.Load().Overlay.MigratedToPanels);
-        var m = new DesktopWidgetsMigration(f.Store, new OverlayMonitorMap(), null, null) { Os = HostOs.Windows };
+        var m = new DesktopWidgetsMigration(f.Store, MappedWindows(), null, null) { Os = HostOs.Windows };
         Assert.NotNull(m.Run(One()));
         Assert.Equal("x", Assert.Single(Assert.Single(f.Store.Load().PanelDevices.Values).DesktopImport!.Widgets).Id);
     }

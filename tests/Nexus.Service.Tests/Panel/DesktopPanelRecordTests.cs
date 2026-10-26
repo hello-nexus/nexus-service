@@ -138,6 +138,47 @@ public class DesktopPanelRecordTests
     }
 
     [Fact]
+    public void Re_enabling_a_disabled_record_on_the_primary_display_applies_the_defaults_through_hosted()
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord
+        {
+            Id = "r",
+            DisplayId = "P",
+            Enabled = false,
+            Backdrop = "wallpaper",
+            AlwaysOnTop = true,
+            ReserveMonitor = true,
+        });
+
+        var (record, activated) = registry.AllocateForDisplay("P", null, Monitor(), primary: true);
+
+        Assert.True(activated);
+        var stored = store.Load().PanelDevices["r"];
+        Assert.True(stored.Hosted);
+        Assert.False(stored.Enabled);
+        Assert.Equal("desktop", stored.Backdrop);
+        Assert.True(stored.ClickThrough);
+        Assert.False(stored.AlwaysOnTop);
+        Assert.False(stored.ReserveMonitor);
+        Assert.True(record.Enabled);
+    }
+
+    [Fact]
+    public void Re_enabling_off_the_primary_display_leaves_the_record_as_it_was()
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord { Id = "r", DisplayId = "S", Enabled = false, Backdrop = "wallpaper" });
+
+        registry.AllocateForDisplay("S", null, Monitor());
+
+        var stored = store.Load().PanelDevices["r"];
+        Assert.True(stored.Enabled);
+        Assert.Null(stored.Hosted);
+        Assert.Equal("wallpaper", stored.Backdrop);
+    }
+
+    [Fact]
     public void Primary_panel_on_an_opaque_host_skips_the_see_through_flags()
     {
         var (registry, _) = Build(seeThrough: false);
@@ -321,8 +362,15 @@ public class DesktopPanelRecordTests
 
     private sealed class FakeProvider : IDisplayTopologyProvider
     {
+        public int Enumerations;
         public bool PositionsAvailable => true;
-        public IReadOnlyList<RawDisplayInfo>? Enumerate() => new List<RawDisplayInfo>
+        public IReadOnlyList<RawDisplayInfo>? Enumerate()
+        {
+            Enumerations++;
+            return Displays();
+        }
+
+        private static List<RawDisplayInfo> Displays() => new List<RawDisplayInfo>
         {
             new() { Id = "A", IsPrimary = false },
             new() { Id = "B", IsPrimary = true },
@@ -333,10 +381,16 @@ public class DesktopPanelRecordTests
     public void Topology_service_names_the_primary_display()
     {
         var store = new InMemoryConfigStore();
-        var service = new DisplayTopologyService(new FakeProvider(), new PanelDeviceRegistry(store), store);
+        var provider = new FakeProvider();
+        var service = new DisplayTopologyService(provider, new PanelDeviceRegistry(store), store);
 
+        Assert.False(service.IsPrimaryDisplay("B"));
+        Assert.Equal(0, provider.Enumerations);
+
+        service.GetTopology();
         Assert.True(service.IsPrimaryDisplay("B"));
         Assert.False(service.IsPrimaryDisplay("A"));
         Assert.False(service.IsPrimaryDisplay(""));
+        Assert.Equal(1, provider.Enumerations);
     }
 }
