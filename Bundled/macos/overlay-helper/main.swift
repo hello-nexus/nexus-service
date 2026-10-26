@@ -77,7 +77,21 @@ func parseOptions() -> Options {
 // again. Trapping the termination signal lets us reload immediately +
 // log so we know it's happening.
 final class OverlayWebViewDelegate: NSObject, WKNavigationDelegate {
+    /// Kiosk only: the page behind this view is gone or going, so any hit region it reported is stale.
+    var onReset: ((WKWebView) -> Void)?
+    /// Kiosk only: a fresh page finished loading and can be asked to report its hit region.
+    var onLoaded: ((WKWebView) -> Void)?
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        onReset?(webView)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        onLoaded?(webView)
+    }
+
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        onReset?(webView)
         FileHandle.standardError.write("[overlay-helper] WebContent process terminated; reloading\n".data(using: .utf8)!)
         // reloadFromOrigin re-issues the URL request, bypassing any cached
         // page state that might have triggered the kill.
@@ -125,6 +139,7 @@ final class OverlayPanel: NSPanel {
 final class HitTestView: NSView {
     private var rects: [CGRect] = []
     private var hasPopover: Bool = false
+    private var capturesAll: Bool = false
     private let lock = NSLock()
 
     var popoverActive: Bool {
@@ -141,6 +156,13 @@ final class HitTestView: NSView {
     // fires, breaking drag entirely.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    /// Kiosk panels: true takes every click regardless of rects (opaque kiosk, or a see-through one
+    /// with an edit sheet or catalog open).
+    var captureAll: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return capturesAll }
+        set { lock.lock(); capturesAll = newValue; lock.unlock() }
+    }
+
     func setRects(_ newRects: [CGRect], popoverActive: Bool) {
         lock.lock()
         rects = newRects
@@ -151,7 +173,9 @@ final class HitTestView: NSView {
     func containsPoint(_ p: CGPoint) -> Bool {
         lock.lock()
         let snapshot = rects
+        let all = capturesAll
         lock.unlock()
+        if all { return true }
         for r in snapshot {
             if r.contains(p) { return true }
         }
@@ -162,7 +186,9 @@ final class HitTestView: NSView {
         let local = convert(point, from: superview)
         lock.lock()
         let snapshot = rects
+        let all = capturesAll
         lock.unlock()
+        if all { return super.hitTest(point) }
         for r in snapshot {
             if r.contains(local) { return super.hitTest(point) }
         }
@@ -329,7 +355,7 @@ final class OverlayController {
         }
     }
 
-    private static let dismissJS = """
+    static let dismissJS = """
         (function () {
             // Synthesize a click on the document body so the SPA's
             // click-outside listeners (WidgetContextMenu, WidgetEditSheet)
@@ -545,13 +571,89 @@ final class KioskWebView: WKWebView {
 struct KioskAssignment {
     let displayId: String
     let panelDeviceId: String
+    /// "desktop" hosts the kiosk as a see-through window.
+    let backdrop: String
+    let alwaysOnTop: Bool
+    let clickThrough: Bool
+    let isPrimary: Bool
+}
+
+/// One live kiosk window and the options it was built from. Backdrop is fixed at creation (a change
+/// respawns the window); always-on-top and click-through apply live.
+final class KioskState {
+    let window: NSWindow
+    let deviceId: String
+    let touchViaPointer: Bool
+    let backdrop: String
+    let hitView: HitTestView
+    let webView: WKWebView
+    var alwaysOnTop: Bool
+    var clickThrough: Bool
+    var isPrimary: Bool
+    /// The page asked to sit above app windows while a menu, sheet or drag is open.
+    var raised = false
+
+    init(window: NSWindow, deviceId: String, touchViaPointer: Bool, backdrop: String,
+         hitView: HitTestView, webView: WKWebView, alwaysOnTop: Bool, clickThrough: Bool, isPrimary: Bool) {
+        self.window = window
+        self.deviceId = deviceId
+        self.touchViaPointer = touchViaPointer
+        self.backdrop = backdrop
+        self.hitView = hitView
+        self.webView = webView
+        self.alwaysOnTop = alwaysOnTop
+        self.clickThrough = clickThrough
+        self.isPrimary = isPrimary
+    }
+
+    var seeThrough: Bool { backdrop == "desktop" }
+    /// Click-through only exists on a see-through window.
+    var passesThrough: Bool { seeThrough && clickThrough }
+}
+
+/// "nexusPanel" script messages from the kiosk page: hit region and raise requests.
+final class KioskPanelBridge: NSObject, WKScriptMessageHandler {
+    weak var owner: KioskController?
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        guard let json = message.body as? String,
+              let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = obj["type"] as? String,
+              let webView = message.webView
+        else { return }
+        switch type {
+        case "nexus.panel.hitTest":
+            let mode = (obj["mode"] as? String) ?? "region"
+            var rects: [CGRect] = []
+            for d in (obj["rects"] as? [[String: Any]]) ?? [] {
+                if let x = (d["x"] as? NSNumber)?.doubleValue,
+                   let y = (d["y"] as? NSNumber)?.doubleValue,
+                   let w = (d["w"] as? NSNumber)?.doubleValue,
+                   let h = (d["h"] as? NSNumber)?.doubleValue,
+                   w > 0, h > 0 {
+                    rects.append(CGRect(x: x, y: y, width: w, height: h))
+                }
+            }
+            DispatchQueue.main.async { [weak self] in self?.owner?.applyHitTest(webView, full: mode == "full", rects: rects) }
+        case "nexus.panel.raise":
+            let value = (obj["value"] as? Bool) ?? false
+            DispatchQueue.main.async { [weak self] in self?.owner?.applyRaise(webView, value) }
+        default:
+            break
+        }
+    }
 }
 
 final class KioskController {
     private let opts: Options
     private let webViewDelegate = OverlayWebViewDelegate()
     private let touchRouter = TouchRouter()
-    private var kiosks: [String: (window: NSWindow, deviceId: String, touchViaPointer: Bool)] = [:]
+    private let panelBridge = KioskPanelBridge()
+    private var kiosks: [String: KioskState] = [:]
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
     private var fetchInFlight = false
     private var fetchQueued = false
     private var retryScheduled = false
@@ -566,6 +668,9 @@ final class KioskController {
 
     init(_ opts: Options) {
         self.opts = opts
+        panelBridge.owner = self
+        webViewDelegate.onReset = { [weak self] webView in self?.resetRegion(for: webView) }
+        webViewDelegate.onLoaded = { webView in KioskController.requestHitTest(webView) }
         touchRouter.onTouchscreenPresenceChanged = { [weak self] in self?.refresh() }
         touchRouter.onStateChanged = { [weak self] state in self?.reportTouchRouting(state) }
     }
@@ -577,10 +682,126 @@ final class KioskController {
             selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil)
+        startCursorTracking()
     }
 
     @objc private func screensChanged() {
         refresh()
+    }
+
+    // MARK: click-through gating
+    //
+    // Same constraint as the widget overlay: a nil hitTest does not let a nonactivating panel pass clicks
+    // on, so ignoresMouseEvents follows the cursor. A click-through kiosk takes clicks only while the
+    // cursor is inside a rect its page reported (or everywhere in full mode).
+
+    private func startCursorTracking() {
+        let mask: NSEvent.EventTypeMask = [
+            .mouseMoved,
+            .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+            .leftMouseDown, .rightMouseDown, .otherMouseDown,
+        ]
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            guard let self = self else { return }
+            self.evaluateCursor()
+            // Only events the helper did not receive land here. A click outside the reported rects while a
+            // menu or sheet is raised should close it, as the Windows region mode does by losing capture.
+            let isMouseDown = [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type)
+            if isMouseDown { self.dismissRaisedPanels() }
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.evaluateCursor()
+            return event
+        }
+    }
+
+    func evaluateCursor() {
+        let mouse = NSEvent.mouseLocation
+        for state in kiosks.values {
+            let capture: Bool
+            if state.passesThrough {
+                let windowPoint = state.window.convertPoint(fromScreen: mouse)
+                capture = state.hitView.containsPoint(state.hitView.convert(windowPoint, from: nil))
+            } else {
+                capture = true
+            }
+            if state.window.ignoresMouseEvents != !capture { state.window.ignoresMouseEvents = !capture }
+        }
+    }
+
+    private func dismissRaisedPanels() {
+        for state in kiosks.values where state.passesThrough && state.raised {
+            state.webView.evaluateJavaScript(OverlayController.dismissJS, completionHandler: nil)
+        }
+    }
+
+    private func state(for webView: WKWebView) -> KioskState? {
+        kiosks.values.first { $0.webView === webView }
+    }
+
+    /// Asks a live page to send its hit region again (the web side exposes this hook).
+    static func requestHitTest(_ webView: WKWebView) {
+        webView.evaluateJavaScript("window.__nexusPanelHost?.requestHitTest()", completionHandler: nil)
+    }
+
+    /// The page is gone or reloading: nothing it reported holds. A click-through kiosk goes back to an
+    /// empty region (every click passes), so a dead page can never block the desktop.
+    private func resetRegion(for webView: WKWebView) {
+        guard let state = state(for: webView) else { return }
+        state.hitView.setRects([], popoverActive: false)
+        state.hitView.captureAll = !state.passesThrough
+        state.raised = false
+        applyLevel(state)
+        evaluateCursor()
+    }
+
+    func applyHitTest(_ webView: WKWebView, full: Bool, rects: [CGRect]) {
+        guard let state = state(for: webView) else { return }
+        // Points equal CSS px on macOS, so the reported rects need no dpr scaling.
+        if state.passesThrough {
+            state.hitView.captureAll = full
+            state.hitView.setRects(full ? [] : rects, popoverActive: false)
+        } else {
+            state.hitView.captureAll = true
+        }
+        evaluateCursor()
+    }
+
+    func applyRaise(_ webView: WKWebView, _ value: Bool) {
+        guard let state = state(for: webView) else { return }
+        state.raised = value
+        applyLevel(state)
+    }
+
+    /// Always on top sits at the status bar level. Otherwise the kiosk lives at desktop icon level, under
+    /// app windows, and a raise lifts it just above normal windows (below floating ones).
+    private func applyLevel(_ state: KioskState) {
+        let target: NSWindow.Level
+        if state.alwaysOnTop {
+            target = .statusBar
+        } else if state.raised {
+            target = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue + 1)
+        } else {
+            target = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)))
+        }
+        if state.window.level != target { state.window.level = target }
+    }
+
+    /// Live option changes that do not need a new window.
+    private func applyLive(_ state: KioskState, _ want: KioskAssignment) {
+        state.isPrimary = want.isPrimary
+        if state.alwaysOnTop != want.alwaysOnTop {
+            state.alwaysOnTop = want.alwaysOnTop
+            applyLevel(state)
+        }
+        if state.clickThrough != want.clickThrough {
+            state.clickThrough = want.clickThrough
+            // The old region described a different mode: start empty (or full) and let the page re-report.
+            state.hitView.setRects([], popoverActive: false)
+            state.hitView.captureAll = !state.passesThrough
+            evaluateCursor()
+            KioskController.requestHitTest(state.webView)
+        }
     }
 
     /// Fetch + reconcile, coalesced: a poke arriving mid-fetch queues exactly
@@ -639,7 +860,13 @@ final class KioskController {
                       let deviceId = entry["panelDeviceId"] as? String,
                       !displayId.isEmpty, !deviceId.isEmpty
                 else { continue }
-                items.append(KioskAssignment(displayId: displayId, panelDeviceId: deviceId))
+                items.append(KioskAssignment(
+                    displayId: displayId,
+                    panelDeviceId: deviceId,
+                    backdrop: (entry["backdrop"] as? String) ?? "",
+                    alwaysOnTop: (entry["alwaysOnTop"] as? Bool) ?? true,
+                    clickThrough: (entry["clickThrough"] as? Bool) ?? false,
+                    isPrimary: (entry["isPrimary"] as? Bool) ?? false))
             }
             completion(items)
         }
@@ -657,6 +884,7 @@ final class KioskController {
             let stale = want == nil
                 || screen == nil
                 || want!.panelDeviceId != entry.deviceId
+                || want!.backdrop != entry.backdrop
                 || entry.window.frame != screen!.frame
             if stale {
                 entry.window.orderOut(nil)
@@ -689,13 +917,16 @@ final class KioskController {
             FileHandle.standardError.write("[overlay-helper] kiosk closed display=\(displayId) (touch routing changed)\n".data(using: .utf8)!)
         }
 
+        for a in assignments {
+            if let live = kiosks[a.displayId] { applyLive(live, a) }
+        }
+
         for a in assignments where kiosks[a.displayId] == nil {
             guard let screen = screens[a.displayId] else {
                 FileHandle.standardError.write("[overlay-helper] kiosk display=\(a.displayId) not attached; skipping\n".data(using: .utf8)!)
                 continue
             }
-            let win = makeKioskWindow(for: screen, deviceId: a.panelDeviceId, touchViaPointer: routable)
-            kiosks[a.displayId] = (win, a.panelDeviceId, routable)
+            kiosks[a.displayId] = makeKioskWindow(for: screen, assignment: a, touchViaPointer: routable)
             FileHandle.standardError.write("[overlay-helper] kiosk opened display=\(a.displayId) device=\(a.panelDeviceId)\n".data(using: .utf8)!)
         }
 
@@ -795,7 +1026,9 @@ final class KioskController {
 
     // MARK: window creation
 
-    private func makeKioskWindow(for screen: NSScreen, deviceId: String, touchViaPointer: Bool) -> NSWindow {
+    private func makeKioskWindow(for screen: NSScreen, assignment a: KioskAssignment, touchViaPointer: Bool) -> KioskState {
+        let deviceId = a.panelDeviceId
+        let seeThrough = a.backdrop == "desktop"
         let frame = screen.frame
         // Non-activating panel for the same reason as the widget overlay:
         // the kiosk must take clicks without ever stealing key/main status
@@ -809,39 +1042,55 @@ final class KioskController {
         win.becomesKeyOnlyIfNeeded = true
         win.hidesOnDeactivate = false
         win.worksWhenModal = true
-        win.isOpaque = true
-        win.backgroundColor = .black
+        win.isOpaque = !seeThrough
+        win.backgroundColor = seeThrough ? .clear : .black
         win.hasShadow = false
-        win.ignoresMouseEvents = false
         win.collectionBehavior = [
             .canJoinAllSpaces,
             .stationary,
             .ignoresCycle,
             .fullScreenAuxiliary,
         ]
-        // Above the menu bar / app windows: a promoted monitor is owned by
-        // the panel the way the Windows kiosk owns its monitor.
-        win.level = .statusBar
 
         let cfg = WKWebViewConfiguration()
+        cfg.userContentController.add(panelBridge, name: "nexusPanel")
         let webView = KioskWebView(
             frame: NSRect(origin: .zero, size: frame.size),
             configuration: cfg)
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = webViewDelegate
+        if seeThrough {
+            // Private but stable; see the widget overlay for why the public API alone leaves an opaque backing.
+            webView.setValue(false, forKey: "drawsBackground")
+        }
         if #available(macOS 13.3, *) {
             webView.isInspectable = true
         } else {
             webView.setValue(true, forKey: "_developerExtrasEnabled")
         }
-        win.contentView = webView
+
+        // A click-through kiosk starts with an empty hit region (every click passes) until its page
+        // reports one; any other kiosk takes every click.
+        let hit = HitTestView(frame: NSRect(origin: .zero, size: frame.size))
+        hit.autoresizingMask = [.width, .height]
+        hit.addSubview(webView)
+        let passesThrough = seeThrough && a.clickThrough
+        hit.captureAll = !passesThrough
+        win.ignoresMouseEvents = passesThrough
+        win.contentView = hit
         win.setFrame(frame, display: true)
+
+        let state = KioskState(
+            window: win, deviceId: deviceId, touchViaPointer: touchViaPointer, backdrop: a.backdrop,
+            hitView: hit, webView: webView, alwaysOnTop: a.alwaysOnTop, clickThrough: a.clickThrough,
+            isPrimary: a.isPrimary)
+        applyLevel(state)
         win.orderFrontRegardless()
 
         if let url = panelURL(deviceId: deviceId, touchViaPointer: touchViaPointer) {
             webView.load(URLRequest(url: url))
         }
-        return win
+        return state
     }
 
     private func panelURL(deviceId: String, touchViaPointer: Bool) -> URL? {
