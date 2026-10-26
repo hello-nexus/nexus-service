@@ -16,6 +16,24 @@ public static partial class SceneValidation
     public const int MaxModelBytes = 16 * 1024 * 1024;
     private const float MaxExtentMm = 100_000f;
     private const int MaxLabel = 80;
+    public const float MinCurveRadiusMm = 300f;
+    public const float MaxCurveRadiusMm = 10_000f;
+
+    /// <summary>Null when the object's curve is absent or valid: a finite radius within the caps, on a monitor only.</summary>
+    public static string? ValidateCurve(SceneObject o)
+    {
+        if (o.Curve is not { } curve)
+        {
+            return null;
+        }
+        if (o.Kind != "monitor")
+        {
+            return $"object {o.Id}: only a monitor can be curved";
+        }
+        return float.IsFinite(curve.RadiusMm) && curve.RadiusMm >= MinCurveRadiusMm && curve.RadiusMm <= MaxCurveRadiusMm
+            ? null
+            : $"object {o.Id}: curve radius must be {MinCurveRadiusMm} to {MaxCurveRadiusMm} mm";
+    }
 
     [GeneratedRegex("^[A-Za-z0-9._:-]{1,64}$")]
     private static partial Regex IdPattern();
@@ -46,6 +64,10 @@ public static partial class SceneValidation
             if (!KindPattern().IsMatch(o.Kind ?? "") || (o.Source != "user" && o.Source != "build"))
             {
                 return $"object {o.Id}: bad kind or source";
+            }
+            if (ValidateCurve(o) is { } curveError)
+            {
+                return curveError;
             }
             // Labels are display text (a catalog title can run long), so they are trimmed rather than refused.
             o.Label = Trim(o.Label);

@@ -126,6 +126,36 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
     }
 
     [Fact]
+    public async Task View_prefs_persist_and_an_unrelated_ui_patch_keeps_them()
+    {
+        var client = AuthedClient();
+
+        var post = await client.PostAsync("/preferences",
+            Json("{\"ui\":{\"lightingView3d\":true,\"coolingView3d\":true,\"coolingFlowMode\":\"airflow\",\"coolingCollisionShapes\":true}}"));
+        Assert.Equal(HttpStatusCode.OK, post.StatusCode);
+        await client.PostAsync("/preferences", Json("{\"ui\":{\"sidebarCollapsed\":true}}"));
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync("/preferences")).Content.ReadAsStringAsync());
+        var ui = doc.RootElement.GetProperty("ui");
+        Assert.True(ui.GetProperty("lightingView3d").GetBoolean());
+        Assert.True(ui.GetProperty("coolingView3d").GetBoolean());
+        Assert.Equal("airflow", ui.GetProperty("coolingFlowMode").GetString());
+        Assert.True(ui.GetProperty("coolingCollisionShapes").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Unknown_cooling_flow_mode_is_dropped_and_keeps_the_stored_value()
+    {
+        var client = AuthedClient();
+
+        await client.PostAsync("/preferences", Json("{\"ui\":{\"coolingFlowMode\":\"case\"}}"));
+        await client.PostAsync("/preferences", Json("{\"ui\":{\"coolingFlowMode\":\"bogus\"}}"));
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync("/preferences")).Content.ReadAsStringAsync());
+        Assert.Equal("case", doc.RootElement.GetProperty("ui").GetProperty("coolingFlowMode").GetString());
+    }
+
+    [Fact]
     public async Task Sidebar_app_order_persists_and_survives_a_pinned_apps_patch()
     {
         var client = AuthedClient();

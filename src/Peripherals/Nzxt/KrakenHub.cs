@@ -42,6 +42,9 @@ public sealed class KrakenHub : IDisposable
     // spans 64-byte and 512-byte reports, and Windows rejects a write that is not exactly
     // the declared length, so every encoded report is truncated to this on the way out.
     private KrakenModel _model = KrakenModel.All[0];
+    // Mirrors _device.Serial and _model for readers that must not wait on the I/O lock.
+    private volatile string? _serial;
+    private volatile KrakenModel _modelRead = KrakenModel.All[0];
     private int _reportLength = KrakenProtocol.ReportLength;
 
     // Panel geometry. Seeded from the model table and then overwritten by whatever the
@@ -381,16 +384,37 @@ public sealed class KrakenHub : IDisposable
 
     public bool IsConnected => _isConnected;
 
+    private volatile string? _claimedHidPath;
+    private volatile KrakenModel? _claimedModel;
+
+    /// <summary>hidraw node of the interface the worker selected; held across detaches until the cooler is gone or control is off.</summary>
+    public string? ClaimedHidPath => _claimedHidPath;
+
+    /// <summary>Chip name the in-kernel driver registers for the claimed model; null when nothing is claimed or the kernel has no driver for it.</summary>
+    public string? ClaimedHwmonName => _claimedModel is { } m ? KrakenModel.KernelHwmonName(m.ProductId) : null;
+
+    public void Claim(string hidPath, KrakenModel model)
+    {
+        _claimedHidPath = hidPath;
+        _claimedModel = model;
+    }
+
+    public void ReleaseClaim()
+    {
+        _claimedHidPath = null;
+        _claimedModel = null;
+    }
+
     /// <summary>The attached model, or the Elite V2 row while nothing is attached.</summary>
     public KrakenModel Model
     {
-        get { lock (_lock) { return _model; } }
+        get => _modelRead;
     }
 
     /// <summary>Marketing name of the attached model, for UI and logs.</summary>
     public string ModelName
     {
-        get { lock (_lock) { return _model.Name; } }
+        get => _modelRead.Name;
     }
 
     /// <summary>Panel width in pixels; 0 on a model with no LCD.</summary>
@@ -411,16 +435,7 @@ public sealed class KrakenHub : IDisposable
     }
 
     /// <summary>USB serial of the attached cooler, or null when nothing is attached.</summary>
-    public string? Serial
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _device?.Serial;
-            }
-        }
-    }
+    public string? Serial => _serial;
 
     /// <summary>Read this reference once, then use it for all field accesses.</summary>
     public KrakenSnapshot Snapshot => _snapshot;
@@ -447,7 +462,9 @@ public sealed class KrakenHub : IDisposable
         {
             _device?.Dispose();
             _device = device;
+            _serial = device.Serial;
             _model = model;
+            _modelRead = model;
             _reportLength = reportLength > 0 ? reportLength : KrakenProtocol.ReportLength;
             _lcdWidth = model.LcdWidth;
             _lcdHeight = model.LcdHeight;
@@ -1908,6 +1925,7 @@ public sealed class KrakenHub : IDisposable
             _lcd = null;
             _device?.Dispose();
             _device = null;
+            _serial = null;
         }
     }
 
@@ -1927,6 +1945,7 @@ public sealed class KrakenHub : IDisposable
             _lcd = null;
             _device?.Dispose();
             _device = null;
+            _serial = null;
         }
     }
 }

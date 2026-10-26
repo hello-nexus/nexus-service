@@ -47,6 +47,7 @@ public class ConflictWhitelistTests
     [InlineData("streamdeck")]
     [InlineData("tryx")]
     [InlineData("nzxt-kraken")]
+    [InlineData("nzxt-fan-controller")]
     [InlineData("zmatrices-lcd")]
     public void ADeviceWhoseAppStartsWhitelistedDefaultsOff(string handlerId)
     {

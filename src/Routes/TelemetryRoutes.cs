@@ -9,6 +9,7 @@ using Nexus.Service.Models;
 using Nexus.Service.Serialization;
 using Nexus.Service.Auth;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Telemetry;
 
 namespace Nexus.Service.Routes;
@@ -64,6 +65,15 @@ internal static class TelemetryRoutes
             });
         }).LocalhostOnly();
 
+        // Dashboard-only: the SPA reports which page is open; AppUsageTracker dedupes to once per page per UTC day and consent gates the capture.
+        app.MapPost("/telemetry/page-viewed/{page}", (string page, AppUsageTracker usage) =>
+        {
+            if (!PageSlug.IsMatch(page))
+                return Results.Json(ApiResponse.Fail("invalid page"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            usage.NotePage(page);
+            return Results.NoContent();
+        }).LocalhostOnly();
+
         // nexus-web (dashboard and paired panels/phones) relays browser errors here; the same opt-out, scrubbing and caps as service errors apply.
         app.MapPost("/telemetry/client-errors", async (HttpContext ctx, ErrorReporter reporter) =>
         {
@@ -91,13 +101,58 @@ internal static class TelemetryRoutes
             {
                 if (e is null)
                     continue;
-                if (e.Kind is not ("window-error" or "unhandled-rejection" or "render") || string.IsNullOrEmpty(e.Fingerprint))
+                if (e.Kind is not ("window-error" or "unhandled-rejection" or "render" or "app" or "app-log") || string.IsNullOrEmpty(e.Fingerprint))
+                    continue;
+                // Local support log line, written whether or not anonymous data is on; only the upload below honours the opt-out.
+                if (e.Kind is "app" or "app-log")
+                    LogAppError(e.App, e.Message);
+                // app-log is free-form author text from nexus.log: local log only, never uploaded.
+                if (e.Kind == "app-log")
                     continue;
                 reporter.ReportClient(e.Kind, e.Fingerprint, e.Type ?? "", e.Message ?? "", e.Stack ?? "", e.Context, Math.Clamp(e.Count, 1, ErrorReporter.MaxCount));
             }
             return Results.NoContent();
         }).AllowPanel();
     }
+
+    private static readonly System.Text.RegularExpressions.Regex PageSlug = new(
+        "^[a-z0-9][a-z0-9-]{0,39}\\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private const int MaxAppErrorLogsPerMinute = 30;
+    private const int MaxAppErrorTagLength = 160;
+    private const int MaxAppErrorMessageLength = 500;
+    private static readonly AppErrorLogLimiter AppErrorLimiter = new(MaxAppErrorLogsPerMinute);
+
+    /// <summary>One WRN line per SDK app error, so a support bundle shows which app broke; capped per minute against a chatty client.</summary>
+    internal static bool LogAppError(string? app, string? message)
+    {
+        if (!AppErrorLimiter.TryAcquire(Environment.TickCount64))
+            return false;
+        ServiceLog.Warn(FormatAppError(app, message));
+        return true;
+    }
+
+    internal static string FormatAppError(string? app, string? message) =>
+        $"[app-error] {LogText(app, MaxAppErrorTagLength)}: {LogText(message, MaxAppErrorMessageLength)}";
+
+    // Untrusted text: scrub like the upload, cap the length and neutralize anything that can break or forge a log line.
+    private static string LogText(string? s, int max)
+    {
+        if (string.IsNullOrEmpty(s)) return "?";
+        s = ErrorReporter.Scrub(s);
+        if (s.Length > max) s = s[..max];
+        return string.Create(s.Length, s, static (span, src) =>
+        {
+            for (var i = 0; i < src.Length; i++) span[i] = IsUnsafeLogChar(src[i]) ? ' ' : src[i];
+        });
+    }
+
+    // C0/C1 controls and DEL, line and paragraph separators, and the bidi marks and overrides.
+    private static bool IsUnsafeLogChar(char c) =>
+        char.IsControl(c)
+        || c is '\u2028' or '\u2029' or '\u200E' or '\u200F'
+        || c is >= '\u202A' and <= '\u202E'
+        || c is >= '\u2066' and <= '\u2069';
 
     private const int MaxClientErrors = 10;
     private const int MaxClientErrorsBytes = 128 * 1024;
@@ -117,3 +172,27 @@ internal static class TelemetryRoutes
 
 public sealed class TelemetryConsentBody { public bool Enabled { get; set; } }
 public sealed class TelemetryConsentDto { public bool Enabled { get; set; } }
+
+/// <summary>Fixed-window counter; one instance per cap so the state is not shared across callers.</summary>
+internal sealed class AppErrorLogLimiter(int maxPerMinute)
+{
+    private readonly object _gate = new();
+    private long _start;
+    private int _count;
+
+    public bool TryAcquire(long nowMs)
+    {
+        lock (_gate)
+        {
+            if (nowMs - _start >= 60_000 || nowMs < _start)
+            {
+                _start = nowMs;
+                _count = 0;
+            }
+            if (_count >= maxPerMinute)
+                return false;
+            _count++;
+            return true;
+        }
+    }
+}

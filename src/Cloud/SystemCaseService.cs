@@ -30,6 +30,11 @@ public sealed class SystemCaseService
     private readonly object _sync = new();
     private readonly SemaphoreSlim _push = new(1, 1);
     private long _lastAttemptTicks;
+    private bool _pullSettled;
+    private int _generation;
+
+    /// <summary>Raised after the stored case changed, whether by a pick, the local auto-assign or an adopted account value.</summary>
+    public event Action<string?>? Changed;
 
     public SystemCaseService(MachineCaseStore store, CloudAccountService accounts, ICloudApiClient api)
         : this(store, accounts, api, TimeProvider.System, () => Nexus.Service.FocusModes.FocusNetworkGate.IsHeld)
@@ -46,7 +51,12 @@ public sealed class SystemCaseService
         // A different account may carry a different website pick: let the next
         // GET compare against it instead of waiting out the pull interval. A
         // still-pending local pick is pushed by the device-report flush.
-        _accounts.OnAccountActivated += _ => Volatile.Write(ref _lastAttemptTicks, 0);
+        _accounts.OnAccountActivated += _ =>
+        {
+            Volatile.Write(ref _lastAttemptTicks, 0);
+            Interlocked.Increment(ref _generation);
+            Volatile.Write(ref _pullSettled, false);
+        };
     }
 
     /// <summary>Null, or 1-64 characters of letters, digits, '.', '_', ':' and '-'. Same rule as the cloud api.</summary>
@@ -77,24 +87,78 @@ public sealed class SystemCaseService
     /// </summary>
     public Task<string?> GetAsync(CancellationToken ct)
     {
+        // Generation first: an activation sets the account before it bumps the generation, so a newer generation always pairs with the newer account.
+        var generation = Volatile.Read(ref _generation);
         if (_accounts.ActiveAccountId is { } accountId && !_networkHeld() && DueForNetwork())
         {
             MarkAttempt();
-            Launch(() => ReconcileAsync(accountId));
+            Launch(() => ReconcileAsync(accountId, generation));
         }
         return Task.FromResult(_store.Load().CaseId);
+    }
+
+    /// <summary>The local case and whether detection assigned it, from one read so the two agree.</summary>
+    public async Task<(string? CaseId, bool Auto)> GetWithOriginAsync(CancellationToken ct)
+    {
+        await GetAsync(ct).ConfigureAwait(false);
+        var f = _store.Load();
+        return (f.CaseId, f.CaseId is not null && f.Origin == MachineCaseOrigin.Auto);
     }
 
     /// <summary>Saves locally first (always pending) and returns; the active account is pushed in the background.</summary>
     public Task<string?> SetAsync(string? caseId, CancellationToken ct)
     {
-        _store.Save(caseId, pending: true);
+        _store.Save(caseId, pending: true, MachineCaseOrigin.Manual);
+        RaiseChanged(caseId);
         if (_accounts.ActiveAccountId is { } accountId && !_networkHeld())
         {
             MarkAttempt();
             Launch(() => PushPendingAsync(accountId));
         }
         return Task.FromResult(_store.Load().CaseId);
+    }
+
+    /// <summary>
+    /// Fills in an automatic case only when the user has made no choice: none stored, or an earlier auto value, and not already
+    /// <paramref name="isProtected"/>. Returns false while a signed-in machine has not settled its first account pull, so the
+    /// caller retries; true once decided. The auto value is local: it is never pushed, and a later account pull replaces it.
+    /// </summary>
+    public bool TryAutoAssign(string caseId, Func<string?, bool> isProtected)
+    {
+        var current = _store.Load();
+        if (current.Pending || IsUserChoice(current) || isProtected(current.CaseId))
+        {
+            return true;
+        }
+        if (_accounts.ActiveAccountId is not null && !_networkHeld() && !Volatile.Read(ref _pullSettled))
+        {
+            GetAsync(CancellationToken.None).GetAwaiter().GetResult();
+            return false;
+        }
+        var assigned = false;
+        _store.Update(f =>
+        {
+            if (f.Pending || IsUserChoice(f) || isProtected(f.CaseId))
+            {
+                return f;
+            }
+            assigned = true;
+            return new MachineCaseFile { CaseId = caseId, Pending = false, Origin = MachineCaseOrigin.Auto };
+        });
+        if (assigned)
+        {
+            RaiseChanged(caseId);
+        }
+        return true;
+    }
+
+    // A manual clear is stored as a manual record with no case, so only a missing record or an auto value is open to auto-assign.
+    private static bool IsUserChoice(MachineCaseFile f) => f.Origin != MachineCaseOrigin.Auto && (f.CaseId is not null || f.Origin is not null);
+
+    private void RaiseChanged(string? caseId)
+    {
+        try { Changed?.Invoke(caseId); }
+        catch (Exception ex) { Console.Error.WriteLine($"[system-case] change notify failed: {ex.GetType().Name}: {ex.Message}"); }
     }
 
     /// <summary>Pushes a pending pick right after a device report succeeded, when the device row is known to exist.</summary>
@@ -141,7 +205,7 @@ public sealed class SystemCaseService
 
     private void MarkAttempt() => Volatile.Write(ref _lastAttemptTicks, _clock.GetUtcNow().UtcTicks);
 
-    private async Task ReconcileAsync(string accountId)
+    private async Task ReconcileAsync(string accountId, int generation)
     {
         await _push.WaitAsync().ConfigureAwait(false);
         try
@@ -155,6 +219,11 @@ public sealed class SystemCaseService
         }
         finally
         {
+            // A pull begun before an account switch must not settle the new account.
+            if (generation == Volatile.Read(ref _generation))
+            {
+                Volatile.Write(ref _pullSettled, true);
+            }
             _push.Release();
         }
     }
@@ -187,7 +256,7 @@ public sealed class SystemCaseService
             return;
         }
         // A newer pick saved while the call was in flight stays pending.
-        _store.Update(f => f.Pending && f.CaseId == pushed ? new MachineCaseFile { CaseId = f.CaseId, Pending = false } : f);
+        _store.Update(f => f.Pending && f.CaseId == pushed ? new MachineCaseFile { CaseId = f.CaseId, Pending = false, Origin = f.Origin } : f);
     }
 
     private async Task PullLockedAsync(string accountId)
@@ -208,13 +277,18 @@ public sealed class SystemCaseService
         // the account lacks is pushed instead.
         if (device.CaseId is null || !IsValidCaseId(device.CaseId))
         {
-            var after = _store.Update(f => f.Pending || f.CaseId is null ? f : new MachineCaseFile { CaseId = f.CaseId, Pending = true });
+            var after = _store.Update(f => f.Pending || f.CaseId is null || f.Origin == MachineCaseOrigin.Auto ? f : new MachineCaseFile { CaseId = f.CaseId, Pending = true, Origin = f.Origin });
             if (after.Pending)
             {
                 await PushLockedAsync(accountId).ConfigureAwait(false);
             }
             return;
         }
-        _store.Update(f => f.Pending || f.CaseId == device.CaseId ? f : new MachineCaseFile { CaseId = device.CaseId, Pending = false });
+        var before = _store.Load().CaseId;
+        var adopted = _store.Update(f => f.Pending || f.CaseId == device.CaseId ? f : new MachineCaseFile { CaseId = device.CaseId, Pending = false, Origin = MachineCaseOrigin.Account });
+        if (adopted.CaseId != before)
+        {
+            RaiseChanged(adopted.CaseId);
+        }
     }
 }

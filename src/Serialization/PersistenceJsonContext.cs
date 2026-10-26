@@ -110,7 +110,12 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(System.Text.Json.JsonElement))]
 // MachineCaseStore: this machine's PC case pick and its pending-sync flag.
 [JsonSerializable(typeof(MachineCaseFile))]
+[JsonSerializable(typeof(SystemPreviewMeta))]
 [JsonSerializable(typeof(Nexus.Service.Lighting.Scene.LightingSceneDoc))]
+[JsonSerializable(typeof(Nexus.Service.Lighting.Scene.PcSetupFile))]
+[JsonSerializable(typeof(Nexus.Service.Lighting.Scene.PcSetup))]
+[JsonSerializable(typeof(Nexus.Service.Cooling.CoolingLayoutFile))]
+[JsonSerializable(typeof(Nexus.Service.Cooling.CoolingLayout))]
 [JsonSerializable(typeof(Nexus.Service.Lighting.CustomEffects.CustomEffectsDoc))]
 // QSeriesTransportStore: (USB-serial → TCP transport record). Lets the
 // service remember which Q-series devices have been promoted to
@@ -163,6 +168,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<PresetAppBinding>))]
 // Stream Deck bindings - the shared DeckAction/DeckConfig tree (see
 // Nexus.Service.Deck.DeckActionModel) persisted per physical deck serial.
+[JsonSerializable(typeof(Nexus.Service.Hotkeys.HotkeySettings))]
 [JsonSerializable(typeof(StreamDeckSettings))]
 [JsonSerializable(typeof(PhysicalDeckSettings))]
 [JsonSerializable(typeof(Dictionary<string, PhysicalDeckSettings>))]
@@ -187,6 +193,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(DeckDial))]
 [JsonSerializable(typeof(List<DeckDial>))]
 [JsonSerializable(typeof(DeckDialAction))]
+[JsonSerializable(typeof(DeckDialHotkeyTags))]
 [JsonSerializable(typeof(List<DeckSequenceStep>))]
 // Metadata-only for the same reason as AppJsonContext: settings writes are
 // rare, so the generated fast-path writer is pure AOT size.

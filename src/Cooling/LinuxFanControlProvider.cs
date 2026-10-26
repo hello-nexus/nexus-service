@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform.Linux;
 
@@ -38,6 +39,7 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
     // merged back into channels, mirroring WindowsFanControlProvider - so an
     // unconnected header calibrates to "Unresponsive" and the UI can mark it.
     private readonly IConfigStore? _config;
+    private readonly Func<string?> _nativeHwmon;
 
     private readonly object _lock = new();
     private readonly Dictionary<string, FanPaths> _fanPaths = new();
@@ -46,11 +48,12 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
 
     private readonly record struct FanPaths(string PwmPath, string EnablePath, string? FanInputPath);
 
-    public LinuxFanControlProvider(IConfigStore config)
-        : this("/sys/class/hwmon", TimeSpan.FromMilliseconds(2500), config) { }
+    public LinuxFanControlProvider(IConfigStore config, KrakenHub krakenHub)
+        : this("/sys/class/hwmon", TimeSpan.FromMilliseconds(2500), config, () => krakenHub.ClaimedHwmonName) { }
 
-    internal LinuxFanControlProvider(string hwmonRoot, TimeSpan stepSettle, IConfigStore? config = null)
+    internal LinuxFanControlProvider(string hwmonRoot, TimeSpan stepSettle, IConfigStore? config = null, Func<string?>? nativeHwmon = null)
     {
+        _nativeHwmon = nativeHwmon ?? (() => null);
         _hwmonRoot = hwmonRoot;
         _stepSettle = stepSettle;
         _config = config;
@@ -342,10 +345,13 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
         try { dirs = Directory.GetDirectories(_hwmonRoot); }
         catch { yield break; }
 
+        var hidden = _nativeHwmon();
         foreach (var dir in dirs)
         {
             var hwmonName = LinuxSysfs.ReadText(Path.Combine(dir, "name"));
             if (string.IsNullOrEmpty(hwmonName))
+                continue;
+            if (hwmonName == hidden)
                 continue;
 
             string[] pwmFiles;
@@ -378,10 +384,13 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
         try { dirs = Directory.GetDirectories(_hwmonRoot); }
         catch { yield break; }
 
+        var hidden = _nativeHwmon();
         foreach (var dir in dirs)
         {
             var hwmonName = LinuxSysfs.ReadText(Path.Combine(dir, "name"));
             if (string.IsNullOrEmpty(hwmonName))
+                continue;
+            if (hwmonName == hidden)
                 continue;
             var category = CategoryFor(hwmonName);
 

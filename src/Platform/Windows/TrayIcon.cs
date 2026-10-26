@@ -564,16 +564,8 @@ public static class TrayIcon
         // file it creates).
         try
         {
-            var dir = Nexus.Service.Platform.ServiceLog.LogsDirectory;
-            System.IO.Directory.CreateDirectory(dir);
-            using var fs = new System.IO.FileStream(
-                System.IO.Path.Combine(dir, "nexus-tray.log"),
-                System.IO.FileMode.Append,
-                System.IO.FileAccess.Write,
-                System.IO.FileShare.ReadWrite);
             var line = $"{DateTime.Now:HH:mm:ss.fff} [TrayIcon p{Environment.ProcessId}] {msg}\n";
-            var bytes = System.Text.Encoding.UTF8.GetBytes(line);
-            fs.Write(bytes, 0, bytes.Length);
+            Nexus.Service.Platform.ServiceLog.AppendUserSessionLog("nexus-tray.log", System.Text.Encoding.UTF8.GetBytes(line));
         }
         catch { }
     }
@@ -808,6 +800,27 @@ public static class TrayIcon
             FileName = $"http://localhost:{port}{path}",
             UseShellExecute = true,
         });
+    }
+
+    /// <summary>
+    /// Global hotkey entry: minimizes the dashboard window (the overlay-hosted one,
+    /// else a standalone Edge app window) when it is the foreground window, and
+    /// otherwise opens or focuses it exactly as the tray's Open item does.
+    /// </summary>
+    public static void ToggleLocalWindow()
+    {
+        try
+        {
+            var dash = FindWindow(OverlayDashboardClassName, null);
+            var target = dash != IntPtr.Zero ? dash : FindExistingNexusAppWindow();
+            if (target != IntPtr.Zero && IsWindowVisible(target) && !IsIconic(target) && GetForegroundWindow() == target)
+            {
+                ShowWindow(target, SW_MINIMIZE);
+                return;
+            }
+        }
+        catch { /* fall through to open */ }
+        OpenLocalWindow();
     }
 
     public static void OpenLocalWindow(int servicePort = 0, string path = "/")
@@ -1753,6 +1766,8 @@ public static class TrayIcon
 
     // Single-instance window focus path
     private const int SW_RESTORE = 9;
+    private const int SW_MINIMIZE = 6;
+    [DllImport("user32")] private static extern IntPtr GetForegroundWindow();
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate bool EnumWindowsDelegate(IntPtr hwnd, IntPtr lParam);
     [DllImport("user32")] private static extern bool EnumWindows(EnumWindowsDelegate enumProc, IntPtr lParam);

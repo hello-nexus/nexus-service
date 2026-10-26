@@ -105,7 +105,7 @@ public sealed class LightingSceneService : IHostedService
                     _engine.SetScene(null);
                     return;
                 }
-                var placements = SceneMath.Placements(_store.Load());
+                var placements = SceneMath.Placements(_store.LoadEffective());
                 _engine.SetScene(placements.Count == 0 ? null : new SceneProjection(camera.Value, placements));
             }
             catch (Exception ex)

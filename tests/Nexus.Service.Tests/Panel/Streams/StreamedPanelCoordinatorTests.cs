@@ -29,6 +29,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     private readonly List<string> _panelChanges = new();
     private StreamedPanelCoordinator? _coordinator;
     private readonly LcdLockState _lock = new();
+    private int? _fpsCap;
 
     public StreamedPanelCoordinatorTests()
     {
@@ -62,7 +63,8 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
             notifyOverlay: null,
             nowMs: () => _nowMs,
             notifyPanelChanged: _panelChanges.Add,
-            lockState: _lock);
+            lockState: _lock,
+            fpsCap: () => _fpsCap);
         _coordinator.FadeRunner.AutoRun = false;
         return _coordinator;
     }
@@ -224,6 +226,96 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
 
         var widgets = Assert.Single(_registry.Get(record.Id)!.Layout!.Pages).Widgets;
         Assert.Contains(widgets, w => w.Type == "weather" && w.Size == "4x4");
+    }
+
+    private static StreamedPanelDeviceInfo KrakenScreen(string serial) => new()
+    {
+        Serial = serial,
+        Profile = new StreamedPanelProfile
+        {
+            Kind = "kraken-round", DisplayName = "Kraken LCD", Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken",
+            CssWidth = 640, CssHeight = 640, Dpi = 240,
+        },
+    };
+
+    [Fact]
+    public void A_kraken_record_keeps_its_look_and_its_legacy_surface_across_an_attach()
+    {
+        var record = _registry.Allocate("Kraken", new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken", CssWidth = 640, CssHeight = 640 });
+        _registry.Patch(record.Id, new PanelDevicePatch { AccentColor = "#abc" });
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["k-serial"] = new() { PanelDeviceId = record.Id } });
+        _discovery.Devices.Add(KrakenScreen("k-serial"));
+
+        Coordinator().TickOnce();
+
+        var after = _registry.Get(record.Id)!;
+        Assert.Equal(PanelSurfaces.LegacyKraken, after.Capabilities!.Surface);
+        Assert.Equal(240, after.Capabilities.Dpi);
+        Assert.Equal("#abc", after.AccentColor);
+        Assert.Single(_registry.List());
+    }
+
+    [Fact]
+    public void A_round_cooler_without_a_stored_entry_does_not_take_the_krakens_record()
+    {
+        var kraken = _registry.Allocate("Kraken", new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken });
+        _discovery.Devices.Add(FanScreen("fan", multiInstance: false));
+
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        var id = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.NotEqual(kraken.Id, id);
+        Assert.Equal(2, _registry.List().Count);
+    }
+
+    [Fact]
+    public void The_kraken_without_a_stored_entry_does_not_take_another_round_coolers_record()
+    {
+        var other = _registry.Allocate("Cooler", new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound });
+        _discovery.Devices.Add(KrakenScreen("k"));
+
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        var id = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        Assert.NotEqual(other.Id, id);
+        Assert.Equal(2, _registry.List().Count);
+    }
+
+    [Fact]
+    public void A_cooler_of_another_vendor_without_a_stored_entry_still_inherits_the_newest_round_record()
+    {
+        var old = _registry.Allocate("Old cooler", new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound, Family = "lianli-galahad2-lcd" });
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "fan",
+            Profile = new StreamedPanelProfile
+            {
+                Kind = "fan-lcd", DisplayName = "fan", Surface = PanelSurfaces.LcdRound, Family = "corsair-link-lcd", CssWidth = 400, CssHeight = 400,
+            },
+        });
+
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        Assert.Equal(old.Id, Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId);
+    }
+
+    [Fact]
+    public void The_kraken_without_a_stored_entry_reuses_its_own_record_even_when_that_has_no_family()
+    {
+        _config.Update(st =>
+        {
+            st.PanelDevices["cooler"] = new PanelDeviceRecord { Id = "cooler", LastSeenAt = 2, Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound } };
+            st.PanelDevices["legacy"] = new PanelDeviceRecord { Id = "legacy", LastSeenAt = 1, Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken } };
+        });
+        _discovery.Devices.Add(KrakenScreen("k"));
+
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+
+        Assert.Equal("legacy", Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId);
     }
 
     [Fact]
@@ -664,6 +756,43 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.NotEqual(first.SessionId, second.SessionId);
         Assert.Equal(60, second.Fps);
         Assert.Equal(first.PanelDeviceId, second.PanelDeviceId);
+    }
+
+    [Theory]
+    [InlineData(20, 60, 20)]
+    [InlineData(30, 20, 20)]
+    [InlineData(null, 60, 60)]
+    public void Fps_cap_limits_the_assignment_to_the_model_rate(int? cap, int modelFps, int expected)
+    {
+        _fpsCap = cap;
+        _discovery.Devices.Add(Device(fps: modelFps));
+        var coordinator = Coordinator();
+
+        coordinator.TickOnce();
+
+        Assert.Equal(expected, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
+    }
+
+    [Fact]
+    public void Fps_cap_change_remints_live_session_at_the_new_rate()
+    {
+        _fpsCap = 30;
+        _discovery.Devices.Add(Device(fps: 60));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var first = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        _fpsCap = 10;
+        coordinator.TickOnce();
+        var second = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(30, first.Fps);
+        Assert.Equal(10, second.Fps);
+        Assert.NotEqual(first.SessionId, second.SessionId);
+
+        _fpsCap = null;
+        coordinator.TickOnce();
+        Assert.Equal(60, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
     }
 
     private static StreamedPanelDeviceInfo Sized(int width, int height, StreamCodec codec = StreamCodec.RawBgra) => new()

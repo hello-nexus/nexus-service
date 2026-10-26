@@ -49,6 +49,67 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Allocate_LcdRound_ReusesARecordStoredUnderTheLegacyKrakenSurface()
+    {
+        var legacy = _registry.Allocate(null, Caps(PanelSurfaces.LegacyKraken));
+        _registry.Patch(legacy.Id, new PanelDevicePatch { AccentColor = "#abc" });
+
+        var folded = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound, Family = "nzxt-kraken" });
+
+        Assert.Equal(legacy.Id, folded.Id);
+        Assert.Equal("#abc", folded.AccentColor);
+        Assert.Equal(PanelSurfaces.LcdRound, folded.Capabilities!.Surface);
+        Assert.Single(_registry.List());
+    }
+
+    [Theory]
+    [InlineData(PanelSurfaces.LegacyKraken, PanelSurfaces.LcdRound)]
+    [InlineData(PanelSurfaces.LcdRound, PanelSurfaces.LcdRound)]
+    [InlineData(PanelSurfaces.Y70, PanelSurfaces.Y70)]
+    [InlineData(null, null)]
+    public void Canonical_ReadsTheLegacyKrakenSurfaceAsLcdRound(string? stored, string? expected)
+    {
+        Assert.Equal(expected, PanelSurfaces.Canonical(stored));
+        Assert.Equal(expected is not null && PanelSurfaces.IsSingleInstance(expected), PanelSurfaces.IsSingleInstance(stored));
+    }
+
+    [Fact]
+    public void Allocate_LcdRoundWithoutAFamily_DoesNotAdoptAKrakenRecord()
+    {
+        var kraken = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken", Dpi = 240 });
+
+        var other = _registry.Allocate(null, Caps(PanelSurfaces.LcdRound));
+
+        Assert.NotEqual(kraken.Id, other.Id);
+        var kept = _registry.Get(kraken.Id)!.Capabilities!;
+        Assert.Equal("nzxt-kraken", kept.Family);
+        Assert.Equal(240, kept.Dpi);
+    }
+
+    [Fact]
+    public void Allocate_Kraken_DoesNotAdoptAnotherRoundCoolersRecord_AndReusesItsOwn()
+    {
+        var cooler = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdRound, Family = "corsair-link-lcd" });
+        var kraken = new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken" };
+
+        var first = _registry.Allocate(null, kraken);
+        var second = _registry.Allocate(null, kraken);
+
+        Assert.NotEqual(cooler.Id, first.Id);
+        Assert.Equal(first.Id, second.Id);
+    }
+
+    [Fact]
+    public void Allocate_KrakenRecordStoredWithoutAFamily_IsStillTheKrakens()
+    {
+        var legacy = _registry.Allocate(null, Caps(PanelSurfaces.LegacyKraken));
+
+        var again = _registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.LegacyKraken, Family = "nzxt-kraken" });
+
+        Assert.Equal(legacy.Id, again.Id);
+    }
+
+    [Fact]
     public void Allocate_Phone_DoesNotDedup()
     {
         var first = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
@@ -135,6 +196,17 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
         Assert.Equal("custom", patched!.TextColorMode);
         Assert.Equal("#ff8800", _registry.Get(record.Id)!.TextColor);
+    }
+
+    [Fact]
+    public void Patch_Font_SystemFamilyIsTrimmedAndInvalidValuesKeepTheStoredFont()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+
+        Assert.Equal("system:Segoe UI", _registry.Patch(record.Id, new PanelDevicePatch { Font = "system:  Segoe UI " })!.Font);
+        Assert.Equal("system:Segoe UI", _registry.Patch(record.Id, new PanelDevicePatch { Font = "system:   " })!.Font);
+        Assert.Equal("system:Segoe UI", _registry.Patch(record.Id, new PanelDevicePatch { Font = "system:" + new string('a', 129) })!.Font);
+        Assert.Equal("oswald", _registry.Patch(record.Id, new PanelDevicePatch { Font = "oswald" })!.Font);
     }
 
     [Fact]
@@ -564,10 +636,23 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void AlwaysOnTop_DefaultsOn_PatchAppliesOnlyToDisplayBoundRecords()
+    {
+        var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
+        Assert.Null(record.AlwaysOnTop);
+        Assert.True(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { AlwaysOnTop = false });
+
+        Assert.False(patched!.AlwaysOnTop);
+        Assert.False(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
+    }
+
+    [Fact]
     public void ResetToDefaults_DisplayBound_KeepsBindingEnabledAndMonitorSettings()
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
-        _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, BackgroundFrostLevel = 25 });
+        _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, AlwaysOnTop = false, BackgroundFrostLevel = 25 });
 
         var reset = _registry.ResetToDefaults(record.Id);
 
@@ -579,6 +664,8 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.False(reset.AutoOrient);
         Assert.True(reset.KeepCursorOff);
         Assert.True(Assert.Single(_registry.ListAssignments()).KeepCursorOff);
+        Assert.False(reset.AlwaysOnTop);
+        Assert.False(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
         Assert.Null(reset.BackgroundFrostLevel);
     }
 
@@ -586,7 +673,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     public void ResetHardwareSettings_ClearsMonitorBehavior_KeepsPersonalization()
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
-        _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, BackgroundFrostLevel = 25 });
+        _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, AlwaysOnTop = false, BackgroundFrostLevel = 25 });
         _registry.UpdateXeneonEdgeSettings("DISPLAY-1", new XeneonEdgeSettingsDto { Brightness = 5 });
 
         var reset = _registry.ResetHardwareSettings(record.Id);
@@ -596,6 +683,8 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.AutoOrient);
         Assert.Null(reset.KeepCursorOff);
         Assert.False(Assert.Single(_registry.ListAssignments()).KeepCursorOff);
+        Assert.Null(reset.AlwaysOnTop);
+        Assert.True(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
         Assert.Null(reset.XeneonEdgeSettings);
         // Personalization is the other scope; hardware reset keeps it.
         Assert.Equal(25, reset.BackgroundFrostLevel);

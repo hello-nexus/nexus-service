@@ -232,6 +232,13 @@ public static class NexusServiceCollectionExtensions
         // engine and routes see motherboard + NP50 channels through one shape.
 #if WINDOWS
         services.AddSingleton<WindowsFanControlProvider>();
+        // Windows only: Linux keeps its liquidctl path for this family.
+        services.AddSingleton<Nexus.Service.Cooling.CommanderCoreCoolingProvider>(sp => new Nexus.Service.Cooling.CommanderCoreCoolingProvider(
+            new Nexus.Service.Cooling.RgbBridgeCommanderCoreSource(() => sp.GetRequiredService<Nexus.Service.Lighting.Rgb.RgbBridge>()),
+            sp.GetRequiredService<Nexus.Service.Lighting.Rgb.IRgbController>() as Nexus.Service.Lighting.Rgb.INexusCoolingTransport
+                ?? new Nexus.Service.Lighting.Rgb.NoNexusCoolingTransport(),
+            sp.GetRequiredService<IConfigStore>()));
+        services.AddHostedService<Nexus.Service.Cooling.CommanderCoreCoolingWorker>();
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(
             sp.GetRequiredService<WindowsFanControlProvider>(),
             sp.GetRequiredService<Np50CoolingProvider>(),
@@ -267,7 +274,11 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.CommanderCoreCoolingProvider.IsCommanderCoreId, sp.GetRequiredService<Nexus.Service.Cooling.CommanderCoreCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS
         services.AddSingleton<MacFanControlProvider>();
@@ -306,13 +317,18 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif LINUX
         // hwmon (motherboard + AMD GPU via amdgpu) + liquidctl USB coolers
         // + NVIDIA GPU fans, layered onto the same composite the routes see.
         services.AddSingleton<LinuxFanControlProvider>();
-        services.AddSingleton<LinuxLiquidctlProvider>();
+        services.AddSingleton(sp => new LinuxLiquidctlProvider(
+            sp.GetRequiredService<IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.Rgb.RgbBridge>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.KrakenHub>()));
         services.AddSingleton<LinuxNvidiaFanProvider>();
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(
             sp.GetRequiredService<LinuxFanControlProvider>(),
@@ -353,7 +369,9 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #else
         services.AddSingleton<IFanControlProvider>(sp => new CompositeFanControlProvider(
@@ -391,7 +409,9 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.TryxCoolingProvider.IsTryxId, sp.GetRequiredService<Nexus.Service.Cooling.TryxCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
-                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>())));
+                Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider.IsUmbraId, sp.GetRequiredService<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>())));
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #endif
         services.AddSingleton<Np50CoolingProvider>();
@@ -593,6 +613,27 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.DevicePinTracker>();
         services.AddSingleton<Nexus.Service.Lighting.LedColorLockTracker>();
         services.AddSingleton<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
+#if LINUX
+        services.AddHostedService(sp =>
+        {
+            var gate = new Nexus.Service.Platform.Linux.LinuxKeyInputGate(
+                sp.GetService<Nexus.Service.Platform.Linux.DBus.DBusConnection>());
+            // Block at once on a lock or suspend; polling reopens once logind says the session is unlocked.
+            if (sp.GetService<Nexus.Service.Lighting.SessionLockListener>() is { } lockListener)
+            {
+                lockListener.LockChanged += locked =>
+                {
+                    if (locked) gate.ForceBlocked("locked");
+                };
+            }
+            if (sp.GetService<Nexus.Service.Platform.Linux.LinuxResumeListener>() is { } resume)
+            {
+                resume.Suspending += () => gate.ForceBlocked("suspending");
+            }
+            return new Nexus.Service.Platform.Linux.LinuxKeyPressWatcher(
+                sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>(), gate);
+        });
+#endif
         services.AddSingleton<LightingEngine>(sp =>
         {
             // Property, not ctor: the engine is constructed directly in tests
@@ -607,7 +648,15 @@ public static class NexusServiceCollectionExtensions
             engine.SamplingModeSource = () => modeStore.Load().Devices.SamplingModes;
             return engine;
         });
-        services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>();
+        services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>(sp =>
+        {
+            var scene = new Nexus.Service.Lighting.Scene.LightingSceneStore();
+            Nexus.Service.Routes.PcSetupRoutes.WireTopic(scene.Setup, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
+            Nexus.Service.Routes.CoolingLayoutRoutes.WireTopic(scene.Cooling, sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>());
+            return scene;
+        });
+        services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Setup);
+        services.AddSingleton(sp => sp.GetRequiredService<Nexus.Service.Lighting.Scene.LightingSceneStore>().Cooling);
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomEffectStore>();
         services.AddSingleton<Nexus.Service.Lighting.CustomEffects.CustomFragCompiler>(sp =>
         {
@@ -911,6 +960,33 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
             sp.GetRequiredService<Nexus.Service.Lighting.IbpPeripheralLightingDeviceProvider>()));
 
+        // Corsair Galleon 100 SD keyboard (1B1C:2B0C): native direct lighting; the bundled OpenRGB has no detector for this PID.
+        // Its dial lamps (1B1C:2B18, HID LampArray collection) ride on the same lighting provider as a second device.
+        services.AddSingleton<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdHub>();
+        services.AddSingleton<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>();
+        services.AddSingleton<Nexus.Service.Lighting.GalleonSdLightingFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingFrameWriter>());
+        services.AddSingleton<Nexus.Service.Lighting.GalleonSdDialsFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdDialsFrameWriter>());
+        services.AddHostedService(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdHub>(),
+            sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>()));
+        // The dial lamps yield to the Stream Deck driver, which lights the same rings. Registered directly: AddHostedService de-duplicates by implementation type and would drop this second worker.
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService, Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker>(sp => new Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdConnectionWorker(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>(),
+            sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+            sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
+            productId: Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdProtocol.StreamDeckProductId,
+            yieldToHandlerId: Nexus.Service.Devices.Handlers.StreamDeckHandler.HandlerId));
+
         // Stream Deck: gen1-protocol button decks (Mini bench-verified
         // 2026-07-10). Peripheral, not lighting - no frame contributor, no
         // 30 Hz tick. The
@@ -954,6 +1030,22 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
         services.AddSingleton<Nexus.Service.Deck.IDeckActionExecutor>(sp =>
             sp.GetRequiredService<Nexus.Service.Deck.DeckActionExecutor>());
+        // Global hotkeys: OS-level registration only (Carbon on macOS, the user
+        // helper's RegisterHotKey on Windows); Linux reports unsupported.
+#if MACOS
+        // No AppKit run loop drains the main queue in a test host, so the Carbon registrar would only time out there.
+        if (Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1")
+            services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Hotkeys.UnsupportedHotkeyRegistrar>();
+        else
+            services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Platform.Mac.MacHotkeyRegistrar>();
+#elif WINDOWS
+        services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar>(sp =>
+            new Nexus.Service.Platform.Windows.HelperHotkeyRegistrar(sp.GetRequiredService<Nexus.Service.Helper.HelperRegistry>()));
+#else
+        services.AddSingleton<Nexus.Service.Hotkeys.IHotkeyRegistrar, Nexus.Service.Hotkeys.UnsupportedHotkeyRegistrar>();
+#endif
+        services.AddSingleton<Nexus.Service.Hotkeys.HotkeyService>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Hotkeys.HotkeyService>());
         services.AddSingleton<Nexus.Service.Deck.IDeckDialValues>(sp => new Nexus.Service.Deck.DeckDialValueService(
             sp.GetRequiredService<Nexus.Service.Activity.IVolumeProvider>(),
             sp.GetRequiredService<Nexus.Service.Activity.IAudioDeviceProvider>(),
@@ -1097,6 +1189,10 @@ public static class NexusServiceCollectionExtensions
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3Transport(port.PortName, port.Role),
 #endif
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>());
+#if WINDOWS
+            wirelessHub.TxPortCycler = new Nexus.Service.Peripherals.LianLiWireless.WindowsSlv3TxPortCycler();
+            wirelessHub.DisplayWatch = new Nexus.Service.Peripherals.LianLiWireless.WindowsDisplayStateWatch(wirelessHub.OnDisplayState);
+#endif
             wirelessHub.WiredOwned = mac => sp.GetService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>()?.Find(mac) is not null;
             return wirelessHub;
         });
@@ -1142,11 +1238,14 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();
 
         // SL-LCD Wireless fan screens: independent wired USB devices (not the
-        // RF link). Windows-only for v1, same discovery-stub pattern as the
-        // dongles above.
+        // RF link). Discovered on Windows and Linux; other platforms use the
+        // same discovery stub as the dongles above.
 #if WINDOWS
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery,
                               Nexus.Service.Peripherals.LianLiWireless.WindowsSlv3LcdDiscovery>();
+#elif LINUX
+        services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery,
+                              Nexus.Service.Peripherals.LianLiWireless.LinuxSlv3LcdDiscovery>();
 #else
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery,
                               Nexus.Service.Peripherals.LianLiWireless.StubSlv3LcdDiscovery>();
@@ -1154,7 +1253,11 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdHub>(sp =>
             new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdHub(
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.ISlv3LcdDiscovery>(),
+#if LINUX
+                port => new Nexus.Service.Peripherals.LianLiWireless.LinuxSlv3LcdTransport(port.PortName),
+#else
                 port => new Nexus.Service.Peripherals.LianLiWireless.Slv3LcdTransport(port.PortName),
+#endif
                 sp.GetService<Nexus.Service.Lighting.LcdLockState>()));
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdConnectionWorker>();
         services.AddSingleton<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaLibrary>();
@@ -1263,14 +1366,19 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingFrameWriter>());
         services.AddHostedService<Nexus.Service.Peripherals.AsiahorseUmbra.UmbraConnectionWorker>();
 
-        // NZXT Kraken Elite V2: HID control + WinUSB bulk LCD, cooling + per-LED lighting.
+        // NZXT Kraken Elite V2: HID control + bulk LCD (WinUSB / usbfs), cooling + per-LED lighting.
 #if WINDOWS
         services.AddSingleton<Nexus.Service.Peripherals.Nzxt.IKrakenLcdTransportFactory,
                               Nexus.Service.Peripherals.Nzxt.WindowsKrakenLcdTransportFactory>();
         services.AddSingleton(sp => BindKrakenLock(sp, new Nexus.Service.Peripherals.Nzxt.KrakenHub(
             sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.IKrakenLcdTransportFactory>())));
+#elif LINUX
+        services.AddSingleton<Nexus.Service.Peripherals.Nzxt.IKrakenLcdTransportFactory,
+                              Nexus.Service.Peripherals.Nzxt.LinuxKrakenLcdTransportFactory>();
+        services.AddSingleton(sp => BindKrakenLock(sp, new Nexus.Service.Peripherals.Nzxt.KrakenHub(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.IKrakenLcdTransportFactory>())));
 #else
-        // No bulk pipe off Windows: HID control still works, LCD upload reports unavailable.
+        // No bulk pipe off Windows and Linux: HID control still works, LCD upload reports unavailable.
         services.AddSingleton(sp => BindKrakenLock(sp, new Nexus.Service.Peripherals.Nzxt.KrakenHub(null)));
 #endif
         services.AddSingleton<Nexus.Service.Cooling.KrakenCoolingProvider>();
@@ -1282,6 +1390,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.KrakenLightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.KrakenLightingFrameWriter>());
         services.AddHostedService<Nexus.Service.Peripherals.Nzxt.KrakenConnectionWorker>();
+
+        // NZXT RGB & Fan Controller: fans only. Its lighting stays with OpenRGB.
+        services.AddSingleton<Nexus.Service.Peripherals.Nzxt.NzxtFanControllerHub>();
+        services.AddSingleton<Nexus.Service.Devices.DeviceInventoryService>();
+        services.AddSingleton<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>();
+        services.AddHostedService<Nexus.Service.Peripherals.Nzxt.NzxtFanControllerConnectionWorker>();
 
         // JPEG-over-HID cooler LCDs. One hub, worker, panel discovery and device row per
         // model; the hub is created here and captured so all four share it. Plain HID, so
@@ -1356,8 +1470,8 @@ public static class NexusServiceCollectionExtensions
 
         // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices,
         // Lian Li HydroShift II). Their pixels ride a USB bulk endpoint rather than HID: Windows
-        // reaches them where WinUSB is bound, macOS through IOUSBHost, and on Linux the factory
-        // is a null object so the workers never find a panel. Ryujin, Thermalright and the Screen
+        // reaches them where WinUSB is bound, macOS through IOUSBHost, and on Linux through usbfs
+        // for the Screen 8.8 only; the other panels get no pipe there. Ryujin, Thermalright and the Screen
         // 8.8 are transcribed and untested and the Lian Li units contend with L-Connect, so
         // those default OFF.
         // Only the Windows host can create a monitor; elsewhere the setting is not offered.
@@ -1371,6 +1485,8 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.WindowsBulkUsbPipeFactory()
 #elif MACOS
             new Nexus.Service.Peripherals.BulkPanels.MacBulkUsbPipeFactory()
+#elif LINUX
+            new Nexus.Service.Peripherals.BulkPanels.LinuxBulkUsbPipeFactory()
 #else
             new Nexus.Service.Peripherals.BulkPanels.NullBulkUsbPipeFactory()
 #endif
@@ -1605,6 +1721,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShiftLcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -1634,6 +1751,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShiftLcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -1650,6 +1768,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KeebHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.IbpKeyboardHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.IbpMouseHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.GalleonSdHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.FanHubHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Aw5Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Np50Handler>();
@@ -1665,6 +1784,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiFlexHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Galahad2Handler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KrakenHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NzxtFanControllerHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.CorsairLinkHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.StrimerHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NollieHandler>();
@@ -2511,6 +2631,10 @@ public static class NexusServiceCollectionExtensions
 #if LINUX
         Nexus.Service.Platform.Linux.LinuxPanelKioskHost.Configure(servicePort);
         services.AddSingleton<Nexus.Service.Platform.Linux.LinuxPanelKioskHost>();
+        Nexus.Service.Platform.Linux.LinuxStreamRenderHost.Configure(servicePort);
+        services.AddHostedService(sp => new Nexus.Service.Platform.Linux.LinuxStreamRenderHost(
+            sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(),
+            sp.GetRequiredService<Nexus.Service.Auth.TokenService>()));
 #endif
         services.AddHostedService(sp => new Nexus.Service.Panel.OverlaySupervisor(
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
@@ -2561,9 +2685,9 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>()));
         }
 #endif
-#if WINDOWS
-        // The Kraken LCD rides the WinUSB bulk pipe, so it is Windows-only, but unlike the
-        // D213 bench board it is a shipping device and is not dev-tools gated.
+#if WINDOWS || LINUX
+        // The Kraken LCD rides a bulk pipe (WinUSB on Windows, usbfs on Linux), so macOS has
+        // no panel, but unlike the D213 bench board it is a shipping device and is not dev-tools gated.
         services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             new Nexus.Service.Panel.Streams.KrakenPanelDiscovery(
                 sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.KrakenHub>()));
@@ -2585,6 +2709,7 @@ public static class NexusServiceCollectionExtensions
             }
 #endif
             var sockets = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            var configStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
             return new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
                 sp.GetServices<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(),
                 sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>(),
@@ -2594,7 +2719,8 @@ public static class NexusServiceCollectionExtensions
                 notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id),
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
-                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
+                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized,
+                fpsCap: () => configStore.Load().StreamedPanelFpsCap);
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());
@@ -2629,7 +2755,9 @@ public static class NexusServiceCollectionExtensions
 #if LINUX
         services.AddSingleton<Nexus.Service.Platform.Linux.DBus.DBusConnection>();
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxTrayService>();
-        services.AddHostedService<Nexus.Service.Platform.Linux.LinuxResumeListener>();
+        // Singleton so the key-press gate can subscribe to Suspending.
+        services.AddSingleton<Nexus.Service.Platform.Linux.LinuxResumeListener>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Platform.Linux.LinuxResumeListener>());
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxIdleDimWatch>();
 #endif
         return services;
@@ -2670,7 +2798,18 @@ public static class NexusServiceCollectionExtensions
         }
         services.AddSingleton<Nexus.Service.Cloud.CloudAccountService>();
         services.AddSingleton<Nexus.Service.Persistence.MachineCaseStore>();
-        services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>();
+        services.AddSingleton<Nexus.Service.Persistence.SystemPreviewStore>();
+        services.AddSingleton<Nexus.Service.Cloud.SystemCaseService>(sp =>
+        {
+            var cases = new Nexus.Service.Cloud.SystemCaseService(
+                sp.GetRequiredService<Nexus.Service.Persistence.MachineCaseStore>(),
+                sp.GetRequiredService<Nexus.Service.Cloud.CloudAccountService>(),
+                sp.GetRequiredService<Nexus.Service.Cloud.ICloudApiClient>());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            cases.Changed += id => Nexus.Service.Sockets.PanelTopics.BroadcastSystemCase(hub, id);
+            return cases;
+        });
+        services.AddSingleton<Nexus.Service.Peripherals.Y70.Y70CaseAssigner>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileSyncService>();
         services.AddSingleton<Nexus.Service.Cloud.CloudProfileLibraryService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Cloud.CloudProfileSyncService>());

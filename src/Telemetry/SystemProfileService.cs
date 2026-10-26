@@ -116,7 +116,7 @@ internal sealed class SystemProfileService : BackgroundService
         var props = new List<(string, object?)> { ("version", BuildInfo.Version), ("os", TelemetryPlatform.OsTag()) };
         Add(props, "os_build", specs.OsBuild);
         Add(props, "cpu", specs.Processor);
-        Add(props, "gpu", specs.GraphicsCard);
+        Add(props, "gpu", ChipOnlyGraphics(specs));
         Add(props, "ram", specs.Memory);
         if (ParseRamGb(specs.Memory) is int ramGb) props.Add(("ram_amount", ramGb));
         Add(props, "motherboard", specs.Motherboard);
@@ -207,12 +207,13 @@ internal sealed class SystemProfileService : BackgroundService
     /// <returns>Null when the settings snapshot could not be walked cleanly;
     /// the caller then omits the usage half rather than reporting zeros.</returns>
     internal static List<(string, object?)>? BuildUsageProperties(
-        NexusSettings settings, int? lightingCount, int? fanCount)
+        NexusSettings settings, int? lightingCount, int? fanCount, DateTimeOffset? now = null)
     {
         var widgetTypes = new SortedSet<string>(StringComparer.Ordinal);
         var widgetCount = 0;
         var pageCount = 0;
         var surfaces = new SortedSet<string>(StringComparer.Ordinal);
+        (int Paired, int Active7d) phones;
 
         // IConfigStore.Load hands back the LIVE settings instance, not a copy,
         // and the panel registry and the Nexus 2 importer mutate these
@@ -221,6 +222,7 @@ internal sealed class SystemProfileService : BackgroundService
         // census that would overwrite a good one.
         try
         {
+            phones = PhoneUsage(settings, now ?? DateTimeOffset.UtcNow);
             foreach (var panel in settings.PanelDevices.Values)
             {
                 var layout = panel.Layout;
@@ -260,6 +262,9 @@ internal sealed class SystemProfileService : BackgroundService
         {
             ("panel_devices", settings.PanelDevices.Count),
             ("panel_surfaces", surfaces.ToArray()),
+            ("paired_phones", phones.Paired),
+            ("phones_active_7d", phones.Active7d),
+            ("relay_enabled", settings.Auth?.RelayEnabled ?? false),
             ("widget_count", widgetCount),
             ("widget_page_count", pageCount),
             ("widget_types", widgetTypes.ToArray()),
@@ -271,6 +276,27 @@ internal sealed class SystemProfileService : BackgroundService
             ("features_off", featuresOff.ToArray()),
         });
         return result;
+    }
+
+    private static readonly TimeSpan PhoneActiveWindow = TimeSpan.FromDays(7);
+
+    /// <summary>Live paired phone sessions (inside their own idle limit), and how many were seen inside <see cref="PhoneActiveWindow"/>. Enumerates the live list: call inside the concurrent-mutation guard.</summary>
+    private static (int Paired, int Active7d) PhoneUsage(NexusSettings settings, DateTimeOffset now)
+    {
+        var sessions = settings.Auth?.PanelPhoneSessions;
+        if (sessions is null) return (0, 0);
+        var cutoff = now.Subtract(PhoneActiveWindow).ToUnixTimeMilliseconds();
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var paired = 0;
+        var active = 0;
+        foreach (var s in sessions)
+        {
+            if (!Nexus.Service.Panel.PanelPhonePairingService.IsSessionLive(s, nowMs)) continue;
+            paired++;
+            var seen = s.LastSeenAt > 0 ? s.LastSeenAt : s.CreatedAt;
+            if (seen >= cutoff) active++;
+        }
+        return (paired, active);
     }
 
     /// <summary>
@@ -310,6 +336,10 @@ internal sealed class SystemProfileService : BackgroundService
         string[] a => string.Join('\u001f', a),
         _ => value.ToString() ?? "",
     };
+
+    /// <summary>The analytics gpu value stays the chips alone, whatever maker prefix graphicsCard carries.</summary>
+    internal static string ChipOnlyGraphics(Nexus.Service.Models.Sensors.SystemSpecsResponse specs) =>
+        specs.GpuCards.Count > 0 ? string.Join(" + ", specs.GpuCards.Select(c => c.Chip)) : specs.GraphicsCard;
 
     private static void Add(List<(string, object?)> props, string key, string value)
     {

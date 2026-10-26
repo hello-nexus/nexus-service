@@ -352,6 +352,10 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
+            if (body.Font is not null && !Nexus.Service.Panel.PanelFontValue.TryNormalize(body.Font, out _))
+            {
+                return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
             var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
             var updated = registry.Patch(id, body);
             if (updated is null)
@@ -500,7 +504,7 @@ public static class PanelRoutes
         // brightness/orientation/screen + panel auto-launch, Q-series
         // brightness/orientation/screen/sleep-with-host, Xeneon Edge DDC
         // picture values - plus the record's monitor behavior
-        // (ReserveMonitor/AutoOrient/KeepCursorOff). Personalization is untouched.
+        // (ReserveMonitor/AutoOrient/KeepCursorOff/AlwaysOnTop). Personalization is untouched.
         // Factory reset: everything the user configured for this panel, plus the
         // panel's own software. Composes the personalization reset above and the
         // hardware reset below with an APK uninstall + reinstall, matching what

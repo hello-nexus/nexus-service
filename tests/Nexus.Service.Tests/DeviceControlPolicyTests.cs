@@ -41,6 +41,7 @@ public class DeviceControlPolicyTests
 
     [Theory]
     [InlineData("nzxt-kraken")]
+    [InlineData("nzxt-fan-controller")]
     [InlineData("streamdeck")]
     [InlineData("tryx")]
     [InlineData("zmatrices-lcd")]

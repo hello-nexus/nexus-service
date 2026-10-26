@@ -89,10 +89,15 @@ internal sealed class FakeLightingDeviceProvider : ILightingDeviceProvider
 {
     public List<LightingDevice> Devices = new();
     public (string Id, bool On)? LastPower;
+    public List<(string Id, bool On)> PowerCalls = new();
     public bool IsConnected => true;
     public GetLightingDevicesResponse GetAll() => new() { Devices = Devices };
     public void SetDisabled(IReadOnlyList<string> ids) { }
-    public void SetPower(string id, bool on) => LastPower = (id, on);
+    public void SetPower(string id, bool on)
+    {
+        LastPower = (id, on);
+        PowerCalls.Add((id, on));
+    }
     public void SetBrightness(string id, int brightness) { }
     public void SetHue(string id, float hue) { }
     public void SetSaturation(string id, float saturation) { }
@@ -268,7 +273,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Equal("steam", _shortcuts.Launched);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Hotkey_ParsesChordAndSendsDownThenUp()
     {
         await Run(new DeckAction { Type = "hotkey", Keys = "ctrl+shift+m" });
@@ -289,7 +294,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Null(_inputter.Last);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Hotkey_PrintScreen_ParsesToThePrintScreenKey()
     {
         await Run(new DeckAction { Type = "hotkey", Keys = "printscreen" });
@@ -297,7 +302,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Equal("PrintScreen", _inputter.Last!.Strokes[0].Key);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Hotkey_MetaPeriod_ParsesToThePeriodKeyWithMeta()
     {
         await Run(new DeckAction { Type = "hotkey", Keys = "meta+." });
@@ -306,7 +311,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.True(_inputter.Last.Strokes[0].Meta);
     }
 
-    [Theory]
+    [InteractiveSessionTheory]
     [InlineData(",", "Comma")]
     [InlineData("/", "Slash")]
     [InlineData(";", "Semicolon")]
@@ -325,7 +330,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.True(_inputter.Last.Strokes[0].Ctrl);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Text_SetsClipboardAndPastes()
     {
         await Run(new DeckAction { Type = "text", Text = "hello world" });
@@ -340,7 +345,7 @@ public sealed class DeckActionExecutorTests : IDisposable
     /// paste chord is skipped and the dispatch reports outcome=failed with
     /// the response's own error text, not outcome=ok.
     /// </summary>
-    [Fact]
+    [InteractiveSessionFact]
     public async Task Text_ClipboardSetFails_ReportsFailedOutcomeAndSkipsThePaste()
     {
         _clipboard.ShouldFail = true;
@@ -521,6 +526,62 @@ public sealed class DeckActionExecutorTests : IDisposable
     {
         await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "lightingBrightness", Value = 1.5 } });
         Assert.Equal(1f, _store.Load().Lighting.GlobalBrightness);
+    }
+
+    [Theory]
+    [InlineData(0.5, 0.1, 0.6f)]
+    [InlineData(0.5, -0.1, 0.4f)]
+    [InlineData(0.95, 0.1, 1f)]
+    [InlineData(0.05, -0.1, 0f)]
+    public async Task Nexus_LightingBrightnessStep_MovesTheMasterLevelAndClamps(double start, double step, float expected)
+    {
+        _store.Update(s => s.Lighting.GlobalBrightness = (float)start);
+        await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "lightingBrightnessStep", Value = step } });
+        Assert.Equal(expected, _store.Load().Lighting.GlobalBrightness, 3);
+    }
+
+    [Fact]
+    public async Task Nexus_LightingBrightnessStep_IgnoresANonFiniteStep()
+    {
+        _store.Update(s => s.Lighting.GlobalBrightness = 0.5f);
+        await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "lightingBrightnessStep", Value = double.NaN } });
+        Assert.Equal(0.5f, _store.Load().Lighting.GlobalBrightness);
+    }
+
+    [Fact]
+    public async Task Nexus_LightingPowerToggle_TurnsEverythingOffWhenAnyDeviceIsOn()
+    {
+        _lightingDevices.Devices.Add(new LightingDevice { Id = "a", LedsOn = true });
+        _lightingDevices.Devices.Add(new LightingDevice { Id = "b", LedsOn = false });
+        await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "lightingPowerToggle" } });
+        Assert.Equal(new[] { ("a", false), ("b", false) }, _lightingDevices.PowerCalls);
+    }
+
+    [Fact]
+    public async Task Nexus_LightingPowerToggle_TurnsEverythingOnWhenAllAreOffAndSkipsUncontrolledDevices()
+    {
+        _lightingDevices.Devices.Add(new LightingDevice { Id = "a", LedsOn = false });
+        _lightingDevices.Devices.Add(new LightingDevice { Id = "b", LedsOn = false });
+        _lightingDevices.Devices.Add(new LightingDevice { Id = "vendor", LedsOn = true, Controlled = false });
+        await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "lightingPowerToggle" } });
+        Assert.Equal(new[] { ("a", true), ("b", true) }, _lightingDevices.PowerCalls);
+    }
+
+    [Fact]
+    public async Task DeckBrightness_WithNoDeckSerial_IsANoOp()
+    {
+        // A global hotkey has no deck: it must not mint a Decks entry or touch a surface.
+        await _executor.ExecuteAsync(
+            new DeckAction { Type = "deckBrightness", Op = "up" }, "", -1, "hotkey:x", CancellationToken.None);
+        Assert.Empty(_store.Load().StreamDeck.Decks);
+        Assert.Null(_deckSurface.LastBrightness);
+    }
+
+    [Fact]
+    public async Task DeckSleep_WithNoDeckSerial_IsANoOp()
+    {
+        await _executor.ExecuteAsync(new DeckAction { Type = "deckSleep" }, "", -1, "hotkey:x", CancellationToken.None);
+        Assert.Null(_deckSurface.LastAsleepSerial);
     }
 
     [Fact]
@@ -787,7 +848,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Equal("dev", _deckSurface.LastAsleepSerial);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task HotkeySwitch_AlternatesBetweenKeysAAndKeysBPerPress()
     {
         var action = new DeckAction { Type = "hotkeySwitch", KeysA = "ctrl+shift+m", KeysB = "ctrl+shift+n" };
@@ -802,7 +863,7 @@ public sealed class DeckActionExecutorTests : IDisposable
         Assert.Equal("KeyM", _inputter.Last!.Strokes[0].Key);
     }
 
-    [Fact]
+    [InteractiveSessionFact]
     public async Task HotkeySwitch_LatchIsPerKeyNotGlobal()
     {
         var action = new DeckAction { Type = "hotkeySwitch", KeysA = "ctrl+shift+m", KeysB = "ctrl+shift+n" };

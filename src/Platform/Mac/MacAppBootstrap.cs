@@ -64,6 +64,7 @@ internal static class MacAppBootstrap
 
         // Start web host on background thread - returns immediately.
         var webTask = app.RunAsync();
+        MacAppWindow.ServicePort = servicePort;
 
         var store = app.Services.GetRequiredService<IConfigStore>();
         var showIcon = store.Load().Monitoring.ShowMacStatusBarIcon;
@@ -98,16 +99,7 @@ internal static class MacAppBootstrap
         // brought forward, never reloaded off the page it is on.
         void OpenWindow()
         {
-            var route = Nexus.Service.Routes.SessionRoutes.LastRoute;
-            // Any localhost caller can POST the route, and a URL NSURL rejects
-            // leaves a fresh window blank; "/" falls back to the SPA restore.
-            var usable = route.StartsWith("/system/", StringComparison.Ordinal)
-                && route.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '-' or '_' or '.' or ':');
-            MacAppWindow.OpenOrFocus(
-                usable
-                    ? $"http://localhost:{servicePort}{route}"
-                    : ServiceLaunchIntent.LocalDashboardUrl(servicePort),
-                navigateIfOpen: false);
+            MacAppWindow.OpenOrFocus(Nexus.Service.Routes.SessionRoutes.LastRouteUrl(servicePort), navigateIfOpen: false);
         }
 
         MacStatusBar.Initialize(

@@ -38,19 +38,20 @@ internal static class SecurityHeadersMiddleware
     // screenshot exporter (PanelEmbedFrame capture) re-reads every rendered
     // image and @font-face binary through fetch() to inline them, so any
     // source img-src/font-src can display must also be connectable or the
-    // export degrades. blob: additionally covers three.js's GLTFLoader, which
-    // loads a GLB's embedded textures by fetch()ing blob: object URLs
-    // (ImageBitmapLoader) - without it avatar models render untextured.
+    // export degrades. blob: additionally covers three.js's GLTFLoader (the 3D
+    // lighting scene, and app Canvas renderer workers, which inherit this
+    // policy), which loads a GLB's embedded textures by fetch()ing blob: object
+    // URLs (ImageBitmapLoader) - without it the models render untextured.
     private const string ContentSecurityPolicy =
         "default-src 'self'; " +
-        // wasm-unsafe-eval: the meshopt decoder (compressed avatar/GLB packs)
+        // wasm-unsafe-eval: a Canvas renderer's meshopt decoder (compressed GLB)
         // instantiates its WASM module from inline bytes.
         "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; " +
         "worker-src 'self' blob:; " +
         "child-src 'self' blob:; " +
-        // frame-src: otherwise child-src governs frames and the YouTube embed the
-        // avatar immersive view docks is refused. Path-scoped to the embed player,
-        // the same allowlist as EMBED_HOSTS in nexus-web src/sandbox/ui/avatarStickers.ts.
+        // frame-src: otherwise child-src governs frames and the SDK YouTube
+        // primitive (nexus-web src/sandbox/ui/LayerStage.tsx) is refused.
+        // Path-scoped to the embed player.
         // build.hellonexus.com: the Build app iframes the portal; its frame-ancestors must list the dashboard origins.
         "frame-src 'self' blob: https://www.youtube.com/embed/ https://www.youtube-nocookie.com/embed/ https://build.hellonexus.com; " +
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +

@@ -1,14 +1,13 @@
 namespace Nexus.Service.Lighting.Rgb;
 
 /// <summary>
-/// Every GPU I2C detector name in the bundled OpenRGB fork: the
-/// <c>REGISTER_I2C_PCI_DETECTOR</c> strings across nexus-rgb/openrgb-headless
-/// Controllers, verbatim and sorted. Linux keeps them all off so OpenRGB never
-/// probes or streams over the graphics card's I2C buses, which the amdgpu
-/// driver shares with display and power management. Regenerate from the fork
-/// when it adds a GPU controller.
+/// Every GPU I2C detector name in the bundled OpenRGB fork (AMD and NVIDIA),
+/// verbatim and sorted. Earlier Linux builds wrote all of them as disabled in
+/// OpenRGB.json. Only <see cref="OpenRgbAmdGpuI2cDetectors"/> is held off now, so
+/// on Linux the rest are released from that stale state by EnsureDetectorOverrides.
+/// Regenerate from the fork when it adds a GPU controller.
 /// </summary>
-internal static class OpenRgbGpuI2cDetectors
+internal static class OpenRgbLegacyGpuI2cDetectors
 {
     internal static readonly string[] Names =
     {
@@ -27,6 +26,7 @@ internal static class OpenRgbGpuI2cDetectors
         "ASUS KO GeForce RTX 3070 V2 Gaming OC",
         "ASUS ROG ASTRAL GeForce RTX 5080",
         "ASUS ROG ASTRAL GeForce RTX 5080 OC",
+        "ASUS ROG ASTRAL GeForce RTX 5080 OC HATSUNE MIKU",
         "ASUS ROG ASTRAL GeForce RTX 5080 OC WHITE",
         "ASUS ROG ASTRAL GeForce RTX 5080 WHITE",
         "ASUS ROG ASTRAL GeForce RTX 5090",

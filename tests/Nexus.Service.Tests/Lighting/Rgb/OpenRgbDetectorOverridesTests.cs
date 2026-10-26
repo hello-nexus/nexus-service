@@ -69,22 +69,127 @@ public class OpenRgbDetectorOverridesTests : IDisposable
         Assert.Contains("Elgato Stream Deck MK.2", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
+    private void SeedHold(params string[] names)
+    {
+        var map = new JsonObject();
+        foreach (var n in names)
+        {
+            map[n] = false;
+        }
+        File.WriteAllText(Path.Combine(_dir, "OpenRGB.json"), new JsonObject { ["Detectors"] = new JsonObject { ["detectors"] = map } }.ToJsonString());
+    }
+
+    private const string Amd = "Sapphire Radeon RX 9070 XT Nitro+";
+    private const string Nvidia = "MSI GeForce RTX 3070 Gaming Trio";
+
+    [Fact]
+    public void Lifting_the_amd_hold_releases_amd_and_stale_nvidia_entries_on_linux()
+    {
+        SeedHold(Amd, Nvidia, "HYTE Keeb TKL");
+        var lifted = OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: false);
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), Array.Empty<string>(), lifted, linux: true);
+
+        var root = ReadConfig();
+        var map = (JsonObject)root["Detectors"]!["detectors"]!;
+        Assert.False(map.ContainsKey(Amd));
+        Assert.False(map.ContainsKey(Nvidia));
+        Assert.False(DetectorEnabled(root, "HYTE Keeb TKL"));
+    }
+
+    [Fact]
+    public void Amd_hold_is_written_and_stale_nvidia_released_when_the_setting_is_off()
+    {
+        SeedHold(Nvidia);
+        var held = OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true);
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), Array.Empty<string>(), held, linux: true);
+
+        var map = (JsonObject)ReadConfig()["Detectors"]!["detectors"]!;
+        Assert.False(map[Amd]!.GetValue<bool>());
+        Assert.False(map.ContainsKey(Nvidia));
+    }
+
+    [Fact]
+    public void User_excluded_gpu_detector_stays_disabled_when_the_hold_lifts()
+    {
+        SeedHold(Nvidia);
+        var lifted = OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: false);
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, new[] { Nvidia }, Array.Empty<string>(), lifted, linux: true);
+
+        Assert.False(DetectorEnabled(ReadConfig(), Nvidia));
+    }
+
+    [Fact]
+    public void Off_linux_the_gpu_entries_are_left_alone()
+    {
+        SeedHold(Amd, Nvidia);
+        var native = OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: false);
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), Array.Empty<string>(), native, linux: false);
+
+        var root = ReadConfig();
+        Assert.False(DetectorEnabled(root, Amd));
+        Assert.False(DetectorEnabled(root, Nvidia));
+    }
+
     [Theory]
     [InlineData("ASUS ROG STRIX Radeon RX 6600 XT Gaming OC")]
     [InlineData("ASUS TUF Radeon RX 9070 XT Gaming OC")]
     [InlineData("Sapphire Radeon RX 9070 XT Nitro+")]
-    public void Gpu_i2c_detectors_disabled_on_linux_only(string detector)
+    [InlineData("PowerColor Red Devil RX9070XT")]
+    public void Amd_gpu_i2c_detectors_disabled_on_linux_only(string detector)
     {
         Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
         Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
         Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
-    [Fact]
-    public void Gpu_i2c_detector_names_are_unique_and_keep_first_party_entries()
+    [Theory]
+    [InlineData("ASUS ROG STRIX GeForce RTX 4090 Gaming OC")]
+    [InlineData("MSI GeForce RTX 3070 Gaming Trio")]
+    public void Nvidia_gpu_detectors_are_never_force_disabled_on_linux(string detector)
     {
-        Assert.Equal(OpenRgbGpuI2cDetectors.Names.Length, OpenRgbGpuI2cDetectors.Names.Distinct().Count());
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
+    }
+
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    public void Amd_hold_follows_the_setting_on_linux_and_ignores_a_stale_value_elsewhere(bool linux, bool setting, bool held)
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.AmdGpuLighting = setting);
+
+        Assert.Equal(held, OpenRgbProcessManager.HoldAmdGpuDetectorsOff(linux, store));
+    }
+
+    [Fact]
+    public void Amd_hold_is_on_without_a_store()
+    {
+        Assert.True(OpenRgbProcessManager.HoldAmdGpuDetectorsOff(linux: true, store: null));
+    }
+
+    [Fact]
+    public void Amd_gpu_i2c_detector_names_are_unique_and_keep_first_party_entries()
+    {
+        Assert.Equal(OpenRgbAmdGpuI2cDetectors.Names.Length, OpenRgbAmdGpuI2cDetectors.Names.Distinct().Count());
+        Assert.DoesNotContain(OpenRgbAmdGpuI2cDetectors.Names, n => n.Contains("GeForce", StringComparison.Ordinal));
         Assert.Contains("HYTE Keeb TKL", OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
+    }
+
+    [Theory]
+    [InlineData("ASUS ROG STRIX GeForce RTX 4090 Gaming OC")]
+    [InlineData("Gigabyte GeForce RTX 3080 Gaming OC")]
+    [InlineData("MSI GeForce RTX 3070 Gaming Trio")]
+    public void Nvidia_gpu_i2c_detectors_are_not_disabled_on_any_os(string detector)
+    {
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false, linux: true));
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+        Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 
     [Theory]

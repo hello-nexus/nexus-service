@@ -239,7 +239,11 @@ public sealed class ChannelSwitchTests
             new UpdateDownloader(new HandlerFactory(new RoutingHandler())),
             new MemoryStore(),
             TestFirmwareFlasher.Create(),
-            new MultiplexHub());
+            new MultiplexHub()
+#if WINDOWS
+            , new Nexus.Service.Helper.HelperRegistry()
+#endif
+            );
 
         var target = await svc.GetChannelTargetAsync("beta", CancellationToken.None);
         Assert.Equal("Updates are managed outside this build.", target.Error);

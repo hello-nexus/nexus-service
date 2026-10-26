@@ -31,6 +31,9 @@ public static class ProfileBundle
         /// <summary>"json" or "archive".</summary>
         public string Format { get; init; } = "json";
 
+        /// <summary>Digest of the exporting machine's install id, when the file says.</summary>
+        public string? InstallDigest { get; init; }
+
         public static Parsed Fail(string error) => new() { Error = error };
     }
 
@@ -73,7 +76,7 @@ public static class ProfileBundle
             var export = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.ProfileExport);
             if (export?.Settings is not null)
             {
-                return new Parsed { Name = export.Name ?? "Imported", ProfileJson = json, AppData = Sanitize(export.AppData) };
+                return new Parsed { Name = export.Name ?? "Imported", ProfileJson = json, AppData = Sanitize(export.AppData), InstallDigest = export.InstallDigest };
             }
             var bare = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
             return bare is null
@@ -136,7 +139,7 @@ public static class ProfileBundle
         var ids = new List<string>();
         foreach (var (appId, docs) in appData)
         {
-            if (docs.Count > 0)
+            if (docs.Count > 0 && appId != Nexus.Service.Cloud.PcSetupBackup.AppId && appId != Nexus.Service.Cloud.CoolingLayoutBackup.AppId)
             {
                 ids.Add(appId);
             }

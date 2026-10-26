@@ -26,6 +26,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
     private readonly object _lock = new();
     private readonly object _writeLock = new();
+    private readonly object _fileLock = new();
     private NexusSettings? _cached;
     private Timer? _flushTimer;
     private bool _dirty;
@@ -525,12 +526,17 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
     private void WriteAtomic(string json, bool keepBackup = true)
     {
-        var dir = Path.GetDirectoryName(SettingsPath)!;
-        Directory.CreateDirectory(dir);
-        // Restrict the temp file BEFORE the token-bearing JSON goes into it; the
-        // rename then carries 0600 onto settings.json every write.
-        NexusDataPaths.CreateRestricted(AtomicJsonFile.TempPathFor(SettingsPath));
-        AtomicJsonFile.Write(SettingsPath, json, keepBackup);
+        // Innermost lock, never held while waiting on another: Load-time Persist runs under _lock
+        // and cannot take _writeLock, yet it shares the temp file with the debounced flusher.
+        lock (_fileLock)
+        {
+            var dir = Path.GetDirectoryName(SettingsPath)!;
+            Directory.CreateDirectory(dir);
+            // Restrict the temp file BEFORE the token-bearing JSON goes into it; the
+            // rename then carries 0600 onto settings.json every write.
+            NexusDataPaths.CreateRestricted(AtomicJsonFile.TempPathFor(SettingsPath));
+            AtomicJsonFile.Write(SettingsPath, json, keepBackup);
+        }
     }
 
     public void Dispose()

@@ -239,6 +239,7 @@ public sealed class JpegPanelHub : IDisposable
                 offset += written;
                 chunkIndex++;
             }
+            (_model.Handshake as IJpegPanelFrameObserver)?.OnFrameSent(jpeg.Length, chunkIndex);
             return true;
         }
     }

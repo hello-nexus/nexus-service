@@ -402,7 +402,7 @@ internal static partial class CfgMgr32
         return result;
     }
 
-    private static unsafe string GetInterfaceInstanceId(string deviceInterfacePath)
+    internal static unsafe string GetInterfaceInstanceId(string deviceInterfacePath)
     {
         if (string.IsNullOrEmpty(deviceInterfacePath))
         {

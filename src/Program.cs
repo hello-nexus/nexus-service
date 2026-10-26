@@ -697,6 +697,8 @@ app.MapCoolingEndpoints();
 app.MapBenchmarkEndpoints();
 app.MapLightingEndpoints();
 app.MapLightingSceneEndpoints();
+app.MapPcSetupEndpoints();
+app.MapCoolingLayoutEndpoints();
 app.MapKeyReactiveEndpoints();
 app.MapWebcamEndpoints();
 app.MapObsEndpoints();
@@ -710,6 +712,7 @@ app.MapKeebEndpoints();
 app.MapStreamDeckEndpoints();
 app.MapDeckImageEndpoints();
 app.MapDeckEndpoints();
+app.MapHotkeyEndpoints();
 app.MapDisplayEndpoints();
 app.MapActivityEndpoints();
 app.MapLifecycleEndpoints();
@@ -1004,6 +1007,7 @@ static void FastServiceShutdown(WebApplication app)
         Task.Run(() => { try { sp.GetService<Nexus.Service.Sensors.ISpdPageReset>()?.ResetSpdPages(TimeSpan.FromMilliseconds(osShutdown ? 4000 : 1200)); } catch { } }),
         Task.Run(() => { try { ReleaseUniversalScreen88(sp); } catch { } }),
         Task.Run(() => { try { ReleaseCorsairLinkLcd(sp); } catch { } }),
+        Task.Run(() => { try { ReleaseGalleonSd(sp); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>()?.ReleaseForShutdown(TimeSpan.FromSeconds(1)); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Common.ExternalTools.ExternalToolManager>()?.TerminateAll(); } catch { } }),
 #if DEV_TOOLS
@@ -1014,7 +1018,15 @@ static void FastServiceShutdown(WebApplication app)
         ? Nexus.Service.Lifecycle.HostShutdown.OsShutdownTeardownBudget
         : Nexus.Service.Lifecycle.HostShutdown.FastTeardownBudget).TotalMilliseconds);
     Console.Error.WriteLine($"[shutdown] fast teardown {(done ? "complete" : "TIMED OUT")} in {sw.ElapsedMilliseconds}ms");
+    if (done) Nexus.Service.Cooling.AdlxInitGuard.ClearFirstStrike(Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
     cloudQuiesce.Wait();
+}
+
+// Disposing a hub hands the board back (hardware mode, dials autonomous) and retires it, so no worker reconnect retakes it.
+static void ReleaseGalleonSd(IServiceProvider sp)
+{
+    sp.GetService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdHub>()?.Dispose();
+    sp.GetService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdDialsHub>()?.Dispose();
 }
 
 // The fast teardown skips the connection worker's release; retired first so no reconnect retakes the glass.

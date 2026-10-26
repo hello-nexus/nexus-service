@@ -274,6 +274,7 @@ public static class LightingDevicesCatalog
         Native("Lian Li", "TL LCD Flex Fan Screen", "fan",      "0x1CBE", "0xA018", screen: true, rgb: false),
         Native("Lian Li", "SL-INF LCD Flex Fan",    "fan",      "0x43A8", "0x0104", screen: true),
         Native("Lian Li", "SL-INF LCD Flex Fan Screen", "fan",  "0x1CBE", "0xA019", screen: true, rgb: false),
+        Native("Lian Li", "P28 V2 Fan",             "fan",      "0x43A8", "0x0105"),
         Native("Lian Li", "Strimer",                "light",    "0x0CF2", "0xA200"),
         Native("Lian Li", "Galahad II Trinity",     "aio",      "0x0416", "0x7373"),
         Native("Lian Li", "Galahad II Performance", "aio",      "0x0416", "0x7371"),
@@ -313,6 +314,10 @@ public static class LightingDevicesCatalog
         Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x1031", screen: true),
         Native("Tryx",    "Panorama v2",            "aio",      "0x391A", "0x10B1", screen: true),
 
+        // Corsair Galleon 100 SD keyboard - IDs from src/Peripherals/Corsair/Galleon.
+        Native("Corsair", "Galleon 100 SD Keyboard", "keyboard", "0x1B1C", "0x2B0C"),
+        Native("Corsair", "Galleon 100 SD Dials", "keyboard", "0x1B1C", "0x2B18"),
+
         // Corsair iCUE LINK - PIDs from src/Peripherals/CorsairLink. The LCD/XD5 pumps
         // carry a screen.
         Native("Corsair", "iCUE LINK System Hub",   "fan",      "0x1B1C", "0x0C3F"),
@@ -343,6 +348,7 @@ public static class LightingDevicesCatalog
         Native("Corsair",    "XC7 RGB Elite LCD",   "aio",      "0x1B1C", "0x0C42", screen: true, rgb: false),
         Native("Corsair",    "Elite Capellix LCD",  "aio",      "0x1B1C", "0x0C39", screen: true, rgb: false),
         Native("Corsair",    "Elite Capellix LCD",  "aio",      "0x1B1C", "0x0C33", screen: true, rgb: false),
+        Native("Corsair",    "Nautilus LCD Cap",    "aio",      "0x1B1C", "0x0C55", screen: true, rgb: false),
         Native("ID-Cooling", "FX-LCD",              "aio",      "0x2000", "0x3000", screen: true, rgb: false),
         Native("ASRock",     "AIO LCD",             "aio",      "0x26CE", "0x0A10", screen: true, rgb: false),
         Native("ASUS",       "ROG Strix SLC IV LCD","aio",      "0x0B05", "0x1DE6", screen: true, rgb: false),

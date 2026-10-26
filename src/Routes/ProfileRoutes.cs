@@ -143,9 +143,12 @@ public static class ProfileRoutes
             }
         });
 
-        app.MapGet("/profiles/{id}/export", (string id, ProfileManager pm, AppDataStore appDataStore) =>
+        app.MapGet("/profiles/{id}/export", (string id, ProfileManager pm, AppDataStore appDataStore, Nexus.Service.Lighting.Scene.LightingSceneStore scene, Nexus.Service.Cloud.CloudAccountService accounts) =>
         {
-            var json = AppDataStore.IsValidProfileId(id) ? pm.ExportProfileJson(id, appDataStore.ReadProfile(id)) : null;
+            // The PC setup rides in the app-data bundle; the file names this machine so an import can tell it from another's.
+            var json = AppDataStore.IsValidProfileId(id)
+                ? pm.ExportProfileJson(id, Nexus.Service.Cloud.CoolingLayoutBackup.Attach(Nexus.Service.Cloud.PcSetupBackup.Attach(appDataStore.ReadProfile(id), scene.Setup, out _), scene.Cooling, out _), Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()))
+                : null;
             return json == null
                 ? Results.NotFound(ApiResponse.Fail("Profile not found."))
                 : Results.Text(json, "application/json");
@@ -164,7 +167,7 @@ public static class ProfileRoutes
         });
 
         app.MapPost("/profiles/import", async (HttpRequest req, ProfileManager pm, MultiplexHub hub,
-            AppDataStore appDataStore, bool? replace, string? appData) =>
+            AppDataStore appDataStore, Nexus.Service.Lighting.Scene.LightingSceneStore scene, Nexus.Service.Cloud.CloudAccountService accounts, bool? replace, string? appData) =>
         {
             var parsed = ProfileBundle.Parse(await ReadBodyAsync(req));
             if (!parsed.Ok)
@@ -176,9 +179,42 @@ public static class ProfileRoutes
             try
             {
                 var entry = pm.ImportProfileJson(parsed.ProfileJson, replace == true);
+                string? setupOutcome = null;
                 if (!skipAppData)
                 {
-                    appDataStore.ReplaceApps(entry.Id, parsed.AppData);
+                    var rest = Nexus.Service.Cloud.PcSetupBackup.Detach(parsed.AppData, out var setup);
+                    rest = Nexus.Service.Cloud.CoolingLayoutBackup.Detach(rest, out var coolingLayout);
+                    appDataStore.ReplaceApps(entry.Id, rest);
+                    if (setup is not null || coolingLayout is not null)
+                    {
+                        // Machine scope: only a replace of a profile from a file this machine exported (or one naming no machine) may replace this machine's setup and cooling layout; a new profile never touches them.
+                        string outcome;
+                        if (replace != true)
+                        {
+                            outcome = "skipped_new_profile";
+                        }
+                        else if (parsed.InstallDigest is not null
+                            && !string.Equals(parsed.InstallDigest, Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()), StringComparison.Ordinal))
+                        {
+                            outcome = "skipped_other_machine";
+                        }
+                        else
+                        {
+                            if (setup is not null)
+                            {
+                                scene.Setup.Replace(setup);
+                            }
+                            if (coolingLayout is not null)
+                            {
+                                scene.Cooling.Replace(coolingLayout);
+                            }
+                            outcome = parsed.InstallDigest is null ? "applied_unknown_machine" : "applied";
+                        }
+                        if (setup is not null)
+                        {
+                            setupOutcome = outcome;
+                        }
+                    }
                 }
 
                 if (replace == true)
@@ -189,7 +225,7 @@ public static class ProfileRoutes
                     PanelTopics.BroadcastLighting(hub);
                     PanelTopics.BroadcastCooling(hub);
                 }
-                return Results.Ok(new ProfileResponse { Profile = entry });
+                return Results.Ok(new ProfileResponse { Profile = entry, PcSetup = setupOutcome });
             }
             catch (ProfileNameConflictException)
             {
@@ -233,6 +269,8 @@ public static class ProfileRoutes
                 StartupDelaySeconds = s.StartupDelaySeconds,
                 DisableGpuMonitoring = s.DisableGpuMonitoring,
                 ReadRamTemperatures = s.ReadRamTemperatures,
+                AmdGpuLighting = OperatingSystem.IsLinux() && s.AmdGpuLighting,
+                AmdGpuLightingApplicable = OperatingSystem.IsLinux(),
                 Features = s.Features,
             };
         }).AllowPanel();
@@ -426,8 +464,9 @@ public static class ProfileRoutes
             }
         });
 
-        app.MapPost("/preferences", (PreferencesPatch body, ProfileManager pm, MultiplexHub hub, Nexus.Service.Lifecycle.FeatureReconciler reconciler, Nexus.Service.Telemetry.ITelemetry telemetry) =>
+        app.MapPost("/preferences", (PreferencesPatch body, ProfileManager pm, MultiplexHub hub, Nexus.Service.Lifecycle.FeatureReconciler reconciler, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Lighting.Rgb.RgbBridge? bridge) =>
         {
+            var amdGpuLightingChanged = false;
             // Captured inside the patch, emitted after it: the current mode
             // also rides the telemetry person profile, but only a recorded
             // transition separates a deliberate switch from the v15 migration
@@ -557,6 +596,13 @@ public static class ProfileRoutes
                     if (ui.ShowUncontrolledDevices.HasValue) s.Ui.ShowUncontrolledDevices = ui.ShowUncontrolledDevices.Value;
                     if (ui.ShowUncontrolledLightingDevices.HasValue) s.Ui.ShowUncontrolledLightingDevices = ui.ShowUncontrolledLightingDevices.Value;
                     if (ui.ShowUncontrolledCoolingDevices.HasValue) s.Ui.ShowUncontrolledCoolingDevices = ui.ShowUncontrolledCoolingDevices.Value;
+                    if (ui.LightingView3d.HasValue) s.Ui.LightingView3d = ui.LightingView3d.Value;
+                    if (ui.CoolingView3d.HasValue) s.Ui.CoolingView3d = ui.CoolingView3d.Value;
+                    if (ui.CoolingCollisionShapes.HasValue) s.Ui.CoolingCollisionShapes = ui.CoolingCollisionShapes.Value;
+                    if (ui.CoolingFlowMode is "both" or "case" or "airflow")
+                    {
+                        s.Ui.CoolingFlowMode = ui.CoolingFlowMode;
+                    }
                     if (ui.HiddenSidebarDevices is not null)
                     {
                         s.Ui.HiddenSidebarDevices = ui.HiddenSidebarDevices
@@ -603,6 +649,11 @@ public static class ProfileRoutes
                 if (body.ReadRamTemperatures is { } readRam)
                 {
                     s.ReadRamTemperatures = readRam;
+                }
+                if (body.AmdGpuLighting is { } amdGpu && OperatingSystem.IsLinux() && amdGpu != s.AmdGpuLighting)
+                {
+                    s.AmdGpuLighting = amdGpu;
+                    amdGpuLightingChanged = true;
                 }
                 if (body.Features is { } features)
                 {
@@ -665,6 +716,10 @@ public static class ProfileRoutes
             }
             pm.MarkDirty();
             PanelTopics.BroadcastPrefs(hub);
+            if (amdGpuLightingChanged)
+            {
+                bridge?.OnAmdGpuLightingChanged();
+            }
             if (dashboardAfter is not null)
                 Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, dashboardBefore, dashboardAfter, "desktop");
             return ApiResponse.Ok();

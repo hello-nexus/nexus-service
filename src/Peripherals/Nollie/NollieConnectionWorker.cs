@@ -459,6 +459,10 @@ public sealed class NollieConnectionWorker : BackgroundService
         {
             return false;
         }
+        if (OperatingSystem.IsLinux())
+        {
+            return true;
+        }
         var expected = spec.Transport == NollieTransport.Wide
             ? NollieProtocol.WideReportSize
             : NollieProtocol.ChunkedReportSize;
