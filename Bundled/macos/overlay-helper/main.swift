@@ -757,6 +757,10 @@ final class KioskController {
             || abs(current.width - target.width) > tolerance
             || abs(current.height - target.height) > tolerance {
             state.window.setFrame(target, display: true)
+            let o = KioskController.origin(of: target, in: screen)
+            state.webView.evaluateJavaScript(
+                "window.__nexusPanelHost?.setOrigin({originX:\(o.x),originY:\(o.y),fullW:\(o.w),fullH:\(o.h)})",
+                completionHandler: nil)
         }
     }
 
@@ -1147,6 +1151,16 @@ final class KioskController {
         a.isPrimary || screen == NSScreen.screens.first
     }
 
+    /// Where the kiosk sits inside the screen's full frame, in page coordinates (top-left origin, points),
+    /// and that full frame's size.
+    static func origin(of frame: NSRect, in screen: NSScreen) -> (x: Int, y: Int, w: Int, h: Int) {
+        let full = screen.frame
+        return (Int((frame.minX - full.minX).rounded()),
+                Int((full.maxY - frame.maxY).rounded()),
+                Int(full.width.rounded()),
+                Int(full.height.rounded()))
+    }
+
     static func kioskFrame(_ screen: NSScreen, primary: Bool) -> NSRect {
         primary ? screen.visibleFrame : screen.frame
     }
@@ -1214,16 +1228,14 @@ final class KioskController {
 
         // Page coordinates run from the top-left, AppKit's from the bottom-left: the offset of the kiosk
         // inside the full screen frame, in points (zero when the kiosk covers the whole display).
-        let full = screen.frame
-        let originX = frame.minX - full.minX
-        let originY = full.maxY - frame.maxY
-        if let url = panelURL(deviceId: deviceId, touchViaPointer: touchViaPointer, originX: originX, originY: originY) {
+        let o = KioskController.origin(of: frame, in: screen)
+        if let url = panelURL(deviceId: deviceId, touchViaPointer: touchViaPointer, origin: o) {
             webView.load(URLRequest(url: url))
         }
         return state
     }
 
-    private func panelURL(deviceId: String, touchViaPointer: Bool, originX: CGFloat, originY: CGFloat) -> URL? {
+    private func panelURL(deviceId: String, touchViaPointer: Bool, origin o: (x: Int, y: Int, w: Int, h: Int)) -> URL? {
         var c = URLComponents()
         c.scheme = "http"
         c.host = "localhost"
@@ -1235,8 +1247,10 @@ final class KioskController {
         // gesture model. Only when routing can apply, so a plain mouse on a
         // kiosk without a touchscreen keeps mouse semantics.
         if touchViaPointer { c.queryItems?.append(URLQueryItem(name: "touchViaPointer", value: "1")) }
-        c.queryItems?.append(URLQueryItem(name: "originX", value: String(Int(originX.rounded()))))
-        c.queryItems?.append(URLQueryItem(name: "originY", value: String(Int(originY.rounded()))))
+        c.queryItems?.append(URLQueryItem(name: "originX", value: String(o.x)))
+        c.queryItems?.append(URLQueryItem(name: "originY", value: String(o.y)))
+        c.queryItems?.append(URLQueryItem(name: "fullW", value: String(o.w)))
+        c.queryItems?.append(URLQueryItem(name: "fullH", value: String(o.h)))
         return c.url
     }
 }
