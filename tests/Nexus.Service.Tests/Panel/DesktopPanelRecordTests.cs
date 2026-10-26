@@ -303,6 +303,33 @@ public class DesktopPanelRecordTests
     }
 
     [Fact]
+    public void Assignments_signature_changes_when_a_display_becomes_primary()
+    {
+        var s = new NexusSettings();
+        s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1" };
+
+        var cold = OverlayHostBootstrap.AssignmentsSignature(s, _ => false);
+        var warm = OverlayHostBootstrap.AssignmentsSignature(s, id => id == "D1");
+
+        Assert.NotEqual(cold, warm);
+        Assert.Equal(cold, OverlayHostBootstrap.AssignmentsSignature(s));
+    }
+
+    [Fact]
+    public void Topology_service_raises_primary_changed_when_the_cache_first_learns_it()
+    {
+        var store = new InMemoryConfigStore();
+        var service = new DisplayTopologyService(new FakeProvider(), new PanelDeviceRegistry(store), store);
+        var raised = 0;
+        service.PrimaryDisplayChanged += () => raised++;
+
+        service.GetTopology();
+        service.GetTopology();
+
+        Assert.Equal(1, raised);
+    }
+
+    [Fact]
     public void Supervisor_wants_a_host_for_a_hosted_record_but_not_for_a_migrated_overlay()
     {
         var s = new NexusSettings();

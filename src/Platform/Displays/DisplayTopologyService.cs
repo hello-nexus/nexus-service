@@ -240,8 +240,10 @@ public sealed class DisplayTopologyService : IDisposable
                     ddcOnlyVariant = Y70DisplayProtocol.DdcOnlyVariantForHardwareId(info.RawHardwareId);
             }
         }
+        bool primaryChanged;
         lock (_cacheLock)
         {
+            primaryChanged = !string.Equals(_primaryDisplayId, primaryId, StringComparison.Ordinal);
             _attachedIds = ids;
             _y70DisplayId = y70DisplayId;
             _ddcOnlyY70Variant = ddcOnlyVariant;
@@ -249,6 +251,7 @@ public sealed class DisplayTopologyService : IDisposable
             _attachedIdsAtMs = Environment.TickCount64;
             _attachedIdsValid = true;
         }
+        if (primaryChanged) PrimaryDisplayChanged?.Invoke();
         if (raw is not null)
         {
             RelinkPanelDisplays(raw);
@@ -334,6 +337,9 @@ public sealed class DisplayTopologyService : IDisposable
     /// a push.
     /// </summary>
     public event Action<IReadOnlyList<string>>? PromotedPanelCapabilitiesChanged;
+
+    /// <summary>Raised when the primary display id changes, including the first time it becomes known after startup.</summary>
+    public event Action? PrimaryDisplayChanged;
 
     /// <summary>
     /// Re-derives promote-time capabilities for every enabled display-bound

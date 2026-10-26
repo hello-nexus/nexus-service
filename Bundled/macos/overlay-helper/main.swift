@@ -1028,7 +1028,10 @@ final class KioskController {
         for a in assignments {
             if let live = kiosks[a.displayId] {
                 applyLive(live, a)
-                if let screen = screens[a.displayId] { refit(live, to: screen) }
+                if let screen = screens[a.displayId] {
+                    live.isPrimary = KioskController.isPrimary(a, screen)
+                    refit(live, to: screen)
+                }
             }
         }
 
@@ -1138,6 +1141,12 @@ final class KioskController {
     // MARK: window creation
 
     /// The primary display's kiosk stops at the menu bar and Dock; every other display is covered whole.
+    /// The service's flag is learned late at startup; the screen hosting the menu bar is always the first
+    /// one, so the helper decides for itself and either source can say primary.
+    static func isPrimary(_ a: KioskAssignment, _ screen: NSScreen) -> Bool {
+        a.isPrimary || screen == NSScreen.screens.first
+    }
+
     static func kioskFrame(_ screen: NSScreen, primary: Bool) -> NSRect {
         primary ? screen.visibleFrame : screen.frame
     }
@@ -1145,7 +1154,8 @@ final class KioskController {
     private func makeKioskWindow(for screen: NSScreen, assignment a: KioskAssignment, touchViaPointer: Bool) -> KioskState {
         let deviceId = a.panelDeviceId
         let seeThrough = a.backdrop == "desktop"
-        let frame = KioskController.kioskFrame(screen, primary: a.isPrimary)
+        let primary = KioskController.isPrimary(a, screen)
+        let frame = KioskController.kioskFrame(screen, primary: primary)
         // Non-activating panel for the same reason as the widget overlay:
         // the kiosk must take clicks without ever stealing key/main status
         // from the user's apps (Windows parity: WS_EX_NOACTIVATE).
@@ -1198,7 +1208,7 @@ final class KioskController {
         let state = KioskState(
             window: win, deviceId: deviceId, touchViaPointer: touchViaPointer, backdrop: a.backdrop,
             hitView: hit, webView: webView, alwaysOnTop: a.alwaysOnTop, clickThrough: a.clickThrough,
-            isPrimary: a.isPrimary)
+            isPrimary: primary)
         applyLevel(state)
         win.orderFrontRegardless()
 
