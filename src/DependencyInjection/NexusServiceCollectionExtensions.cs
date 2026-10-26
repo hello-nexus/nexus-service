@@ -2630,11 +2630,30 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(),
             sp.GetRequiredService<Nexus.Service.Auth.TokenService>()));
 #endif
+        services.AddSingleton(sp =>
+        {
+            Action? wakeOverlay = null;
+#if WINDOWS
+            // Same wake OverlayHostBootstrap sends: the overlay refetches /overlay/state, which carries the identify.
+            var helperRegistry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
+            if (helperRegistry is not null)
+            {
+                wakeOverlay = () =>
+                {
+                    try { Nexus.Service.Helper.Domains.LifecycleCommands.NotifyOverlayPrefsChangedAsync(helperRegistry).ObserveFaults(); }
+                    catch { }
+                };
+            }
+#endif
+            return new Nexus.Service.Panel.DisplayIdentifyService(
+                sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(), wakeOverlay);
+        });
         services.AddHostedService(sp => new Nexus.Service.Panel.OverlaySupervisor(
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
-            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0));
+            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0,
+            () => sp.GetRequiredService<Nexus.Service.Panel.DisplayIdentifyService>().IsActive));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
 
         // Registered on every OS so GET /sentry can answer supported:false where

@@ -144,6 +144,25 @@ public sealed class MacOverlayHostLauncher : IOverlayHost
         }
     }
 
+    /// <summary>Pushes an identify to the helper as one stdin line; the payload is single-line JSON.</summary>
+    public void NotifyIdentify(string payloadJson)
+    {
+        lock (_lock)
+        {
+            var proc = _process;
+            if (proc is null || proc.HasExited) return;
+            try
+            {
+                proc.StandardInput.WriteLine("identify " + payloadJson);
+                proc.StandardInput.Flush();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[overlay-helper] identify push failed: {ex.Message}");
+            }
+        }
+    }
+
     private void OnExited(object? sender, EventArgs e)
     {
         if (_stopRequested) return;

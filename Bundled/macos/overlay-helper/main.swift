@@ -833,7 +833,7 @@ final class KioskController {
         return result
     }
 
-    private func screensByStableId() -> [String: NSScreen] {
+    func screensByStableId() -> [String: NSScreen] {
         let stable = stableIdsByCGDisplay()
         var result: [String: NSScreen] = [:]
         for screen in NSScreen.screens {
@@ -965,6 +965,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let opts: Options
     var kiosk: KioskController?
     var streams: StreamHostController?
+    let identify = IdentifyController()
 
     init(_ opts: Options) { self.opts = opts }
 
@@ -984,7 +985,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // doesn't close its child cleanly.
         DispatchQueue.global(qos: .background).async { [weak self] in
             while let line = readLine(strippingNewline: true) {
-                if line == "assignments-changed" {
+                if line.hasPrefix("identify ") {
+                    let json = String(line.dropFirst("identify ".count))
+                    DispatchQueue.main.async {
+                        guard let self = self, let screens = self.kiosk?.screensByStableId() else { return }
+                        self.identify.show(json: json, screens: screens)
+                    }
+                } else if line == "assignments-changed" {
                     DispatchQueue.main.async {
                         self?.kiosk?.refresh()
                         self?.streams?.refresh()
@@ -997,6 +1004,139 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // NSWindow cleanup is automatic. Nothing else to flush.
+    }
+}
+
+// MARK: - Display identify
+
+// One click-through panel per listed display, above the kiosk level. Pushed by the service as an
+// "identify <json>" stdin line; a newer token replaces whatever is showing.
+final class IdentifyController {
+    private var panels: [NSPanel] = []
+    private var lastToken: Int64 = -1
+    private var fadeWork: DispatchWorkItem?
+    private static let fadeInSeconds: TimeInterval = 0.18
+    private static let fadeOutSeconds: TimeInterval = 0.35
+
+    func show(json: String, screens: [String: NSScreen]) {
+        guard let data = json.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let list = obj["displays"] as? [[String: Any]]
+        else { return }
+        let token = (obj["token"] as? NSNumber)?.int64Value ?? 0
+        if token == lastToken { return }
+        lastToken = token
+        let remaining = max(0.4, Double((obj["remainingMs"] as? NSNumber)?.intValue ?? 3000) / 1000)
+
+        dismiss(animated: false)
+        for entry in list {
+            guard let id = entry["displayId"] as? String, let screen = screens[id] else { continue }
+            let label = (entry["label"] as? String) ?? ""
+            let name = entry["name"] as? String
+            panels.append(makePanel(on: screen, label: label, name: name))
+        }
+        let work = DispatchWorkItem { [weak self] in self?.dismiss(animated: true) }
+        fadeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.1, remaining - Self.fadeOutSeconds), execute: work)
+    }
+
+    private func dismiss(animated: Bool) {
+        fadeWork?.cancel()
+        fadeWork = nil
+        let closing = panels
+        panels = []
+        if !animated {
+            for p in closing { p.orderOut(nil); p.close() }
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = Self.fadeOutSeconds
+            for p in closing { p.animator().alphaValue = 0 }
+        }, completionHandler: {
+            for p in closing { p.orderOut(nil); p.close() }
+        })
+    }
+
+    private func makePanel(on screen: NSScreen, label: String, name: String?) -> NSPanel {
+        let frame = screen.frame
+        let side = (min(frame.width, frame.height) * 0.30).rounded()
+        let final = NSRect(x: frame.midX - side / 2, y: frame.midY - side / 2, width: side, height: side)
+        let start = final.insetBy(dx: side * 0.06, dy: side * 0.06)
+
+        let panel = NSPanel(contentRect: start, styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false, screen: screen)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
+        // Above the kiosk's status bar level and the menu bar.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue)
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        // Keeps the badge out of screenshots and screen recordings.
+        panel.sharingType = .none
+        panel.alphaValue = 0
+
+        let blur = NSVisualEffectView(frame: NSRect(origin: .zero, size: start.size))
+        blur.autoresizingMask = [.width, .height]
+        blur.material = .hudWindow
+        blur.blendingMode = .behindWindow
+        blur.state = .active
+        blur.appearance = NSAppearance(named: .darkAqua)
+        blur.wantsLayer = true
+        blur.layer?.cornerRadius = side * 0.2
+        blur.layer?.masksToBounds = true
+        blur.layer?.borderWidth = max(2, side * 0.012)
+        blur.layer?.borderColor = NSColor.white.withAlphaComponent(0.55).cgColor
+        panel.contentView = blur
+
+        let hasName = !(name ?? "").isEmpty
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.55)
+        shadow.shadowBlurRadius = side * 0.03
+        shadow.shadowOffset = NSSize(width: 0, height: -side * 0.012)
+
+        let number = Self.textField(label, font: .systemFont(ofSize: side * 0.5, weight: .heavy),
+                                    color: .white, shadow: shadow)
+        // A label field draws from the top of its frame, so size it to the text and center that.
+        let numberHeight = number.intrinsicContentSize.height
+        let bandBottom = side * (hasName ? 0.26 : 0)
+        let bandHeight = side - bandBottom - (hasName ? side * 0.06 : 0)
+        number.frame = NSRect(x: 0, y: bandBottom + (bandHeight - numberHeight) / 2, width: side, height: numberHeight)
+        number.autoresizingMask = [.width, .minYMargin, .maxYMargin]
+        blur.addSubview(number)
+        if hasName, let name = name {
+            let sub = Self.textField(name, font: .systemFont(ofSize: side * 0.07, weight: .semibold),
+                                     color: NSColor.white.withAlphaComponent(0.8), shadow: nil)
+            sub.frame = NSRect(x: side * 0.08, y: side * 0.1, width: side * 0.84, height: side * 0.12)
+            sub.autoresizingMask = [.width, .minYMargin]
+            blur.addSubview(sub)
+        }
+
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Self.fadeInSeconds
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+            panel.animator().setFrame(final, display: true)
+        }
+        return panel
+    }
+
+    private static func textField(_ text: String, font: NSFont, color: NSColor, shadow: NSShadow?) -> NSTextField {
+        let f = NSTextField(labelWithString: text)
+        f.font = font
+        f.textColor = color
+        f.alignment = .center
+        f.lineBreakMode = .byTruncatingTail
+        f.maximumNumberOfLines = 1
+        f.drawsBackground = false
+        f.isBezeled = false
+        f.shadow = shadow
+        f.cell?.usesSingleLineMode = true
+        return f
     }
 }
 

@@ -24,17 +24,19 @@ public sealed class OverlaySupervisor : BackgroundService
     private readonly IConfigStore _store;
     private readonly Func<bool> _y70Present;
     private readonly Func<bool> _streamsWanted;
+    private readonly Func<bool>? _identifyActive;
     private readonly SemaphoreSlim _wake = new(0, 1);
     private TimeSpan _backoff = MinBackoff;
     private DateTime _nextAttempt = DateTime.MinValue;
     private bool _wasDesired;
 
-    public OverlaySupervisor(IOverlayHost host, IConfigStore store, Func<bool> y70Present, Func<bool> streamsWanted)
+    public OverlaySupervisor(IOverlayHost host, IConfigStore store, Func<bool> y70Present, Func<bool> streamsWanted, Func<bool>? identifyActive = null)
     {
         _host = host;
         _store = store;
         _y70Present = y70Present;
         _streamsWanted = streamsWanted;
+        _identifyActive = identifyActive;
     }
 
     public static bool Desired(NexusSettings s, bool y70Present, bool streamsWanted)
@@ -76,7 +78,7 @@ public sealed class OverlaySupervisor : BackgroundService
             // The macOS helper renders only widgets and has no teardown path of
             // its own. Windows self-exits when idle, and the Linux kiosks are
             // reconciled by their own host.
-            if (OperatingSystem.IsMacOS() && _host.IsRunning) _host.Stop();
+            if (OperatingSystem.IsMacOS() && _host.IsRunning && _identifyActive?.Invoke() != true) _host.Stop();
             return;
         }
         if (_host.IsRunning || now < _nextAttempt) return;

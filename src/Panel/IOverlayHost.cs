@@ -25,6 +25,12 @@ public interface IOverlayHost
     /// launcher pokes it over the stdin pipe it already holds open.
     /// </summary>
     void NotifyDisplayAssignmentsChanged();
+
+    /// <summary>
+    /// Display identify started or restarted. The payload is one line of
+    /// OverlayIdentifyDto JSON. Hosts that read it from /overlay/state ignore this.
+    /// </summary>
+    void NotifyIdentify(string payloadJson) { }
 }
 
 /// <summary>Unsupported-platform fallback. No host ever starts.</summary>

@@ -363,6 +363,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamAssignmentsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamSettingsDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayStateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.OverlayIdentifyDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.IdentifyDisplaysBody))]
 
 // Weather
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherSnapshot))]

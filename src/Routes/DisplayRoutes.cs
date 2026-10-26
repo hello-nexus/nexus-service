@@ -300,6 +300,13 @@ public static class DisplayRoutes
             return Results.Ok(ApiResponse.Ok("rotated"));
         });
 
+        // Flashes each listed display's label on the real screen for a few seconds, panel or not.
+        app.MapPost("/displays/identify", (IdentifyDisplaysBody body, DisplayIdentifyService identify) =>
+        {
+            identify.Begin(body.Displays);
+            return Results.NoContent();
+        });
+
         // The macOS overlay helper reports whether its touchscreen event tap is
         // live; a refused tap (no Privacy grant) surfaces as a panel warning.
         app.MapPost("/displays/touch-routing", (

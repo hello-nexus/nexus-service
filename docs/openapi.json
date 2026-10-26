@@ -8653,6 +8653,28 @@
         }
       }
     },
+    "/displays/identify": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentifyDisplaysBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
     "/displays/touch-permission/open": {
       "post": {
         "tags": [
@@ -27753,6 +27775,33 @@
           },
           "acknowledged": {
             "type": "boolean"
+          }
+        }
+      },
+      "IdentifyDisplayEntry": {
+        "type": "object",
+        "properties": {
+          "displayId": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "IdentifyDisplaysBody": {
+        "type": "object",
+        "properties": {
+          "displays": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IdentifyDisplayEntry"
+            },
+            "nullable": true
           }
         }
       },

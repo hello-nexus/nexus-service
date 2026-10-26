@@ -14,4 +14,6 @@ public sealed class OverlayStateResponse
     public bool Y70KeepCursorOff { get; set; }
     public List<DisplayAssignmentDto> Assignments { get; set; } = new();
     public List<StreamAssignmentDto> Streams { get; set; } = new();
+    /// <summary>A display identify still showing; null otherwise.</summary>
+    public OverlayIdentifyDto? Identify { get; set; }
 }

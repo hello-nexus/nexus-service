@@ -21,7 +21,7 @@ public static class OverlayRoutes
         // Everything nexus-overlay reconciles against, in one read: a failed
         // read must leave the host's kiosks and widgets exactly as they are,
         // which per-setting reads could not express.
-        app.MapGet("/overlay/state", (HttpContext ctx, IConfigStore store, PanelDeviceRegistry registry, DisplayTopologyService topology, StreamedPanelCoordinator streams, TokenService tokens) =>
+        app.MapGet("/overlay/state", (HttpContext ctx, IConfigStore store, PanelDeviceRegistry registry, DisplayTopologyService topology, StreamedPanelCoordinator streams, DisplayIdentifyService identify, TokenService tokens) =>
         {
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
@@ -35,6 +35,7 @@ public static class OverlayRoutes
                 Y70CompatibilityRendering = s.Y70.CompatibilityRendering,
                 Y70KeepCursorOff = s.Y70.KeepCursorOff,
                 Streams = streams.GetAssignments().Assignments,
+                Identify = identify.Current(),
             };
             foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
             {
