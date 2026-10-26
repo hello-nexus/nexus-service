@@ -18,7 +18,7 @@ internal static class HardwareIdsBuilder
     {
         return new HardwareIdsDto
         {
-            Gpus = cards.Count == 0 ? null : cards.Select(c => new GpuIdsDto
+            Gpus = !cards.Any(HasAnyId) ? null : cards.Select(c => new GpuIdsDto
             {
                 Vendor = Hex(c.VendorId),
                 Device = Hex(c.DeviceId),
@@ -27,8 +27,8 @@ internal static class HardwareIdsBuilder
             }).ToList(),
             RamModules = inventory.RamModules.Count == 0 ? null : inventory.RamModules.Select(m => new RamModuleIdsDto
             {
-                Manufacturer = m.Manufacturer,
-                PartNumber = m.PartNumber,
+                Manufacturer = Real(m.Manufacturer),
+                PartNumber = Real(m.PartNumber),
                 CapacityBytes = m.CapacityBytes,
                 ConfiguredSpeedMts = m.ConfiguredSpeedMts,
             }).ToList(),
@@ -37,10 +37,27 @@ internal static class HardwareIdsBuilder
                 Vendor = d.Vendor,
                 Model = d.Model,
             }).ToList(),
-            Board = board is { } b && (!string.IsNullOrEmpty(b.Manufacturer) || !string.IsNullOrEmpty(b.Product))
-                ? new BoardIdsDto { Manufacturer = b.Manufacturer, Product = b.Product }
+            Board = board is { } b && (Real(b.Manufacturer) is not null || Real(b.Product) is not null)
+                ? new BoardIdsDto { Manufacturer = Real(b.Manufacturer), Product = Real(b.Product) }
                 : null,
         };
+    }
+
+    private static bool HasAnyId(GpuCard c) =>
+        Hex(c.VendorId) is not null || Hex(c.DeviceId) is not null || Hex(c.SubsystemVendorId) is not null || Hex(c.SubsystemDeviceId) is not null;
+
+    private static readonly string[] Placeholders =
+    {
+        "Default string", "To be filled by O.E.M.", "System Product Name", "Not Applicable", "None",
+    };
+
+    /// <summary>The value trimmed, or null when it is empty or a firmware placeholder a vendor left unset.</summary>
+    internal static string? Real(string? value)
+    {
+        var text = value?.Trim();
+        if (string.IsNullOrEmpty(text))
+            return null;
+        return Placeholders.Any(p => string.Equals(p, text, System.StringComparison.OrdinalIgnoreCase)) ? null : text;
     }
 
     /// <summary>A PCI id as four lowercase hex digits; null for zero (unread) and for values outside 16 bits.</summary>

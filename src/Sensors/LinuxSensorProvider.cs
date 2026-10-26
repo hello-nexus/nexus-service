@@ -69,6 +69,8 @@ public sealed class LinuxSensorProvider : ISensorProvider
 
     private List<string>? _gpuModels;
     private List<GpuBoard>? _gpuBoards;
+    // Chip vendor and device per entry of _gpuModels, (0, 0) when sysfs has none.
+    private List<(int Vendor, int Device)>? _gpuChips;
     private string _gpuSmiCsv = "";
     private DateTime _gpuSmiFetchedAt;
 
@@ -254,6 +256,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
 
         var models = new List<string>();
         var boards = new List<GpuBoard>();
+        var chips = new List<(int Vendor, int Device)>();
         try
         {
             var csv = ShellOut("/usr/bin/nvidia-smi", 2000, "--query-gpu=name,pci.bus_id", "--format=csv,noheader");
@@ -263,6 +266,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
                 if (name.Length > 0)
                 {
                     models.Add(name);
+                    chips.Add(LinuxPciSubsystem.ReadChip(LinuxPciSubsystem.DevicesRoot, busId) ?? (0, 0));
                     AddBoard(boards, name, busId);
                 }
             }
@@ -274,6 +278,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
                 foreach (var (name, slot) in LinuxPciSubsystem.ParseLspciGpus(lspci))
                 {
                     models.Add(name);
+                    chips.Add(LinuxPciSubsystem.ReadChip(LinuxPciSubsystem.DevicesRoot, slot) ?? (0, 0));
                     AddBoard(boards, name, slot);
                 }
             }
@@ -281,8 +286,19 @@ public sealed class LinuxSensorProvider : ISensorProvider
         catch { }
 
         _gpuBoards = boards;
+        _gpuChips = chips;
         _gpuModels = models;
         return _gpuModels;
+    }
+
+    public IReadOnlyList<GpuCard> GetGpuCards()
+    {
+        var models = GetGpuModels();
+        var cards = GpuBoardPartners.Resolve(models, GetGpuBoards());
+        var chips = _gpuChips;
+        return chips is null || chips.Count != cards.Count
+            ? cards
+            : cards.Select((c, i) => c with { VendorId = chips[i].Vendor, DeviceId = chips[i].Device }).ToList();
     }
 
     public IReadOnlyList<GpuBoard> GetGpuBoards()
@@ -301,8 +317,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
 
         if (LinuxPciSubsystem.Read(LinuxPciSubsystem.DevicesRoot, busId) is { } ids)
         {
-            var chip = LinuxPciSubsystem.ReadChip(LinuxPciSubsystem.DevicesRoot, busId);
-            boards.Add(new GpuBoard(name, ids.Vendor, ids.Device, chip?.Vendor ?? 0, chip?.Device ?? 0));
+            boards.Add(new GpuBoard(name, ids.Vendor, ids.Device));
         }
     }
 

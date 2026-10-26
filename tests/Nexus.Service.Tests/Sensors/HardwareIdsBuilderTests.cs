@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
@@ -155,6 +156,130 @@ public class HardwareIdsBuilderTests
         }
         bytes.Add(0);
         return bytes.ToArray();
+    }
+
+    [Fact]
+    public void Build_NoGpuHasAnyIdIsNull()
+    {
+        var ids = HardwareIdsBuilder.Build(new[] { new GpuCard("Apple M2 Max") }, HardwareInventory.Empty, null);
+
+        Assert.Null(ids.Gpus);
+    }
+
+    [Fact]
+    public void Build_GpuEntriesStayAlignedWithTheCardIndex()
+    {
+        var cards = new[]
+        {
+            new GpuCard("iGPU", null, 0, 0, 0x1002, 0x164E),
+            new GpuCard("dGPU", "ASUS", 0x1043, 0x87D3, 0x10DE, 0x2684),
+            new GpuCard("unread"),
+        };
+
+        var gpus = HardwareIdsBuilder.Build(cards, HardwareInventory.Empty, null).Gpus!;
+
+        Assert.Equal(3, gpus.Count);
+        Assert.Equal(("1002", "164e", null), (gpus[0].Vendor, gpus[0].Device, gpus[0].SubVendor));
+        Assert.Equal(("10de", "2684", "1043", "87d3"), (gpus[1].Vendor, gpus[1].Device, gpus[1].SubVendor, gpus[1].SubDevice));
+        Assert.Null(gpus[2].Vendor);
+    }
+
+    [Theory]
+    [InlineData("Default string")]
+    [InlineData("TO BE FILLED BY O.E.M.")]
+    [InlineData("system product name")]
+    [InlineData("Not Applicable")]
+    [InlineData("none")]
+    [InlineData("   ")]
+    [InlineData("")]
+    public void Build_DropsFirmwarePlaceholders(string placeholder)
+    {
+        var inventory = new HardwareInventory(
+            new[] { new FleetEventRamModule { Manufacturer = placeholder, PartNumber = placeholder, CapacityBytes = 1 } },
+            Array.Empty<FleetEventDrive>());
+
+        var ids = HardwareIdsBuilder.Build(Array.Empty<GpuCard>(), inventory, (placeholder, placeholder));
+
+        Assert.Null(ids.Board);
+        Assert.Null(ids.RamModules![0].Manufacturer);
+        Assert.Null(ids.RamModules[0].PartNumber);
+    }
+
+    [Fact]
+    public void Build_KeepsARealValueWhenOneFieldIsAPlaceholder()
+    {
+        var ids = HardwareIdsBuilder.Build(Array.Empty<GpuCard>(), HardwareInventory.Empty, ("ASUS", "To be filled by O.E.M."));
+
+        Assert.Equal("ASUS", ids.Board!.Manufacturer);
+        Assert.Null(ids.Board.Product);
+    }
+
+    [Theory]
+    [InlineData("de1", "A0B1", null, "A0B1")]
+    [InlineData("DELL", "A0B1", null, "A0B1")]
+    [InlineData("D3L", "A0B1", null, "A0B1")]
+    [InlineData("DEL", "0000", "DEL", null)]
+    [InlineData("DEL", "A0B1", "DEL", "A0B1")]
+    public void ParseMonitorIds_DropsJunkEdidFields(string manufacturer, string productCode, string? expectedManufacturer, string? expectedProductCode)
+    {
+        var rows = new JsonArray { (JsonNode)new JsonObject { ["Name"] = "Panel", ["Mfg"] = manufacturer, ["ProductCode"] = productCode } };
+
+        var monitor = Assert.Single(SystemSpecsCollector.ParseMonitorIds(rows)!);
+
+        Assert.Equal(expectedManufacturer, monitor.Manufacturer);
+        Assert.Equal(expectedProductCode, monitor.ProductCode);
+    }
+
+    [Fact]
+    public void ParseBaseboard_TruncatedType2ReturnsWhatFits()
+    {
+        // Formatted area ends before the product offset, so only the manufacturer resolves.
+        var table = Smbios(Structure(2, Array.Empty<byte>(), "ignored"));
+        Assert.Null(SmbiosParser.ParseBaseboard(table)?.Product);
+
+        var cut = Smbios(Structure(2, new byte[] { 1, 2, 0, 3, 0 }, "ASUS", "PRIME", "SER-1")).Take(14).ToArray();
+        BitConverter.GetBytes((uint)(cut.Length - 8)).CopyTo(cut, 4);
+        Assert.Null(SmbiosParser.ParseBaseboard(cut));
+    }
+
+    [Fact]
+    public void SerialFedThroughTheParsersNeverReachesTheJson()
+    {
+        const string boardSerial = "BOARD-SERIAL-9";
+        const string edidSerial = "7MT0123";
+        var board = SmbiosParser.ParseBaseboard(Smbios(Structure(2, new byte[] { 1, 2, 0, 3, 0 }, "ASUS", "PRIME", boardSerial)));
+        var specs = new SystemSpecsResponse { HardwareIds = HardwareIdsBuilder.Build(Array.Empty<GpuCard>(), Inventory(), board) };
+        specs.HardwareIds.Monitors = SystemSpecsCollector.ParseMonitorIds(new JsonArray
+        {
+            (JsonNode)new JsonObject { ["Name"] = "DELL", ["Mfg"] = "DEL", ["ProductCode"] = "A0B1", ["Serial"] = edidSerial },
+        });
+
+        var json = JsonSerializer.Serialize(specs, AppJsonContext.Default.SystemSpecsResponse);
+
+        Assert.DoesNotContain(boardSerial, json);
+        Assert.DoesNotContain(edidSerial, json);
+    }
+
+    [Fact]
+    public void ReadChip_ReadsVendorAndDeviceWithoutSubsystemFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pci-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var dir = Path.Combine(root, "0000:00:02.0");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "vendor"), "0x8086\n");
+            File.WriteAllText(Path.Combine(dir, "device"), "0x4680\n");
+
+            Assert.Equal((0x8086, 0x4680), LinuxPciSubsystem.ReadChip(root, "00:02.0"));
+            Assert.Null(LinuxPciSubsystem.Read(root, "00:02.0"));
+            Assert.Null(LinuxPciSubsystem.ReadChip(root, "00:03.0"));
+            Assert.Null(LinuxPciSubsystem.ReadChip(root, null));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
     }
 
     [Fact]

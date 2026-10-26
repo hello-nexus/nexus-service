@@ -76,7 +76,7 @@ internal static class GpuBoardPartners
             }
             var board = unused[at];
             unused.RemoveAt(at);
-            cards.Add(new GpuCard(model, NameOf(board.SubsystemVendorId), board.SubsystemVendorId, board.SubsystemDeviceId, board.VendorId, board.DeviceId));
+            cards.Add(new GpuCard(model, NameOf(board.SubsystemVendorId), board.SubsystemVendorId, board.SubsystemDeviceId));
         }
         return cards;
     }

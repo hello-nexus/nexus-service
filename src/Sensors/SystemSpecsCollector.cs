@@ -332,10 +332,13 @@ public sealed class SystemSpecsCollector
         var ids = new List<MonitorIdsDto>();
         foreach (var row in mon?.AsArray()?.OfType<JsonObject>() ?? Enumerable.Empty<JsonObject>())
         {
+            var manufacturer = JsonString(row["Mfg"]).Trim();
+            var productCode = JsonString(row["ProductCode"]).Trim();
             var id = new MonitorIdsDto
             {
-                Manufacturer = NullIfEmpty(JsonString(row["Mfg"]).Trim()),
-                ProductCode = NullIfEmpty(JsonString(row["ProductCode"]).Trim()),
+                // A PnP id is three letters A-Z and an unprogrammed product code is zero; either is a junk EDID, not a model.
+                Manufacturer = manufacturer.Length == 3 && manufacturer.All(c => c is >= 'A' and <= 'Z') ? manufacturer : null,
+                ProductCode = productCode.Length == 0 || productCode == "0000" ? null : productCode,
                 Name = NullIfEmpty(Clean(JsonString(row["Name"]))),
             };
             if (id.Manufacturer is not null || id.ProductCode is not null || id.Name is not null)
