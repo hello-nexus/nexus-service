@@ -347,6 +347,47 @@ public class CorsairLinkHubHandleTests
     }
 
     [Fact]
+    public void HearsAnotherHost_reports_the_heard_bytes()
+    {
+        var busy = new FakeLinkHub();
+        busy.InjectReply(0x08);
+
+        Assert.True(CorsairLinkHub.HearsAnotherHost(busy, 10, out var heard));
+        Assert.StartsWith("n=", heard);
+        Assert.Equal("", CorsairLinkHub.HearsAnotherHost(new FakeLinkHub(), 10, out var none) ? "x" : none);
+    }
+
+    [Fact]
+    public void Initialize_records_each_step_and_its_traffic()
+    {
+        var hub = new CorsairLinkHub();
+        hub.Attach(new FakeLinkHub());
+
+        Assert.True(hub.Initialize());
+
+        Assert.Contains("step=firmware", hub.LastInitTrace);
+        Assert.Contains("step=refresh", hub.LastInitTrace);
+        Assert.Contains("0x36 devices=", hub.LastInitTrace);
+        Assert.Contains("out 02 13", hub.LastInitTrace);
+        Assert.EndsWith("init ok", hub.LastInitTrace);
+    }
+
+    [Fact]
+    public void A_foreign_reply_during_initialize_is_recorded_with_its_bytes()
+    {
+        var device = new FakeLinkHub();
+        device.InjectReply(0x09);
+        var hub = new CorsairLinkHub();
+        hub.Attach(device);
+
+        Assert.False(hub.Initialize());
+
+        Assert.True(hub.ForeignHostSeen);
+        Assert.Contains("echo=09", hub.ForeignReplyHex);
+        Assert.Contains("foreign", hub.LastInitTrace);
+    }
+
+    [Fact]
     public async Task Redetect_starts_detection_then_pings_until_the_hub_is_idle()
     {
         var (hub, device) = Connected();

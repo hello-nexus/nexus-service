@@ -29,6 +29,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
     private const int MaxInitRetryMs = 60_000;
     // Longer than iCUE's telemetry read interval.
     private const int ListenMs = 2500;
+    private const long ListenLogEveryMs = 300_000;
     // Longer than iCUE's keep-alive ping interval to its Bragi devices.
     private const long QuietAfterOtherHostMs = 60_000;
     // A slotless or empty chain re-detects once it has stayed that way this long.
@@ -234,6 +235,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
             var initRetryMs = ConnectPollMs;
             // When another program last answered on the hub; null once Nexus holds it again.
             long? otherHostHeardMs = null;
+            long lastListenLogMs = 0;
             while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("corsair"))
             {
                 // Unplugged: the session ends and a new one starts when the hub returns.
@@ -247,12 +249,18 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                 }
 
                 var listenStartMs = Environment.TickCount64;
-                if (CorsairLinkHub.HearsAnotherHost(device, ListenMs))
+                if (CorsairLinkHub.HearsAnotherHost(device, ListenMs, out var heardHex))
                 {
                     device.Dispose();
                     if (otherHostHeardMs is null)
                     {
-                        ServiceLog.Info($"{Tag(hub)} another program is driving the hub; waiting for it to stop");
+                        ServiceLog.Info($"{Tag(hub)} another program is driving the hub; waiting for it to stop (heard {heardHex} after {Environment.TickCount64 - listenStartMs}ms)");
+                        lastListenLogMs = Environment.TickCount64;
+                    }
+                    else if (Environment.TickCount64 - lastListenLogMs >= ListenLogEveryMs)
+                    {
+                        ServiceLog.Info($"{Tag(hub)} still hearing the hub while listening: {heardHex}");
+                        lastListenLogMs = Environment.TickCount64;
                     }
                     otherHostHeardMs = Environment.TickCount64;
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
@@ -279,7 +287,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                     {
                         if (otherHostHeardMs is null)
                         {
-                            ServiceLog.Warn($"{Tag(hub)} another program answered during initialize; releasing the hub");
+                            ServiceLog.Warn($"{Tag(hub)} another program answered during initialize; releasing the hub ({hub.ForeignReplyHex}) trace: {hub.LastInitTrace}");
                         }
                         otherHostHeardMs = Environment.TickCount64;
                         hub.Detach(handBack: false);
@@ -289,7 +297,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                     // firmware read itself never landed a full reply - the hub went
                     // silent (or answered short) before the device-list read.
                     var fw = hub.State.Firmware;
-                    ServiceLog.Warn($"{Tag(hub)} initialize failed, retrying in {initRetryMs / 1000}s (fw={(string.IsNullOrEmpty(fw) ? "none" : fw)})");
+                    ServiceLog.Warn($"{Tag(hub)} initialize failed, retrying in {initRetryMs / 1000}s (fw={(string.IsNullOrEmpty(fw) ? "none" : fw)}) trace: {hub.LastInitTrace}");
                     hub.Detach(handBack: HandBack());
                     await Task.Delay(initRetryMs, stoppingToken).ConfigureAwait(false);
                     initRetryMs = Math.Min(initRetryMs * 2, MaxInitRetryMs);
@@ -298,7 +306,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                 initRetryMs = ConnectPollMs;
                 otherHostHeardMs = null;
 
-                ServiceLog.Info($"{Tag(hub)} connected fw={hub.State.Firmware} devices={hub.State.Devices.Count}");
+                ServiceLog.Info($"{Tag(hub)} connected fw={hub.State.Firmware} devices={hub.State.Devices.Count} trace: {hub.LastInitTrace}");
                 EnsureLcd();
                 _lighting.OnHubStateUpdated();
                 _cooling.ReassertControl(hub);
