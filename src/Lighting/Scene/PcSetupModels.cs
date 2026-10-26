@@ -32,6 +32,9 @@ public sealed class PcSetup
 public sealed class PcSetupCase
 {
     public PcSetupPlace? Place { get; set; }
+
+    /// <summary>The face the user chose for the radiator; absent means Build's default order.</summary>
+    public string? RadiatorMount { get; set; }
 }
 
 public sealed class PcSetupItem
