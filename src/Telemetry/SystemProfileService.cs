@@ -213,6 +213,7 @@ internal sealed class SystemProfileService : BackgroundService
         var widgetCount = 0;
         var pageCount = 0;
         var surfaces = new SortedSet<string>(StringComparer.Ordinal);
+        (int Paired, int Active7d) phones;
 
         // IConfigStore.Load hands back the LIVE settings instance, not a copy,
         // and the panel registry and the Nexus 2 importer mutate these
@@ -221,6 +222,7 @@ internal sealed class SystemProfileService : BackgroundService
         // census that would overwrite a good one.
         try
         {
+            phones = PhoneUsage(settings, now ?? DateTimeOffset.UtcNow);
             foreach (var panel in settings.PanelDevices.Values)
             {
                 var layout = panel.Layout;
@@ -252,8 +254,6 @@ internal sealed class SystemProfileService : BackgroundService
         if (!settings.Features.Monitoring) featuresOff.Add("monitoring");
         if (!settings.Features.Diagnostics) featuresOff.Add("diagnostics");
 
-        var phones = PhoneUsage(settings, now ?? DateTimeOffset.UtcNow);
-
         var result = new List<(string, object?)>();
         // Omitted rather than zeroed when the provider read failed.
         if (lightingCount is { } lc) result.Add(("lighting_devices", lc));
@@ -280,19 +280,23 @@ internal sealed class SystemProfileService : BackgroundService
 
     private static readonly TimeSpan PhoneActiveWindow = TimeSpan.FromDays(7);
 
-    /// <summary>Paired phone sessions, and how many were seen inside <see cref="PhoneActiveWindow"/>.</summary>
+    /// <summary>Live paired phone sessions (inside their own idle limit), and how many were seen inside <see cref="PhoneActiveWindow"/>. Enumerates the live list: call inside the concurrent-mutation guard.</summary>
     private static (int Paired, int Active7d) PhoneUsage(NexusSettings settings, DateTimeOffset now)
     {
         var sessions = settings.Auth?.PanelPhoneSessions;
         if (sessions is null) return (0, 0);
         var cutoff = now.Subtract(PhoneActiveWindow).ToUnixTimeMilliseconds();
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var paired = 0;
         var active = 0;
         foreach (var s in sessions)
         {
+            if (!Nexus.Service.Panel.PanelPhonePairingService.IsSessionLive(s, nowMs)) continue;
+            paired++;
             var seen = s.LastSeenAt > 0 ? s.LastSeenAt : s.CreatedAt;
             if (seen >= cutoff) active++;
         }
-        return (sessions.Count, active);
+        return (paired, active);
     }
 
     /// <summary>

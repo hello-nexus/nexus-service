@@ -419,6 +419,14 @@ public sealed class PanelPhonePairingService
         public static ClaimResult Fail(string error) => new(false, "", "", "", error, false, "", "", 0);
     }
 
+    /// <summary>True while a session is still inside its own idle limit (long for HTTPS-claimed, short for plain HTTP).</summary>
+    internal static bool IsSessionLive(PanelPhoneSessionToken session, long nowMs)
+    {
+        var lastSeen = session.LastSeenAt > 0 ? session.LastSeenAt : session.CreatedAt;
+        var idleLimit = session.ClaimedOverHttps ? SessionIdleMs : HttpSessionIdleMs;
+        return lastSeen > 0 && nowMs - lastSeen <= idleLimit;
+    }
+
     private bool AlreadyPaired(string deviceId, string fingerprint)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -429,9 +437,7 @@ public sealed class PanelPhonePairingService
         }
         foreach (var session in sessions)
         {
-            var lastSeen = session.LastSeenAt > 0 ? session.LastSeenAt : session.CreatedAt;
-            var idleLimit = session.ClaimedOverHttps ? SessionIdleMs : HttpSessionIdleMs;
-            if (lastSeen <= 0 || now - lastSeen > idleLimit)
+            if (!IsSessionLive(session, now))
             {
                 continue;
             }

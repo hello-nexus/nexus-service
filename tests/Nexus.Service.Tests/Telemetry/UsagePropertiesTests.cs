@@ -154,17 +154,21 @@ public class UsagePropertiesTests
         var now = DateTimeOffset.UtcNow;
         long Ms(TimeSpan ago) => now.Subtract(ago).ToUnixTimeMilliseconds();
         var s = new NexusSettings();
-        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { LastSeenAt = Ms(TimeSpan.FromHours(1)) });
-        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { LastSeenAt = Ms(TimeSpan.FromDays(6)) });
-        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { LastSeenAt = Ms(TimeSpan.FromDays(8)) });
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, LastSeenAt = Ms(TimeSpan.FromHours(1)) });
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, LastSeenAt = Ms(TimeSpan.FromDays(6)) });
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, LastSeenAt = Ms(TimeSpan.FromDays(8)) });
         // No LastSeenAt yet: falls back to CreatedAt.
-        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { CreatedAt = Ms(TimeSpan.FromDays(1)) });
-        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { CreatedAt = Ms(TimeSpan.FromDays(30)) });
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, CreatedAt = Ms(TimeSpan.FromDays(1)) });
+        // Past the 30-day idle limit: stored but no longer a live pairing.
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, CreatedAt = Ms(TimeSpan.FromDays(40)) });
+        // A plain-HTTP session has a 24-hour limit, so 2 days idle is stale.
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = false, LastSeenAt = Ms(TimeSpan.FromDays(2)) });
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = false, LastSeenAt = Ms(TimeSpan.FromHours(2)) });
 
         var props = SystemProfileService.BuildUsageProperties(s, 0, 0, now);
 
         Assert.Equal(5, Value(props, "paired_phones"));
-        Assert.Equal(3, Value(props, "phones_active_7d"));
+        Assert.Equal(4, Value(props, "phones_active_7d"));
     }
 
     [Fact]
