@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
+using Nexus.Service.Models.Displays;
 using Nexus.Service.Platform.Displays;
 using Xunit;
 
@@ -199,5 +202,185 @@ public class LinuxDisplayBrightnessTests
         Connector(t, "card0-DP-1", "connected");
 
         Assert.Equal(new[] { 5, 6 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+    }
+
+    private sealed class ScanFixture
+    {
+        public int Scans;
+        public string Signature = "a";
+        public bool HasConnectors = true;
+        public long Now;
+        public int Brightness = 40;
+        public LinuxDisplayBrightnessProvider Provider { get; }
+
+        public ScanFixture()
+        {
+            Provider = new LinuxDisplayBrightnessProvider(() => (Signature, HasConnectors), Scan, () => Now);
+        }
+
+        private IEnumerable<LinuxDisplayBrightnessProvider.Target> Scan()
+        {
+            Scans++;
+            var dto = new DisplayDto
+            {
+                Id = "linux-ddc-i2c-5",
+                IsDdcCapable = true,
+                BrightnessControl = new DisplayBrightnessControlDto { Supported = true, Current = Brightness },
+            };
+            yield return new LinuxDisplayBrightnessProvider.Target(false, null, 5, dto);
+        }
+    }
+
+    [Fact]
+    public void Enumerate_ScansOnceWhileSignatureIsUnchanged()
+    {
+        var f = new ScanFixture();
+        f.Provider.Enumerate();
+        f.Provider.Enumerate();
+        f.Provider.FindDisplayIdByHardwareName(new[] { "i2c-5" });
+        Assert.Equal(1, f.Scans);
+    }
+
+    [Fact]
+    public void Enumerate_RescansWhenSignatureChanges()
+    {
+        var f = new ScanFixture();
+        f.Provider.Enumerate();
+        f.Signature = "b";
+        f.Provider.Enumerate();
+        f.Provider.Enumerate();
+        Assert.Equal(2, f.Scans);
+    }
+
+    [Fact]
+    public void RequestRescan_ScansImmediatelyOrIsDropped()
+    {
+        var f = new ScanFixture();
+        f.Provider.Enumerate();
+
+        f.Now = 1_000;
+        f.Provider.RequestRescan();
+        Assert.Equal(1, f.Scans);
+
+        f.Now = LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+        f.Provider.Enumerate();
+        Assert.Equal(1, f.Scans);
+
+        f.Provider.RequestRescan();
+        Assert.Equal(2, f.Scans);
+
+        f.Now += 1_000;
+        f.Provider.RequestRescan();
+        f.Provider.Enumerate();
+        Assert.Equal(2, f.Scans);
+    }
+
+    [Fact]
+    public void GetBrightness_MissedIdForcesOneRescanUntilSignatureChanges()
+    {
+        var f = new ScanFixture();
+        f.Provider.Enumerate();
+        f.Now = LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+        Assert.Null(f.Provider.GetBrightness("missing"));
+        Assert.Equal(2, f.Scans);
+
+        f.Now += LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+        for (var i = 0; i < 5; i++)
+            f.Provider.GetBrightness("missing");
+        Assert.Equal(2, f.Scans);
+
+        f.Signature = "b";
+        f.Provider.Enumerate();
+        Assert.Equal(3, f.Scans);
+        f.Now += LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+        f.Provider.GetBrightness("missing");
+        Assert.Equal(4, f.Scans);
+    }
+
+    [Fact]
+    public void Enumerate_WithoutConnectorsRescansOnSlowTtl()
+    {
+        var f = new ScanFixture { HasConnectors = false };
+        f.Provider.Enumerate();
+        f.Now = LinuxDisplayBrightnessProvider.NoConnectorRescanMs - 1;
+        f.Provider.Enumerate();
+        Assert.Equal(1, f.Scans);
+        f.Now = LinuxDisplayBrightnessProvider.NoConnectorRescanMs;
+        f.Provider.Enumerate();
+        Assert.Equal(2, f.Scans);
+    }
+
+    [Fact]
+    public void Enumerate_WithConnectorsNeverAgesOut()
+    {
+        var f = new ScanFixture();
+        f.Provider.Enumerate();
+        f.Now = LinuxDisplayBrightnessProvider.NoConnectorRescanMs * 10;
+        f.Provider.Enumerate();
+        Assert.Equal(1, f.Scans);
+    }
+
+    [Fact]
+    public void RememberBrightness_DoesNotMutateDtoAlreadyReturned()
+    {
+        var f = new ScanFixture();
+        var before = f.Provider.Enumerate().Single(d => d.Id == "linux-ddc-i2c-5");
+        f.Provider.RememberBrightness("linux-ddc-i2c-5", 77);
+        Assert.Equal(40, before.BrightnessControl.Current);
+    }
+
+    [Fact]
+    public void Enumerate_ExcludedDisplayDoesNotLeakIntoCache()
+    {
+        var f = new ScanFixture();
+        var excluded = f.Provider.Enumerate(new[] { "linux-ddc-i2c-5" });
+        Assert.False(excluded.Single(d => d.Id == "linux-ddc-i2c-5").DdcEnabled);
+        Assert.True(f.Provider.Enumerate().Single(d => d.Id == "linux-ddc-i2c-5").DdcEnabled);
+        Assert.Equal(1, f.Scans);
+    }
+
+    private static string Sig(TempDir t) => LinuxDisplayBrightnessProvider.ComputeDisplaySignature(t.At("drm"), t.At("dev")).Signature;
+
+    [Fact]
+    public void ComputeDisplaySignature_ReportsWhetherAnyConnectorHasStatus()
+    {
+        using var t = new TempDir();
+        t.Write("dev/i2c-3", "");
+        Assert.False(LinuxDisplayBrightnessProvider.ComputeDisplaySignature(t.At("drm"), t.At("dev")).HasConnectors);
+        t.Write("drm/card0-DP-1/status", "disconnected\n");
+        Assert.True(LinuxDisplayBrightnessProvider.ComputeDisplaySignature(t.At("drm"), t.At("dev")).HasConnectors);
+    }
+
+    [Fact]
+    public void ComputeDisplaySignature_ChangesWithStatusEdidAndI2cNodes()
+    {
+        using var t = new TempDir();
+        t.Write("drm/card0-DP-1/status", "connected\n");
+        t.Write("drm/card0-DP-1/edid", "one");
+        t.Write("dev/i2c-3", "");
+        var baseline = Sig(t);
+        Assert.Equal(baseline, Sig(t));
+
+        t.Write("drm/card0-DP-1/edid", "two");
+        var afterEdid = Sig(t);
+        Assert.NotEqual(baseline, afterEdid);
+
+        t.Write("drm/card0-DP-1/status", "disconnected\n");
+        var afterStatus = Sig(t);
+        Assert.NotEqual(afterEdid, afterStatus);
+
+        t.Write("dev/i2c-4", "");
+        Assert.NotEqual(afterStatus, Sig(t));
+    }
+
+    [Fact]
+    public void RememberBrightness_UpdatesCachedCurrentWithoutRescan()
+    {
+        var f = new ScanFixture();
+        f.Provider.Enumerate();
+        f.Provider.RememberBrightness("linux-ddc-i2c-5", 77);
+        var dto = f.Provider.Enumerate().Single(d => d.Id == "linux-ddc-i2c-5");
+        Assert.Equal(77, dto.BrightnessControl.Current);
+        Assert.Equal(1, f.Scans);
     }
 }

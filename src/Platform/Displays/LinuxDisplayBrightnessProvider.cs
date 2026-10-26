@@ -24,6 +24,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 {
     private const string BacklightRoot = "/sys/class/backlight";
     private const string DrmRoot = "/sys/class/drm";
+    private const string DevRoot = "/dev";
     internal const string DisableDdcEnv = "NEXUS_DISABLE_DDC";
     private const byte DdcAddress = 0x37;
     private const byte EdidAddress = 0x50;
@@ -39,36 +40,60 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     private readonly object _gate = new();
     private readonly Dictionary<string, Target> _targets = new();
 
-    private sealed record Target(bool Internal, string? BacklightDir, int I2cBus, DisplayDto Dto, string PnpId = "");
+    // Minimum gap between scans started by RequestRescan.
+    internal const long ForcedRescanMinMs = 30_000;
+    // Without DRM connector status files (NVIDIA without modeset) a hotplug leaves no sysfs trace, so the scan ages out instead.
+    internal const long NoConnectorRescanMs = 300_000;
+
+    private readonly Func<(string Signature, bool HasConnectors)> _signature;
+    private readonly Func<IEnumerable<Target>> _scan;
+    private readonly Func<long> _clock;
+    private List<Target>? _ddcScan;
+    private string? _ddcSignature;
+    private long _lastScanAt;
+    private readonly HashSet<string> _missedIds = new();
+
+    internal sealed record Target(bool Internal, string? BacklightDir, int I2cBus, DisplayDto Dto, string PnpId = "");
+
+    public LinuxDisplayBrightnessProvider()
+        : this(() => ComputeDisplaySignature(DrmRoot, DevRoot), () => EnumerateDdc(DrmRoot), () => Environment.TickCount64)
+    {
+    }
+
+    internal LinuxDisplayBrightnessProvider(Func<(string Signature, bool HasConnectors)> signature, Func<IEnumerable<Target>> scan, Func<long> clock)
+    {
+        _signature = signature;
+        _scan = scan;
+        _clock = clock;
+    }
 
     public string Hint { get; private set; } = "";
 
     public IReadOnlyList<DisplayDto> Enumerate(IReadOnlyCollection<string>? excludedIds = null)
     {
-        if (!OperatingSystem.IsLinux())
-            return Array.Empty<DisplayDto>();
-
         var dtos = new List<DisplayDto>();
         lock (_gate)
         {
             _targets.Clear();
-            foreach (var t in EnumerateBacklights().Concat(EnumerateDdc(DrmRoot)))
+            foreach (var t in EnumerateBacklights().Concat(DdcTargets()))
             {
+                // The caller gets its own DTO so edits and cached brightness updates never cross.
+                var dto = CloneDto(t.Dto);
                 // An opted-out display is listed but not registered as a
                 // target, so no read or write can reach it later.
-                if (excludedIds is not null && excludedIds.Contains(t.Dto.Id))
+                if (excludedIds is not null && excludedIds.Contains(dto.Id))
                 {
-                    t.Dto.DdcEnabled = false;
-                    t.Dto.Capabilities.Brightness = false;
-                    t.Dto.BrightnessControl = new DisplayBrightnessControlDto
+                    dto.DdcEnabled = false;
+                    dto.Capabilities.Brightness = false;
+                    dto.BrightnessControl = new DisplayBrightnessControlDto
                     {
                         UnsupportedReason = "Brightness control is turned off for this display.",
                     };
-                    dtos.Add(t.Dto);
+                    dtos.Add(dto);
                     continue;
                 }
-                _targets[t.Dto.Id] = t;
-                dtos.Add(t.Dto);
+                _targets[dto.Id] = t;
+                dtos.Add(dto);
             }
             Hint = dtos.Count == 0
                 ? "No backlight panel and no DDC/CI display found (load i2c-dev; ensure /dev/i2c-* is readable)."
@@ -82,7 +107,11 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         var t = Resolve(id);
         if (t is null)
             return null;
-        return t.Internal ? ReadBacklightPercent(t.BacklightDir!) : DdcBrightnessPct(t.I2cBus);
+        if (t.Internal)
+            return ReadBacklightPercent(t.BacklightDir!);
+        var pct = DdcBrightnessPct(t.I2cBus);
+        RememberBrightness(id, pct);
+        return pct;
     }
 
     public DisplayBrightnessDto SetBrightness(string id, int percent)
@@ -97,6 +126,8 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
             return Failed(id, percent, "Write failed (check i2c/backlight permissions).");
 
         var applied = (t.Internal ? ReadBacklightPercent(t.BacklightDir!) : DdcBrightnessPct(t.I2cBus)) ?? percent;
+        if (!t.Internal)
+            RememberBrightness(id, applied);
         return new DisplayBrightnessDto
         {
             Id = id,
@@ -163,17 +194,36 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         return null;
     }
 
+    public void RequestRescan()
+    {
+        if (Environment.GetEnvironmentVariable(DisableDdcEnv) == "1")
+            return;
+        lock (_gate)
+        {
+            var now = _clock();
+            if (_ddcScan is null || now - _lastScanAt >= ForcedRescanMinMs)
+                ScanLocked(_signature().Signature, now);
+        }
+    }
+
     private Target? Resolve(string id)
     {
         lock (_gate)
         {
             if (_targets.TryGetValue(id, out var t))
                 return t;
+            // A missed id is not retried until a scan runs; a forced scan never starts within the rate limit of the last one.
+            if (_missedIds.Contains(id))
+                return null;
         }
+        RequestRescan();
         Enumerate();
         lock (_gate)
         {
-            return _targets.TryGetValue(id, out var t2) ? t2 : null;
+            if (_targets.TryGetValue(id, out var t2))
+                return t2;
+            _missedIds.Add(id);
+            return null;
         }
     }
 
@@ -232,6 +282,102 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     }
 
     // ── External monitors (DDC/CI over i2c-dev) ──
+
+    // Caller holds _gate. A scan does i2c traffic that stalls GPU frames, so it reruns only when sysfs changed.
+    private List<Target> DdcTargets()
+    {
+        if (Environment.GetEnvironmentVariable(DisableDdcEnv) == "1")
+            return new List<Target>();
+
+        var (signature, hasConnectors) = _signature();
+        var now = _clock();
+        var aged = !hasConnectors && now - _lastScanAt >= NoConnectorRescanMs;
+        if (_ddcScan is null || signature != _ddcSignature || aged)
+            ScanLocked(signature, now);
+        return _ddcScan!;
+    }
+
+    private void ScanLocked(string signature, long now)
+    {
+        _ddcScan = _scan().ToList();
+        _ddcSignature = signature;
+        _lastScanAt = now;
+        _missedIds.Clear();
+    }
+
+    private static DisplayDto CloneDto(DisplayDto d)
+    {
+        var c = d.BrightnessControl;
+        return new DisplayDto
+        {
+            Id = d.Id,
+            Name = d.Name,
+            Manufacturer = d.Manufacturer,
+            Model = d.Model,
+            IsInternal = d.IsInternal,
+            IsDdcCapable = d.IsDdcCapable,
+            DdcEnabled = d.DdcEnabled,
+            Capabilities = new DisplayCapabilitiesDto
+            {
+                Brightness = d.Capabilities.Brightness,
+                Contrast = d.Capabilities.Contrast,
+                ColorTempPresets = new List<string>(d.Capabilities.ColorTempPresets),
+                InputSources = new List<string>(d.Capabilities.InputSources),
+                Volume = d.Capabilities.Volume,
+            },
+            BrightnessControl = new DisplayBrightnessControlDto
+            {
+                Supported = c.Supported,
+                Min = c.Min,
+                Max = c.Max,
+                Current = c.Current,
+                ControlPath = c.ControlPath,
+                WriteMode = c.WriteMode,
+                WriteCooldownMs = c.WriteCooldownMs,
+                VerifyAfterWrite = c.VerifyAfterWrite,
+                UnsupportedReason = c.UnsupportedReason,
+            },
+        };
+    }
+
+    internal void RememberBrightness(string id, int? pct)
+    {
+        if (pct is null)
+            return;
+        lock (_gate)
+        {
+            _ddcScan?.Find(t => t.Dto.Id == id)?.Dto.BrightnessControl.Current = pct;
+        }
+    }
+
+    /// <summary>Cheap change detector for the DDC scan cache: connector name, status and EDID hash, plus the i2c device nodes. No i2c traffic.</summary>
+    internal static (string Signature, bool HasConnectors) ComputeDisplaySignature(string drmRoot, string devRoot)
+    {
+        var sb = new System.Text.StringBuilder();
+        var connectors = 0;
+        try
+        {
+            foreach (var dir in Directory.GetDirectories(drmRoot, "card*-*").Order(StringComparer.Ordinal))
+            {
+                var status = LinuxSysfs.ReadText(Path.Combine(dir, "status"));
+                if (status is null)
+                    continue;
+                connectors++;
+                sb.Append(Path.GetFileName(dir)).Append('=').Append(status).Append(':');
+                try { sb.Append(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(dir, "edid"))))); }
+                catch { }
+                sb.Append(';');
+            }
+        }
+        catch { }
+        try
+        {
+            foreach (var node in Directory.GetFiles(devRoot, "i2c-*").Order(StringComparer.Ordinal))
+                sb.Append(Path.GetFileName(node)).Append(',');
+        }
+        catch { }
+        return (sb.ToString(), connectors > 0);
+    }
 
     private static IEnumerable<Target> EnumerateDdc(string drmRoot)
     {
