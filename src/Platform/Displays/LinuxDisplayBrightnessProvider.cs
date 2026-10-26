@@ -419,7 +419,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 
     private const string I2cDevicesRoot = "/sys/bus/i2c/devices";
 
-    // One line per scan decision, so a bundle shows why a monitor was or was not reached. Scans run only on a sysfs change.
+    // One line per scan decision, so a bundle shows why a monitor was or was not reached. Scans are rate limited (sysfs change, forced rescan, age-out).
     private static void ScanLog(string message) => ServiceLog.Info($"[ddc-scan] {message}");
 
     /// <summary>
