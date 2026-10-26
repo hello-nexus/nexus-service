@@ -206,7 +206,8 @@ public static class MystiqueProtocol
 
     /// <summary>
     /// Whether the screen plays its pictures or a GIF it holds, picked by <paramref name="gifIndex"/>, its place in the order
-    /// the screen stored them (capture 5); sent after an upload and to switch between stored GIFs.
+    /// the screen stored them (capture 5); sent after an upload and to switch between stored GIFs. Pictures go as the first
+    /// stored picture, the one picture slot the screen keeps (the rotation capture).
     /// </summary>
     public static byte[] BuildMediaSource(string source, int gifIndex = 0)
     {
@@ -215,10 +216,6 @@ public static class MystiqueProtocol
         {
             p[0] = 1;
             p[1] = (byte)gifIndex;
-        }
-        else
-        {
-            p[1] = 1;
         }
         return BuildFrame(CmdMediaSource, p);
     }

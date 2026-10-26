@@ -2439,12 +2439,6 @@ public sealed class DeepCoolMystiqueSettings
     /// <summary>The screen may hold pictures or GIFs from before Nexus kept track of them, so what it shows is a guess; a format clears it. Named for GIFs, as saved settings use it.</summary>
     public bool GifSlotUnsure { get; set; } = true;
 
-    /// <summary>
-    /// Set by a format: the screen's own software sends no source command after the first new picture that follows one.
-    /// Cleared by the next new item, a source change or a picture show.
-    /// </summary>
-    public bool QuietSinceFormat { get; set; }
-
     /// <summary>The screen id every picture goes up under, so showing another picture replaces the one it holds. Empty until the first picture after a format.</summary>
     public string PictureSlot { get; set; } = "";
 

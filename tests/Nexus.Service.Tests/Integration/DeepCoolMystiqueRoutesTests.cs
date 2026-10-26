@@ -282,7 +282,6 @@ public partial class DeepCoolMystiqueRoutesTests
         var m = System.Text.Json.JsonSerializer.Deserialize(saved, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!.Devices.DeepCoolMystique.Copy();
 
         Assert.Equal(new[] { ("2101b6e6277841daa821e8d79a5c528b", "a") }, m.Media.Select(i => (i.Id, i.Name)));
-        Assert.True(m.QuietSinceFormat);
         Assert.Equal(("", ""), (m.PictureSlot, m.ShownPicture));
         Assert.Equal(("2101b6e6277841daa821e8d79a5c528b", true), DevicesRoutes.MystiquePictureSlot(m, "41c9bf307cba45a1aa3a1d92bbe93b96"));
     }
@@ -525,25 +524,14 @@ public partial class DeepCoolMystiqueRoutesTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void After_a_format_the_first_new_picture_selects_pictures_unsent_and_the_next_new_item_sends(bool gifFirst)
+    public void A_new_item_always_sends_its_kind_as_the_source(bool isGif)
     {
-        var m = new DeepCoolMystiqueSettings { MediaSource = "gif", SourceEdited = false, QuietSinceFormat = true };
+        var m = new DeepCoolMystiqueSettings { MediaSource = "gif", SourceEdited = false };
 
-        var first = DevicesRoutes.MystiqueSourceAfterUpload(m, gifFirst, chosenDuringStream: false);
-        Assert.Equal(gifFirst ? new MystiqueSourceAfter("gif", true) : new MystiqueSourceAfter("images", false), first);
-        Assert.Equal((first!.Value.Source, true), (m.MediaSource, m.SourceEdited));
-        Assert.False(m.QuietSinceFormat);
-        Assert.Equal(new MystiqueSourceAfter("images", true), DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, chosenDuringStream: false));
-    }
+        var after = DevicesRoutes.MystiqueSourceAfterUpload(m, isGif, chosenDuringStream: false);
 
-    [Fact]
-    public void Choosing_a_source_ends_the_quiet_after_a_format()
-    {
-        var m = new DeepCoolMystiqueSettings { QuietSinceFormat = true };
-
-        DevicesRoutes.ApplyMystiqueRequest(m, new DeepCoolMystiqueSettingsRequest { MediaSource = DeepCoolMystiqueSettings.SourceImages });
-
-        Assert.False(m.QuietSinceFormat);
+        Assert.Equal(new MystiqueSourceAfter(isGif ? "gif" : "images", true), after);
+        Assert.Equal((after!.Value.Source, true), (m.MediaSource, m.SourceEdited));
     }
 
     [Fact]

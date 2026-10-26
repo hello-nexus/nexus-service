@@ -118,7 +118,7 @@ public static partial class DevicesRoutes
         if (body.AuxArea is not null) { m.AuxArea = body.AuxArea; m.ReadoutEdited = true; }
         if (body.SwitchSeconds.HasValue) { m.SwitchSeconds = body.SwitchSeconds.Value; m.MediaEdited = true; }
         if (body.Animation is not null) { m.Animation = body.Animation; m.MediaEdited = true; }
-        if (body.MediaSource is not null) { m.MediaSource = body.MediaSource; m.SourceEdited = true; m.QuietSinceFormat = false; Interlocked.Increment(ref s_mystiqueSourceChoices); }
+        if (body.MediaSource is not null) { m.MediaSource = body.MediaSource; m.SourceEdited = true; Interlocked.Increment(ref s_mystiqueSourceChoices); }
         if (body.EdgePicking.HasValue) { m.EdgePicking = body.EdgePicking.Value; m.DeviceEdited = true; }
         if (body.Brightness.HasValue) { m.Brightness = Math.Clamp(body.Brightness.Value, 0, 100); m.DeviceEdited = true; }
         if (body.Gyroscope.HasValue) { m.Gyroscope = body.Gyroscope.Value; m.DeviceEdited = true; }

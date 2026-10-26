@@ -152,7 +152,7 @@ public partial class DeepCoolMystiqueRoutesTests
     private static bool Ok(JsonElement res) => !res.GetProperty("error").GetBoolean();
 
     [FfmpegFact]
-    public async Task The_first_picture_after_remove_all_creates_the_slot_and_sends_no_source_command()
+    public async Task The_first_picture_after_remove_all_creates_the_slot_and_selects_the_pictures()
     {
         await using var screen = await Screen.StartAsync(MediaRoot());
         Assert.Equal(System.Net.HttpStatusCode.OK, (await screen.Client.DeleteAsync("/devices/deepcool-mystique/media")).StatusCode);
@@ -165,7 +165,7 @@ public partial class DeepCoolMystiqueRoutesTests
         Assert.True(Ok(res));
         var writes = WritesSince(screen, mark);
         Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdUploadStart));
-        Assert.Equal(0, Commands(writes, MystiqueProtocol.CmdMediaSource));
+        Assert.Equal(new[] { MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceImages) }, writes.Where(w => w.Length == MystiqueProtocol.FrameLength && w[2] == MystiqueProtocol.CmdMediaSource));
         var m = screen.Settings();
         Assert.Equal((PictureId(picture), PictureId(picture)), (m.PictureSlot, m.ShownPicture));
         Assert.Equal(DeepCoolMystiqueSettings.SourceImages, m.MediaSource);

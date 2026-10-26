@@ -23,18 +23,15 @@ public static partial class DevicesRoutes
 
     /// <summary>
     /// Saves the source a finished stream leaves the screen on and returns it, null for none. A new item selects its
-    /// kind, as the screen's own software does, unless the user chose a source during the stream. The first new picture
-    /// after a format selects pictures without sending the command (<see cref="DeepCoolMystiqueSettings.QuietSinceFormat"/>).
+    /// kind, as the screen's own software does, unless the user chose a source during the stream.
     /// </summary>
     internal static MystiqueSourceAfter? MystiqueSourceAfterUpload(DeepCoolMystiqueSettings m, bool isGif, bool chosenDuringStream)
     {
-        bool quiet = m.QuietSinceFormat && !isGif && !chosenDuringStream;
-        m.QuietSinceFormat = false;
         if (!chosenDuringStream)
         {
             m.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
             m.SourceEdited = true;
-            return new MystiqueSourceAfter(m.MediaSource, !quiet);
+            return new MystiqueSourceAfter(m.MediaSource, true);
         }
         return m.SourceEdited ? new MystiqueSourceAfter(m.MediaSource, true) : null;
     }
@@ -150,7 +147,6 @@ public static partial class DevicesRoutes
                 d.Freed = new();
                 d.GifSlotUnsure = false;
                 d.GifOrderUnsure = false;
-                d.QuietSinceFormat = false;
             }
         });
         if (!formatted)
@@ -499,7 +495,6 @@ public static partial class DevicesRoutes
                     m.ShownPicture = "";
                     m.GifSlotUnsure = false;
                     m.GifOrderUnsure = false;
-                    m.QuietSinceFormat = true;
                 });
                 gone.ForEach(DeleteMystiqueFiles);
                 DeleteMystiqueStreamLeftovers();
