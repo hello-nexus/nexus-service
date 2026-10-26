@@ -207,7 +207,7 @@ internal sealed class SystemProfileService : BackgroundService
     /// <returns>Null when the settings snapshot could not be walked cleanly;
     /// the caller then omits the usage half rather than reporting zeros.</returns>
     internal static List<(string, object?)>? BuildUsageProperties(
-        NexusSettings settings, int? lightingCount, int? fanCount)
+        NexusSettings settings, int? lightingCount, int? fanCount, DateTimeOffset? now = null)
     {
         var widgetTypes = new SortedSet<string>(StringComparer.Ordinal);
         var widgetCount = 0;
@@ -252,6 +252,8 @@ internal sealed class SystemProfileService : BackgroundService
         if (!settings.Features.Monitoring) featuresOff.Add("monitoring");
         if (!settings.Features.Diagnostics) featuresOff.Add("diagnostics");
 
+        var phones = PhoneUsage(settings, now ?? DateTimeOffset.UtcNow);
+
         var result = new List<(string, object?)>();
         // Omitted rather than zeroed when the provider read failed.
         if (lightingCount is { } lc) result.Add(("lighting_devices", lc));
@@ -260,6 +262,9 @@ internal sealed class SystemProfileService : BackgroundService
         {
             ("panel_devices", settings.PanelDevices.Count),
             ("panel_surfaces", surfaces.ToArray()),
+            ("paired_phones", phones.Paired),
+            ("phones_active_7d", phones.Active7d),
+            ("relay_enabled", settings.Auth?.RelayEnabled ?? false),
             ("widget_count", widgetCount),
             ("widget_page_count", pageCount),
             ("widget_types", widgetTypes.ToArray()),
@@ -271,6 +276,23 @@ internal sealed class SystemProfileService : BackgroundService
             ("features_off", featuresOff.ToArray()),
         });
         return result;
+    }
+
+    private static readonly TimeSpan PhoneActiveWindow = TimeSpan.FromDays(7);
+
+    /// <summary>Paired phone sessions, and how many were seen inside <see cref="PhoneActiveWindow"/>.</summary>
+    private static (int Paired, int Active7d) PhoneUsage(NexusSettings settings, DateTimeOffset now)
+    {
+        var sessions = settings.Auth?.PanelPhoneSessions;
+        if (sessions is null) return (0, 0);
+        var cutoff = now.Subtract(PhoneActiveWindow).ToUnixTimeMilliseconds();
+        var active = 0;
+        foreach (var s in sessions)
+        {
+            var seen = s.LastSeenAt > 0 ? s.LastSeenAt : s.CreatedAt;
+            if (seen >= cutoff) active++;
+        }
+        return (sessions.Count, active);
     }
 
     /// <summary>

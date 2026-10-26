@@ -1089,6 +1089,52 @@ public class PanelPhonePairingServiceTests
         Assert.False(string.IsNullOrEmpty(confirm.Token));
     }
 
+    private sealed class RecordingTelemetry : Nexus.Service.Telemetry.ITelemetry
+    {
+        public List<(string Event, (string Key, object? Value)[] Props)> Events { get; } = new();
+        public void Capture(string @event, params (string Key, object? Value)[] properties) => Events.Add((@event, properties));
+        public void Identify(params (string Key, object? Value)[] properties) { }
+    }
+
+    [Fact]
+    public void LanClaim_CapturesPairCompletedWithLanTransport()
+    {
+        var telemetry = new RecordingTelemetry();
+        var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
+
+        var result = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
+
+        Assert.True(result.Paired);
+        var e = Assert.Single(telemetry.Events);
+        Assert.Equal(Nexus.Service.Telemetry.TelemetryEvents.PairCompleted, e.Event);
+        Assert.Equal(("transport", (object?)"lan"), Assert.Single(e.Props));
+    }
+
+    [Fact]
+    public void RelayClaim_CapturesPairCompletedWithRelayTransport()
+    {
+        var telemetry = new RecordingTelemetry();
+        var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
+        var token = PairTokenFrom(service.CreatePairQr());
+
+        var result = service.ClaimCore(token, "Phone", "", "", "relay-device", overRelay: true, claimedOverHttps: false);
+
+        Assert.True(result.Ok);
+        Assert.Equal(("transport", (object?)"relay"), Assert.Single(Assert.Single(telemetry.Events).Props));
+    }
+
+    [Fact]
+    public void FailedClaim_CapturesNothing()
+    {
+        var telemetry = new RecordingTelemetry();
+        var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
+
+        var result = service.ClaimCore("not-a-token", "Phone", "", "", "d", overRelay: true, claimedOverHttps: false);
+
+        Assert.False(result.Ok);
+        Assert.Empty(telemetry.Events);
+    }
+
     private static PanelPhonePairingService NewServiceWithHub(Nexus.Service.Sockets.MultiplexHub hub)
     {
         return new PanelPhonePairingService(new InMemoryConfigStore(), hub)
