@@ -740,11 +740,20 @@ final class KioskController {
     private func refitIfVisibleFrameChanged() {
         let screens = screensByStableId()
         for (displayId, state) in kiosks where state.isPrimary {
-            guard let screen = screens[displayId] else { continue }
-            if state.window.frame != KioskController.kioskFrame(screen, primary: true) {
-                refresh()
-                return
-            }
+            if let screen = screens[displayId] { refit(state, to: screen) }
+        }
+    }
+
+    /// Resizes in place: the page keeps its state and the web view follows through autoresizing.
+    private func refit(_ state: KioskState, to screen: NSScreen) {
+        let target = KioskController.kioskFrame(screen, primary: state.isPrimary)
+        let current = state.window.frame
+        let tolerance: CGFloat = 1
+        if abs(current.origin.x - target.origin.x) > tolerance
+            || abs(current.origin.y - target.origin.y) > tolerance
+            || abs(current.width - target.width) > tolerance
+            || abs(current.height - target.height) > tolerance {
+            state.window.setFrame(target, display: true)
         }
     }
 
@@ -982,7 +991,6 @@ final class KioskController {
                 || screen == nil
                 || want!.panelDeviceId != entry.deviceId
                 || want!.backdrop != entry.backdrop
-                || entry.window.frame != KioskController.kioskFrame(screen!, primary: want!.isPrimary)
             if stale {
                 entry.window.orderOut(nil)
                 entry.window.close()
@@ -1015,7 +1023,10 @@ final class KioskController {
         }
 
         for a in assignments {
-            if let live = kiosks[a.displayId] { applyLive(live, a) }
+            if let live = kiosks[a.displayId] {
+                applyLive(live, a)
+                if let screen = screens[a.displayId] { refit(live, to: screen) }
+            }
         }
 
         for a in assignments where kiosks[a.displayId] == nil {
