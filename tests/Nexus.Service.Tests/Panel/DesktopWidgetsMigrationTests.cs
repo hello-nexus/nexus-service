@@ -450,6 +450,76 @@ public class DesktopWidgetsMigrationTests
         Assert.Null(store.Load().Overlay.Layout);
     }
 
+    private static PanelLayoutDto LayoutWith(params string[] ids) => new()
+    {
+        LayoutSchemaVersion = 2,
+        Surface = "monitor",
+        Pages = new List<PanelPageDto> { new() { Id = "pg", Widgets = ids.Select(i => new PanelWidgetDto { Id = i, Type = "clock" }).ToList() } },
+    };
+
+    [Fact]
+    public void A_migrated_block_with_widgets_the_record_lacks_hands_them_over_before_clearing()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("placed"), Widget("pending"), Widget("new1", "weather", col: 3, row: 2), Widget("d", "discord"));
+        store.Update(s =>
+        {
+            s.Overlay.MigratedToPanels = true;
+            s.Overlay.MigratedRecordId = "r1";
+            s.Overlay.Scale = 150;
+            s.PanelDevices["r1"] = new PanelDeviceRecord
+            {
+                Id = "r1",
+                DisplayId = Primary,
+                Layout = LayoutWith("placed"),
+                DesktopImport = new DesktopImportDto { CellPx = 99, Widgets = new List<LegacyOverlayWidget> { Widget("pending") } },
+            };
+        });
+
+        Assert.Null(m.Run(One()));
+
+        var r = Only(store);
+        Assert.Equal(new[] { "pending", "new1" }, r.DesktopImport!.Widgets.Select(w => w.Id).ToArray());
+        Assert.Equal(99, r.DesktopImport.CellPx);
+        Assert.True(r.DesktopImport.Merge);
+        Assert.Equal(3, r.DesktopImport.Widgets[1].Col);
+        Assert.Null(store.Load().Overlay.Layout);
+        Assert.Null(store.Load().Overlay.Scale);
+        Assert.Equal("r1", store.Load().Overlay.MigratedRecordId);
+    }
+
+    [Fact]
+    public void A_migrated_block_whose_widgets_the_record_holds_is_cleared_without_an_import()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"), Widget("b"));
+        store.Update(s =>
+        {
+            s.Overlay.MigratedToPanels = true;
+            s.Overlay.MigratedRecordId = "r1";
+            s.PanelDevices["r1"] = new PanelDeviceRecord { Id = "r1", DisplayId = Primary, Layout = LayoutWith("a", "b") };
+        });
+
+        m.Run(One());
+
+        Assert.Null(Only(store).DesktopImport);
+        Assert.Null(store.Load().Overlay.Layout);
+    }
+
+    [Fact]
+    public void A_migrated_block_whose_record_is_gone_keeps_its_widgets()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s =>
+        {
+            s.Overlay.MigratedToPanels = true;
+            s.Overlay.MigratedRecordId = "gone";
+        });
+
+        m.Run(One());
+
+        Assert.Single(store.Load().Overlay.Layout!);
+        Assert.Empty(store.Load().PanelDevices);
+    }
+
     [Fact]
     public void Empty_and_discord_only_blocks_are_cleared_with_the_marker()
     {

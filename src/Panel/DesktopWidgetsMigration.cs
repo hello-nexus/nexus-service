@@ -141,10 +141,7 @@ public sealed class DesktopWidgetsMigration
             {
                 if (s.Overlay.MigratedToPanels) return;
                 var overlay = s.Overlay;
-                var widgets = (overlay.Layout ?? new List<LegacyOverlayWidget>())
-                    .Where(w => !string.Equals(w.Type, "discord", StringComparison.Ordinal))
-                    .Select(CopyWidget)
-                    .ToList();
+                var widgets = Migratable(overlay).ToList();
                 if (widgets.Count == 0)
                 {
                     overlay.MigratedToPanels = true;
@@ -171,15 +168,7 @@ public sealed class DesktopWidgetsMigration
                     ApplyDesktopFlags(record, overlay);
                 }
 
-                var existing = record.DesktopImport;
-                record.DesktopImport = new DesktopImportDto
-                {
-                    Version = 1,
-                    CellPx = existing?.CellPx ?? LegacyCellPx * Math.Clamp(overlay.Scale ?? 100, MinScalePercent, MaxScalePercent) / 100.0,
-                    CellUnits = existing?.CellUnits ?? (Os == HostOs.Windows ? "device" : "css"),
-                    Merge = merge || existing?.Merge == true,
-                    Widgets = existing is null ? widgets : existing.Widgets.Concat(widgets).ToList(),
-                };
+                AddImport(record, overlay, merge, widgets);
                 overlay.MigratedToPanels = true;
                 overlay.MigratedRecordId = record.Id;
                 overlay.MonitorMissingForMs = null;
@@ -211,21 +200,60 @@ public sealed class DesktopWidgetsMigration
         return target is null || Usable(target) || Usable(primary);
     }
 
-    // An install migrated before the fields were cleared still carries them. Only a present record proves
-    // the widgets landed, and the live block is re-checked so a profile switch cannot lose another profile's.
+    // A migrated block still holds legacy fields when an older build migrated without clearing them, or when
+    // a build that kept the markers wrote widgets after the migration. Widgets the record holds by id neither
+    // on its layout nor in a pending import are handed over first, so only copies are cleared. A missing record
+    // keeps the block, and the live block is re-checked so a profile switch cannot lose another profile's.
     private void ClearMigratedLegacy(LegacyOverlaySettings snapshot)
     {
         if (snapshot.MigratedRecordId is null || !HasLegacyFields(snapshot)) return;
         var cleared = false;
+        string? imported = null;
         _store.Update(s =>
         {
             var o = s.Overlay;
             if (!o.MigratedToPanels || o.MigratedRecordId is not { } id || !HasLegacyFields(o)) return;
-            if (!s.PanelDevices.ContainsKey(id)) return;
+            if (!s.PanelDevices.TryGetValue(id, out var record)) return;
+            var held = (record.Layout?.Pages ?? new List<PanelPageDto>())
+                .SelectMany(p => p.Widgets.Select(w => w.Id))
+                .Concat(record.DesktopImport?.Widgets.Select(w => w.Id) ?? Enumerable.Empty<string>())
+                .ToHashSet(StringComparer.Ordinal);
+            var missing = Migratable(o).Where(w => !held.Contains(w.Id)).ToList();
+            if (missing.Count > 0)
+            {
+                AddImport(record, o, merge: true, missing);
+                imported = id;
+            }
             o.ClearLegacy();
             cleared = true;
         });
-        if (cleared) _store.FlushNow();
+        if (imported is not null)
+        {
+            ServiceLog.Info($"[desktop-migration] handed legacy widgets missing from {imported} to it after the migration");
+            Finish(imported);
+        }
+        else if (cleared)
+        {
+            _store.FlushNow();
+        }
+    }
+
+    private static IEnumerable<LegacyOverlayWidget> Migratable(LegacyOverlaySettings overlay) =>
+        (overlay.Layout ?? new List<LegacyOverlayWidget>())
+            .Where(w => !string.Equals(w.Type, "discord", StringComparison.Ordinal))
+            .Select(CopyWidget);
+
+    private void AddImport(PanelDeviceRecord record, LegacyOverlaySettings overlay, bool merge, List<LegacyOverlayWidget> widgets)
+    {
+        var existing = record.DesktopImport;
+        record.DesktopImport = new DesktopImportDto
+        {
+            Version = 1,
+            CellPx = existing?.CellPx ?? LegacyCellPx * Math.Clamp(overlay.Scale ?? 100, MinScalePercent, MaxScalePercent) / 100.0,
+            CellUnits = existing?.CellUnits ?? (Os == HostOs.Windows ? "device" : "css"),
+            Merge = merge || existing?.Merge == true,
+            Widgets = existing is null ? widgets : existing.Widgets.Concat(widgets).ToList(),
+        };
     }
 
     // Windows only reaches here with a posted map. A legacy index the map or the topology does not hold
