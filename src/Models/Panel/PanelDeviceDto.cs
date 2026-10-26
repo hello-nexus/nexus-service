@@ -187,6 +187,8 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>"large" (fewer, bigger widgets), "small" or "xsmall" (a denser grid); null = the panel's
     /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
     public string? WidgetSize { get; set; }
+    /// <summary>The window size the kiosk on a display-bound record measured, reported by the kiosk itself. Kept apart from <see cref="Capabilities"/>, which the topology sync rebuilds from OS facts.</summary>
+    public KioskViewportDto? KioskViewport { get; set; }
     /// <summary>Profile files only: hash of the monitor fingerprint this record was saved from (see <see cref="Nexus.Service.Persistence.PanelProfileData"/>). Never set on a live record.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? FingerprintKey { get; set; }
@@ -500,7 +502,17 @@ public sealed class PanelDevicePatch
     public bool? HighResolution { get; set; }
     /// <summary>"large", "small" or "xsmall"; anything else is ignored. Null = leave it.</summary>
     public string? WidgetSize { get; set; }
+    /// <summary>Kiosk-measured window size; applied to display-bound records only.</summary>
+    public KioskViewportDto? KioskViewport { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
+}
+
+/// <summary>CSS-px size of the kiosk window and its device pixel ratio.</summary>
+public sealed class KioskViewportDto
+{
+    public int CssWidth { get; set; }
+    public int CssHeight { get; set; }
+    public double Dpr { get; set; } = 1;
 }
 
 /// <summary>

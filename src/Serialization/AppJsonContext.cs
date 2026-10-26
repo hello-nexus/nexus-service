@@ -260,6 +260,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelGaugeGradientStop))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelGaugeGradientStop>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCapabilities))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.KioskViewportDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.XeneonEdgeSettingsDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDevicePatch))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCreateBody))]

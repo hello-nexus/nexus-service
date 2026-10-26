@@ -513,4 +513,56 @@ public class DesktopPanelRecordTests
         Assert.False(service.IsPrimaryDisplay(""));
         Assert.Equal(1, provider.Enumerations);
     }
+
+    [Fact]
+    public void Kiosk_viewport_patches_on_display_bound_records_and_survives_a_capability_refresh()
+    {
+        var (registry, _) = Build();
+        var (record, _) = registry.AllocateForDisplay("D1", "Monitor", Monitor());
+
+        var patched = registry.Patch(record.Id, new PanelDevicePatch { KioskViewport = new KioskViewportDto { CssWidth = 1920, CssHeight = 1152, Dpr = 1 } });
+        registry.RefreshDisplayCapabilities("D1", new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 1200, Dpr = 1 });
+
+        Assert.Equal(1152, patched!.KioskViewport!.CssHeight);
+        var fetched = registry.Get(record.Id)!;
+        Assert.Equal(1152, fetched.KioskViewport!.CssHeight);
+        Assert.Equal(1200, fetched.Capabilities!.CssHeight);
+    }
+
+    [Theory]
+    [InlineData(0, 100, 1)]
+    [InlineData(100, 40000, 1)]
+    [InlineData(100, 100, 0)]
+    [InlineData(100, 100, double.NaN)]
+    public void Kiosk_viewport_rejects_out_of_range_values(int w, int h, double dpr)
+    {
+        var (registry, _) = Build();
+        var (record, _) = registry.AllocateForDisplay("D1", "Monitor", Monitor());
+
+        registry.Patch(record.Id, new PanelDevicePatch { KioskViewport = new KioskViewportDto { CssWidth = w, CssHeight = h, Dpr = dpr } });
+
+        Assert.Null(registry.Get(record.Id)!.KioskViewport);
+    }
+
+    [Fact]
+    public void Kiosk_viewport_is_ignored_on_records_without_a_display()
+    {
+        var (registry, _) = Build();
+        var record = registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Phone });
+
+        registry.Patch(record.Id, new PanelDevicePatch { KioskViewport = new KioskViewportDto { CssWidth = 800, CssHeight = 600, Dpr = 1 } });
+
+        Assert.Null(registry.Get(record.Id)!.KioskViewport);
+    }
+
+    [Fact]
+    public void Kiosk_viewport_round_trips_through_the_source_generated_json_context()
+    {
+        var json = JsonSerializer.Serialize(new PanelDeviceRecord { Id = "r", KioskViewport = new KioskViewportDto { CssWidth = 1920, CssHeight = 1152, Dpr = 1.25 } }, AppJsonContext.Default.PanelDeviceRecord);
+        var back = JsonSerializer.Deserialize(json, AppJsonContext.Default.PanelDeviceRecord)!;
+
+        Assert.Contains("\"kioskViewport\"", json);
+        Assert.Equal(1152, back.KioskViewport!.CssHeight);
+        Assert.Equal(1.25, back.KioskViewport.Dpr);
+    }
 }

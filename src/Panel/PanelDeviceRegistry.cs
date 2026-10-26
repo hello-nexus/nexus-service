@@ -191,6 +191,9 @@ public sealed class PanelDeviceRegistry
         record.Enabled = false;
     }
 
+    private static bool ValidViewport(KioskViewportDto v) =>
+        v.CssWidth is >= 1 and <= 32768 && v.CssHeight is >= 1 and <= 32768 && double.IsFinite(v.Dpr) && v.Dpr is >= 0.25 and <= 8;
+
     public const int MinGridSlots = 2;
     public const int MaxGridSlots = 64;
 
@@ -842,6 +845,8 @@ public sealed class PanelDeviceRegistry
                 record.HighResolution = patch.HighResolution.Value;
             if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.Small or PanelWidgetSizes.XSmall)
                 record.WidgetSize = patch.WidgetSize;
+            if (patch.KioskViewport is { } viewport && !string.IsNullOrEmpty(record.DisplayId) && ValidViewport(viewport))
+                record.KioskViewport = new KioskViewportDto { CssWidth = viewport.CssWidth, CssHeight = viewport.CssHeight, Dpr = viewport.Dpr };
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
@@ -1294,6 +1299,7 @@ public sealed class PanelDeviceRegistry
             Portrait = r.Portrait,
             HighResolution = r.HighResolution,
             WidgetSize = r.WidgetSize,
+            KioskViewport = r.KioskViewport,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
                 : new XeneonEdgeSettingsDto
