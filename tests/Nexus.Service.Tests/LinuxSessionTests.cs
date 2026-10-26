@@ -85,6 +85,17 @@ public class LinuxSessionTests
         Assert.Equal("wayland-0", LinuxSession.ResolveWaylandDisplay("wayland", null));
     }
 
+    [Theory]
+    [InlineData("wayland", null, 0L, true)]
+    [InlineData("wayland", null, 44_999L, true)]
+    [InlineData("wayland", null, 45_000L, false)]
+    [InlineData("wayland", "wayland-1", 0L, false)]
+    [InlineData("x11", null, 0L, false)]
+    [InlineData(null, null, 0L, false)]
+    public void WaylandSocketPending_DefersOnlyASocketlessWaylandSessionWithinTheGrace(
+        string? type, string? socket, long socketlessForMs, bool expected)
+        => Assert.Equal(expected, LinuxSession.WaylandSocketPending(type, socket, socketlessForMs));
+
     [Fact]
     public void ResolveX11Env_PrefersTheSessionLeadersOwnEnvironment()
     {

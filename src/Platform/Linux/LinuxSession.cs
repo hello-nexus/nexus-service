@@ -76,6 +76,9 @@ public static partial class LinuxSession
     private const int SessionPollFastMs = 2_000;
     private const int SessionPollSlowMs = 30_000;
     private const int SessionFastWindowMs = 2 * 60 * 1000;
+    // How long a wayland session may sit without a socket in its runtime dir before
+    // it is adopted anyway with the wayland-0 guess.
+    internal const int WaylandSocketGraceMs = 45_000;
 
     public static void AdoptActiveSessionEnv()
     {
@@ -101,16 +104,32 @@ public static partial class LinuxSession
             return;
         }
 
+        if (WaylandSocketPending(s.Type, s.Wayland, 0))
+        {
+            Console.Error.WriteLine("[session] root daemon: wayland session is active but its compositor socket is not up yet; waiting for it before adopting");
+            StartSessionWatch(Environment.TickCount64);
+            return;
+        }
+
         Apply(s);
     }
 
+    /// <summary>True while a wayland session has no compositor socket yet and has been
+    /// seen without one for less than <see cref="WaylandSocketGraceMs"/>. Adopting
+    /// early would freeze a guessed WAYLAND_DISPLAY that adoption never corrects.</summary>
+    internal static bool WaylandSocketPending(string? sessionType, string? waylandSocket, long socketlessForMs)
+        => string.Equals(sessionType, "wayland", StringComparison.Ordinal)
+        && waylandSocket is null
+        && socketlessForMs < WaylandSocketGraceMs;
+
     // Poll for the session the daemon booted without, then adopt it and let the
     // session-bound subsystems re-arm.
-    private static void StartSessionWatch()
+    private static void StartSessionWatch(long? socketlessSince = null)
     {
         var t = new Thread(() =>
         {
             var waited = 0;
+            var logged = socketlessSince is not null;
             while (true)
             {
                 var nap = waited < SessionFastWindowMs ? SessionPollFastMs : SessionPollSlowMs;
@@ -121,6 +140,19 @@ public static partial class LinuxSession
                 catch { continue; }
                 if (found is null)
                     continue;
+                socketlessSince ??= found.Wayland is null ? Environment.TickCount64 : null;
+                var socketlessFor = socketlessSince is { } since ? Environment.TickCount64 - since : 0;
+                if (WaylandSocketPending(found.Type, found.Wayland, socketlessFor))
+                {
+                    if (!logged)
+                    {
+                        logged = true;
+                        Console.Error.WriteLine("[session] root daemon: wayland session is active but its compositor socket is not up yet; waiting for it before adopting");
+                    }
+                    continue;
+                }
+                if (found.Type == "wayland" && found.Wayland is null)
+                    Console.Error.WriteLine("[session] root daemon: no wayland socket appeared; adopting with the default display name");
                 Apply(found);
                 try { SessionAdopted?.Invoke(); }
                 catch (Exception ex)
