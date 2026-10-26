@@ -54,15 +54,14 @@ internal static class SecurityHeadersMiddleware
         // Path-scoped to the embed player.
         // build.hellonexus.com: the Build app iframes the portal; its frame-ancestors must list the dashboard origins.
         "frame-src 'self' blob: https://www.youtube.com/embed/ https://www.youtube-nocookie.com/embed/ https://build.hellonexus.com; " +
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-        "font-src 'self' data: https://fonts.gstatic.com; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "font-src 'self' data:; " +
         "img-src 'self' data: blob: " +
         "https://*.steamstatic.com https://media.steampowered.com " +
         "https://cdn.discordapp.com https://media.discordapp.net " +
         "https://usercontent.hellonexus.com; " +
         "media-src 'self' data: blob:; " +
         "connect-src 'self' ws: wss: blob: https://api.hellonexus.com " +
-        "https://fonts.googleapis.com https://fonts.gstatic.com " +
         "https://*.steamstatic.com https://media.steampowered.com " +
         "https://cdn.discordapp.com https://media.discordapp.net " +
         "https://usercontent.hellonexus.com; " +
