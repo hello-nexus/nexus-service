@@ -22,6 +22,37 @@ internal static partial class LinuxSysfs
         catch { return false; }
     }
 
+    /// <summary>
+    /// True when the path, symlinks followed, is a regular file. Uses statx, whose layout is the same on every
+    /// architecture, so a FIFO or device is classified without being opened.
+    /// </summary>
+    internal static bool IsRegularFile(string path)
+    {
+        if (!OperatingSystem.IsLinux())
+            return File.Exists(path);
+        try
+        {
+            var buffer = new byte[StatxSize];
+            if (statx(AtFdCwd, path, 0, StatxType, buffer) != 0)
+                return false;
+            return (BitConverter.ToUInt16(buffer, StatxModeOffset) & SIfMt) == SIfReg;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private const int AtFdCwd = -100;
+    private const uint StatxType = 1;
+    private const int StatxSize = 256;
+    private const int StatxModeOffset = 28;
+    private const int SIfMt = 0xF000;
+    private const int SIfReg = 0x8000;
+
+    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int statx(int dirfd, string path, int flags, uint mask, byte[] buffer);
+
     [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int chown(string path, uint owner, uint group);
 

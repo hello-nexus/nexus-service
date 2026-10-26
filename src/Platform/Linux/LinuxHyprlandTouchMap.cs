@@ -13,7 +13,7 @@ namespace Nexus.Service.Platform.Linux;
 /// </summary>
 internal static class LinuxHyprlandTouchMap
 {
-    private const long MaxConfigFileBytes = 1_000_000;
+    private const int MaxConfigFileBytes = 1_000_000;
 
     internal enum Outcome { Mapped, NoMonitor, NoTouchDevice, Ambiguous, UserConfigured, Rejected }
 
@@ -65,12 +65,12 @@ internal static class LinuxHyprlandTouchMap
             var dir = Path.Combine(home, ".config", "hypr");
             if (!Directory.Exists(dir))
                 return "";
-            // Symlinks are skipped, and a zero Length also drops FIFOs and devices, which would block a read.
+            // Symlinked configs (stow, home-manager) are followed; only regular files are opened, so a FIFO or device never blocks.
             var options = new EnumerationOptions
             {
                 RecurseSubdirectories = true,
                 MaxRecursionDepth = 3,
-                AttributesToSkip = FileAttributes.ReparsePoint | FileAttributes.Hidden | FileAttributes.System,
+                AttributesToSkip = FileAttributes.Hidden | FileAttributes.System,
             };
             var text = new StringBuilder();
             foreach (var file in Directory.EnumerateFiles(dir, "*", options))
@@ -88,11 +88,10 @@ internal static class LinuxHyprlandTouchMap
 
     private static string ReadCapped(string path)
     {
-        var info = new FileInfo(path);
-        if (info.LinkTarget is not null || info.Length == 0)
+        if (!LinuxSysfs.IsRegularFile(path))
             return "";
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        var buffer = new byte[(int)Math.Min(MaxConfigFileBytes, info.Length)];
+        var buffer = new byte[MaxConfigFileBytes];
         var read = 0;
         while (read < buffer.Length)
         {

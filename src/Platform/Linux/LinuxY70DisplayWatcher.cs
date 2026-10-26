@@ -22,6 +22,8 @@ public sealed class LinuxY70DisplayWatcher : BackgroundService
     private readonly Func<string> _connectors;
     private bool _wasPresent;
     private string? _lastConnectors;
+    private int _recheck;
+    private const int RecheckTicks = 2;
 
     internal LinuxY70DisplayWatcher(LinuxPanelKioskHost host)
         : this(host.WantsY70DisplayWatch, host.Y70DisplayPresent, host.Reconcile, () => ReadConnectedConnectors())
@@ -65,13 +67,22 @@ public sealed class LinuxY70DisplayWatcher : BackgroundService
             // Presence is not tracked while a kiosk is running or no session exists; the next wanted tick rescans.
             _wasPresent = true;
             _lastConnectors = null;
+            _recheck = 0;
             return;
         }
         var connectors = _connectors();
-        if (connectors == _lastConnectors)
+        if (connectors != _lastConnectors)
+        {
+            _lastConnectors = connectors;
+            _recheck = RecheckTicks;
+        }
+        else if (_recheck <= 0)
+        {
             return;
-        _lastConnectors = connectors;
+        }
+        // The topology is cached for a few seconds, so a read right after a change can predate it; recheck on later ticks.
         var present = _present();
+        _recheck = present ? 0 : _recheck - 1;
         var reconcile = ShouldReconcile(true, present, _wasPresent);
         _wasPresent = present;
         if (reconcile)

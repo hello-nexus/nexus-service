@@ -91,7 +91,9 @@ internal static class HyprlandIpc
     internal static bool PeerUidMatches(byte[] credentials, uint expectedUid)
         => credentials.Length >= 12 && BitConverter.ToUInt32(credentials, 4) == expectedUid;
 
-    private const SocketOptionName SoPeerCred = (SocketOptionName)17;
+    // Linux values; .NET's SocketOptionLevel.Socket is the BSD 65535.
+    internal const int LinuxSolSocket = 1;
+    internal const int LinuxSoPeerCred = 17;
 
     /// <summary>Connects to a real socket file owned by the session user, or throws.</summary>
     internal static Socket Connect(string socketPath)
@@ -106,7 +108,7 @@ internal static class HyprlandIpc
         try
         {
             socket.Connect(new UnixDomainSocketEndPoint(socketPath));
-            if (LinuxSession.SessionUid is { } uid
+            if (OperatingSystem.IsLinux() && LinuxSession.SessionUid is { } uid
                 && !PeerUidMatches(PeerCredentials(socket), uid))
             {
                 throw new IOException("socket peer is not the session user");
@@ -123,7 +125,7 @@ internal static class HyprlandIpc
     private static byte[] PeerCredentials(Socket socket)
     {
         var buffer = new byte[12];
-        socket.GetRawSocketOption((int)SocketOptionLevel.Socket, (int)SoPeerCred, buffer);
+        socket.GetRawSocketOption(LinuxSolSocket, LinuxSoPeerCred, buffer);
         return buffer;
     }
 
@@ -245,6 +247,22 @@ internal static class HyprlandIpc
             using var doc = JsonDocument.Parse(json ?? "");
             return doc.RootElement.ValueKind == JsonValueKind.Object && TryString(doc.RootElement, "address", out var a) && a.Length > 0
                 ? a
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Position from <c>j/cursorpos</c>, null when unparseable.</summary>
+    internal static (int X, int Y)? ParseCursor(string? json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json ?? "");
+            return doc.RootElement.ValueKind == JsonValueKind.Object && TryInt(doc.RootElement, "x", out var x) && TryInt(doc.RootElement, "y", out var y)
+                ? (x, y)
                 : null;
         }
         catch (JsonException)
