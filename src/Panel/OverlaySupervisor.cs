@@ -39,8 +39,10 @@ public sealed class OverlaySupervisor : BackgroundService
         _identifyActive = identifyActive;
     }
 
+    // Pending legacy widgets need a host: the Windows migration waits for the monitor map it publishes.
     public static bool Desired(NexusSettings s, bool y70Present, bool streamsWanted)
-        => (s.Panel.AutoLaunch && y70Present)
+        => (s.Overlay.Enabled == true && s.Overlay.HasWidgets && !s.Overlay.MigratedToPanels)
+           || (s.Panel.AutoLaunch && y70Present)
            || streamsWanted
            || s.PanelDevices.Values.Any(r => !string.IsNullOrEmpty(r.DisplayId) && PanelHosting.IsOn(r));
 

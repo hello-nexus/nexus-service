@@ -34,7 +34,7 @@ public class OverlaySupervisorTests
     }
 
     [Fact]
-    public void Legacy_overlay_widgets_no_longer_start_the_host()
+    public void Shown_legacy_widgets_still_to_migrate_start_the_host()
     {
         var (sup, host, store) = Build();
         store.Update(s =>
@@ -42,6 +42,26 @@ public class OverlaySupervisorTests
             s.Panel.AutoLaunch = false;
             s.Overlay.Enabled = true;
             s.Overlay.Layout = new() { new() };
+        });
+        sup.Reconcile(T0);
+        Assert.Equal(1, host.StartCalls);
+    }
+
+    [Fact]
+    public void Migrated_or_hidden_legacy_widgets_do_not_start_the_host()
+    {
+        var (sup, host, store) = Build();
+        store.Update(s =>
+        {
+            s.Panel.AutoLaunch = false;
+            s.Overlay.Enabled = false;
+            s.Overlay.Layout = new() { new() };
+        });
+        sup.Reconcile(T0);
+        store.Update(s =>
+        {
+            s.Overlay.Enabled = true;
+            s.Overlay.MigratedToPanels = true;
         });
         sup.Reconcile(T0);
         Assert.Equal(0, host.StartCalls);

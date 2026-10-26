@@ -382,12 +382,17 @@ public class DesktopPanelRecordTests
     }
 
     [Fact]
-    public void Supervisor_wants_a_host_for_a_hosted_record_only()
+    public void Supervisor_wants_a_host_for_a_hosted_record_or_shown_widgets_still_to_migrate()
     {
         var s = new NexusSettings();
         s.Panel.AutoLaunch = false;
         s.Overlay.Enabled = true;
         s.Overlay.Layout = new() { new LegacyOverlayWidget { Id = "w" } };
+        Assert.True(OverlaySupervisor.Desired(s, false, false));
+        s.Overlay.Enabled = false;
+        Assert.False(OverlaySupervisor.Desired(s, false, false));
+        s.Overlay.Enabled = true;
+        s.Overlay.MigratedToPanels = true;
         Assert.False(OverlaySupervisor.Desired(s, false, false));
 
         s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1", Hosted = true, Enabled = false };
