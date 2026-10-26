@@ -28,14 +28,16 @@ public sealed class DisplayTopologyWatcher : BackgroundService
     private readonly MultiplexHub _hub;
     private readonly DisplayTopologyService _topology;
     private readonly PanelAutoPromotion _autoPromotion;
+    private readonly DesktopWidgetsMigration _desktopMigration;
     private readonly Timer _debounce;
 
-    public DisplayTopologyWatcher(HelperRegistry helpers, MultiplexHub hub, DisplayTopologyService topology, PanelAutoPromotion autoPromotion)
+    public DisplayTopologyWatcher(HelperRegistry helpers, MultiplexHub hub, DisplayTopologyService topology, PanelAutoPromotion autoPromotion, DesktopWidgetsMigration desktopMigration)
     {
         _helpers = helpers;
         _hub = hub;
         _topology = topology;
         _autoPromotion = autoPromotion;
+        _desktopMigration = desktopMigration;
         _debounce = new Timer(_ => Broadcast(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
@@ -98,6 +100,8 @@ public sealed class DisplayTopologyWatcher : BackgroundService
             {
                 PanelTopics.BroadcastPanelDevice(_hub, recordId);
             }
+            // After promotion: a legacy-widget target may itself be a just-promoted display.
+            _desktopMigration.Run(topology);
             PanelTopics.BroadcastDisplays(_hub);
         }
         catch (Exception ex)

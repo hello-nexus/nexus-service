@@ -159,6 +159,10 @@ public sealed class DisplayAssignmentDto
     public bool KeepCursorOff { get; set; }
     /// <summary>Per-panel "keep the panel above other windows" (record setting; default true).</summary>
     public bool AlwaysOnTop { get; set; } = true;
+    /// <summary>Per-panel click-through on empty space (record setting; default false). Only meaningful with Backdrop "desktop".</summary>
+    public bool ClickThrough { get; set; }
+    /// <summary>The bound display is the OS primary display. Hosts never apply the keep-off guards there.</summary>
+    public bool IsPrimary { get; set; }
 }
 
 /// <summary>Body for POST /displays/{id}/rotation.</summary>

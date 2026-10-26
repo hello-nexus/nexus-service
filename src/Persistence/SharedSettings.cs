@@ -106,6 +106,9 @@ public sealed class OverlaySettings
     public int Monitor { get; set; } = -1;
     /// <summary>Pinned floating-widget instances. Empty list = no widgets pinned.</summary>
     public List<OverlayWidgetDto> Layout { get; set; } = new();
+    /// <summary>The legacy widgets were handed to a panel record (DesktopWidgetsMigration). Per profile; the block above is left as it was for a downgrade.</summary>
+    public bool MigratedToPanels { get; set; }
+    public string? MigratedRecordId { get; set; }
 }
 
 // Layout seed types - used by install-defaults to define starter widget sets

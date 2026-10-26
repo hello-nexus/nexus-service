@@ -48,6 +48,8 @@ public sealed class DisplayTopologyService : IDisposable
     // brightness controller routes that id through the Y70 provider.
     private string _y70DisplayId = "";
     private string _ddcOnlyY70Variant = "";
+    // Id of the OS primary display ("" when unknown), refreshed with the attached-id cache.
+    private string _primaryDisplayId = "";
     private long _attachedIdsAtMs;
     private bool _attachedIdsValid;
 
@@ -87,7 +89,7 @@ public sealed class DisplayTopologyService : IDisposable
             // reads as unassigned: the UI offers "Use as Nexus panel", which
             // re-activates the same record.
             var assigned = _panelRegistry.FindByDisplayId(info.Id);
-            if (assigned?.Enabled == false) assigned = null;
+            if (assigned is not null && !PanelHosting.IsOn(assigned)) assigned = null;
             response.Displays.Add(new DisplayTopologyEntryDto
             {
                 Id = info.Id,
@@ -178,6 +180,15 @@ public sealed class DisplayTopologyService : IDisposable
         lock (_cacheLock) return _y70DisplayId;
     }
 
+    /// <summary>Whether <paramref name="displayId"/> is the OS primary display, from the same short-lived cache.</summary>
+    public bool IsPrimaryDisplay(string displayId)
+    {
+        if (string.IsNullOrEmpty(displayId)) return false;
+        if (!TryGetCached(out _, out _, out _))
+            CacheAttachedIds(_provider.Enumerate());
+        lock (_cacheLock) return _primaryDisplayId.Length > 0 && string.Equals(_primaryDisplayId, displayId, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Variant key of the attached DDC-only Y70 panel (GW / Ina, matched by
     /// EDID fragment), or empty. These panels expose no USB serial function,
@@ -215,12 +226,14 @@ public sealed class DisplayTopologyService : IDisposable
         HashSet<string>? ids = null;
         var y70DisplayId = "";
         var ddcOnlyVariant = "";
+        var primaryId = "";
         if (raw is not null)
         {
             ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var info in raw)
             {
                 ids.Add(info.Id);
+                if (primaryId.Length == 0 && info.IsPrimary) primaryId = info.Id;
                 if (y70DisplayId.Length == 0 && IsY70Display(info.RawHardwareId)) y70DisplayId = info.Id;
                 if (ddcOnlyVariant.Length == 0)
                     ddcOnlyVariant = Y70DisplayProtocol.DdcOnlyVariantForHardwareId(info.RawHardwareId);
@@ -231,6 +244,7 @@ public sealed class DisplayTopologyService : IDisposable
             _attachedIds = ids;
             _y70DisplayId = y70DisplayId;
             _ddcOnlyY70Variant = ddcOnlyVariant;
+            _primaryDisplayId = primaryId;
             _attachedIdsAtMs = Environment.TickCount64;
             _attachedIdsValid = true;
         }
@@ -336,7 +350,7 @@ public sealed class DisplayTopologyService : IDisposable
             foreach (var info in raw)
             {
                 var record = _panelRegistry.FindByDisplayId(info.Id);
-                if (record is null || record.Enabled == false) continue;
+                if (record is null || !PanelHosting.IsOn(record)) continue;
                 if (record.Capabilities?.Surface is { } surface && surface != PanelSurfaces.Monitor) continue;
                 var caps = BuildPromotedCapabilities(
                     info.Manufacturer, info.Model, info.Name,

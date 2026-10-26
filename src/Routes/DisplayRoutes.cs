@@ -180,12 +180,12 @@ public static class DisplayRoutes
 
         // displayId -> panelDeviceId bindings; the overlay reconciles its
         // kiosk windows against this on every prefs poll / push.
-        app.MapGet("/displays/assignments", (HttpContext ctx, PanelDeviceRegistry registry, TokenService tokens) =>
+        app.MapGet("/displays/assignments", (HttpContext ctx, PanelDeviceRegistry registry, DisplayTopologyService topology, TokenService tokens) =>
         {
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
             var response = new DisplayAssignmentsResponse { PanelBackdrop = registry.GetY70Backdrop() };
-            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop) in registry.ListAssignments())
+            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
             {
                 response.Assignments.Add(new DisplayAssignmentDto
                 {
@@ -195,6 +195,8 @@ public static class DisplayRoutes
                     Backdrop = backdrop,
                     KeepCursorOff = keepCursorOff,
                     AlwaysOnTop = alwaysOnTop,
+                    ClickThrough = clickThrough,
+                    IsPrimary = isPrimary,
                 });
             }
             return Results.Json(response, AppJsonContext.Default.DisplayAssignmentsResponse);
@@ -233,7 +235,7 @@ public static class DisplayRoutes
                 display.Resolution.Width, display.Resolution.Height,
                 display.ScaleFactor, display.IsTouch, display.Orientation,
                 display.Dpi);
-            var (record, activated) = registry.AllocateForDisplay(id, body?.DisplayName ?? display.Name, capabilities, display.Fingerprint);
+            var (record, activated) = registry.AllocateForDisplay(id, body?.DisplayName ?? display.Name, capabilities, display.Fingerprint, display.IsPrimary);
             if (!activated)
                 return Results.Conflict(ApiResponse.Fail("display is already a panel"));
             PanelTopics.BroadcastPanelDevice(hub, record.Id);
@@ -255,7 +257,7 @@ public static class DisplayRoutes
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
             var record = registry.FindByDisplayId(id);
-            if (record is null || record.Capabilities?.Surface != PanelSurfaces.Monitor || record.Enabled == false)
+            if (record is null || record.Capabilities?.Surface != PanelSurfaces.Monitor || !PanelHosting.IsOn(record))
                 return Results.NotFound(ApiResponse.Fail("display is not an active panel"));
             registry.DisablePanelForDisplay(id);
             PanelTopics.BroadcastPanelDevice(hub, record.Id);

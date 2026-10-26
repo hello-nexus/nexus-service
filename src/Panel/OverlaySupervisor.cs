@@ -38,10 +38,10 @@ public sealed class OverlaySupervisor : BackgroundService
     }
 
     public static bool Desired(NexusSettings s, bool y70Present, bool streamsWanted)
-        => (s.Overlay.Enabled && s.Overlay.Layout.Count > 0)
+        => (s.Overlay.Enabled && s.Overlay.Layout.Count > 0 && !s.Overlay.MigratedToPanels)
            || (s.Panel.AutoLaunch && y70Present)
            || streamsWanted
-           || s.PanelDevices.Values.Any(r => !string.IsNullOrEmpty(r.DisplayId) && r.Enabled != false);
+           || s.PanelDevices.Values.Any(r => !string.IsNullOrEmpty(r.DisplayId) && PanelHosting.IsOn(r));
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

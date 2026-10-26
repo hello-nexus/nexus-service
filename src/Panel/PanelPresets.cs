@@ -60,6 +60,7 @@ public static class PanelPresets
         to.ThemeSyncWithDesktop = from.ThemeSyncWithDesktop;
         to.AccentSyncWithDesktop = from.AccentSyncWithDesktop;
         to.WidgetSize = from.WidgetSize;
+        to.GridSlots = from.GridSlots;
     }
 
     public static PanelPresetsResponse ToResponse(PanelDeviceRecord record) => new()

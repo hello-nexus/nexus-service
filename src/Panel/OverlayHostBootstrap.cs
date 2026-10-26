@@ -80,13 +80,13 @@ internal static class OverlayHostBootstrap
         });
     }
 
-    private static string AssignmentsSignature(NexusSettings snapshot)
+    internal static string AssignmentsSignature(NexusSettings snapshot)
     {
         var parts = new List<string>();
         foreach (var record in snapshot.PanelDevices.Values)
         {
-            if (!string.IsNullOrEmpty(record.DisplayId) && record.Enabled != false)
-                parts.Add($"{record.DisplayId}|{record.Id}|{record.ReserveMonitor ?? true}|{record.KeepCursorOff ?? false}|{record.AlwaysOnTop ?? true}");
+            if (!string.IsNullOrEmpty(record.DisplayId) && PanelHosting.IsOn(record))
+                parts.Add($"{record.DisplayId}|{record.Id}|{record.ReserveMonitor ?? true}|{record.KeepCursorOff ?? false}|{record.AlwaysOnTop ?? true}|{record.Backdrop ?? ""}|{record.ClickThrough ?? false}");
         }
         parts.Sort(StringComparer.Ordinal);
         return string.Join(";", parts);

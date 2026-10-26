@@ -8,6 +8,7 @@ using Nexus.Service.Panel.Streams;
 using Nexus.Service.Panel;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform.Displays;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
 
@@ -45,7 +46,7 @@ public static class OverlayRoutes
         // Everything nexus-overlay reconciles against, in one read: a failed
         // read must leave the host's kiosks and widgets exactly as they are,
         // which per-setting reads could not express.
-        app.MapGet("/overlay/state", (HttpContext ctx, IConfigStore store, PanelDeviceRegistry registry, StreamedPanelCoordinator streams, TokenService tokens) =>
+        app.MapGet("/overlay/state", (HttpContext ctx, IConfigStore store, PanelDeviceRegistry registry, DisplayTopologyService topology, StreamedPanelCoordinator streams, TokenService tokens) =>
         {
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
@@ -58,13 +59,14 @@ public static class OverlayRoutes
                 Y70Backdrop = registry.GetY70Backdrop(),
                 Y70CompatibilityRendering = s.Y70.CompatibilityRendering,
                 Y70KeepCursorOff = s.Y70.KeepCursorOff,
-                OverlayEnabled = s.Overlay.Enabled,
+                // Once the widgets live on a panel record the legacy overlay is hidden on both hosts.
+                OverlayEnabled = s.Overlay.Enabled && !s.Overlay.MigratedToPanels,
                 AlwaysOnTop = s.Overlay.AlwaysOnTop,
                 Monitor = s.Overlay.Monitor,
-                Pinned = s.Overlay.Layout.Count,
+                Pinned = s.Overlay.MigratedToPanels ? 0 : s.Overlay.Layout.Count,
                 Streams = streams.GetAssignments().Assignments,
             };
-            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop) in registry.ListAssignments())
+            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
             {
                 state.Assignments.Add(new DisplayAssignmentDto
                 {
@@ -74,6 +76,8 @@ public static class OverlayRoutes
                     Backdrop = backdrop,
                     KeepCursorOff = keepCursorOff,
                     AlwaysOnTop = alwaysOnTop,
+                    ClickThrough = clickThrough,
+                    IsPrimary = isPrimary,
                 });
             }
             return Results.Json(state, AppJsonContext.Default.OverlayStateResponse);
@@ -81,10 +85,22 @@ public static class OverlayRoutes
 
         app.MapGet("/overlay/widgets", (IConfigStore store) =>
         {
+            var overlay = store.Load().Overlay;
             return Results.Json(
-                store.Load().Overlay.Layout,
+                overlay.MigratedToPanels ? new List<OverlayWidgetDto>() : overlay.Layout,
                 AppJsonContext.Default.ListOverlayWidgetDto);
         }).AllowPanel();
+
+        // The Windows host numbers monitors in EnumDisplayMonitors order; only it can map the legacy
+        // Overlay.Monitor index to a display id. Posted at boot and on every display change.
+        app.MapPost("/overlay/monitors", (OverlayMonitorsBody body, HttpContext ctx, OverlayMonitorMap map, DesktopWidgetsMigration migration, TokenService tokens) =>
+        {
+            if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
+                return Results.Unauthorized();
+            map.Set(body.Monitors ?? new List<OverlayMonitorDto>());
+            migration.Run();
+            return Results.Ok(ApiResponse.Ok("ok"));
+        });
 
         app.MapPost("/overlay/widgets", (OverlayWidgetCreateBody body, IConfigStore store, ProfileManager pm, MultiplexHub hub) =>
         {
