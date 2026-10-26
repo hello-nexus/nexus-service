@@ -147,8 +147,9 @@ public sealed class PanelDeviceRegistry
                 if (!PanelHosting.IsOn(candidate))
                 {
                     // Turning the panel back on: same record, so layout,
-                    // theme, name, and reserve persist through off/on
-                    // cycles (a primary display takes the desktop defaults instead). Viewport hints refresh from the current OS
+                    // theme, name, and options persist through off/on
+                    // cycles (a primary display fills only unset options with
+                    // its defaults). Viewport hints refresh from the current OS
                     // facts (resolution/scale/touch may have changed).
                     if (primary) ApplyPrimaryDefaults(candidate);
                     else PanelHosting.Set(candidate, true);
@@ -173,18 +174,19 @@ public sealed class PanelDeviceRegistry
     }
 
     // The primary display is the one the user works on: a panel there behaves like the desktop
-    // (see-through, click-through, under windows, no guards) rather than a dedicated screen. Hosting goes
-    // through Hosted so a build without it never sees a fullscreen kiosk on the primary display.
+    // (see-through, click-through, under windows, no guards) rather than a dedicated screen. A saved option
+    // wins over the default. Hosting goes through Hosted so a build without it never sees a fullscreen kiosk
+    // on the primary display.
     private void ApplyPrimaryDefaults(PanelDeviceRecord record)
     {
         if (SeeThroughHost)
         {
-            record.Backdrop = "desktop";
-            record.ClickThrough = true;
+            record.Backdrop ??= "desktop";
+            record.ClickThrough ??= true;
         }
-        record.AlwaysOnTop = false;
-        record.ReserveMonitor = false;
-        record.KeepCursorOff = false;
+        record.AlwaysOnTop ??= false;
+        record.ReserveMonitor ??= false;
+        record.KeepCursorOff ??= false;
         record.Hosted = true;
         record.Enabled = false;
     }

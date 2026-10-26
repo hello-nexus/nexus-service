@@ -138,7 +138,7 @@ public class DesktopPanelRecordTests
     }
 
     [Fact]
-    public void Re_enabling_a_disabled_record_on_the_primary_display_applies_the_defaults_through_hosted()
+    public void Re_enabling_a_disabled_record_on_the_primary_display_keeps_saved_options_and_fills_unset_ones()
     {
         var (registry, store) = Build();
         store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord
@@ -157,11 +157,29 @@ public class DesktopPanelRecordTests
         var stored = store.Load().PanelDevices["r"];
         Assert.True(stored.Hosted);
         Assert.False(stored.Enabled);
-        Assert.Equal("desktop", stored.Backdrop);
+        Assert.Equal("wallpaper", stored.Backdrop);
+        Assert.True(stored.AlwaysOnTop);
+        Assert.True(stored.ReserveMonitor);
         Assert.True(stored.ClickThrough);
-        Assert.False(stored.AlwaysOnTop);
-        Assert.False(stored.ReserveMonitor);
+        Assert.False(stored.KeepCursorOff);
         Assert.True(record.Enabled);
+    }
+
+    [Fact]
+    public void Primary_panel_off_and_on_keeps_always_on_top()
+    {
+        var (registry, store) = Build();
+        var (created, _) = registry.AllocateForDisplay("P", null, Monitor(), primary: true);
+        Assert.False(created.AlwaysOnTop);
+        store.Update(s => s.PanelDevices[created.Id].AlwaysOnTop = true);
+
+        registry.DisablePanelForDisplay("P");
+        var (record, activated) = registry.AllocateForDisplay("P", null, Monitor(), primary: true);
+
+        Assert.True(activated);
+        Assert.True(record.AlwaysOnTop);
+        Assert.True(store.Load().PanelDevices[created.Id].AlwaysOnTop);
+        Assert.True(Assert.Single(registry.ListAssignments()).AlwaysOnTop);
     }
 
     [Fact]

@@ -232,8 +232,6 @@ final class KioskState {
     var baseRects: [CGRect] = []
     /// Frost cards currently placed behind the web view, reused across updates.
     var frostViews: [FrostView] = []
-    /// The app that was frontmost before the page asked for keyboard focus, given back when it lets go.
-    var previousApp: NSRunningApplication?
     /// Expiry of the page's transient full capture (edit sheet, catalog, drag); renewed by the page.
     var leaseExpiry: DispatchWorkItem?
 
@@ -562,10 +560,8 @@ final class KioskController {
         guard let state = state(for: webView), let panel = state.window as? OverlayPanel else { return }
         if value {
             if panel.activatable { return }
-            let front = NSWorkspace.shared.frontmostApplication
-            if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { state.previousApp = front }
             panel.activatable = true
-            NSApp.activate(ignoringOtherApps: true)
+            // No app activation: a pending activate defers makeKey, and macOS may deny it.
             panel.makeKey()
             panel.makeFirstResponder(webView)
         } else {
@@ -576,20 +572,13 @@ final class KioskController {
     private func releaseKeyboard(_ state: KioskState) {
         guard let panel = state.window as? OverlayPanel, panel.activatable else { return }
         panel.activatable = false
-        let previous = state.previousApp
-        state.previousApp = nil
-        // Another kiosk still editing keeps key and inherits the app to return to; focus is not handed back yet.
+        // Another kiosk still editing keeps key; focus is not handed back yet.
         if let other = kiosks.values.first(where: { $0 !== state && ($0.window as? OverlayPanel)?.activatable == true }) {
-            if other.previousApp == nil { other.previousApp = previous }
             other.window.makeKey()
             return
         }
-        // resignKey() is only a notification hook; the key window changes when another app activates or this one yields.
-        if let previous, !previous.isTerminated {
-            previous.activate(options: [])
-        } else {
-            NSApp.deactivate()
-        }
+        // The frontmost app never changed, so only yielding hands key back.
+        NSApp.deactivate()
     }
 
     func applyRaise(_ webView: WKWebView, _ value: Bool) {
