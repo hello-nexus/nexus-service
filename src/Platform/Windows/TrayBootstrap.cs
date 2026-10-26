@@ -103,14 +103,6 @@ internal static class TrayBootstrap
         };
 
         var hub = app.Services.GetRequiredService<MultiplexHub>();
-        TrayIcon.ConfigureDesktop(
-            onToggleOverlayTopmost: () =>
-            {
-                store.Update(s => s.Overlay.AlwaysOnTop = !s.Overlay.AlwaysOnTop);
-                PanelTopics.BroadcastPrefs(hub);
-            },
-            isOverlayTopmost: () => store.Load().Overlay.AlwaysOnTop,
-            hasOverlayWidgets: () => store.Load().Overlay.Layout.Count > 0);
 
         var pm = app.Services.GetRequiredService<ProfileManager>();
         TrayIcon.ConfigureProfiles(

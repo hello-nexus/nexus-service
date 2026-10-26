@@ -179,9 +179,6 @@ public static class TrayIcon
     private static Action? _onExit;
     private static Action? _onTogglePanel;
     private static Func<bool>? _isPanelRunning;
-    private static Action? _onToggleOverlayTopmost;
-    private static Func<bool>? _isOverlayTopmost;
-    private static Func<bool>? _hasOverlayWidgets;
     private static Action? _onToggleAutostart;
     private static Func<bool>? _isAutostartEnabled;
     private static Func<(System.Collections.Generic.IReadOnlyList<(string Id, string Name)> Items, string ActiveId)>? _getProfiles;
@@ -234,16 +231,6 @@ public static class TrayIcon
     {
         _onToggleAutostart = onToggle;
         _isAutostartEnabled = isEnabled;
-    }
-
-    public static void ConfigureDesktop(
-        Action onToggleOverlayTopmost,
-        Func<bool> isOverlayTopmost,
-        Func<bool> hasOverlayWidgets)
-    {
-        _onToggleOverlayTopmost = onToggleOverlayTopmost;
-        _isOverlayTopmost = isOverlayTopmost;
-        _hasOverlayWidgets = hasOverlayWidgets;
     }
 
     /// <summary>
