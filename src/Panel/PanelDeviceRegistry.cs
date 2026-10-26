@@ -1274,7 +1274,8 @@ public sealed class PanelDeviceRegistry
                     Green = r.XeneonEdgeSettings.Green,
                     Blue = r.XeneonEdgeSettings.Blue,
                 },
-            Enabled = PanelHosting.IsOn(r),
+            // Hosted wins when set; otherwise Enabled passes through, so an untouched record still reads as uncustomized.
+            Enabled = r.Hosted ?? r.Enabled,
             ClickThrough = r.ClickThrough,
             GridSlots = r.GridSlots,
             DesktopImport = r.DesktopImport,
