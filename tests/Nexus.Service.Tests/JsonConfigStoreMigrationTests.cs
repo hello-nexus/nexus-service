@@ -59,6 +59,30 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_V26_WithoutDeepCoolExclusion_AddsItAndStampsCurrent()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "ui": { "conflictAutoKillExclusions": ["corsair-icue"] } }""");
+
+        using var store = new JsonConfigStore(_settingsPath);
+
+        var s = store.Load();
+        Assert.Equal(["corsair-icue", "deepcool"], s.Ui.ConflictAutoKillExclusions);
+        Assert.Equal(27, s.SchemaVersion);
+    }
+
+    [Fact]
+    public void Load_V26_WithDeepCoolExclusion_LeavesItUnchanged()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "ui": { "conflictAutoKillExclusions": ["deepcool", "corsair-icue"] } }""");
+
+        using var store = new JsonConfigStore(_settingsPath);
+
+        var s = store.Load();
+        Assert.Equal(["deepcool", "corsair-icue"], s.Ui.ConflictAutoKillExclusions);
+        Assert.Equal(27, s.SchemaVersion);
+    }
+
+    [Fact]
     public void Load_ClearsTheRetiredOverlayBlockWhenItHoldsNoWidgets()
     {
         File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "overlay": { "enabled": true, "alwaysOnTop": true, "scale": 120, "layout": [] } }""");

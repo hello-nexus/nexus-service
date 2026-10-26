@@ -403,7 +403,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         {
             KeebBrightnessMigration.Apply(doc.Keeb?.FirmwareLighting);
         }
-        if (doc.SchemaVersion < 26)
+        if (doc.SchemaVersion < 27)
         {
             Nexus.Service.Conflicts.ConflictWhitelistMigration.WhitelistDeepCool(doc);
         }
