@@ -546,6 +546,7 @@ public static class ProfileRoutes
                     {
                         s.Overlay.Opacity = Math.Clamp(overlay.Opacity.Value, 0, 1);
                     }
+                    if (overlay.Frost.HasValue)        s.Overlay.Frost       = overlay.Frost.Value;
                     if (overlay.Monitor.HasValue)
                     {
                         // -1 (primary) or any non-negative index. Don't clamp to a

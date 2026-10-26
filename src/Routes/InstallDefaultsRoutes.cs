@@ -78,6 +78,7 @@ public static class InstallDefaultsRoutes
                     AlwaysOnTop = s.Overlay.AlwaysOnTop,
                     Scale = s.Overlay.Scale,
                     Opacity = s.Overlay.Opacity,
+                    Frost = s.Overlay.Frost,
                     Monitor = s.Overlay.Monitor,
                 },
                 Lighting = new LightingDefaults

@@ -103,6 +103,8 @@ public sealed class OverlaySettings
     public bool AlwaysOnTop { get; set; }
     public int Scale { get; set; } = 100;
     public double Opacity { get; set; } = 1.0;
+    /// <summary>Blur the desktop behind the pinned widget cards (native host backdrop).</summary>
+    public bool Frost { get; set; }
     public int Monitor { get; set; } = -1;
     /// <summary>Pinned floating-widget instances. Empty list = no widgets pinned.</summary>
     public List<OverlayWidgetDto> Layout { get; set; } = new();
@@ -340,6 +342,7 @@ public sealed class OverlaySettingsPatch
     public bool? AlwaysOnTop { get; set; }
     public int? Scale { get; set; }
     public double? Opacity { get; set; }
+    public bool? Frost { get; set; }
     public int? Monitor { get; set; }
     public List<OverlayWidgetDto>? Layout { get; set; }
 }
