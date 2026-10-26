@@ -173,10 +173,10 @@ public class LinuxKeyInputGateTests
     {
         using var queryFails = NewGate();
         Assert.True(await queryFails.CheckLockerAsync(n => Task.FromResult(n == Gnome), _ => throw new TimeoutException()));
-        using var otherError = NewGate();
-        Assert.True(await otherError.CheckLockerAsync(
+        using var transport = NewGate();
+        Assert.True(await transport.CheckLockerAsync(
             n => Task.FromResult(n == Gnome),
-            _ => throw new InvalidOperationException("D-Bus error org.freedesktop.DBus.Error.AccessDenied: no")));
+            _ => throw new InvalidOperationException("D-Bus auth failed: x")));
         using var lookupFails = NewGate();
         Assert.True(await lookupFails.CheckLockerAsync(_ => throw new TimeoutException(), _ => Task.FromResult(false)));
     }
@@ -185,6 +185,8 @@ public class LinuxKeyInputGateTests
     [InlineData("org.freedesktop.DBus.Error.UnknownMethod")]
     [InlineData("org.freedesktop.DBus.Error.UnknownInterface")]
     [InlineData("org.freedesktop.DBus.Error.UnknownObject")]
+    [InlineData("org.freedesktop.DBus.Error.NotSupported")]
+    [InlineData("org.freedesktop.DBus.Error.AccessDenied")]
     public async Task Locker_OwnerWithoutGetActiveIsNotALocker(string error)
     {
         using var only = NewGate();
@@ -199,12 +201,24 @@ public class LinuxKeyInputGateTests
     }
 
     [Fact]
-    public async Task Locker_ErrorNameMustLeadTheMessage()
+    public async Task Locker_CinnamonProxyNotSupportedDoesNotBlockAnUnlockedDesktop()
     {
+        const string cinnamon = "org.cinnamon.ScreenSaver";
         using var gate = NewGate();
-        Assert.True(await gate.CheckLockerAsync(
-            n => Task.FromResult(n == Gnome),
-            _ => throw new InvalidOperationException("D-Bus error org.example.Error: org.freedesktop.DBus.Error.UnknownMethod")));
+        var answer = await gate.CheckLockerAsync(
+            n => Task.FromResult(n is cinnamon or Freedesktop),
+            l => l.Name == Freedesktop
+                ? throw new InvalidOperationException("D-Bus error org.freedesktop.DBus.Error.NotSupported: This method is not implemented")
+                : Task.FromResult(false));
+        Assert.False(answer);
+        Assert.True(LinuxKeyInputGate.Decide(Seat(), answer, SessionUser).Allowed);
+
+        using var proxyOnly = NewGate();
+        var none = await proxyOnly.CheckLockerAsync(
+            n => Task.FromResult(n == Freedesktop),
+            _ => throw new InvalidOperationException("D-Bus error org.freedesktop.DBus.Error.NotSupported: This method is not implemented"));
+        Assert.Null(none);
+        Assert.True(LinuxKeyInputGate.Decide(Seat(), none, SessionUser).Allowed);
     }
 
     [Fact]
