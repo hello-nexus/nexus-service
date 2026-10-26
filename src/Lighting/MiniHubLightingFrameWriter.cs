@@ -23,14 +23,31 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
     private const int TickPeriodMs = 33;
     private const int IdentifyFlashHalfPeriodMs = 250;
 
+    /// <summary>
+    /// Minimum interval between consecutive non-black frame writes on the same
+    /// channel (~10 Hz). MiniHub runs over a 115200-baud UART where a full
+    /// 4-channel cycle is 778 bytes (~67.5 ms wire time plus MCU WS2812B
+    /// bit-banging); streaming all 4 channels at 30 Hz overruns the serial link
+    /// by >200% and causes visible flicker.
+    /// </summary>
+    internal const int MinStreamIntervalMs = 100;
+
     private readonly LightingEngine _engine;
     private readonly MiniHubHub _hub;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
+    private readonly Func<long> _nowMs;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
     private readonly MiniHubColor[]?[] _portBuffers = new MiniHubColor[MiniHubProtocol.LedPortCount][];
+    private readonly int[] _currentLedCounts = new int[MiniHubProtocol.LedPortCount];
+    private readonly MiniHubColor[]?[] _lastSentBuffers = new MiniHubColor[MiniHubProtocol.LedPortCount][];
+    private readonly int[] _lastSentLedCounts = new int[MiniHubProtocol.LedPortCount];
+    private bool _hasSentCycle;
+    private int _pendingConfirmCycles;
+    private long _lastCycleWriteMs;
+    private int _lastConnectEpoch = -1;
 
     private readonly FeatureGates _gates;
 
@@ -40,10 +57,17 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
     // back to last tick's zones rather than dropping the frame.
     private readonly System.Collections.Generic.Dictionary<string, System.Collections.Generic.IReadOnlyList<ResolvedZone>> _zoneCache = new();
 
-    public MiniHubLightingFrameWriter(LightingEngine engine, MiniHubHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
+    public MiniHubLightingFrameWriter(
+        LightingEngine engine,
+        MiniHubHub hub,
+        IConfigStore store,
+        Np50IdentifyTracker identify,
+        FeatureGates? gates = null,
+        Func<long>? nowMs = null)
     {
         _engine = engine; _hub = hub; _store = store; _identify = identify;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _nowMs = nowMs ?? (() => Environment.TickCount64);
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -81,10 +105,21 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void Tick()
+    internal void Tick()
     {
         if (!_gates.Lighting) return;
-        if (!_hub.IsConnected) return;
+        if (!_hub.IsConnected)
+        {
+            InvalidateSentState();
+            return;
+        }
+        var epoch = _hub.ConnectEpoch;
+        if (epoch != _lastConnectEpoch)
+        {
+            InvalidateSentState();
+            _lastConnectEpoch = epoch;
+        }
+
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
         var settings = _store.Load();
@@ -93,6 +128,7 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         var prefs = settings.Devices.LightingDevicePrefs;
         var globalBrightness = MasterBrightness.Effective(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
+        var nowMs = _nowMs();
 
         var hubId = _hub.DeviceId;
         var port3Zones = ResolveOrReuse($"{hubId}:port3",
@@ -100,27 +136,38 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         var port4Zones = ResolveOrReuse($"{hubId}:port4",
             () => MiniHubLightingDeviceProvider.ResolveLedPortZones(settings, hubId, 4, _hub.State.Port4.LedCount));
 
+        var port1Uncontrolled = uncontrolled.Count > 0 && uncontrolled.Contains($"{hubId}:port1");
+        var port2Uncontrolled = uncontrolled.Count > 0 && uncontrolled.Contains($"{hubId}:port2");
+        var port3Uncontrolled = ZoneResolution.IsFullyUncontrolled(port3Zones, uncontrolled);
+        var port4Uncontrolled = ZoneResolution.IsFullyUncontrolled(port4Zones, uncontrolled);
+
         // Every port uncontrolled: leave the whole hub alone so it drops back to
         // its firmware animation, same as never pushing at all. A chained port
         // (3/4) counts as uncontrolled only when every one of its products does.
-        if (uncontrolled.Count > 0
-            && uncontrolled.Contains($"{hubId}:port1") && uncontrolled.Contains($"{hubId}:port2")
-            && ZoneResolution.IsFullyUncontrolled(port3Zones, uncontrolled)
-            && ZoneResolution.IsFullyUncontrolled(port4Zones, uncontrolled))
+        if (port1Uncontrolled && port2Uncontrolled && port3Uncontrolled && port4Uncontrolled)
         {
+            InvalidateSentState();
             return;
         }
 
-        // Push every channel every tick - even channels with zero declared
-        // LEDs get a padded blank frame, which the hub firmware honours by
-        // blacking out the strip. The per-channel padded buffer comes from
-        // MiniHubProtocol.BuildLightingStream, so each WriteLighting call
-        // emits exactly 307 bytes (channel 4) or 157 bytes (channels 1-3)
-        // regardless of how many LEDs the user has wired.
-        TryPushZone(devices, $"{hubId}:port1", channel: 1, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
-        TryPushZone(devices, $"{hubId}:port2", channel: 2, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
-        PushPort(devices, port3Zones, channel: 3, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
-        PushPort(devices, port4Zones, channel: 4, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        // Stage all 4 channels and push the full 4-port cycle whenever any
+        // channel's LED output changes. Like Np50LightingFrameWriter (which
+        // shares HYTE's CoolingHubBaseController.SendToHardware firmware
+        // contract), the MiniHub firmware only commits its lighting latch when
+        // all 4 channels (1..4) are written in a cycle; skipping unchanged empty
+        // channels (such as port 3/4) leaves the latch uncommitted.
+        PrepareZone(devices, $"{hubId}:port1", channel: 1, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        PrepareZone(devices, $"{hubId}:port2", channel: 2, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        PreparePort(devices, port3Zones, channel: 3, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+        PreparePort(devices, port4Zones, channel: 4, disabled, uncontrolled, prefs, globalBrightness, nowTicks);
+
+        PushCycleIfChanged(nowMs);
+    }
+
+    private void InvalidateSentState()
+    {
+        _hasSentCycle = false;
+        _pendingConfirmCycles = 0;
     }
 
     private System.Collections.Generic.IReadOnlyList<ResolvedZone> ResolveOrReuse(
@@ -138,7 +185,7 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void TryPushZone(DeviceFrame[] devices, string id, int channel,
+    private void PrepareZone(DeviceFrame[] devices, string id, int channel,
         System.Collections.Generic.IReadOnlyList<string> disabled,
         System.Collections.Generic.IReadOnlyList<string> uncontrolled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
@@ -147,11 +194,6 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         DeviceFrame? frame = null;
         for (var i = 0; i < devices.Length; i++)
         { if (devices[i].Id == id) { frame = devices[i]; break; } }
-        // Always push something - even a zero-LED frame goes out as a fully
-        // zero-padded buffer, which BuildLightingStream then sends to the
-        // hub. Skipping a channel means the hub eventually drops back to
-        // its firmware animation on that strip. Cheap: BuildLightingStream
-        // produces a fixed 157/307-byte frame regardless of declared count.
         var ledCount = frame is null ? 0 : frame.LedCount;
         var brightnessMul = ComputeBrightnessMul(id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
         var hasIdentify = _identify.TryGetActive(id, nowTicks, out var startTicks);
@@ -161,20 +203,21 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         if (buf is null || buf.Length < Math.Max(ledCount, 1))
             _portBuffers[idx] = new MiniHubColor[Math.Max(ledCount, 64)];
         var dst = _portBuffers[idx]!;
+        if (ledCount > 0) Array.Clear(dst, 0, Math.Min(ledCount, dst.Length));
         if (ledCount > 0 && frame is not null)
         {
             FillBufferSlice(dst, 0, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
         }
-        _hub.WriteLighting(channel, new ReadOnlySpan<MiniHubColor>(dst, 0, ledCount));
+        _currentLedCounts[idx] = ledCount;
     }
 
     /// <summary>
     /// Fill a chainable port's buffer from its resolved zones, laid down back
-    /// to back in chain order, and push it. Power, brightness, colour trim and
+    /// to back in chain order. Power, brightness, colour trim and
     /// identify are per-zone, so one product in a chain can be flashed or
     /// switched off without touching the ones beside it on the same wire.
     /// </summary>
-    private void PushPort(DeviceFrame[] devices,
+    private void PreparePort(DeviceFrame[] devices,
         System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, int channel,
         System.Collections.Generic.IReadOnlyList<string> disabled,
         System.Collections.Generic.IReadOnlyList<string> uncontrolled,
@@ -189,6 +232,7 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         if (buf is null || buf.Length < Math.Max(total, 1))
             _portBuffers[idx] = new MiniHubColor[Math.Max(total, 64)];
         var dst = _portBuffers[idx]!;
+        if (total > 0) Array.Clear(dst, 0, Math.Min(total, dst.Length));
 
         var offset = 0;
         for (var i = 0; i < zones.Count; i++)
@@ -216,7 +260,122 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
             }
             offset += ledCount;
         }
-        _hub.WriteLighting(channel, new ReadOnlySpan<MiniHubColor>(dst, 0, total));
+        _currentLedCounts[idx] = total;
+    }
+
+    private void PushCycleIfChanged(long nowMs)
+    {
+        var changed = !CycleEquals();
+        if (!changed)
+        {
+            if (_pendingConfirmCycles <= 0 || nowMs - _lastCycleWriteMs < MinStreamIntervalMs)
+            {
+                return;
+            }
+            if (WriteFullCycle())
+            {
+                _pendingConfirmCycles--;
+                _lastCycleWriteMs = _nowMs();
+            }
+            return;
+        }
+
+        // Rate-limit continuous streaming so animated effects don't saturate
+        // the 115200-baud UART (778 bytes/cycle = 67.5 ms wire time; 10 Hz =
+        // 7,780 B/s < 11,520 B/s). First write after connect/uncontrol and
+        // blackout/off frames bypass the interval so power-off is immediate.
+        if (_hasSentCycle
+            && !IsCycleAllBlack()
+            && nowMs - _lastCycleWriteMs < MinStreamIntervalMs)
+        {
+            return;
+        }
+
+        if (!WriteFullCycle())
+        {
+            _hasSentCycle = false;
+            return;
+        }
+
+        for (var idx = 0; idx < MiniHubProtocol.LedPortCount; idx++)
+        {
+            var ledCount = _currentLedCounts[idx];
+            var dst = _portBuffers[idx]!;
+            var last = _lastSentBuffers[idx];
+            if (last is null || last.Length < Math.Max(ledCount, 1))
+            {
+                last = new MiniHubColor[Math.Max(ledCount, 64)];
+                _lastSentBuffers[idx] = last;
+            }
+            if (ledCount > 0)
+            {
+                Array.Copy(dst, 0, last, 0, ledCount);
+            }
+            _lastSentLedCounts[idx] = ledCount;
+        }
+        _hasSentCycle = true;
+        _pendingConfirmCycles = 1;
+        _lastCycleWriteMs = _nowMs();
+    }
+
+    private bool WriteFullCycle()
+    {
+        lock (_hub.IoLock)
+        {
+            for (var channel = 1; channel <= MiniHubProtocol.LedPortCount; channel++)
+            {
+                var idx = channel - 1;
+                var dst = _portBuffers[idx]!;
+                var ledCount = _currentLedCounts[idx];
+                if (!_hub.WriteLighting(channel, new ReadOnlySpan<MiniHubColor>(dst, 0, ledCount)))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    private bool CycleEquals()
+    {
+        if (!_hasSentCycle) return false;
+        for (var idx = 0; idx < MiniHubProtocol.LedPortCount; idx++)
+        {
+            var ledCount = _currentLedCounts[idx];
+            if (_lastSentLedCounts[idx] != ledCount) return false;
+            if (!FramesEqual(_lastSentBuffers[idx], _portBuffers[idx]!, ledCount)) return false;
+        }
+        return true;
+    }
+
+    private bool IsCycleAllBlack()
+    {
+        for (var idx = 0; idx < MiniHubProtocol.LedPortCount; idx++)
+        {
+            if (!IsAllBlack(_portBuffers[idx]!, _currentLedCounts[idx])) return false;
+        }
+        return true;
+    }
+
+    private static bool FramesEqual(MiniHubColor[]? last, MiniHubColor[] current, int ledCount)
+    {
+        if (ledCount == 0) return true;
+        if (last is null || last.Length < ledCount) return false;
+        for (var i = 0; i < ledCount; i++)
+        {
+            if (last[i] != current[i]) return false;
+        }
+        return true;
+    }
+
+    private static bool IsAllBlack(MiniHubColor[] buf, int ledCount)
+    {
+        for (var i = 0; i < ledCount && i < buf.Length; i++)
+        {
+            var c = buf[i];
+            if (c.R != 0 || c.G != 0 || c.B != 0) return false;
+        }
+        return true;
     }
 
     private static double ComputeBrightnessMul(string id,

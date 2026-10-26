@@ -230,6 +230,7 @@ public sealed class MiniHubLightingDeviceProvider :
             s.Devices.ZoneLedCounts[id] = count;
             ZoneResolution.DropChainForCount(s, id);
         });
+        try { DevicesChanged?.Invoke(); } catch { }
     }
 
     public void Identify(string id, int durationMs) => _identify.Schedule(id, durationMs);

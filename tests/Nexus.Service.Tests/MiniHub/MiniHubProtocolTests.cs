@@ -102,31 +102,30 @@ public class MiniHubProtocolTests
     }
 
     [Fact]
-    public void BuildLightingStream_clamps_to_max_LED_count_per_channel()
+    public void BuildLightingStream_clamps_to_max_LED_count_per_channel_and_clamps_0xFF_to_0xFE()
     {
         // Channel 4 ("big" output) caps at 100 LEDs; channels 1-3 cap at 50.
-        // Anything past the cap is silently dropped. The buffer length is
-        // fixed (157 / 307) and the in-cap LEDs fill it exactly, so there
-        // is no trailing byte to inspect - the proof of clamping is that
-        // every byte we DID write matches the supplied colour and the
-        // buffer stays at the documented length.
+        // Anything past the cap is silently dropped. 0xFF channel bytes are
+        // clamped to 0xFE (MaxLedChannelByte) so 0xFF remains strictly the
+        // Frame0 header sync byte across 64-byte USB bulk packet boundaries.
         var tooManyCh1 = new RgbColor[200];
         for (var i = 0; i < tooManyCh1.Length; i++) tooManyCh1[i] = new RgbColor(0xFF, 0xFF, 0xFF);
         var ch1 = MiniHubProtocol.BuildLightingStream(1, tooManyCh1);
         Assert.Equal(157, ch1.Length);
+        Assert.Equal(0xFF, ch1[0]);
         for (var i = 0; i < 50; i++)
         {
             var off = 7 + i * 3;
-            Assert.Equal(0xFF, ch1[off + 0]);
-            Assert.Equal(0xFF, ch1[off + 1]);
-            Assert.Equal(0xFF, ch1[off + 2]);
+            Assert.Equal(MiniHubProtocol.MaxLedChannelByte, ch1[off + 0]);
+            Assert.Equal(MiniHubProtocol.MaxLedChannelByte, ch1[off + 1]);
+            Assert.Equal(MiniHubProtocol.MaxLedChannelByte, ch1[off + 2]);
         }
 
         var tooManyCh4 = new RgbColor[200];
         for (var i = 0; i < tooManyCh4.Length; i++) tooManyCh4[i] = new RgbColor(0xFF, 0xFF, 0xFF);
         var ch4 = MiniHubProtocol.BuildLightingStream(4, tooManyCh4);
         Assert.Equal(307, ch4.Length);
-        Assert.Equal(0xFF, ch4[7 + 99 * 3 + 0]);
+        Assert.Equal(MiniHubProtocol.MaxLedChannelByte, ch4[7 + 99 * 3 + 0]);
     }
 
     [Fact]
