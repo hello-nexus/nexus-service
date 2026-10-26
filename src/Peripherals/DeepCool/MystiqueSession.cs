@@ -32,10 +32,11 @@ public sealed class MystiqueSession
     // software does (capture 2), which follows a GIF far sooner.
     private const int AfterPictureGapMs = 410;
 
-    // A whole number of the endpoint's packets, which the transport splits each write into; WinUSB adds no
-    // zero-length packet without SHORT_PACKET_TERMINATE. Each frame's header goes in a write of its own first, as the
-    // screen's own software sends it (capture 4).
-    private const int StreamChunkBytes = 16 * 1024;
+    // One endpoint packet per write, each frame's header first, as the screen's own software streams (captures 4 and 5).
+    private const int StreamChunkBytes = MystiqueMedia.PacketLength;
+
+    // The screen's own software waits this long after each GIF frame's header, the median in capture 5; none after a picture's.
+    internal const int AfterGifHeaderGapMs = 81;
 
     // A stream with no write taken for this long has stalled; shorter stalls have ended on their own.
     internal const int StreamStallMs = 30_000;
@@ -238,12 +239,16 @@ public sealed class MystiqueSession
                     AbandonStream(f, frame.Length, streamed, frame.Length - sent, stopped: true);
                     return false;
                 }
-                int length = sent == 0 ? MystiqueMedia.HeaderLength : Math.Min(StreamChunkBytes, frame.Length - sent);
+                int length = Math.Min(StreamChunkBytes, frame.Length - sent);
                 int landed = WriteChunk(frame.AsSpan(sent, length), tookAt + StreamStallMs);
                 if (landed != length)
                 {
                     AbandonStream(f, frame.Length, streamed, frame.Length - sent - Math.Max(landed, 0), stopped: _stop.IsCancellationRequested);
                     return false;
+                }
+                if (sent == 0 && package.Kind == MystiqueMedia.KindGif)
+                {
+                    _sleep(AfterGifHeaderGapMs);
                 }
                 sent += landed;
                 streamed += landed;

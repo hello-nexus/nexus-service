@@ -14,7 +14,8 @@ namespace Nexus.Service.Routes;
 
 public static partial class DevicesRoutes
 {
-    private static readonly TimeSpan MystiqueUploadBudget = TimeSpan.FromMinutes(3);
+    // Covers converting and streaming the largest recorded GIF one packet per write even at one packet per USB frame.
+    private static readonly TimeSpan MystiqueUploadBudget = TimeSpan.FromMinutes(5);
     private const int MystiqueNameMax = 64;
 
     // Bounds a kept source, so full slots of uploads up to MediaImporter.MaxFileSize never pile up gigabytes.

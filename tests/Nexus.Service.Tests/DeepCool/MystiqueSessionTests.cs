@@ -99,7 +99,7 @@ public class MystiqueSessionTests
     }
 
     [Fact]
-    public void A_frame_streams_its_header_alone_then_whole_packet_writes_of_up_to_16_KiB_and_reports_the_bytes_after_each()
+    public void A_frame_streams_one_packet_per_write_and_reports_the_bytes_after_each()
     {
         var pipe = new FakePipe();
         var session = new MystiqueSession(pipe, sleep: NoSleep);
@@ -111,21 +111,14 @@ public class MystiqueSessionTests
         Assert.True(session.Upload(package, progress: reported.Add));
 
         var stream = pipe.Writes.Skip(1).TakeWhile(w => w.Frame.Length != MystiqueMedia.FinishLength).ToList();
-        Assert.Equal(new[] { 64, 16_384, 16_384, 40_000 - 32_768 }, stream.ConvertAll(w => w.Frame.Length));
-        Assert.Equal(package.Frames[0][..MystiqueMedia.HeaderLength], stream[0].Frame);
-        Assert.Equal(package.Frames[0], stream.SelectMany(w => w.Frame));
-        Assert.Equal(new long[] { 64, 16_448, 32_832, 40_064 }, reported);
+        Assert.Equal(StreamWrites(package.Frames[0]).Select(Convert.ToHexString), stream.Select(w => Convert.ToHexString(w.Frame)));
+        Assert.Equal(40_064 / 64, stream.Count);
+        Assert.All(stream, w => Assert.Equal(64, w.Frame.Length));
+        Assert.Equal(Enumerable.Range(1, stream.Count).Select(i => i * 64L), reported);
     }
 
-    /// <summary>The writes a frame streams as: its header, then the rest in whole-packet writes of up to 16 KiB.</summary>
-    private static IEnumerable<byte[]> StreamWrites(byte[] frame)
-    {
-        yield return frame[..MystiqueMedia.HeaderLength];
-        for (int at = MystiqueMedia.HeaderLength; at < frame.Length; at += 16_384)
-        {
-            yield return frame[at..Math.Min(frame.Length, at + 16_384)];
-        }
-    }
+    /// <summary>The writes a frame streams as: one endpoint packet each.</summary>
+    private static IEnumerable<byte[]> StreamWrites(byte[] frame) => MystiqueMedia.Packets(frame);
 
     [Fact]
     public void A_write_that_took_nothing_is_not_resent_once_the_stall_time_has_passed()
@@ -143,14 +136,14 @@ public class MystiqueSessionTests
         Assert.False(session.Upload(package));
 
         var body = pipe.Writes.Skip(1).SkipLast(1).SelectMany(w => w.Frame).ToArray();
-        int good = MystiqueMedia.HeaderLength + 16_384;
+        int good = MystiqueMedia.HeaderLength + MystiqueMedia.PacketLength;
         Assert.Equal(package.Frames[0][..good], body[..good]);
         Assert.All(body[good..], b => Assert.Equal(0, b));
         Assert.Equal(MystiqueMedia.FinishLength, pipe.Writes[^1].Frame.Length);
     }
 
     [Fact]
-    public void A_picture_waits_the_recorded_gap_before_the_next_command_and_a_gif_does_not()
+    public void A_picture_waits_the_recorded_gap_before_the_next_command_and_a_gif_waits_after_each_frame_header_instead()
     {
         var pipe = new FakePipe();
         var slept = new List<int>();
@@ -160,12 +153,14 @@ public class MystiqueSessionTests
         Assert.True(session.Upload(MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b")));
         Assert.Equal(new[] { 410 }, slept);
         Assert.True(session.Upload(MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b"), () => null));
+        Assert.Equal(new[] { 410 }, slept);
         Assert.True(session.Upload(MystiqueMedia.BuildGif(Enumerable.Range(0, MystiqueMedia.GifFrames).Select(_ => new byte[100]).ToList(), "acd9325521f3493c86bfc0b0aa85658d")));
 
-        Assert.Equal(new[] { 410 }, slept);
+        Assert.Equal(new[] { 410 }.Concat(Enumerable.Repeat(MystiqueSession.AfterGifHeaderGapMs, MystiqueMedia.GifFrames)), slept);
+        slept.Clear();
         var picture = MystiqueMedia.BuildPicture(new byte[1000], "2101b6e6277841daa821e8d79a5c528b");
         Assert.Equal(2, session.Upload(new[] { picture, picture }));
-        Assert.Equal(new[] { 410, 410, 410 }, slept);
+        Assert.Equal(new[] { 410, 410 }, slept);
     }
 
     [Fact]
@@ -366,7 +361,7 @@ public class MystiqueSessionTests
     [Theory]
     [InlineData("unknown", 0)]
     [InlineData("zero", 0)]
-    [InlineData("partial", 1024)]
+    [InlineData("partial", 32)]
     public void A_failed_write_ends_the_frame_with_zeros_after_what_landed_then_the_finish_packet(string failure, int landed)
     {
         var pipe = new FakePipe();
@@ -396,7 +391,7 @@ public class MystiqueSessionTests
         Assert.Equal(MystiqueMedia.FinishLength, stream[^1].Frame.Length);
         var body = stream.SkipLast(1).SelectMany(w => w.Frame).ToArray();
         var frame = package.Frames[0];
-        int good = MystiqueMedia.HeaderLength + 16_384 + landed;
+        int good = MystiqueMedia.HeaderLength + MystiqueMedia.PacketLength + landed;
         Assert.Equal(frame.Length, body.Length);
         Assert.Equal(frame[..good], body[..good]);
         Assert.All(body[good..], b => Assert.Equal(0, b));
