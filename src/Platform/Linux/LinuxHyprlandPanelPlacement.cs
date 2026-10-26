@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Nexus.Service.Platform.Linux;
@@ -20,6 +22,9 @@ internal static class LinuxHyprlandPanelPlacement
     private const int PollAttempts = 40;
     private const int PollIntervalMs = 500;
     private const double MinStripAspect = 3.0;
+    private const int MaxFullscreenTries = 3;
+    private const int MaxEventConnectFailures = 5;
+    private const int EventReconnectDelayMs = 2000;
 
     internal enum StepKind { NoWindow, NoMonitor, Done, Move, Fullscreen }
 
@@ -36,7 +41,7 @@ internal static class LinuxHyprlandPanelPlacement
         => string.Equals(cls, LinuxKWinPanelPlacement.FirefoxClass, StringComparison.Ordinal)
            || cls.EndsWith(ChromiumClassSuffix, StringComparison.Ordinal);
 
-    /// <summary>The named connector, else the one strip-shaped output (either orientation), else none.</summary>
+    /// <summary>The named connector; with no connector, the one portrait strip output.</summary>
     internal static HyprlandIpc.Monitor? FindTargetMonitor(IReadOnlyList<HyprlandIpc.Monitor> monitors, string connector)
     {
         if (connector.Length > 0)
@@ -46,13 +51,22 @@ internal static class LinuxHyprlandPanelPlacement
                 if (string.Equals(m.Name, connector, StringComparison.OrdinalIgnoreCase))
                     return m;
             }
+            return null;
         }
-        var strips = monitors.Where(m => m.Width > 0 && m.Height > 0
-            && Math.Max(m.Width, m.Height) / (double)Math.Min(m.Width, m.Height) >= MinStripAspect).ToList();
+        var strips = monitors.Where(IsPortraitStrip).ToList();
         return strips.Count == 1 ? strips[0] : null;
     }
 
-    internal static Step Plan(IReadOnlyList<HyprlandIpc.Client> clients, IReadOnlyList<HyprlandIpc.Monitor> monitors, string connector)
+    // Width and height are the mode's, so an odd transform (quarter turns) swaps them.
+    private static bool IsPortraitStrip(HyprlandIpc.Monitor m)
+    {
+        if (m.Width <= 0 || m.Height <= 0)
+            return false;
+        var (w, h) = m.Transform % 2 == 1 ? (m.Height, m.Width) : (m.Width, m.Height);
+        return h > w && h / (double)w >= MinStripAspect;
+    }
+
+    internal static Step Plan(IReadOnlyList<HyprlandIpc.Client> clients, IReadOnlyList<HyprlandIpc.Monitor> monitors, string connector, bool skipFullscreen = false)
     {
         var window = clients.Where(IsPanelWindow).Cast<HyprlandIpc.Client?>().FirstOrDefault();
         if (window is null)
@@ -61,7 +75,7 @@ internal static class LinuxHyprlandPanelPlacement
             return new Step(StepKind.NoMonitor, window.Value);
         if (window.Value.MonitorId != target.Id)
             return new Step(StepKind.Move, window.Value, target);
-        var fullscreen = window.Value.Fullscreen >= 2 || window.Value.FullscreenClient >= 2;
+        var fullscreen = skipFullscreen || window.Value.Fullscreen >= 2 || window.Value.FullscreenClient >= 2;
         return new Step(fullscreen ? StepKind.Done : StepKind.Fullscreen, window.Value, target);
     }
 
@@ -87,50 +101,108 @@ internal static class LinuxHyprlandPanelPlacement
     internal static string FullscreenLua(string address)
         => $"/dispatch hl.dsp.window.fullscreen({{ mode = \"fullscreen\", action = \"set\", window = \"address:{address}\" }})";
 
+    internal static string FullscreenLegacy() => "/dispatch fullscreen 0";
+
     internal static string FocusLua(string address)
         => $"/dispatch hl.dsp.focus({{ window = \"address:{address}\" }})";
 
     internal static string FocusLegacy(string address)
         => $"/dispatch focuswindow address:{address}";
 
-    /// <summary>Fire and forget from the kiosk spawn; a no-op unless a Hyprland instance answers.</summary>
-    internal static void Start(string connector)
+    /// <summary>Starts placement, touch binding and reload re-binding; null unless a Hyprland instance answers. Dispose to stop.</summary>
+    internal static IDisposable? Start(string connector)
     {
+        if (HyprlandIpc.FindSocket() is not { } socketPath)
+            return null;
+        var cts = new CancellationTokenSource();
         _ = Task.Run(async () =>
         {
             try
             {
-                if (HyprlandIpc.Open() is not { } send)
-                    return;
+                Func<string, string?> send = request => HyprlandIpc.Send(socketPath, request);
                 Console.Error.WriteLine("[panel-kiosk] Hyprland session; placing the kiosk on the Y70 output");
                 await PlaceAsync(send, connector, Task.Delay).ConfigureAwait(false);
-                LinuxHyprlandTouchMap.Apply(send, connector, LinuxInputDevices.ReadY70TouchNames(), LinuxHyprlandTouchMap.ReadUserConfigText());
+                MapTouch(send, connector);
+                await WatchConfigReloadsAsync(socketPath, () => MapTouch(send, connector), cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[panel-kiosk] Hyprland placement failed: {ex.Message}");
             }
         });
+        return cts;
+    }
+
+    private static void MapTouch(Func<string, string?> send, string connector)
+        => LinuxHyprlandTouchMap.Apply(send, connector, LinuxInputDevices.ReadY70TouchNames(), LinuxHyprlandTouchMap.ReadUserConfigText());
+
+    /// <summary>Runtime device config is dropped by a config reload; re-apply on each reload event. Gives up after repeated connect failures.</summary>
+    private static async Task WatchConfigReloadsAsync(string requestSocket, Action onReload, CancellationToken token)
+    {
+        var failures = 0;
+        while (!token.IsCancellationRequested && failures < MaxEventConnectFailures)
+        {
+            try
+            {
+                using var socket = HyprlandIpc.Connect(HyprlandIpc.EventSocketPath(requestSocket));
+                socket.ReceiveTimeout = 0;
+                using var _ = token.Register(socket.Dispose);
+                failures = 0;
+                var pending = "";
+                var buffer = new byte[4096];
+                while (true)
+                {
+                    var n = await Task.Run(() => socket.Receive(buffer), token).ConfigureAwait(false);
+                    if (n <= 0)
+                        break;
+                    foreach (var line in HyprlandIpc.TakeLines(ref pending, Encoding.UTF8.GetString(buffer, 0, n)))
+                    {
+                        if (HyprlandIpc.IsConfigReloaded(line))
+                            onReload();
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                if (token.IsCancellationRequested)
+                    return;
+                failures++;
+            }
+            await Task.Delay(EventReconnectDelayMs, token).ConfigureAwait(false);
+        }
     }
 
     internal static async Task<bool> PlaceAsync(Func<string, string?> send, string connector, Func<int, Task> delay)
     {
         // Captured before the kiosk maps: a new window takes focus and the move is silent.
         var previousFocus = HyprlandIpc.ParseActiveAddress(send("j/activewindow"));
+        var fullscreenTries = 0;
         for (var attempt = 0; attempt < PollAttempts; attempt++)
         {
-            var step = Plan(HyprlandIpc.ParseClients(send("j/clients")), HyprlandIpc.ParseMonitors(send("j/monitors")), connector);
+            var step = Plan(HyprlandIpc.ParseClients(send("j/clients")), HyprlandIpc.ParseMonitors(send("j/monitors")), connector,
+                skipFullscreen: fullscreenTries >= MaxFullscreenTries);
             switch (step.Kind)
             {
                 case StepKind.Done:
                     RestoreFocus(send, step.Window.Address, previousFocus);
-                    Console.Error.WriteLine($"[panel-kiosk] Hyprland kiosk fullscreen on {connector}");
+                    Console.Error.WriteLine(fullscreenTries >= MaxFullscreenTries
+                        ? $"[panel-kiosk] Hyprland kiosk on {connector}; fullscreen was not confirmed"
+                        : $"[panel-kiosk] Hyprland kiosk fullscreen on {connector}");
                     return true;
                 case StepKind.Move when IsAddress(step.Window.Address) && WorkspaceSelector(step.Target) is { } workspace:
                     Dispatch(send, MoveLua(step.Window.Address, workspace), MoveLegacy(step.Window.Address, workspace));
                     break;
                 case StepKind.Fullscreen when IsAddress(step.Window.Address):
-                    Dispatch(send, FullscreenLua(step.Window.Address), null);
+                    fullscreenTries++;
+                    if (!HyprlandIpc.IsOk(send(FullscreenLua(step.Window.Address))))
+                    {
+                        // hyprlang acts on the focused window only; the caller restores focus afterwards.
+                        send(FocusLegacy(step.Window.Address));
+                        send(FullscreenLegacy());
+                    }
                     break;
             }
             await delay(PollIntervalMs).ConfigureAwait(false);

@@ -63,8 +63,9 @@ public sealed class LinuxPanelKioskHost : IDisposable
 
     private sealed class Kiosk
     {
-        public Kiosk(Process process, string deviceId, DateTime spawnedUtc, string? flatpakApp)
+        public Kiosk(Process process, string deviceId, DateTime spawnedUtc, string? flatpakApp, IDisposable? placement = null)
         {
+            Placement = placement;
             Process = process;
             FlatpakApp = flatpakApp;
             DeviceId = deviceId;
@@ -72,6 +73,8 @@ public sealed class LinuxPanelKioskHost : IDisposable
         }
 
         public Process Process { get; }
+        /// <summary>Hyprland placement and touch re-binding for the Y70 kiosk, stopped with the kiosk.</summary>
+        public IDisposable? Placement { get; }
         /// <summary>Flatpak application id when the browser is a flatpak export, else null.</summary>
         public string? FlatpakApp { get; }
         public string DeviceId { get; }
@@ -223,6 +226,7 @@ public sealed class LinuxPanelKioskHost : IDisposable
             _y70Running = false;
             _ = LinuxScreenInhibit.ReleaseAsync(_dbus);
         }
+        try { kiosk.Placement?.Dispose(); } catch { }
         try
         {
             if (!kiosk.Process.HasExited)
@@ -376,10 +380,10 @@ public sealed class LinuxPanelKioskHost : IDisposable
             }
             proc.EnableRaisingEvents = true;
             proc.Exited += (_, _) => OnKioskExited(displayId);
-            _running[displayId] = new Kiosk(proc, deviceId, DateTime.UtcNow, flatpakApp);
+            var placement = isY70 ? LinuxHyprlandPanelPlacement.Start(y70Connector) : null;
+            _running[displayId] = new Kiosk(proc, deviceId, DateTime.UtcNow, flatpakApp, placement);
             if (isY70)
             {
-                LinuxHyprlandPanelPlacement.Start(y70Connector);
                 _y70Running = true;
                 _ = LinuxScreenInhibit.AcquireAsync(_dbus);
             }
@@ -500,6 +504,7 @@ user_pref("browser.tabs.warnOnClose", false);
             if (!_running.TryGetValue(displayId, out var kiosk) || !kiosk.Process.HasExited)
                 return;
             try { exitCode = kiosk.Process.ExitCode; } catch { }
+            try { kiosk.Placement?.Dispose(); } catch { }
             _running.Remove(displayId);
             if (string.Equals(displayId, Y70Slot, StringComparison.Ordinal))
             {

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 
 namespace Nexus.Service.Platform.Linux;
 
@@ -64,15 +65,43 @@ internal static class LinuxHyprlandTouchMap
             var dir = Path.Combine(home, ".config", "hypr");
             if (!Directory.Exists(dir))
                 return "";
-            var files = Directory.EnumerateFiles(dir, "*", new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 3 })
-                .Where(f => f.EndsWith(".lua", StringComparison.Ordinal) || f.EndsWith(".conf", StringComparison.Ordinal))
-                .Where(f => new FileInfo(f).Length <= MaxConfigFileBytes);
-            return string.Join('\n', files.Select(File.ReadAllText));
+            // Symlinks are skipped, and a zero Length also drops FIFOs and devices, which would block a read.
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                MaxRecursionDepth = 3,
+                AttributesToSkip = FileAttributes.ReparsePoint | FileAttributes.Hidden | FileAttributes.System,
+            };
+            var text = new StringBuilder();
+            foreach (var file in Directory.EnumerateFiles(dir, "*", options))
+            {
+                if (file.EndsWith(".lua", StringComparison.Ordinal) || file.EndsWith(".conf", StringComparison.Ordinal))
+                    text.Append(ReadCapped(file)).Append('\n');
+            }
+            return text.ToString();
         }
         catch (Exception)
         {
             return "";
         }
+    }
+
+    private static string ReadCapped(string path)
+    {
+        var info = new FileInfo(path);
+        if (info.LinkTarget is not null || info.Length == 0)
+            return "";
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var buffer = new byte[(int)Math.Min(MaxConfigFileBytes, info.Length)];
+        var read = 0;
+        while (read < buffer.Length)
+        {
+            var n = stream.Read(buffer, read, buffer.Length - read);
+            if (n <= 0)
+                break;
+            read += n;
+        }
+        return Encoding.UTF8.GetString(buffer, 0, read);
     }
 
     internal static Outcome Apply(Func<string, string?> send, string connector, IReadOnlyList<string> y70KernelNames, string userConfigText)

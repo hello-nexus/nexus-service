@@ -9,13 +9,8 @@ using System.Text.Json;
 namespace Nexus.Service.Platform.Linux;
 
 /// <summary>
-/// Raw client for Hyprland's request socket (<c>$XDG_RUNTIME_DIR/hypr/&lt;instance&gt;/.socket.sock</c>).
-/// One connection per request: write the request, read until the compositor
-/// closes. Hyprland does not check the peer uid (it reads SO_PEERCRED for the
-/// pid only, to log it), and the socket file is reachable by root, so the root
-/// daemon talks to it directly, with no seteuid dance and no hyprctl process.
-/// The root daemon has no HYPRLAND_INSTANCE_SIGNATURE, so the instance is the
-/// newest directory whose socket accepts a connection.
+/// Raw client for Hyprland's request socket, one connection per request. Hyprland ignores the peer uid,
+/// so the root daemon connects directly. The instance is the newest one whose socket answers.
 /// </summary>
 internal static class HyprlandIpc
 {
@@ -62,22 +57,74 @@ internal static class HyprlandIpc
         return found.OrderByDescending(f => f.Time).Select(f => f.Path).ToList();
     }
 
-    /// <summary>A send function bound to the live instance, or null when no Hyprland answers.</summary>
-    internal static Func<string, string?>? Open()
+    /// <summary>Path of the live instance's request socket, or null when no Hyprland answers.</summary>
+    internal static string? FindSocket()
     {
         if (!OperatingSystem.IsLinux() || RuntimeDir() is not { } runtime)
             return null;
-        if (_socketPath is not null && Send(_socketPath, "/version") is not null)
-            return request => Send(_socketPath, request);
+        var cached = _socketPath;
+        if (cached is not null && Send(cached, "/version") is not null)
+            return cached;
         _socketPath = null;
         foreach (var candidate in InstanceSockets(runtime))
         {
             if (Send(candidate, "/version") is null)
                 continue;
             _socketPath = candidate;
-            return request => Send(candidate, request);
+            return candidate;
         }
         return null;
+    }
+
+    /// <summary>A send function bound to the live instance, or null when no Hyprland answers.</summary>
+    internal static Func<string, string?>? Open()
+    {
+        var path = FindSocket();
+        return path is null ? null : request => Send(path, request);
+    }
+
+    /// <summary>The event socket beside a request socket.</summary>
+    internal static string EventSocketPath(string requestSocket)
+        => Path.Combine(Path.GetDirectoryName(requestSocket) ?? "", ".socket2.sock");
+
+    /// <summary>True when SO_PEERCRED bytes (pid, uid, gid) name the expected uid.</summary>
+    internal static bool PeerUidMatches(byte[] credentials, uint expectedUid)
+        => credentials.Length >= 12 && BitConverter.ToUInt32(credentials, 4) == expectedUid;
+
+    private const SocketOptionName SoPeerCred = (SocketOptionName)17;
+
+    /// <summary>Connects to a real socket file owned by the session user, or throws.</summary>
+    internal static Socket Connect(string socketPath)
+    {
+        if (new FileInfo(socketPath).LinkTarget is not null)
+            throw new IOException("socket path is a symlink");
+        var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified)
+        {
+            SendTimeout = TimeoutMs,
+            ReceiveTimeout = TimeoutMs,
+        };
+        try
+        {
+            socket.Connect(new UnixDomainSocketEndPoint(socketPath));
+            if (LinuxSession.SessionUid is { } uid
+                && !PeerUidMatches(PeerCredentials(socket), uid))
+            {
+                throw new IOException("socket peer is not the session user");
+            }
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    private static byte[] PeerCredentials(Socket socket)
+    {
+        var buffer = new byte[12];
+        socket.GetRawSocketOption((int)SocketOptionLevel.Socket, (int)SoPeerCred, buffer);
+        return buffer;
     }
 
     /// <summary>The reply, or null when the connection or the exchange failed.</summary>
@@ -85,12 +132,7 @@ internal static class HyprlandIpc
     {
         try
         {
-            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified)
-            {
-                SendTimeout = TimeoutMs,
-                ReceiveTimeout = TimeoutMs,
-            };
-            socket.Connect(new UnixDomainSocketEndPoint(socketPath));
+            using var socket = Connect(socketPath);
             socket.Send(Encoding.UTF8.GetBytes(request));
             using var reply = new MemoryStream();
             var buffer = new byte[8192];
@@ -110,6 +152,22 @@ internal static class HyprlandIpc
             return null;
         }
     }
+
+    /// <summary>Complete lines from a chunk of the event stream; the unterminated tail stays in <paramref name="pending"/>.</summary>
+    internal static List<string> TakeLines(ref string pending, string chunk)
+    {
+        pending += chunk;
+        var lines = new List<string>();
+        int nl;
+        while ((nl = pending.IndexOf('\n')) >= 0)
+        {
+            lines.Add(pending[..nl]);
+            pending = pending[(nl + 1)..];
+        }
+        return lines;
+    }
+
+    internal static bool IsConfigReloaded(string line) => line.StartsWith("configreloaded>>", StringComparison.Ordinal);
 
     /// <summary>Eval and dispatch answer exactly "ok" on success and an error text otherwise.</summary>
     internal static bool IsOk(string? reply) => reply is not null && reply.Trim().StartsWith("ok", StringComparison.Ordinal);
@@ -148,7 +206,7 @@ internal static class HyprlandIpc
             TryString(c, "initialClass", out var initialClass);
             TryInt(c, "monitor", out var monitor);
             var mapped = !c.TryGetProperty("mapped", out var m) || m.ValueKind != JsonValueKind.False;
-            TryInt(c, "fullscreen", out var fullscreen);
+            var fullscreen = FullscreenLevel(c);
             TryInt(c, "fullscreenClient", out var fullscreenClient);
             result.Add(new Client(address, cls, initialClass, monitor, mapped, fullscreen, fullscreenClient));
         }
@@ -220,7 +278,7 @@ internal static class HyprlandIpc
     {
         var sb = new StringBuilder(name.Length);
         foreach (var ch in name)
-            sb.Append(ch is ' ' or '\n' or ',' ? '-' : char.ToLowerInvariant(ch));
+            sb.Append(ch is ' ' or '\n' or ',' ? '-' : ch is >= 'A' and <= 'Z' ? (char)(ch + 32) : ch);
         return sb.ToString();
     }
 
@@ -263,6 +321,19 @@ internal static class HyprlandIpc
                     yield return e;
             }
         }
+    }
+
+    /// <summary>Older Hyprland reports fullscreen as a bool, newer as the mode number.</summary>
+    private static int FullscreenLevel(JsonElement client)
+    {
+        if (!client.TryGetProperty("fullscreen", out var p))
+            return 0;
+        return p.ValueKind switch
+        {
+            JsonValueKind.True => 2,
+            JsonValueKind.Number when p.TryGetInt32(out var n) => n,
+            _ => 0,
+        };
     }
 
     private static bool TryString(JsonElement element, string name, out string value)

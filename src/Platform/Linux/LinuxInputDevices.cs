@@ -33,7 +33,7 @@ internal static class LinuxInputDevices
                     continue;
                 if (LinuxSysfs.ReadText(Path.Combine(device, "name")) is not { Length: > 0 } name)
                     continue;
-                if (HasEdgeCompanion(device))
+                if (HasEdgeCompanion(dir))
                     continue;
                 if (!names.Contains(name, StringComparer.Ordinal))
                     names.Add(name);
@@ -46,9 +46,15 @@ internal static class LinuxInputDevices
         return names;
     }
 
-    internal static bool HasEdgeCompanion(string inputDevicePath)
+    /// <summary>
+    /// <paramref name="eventDir"/> is the class entry, itself a symlink; its relative <c>device</c> link
+    /// only resolves from the real directory.
+    /// </summary>
+    internal static bool HasEdgeCompanion(string eventDir)
     {
-        var real = Directory.ResolveLinkTarget(inputDevicePath, returnFinalTarget: true)?.FullName ?? inputDevicePath;
+        var realEvent = Directory.ResolveLinkTarget(eventDir, returnFinalTarget: true)?.FullName ?? eventDir;
+        var deviceLink = Path.Combine(realEvent, "device");
+        var real = Directory.ResolveLinkTarget(deviceLink, returnFinalTarget: true)?.FullName ?? deviceLink;
         var usb = new DirectoryInfo(real);
         while (usb is not null && !File.Exists(Path.Combine(usb.FullName, "idVendor")))
             usb = usb.Parent;

@@ -75,6 +75,57 @@ public class HyprlandPanelTests
         Assert.Null(HyprlandIpc.LuaString("a\nb"));
     }
 
+    [Fact]
+    public void ParseClients_ReadsABooleanFullscreenFromOlderHyprland()
+    {
+        var clients = HyprlandIpc.ParseClients("""[{"address":"0x1","class":"c","monitor":1,"fullscreen":true}]""");
+        Assert.Equal(2, clients[0].Fullscreen);
+        Assert.Equal(0, HyprlandIpc.ParseClients("""[{"address":"0x1","fullscreen":false}]""")[0].Fullscreen);
+    }
+
+    [Fact]
+    public void TakeLines_KeepsTheUnterminatedTail()
+    {
+        var pending = "";
+        Assert.Equal(["workspace>>1"], HyprlandIpc.TakeLines(ref pending, "workspace>>1\nconfigre"));
+        Assert.Equal(["configreloaded>>"], HyprlandIpc.TakeLines(ref pending, "loaded>>\n"));
+        Assert.True(HyprlandIpc.IsConfigReloaded("configreloaded>>"));
+        Assert.False(HyprlandIpc.IsConfigReloaded("workspace>>1"));
+    }
+
+    [Fact]
+    public void PeerUidMatches_ReadsTheUidFromPeerCredentials()
+    {
+        var cred = new byte[12];
+        BitConverter.GetBytes(1000u).CopyTo(cred, 4);
+        Assert.True(HyprlandIpc.PeerUidMatches(cred, 1000));
+        Assert.False(HyprlandIpc.PeerUidMatches(cred, 0));
+        Assert.False(HyprlandIpc.PeerUidMatches([], 1000));
+    }
+
+    [Fact]
+    public void NormalizeDeviceName_LowercasesAsciiOnly()
+        => Assert.Equal("\u00c9a-b", HyprlandIpc.NormalizeDeviceName("\u00c9A B"));
+
+    [Fact]
+    public void ReadConnectedConnectors_ListsOnlyConnectedStatus()
+    {
+        var root = Directory.CreateTempSubdirectory("drm").FullName;
+        try
+        {
+            foreach (var (name, status) in new[] { ("card1-DP-2", "connected"), ("card1-DP-1", "connected"), ("card1-HDMI-A-1", "disconnected") })
+            {
+                Directory.CreateDirectory(Path.Combine(root, name));
+                File.WriteAllText(Path.Combine(root, name, "status"), status + "\n");
+            }
+            Assert.Equal("card1-DP-1,card1-DP-2", LinuxY70DisplayWatcher.ReadConnectedConnectors(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("OK", true)]
     [InlineData("ok", true)]
@@ -99,10 +150,13 @@ public class HyprlandPanelTests
     {
         var monitors = HyprlandIpc.ParseMonitors(MonitorsJson);
         Assert.Equal("DP-1", LinuxHyprlandPanelPlacement.FindTargetMonitor(monitors, "dp-1")?.Name);
-        Assert.Equal("DP-2", LinuxHyprlandPanelPlacement.FindTargetMonitor(monitors, "HDMI-A-9")?.Name);
+        Assert.Null(LinuxHyprlandPanelPlacement.FindTargetMonitor(monitors, "HDMI-A-9"));
         Assert.Equal("DP-2", LinuxHyprlandPanelPlacement.FindTargetMonitor(monitors, "")?.Name);
-        var noStrip = monitors.Take(1).ToList();
-        Assert.Null(LinuxHyprlandPanelPlacement.FindTargetMonitor(noStrip, "HDMI-A-9"));
+        Assert.Null(LinuxHyprlandPanelPlacement.FindTargetMonitor(monitors.Take(1).ToList(), ""));
+        // A 32:9 landscape desktop monitor is wide, not a portrait strip.
+        var wide = new HyprlandIpc.Monitor(0, "DP-1", 7680, 2160, 0, 1, "1");
+        Assert.Null(LinuxHyprlandPanelPlacement.FindTargetMonitor([wide], ""));
+        Assert.Equal("DP-3", LinuxHyprlandPanelPlacement.FindTargetMonitor([wide, wide with { Id = 2, Name = "DP-3", Width = 1100, Height = 3840 }], "")?.Name);
     }
 
     [Fact]
@@ -142,6 +196,7 @@ public class HyprlandPanelTests
         public int KioskMonitor = 0;
         public int Fullscreen = 2;
         public bool LuaAccepted = true;
+        public bool FullscreenWorks = true;
         public string ActiveAddress = "0xbeef";
         public readonly List<string> Sent = [];
 
@@ -174,7 +229,19 @@ public class HyprlandPanelTests
                 ActiveAddress = request.Contains("0xbeef", StringComparison.Ordinal) ? "0xbeef" : ActiveAddress;
                 return "ok";
             }
-            if (request.StartsWith("/dispatch hl.dsp.window.fullscreen", StringComparison.Ordinal))
+            if (request.StartsWith("/dispatch hl.dsp.window.fullscreen", StringComparison.Ordinal) && LuaAccepted)
+            {
+                Fullscreen = 2;
+                return "ok";
+            }
+            if (request.StartsWith("/dispatch focuswindow address:", StringComparison.Ordinal))
+            {
+                ActiveAddress = request["/dispatch focuswindow address:".Length..];
+                return "ok";
+            }
+            if (request == "/dispatch fullscreen 0" && !FullscreenWorks)
+                return "ok";
+            if (request == "/dispatch fullscreen 0")
             {
                 Fullscreen = 2;
                 return "ok";
@@ -207,6 +274,24 @@ public class HyprlandPanelTests
         Assert.True(await LinuxHyprlandPanelPlacement.PlaceAsync(fake.Send, "DP-2", _ => Task.CompletedTask));
         Assert.DoesNotContain(fake.Sent, r => r.StartsWith("/dispatch hl.dsp.window.move", StringComparison.Ordinal));
         Assert.Contains(fake.Sent, r => r.StartsWith("/dispatch hl.dsp.window.fullscreen", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PlaceAsync_UsesFocusThenFullscreenOnAHyprlangConfigAndRestoresFocus()
+    {
+        var fake = new FakeHyprland { LuaAccepted = false, KioskMonitor = 1, Fullscreen = 0 };
+        Assert.True(await LinuxHyprlandPanelPlacement.PlaceAsync(fake.Send, "DP-2", _ => Task.CompletedTask));
+        var focus = fake.Sent.IndexOf("/dispatch focuswindow address:0xa1");
+        Assert.True(focus >= 0 && fake.Sent.IndexOf("/dispatch fullscreen 0") > focus);
+        Assert.Contains("/dispatch focuswindow address:0xbeef", fake.Sent);
+    }
+
+    [Fact]
+    public async Task PlaceAsync_StopsRetryingFullscreenAndStillFinishes()
+    {
+        var fake = new FakeHyprland { KioskMonitor = 1, Fullscreen = 0, LuaAccepted = false, FullscreenWorks = false };
+        Assert.True(await LinuxHyprlandPanelPlacement.PlaceAsync(fake.Send, "DP-2", _ => Task.CompletedTask));
+        Assert.Equal(3, fake.Sent.Count(r => r == "/dispatch fullscreen 0"));
     }
 
     [Fact]
@@ -286,12 +371,15 @@ public class HyprlandPanelTests
         var root = Directory.CreateTempSubdirectory("hypr-sysfs").FullName;
         try
         {
+            // Real layout: class/input/eventN is a symlink to <input dir>/eventN, whose "device" link is relative.
             void Node(string hubName, string eventName, string name, string vid, string pid, bool corsair)
             {
                 var hub = Path.Combine(root, "devices", hubName);
                 var usb = Path.Combine(hub, hubName + ".1");
                 var input = Path.Combine(usb, "if0", "input", "input" + eventName);
+                var eventDir = Path.Combine(input, "event" + eventName);
                 Directory.CreateDirectory(Path.Combine(input, "id"));
+                Directory.CreateDirectory(eventDir);
                 File.WriteAllText(Path.Combine(usb, "idVendor"), vid);
                 File.WriteAllText(Path.Combine(input, "name"), name);
                 File.WriteAllText(Path.Combine(input, "id", "vendor"), vid);
@@ -303,9 +391,9 @@ public class HyprlandPanelTests
                     File.WriteAllText(Path.Combine(c, "idVendor"), "1b1c");
                     File.WriteAllText(Path.Combine(c, "idProduct"), "1d0d");
                 }
-                var cls = Path.Combine(root, "class", "input", "event" + eventName);
-                Directory.CreateDirectory(cls);
-                Directory.CreateSymbolicLink(Path.Combine(cls, "device"), input);
+                Directory.CreateSymbolicLink(Path.Combine(eventDir, "device"), Path.Combine("..", "..", "input" + eventName));
+                Directory.CreateDirectory(Path.Combine(root, "class", "input"));
+                Directory.CreateSymbolicLink(Path.Combine(root, "class", "input", "event" + eventName), eventDir);
             }
             Node("1-1", "5", "ILITEK ILITEK-TOUCH", "222a", "0001", corsair: false);
             Node("1-2", "6", "Edge Touch", "27c0", "0859", corsair: true);
@@ -332,12 +420,19 @@ public class HyprlandPanelTests
         var present = false;
         var wanted = true;
         var reconciles = 0;
-        var watcher = new LinuxY70DisplayWatcher(() => wanted, () => present, () => reconciles++);
+        var connectors = "a";
+        var scans = 0;
+        var watcher = new LinuxY70DisplayWatcher(() => wanted, () => { scans++; return present; }, () => reconciles++, () => connectors);
         watcher.Tick();
+        Assert.Equal(1, scans);
+        watcher.Tick();
+        Assert.Equal(1, scans);
         present = true;
+        connectors = "a,b";
         watcher.Tick();
         watcher.Tick();
         Assert.Equal(1, reconciles);
+        Assert.Equal(2, scans);
         wanted = false;
         watcher.Tick();
         wanted = true;
