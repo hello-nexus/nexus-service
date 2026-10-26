@@ -273,7 +273,7 @@ final class OverlayController {
     /// The legacy desktop widgets exist only while the service says the overlay is on; once the widgets
     /// have moved to a panel record it is off and no window is created at all.
     private var legacyEnabled = false
-    private var stateFetched = false
+    private var stateRetryScheduled = false
 
     init(_ opts: Options) {
         self.opts = opts
@@ -299,12 +299,15 @@ final class OverlayController {
                       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                       let enabled = obj["overlayEnabled"] as? Bool
                 else {
-                    if !self.stateFetched {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.refreshState() }
+                    if !self.stateRetryScheduled {
+                        self.stateRetryScheduled = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                            self?.stateRetryScheduled = false
+                            self?.refreshState()
+                        }
                     }
                     return
                 }
-                self.stateFetched = true
                 self.setLegacyEnabled(enabled)
             }
         }.resume()
@@ -1199,13 +1202,18 @@ final class KioskController {
         applyLevel(state)
         win.orderFrontRegardless()
 
-        if let url = panelURL(deviceId: deviceId, touchViaPointer: touchViaPointer) {
+        // Page coordinates run from the top-left, AppKit's from the bottom-left: the offset of the kiosk
+        // inside the full screen frame, in points (zero when the kiosk covers the whole display).
+        let full = screen.frame
+        let originX = frame.minX - full.minX
+        let originY = full.maxY - frame.maxY
+        if let url = panelURL(deviceId: deviceId, touchViaPointer: touchViaPointer, originX: originX, originY: originY) {
             webView.load(URLRequest(url: url))
         }
         return state
     }
 
-    private func panelURL(deviceId: String, touchViaPointer: Bool) -> URL? {
+    private func panelURL(deviceId: String, touchViaPointer: Bool, originX: CGFloat, originY: CGFloat) -> URL? {
         var c = URLComponents()
         c.scheme = "http"
         c.host = "localhost"
@@ -1217,6 +1225,8 @@ final class KioskController {
         // gesture model. Only when routing can apply, so a plain mouse on a
         // kiosk without a touchscreen keeps mouse semantics.
         if touchViaPointer { c.queryItems?.append(URLQueryItem(name: "touchViaPointer", value: "1")) }
+        c.queryItems?.append(URLQueryItem(name: "originX", value: String(Int(originX.rounded()))))
+        c.queryItems?.append(URLQueryItem(name: "originY", value: String(Int(originY.rounded()))))
         return c.url
     }
 }
