@@ -270,6 +270,10 @@ final class OverlayController {
     private let webViewDelegate = OverlayWebViewDelegate()
     private var windows: [NSWindow] = []
     private var alwaysOnTop: Bool
+    /// The legacy desktop widgets exist only while the service says the overlay is on; once the widgets
+    /// have moved to a panel record it is off and no window is created at all.
+    private var legacyEnabled = false
+    private var stateFetched = false
 
     init(_ opts: Options) {
         self.opts = opts
@@ -277,8 +281,42 @@ final class OverlayController {
         bridge.owner = self
     }
 
-    func start() {
+    /// Reads overlayEnabled from /overlay/state and opens or closes the legacy windows to match. A failed
+    /// read changes nothing and is retried until the first success.
+    func refreshState() {
+        var c = URLComponents()
+        c.scheme = "http"
+        c.host = "localhost"
+        c.port = opts.port
+        c.path = "/overlay/state"
+        c.queryItems = [URLQueryItem(name: "token", value: opts.token)]
+        guard let url = c.url else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, response, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard let data = data,
+                      let http = response as? HTTPURLResponse, http.statusCode == 200,
+                      let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      let enabled = obj["overlayEnabled"] as? Bool
+                else {
+                    if !self.stateFetched {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.refreshState() }
+                    }
+                    return
+                }
+                self.stateFetched = true
+                self.setLegacyEnabled(enabled)
+            }
+        }.resume()
+    }
+
+    private func setLegacyEnabled(_ value: Bool) {
+        if legacyEnabled == value { return }
+        legacyEnabled = value
         rebuild()
+    }
+
+    func start() {
         startCursorTracking()
         NotificationCenter.default.addObserver(
             self,
@@ -393,6 +431,7 @@ final class OverlayController {
     private func rebuild() {
         for w in windows { w.orderOut(nil); w.close() }
         windows.removeAll()
+        if !legacyEnabled { return }
 
         for (i, screen) in NSScreen.screens.enumerated() {
             let w = makeWindow(for: screen, monitor: i)
@@ -821,7 +860,9 @@ final class KioskController {
         } else if state.raised {
             target = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue + 1)
         } else {
-            target = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)))
+            // One above the icon level: Finder's desktop window sits at the icon level itself and would
+            // otherwise cover the kiosk after a click on empty desktop. Still far below normal windows.
+            target = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         }
         if state.window.level != target { state.window.level = target }
     }
@@ -1159,6 +1200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let c = OverlayController(opts)
         c.start()
+        c.refreshState()
         controller = c
 
         let k = KioskController(opts)
@@ -1178,6 +1220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             while let line = readLine(strippingNewline: true) {
                 if line == "assignments-changed" {
                     DispatchQueue.main.async {
+                        self?.controller?.refreshState()
                         self?.kiosk?.refresh()
                         self?.streams?.refresh()
                     }
