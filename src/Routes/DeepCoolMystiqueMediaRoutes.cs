@@ -22,63 +22,53 @@ public static partial class DevicesRoutes
 
     /// <summary>
     /// Saves the source a finished stream leaves the screen on and returns it, null for none. A new item selects its
-    /// kind, as the screen's own software does, and so does a GIF sent while the pictures play, unless the user chose
-    /// a source during the stream. The first new picture after a format selects pictures without sending the command
-    /// (<see cref="DeepCoolMystiqueSettings.QuietSinceFormat"/>). A GIF replacing the slot the screen holds selects nothing
-    /// while GIFs play, as the recorded edits sent no source command after the stream.
+    /// kind, as the screen's own software does, unless the user chose a source during the stream. The first new picture
+    /// after a format selects pictures without sending the command (<see cref="DeepCoolMystiqueSettings.QuietSinceFormat"/>).
     /// </summary>
-    internal static MystiqueSourceAfter? MystiqueSourceAfterUpload(DeepCoolMystiqueSettings m, bool isGif, bool inPlace, bool chosenDuringStream)
+    internal static MystiqueSourceAfter? MystiqueSourceAfterUpload(DeepCoolMystiqueSettings m, bool isGif, bool chosenDuringStream)
     {
-        bool quiet = m.QuietSinceFormat && !isGif && !inPlace && !chosenDuringStream;
-        if (!inPlace)
-        {
-            m.QuietSinceFormat = false;
-        }
-        bool gifNotPlaying = isGif && (!m.SourceEdited || m.MediaSource != DeepCoolMystiqueSettings.SourceGif);
-        if (!chosenDuringStream && (!inPlace || gifNotPlaying))
+        bool quiet = m.QuietSinceFormat && !isGif && !chosenDuringStream;
+        m.QuietSinceFormat = false;
+        if (!chosenDuringStream)
         {
             m.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
             m.SourceEdited = true;
             return new MystiqueSourceAfter(m.MediaSource, !quiet);
         }
-        if (inPlace)
-        {
-            return null;
-        }
         return m.SourceEdited ? new MystiqueSourceAfter(m.MediaSource, true) : null;
     }
 
+    /// <summary>True while the GIFs the screen holds are not known in order, so the next new GIF goes up after a format.</summary>
+    internal static bool MystiqueGifsUnsure(DeepCoolMystiqueSettings m) =>
+        m.GifSlotUnsure || ((m.GifOrder?.Count ?? 0) == 0 && MystiqueMedia.IsId(m.GifSlot));
+
+    /// <summary>Whether a new GIF goes up after a format instead of being added to those the screen holds.</summary>
+    internal static bool MystiqueGifNeedsFormat(DeepCoolMystiqueSettings m) =>
+        MystiqueGifsUnsure(m) || (m.GifOrder?.Count ?? 0) >= MystiqueMedia.MaxGifs;
+
     /// <summary>
-    /// The screen id a GIF goes up under, and whether the screen already holds it. Every GIF shares one id, so showing
-    /// another replaces it in place; this assumes, from a customer report that the screen kept playing its first
-    /// stored GIF while later ones were added, that the screen plays the oldest GIF it holds. Before a slot is recorded
-    /// a GIF id the screen may hold is taken, freed ones first, then listed ones; no upload times are kept, so this is
-    /// a guess that <see cref="DeepCoolMystiqueSettings.GifSlotUnsure"/> reports until a format.
+    /// Records a GIF that landed as the last the screen holds and returns the source command after it, which picks the GIF
+    /// by its place as the screen's own software does, or the pictures when the user chose them during the stream.
     /// </summary>
-    internal static (string Id, bool Held) MystiqueGifSlot(DeepCoolMystiqueSettings m, string itemId)
+    internal static MystiqueSourceAfter MystiqueGifLanded(DeepCoolMystiqueSettings m, string itemId, bool chosenDuringStream)
     {
-        if (MystiqueMedia.IsId(m.GifSlot))
+        var order = m.GifOrder ??= new();
+        for (int i = 0; i < order.Count; i++)
         {
-            return (m.GifSlot, true);
+            if (order[i] == itemId)
+            {
+                order[i] = "";
+            }
         }
-        var held = m.Freed?.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindGif) ?? m.Media?.Find(i => i.Kind == DeepCoolMystiqueMediaItem.KindGif);
-        return held is not null ? (held.Id, true) : (itemId, false);
+        order.Add(itemId);
+        m.ShownGif = itemId;
+        var chosen = MystiqueSourceAfterUpload(m, isGif: true, chosenDuringStream);
+        return new MystiqueSourceAfter(chosen?.Source ?? m.MediaSource, true, order.Count - 1);
     }
 
     /// <summary>
-    /// Records what a finished or failed GIF stream left in the slot: the shown item, or none when the stream failed.
-    /// Freed GIF ids are dropped: GIFs never go up under them once a slot is recorded.
-    /// </summary>
-    internal static void SetMystiqueGifSlot(DeepCoolMystiqueSettings m, string slot, string shown)
-    {
-        m.GifSlot = slot;
-        m.ShownGif = shown;
-        m.Freed?.RemoveAll(i => i.Id == slot || i.Kind == DeepCoolMystiqueMediaItem.KindGif);
-    }
-
-    /// <summary>
-    /// The screen id a picture goes up under, and whether the screen already holds it. The screen keeps one picture, as it
-    /// keeps one GIF in <see cref="MystiqueGifSlot"/>, so each show replaces it in place. Before a slot is recorded a picture
+    /// The screen id a picture goes up under, and whether the screen already holds it. The screen keeps one picture, so
+    /// each show replaces it in place. Before a slot is recorded a picture
     /// id the screen may hold is taken, listed ones first, then freed ones; which of several the screen shows is unknown,
     /// so <see cref="MystiquePicturesUnsure"/> reports it until a format.
     /// </summary>
@@ -135,11 +125,9 @@ public static partial class DevicesRoutes
             AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
 
     /// <summary>
-    /// Puts a GIF up where the screen holds one: a format, the shown picture again, the GIF under its own id last, and one
-    /// source command after it, so the screen never stores two GIFs; overwriting a large one hung a screen until its power
-    /// was removed. Only screen-side state is reset, never the library. A slot is recorded only for an item that goes up,
-    /// with nothing shown until its stream lands, so the next show retries. Returns 1 once the GIF landed, 0 when it did
-    /// not, or -1 when the format was not taken.
+    /// Puts a GIF up when the GIFs the screen holds are unknown or full: a format, the shown picture again, the GIF last, and
+    /// one source command after it. Only screen-side state is reset, never the library. Returns 1 once the GIF landed, 0
+    /// when it did not, or -1 when the format was not taken.
     /// </summary>
     private static async Task<int> StreamMystiqueFreshGifAsync(
         IConfigStore store, MystiqueWorker worker, MystiqueMediaPackage gif, string gifId, int startChoices, CancellationToken ct)
@@ -157,7 +145,8 @@ public static partial class DevicesRoutes
             d.ShownPicture = "";
             if (formatted)
             {
-                d.GifSlot = gifId;
+                d.GifSlot = "";
+                d.GifOrder = new();
                 d.PictureSlot = picture?.Id ?? "";
                 d.Freed = new();
                 d.GifSlotUnsure = false;
@@ -170,17 +159,12 @@ public static partial class DevicesRoutes
         }
         Nexus.Service.Platform.ServiceLog.Info($"[deepcool-mystique] "
             + (picture is null ? "" : $"picture {picture.Id} into slot {picture.Id}, then ")
-            + $"gif {gifId} into slot {gifId}, after a format");
+            + $"gif {gifId} as {gif.Id}, after a format");
         // The GIF goes last so its source command follows it whenever it lands.
         MystiqueSourceAfter? SourceAfterStream()
         {
-            var after = new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceGif, true);
-            store.Update(s =>
-            {
-                var d = s.Devices.DeepCoolMystique;
-                var chosen = MystiqueSourceAfterUpload(d, isGif: true, inPlace: false, MystiqueSourceChoices != startChoices);
-                after = new MystiqueSourceAfter(chosen?.Source ?? d.MediaSource, true);
-            });
+            MystiqueSourceAfter? after = null;
+            store.Update(s => after = MystiqueGifLanded(s.Devices.DeepCoolMystique, gifId, MystiqueSourceChoices != startChoices));
             return after;
         }
         int streamed = await worker.UploadAsync(packages, SourceAfterStream, ct);
@@ -188,13 +172,40 @@ public static partial class DevicesRoutes
         {
             store.Update(s => SetMystiquePictureSlot(s.Devices.DeepCoolMystique, picture.Id, picture.Id));
         }
-        if (streamed < packages.Count)
+        if (streamed == packages.Count - 1)
         {
-            return 0;
+            // A GIF stream that broke off may or may not be stored, so the places of later GIFs are unknown.
+            store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
         }
-        store.Update(s => SetMystiqueGifSlot(s.Devices.DeepCoolMystique, gifId, gifId));
-        return 1;
+        return streamed == packages.Count ? 1 : 0;
     }
+
+    /// <summary>
+    /// Adds a GIF to those the screen holds, as the screen's own software does: no format, the GIF under a screen id of its
+    /// own, then the source command picking it by its place. Returns the worker's count.
+    /// </summary>
+    private static async Task<int> StreamMystiqueNewGifAsync(
+        IConfigStore store, MystiqueWorker worker, MystiqueMediaPackage package, string itemId, int startChoices, CancellationToken ct)
+    {
+        MystiqueSourceAfter? SourceAfterStream()
+        {
+            MystiqueSourceAfter? after = null;
+            store.Update(s => after = MystiqueGifLanded(s.Devices.DeepCoolMystique, itemId, MystiqueSourceChoices != startChoices));
+            return after;
+        }
+        Nexus.Service.Platform.ServiceLog.Info($"[deepcool-mystique] gif {itemId} added as {package.Id}");
+        worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
+        int streamed = await worker.UploadAsync(new[] { package }, SourceAfterStream, ct);
+        if (streamed == 0)
+        {
+            store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+        }
+        worker.RequestApply();
+        return streamed;
+    }
+
+    /// <summary>The screen id a GIF goes up under: a new one for every add, as the screen's own software sends.</summary>
+    private static string NewMystiqueGifScreenId() => Guid.NewGuid().ToString("N");
 
     /// <summary>The picture to show again after a format, the shown one first, and its frames; none when no listed picture can be sent.</summary>
     private static async Task<(DeepCoolMystiqueMediaItem? Item, MystiqueMediaPackage? Frames)> ResolveMystiquePictureToKeepAsync(
@@ -212,40 +223,28 @@ public static partial class DevicesRoutes
     }
 
     /// <summary>
-    /// Streams <paramref name="package"/> into the <paramref name="kind"/> slot with the source command after it, and records
-    /// what the slot holds: <paramref name="itemId"/> once it lands, nothing once the stream fails, and no change when the
-    /// screen never took the turn. Returns the worker's count. A held GIF slot needs no source command while GIFs play,
-    /// as the screen's own software sends none; a picture always selects the pictures.
+    /// Streams a picture into the picture slot with the source command after it, and records what the slot holds:
+    /// <paramref name="itemId"/> once it lands, nothing once the stream fails, and no change when the screen never took
+    /// the turn. Returns the worker's count.
     /// </summary>
-    private static async Task<int> StreamMystiqueSlotAsync(
-        IConfigStore store, MystiqueWorker worker, string kind, string slot, bool held, MystiqueMediaPackage package, string itemId,
+    private static async Task<int> StreamMystiquePictureAsync(
+        IConfigStore store, MystiqueWorker worker, string slot, bool held, MystiqueMediaPackage package, string itemId,
         int startChoices, CancellationToken ct)
     {
-        bool isGif = kind == DeepCoolMystiqueMediaItem.KindGif;
         // Once streaming starts this waits for the real result, so an item the screen took is always recorded.
         MystiqueSourceAfter? SourceAfterStream()
         {
             MystiqueSourceAfter? after = null;
-            store.Update(s => after = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif, isGif && held, MystiqueSourceChoices != startChoices));
+            store.Update(s => after = MystiqueSourceAfterUpload(s.Devices.DeepCoolMystique, isGif: false, MystiqueSourceChoices != startChoices));
             return after;
         }
-        Nexus.Service.Platform.ServiceLog.Info($"[deepcool-mystique] {kind} {itemId} into slot {slot}{(held ? "" : ", new")}");
+        Nexus.Service.Platform.ServiceLog.Info($"[deepcool-mystique] picture {itemId} into slot {slot}{(held ? "" : ", new")}");
         worker.ReportProgress(MystiqueWorker.ProgressSending, 0, 1);
         int streamed = await worker.UploadAsync(new[] { package }, SourceAfterStream, ct);
         if (streamed >= 0)
         {
             string shown = streamed == 1 ? itemId : "";
-            store.Update(s =>
-            {
-                if (isGif)
-                {
-                    SetMystiqueGifSlot(s.Devices.DeepCoolMystique, slot, shown);
-                }
-                else
-                {
-                    SetMystiquePictureSlot(s.Devices.DeepCoolMystique, slot, shown);
-                }
-            });
+            store.Update(s => SetMystiquePictureSlot(s.Devices.DeepCoolMystique, slot, shown));
         }
         worker.RequestApply();
         return streamed;
@@ -306,24 +305,26 @@ public static partial class DevicesRoutes
                         ? "Nexus keeps its maximum number of GIFs; replace or remove one first."
                         : "Nexus keeps its maximum number of pictures; replace or remove one first.");
                 }
-                string slot = id;
+                string slot = isGif ? NewMystiqueGifScreenId() : id;
                 bool held = false;
+                bool format = false;
                 bool rotate = false;
                 int startChoices = 0;
                 store.Read(s =>
                 {
                     var m = s.Devices.DeepCoolMystique.Copy();
-                    (slot, held) = isGif ? MystiqueGifSlot(m, id) : MystiquePictureSlot(m, id);
+                    if (isGif)
+                    {
+                        format = MystiqueGifNeedsFormat(m);
+                    }
+                    else
+                    {
+                        (slot, held) = MystiquePictureSlot(m, id);
+                    }
                     rotate = MystiqueRotatesMedia(m);
                     startChoices = MystiqueSourceChoices;
                 });
                 worker.ReportProgress(MystiqueWorker.ProgressConverting, 0, 1);
-                // A GIF never overwrites one the screen holds; it goes up fresh under its own id.
-                bool fresh = isGif && held;
-                if (fresh)
-                {
-                    slot = id;
-                }
                 var encoded = isGif
                     ? await MystiqueMediaEncoder.EncodeGifAsync(source, ext, crop, slot, rotate, budget.Token,
                         (done, total) => worker.ReportProgress(MystiqueWorker.ProgressConverting, done, total))
@@ -333,9 +334,9 @@ public static partial class DevicesRoutes
                     return MystiqueMediaFailure(encoded.Error ?? "Encode failed");
                 }
                 var package = encoded.Package!;
-                int landed = fresh
-                    ? await StreamMystiqueFreshGifAsync(store, worker, package, id, startChoices, budget.Token)
-                    : await StreamMystiqueSlotAsync(store, worker, kind, slot, held, package, id, startChoices, budget.Token);
+                int landed = !isGif ? await StreamMystiquePictureAsync(store, worker, slot, held, package, id, startChoices, budget.Token)
+                    : format ? await StreamMystiqueFreshGifAsync(store, worker, package, id, startChoices, budget.Token)
+                    : await StreamMystiqueNewGifAsync(store, worker, package, id, startChoices, budget.Token);
                 if (landed != 1)
                 {
                     return MystiqueMediaFailure("The screen did not take the upload");
@@ -374,7 +375,7 @@ public static partial class DevicesRoutes
             }
         }).DisableAntiforgery();
 
-        // Selecting an item shows it: its kept frames go up under the one slot of its kind, as a GIF does in the screen's own software.
+        // Selecting a picture streams it into the picture slot; a GIF the screen holds is picked by the source command alone, as in the screen's own software.
         app.MapPost("/devices/deepcool-mystique/media/{id}/show", async (string id, HttpContext ctx, IConfigStore store, MystiqueWorker worker) =>
         {
             if (!MystiqueMedia.IsId(id))
@@ -406,32 +407,34 @@ public static partial class DevicesRoutes
                 }
                 bool isGif = item.Kind == DeepCoolMystiqueMediaItem.KindGif;
                 var shown = Results.Json(new DeepCoolMystiqueMediaResponse { Id = id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
-                if ((isGif ? m.ShownGif : m.ShownPicture) == id && MystiqueMedia.IsId(isGif ? m.GifSlot : m.PictureSlot))
+                bool stored = isGif
+                    ? !MystiqueGifsUnsure(m) && m.GifOrder.Contains(id)
+                    : m.ShownPicture == id && MystiqueMedia.IsId(m.PictureSlot);
+                if (stored)
                 {
                     store.Update(s =>
                     {
                         var d = s.Devices.DeepCoolMystique;
+                        if (isGif)
+                        {
+                            d.ShownGif = id;
+                        }
                         d.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
                         d.SourceEdited = true;
                     });
                     worker.RequestApply();
                     return shown;
                 }
-                var (slot, held) = isGif ? MystiqueGifSlot(m, id) : MystiquePictureSlot(m, id);
-                bool fresh = isGif && held;
-                if (fresh)
-                {
-                    slot = id;
-                }
+                var (slot, held) = isGif ? (NewMystiqueGifScreenId(), false) : MystiquePictureSlot(m, id);
                 var package = await ResolveMystiqueMediaAsync(item, slot, MystiqueRotatesMedia(m),
                     (done, total) => worker.ReportProgress(MystiqueWorker.ProgressConverting, done, total), budget.Token);
                 if (package is null)
                 {
                     return MystiqueNotResolved(item);
                 }
-                int landed = fresh
-                    ? await StreamMystiqueFreshGifAsync(store, worker, package, id, MystiqueSourceChoices, budget.Token)
-                    : await StreamMystiqueSlotAsync(store, worker, item.Kind, slot, held, package, id, MystiqueSourceChoices, budget.Token);
+                int landed = !isGif ? await StreamMystiquePictureAsync(store, worker, slot, held, package, id, MystiqueSourceChoices, budget.Token)
+                    : MystiqueGifNeedsFormat(m) ? await StreamMystiqueFreshGifAsync(store, worker, package, id, MystiqueSourceChoices, budget.Token)
+                    : await StreamMystiqueNewGifAsync(store, worker, package, id, MystiqueSourceChoices, budget.Token);
                 return landed == 1
                     ? shown
                     : MystiqueMediaFailure(isGif ? "The screen did not take the GIF" : "The screen did not take the picture");
@@ -490,6 +493,7 @@ public static partial class DevicesRoutes
                     m.Media = new();
                     m.Freed = new();
                     m.GifSlot = "";
+                    m.GifOrder = new();
                     m.ShownGif = "";
                     m.PictureSlot = "";
                     m.ShownPicture = "";
@@ -569,8 +573,7 @@ public static partial class DevicesRoutes
 
     /// <summary>
     /// Drops the matching items from the list with their files and returns how many, or -1 when the upload gate stayed
-    /// held. Nexus-side only: the screen has no single-item delete, so it keeps showing a removed item until the next
-    /// show replaces it.
+    /// held. Nexus-side only: the screen keeps a removed item, so a removed GIF keeps its place in the order.
     /// </summary>
     private static async Task<int> ForgetMystiqueMedia(IConfigStore store, MystiqueWorker worker, Predicate<DeepCoolMystiqueMediaItem> match, CancellationToken ct)
     {
@@ -590,6 +593,7 @@ public static partial class DevicesRoutes
                 m.Media.RemoveAll(match);
                 // The removed picture may still be on the screen, so fewer listed ids does not make the slot sure.
                 m.GifSlotUnsure |= unsure && gone.Count > 0;
+                m.GifOrder = (m.GifOrder ?? new()).ConvertAll(g => gone.Exists(i => i.Id == g) ? "" : g);
                 if (gone.Exists(i => i.Id == m.ShownGif))
                 {
                     m.ShownGif = "";

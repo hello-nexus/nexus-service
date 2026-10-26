@@ -204,13 +204,17 @@ public static class MystiqueProtocol
         return BuildFrame(CmdMediaPlayback, p);
     }
 
-    /// <summary>Whether the screen plays its pictures or its GIF; sent after an upload of that kind.</summary>
-    public static byte[] BuildMediaSource(string source)
+    /// <summary>
+    /// Whether the screen plays its pictures or a GIF it holds, picked by <paramref name="gifIndex"/>, its place in the order
+    /// the screen stored them (capture 5); sent after an upload and to switch between stored GIFs.
+    /// </summary>
+    public static byte[] BuildMediaSource(string source, int gifIndex = 0)
     {
         Span<byte> p = stackalloc byte[2];
         if (source == DeepCoolMystiqueSettings.SourceGif)
         {
             p[0] = 1;
+            p[1] = (byte)gifIndex;
         }
         else
         {

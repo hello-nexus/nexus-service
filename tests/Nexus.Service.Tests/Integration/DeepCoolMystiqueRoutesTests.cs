@@ -204,7 +204,7 @@ public partial class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
-    public async Task Removing_the_shown_picture_or_gif_keeps_its_slot_and_leaves_none_shown()
+    public async Task Removing_the_shown_picture_or_gif_keeps_its_slot_or_place_and_leaves_none_shown()
     {
         using var factory = new NexusAppFactory();
         var client = Client(factory);
@@ -221,7 +221,8 @@ public partial class DeepCoolMystiqueRoutesTests
                 new DeepCoolMystiqueMediaItem { Kind = "picture", Id = otherPicture },
                 new DeepCoolMystiqueMediaItem { Kind = "gif", Id = gifId },
             };
-            (m.PictureSlot, m.ShownPicture, m.GifSlot, m.ShownGif) = (otherPicture, pictureId, gifId, gifId);
+            (m.PictureSlot, m.ShownPicture, m.ShownGif) = (otherPicture, pictureId, gifId);
+            m.GifOrder = new() { gifId };
         });
 
         Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync($"/devices/deepcool-mystique/media/{otherPicture}")).StatusCode);
@@ -235,7 +236,8 @@ public partial class DeepCoolMystiqueRoutesTests
         store.Read(s => m = s.Devices.DeepCoolMystique.Copy());
         Assert.Empty(m.Media);
         Assert.Empty(m.Freed);
-        Assert.Equal((otherPicture, "", gifId, ""), (m.PictureSlot, m.ShownPicture, m.GifSlot, m.ShownGif));
+        Assert.Equal((otherPicture, "", ""), (m.PictureSlot, m.ShownPicture, m.ShownGif));
+        Assert.Equal(new[] { "" }, m.GifOrder);
     }
 
     [Fact]
@@ -284,34 +286,41 @@ public partial class DeepCoolMystiqueRoutesTests
     }
 
     [Fact]
-    public void Every_gif_goes_up_under_one_slot_taken_from_a_held_gif_until_one_is_recorded()
+    public void A_landed_gif_is_appended_and_picked_by_its_place_and_an_unknown_or_full_screen_needs_a_format()
     {
-        const string listed = "acd9325521f3493c86bfc0b0aa85658d";
-        const string freed = "83182dc7830844c89ca5f01e57f63ad9";
-        const string fresh = "41c9bf307cba45a1aa3a1d92bbe93b96";
+        const string a = "acd9325521f3493c86bfc0b0aa85658d";
+        const string b = "83182dc7830844c89ca5f01e57f63ad9";
         var m = new DeepCoolMystiqueSettings();
+        Assert.True(DevicesRoutes.MystiqueGifNeedsFormat(m));
+        m.GifSlotUnsure = false;
+        Assert.False(DevicesRoutes.MystiqueGifNeedsFormat(m));
 
-        Assert.True(m.GifSlotUnsure);
-        Assert.Equal((fresh, false), DevicesRoutes.MystiqueGifSlot(m, fresh));
+        Assert.Equal(new MystiqueSourceAfter("gif", true, 0), DevicesRoutes.MystiqueGifLanded(m, a, chosenDuringStream: false));
+        Assert.Equal(new MystiqueSourceAfter("gif", true, 1), DevicesRoutes.MystiqueGifLanded(m, b, chosenDuringStream: false));
+        Assert.Equal(new MystiqueSourceAfter("gif", true, 2), DevicesRoutes.MystiqueGifLanded(m, a, chosenDuringStream: false));
+        Assert.Equal(new[] { "", b, a }, m.GifOrder);
+        Assert.Equal(a, m.ShownGif);
 
-        m.Media = new()
+        m.MediaSource = "images";
+        Assert.Equal(new MystiqueSourceAfter("images", true, 3), DevicesRoutes.MystiqueGifLanded(m, b, chosenDuringStream: true));
+        Assert.Equal("images", m.MediaSource);
+
+        while (m.GifOrder.Count < MystiqueMedia.MaxGifs)
         {
-            new DeepCoolMystiqueMediaItem { Kind = "picture", Id = "2101b6e6277841daa821e8d79a5c528b" },
-            new DeepCoolMystiqueMediaItem { Kind = "gif", Id = listed },
-        };
-        Assert.Equal((listed, true), DevicesRoutes.MystiqueGifSlot(m, fresh));
+            m.GifOrder.Add("");
+        }
+        Assert.True(DevicesRoutes.MystiqueGifNeedsFormat(m));
+        Assert.False(DevicesRoutes.MystiqueGifsUnsure(m));
+    }
 
-        m.Freed = new()
-        {
-            new DeepCoolMystiqueMediaItem { Kind = "picture", Id = "90b8cf628a5440908e6ad8ce51452ef8" },
-            new DeepCoolMystiqueMediaItem { Kind = "gif", Id = freed },
-        };
-        Assert.Equal((freed, true), DevicesRoutes.MystiqueGifSlot(m, fresh));
+    [Fact]
+    public void A_gif_slot_saved_by_an_earlier_build_leaves_the_stored_gifs_unknown()
+    {
+        var m = new DeepCoolMystiqueSettings { GifSlotUnsure = false, GifSlot = "acd9325521f3493c86bfc0b0aa85658d" };
 
-        DevicesRoutes.SetMystiqueGifSlot(m, freed, listed);
-        Assert.Equal((freed, listed), (m.GifSlot, m.ShownGif));
-        Assert.Equal(new[] { "picture" }, m.Freed.ConvertAll(i => i.Kind));
-        Assert.Equal((freed, true), DevicesRoutes.MystiqueGifSlot(m, fresh));
+        Assert.True(DevicesRoutes.MystiqueGifsUnsure(m));
+        m.GifOrder.Add("83182dc7830844c89ca5f01e57f63ad9");
+        Assert.False(DevicesRoutes.MystiqueGifsUnsure(m));
     }
 
     [Fact]
@@ -493,23 +502,18 @@ public partial class DeepCoolMystiqueRoutesTests
     }
 
     [Theory]
-    [InlineData(true, false, false, "images", true, "gif")]
-    [InlineData(true, false, false, "gif", true, "gif")]
-    [InlineData(true, false, false, "images", false, "gif")]
-    [InlineData(true, false, true, "images", true, "images")]
-    [InlineData(true, true, false, "images", true, "gif")]
-    [InlineData(true, true, false, "gif", false, "gif")]
-    [InlineData(true, true, false, "gif", true, null)]
-    [InlineData(true, true, true, "images", true, null)]
-    [InlineData(false, false, false, "gif", true, "images")]
-    [InlineData(false, true, false, "gif", true, null)]
-    [InlineData(false, true, false, "images", false, null)]
-    public void After_a_stream_a_new_item_or_a_gif_shown_over_the_pictures_selects_its_kind_unless_the_user_chose_meanwhile(
-        bool isGif, bool inPlace, bool chosenDuringStream, string stored, bool storedChosen, string? sent)
+    [InlineData(true, false, "images", true, "gif")]
+    [InlineData(true, false, "gif", true, "gif")]
+    [InlineData(true, false, "images", false, "gif")]
+    [InlineData(true, true, "images", true, "images")]
+    [InlineData(false, false, "gif", true, "images")]
+    [InlineData(false, true, "gif", false, null)]
+    public void After_a_stream_a_new_item_selects_its_kind_unless_the_user_chose_meanwhile(
+        bool isGif, bool chosenDuringStream, string stored, bool storedChosen, string? sent)
     {
         var m = new DeepCoolMystiqueSettings { MediaSource = stored, SourceEdited = storedChosen };
 
-        var after = DevicesRoutes.MystiqueSourceAfterUpload(m, isGif, inPlace, chosenDuringStream);
+        var after = DevicesRoutes.MystiqueSourceAfterUpload(m, isGif, chosenDuringStream);
         Assert.Equal(sent, after?.Source);
         Assert.True(after?.Send ?? true);
         Assert.Equal(sent ?? stored, m.MediaSource);
@@ -522,13 +526,11 @@ public partial class DeepCoolMystiqueRoutesTests
     {
         var m = new DeepCoolMystiqueSettings { MediaSource = "gif", SourceEdited = false, QuietSinceFormat = true };
 
-        Assert.Null(DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, inPlace: true, chosenDuringStream: false));
-        Assert.True(m.QuietSinceFormat);
-        var first = DevicesRoutes.MystiqueSourceAfterUpload(m, gifFirst, inPlace: false, chosenDuringStream: false);
+        var first = DevicesRoutes.MystiqueSourceAfterUpload(m, gifFirst, chosenDuringStream: false);
         Assert.Equal(gifFirst ? new MystiqueSourceAfter("gif", true) : new MystiqueSourceAfter("images", false), first);
         Assert.Equal((first!.Value.Source, true), (m.MediaSource, m.SourceEdited));
         Assert.False(m.QuietSinceFormat);
-        Assert.Equal(new MystiqueSourceAfter("images", true), DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, inPlace: false, chosenDuringStream: false));
+        Assert.Equal(new MystiqueSourceAfter("images", true), DevicesRoutes.MystiqueSourceAfterUpload(m, isGif: false, chosenDuringStream: false));
     }
 
     [Fact]
