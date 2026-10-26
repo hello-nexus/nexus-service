@@ -141,25 +141,50 @@ public class DesktopWidgetsMigrationTests
     }
 
     [Fact]
-    public void A_missing_index_waits_for_the_grace_period_then_falls_back_to_primary()
+    public void A_missing_index_accumulates_monotonic_time_then_falls_back_to_primary()
     {
-        var clock = 1_000L;
+        var clock = 5_000L;
         var (m, store, _) = Build(HostOs.Windows, Widget("a"));
-        m.NowMs = () => clock;
+        m.MonoMs = () => clock;
         store.Update(s => s.Overlay.Monitor = 5);
 
         Assert.Null(m.Run(Two()));
-        Assert.Equal(1_000L, store.Load().Overlay.MonitorMissingSinceMs);
-        Assert.False(store.Load().Overlay.MigratedToPanels);
+        Assert.Equal(0L, store.Load().Overlay.MonitorMissingForMs);
+        Assert.True(m.RecheckArmed);
 
-        clock += DesktopWidgetsMigration.MissingMonitorGraceMs - 1;
+        clock += 3_600_000;
         Assert.Null(m.Run(Two()));
-        Assert.Equal(1_000L, store.Load().Overlay.MonitorMissingSinceMs);
+        Assert.Equal(3_600_000L, store.Load().Overlay.MonitorMissingForMs);
+
+        clock += DesktopWidgetsMigration.MissingMonitorGraceMs - 3_600_000 - 1;
+        Assert.Null(m.Run(Two()));
+        Assert.False(store.Load().Overlay.MigratedToPanels);
 
         clock += 1;
         Assert.NotNull(m.Run(Two()));
         Assert.Equal(Primary, Only(store).DisplayId);
-        Assert.Null(store.Load().Overlay.MonitorMissingSinceMs);
+        Assert.Null(store.Load().Overlay.MonitorMissingForMs);
+        Assert.False(m.RecheckArmed);
+    }
+
+    [Fact]
+    public void A_resolved_index_clears_the_stamp_and_disarms_the_recheck()
+    {
+        var clock = 0L;
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        m.MonoMs = () => clock;
+        store.Update(s => s.Overlay.Monitor = 1);
+        Assert.Null(m.Run(One()));
+        clock += 10_000;
+        Assert.Null(m.Run(One()));
+        Assert.Equal(10_000L, store.Load().Overlay.MonitorMissingForMs);
+
+        // The display is back but the target is unusable, so nothing migrates and the stamp must not linger.
+        Assert.Null(m.Run(Topology(Display(Primary, true, hosting: false), Display(Second, false, hosting: false))));
+
+        Assert.Null(store.Load().Overlay.MonitorMissingForMs);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+        Assert.False(m.RecheckArmed);
     }
 
     [Fact]
@@ -169,11 +194,11 @@ public class DesktopWidgetsMigrationTests
         store.Update(s => s.Overlay.Monitor = 1);
 
         Assert.Null(m.Run(One()));
-        Assert.NotNull(store.Load().Overlay.MonitorMissingSinceMs);
+        Assert.NotNull(store.Load().Overlay.MonitorMissingForMs);
 
         Assert.NotNull(m.Run(Two()));
         Assert.Equal(Second, Only(store).DisplayId);
-        Assert.Null(store.Load().Overlay.MonitorMissingSinceMs);
+        Assert.Null(store.Load().Overlay.MonitorMissingForMs);
     }
 
     [Fact]

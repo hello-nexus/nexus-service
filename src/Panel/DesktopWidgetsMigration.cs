@@ -32,7 +32,16 @@ public sealed class DesktopWidgetsMigration
     private readonly MultiplexHub? _hub;
     private readonly object _lock = new();
 
-    internal Func<long> NowMs { get; set; } = () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    /// <summary>Monotonic, so a wall-clock jump neither shortens nor stretches the grace period.</summary>
+    internal Func<long> MonoMs { get; set; } = () => Environment.TickCount64;
+
+    /// <summary>How often a deferral on a missing index re-checks on its own, so the fallback needs no display change.</summary>
+    internal int RecheckIntervalMs { get; set; } = 60 * 60 * 1000;
+
+    internal bool RecheckArmed { get; private set; }
+
+    private System.Threading.Timer? _recheck;
+    private long? _lastMissingCheckMs;
 
     internal HostOs Os { get; init; } =
         OperatingSystem.IsWindows() ? HostOs.Windows : OperatingSystem.IsMacOS() ? HostOs.MacOS : HostOs.Linux;
@@ -90,7 +99,15 @@ public sealed class DesktopWidgetsMigration
             topology ??= _topology?.GetTopology();
             if (topology is null || topology.Displays.Count == 0) return null;
             var target = ResolveTarget(settings.Overlay, topology, out var indexMissing);
-            if (indexMissing) NoteMissingMonitor(settings.Overlay);
+            if (indexMissing)
+            {
+                ArmRecheck();
+            }
+            else
+            {
+                DisarmRecheck();
+                ClearMissing(settings.Overlay);
+            }
             if (target is null) return null;
 
             string? recordId = null;
@@ -137,7 +154,7 @@ public sealed class DesktopWidgetsMigration
                 };
                 overlay.MigratedToPanels = true;
                 overlay.MigratedRecordId = record.Id;
-                overlay.MonitorMissingSinceMs = null;
+                overlay.MonitorMissingForMs = null;
                 recordId = record.Id;
             });
             Finish(recordId);
@@ -165,8 +182,7 @@ public sealed class DesktopWidgetsMigration
             if (target is null)
             {
                 indexMissing = true;
-                var since = overlay.MonitorMissingSinceMs;
-                if (since is null || NowMs() - since.Value < MissingMonitorGraceMs) return null;
+                if (!MissingGraceElapsed(overlay)) return null;
                 indexMissing = false;
                 target = primary;
             }
@@ -176,12 +192,46 @@ public sealed class DesktopWidgetsMigration
         return target is null || target.IsY70 || !target.HostingSupported ? null : target;
     }
 
-    private void NoteMissingMonitor(OverlaySettings overlay)
+    // Missing time accumulates from monotonic deltas between checks and is persisted at each one. A restart
+    // adds nothing for the time it was down, so the grace can only run long, never short.
+    private bool MissingGraceElapsed(OverlaySettings overlay)
     {
-        if (overlay.MonitorMissingSinceMs is not null) return;
-        var now = NowMs();
-        _store.Update(s => s.Overlay.MonitorMissingSinceMs ??= now);
-        _store.FlushNow();
+        var mono = MonoMs();
+        var delta = _lastMissingCheckMs is { } last ? Math.Max(0, mono - last) : 0;
+        _lastMissingCheckMs = mono;
+        var total = (overlay.MonitorMissingForMs ?? 0) + delta;
+        if (total != overlay.MonitorMissingForMs)
+        {
+            _store.Update(s => s.Overlay.MonitorMissingForMs = total);
+            _store.FlushNow();
+        }
+        return total >= MissingMonitorGraceMs;
+    }
+
+    private void ClearMissing(OverlaySettings overlay)
+    {
+        _lastMissingCheckMs = null;
+        if (overlay.MonitorMissingForMs is null) return;
+        _store.Update(s => s.Overlay.MonitorMissingForMs = null);
+    }
+
+    private void ArmRecheck()
+    {
+        RecheckArmed = true;
+        _recheck ??= new System.Threading.Timer(_ => OnRecheck(), null, System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+        _recheck.Change(RecheckIntervalMs, System.Threading.Timeout.Infinite);
+    }
+
+    private void DisarmRecheck()
+    {
+        RecheckArmed = false;
+        _recheck?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+    }
+
+    private void OnRecheck()
+    {
+        try { Run(); }
+        catch (Exception ex) { ServiceLog.Error($"[desktop-migration] {ex.GetType().Name}: {ex.Message}"); }
     }
 
     private static void ApplyDesktopFlags(PanelDeviceRecord record, OverlaySettings overlay)

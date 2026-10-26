@@ -148,7 +148,7 @@ public sealed class PanelDeviceRegistry
                 {
                     // Turning the panel back on: same record, so layout,
                     // theme, name, and reserve persist through off/on
-                    // cycles. Viewport hints refresh from the current OS
+                    // cycles (a primary display takes the desktop defaults instead). Viewport hints refresh from the current OS
                     // facts (resolution/scale/touch may have changed).
                     if (primary) ApplyPrimaryDefaults(candidate);
                     else PanelHosting.Set(candidate, true);

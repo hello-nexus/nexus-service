@@ -109,8 +109,8 @@ public sealed class OverlaySettings
     /// <summary>The legacy widgets were handed to a panel record (DesktopWidgetsMigration). Per profile; the block above is left as it was for a downgrade.</summary>
     public bool MigratedToPanels { get; set; }
     public string? MigratedRecordId { get; set; }
-    /// <summary>Unix ms the legacy monitor index was first missing from the host's monitor map; cleared once it resolves or the widgets migrate.</summary>
-    public long? MonitorMissingSinceMs { get; set; }
+    /// <summary>Accumulated ms the legacy monitor index has been missing from the host's monitor map; cleared once it resolves or the widgets migrate.</summary>
+    public long? MonitorMissingForMs { get; set; }
 }
 
 // Layout seed types - used by install-defaults to define starter widget sets

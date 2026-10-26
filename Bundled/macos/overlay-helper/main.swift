@@ -790,6 +790,8 @@ final class KioskController {
                 state.raised = false
                 self.applyLevel(state)
                 self.evaluateCursor()
+                // A sheet still open would stay sunk under app windows: ask the page to send its raise again.
+                KioskController.requestHitTest(state.webView)
             }
             state.leaseExpiry = item
             DispatchQueue.main.asyncAfter(deadline: .now() + KioskController.leaseTimeout, execute: item)
