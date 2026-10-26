@@ -191,7 +191,7 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
         {
             foreach (var info in _hid.Find(model.VendorId, model.ProductIds[i]))
             {
-                usable |= info.OutputReportByteLength >= model.ReportLength;
+                usable |= IsCandidate(model, info, OperatingSystem.IsLinux());
                 seen.Append(seen.Length == 0 ? "" : "; ")
                     .Append($"pid=0x{info.ProductId:X4} usage={info.UsagePage:X4}/{info.Usage:X2} out={info.OutputReportByteLength} in={info.InputReportByteLength}");
             }
@@ -200,7 +200,9 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
             ? $"[{model.HandlerId}] no HID interface enumerated for this panel"
             : usable
                 ? $"[{model.HandlerId}] could not open the panel's HID interface; saw {seen}"
-                : $"[{model.HandlerId}] no interface carries a {model.ReportLength}-byte report; saw {seen}");
+                : model.Handshake != null && OperatingSystem.IsLinux()
+                    ? $"[{model.HandlerId}] not attached on Linux (control channel unsupported over hidraw); saw {seen}"
+                    : $"[{model.HandlerId}] no interface carries a {model.ReportLength}-byte report; saw {seen}");
     }
 
     private bool OnBus() => _presence.UsbPresent(_hub.Model.VendorId, _hub.Model.ProductIds);
@@ -218,6 +220,20 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
         return false;
     }
 
+    /// <summary>
+    /// A model with a control channel stays unattached on Linux: hidraw read() drops the
+    /// report-id byte that the AsRock and ASUS reply parsers index past. A model that only
+    /// writes frames has no reply to misparse.
+    /// </summary>
+    internal static bool IsCandidate(JpegPanelModel model, HidDeviceInfo info, bool isLinux)
+    {
+        if (isLinux && model.Handshake != null)
+        {
+            return false;
+        }
+        return info.OutputReportByteLength >= model.ReportLength;
+    }
+
     private IHidDevice? FindAndOpen()
     {
         var model = _hub.Model;
@@ -230,8 +246,7 @@ public sealed class JpegPanelConnectionWorker : BackgroundService
                 // output reports are long enough to carry a frame chunk. Matching on the
                 // declared length rather than a usage page keeps this working across the
                 // family, whose collections are not consistently tagged.
-                // Linux stays unattached: hidraw read() drops the report-id byte that the AsRock and ASUS reply parsers index past.
-                if (OperatingSystem.IsLinux() || info.OutputReportByteLength < model.ReportLength)
+                if (!IsCandidate(model, info, OperatingSystem.IsLinux()))
                 {
                     continue;
                 }
