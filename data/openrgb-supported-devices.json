@@ -3834,6 +3834,14 @@
       "type": "gpu"
     },
     {
+      "name": "ASUS ROG ASTRAL GeForce RTX 5080 OC HATSUNE MIKU",
+      "vid": null,
+      "pid": null,
+      "controller": "ENESMBusController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "ASUS ROG ASTRAL GeForce RTX 5080 OC WHITE",
       "vid": null,
       "pid": null,
