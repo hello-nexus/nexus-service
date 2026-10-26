@@ -29,6 +29,7 @@ namespace Nexus.Service.Serialization;
 
 // Ping + Auth
 [JsonSerializable(typeof(ApiResponse))]
+[JsonSerializable(typeof(Nexus.Service.Platform.OpenAppBody))]
 [JsonSerializable(typeof(FeatureDisabledResponse))]
 [JsonSerializable(typeof(PingResponse))]
 [JsonSerializable(typeof(PairResponse))]

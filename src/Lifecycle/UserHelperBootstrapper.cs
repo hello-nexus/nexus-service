@@ -266,11 +266,13 @@ internal static class UserHelperBootstrapper
     /// console session, which then runs the same Edge --app spawn path the
     /// helper uses.
     /// </summary>
-    public static void LaunchOpenApp()
+    public static void LaunchOpenApp(string? route = null)
     {
         try
         {
-            SpawnInUserSession("--open-app", "open-app", "NexusOpenApp");
+            // The route is already validated to characters that need no quoting on a command line.
+            var arg = Nexus.Service.Platform.OpenAppRoute.Normalize(route) is { } safe ? "--open-app " + safe : "--open-app";
+            SpawnInUserSession(arg, "open-app", "NexusOpenApp");
         }
         catch (Exception ex)
         {

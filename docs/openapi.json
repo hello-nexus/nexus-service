@@ -1112,6 +1112,16 @@
         "tags": [
           "Nexus"
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAppBody"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "200": {
             "description": "OK"
@@ -27801,6 +27811,15 @@
             "items": {
               "$ref": "#/components/schemas/IdentifyDisplayEntry"
             },
+            "nullable": true
+          }
+        }
+      },
+      "OpenAppBody": {
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "string",
             "nullable": true
           }
         }
