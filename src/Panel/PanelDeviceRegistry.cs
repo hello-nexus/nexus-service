@@ -477,8 +477,8 @@ public sealed class PanelDeviceRegistry
     /// <remarks>
     /// <paramref name="isPrimary"/> names the OS primary display. There the keep-off guards read false whatever the
     /// record stores: a panel on the display the user works on never evicts windows or fences the mouse.
-    /// ClickThrough only reads true with a "desktop" backdrop. A generic display (no curated family) is on top only
-    /// with that backdrop too: a solid one would cover the windows its clicks reach. The stored choice is kept.
+    /// ClickThrough only reads true with a "desktop" backdrop, where a generic display (no curated family) always passes
+    /// empty-space clicks. A generic display is on top only with that backdrop; the stored choices are kept.
     /// </remarks>
     public IReadOnlyList<(string DisplayId, string PanelDeviceId, bool ReserveMonitor, string Backdrop, bool KeepCursorOff, bool AlwaysOnTop, bool ClickThrough, bool IsPrimary)> ListAssignments(Func<string, bool>? isPrimary = null)
     {
@@ -497,7 +497,7 @@ public sealed class PanelDeviceRegistry
                 backdrop,
                 !primary && (record.KeepCursorOff ?? false),
                 (record.AlwaysOnTop ?? true) && (seeThrough || !generic),
-                seeThrough && (record.ClickThrough ?? false),
+                seeThrough && (generic || (record.ClickThrough ?? false)),
                 primary));
         }
         return assignments;

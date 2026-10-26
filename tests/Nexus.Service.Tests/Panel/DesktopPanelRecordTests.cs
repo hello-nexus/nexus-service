@@ -103,14 +103,20 @@ public class DesktopPanelRecordTests
     }
 
     [Theory]
-    [InlineData("desktop", true, true)]
-    [InlineData("wallpaper", true, false)]
-    [InlineData("", true, false)]
-    [InlineData("desktop", false, false)]
-    public void Click_through_only_reads_true_over_a_desktop_backdrop(string backdrop, bool stored, bool expected)
+    [InlineData("desktop", "xeneon-edge", true, true)]
+    [InlineData("wallpaper", "xeneon-edge", true, false)]
+    [InlineData("", "xeneon-edge", true, false)]
+    [InlineData("desktop", "xeneon-edge", false, false)]
+    [InlineData("desktop", null, false, true)]
+    [InlineData("wallpaper", null, true, false)]
+    public void Click_through_reads_true_over_a_desktop_backdrop_and_always_on_a_generic_display(string backdrop, string? family, bool stored, bool expected)
     {
         var (registry, store) = Build();
-        store.Update(s => s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "P", Backdrop = backdrop, ClickThrough = stored });
+        store.Update(s => s.PanelDevices["a"] = new PanelDeviceRecord
+        {
+            Id = "a", DisplayId = "P", Backdrop = backdrop, ClickThrough = stored,
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Family = family },
+        });
 
         Assert.Equal(expected, Assert.Single(registry.ListAssignments()).ClickThrough);
     }
