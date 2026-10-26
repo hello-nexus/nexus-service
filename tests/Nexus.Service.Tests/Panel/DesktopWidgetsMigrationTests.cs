@@ -588,4 +588,86 @@ public class DesktopWidgetsMigrationTests
 
         Assert.False(s.Overlay.MigratedToPanels);
     }
+
+    // Load hands out a detached copy; the swap runs once, just before the first Update, as a profile switch would.
+    private sealed class SwapBeforeUpdateStore : IConfigStore
+    {
+        private readonly InMemoryConfigStore _inner = new();
+        private System.Action<NexusSettings>? _swap;
+
+        public SwapBeforeUpdateStore(System.Action<NexusSettings> seed, System.Action<NexusSettings> swap)
+        {
+            _inner.Update(seed);
+            _swap = swap;
+        }
+
+        public string SettingsPath => _inner.SettingsPath;
+        public NexusSettings Load() => JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(_inner.Load(), PersistenceJsonContext.Default.NexusSettings),
+            PersistenceJsonContext.Default.NexusSettings)!;
+        public NexusSettings Live => _inner.Load();
+        public void Update(System.Action<NexusSettings> mutator)
+        {
+            var swap = _swap;
+            _swap = null;
+            if (swap is not null) _inner.Update(swap);
+            _inner.Update(mutator);
+        }
+        public void FlushNow() { }
+        public void Reload() { }
+        public event System.Action? OnChanged { add { } remove { } }
+    }
+
+    [Theory]
+    [InlineData(HostOs.Windows)]
+    [InlineData(HostOs.MacOS)]
+    [InlineData(HostOs.Linux)]
+    public void A_block_swapped_to_one_with_widgets_after_the_snapshot_is_not_cleared(HostOs os)
+    {
+        var store = new SwapBeforeUpdateStore(
+            s => { s.Overlay.Enabled = true; s.Overlay.Layout = new(); },
+            s => { s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("kept") }; });
+        var map = new OverlayMonitorMap();
+        map.Set(Seeded());
+        var m = new DesktopWidgetsMigration(store, map, null, null) { Os = os };
+
+        m.Run(One());
+
+        Assert.False(store.Live.Overlay.MigratedToPanels);
+        Assert.Equal("kept", Assert.Single(store.Live.Overlay.Layout!).Id);
+    }
+
+    [Fact]
+    public void A_migrated_block_drops_its_legacy_fields_once_the_record_exists()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        var id = m.Run(One());
+        store.Update(s =>
+        {
+            s.Overlay.Enabled = true;
+            s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("old") };
+        });
+
+        Assert.Null(m.Run(One()));
+
+        Assert.Null(store.Load().Overlay.Layout);
+        Assert.Null(store.Load().Overlay.Enabled);
+        Assert.Equal(id, store.Load().Overlay.MigratedRecordId);
+    }
+
+    [Fact]
+    public void A_migrated_block_keeps_its_legacy_fields_while_the_record_is_missing()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        var id = m.Run(One());
+        store.Update(s =>
+        {
+            s.PanelDevices.Remove(id!);
+            s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("old") };
+        });
+
+        m.Run(One());
+
+        Assert.Single(store.Load().Overlay.Layout!);
+    }
 }

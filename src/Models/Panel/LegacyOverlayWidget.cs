@@ -21,8 +21,8 @@ public sealed class LegacyOverlayWidget
     public int Monitor { get; set; }
 
     /// <summary>Top-left cell column on the target monitor. Fractional values
-    /// allowed in 0.25 increments so users can position at sub-cell precision
-    /// (drag-aligned grid is 4x finer than the widget sizing grid).</summary>
+    /// allowed so users can position at sub-cell precision (the drag-aligned grid is finer than the
+    /// widget sizing grid).</summary>
     public double Col { get; set; }
 
     /// <summary>Top-left cell row on the target monitor. Same fractional rules

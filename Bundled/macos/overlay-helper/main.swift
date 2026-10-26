@@ -576,9 +576,20 @@ final class KioskController {
     private func releaseKeyboard(_ state: KioskState) {
         guard let panel = state.window as? OverlayPanel, panel.activatable else { return }
         panel.activatable = false
-        panel.resignKey()
-        state.previousApp?.activate(options: [])
+        let previous = state.previousApp
         state.previousApp = nil
+        // Another kiosk still editing keeps key and inherits the app to return to; focus is not handed back yet.
+        if let other = kiosks.values.first(where: { $0 !== state && ($0.window as? OverlayPanel)?.activatable == true }) {
+            if other.previousApp == nil { other.previousApp = previous }
+            other.window.makeKey()
+            return
+        }
+        // resignKey() is only a notification hook; the key window changes when another app activates or this one yields.
+        if let previous, !previous.isTerminated {
+            previous.activate(options: [])
+        } else {
+            NSApp.deactivate()
+        }
     }
 
     func applyRaise(_ webView: WKWebView, _ value: Bool) {
@@ -701,6 +712,7 @@ final class KioskController {
                 || want!.panelDeviceId != entry.deviceId
                 || want!.backdrop != entry.backdrop
             if stale {
+                releaseKeyboard(entry)
                 entry.window.orderOut(nil)
                 entry.window.close()
                 kiosks.removeValue(forKey: displayId)
@@ -725,6 +737,7 @@ final class KioskController {
         // terminates and returns while the display stays therefore reloads
         // the kiosk twice (mouse semantics, then touch again).
         for (displayId, entry) in kiosks where entry.touchViaPointer != routable {
+            releaseKeyboard(entry)
             entry.window.orderOut(nil)
             entry.window.close()
             kiosks.removeValue(forKey: displayId)

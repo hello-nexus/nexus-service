@@ -103,18 +103,6 @@ internal static class TrayBootstrap
         };
 
         var hub = app.Services.GetRequiredService<MultiplexHub>();
-        // "Always on top" belongs to the panel on the primary display; with none, the item has nothing to act on.
-        var panelRegistry = app.Services.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
-        var displayTopology = app.Services.GetRequiredService<Nexus.Service.Platform.Displays.DisplayTopologyService>();
-        TrayIcon.ConfigureDesktop(
-            onToggleOverlayTopmost: () =>
-            {
-                if (panelRegistry.FindPrimaryPanel(displayTopology.IsPrimaryDisplay) is not { } primary) return;
-                panelRegistry.Patch(primary.Id, new Nexus.Service.Models.Panel.PanelDevicePatch { AlwaysOnTop = !(primary.AlwaysOnTop ?? true) });
-                PanelTopics.BroadcastPanelDevice(hub, primary.Id);
-            },
-            isOverlayTopmost: () => panelRegistry.FindPrimaryPanel(displayTopology.IsPrimaryDisplay)?.AlwaysOnTop ?? true,
-            hasPrimaryPanel: () => panelRegistry.FindPrimaryPanel(displayTopology.IsPrimaryDisplay) is not null);
 
         var pm = app.Services.GetRequiredService<ProfileManager>();
         TrayIcon.ConfigureProfiles(

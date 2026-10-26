@@ -14,7 +14,8 @@ namespace Nexus.Service.Panel;
 /// <summary>
 /// Hands the legacy desktop-widget layout (<c>Overlay.Layout</c>) to a per-display panel record as a
 /// <see cref="PanelDeviceRecord.DesktopImport"/>, which the panel's own web client places on its grid.
-/// The Overlay block is never rewritten except for its marker, so a downgraded build still finds its widgets.
+/// Once the widgets are handed over, the Overlay block's legacy fields are cleared and only its markers stay,
+/// so a pre-migration build opened on the same settings sees no widgets.
 /// </summary>
 public sealed class DesktopWidgetsMigration
 {
@@ -89,7 +90,11 @@ public sealed class DesktopWidgetsMigration
                 // A block without any holds nothing worth keeping.
                 if (_store.Load().Overlay is { HasWidgets: false } idle && HasLegacyFields(idle))
                 {
-                    _store.Update(s => s.Overlay.ClearLegacy());
+                    // A profile switch may have swapped the block since the snapshot.
+                    _store.Update(s =>
+                    {
+                        if (!s.Overlay.HasWidgets) s.Overlay.ClearLegacy();
+                    });
                     _store.FlushNow();
                 }
                 return null;
@@ -98,12 +103,18 @@ public sealed class DesktopWidgetsMigration
             // drawing the legacy widgets, so nothing may be handed over or hidden until the map arrives.
             if (Os == HostOs.Windows && !_monitors.HasMap) return null;
             var settings = _store.Load();
-            if (settings.Overlay.MigratedToPanels) return null;
+            if (settings.Overlay.MigratedToPanels)
+            {
+                ClearMigratedLegacy(settings.Overlay);
+                return null;
+            }
 
             if (!settings.Overlay.HasWidgets)
             {
                 _store.Update(s =>
                 {
+                    // Re-checked against the live block: a profile switch may have loaded one holding widgets.
+                    if (s.Overlay.MigratedToPanels || s.Overlay.HasWidgets) return;
                     s.Overlay.MigratedToPanels = true;
                     s.Overlay.ClearLegacy();
                 });
@@ -178,6 +189,23 @@ public sealed class DesktopWidgetsMigration
             Finish(recordId);
             return recordId;
         }
+    }
+
+    // An install migrated before the fields were cleared still carries them. Only a present record proves
+    // the widgets landed, and the live block is re-checked so a profile switch cannot lose another profile's.
+    private void ClearMigratedLegacy(LegacyOverlaySettings snapshot)
+    {
+        if (snapshot.MigratedRecordId is null || !HasLegacyFields(snapshot)) return;
+        var cleared = false;
+        _store.Update(s =>
+        {
+            var o = s.Overlay;
+            if (!o.MigratedToPanels || o.MigratedRecordId is not { } id || !HasLegacyFields(o)) return;
+            if (!s.PanelDevices.ContainsKey(id)) return;
+            o.ClearLegacy();
+            cleared = true;
+        });
+        if (cleared) _store.FlushNow();
     }
 
     // Windows only reaches here with a posted map. A legacy index the map or the topology does not hold
