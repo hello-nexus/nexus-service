@@ -384,13 +384,17 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         if (Environment.GetEnvironmentVariable(DisableDdcEnv) == "1")
             yield break;
 
-        foreach (var bus in SelectDdcBuses(drmRoot))
+        foreach (var bus in SelectDdcBuses(drmRoot, log: ScanLog))
         {
             // A bus is a DDC/CI monitor only if it answers a VCP 0x10 read.
             if (ReadDdcVcp(bus, VcpBrightness) is null)
+            {
+                ScanLog($"i2c-{bus} rejected: no VCP 0x10 reply");
                 continue;
+            }
 
             var (mfg, model, pnpId) = ReadEdidIdentity(bus);
+            ScanLog($"i2c-{bus} accepted: mfg='{mfg}' model='{model}' pnp='{pnpId}'");
             var dto = new DisplayDto
             {
                 Id = $"linux-ddc-i2c-{bus}",
@@ -415,11 +419,14 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 
     private const string I2cDevicesRoot = "/sys/bus/i2c/devices";
 
+    // One line per scan decision, so a bundle shows why a monitor was or was not reached. Scans run only on a sysfs change.
+    private static void ScanLog(string message) => ServiceLog.Info($"[ddc-scan] {message}");
+
     /// <summary>
     /// I2c bus numbers to probe for DDC: buses linked from connected DRM connectors, plus every NVIDIA
     /// adapter (the proprietary driver exposes no connector link). Probing any other /dev/i2c-* (GPU internal, SMBus) can hang the GPU.
     /// </summary>
-    internal static List<int> SelectDdcBuses(string drmRoot, string i2cRoot = I2cDevicesRoot)
+    internal static List<int> SelectDdcBuses(string drmRoot, string i2cRoot = I2cDevicesRoot, Action<string>? log = null)
     {
         var buses = new SortedSet<int>();
         string[] connectors;
@@ -428,18 +435,25 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 
         foreach (var dir in connectors)
         {
-            if (LinuxSysfs.ReadText(Path.Combine(dir, "status")) != "connected")
+            var status = LinuxSysfs.ReadText(Path.Combine(dir, "status"));
+            if (status != "connected")
+            {
+                log?.Invoke($"{Path.GetFileName(dir)} skipped: status='{status}'");
                 continue;
+            }
             // The kernel links the connector's DDC adapter as "ddc"; DP AUX adapters nest an i2c-N child instead.
             var ddcLink = Path.Combine(dir, "ddc");
             var leaf = LinuxSysfs.ReadLinkLeaf(ddcLink);
             if (leaf is not null)
             {
-                AddBus(buses, leaf, ddcLink);
+                AddBus(buses, leaf, ddcLink, $"{Path.GetFileName(dir)} ddc link", log);
                 continue;
             }
-            foreach (var child in ChildI2cLeaves(dir))
-                AddBus(buses, child, Path.Combine(dir, child));
+            var children = ChildI2cLeaves(dir);
+            if (children.Length == 0)
+                log?.Invoke($"{Path.GetFileName(dir)} connected but has no ddc link and no i2c child");
+            foreach (var child in children)
+                AddBus(buses, child, Path.Combine(dir, child), $"{Path.GetFileName(dir)} child", log);
         }
 
         try
@@ -447,23 +461,30 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
             foreach (var adapter in Directory.GetDirectories(i2cRoot, "i2c-*"))
             {
                 if (LinuxSysfs.ReadText(Path.Combine(adapter, "name"))?.StartsWith("NVIDIA i2c adapter", StringComparison.Ordinal) == true)
-                    AddBus(buses, Path.GetFileName(adapter), adapter);
+                    AddBus(buses, Path.GetFileName(adapter), adapter, "NVIDIA adapter", log);
             }
         }
         catch { }
         return buses.ToList();
     }
 
-    private static void AddBus(SortedSet<int> buses, string leaf, string adapterDir)
+    private static void AddBus(SortedSet<int> buses, string leaf, string adapterDir, string source, Action<string>? log)
     {
+        var name = LinuxSysfs.ReadText(Path.Combine(adapterDir, "name"));
         // The amdgpu SMU adapter carries power-management table transfers; a DDC probe there wedges the SMU.
-        if (LinuxSysfs.ReadText(Path.Combine(adapterDir, "name"))?.StartsWith("AMDGPU SMU", StringComparison.Ordinal) == true)
+        if (name?.StartsWith("AMDGPU SMU", StringComparison.Ordinal) == true)
+        {
+            log?.Invoke($"{source} -> {leaf} skipped: adapter '{name}' is an SMU adapter");
             return;
+        }
         if (leaf.StartsWith("i2c-", StringComparison.Ordinal)
             && int.TryParse(leaf.AsSpan("i2c-".Length), NumberStyles.None, CultureInfo.InvariantCulture, out var bus))
         {
             buses.Add(bus);
+            log?.Invoke($"{source} -> {leaf} selected: adapter '{name}'");
+            return;
         }
+        log?.Invoke($"{source} -> '{leaf}' skipped: not an i2c-N adapter (name '{name}')");
     }
 
     private static string[] ChildI2cLeaves(string connectorDir)

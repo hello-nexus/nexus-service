@@ -179,6 +179,27 @@ public class LinuxDisplayBrightnessTests
     }
 
     [Fact]
+    public void SelectDdcBuses_LogsSelectionAndRejectionReasons()
+    {
+        using var t = new TempDir();
+        t.Write("drm/card1-DP-2/i2c-5/name", "AMDGPU DM aux hw bus 1\n");
+        Connector(t, "card1-DP-2", "connected", childBus: "i2c-5");
+        t.Write("drm/card1-DP-1/i2c-4/name", "AMDGPU SMU 4\n");
+        Connector(t, "card1-DP-1", "connected", childBus: "i2c-4");
+        Connector(t, "card1-HDMI-A-1", "disconnected");
+        Connector(t, "card1-DP-3", "connected");
+        var lines = new List<string>();
+
+        var buses = LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices"), lines.Add);
+
+        Assert.Equal(new[] { 5 }, buses);
+        Assert.Contains(lines, l => l.Contains("card1-DP-2") && l.Contains("i2c-5 selected") && l.Contains("AMDGPU DM aux hw bus 1"));
+        Assert.Contains(lines, l => l.Contains("card1-DP-1") && l.Contains("SMU adapter"));
+        Assert.Contains(lines, l => l.Contains("card1-HDMI-A-1 skipped") && l.Contains("disconnected"));
+        Assert.Contains(lines, l => l.Contains("card1-DP-3") && l.Contains("no ddc link and no i2c child"));
+    }
+
+    [Fact]
     public void SelectDdcBuses_UnionsNvidiaAdaptersWithConnectorBuses()
     {
         using var t = new TempDir();
