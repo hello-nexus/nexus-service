@@ -124,7 +124,8 @@ if (OperatingSystem.IsWindows() && !testHost)
 // for a --user install. Returns without waiting when nobody is logged in yet;
 // our own stores never ride on HOME here, so the rest of the boot is unaffected.
 // Still done first, so a session that already exists is adopted before any
-// desktop-derived path resolves.
+// desktop-derived path resolves (a wayland session still waiting for its
+// compositor socket is adopted by the watch a few seconds later).
 // Skipped under the test host: an integration fixture running as root would
 // adopt the machine data root and leave a polling thread behind per fixture.
 #if LINUX

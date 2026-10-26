@@ -85,16 +85,44 @@ public class LinuxSessionTests
         Assert.Equal("wayland-0", LinuxSession.ResolveWaylandDisplay("wayland", null));
     }
 
+    [Fact]
+    public void NextAdoption_DefersASocketlessWaylandSessionThenFallsBackAfterTheGrace()
+    {
+        var (d1, w1) = LinuxSession.NextAdoption(null, 1000, "wayland", null, 100);
+        Assert.Equal(LinuxSession.AdoptDecision.Defer, d1);
+        var (d2, w2) = LinuxSession.NextAdoption(w1, 1000, "wayland", null, 100 + LinuxSession.WaylandSocketGraceMs - 1);
+        Assert.Equal(LinuxSession.AdoptDecision.Defer, d2);
+        Assert.Equal(w1, w2);
+        var (d3, _) = LinuxSession.NextAdoption(w2, 1000, "wayland", null, 100 + LinuxSession.WaylandSocketGraceMs);
+        Assert.Equal(LinuxSession.AdoptDecision.AdoptGuess, d3);
+    }
+
     [Theory]
-    [InlineData("wayland", null, 0L, true)]
-    [InlineData("wayland", null, 44_999L, true)]
-    [InlineData("wayland", null, 45_000L, false)]
-    [InlineData("wayland", "wayland-1", 0L, false)]
-    [InlineData("x11", null, 0L, false)]
-    [InlineData(null, null, 0L, false)]
-    public void WaylandSocketPending_DefersOnlyASocketlessWaylandSessionWithinTheGrace(
-        string? type, string? socket, long socketlessForMs, bool expected)
-        => Assert.Equal(expected, LinuxSession.WaylandSocketPending(type, socket, socketlessForMs));
+    [InlineData("wayland", "wayland-1")]
+    [InlineData("x11", null)]
+    [InlineData(null, null)]
+    public void NextAdoption_AdoptsAtOnceAndClearsTheWaitOtherwise(string? type, string? socket)
+    {
+        var stale = new LinuxSession.SocketWait(1000, 0);
+        var (decision, wait) = LinuxSession.NextAdoption(stale, 1000, type, socket, 1_000_000);
+        Assert.Equal(LinuxSession.AdoptDecision.Adopt, decision);
+        Assert.Null(wait);
+    }
+
+    [Fact]
+    public void NextAdoption_RestartsTheClockWhenTheSessionDisappearsOrChanges()
+    {
+        var (_, started) = LinuxSession.NextAdoption(null, 1000, "wayland", null, 0);
+        var (none, cleared) = LinuxSession.NextAdoption(started, null, null, null, 10_000);
+        Assert.Equal(LinuxSession.AdoptDecision.None, none);
+        Assert.Null(cleared);
+        var (again, fresh) = LinuxSession.NextAdoption(cleared, 1000, "wayland", null, 1_000_000);
+        Assert.Equal(LinuxSession.AdoptDecision.Defer, again);
+        Assert.Equal(1_000_000, fresh!.Value.SinceMs);
+        var (other, swapped) = LinuxSession.NextAdoption(fresh, 1001, "wayland", null, 1_000_000 + LinuxSession.WaylandSocketGraceMs);
+        Assert.Equal(LinuxSession.AdoptDecision.Defer, other);
+        Assert.Equal(1001u, swapped!.Value.Uid);
+    }
 
     [Fact]
     public void ResolveX11Env_PrefersTheSessionLeadersOwnEnvironment()
