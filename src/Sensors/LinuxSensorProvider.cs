@@ -301,7 +301,8 @@ public sealed class LinuxSensorProvider : ISensorProvider
 
         if (LinuxPciSubsystem.Read(LinuxPciSubsystem.DevicesRoot, busId) is { } ids)
         {
-            boards.Add(new GpuBoard(name, ids.Vendor, ids.Device));
+            var chip = LinuxPciSubsystem.ReadChip(LinuxPciSubsystem.DevicesRoot, busId);
+            boards.Add(new GpuBoard(name, ids.Vendor, ids.Device, chip?.Vendor ?? 0, chip?.Device ?? 0));
         }
     }
 

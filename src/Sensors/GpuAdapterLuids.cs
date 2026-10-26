@@ -192,6 +192,7 @@ internal static class GpuAdapterLuids
     private static void Apply(GpuReadout g, Adapter a)
     {
         g.AdapterLuid = a.Luid;
+        (g.PciVendorId, g.PciDeviceId) = ((int)a.VendorId, (int)a.DeviceId);
         (g.SubsystemVendorId, g.SubsystemDeviceId) = SplitSubsystemId(a.SubSysId);
     }
 

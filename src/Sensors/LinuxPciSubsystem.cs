@@ -42,6 +42,18 @@ internal static class LinuxPciSubsystem
         return vendor is { } v && device is { } d ? (v, d) : null;
     }
 
+    /// <summary>The chip's own vendor and device ids of one function; null when sysfs has no such file or it does not parse.</summary>
+    internal static (int Vendor, int Device)? ReadChip(string devicesRoot, string? busId)
+    {
+        var normalized = NormalizeBusId(busId);
+        if (normalized is null)
+            return null;
+        var dir = Path.Combine(devicesRoot, normalized);
+        var vendor = ReadHex(Path.Combine(dir, "vendor"));
+        var device = ReadHex(Path.Combine(dir, "device"));
+        return vendor is { } v && device is { } d ? (v, d) : null;
+    }
+
     /// <summary>One row of <c>nvidia-smi --query-gpu=name,pci.bus_id --format=csv,noheader</c>; the bus id is the last field because a name has no comma but a missing bus id must not eat it.</summary>
     internal static (string Name, string? BusId) ParseSmiRow(string row)
     {

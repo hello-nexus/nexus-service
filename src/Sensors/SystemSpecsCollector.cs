@@ -84,6 +84,8 @@ public sealed class SystemSpecsCollector
                 ?? _sensors.GetGpuModels().FirstOrDefault() ?? "",
         };
 
+        s.HardwareIds = HardwareIdsBuilder.Build(cards, inventory, ReadBoard());
+
         if (OperatingSystem.IsWindows())
             EnrichWindows(s);
         else if (OperatingSystem.IsMacOS())
@@ -108,6 +110,39 @@ public sealed class SystemSpecsCollector
         }
 
         return s;
+    }
+
+    // Windows reads the SMBIOS baseboard record, Linux the world-readable DMI board files. macOS has no baseboard identity.
+    private static (string? Manufacturer, string? Product)? ReadBoard()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+                return ReadWindowsBoard();
+            if (OperatingSystem.IsLinux())
+                return (ReadDmi("board_vendor"), ReadDmi("board_name"));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[system-specs] {ex.GetType().Name}: {ex.Message}");
+        }
+        return null;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static (string? Manufacturer, string? Product)? ReadWindowsBoard() => WindowsSpecsNative.ReadBaseboard();
+
+    private static string? ReadDmi(string file)
+    {
+        try
+        {
+            var text = System.IO.File.ReadAllText(System.IO.Path.Combine(LinuxPciSubsystem.DmiRoot, file)).Trim();
+            return text.Length == 0 ? null : text;
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static string SafeMachineName()
@@ -283,11 +318,33 @@ public sealed class SystemSpecsCollector
             }
         }
 
+        s.HardwareIds.Monitors = ParseMonitorIds(mon);
+
         var nameJoined = string.Join(" + ", names);
         s.Monitor = !string.IsNullOrEmpty(nameJoined) && !string.IsNullOrEmpty(resolution)
             ? $"{nameJoined} ({resolution})"
             : !string.IsNullOrEmpty(nameJoined) ? nameJoined : resolution;
     }
+
+    // Model ids only: name, PnP manufacturer and EDID product code. The EDID serial is never read into the row.
+    internal static List<MonitorIdsDto>? ParseMonitorIds(JsonNode? mon)
+    {
+        var ids = new List<MonitorIdsDto>();
+        foreach (var row in mon?.AsArray()?.OfType<JsonObject>() ?? Enumerable.Empty<JsonObject>())
+        {
+            var id = new MonitorIdsDto
+            {
+                Manufacturer = NullIfEmpty(JsonString(row["Mfg"]).Trim()),
+                ProductCode = NullIfEmpty(JsonString(row["ProductCode"]).Trim()),
+                Name = NullIfEmpty(Clean(JsonString(row["Name"]))),
+            };
+            if (id.Manufacturer is not null || id.ProductCode is not null || id.Name is not null)
+                ids.Add(id);
+        }
+        return ids.Count == 0 ? null : ids;
+    }
+
+    private static string? NullIfEmpty(string value) => value.Length == 0 ? null : value;
 
     private static void ApplySound(SystemSpecsResponse s, JsonNode? node)
     {

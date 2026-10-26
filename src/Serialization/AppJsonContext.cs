@@ -51,6 +51,12 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(GetStoragePartitionsResponse))]
 [JsonSerializable(typeof(GetDriveStorageResponse))]
 [JsonSerializable(typeof(SystemSpecsResponse))]
+[JsonSerializable(typeof(HardwareIdsDto))]
+[JsonSerializable(typeof(GpuIdsDto))]
+[JsonSerializable(typeof(RamModuleIdsDto))]
+[JsonSerializable(typeof(DriveIdsDto))]
+[JsonSerializable(typeof(BoardIdsDto))]
+[JsonSerializable(typeof(MonitorIdsDto))]
 [JsonSerializable(typeof(GetPollingRateResponse))]
 
 // Cooling
