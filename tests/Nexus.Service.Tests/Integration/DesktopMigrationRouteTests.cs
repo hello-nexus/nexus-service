@@ -28,31 +28,25 @@ public sealed class DesktopMigrationRouteTests : IClassFixture<NexusAppFactory>
         return client;
     }
 
-    private void SeedOverlay(bool migrated)
-    {
-        _factory.Services.GetRequiredService<IConfigStore>().Update(s =>
-        {
-            s.Overlay.Enabled = true;
-            s.Overlay.MigratedToPanels = migrated;
-            s.Overlay.Layout.Clear();
-            s.Overlay.Layout.Add(new OverlayWidgetDto { Id = "w1", Type = "clock" });
-        });
-    }
-
     [Theory]
-    [InlineData(false, true, 1, 1)]
-    [InlineData(true, false, 0, 0)]
-    public async Task Overlay_state_and_widgets_are_gated_by_the_migration_marker(bool migrated, bool enabled, int pinned, int widgets)
+    [InlineData("/overlay/widgets")]
+    [InlineData("/overlay/widgets/x")]
+    [InlineData("/overlay/widgets/lock")]
+    public async Task The_legacy_widget_routes_are_gone(string path)
     {
-        SeedOverlay(migrated);
         var client = AuthedClient();
 
-        using var state = JsonDocument.Parse(await client.GetStringAsync("/overlay/state"));
-        Assert.Equal(enabled, state.RootElement.GetProperty("overlayEnabled").GetBoolean());
-        Assert.Equal(pinned, state.RootElement.GetProperty("pinned").GetInt32());
+        Assert.NotEqual(HttpStatusCode.OK, (await client.GetAsync(path)).StatusCode);
+        Assert.NotEqual(HttpStatusCode.OK, (await client.DeleteAsync(path)).StatusCode);
+    }
 
-        using var list = JsonDocument.Parse(await client.GetStringAsync("/overlay/widgets"));
-        Assert.Equal(widgets, list.RootElement.GetArrayLength());
+    [Fact]
+    public async Task Overlay_state_carries_no_desktop_widget_fields()
+    {
+        using var state = JsonDocument.Parse(await AuthedClient().GetStringAsync("/overlay/state"));
+        foreach (var gone in new[] { "overlayEnabled", "alwaysOnTop", "monitor", "pinned" })
+            Assert.False(state.RootElement.TryGetProperty(gone, out _), gone);
+        Assert.True(state.RootElement.TryGetProperty("assignments", out _));
     }
 
     [Fact]

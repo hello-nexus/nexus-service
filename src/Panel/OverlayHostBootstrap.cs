@@ -26,7 +26,6 @@ internal static class OverlayHostBootstrap
         var lastShowPanel = store.Load().Panel.AutoLaunch;
         var topology = app.Services.GetService<Platform.Displays.DisplayTopologyService>();
         var lastAssignments = AssignmentsSignature(store.Load(), topology is null ? null : topology.IsPrimaryDisplay);
-        var lastLegacyOverlay = LegacyOverlayShown(store.Load());
 #if WINDOWS
         var helperRegistry = app.Services.GetService<HelperRegistry>();
 #endif
@@ -60,7 +59,7 @@ internal static class OverlayHostBootstrap
                 if (helperRegistry is not null)
                     LifecycleCommands.NotifyOverlayPrefsChangedAsync(helperRegistry).ObserveFaults();
 #endif
-                bool showPanelChanged, assignmentsChanged, legacyOverlayChanged;
+                bool showPanelChanged, assignmentsChanged;
                 var assignments = AssignmentsSignature(snapshot, topology is null ? null : topology.IsPrimaryDisplay);
                 lock (edgeLock)
                 {
@@ -68,12 +67,7 @@ internal static class OverlayHostBootstrap
                     lastShowPanel = snapshot.Panel.AutoLaunch;
                     assignmentsChanged = assignments != lastAssignments;
                     lastAssignments = assignments;
-                    var legacyShown = LegacyOverlayShown(snapshot);
-                    legacyOverlayChanged = legacyShown != lastLegacyOverlay;
-                    lastLegacyOverlay = legacyShown;
                 }
-                // The macOS helper reads the legacy overlay's visibility on a poke; a migration flips it.
-                if (legacyOverlayChanged && !assignmentsChanged) overlayHost.NotifyDisplayAssignmentsChanged();
                 if (showPanelChanged)
                 {
                     if (snapshot.Panel.AutoLaunch) panelKioskLauncher.Launch();
@@ -105,8 +99,6 @@ internal static class OverlayHostBootstrap
             try { overlayHost.Stop(); } catch { }
         });
     }
-
-    private static bool LegacyOverlayShown(NexusSettings s) => s.Overlay.Enabled && !s.Overlay.MigratedToPanels;
 
     internal static string AssignmentsSignature(NexusSettings snapshot, Func<string, bool>? isPrimary = null)
     {

@@ -40,7 +40,7 @@ public class DesktopWidgetsMigrationTests
     private static DisplayTopologyResponse Two() => Topology(Display(Primary, true), Display(Second, false));
     private static DisplayTopologyResponse One() => Topology(Display(Primary, true));
 
-    private static OverlayWidgetDto Widget(string id, string type = "clock", double col = 0, double row = 0, bool locked = false, string size = "2x2", Dictionary<string, JsonElement>? config = null) => new()
+    private static LegacyOverlayWidget Widget(string id, string type = "clock", double col = 0, double row = 0, bool locked = false, string size = "2x2", Dictionary<string, JsonElement>? config = null) => new()
     {
         Id = id,
         Type = type,
@@ -58,16 +58,16 @@ public class DesktopWidgetsMigrationTests
     };
 
     // Windows has a posted map (a new overlay host) unless a test says otherwise.
-    private static (DesktopWidgetsMigration Migration, InMemoryConfigStore Store, OverlayMonitorMap Map) Build(HostOs os, params OverlayWidgetDto[] widgets)
+    private static (DesktopWidgetsMigration Migration, InMemoryConfigStore Store, OverlayMonitorMap Map) Build(HostOs os, params LegacyOverlayWidget[] widgets)
         => Build(os, postMap: os == HostOs.Windows, widgets);
 
-    private static (DesktopWidgetsMigration Migration, InMemoryConfigStore Store, OverlayMonitorMap Map) Build(HostOs os, bool postMap, params OverlayWidgetDto[] widgets)
+    private static (DesktopWidgetsMigration Migration, InMemoryConfigStore Store, OverlayMonitorMap Map) Build(HostOs os, bool postMap, params LegacyOverlayWidget[] widgets)
     {
         var store = new InMemoryConfigStore();
         store.Update(s =>
         {
             s.Overlay.Enabled = true;
-            s.Overlay.Layout.AddRange(widgets);
+            s.Overlay.Layout = widgets.ToList();
         });
         var map = new OverlayMonitorMap();
         if (postMap) map.Set(Seeded());
@@ -332,7 +332,7 @@ public class DesktopWidgetsMigrationTests
         Assert.Equal(4.25, pin.Col);
         Assert.Equal("2x4", pin.Size);
         Assert.True(pin.Config!["panelOnly"].GetBoolean());
-        Assert.NotSame(store.Load().Overlay.Layout[1], pin);
+        Assert.NotNull(pin);
     }
 
     [Fact]
@@ -398,8 +398,11 @@ public class DesktopWidgetsMigrationTests
         Assert.True(r.DesktopImport!.Merge);
     }
 
+    private static string OverlayJson(InMemoryConfigStore store) =>
+        JsonSerializer.Serialize(store.Load().Overlay, PersistenceJsonContext.Default.LegacyOverlaySettings);
+
     [Fact]
-    public void The_overlay_block_is_left_as_it_was_apart_from_the_marker()
+    public void A_migrated_block_persists_only_its_markers()
     {
         var (m, store, _) = Build(HostOs.Windows, Widget("a"), Widget("d", "discord"));
         store.Update(s =>
@@ -409,16 +412,63 @@ public class DesktopWidgetsMigrationTests
             s.Overlay.Monitor = -1;
             s.Overlay.AlwaysOnTop = true;
         });
-        var before = JsonSerializer.Serialize(store.Load().Overlay, PersistenceJsonContext.Default.OverlaySettings);
 
+        var id = m.Run(One());
+
+        using var doc = JsonDocument.Parse(OverlayJson(store));
+        var names = doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray();
+        Assert.Equal(new[] { "migratedRecordId", "migratedToPanels" }, names);
+        Assert.Equal(id, doc.RootElement.GetProperty("migratedRecordId").GetString());
+        // The settings document as written to disk carries the same two markers and no legacy field.
+        using var whole = JsonDocument.Parse(JsonSerializer.Serialize(store.Load(), PersistenceJsonContext.Default.NexusSettings));
+        Assert.Equal(names, whole.RootElement.GetProperty("overlay").EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray());
+        Assert.Null(store.Load().Overlay.Layout);
+    }
+
+    [Fact]
+    public void Empty_and_discord_only_blocks_are_cleared_with_the_marker()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("d", "discord"));
+        store.Update(s => s.Overlay.Scale = 120);
+
+        Assert.Null(m.Run(One()));
+
+        Assert.True(store.Load().Overlay.MigratedToPanels);
+        using var doc = JsonDocument.Parse(OverlayJson(store));
+        Assert.Equal(new[] { "migratedToPanels" }, doc.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
+
+        var (m2, store2, _) = Build(HostOs.Windows);
+        store2.Update(s => s.Overlay.Scale = 120);
+        m2.Run(One());
+        using var doc2 = JsonDocument.Parse(OverlayJson(store2));
+        Assert.Equal(new[] { "migratedToPanels" }, doc2.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
+    }
+
+    [Fact]
+    public void A_deferred_block_keeps_its_widgets_for_a_later_pass()
+    {
+        var (m, store, _) = Build(HostOs.Windows, postMap: false, Widget("a"));
+
+        Assert.Null(m.Run(One()));
+
+        Assert.Single(store.Load().Overlay.Layout!);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+    }
+
+    [Fact]
+    public void Linux_clears_a_widgetless_block_and_keeps_one_with_widgets()
+    {
+        var (m, store, _) = Build(HostOs.Linux);
+        store.Update(s => { s.Overlay.Enabled = true; s.Overlay.Scale = 120; s.Overlay.Layout = new(); });
         m.Run(One());
+        Assert.Null(store.Load().Overlay.Enabled);
+        Assert.Null(store.Load().Overlay.Layout);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
 
-        var after = store.Load().Overlay;
-        Assert.True(after.MigratedToPanels);
-        Assert.Equal(Only(store).Id, after.MigratedRecordId);
-        after.MigratedToPanels = false;
-        after.MigratedRecordId = null;
-        Assert.Equal(before, JsonSerializer.Serialize(after, PersistenceJsonContext.Default.OverlaySettings));
+        var (m2, store2, _) = Build(HostOs.Linux, Widget("a"));
+        m2.Run(One());
+        Assert.True(store2.Load().Overlay.Enabled);
+        Assert.Single(store2.Load().Overlay.Layout!);
     }
 
     [Fact]
@@ -434,7 +484,7 @@ public class DesktopWidgetsMigrationTests
         Assert.Equal(Second, Only(store).DisplayId);
     }
 
-    private static readonly OverlayWidgetDto[] OneWidget = { new() { Id = "a", Type = "clock" } };
+    private static readonly LegacyOverlayWidget[] OneWidget = { new() { Id = "a", Type = "clock" } };
 
     private sealed class ProfileFixture : System.IDisposable
     {
@@ -498,7 +548,7 @@ public class DesktopWidgetsMigrationTests
         f.Profiles.SwitchProfile(f.TargetId);
 
         Assert.True(f.Store.Load().Overlay.MigratedToPanels);
-        Assert.Single(f.Store.Load().Overlay.Layout);
+        Assert.Single(f.Store.Load().Overlay.Layout!);
         var m = new DesktopWidgetsMigration(f.Store, MappedWindows(), null, null) { Os = HostOs.Windows };
         Assert.Null(m.Run(One()));
         Assert.Empty(f.Store.Load().PanelDevices);
@@ -521,7 +571,7 @@ public class DesktopWidgetsMigrationTests
     public void MarkLaterProfile_needs_a_migrated_predecessor()
     {
         var s = new NexusSettings();
-        s.Overlay.Layout.AddRange(OneWidget);
+        s.Overlay.Layout = OneWidget.ToList();
 
         DesktopWidgetsMigration.MarkLaterProfile(s, priorMigrated: false);
 

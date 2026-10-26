@@ -259,7 +259,7 @@ internal static class UserHelperBootstrapper
 
     /// <summary>
     /// Mirror of <see cref="EnsureLaunched"/> for the "open the dashboard window"
-    /// hotline. The desktop widget context menu's "Open dashboard" entry hits
+    /// hotline. The panel widget context menu's "Open dashboard" entry hits
     /// <c>POST /service/open-app</c>; the service handler runs as LocalSystem
     /// in Session 0 and cannot spawn an interactive Edge --app on its own,
     /// so we delegate to a one-shot <c>Nexus.exe --open-app</c> in the active

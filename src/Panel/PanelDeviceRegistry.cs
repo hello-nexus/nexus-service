@@ -438,6 +438,17 @@ public sealed class PanelDeviceRegistry
         return null;
     }
 
+    /// <summary>The hosted panel on the primary display (per <paramref name="isPrimary"/>), or null when there is none.</summary>
+    public PanelDeviceRecord? FindPrimaryPanel(Func<string, bool> isPrimary)
+    {
+        foreach (var record in _store.Load().PanelDevices.Values)
+        {
+            if (!string.IsNullOrEmpty(record.DisplayId) && PanelHosting.IsOn(record) && isPrimary(record.DisplayId))
+                return Clone(record);
+        }
+        return null;
+    }
+
     /// <summary>
     /// Solid "#rrggbb" colour that best represents this panel's current
     /// background, for callers that need to blend with it without importing

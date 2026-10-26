@@ -17,19 +17,14 @@ namespace Nexus.Service.Platform.Mac;
 /// kill on disable, restart on crash with linear backoff.
 ///
 /// Communication with the helper:
-/// * Boot: CLI args carry the service port + auth token + initial
-///   always-on-top value.
-/// * Always-on-top toggle: SPA posts via the WKScriptMessageHandler bridge
-///   inside the helper (no service round-trip needed for instant response).
-/// * Settings broadcast: SPA refetches /preferences via the prefs WS topic
-///   and re-applies; same flow as Windows.
+/// * Boot: CLI args carry the service port + auth token.
+/// * Assignment changes: a stdin line pokes the helper to refetch the kiosk assignments.
 /// * Stdin EOF kills the helper - guarantees the sidecar dies if the
 ///   service crashes without calling Stop.
 /// </summary>
 public sealed class MacOverlayHostLauncher : IOverlayHost
 {
     private readonly TokenService _tokens;
-    private readonly IConfigStore _store;
     private readonly object _lock = new();
     private static int _servicePort = 9400;
 
@@ -38,10 +33,9 @@ public sealed class MacOverlayHostLauncher : IOverlayHost
     private int _consecutiveFailures;
     private volatile bool _stopRequested;
 
-    public MacOverlayHostLauncher(TokenService tokens, IConfigStore store)
+    public MacOverlayHostLauncher(TokenService tokens)
     {
         _tokens = tokens;
-        _store = store;
     }
 
     public bool IsRunning => _process is { HasExited: false };
@@ -57,7 +51,7 @@ public sealed class MacOverlayHostLauncher : IOverlayHost
             var helperPath = ResolveHelperPath();
             if (helperPath is null || !File.Exists(helperPath))
             {
-                Console.Error.WriteLine($"[overlay-helper] helper not found at '{helperPath ?? "<null>"}'; the .app bundle's build-app.sh must compile and copy nexus-overlay-helper. Desktop widgets disabled.");
+                Console.Error.WriteLine($"[overlay-helper] helper not found at '{helperPath ?? "<null>"}'; the .app bundle's build-app.sh must compile and copy nexus-overlay-helper. Panel kiosks disabled.");
                 return false;
             }
 
@@ -65,7 +59,6 @@ public sealed class MacOverlayHostLauncher : IOverlayHost
             {
                 _stopRequested = false;
                 _lastSpawnUtc = DateTime.UtcNow;
-                var alwaysOnTop = _store.Load().Overlay.AlwaysOnTop ? "true" : "false";
                 var psi = new ProcessStartInfo
                 {
                     FileName = helperPath,
@@ -79,7 +72,6 @@ public sealed class MacOverlayHostLauncher : IOverlayHost
                 };
                 psi.ArgumentList.Add($"--port={_servicePort}");
                 psi.ArgumentList.Add($"--token={_tokens.Token}");
-                psi.ArgumentList.Add($"--always-on-top={alwaysOnTop}");
 
                 _process = Process.Start(psi);
                 if (_process is not null)
@@ -150,15 +142,6 @@ public sealed class MacOverlayHostLauncher : IOverlayHost
                 Console.Error.WriteLine($"[overlay-helper] assignments poke failed: {ex.Message}");
             }
         }
-    }
-
-    public void SetAlwaysOnTop(bool value)
-    {
-        // The SPA posts setAlwaysOnTop directly via the WK bridge inside
-        // the helper, so the toggle takes effect without a service round
-        // trip. The service-side reconcile loop reads the persisted setting
-        // and bounces the helper if the user changes other prefs that the
-        // helper reads at startup. Nothing to do here.
     }
 
     private void OnExited(object? sender, EventArgs e)

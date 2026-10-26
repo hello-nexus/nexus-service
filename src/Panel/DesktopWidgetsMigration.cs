@@ -7,6 +7,7 @@ using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Platform.Displays;
 using Nexus.Service.Sockets;
+using Nexus.Service.Widgets;
 
 namespace Nexus.Service.Panel;
 
@@ -69,7 +70,7 @@ public sealed class DesktopWidgetsMigration
     /// </summary>
     internal static void MarkLaterProfile(NexusSettings s, bool priorMigrated)
     {
-        if (!priorMigrated || s.Overlay.MigratedToPanels || s.Overlay.Layout.Count == 0) return;
+        if (!priorMigrated || s.Overlay.MigratedToPanels || !s.Overlay.HasWidgets) return;
         if (!s.SharedCategories.Contains(ProfileSharing.Panels)) return;
         s.Overlay.MigratedToPanels = true;
     }
@@ -82,16 +83,30 @@ public sealed class DesktopWidgetsMigration
     {
         lock (_lock)
         {
-            if (Os == HostOs.Linux) return null;
+            if (Os == HostOs.Linux)
+            {
+                // No host here, so widgets stay for a Windows or macOS machine that opens the same profile.
+                // A block without any holds nothing worth keeping.
+                if (_store.Load().Overlay is { HasWidgets: false } idle && HasLegacyFields(idle))
+                {
+                    _store.Update(s => s.Overlay.ClearLegacy());
+                    _store.FlushNow();
+                }
+                return null;
+            }
             // The monitor map is how a new Windows overlay host announces itself. An older host keeps
             // drawing the legacy widgets, so nothing may be handed over or hidden until the map arrives.
             if (Os == HostOs.Windows && !_monitors.HasMap) return null;
             var settings = _store.Load();
             if (settings.Overlay.MigratedToPanels) return null;
 
-            if (settings.Overlay.Layout.Count == 0)
+            if (!settings.Overlay.HasWidgets)
             {
-                _store.Update(s => s.Overlay.MigratedToPanels = true);
+                _store.Update(s =>
+                {
+                    s.Overlay.MigratedToPanels = true;
+                    s.Overlay.ClearLegacy();
+                });
                 Finish(null);
                 return null;
             }
@@ -115,13 +130,15 @@ public sealed class DesktopWidgetsMigration
             {
                 if (s.Overlay.MigratedToPanels) return;
                 var overlay = s.Overlay;
-                var widgets = overlay.Layout
+                var widgets = (overlay.Layout ?? new List<LegacyOverlayWidget>())
                     .Where(w => !string.Equals(w.Type, "discord", StringComparison.Ordinal))
                     .Select(CopyWidget)
                     .ToList();
                 if (widgets.Count == 0)
                 {
                     overlay.MigratedToPanels = true;
+                    overlay.MonitorMissingForMs = null;
+                    overlay.ClearLegacy();
                     return;
                 }
 
@@ -147,7 +164,7 @@ public sealed class DesktopWidgetsMigration
                 record.DesktopImport = new DesktopImportDto
                 {
                     Version = 1,
-                    CellPx = existing?.CellPx ?? LegacyCellPx * Math.Clamp(overlay.Scale, MinScalePercent, MaxScalePercent) / 100.0,
+                    CellPx = existing?.CellPx ?? LegacyCellPx * Math.Clamp(overlay.Scale ?? 100, MinScalePercent, MaxScalePercent) / 100.0,
                     CellUnits = existing?.CellUnits ?? (Os == HostOs.Windows ? "device" : "css"),
                     Merge = merge || existing?.Merge == true,
                     Widgets = existing is null ? widgets : existing.Widgets.Concat(widgets).ToList(),
@@ -155,6 +172,7 @@ public sealed class DesktopWidgetsMigration
                 overlay.MigratedToPanels = true;
                 overlay.MigratedRecordId = record.Id;
                 overlay.MonitorMissingForMs = null;
+                overlay.ClearLegacy();
                 recordId = record.Id;
             });
             Finish(recordId);
@@ -165,19 +183,19 @@ public sealed class DesktopWidgetsMigration
     // Windows only reaches here with a posted map. A legacy index the map or the topology does not hold
     // yet (a secondary asleep at boot) waits, so the widgets do not land on the wrong display; the primary
     // stands in once the index has been missing for the grace period.
-    private DisplayTopologyEntryDto? ResolveTarget(OverlaySettings overlay, DisplayTopologyResponse topology, out bool indexMissing)
+    private DisplayTopologyEntryDto? ResolveTarget(LegacyOverlaySettings overlay, DisplayTopologyResponse topology, out bool indexMissing)
     {
         indexMissing = false;
         var displays = topology.Displays;
         var primary = displays.FirstOrDefault(d => d.IsPrimary) ?? (displays.Count == 1 ? displays[0] : null);
         DisplayTopologyEntryDto? target;
-        if (Os == HostOs.MacOS || overlay.Monitor < 0)
+        if (Os == HostOs.MacOS || (overlay.Monitor ?? -1) < 0)
         {
             target = primary;
         }
         else
         {
-            var id = _monitors.DisplayIdForIndex(overlay.Monitor);
+            var id = _monitors.DisplayIdForIndex(overlay.Monitor ?? -1);
             target = id is null ? null : displays.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.Ordinal));
             if (target is null)
             {
@@ -194,7 +212,7 @@ public sealed class DesktopWidgetsMigration
 
     // Missing time accumulates from monotonic deltas between checks and is persisted at each one. A restart
     // adds nothing for the time it was down, so the grace can only run long, never short.
-    private bool MissingGraceElapsed(OverlaySettings overlay)
+    private bool MissingGraceElapsed(LegacyOverlaySettings overlay)
     {
         var mono = MonoMs();
         var delta = _lastMissingCheckMs is { } last ? Math.Max(0, mono - last) : 0;
@@ -208,7 +226,7 @@ public sealed class DesktopWidgetsMigration
         return total >= MissingMonitorGraceMs;
     }
 
-    private void ClearMissing(OverlaySettings overlay)
+    private void ClearMissing(LegacyOverlaySettings overlay)
     {
         _lastMissingCheckMs = null;
         if (overlay.MonitorMissingForMs is null) return;
@@ -234,17 +252,17 @@ public sealed class DesktopWidgetsMigration
         catch (Exception ex) { ServiceLog.Error($"[desktop-migration] {ex.GetType().Name}: {ex.Message}"); }
     }
 
-    private static void ApplyDesktopFlags(PanelDeviceRecord record, OverlaySettings overlay)
+    private static void ApplyDesktopFlags(PanelDeviceRecord record, LegacyOverlaySettings overlay)
     {
         record.Backdrop = "desktop";
         record.ClickThrough = true;
-        record.AlwaysOnTop = overlay.AlwaysOnTop;
+        record.AlwaysOnTop = overlay.AlwaysOnTop ?? false;
         record.ReserveMonitor = false;
         record.KeepCursorOff = false;
-        record.WidgetOpacity = Math.Clamp(overlay.Opacity, 0, 1);
+        record.WidgetOpacity = Math.Clamp(overlay.Opacity ?? 1.0, 0, 1);
         record.ThemeSyncWithDesktop = true;
         record.AccentSyncWithDesktop = true;
-        record.Hosted = overlay.Enabled;
+        record.Hosted = overlay.Enabled ?? false;
         record.Enabled = false;
     }
 
@@ -256,10 +274,10 @@ public sealed class DesktopWidgetsMigration
         Pages = new List<PanelPageDto> { new() { Id = Guid.NewGuid().ToString() } },
     };
 
-    private static OverlayWidgetDto CopyWidget(OverlayWidgetDto w) => new()
+    private static LegacyOverlayWidget CopyWidget(LegacyOverlayWidget w) => new()
     {
         Id = w.Id,
-        Type = w.Type,
+        Type = AppPrefixMigration.Rewrite(w.Type),
         Size = w.Size,
         Monitor = w.Monitor,
         Col = w.Col,
@@ -267,6 +285,10 @@ public sealed class DesktopWidgetsMigration
         Locked = w.Locked,
         Config = w.Config is null ? null : new Dictionary<string, System.Text.Json.JsonElement>(w.Config),
     };
+
+    private static bool HasLegacyFields(LegacyOverlaySettings o) =>
+        o.Enabled is not null || o.AlwaysOnTop is not null || o.Scale is not null || o.Opacity is not null
+        || o.Monitor is not null || o.Layout is not null;
 
     private void Finish(string? recordId)
     {

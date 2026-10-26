@@ -97,20 +97,41 @@ public sealed class PanelSettings
     public List<PanelGaugeGradientStop>? DashboardGaugeGradient { get; set; }
 }
 
-public sealed class OverlaySettings
+/// <summary>
+/// The retired desktop overlay's persisted block. Read only by
+/// <see cref="Nexus.Service.Panel.DesktopWidgetsMigration"/>, which hands the widgets to a panel record and
+/// then clears every legacy field, so a migrated settings file carries only the markers. The legacy fields
+/// are nullable so a cleared block writes nothing; null reads as the old default.
+/// </summary>
+public sealed class LegacyOverlaySettings
 {
-    public bool Enabled { get; set; }
-    public bool AlwaysOnTop { get; set; }
-    public int Scale { get; set; } = 100;
-    public double Opacity { get; set; } = 1.0;
-    public int Monitor { get; set; } = -1;
-    /// <summary>Pinned floating-widget instances. Empty list = no widgets pinned.</summary>
-    public List<OverlayWidgetDto> Layout { get; set; } = new();
-    /// <summary>The legacy widgets were handed to a panel record (DesktopWidgetsMigration). Per profile; the block above is left as it was for a downgrade.</summary>
+    public bool? Enabled { get; set; }
+    public bool? AlwaysOnTop { get; set; }
+    public int? Scale { get; set; }
+    public double? Opacity { get; set; }
+    public int? Monitor { get; set; }
+    public List<LegacyOverlayWidget>? Layout { get; set; }
+    /// <summary>The widgets were handed to a panel record (or there were none). Per profile; marks the block done.</summary>
     public bool MigratedToPanels { get; set; }
+    /// <summary>The record that received the widgets; null when nothing was handed over.</summary>
     public string? MigratedRecordId { get; set; }
     /// <summary>Accumulated ms the legacy monitor index has been missing from the host's monitor map; cleared once it resolves or the widgets migrate.</summary>
     public long? MonitorMissingForMs { get; set; }
+
+    /// <summary>True while the block still holds widgets to migrate.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool HasWidgets => Layout is { Count: > 0 };
+
+    /// <summary>Drops every legacy field, leaving the markers.</summary>
+    public void ClearLegacy()
+    {
+        Enabled = null;
+        AlwaysOnTop = null;
+        Scale = null;
+        Opacity = null;
+        Monitor = null;
+        Layout = null;
+    }
 }
 
 // Layout seed types - used by install-defaults to define starter widget sets
@@ -152,7 +173,6 @@ public sealed class Preferences
 {
     public ThemeSettings Theme { get; set; } = new();
     public PanelSettings Panel { get; set; } = new();
-    public OverlaySettings Overlay { get; set; } = new();
     public MonitoringSettings Monitoring { get; set; } = new();
     public CoolingPrefs Cooling { get; set; } = new();
     public UiSettings Ui { get; set; } = new();
@@ -284,7 +304,6 @@ public sealed class PreferencesPatch
 {
     public ThemeSettingsPatch? Theme { get; set; }
     public PanelSettingsPatch? Panel { get; set; }
-    public OverlaySettingsPatch? Overlay { get; set; }
     public MonitoringSettingsPatch? Monitoring { get; set; }
     public CoolingPrefsPatch? Cooling { get; set; }
     public UiSettingsPatch? Ui { get; set; }
@@ -337,16 +356,6 @@ public sealed class PanelSettingsPatch
     public bool? WidgetLabels { get; set; }
     public PanelLayoutDto? DashboardLayout { get; set; }
     public List<PanelGaugeGradientStop>? DashboardGaugeGradient { get; set; }
-}
-
-public sealed class OverlaySettingsPatch
-{
-    public bool? Enabled { get; set; }
-    public bool? AlwaysOnTop { get; set; }
-    public int? Scale { get; set; }
-    public double? Opacity { get; set; }
-    public int? Monitor { get; set; }
-    public List<OverlayWidgetDto>? Layout { get; set; }
 }
 
 public sealed class MonitoringSettingsPatch

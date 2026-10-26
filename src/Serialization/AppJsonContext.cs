@@ -226,7 +226,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.ThemeSettings))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.MonitoringSettings))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelSettings))]
-[JsonSerializable(typeof(Nexus.Service.Persistence.OverlaySettings))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelLayoutsDefaults))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelLayoutDefault))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelLayoutWidget))]
@@ -236,7 +235,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.PreferencesPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.ThemeSettingsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelSettingsPatch))]
-[JsonSerializable(typeof(Nexus.Service.Persistence.OverlaySettingsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.MonitoringSettingsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.CoolingPrefsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.DiagnosticsSettings))]
@@ -273,14 +271,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PrefsChangedFrame))]
 
-// Desktop widgets - floating panel widgets on the Windows desktop.
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayWidgetDto))]
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayWidgetCreateBody))]
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayWidgetPatch))]
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayLockAllBody))]
+// Overlay host monitor map and the legacy desktop widgets handed to a panel record.
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayMonitorsBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.DesktopImportDto))]
-[JsonSerializable(typeof(List<Nexus.Service.Models.Panel.OverlayWidgetDto>))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.LegacyOverlayWidget))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.LightingChangedFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.CoolingChangedFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.VolumeChangedFrame))]

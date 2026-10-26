@@ -192,14 +192,6 @@
     }
   },
 
-  "overlay": {
-    "enabled": false,
-    "alwaysOnTop": false,
-    "scale": 100,
-    "opacity": 1.0,
-    "monitor": -1
-  },
-
   "lighting": {
     "sync": "sweeprainbow",
     "brightnessEnabled": false,

@@ -510,7 +510,7 @@ public sealed class DesktopImportDto
     public double CellPx { get; set; }
     public string CellUnits { get; set; } = "device";
     public bool Merge { get; set; }
-    public List<OverlayWidgetDto> Widgets { get; set; } = new();
+    public List<LegacyOverlayWidget> Widgets { get; set; } = new();
 }
 
 public sealed class PanelDeviceListResponse

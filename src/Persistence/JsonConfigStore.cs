@@ -403,6 +403,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         {
             KeebBrightnessMigration.Apply(doc.Keeb?.FirmwareLighting);
         }
+        if (doc.SchemaVersion < 26 && !(doc.Overlay?.HasWidgets ?? false))
+        {
+            doc.Overlay?.ClearLegacy();
+        }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }
 

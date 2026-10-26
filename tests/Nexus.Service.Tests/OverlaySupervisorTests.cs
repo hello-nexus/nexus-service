@@ -34,12 +34,17 @@ public class OverlaySupervisorTests
     }
 
     [Fact]
-    public void Pinned_widgets_start_the_host()
+    public void Legacy_overlay_widgets_no_longer_start_the_host()
     {
         var (sup, host, store) = Build();
-        store.Update(s => { s.Overlay.Enabled = true; s.Overlay.Layout.Add(new()); });
+        store.Update(s =>
+        {
+            s.Panel.AutoLaunch = false;
+            s.Overlay.Enabled = true;
+            s.Overlay.Layout = new() { new() };
+        });
         sup.Reconcile(T0);
-        Assert.Equal(1, host.StartCalls);
+        Assert.Equal(0, host.StartCalls);
     }
 
     [Fact]
@@ -115,7 +120,7 @@ public class OverlaySupervisorTests
         sup.Reconcile(T0);
         Assert.Equal(0, host.StartCalls);
 
-        store.Update(s => { s.Overlay.Enabled = true; s.Overlay.Layout.Add(new()); });
+        store.Update(s => s.PanelDevices["a"] = new() { Id = "a", DisplayId = "D1" });
         sup.Reconcile(T0.AddSeconds(1));
         Assert.Equal(1, host.StartCalls);
     }
@@ -137,7 +142,6 @@ public class OverlaySupervisorTests
         public bool IsRunning => Running;
         public bool Start() { StartCalls++; if (StartSucceeds) Running = true; return StartSucceeds; }
         public void Stop() { Running = false; }
-        public void SetAlwaysOnTop(bool value) { }
         public void NotifyDisplayAssignmentsChanged() { }
     }
 

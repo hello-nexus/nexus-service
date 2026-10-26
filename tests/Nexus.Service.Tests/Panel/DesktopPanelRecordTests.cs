@@ -46,7 +46,7 @@ public class DesktopPanelRecordTests
             Enabled = false,
             ClickThrough = true,
             GridSlots = 12,
-            DesktopImport = new DesktopImportDto { CellPx = 86, Widgets = { new OverlayWidgetDto { Id = "w", Type = "clock" } } },
+            DesktopImport = new DesktopImportDto { CellPx = 86, Widgets = { new LegacyOverlayWidget { Id = "w", Type = "clock" } } },
         });
 
         var clone = registry.FindByDisplayId("D1")!;
@@ -330,21 +330,34 @@ public class DesktopPanelRecordTests
     }
 
     [Fact]
-    public void Supervisor_wants_a_host_for_a_hosted_record_but_not_for_a_migrated_overlay()
+    public void Supervisor_wants_a_host_for_a_hosted_record_only()
     {
         var s = new NexusSettings();
         s.Panel.AutoLaunch = false;
         s.Overlay.Enabled = true;
-        s.Overlay.Layout.Add(new OverlayWidgetDto { Id = "w" });
-        Assert.True(OverlaySupervisor.Desired(s, false, false));
-
-        s.Overlay.MigratedToPanels = true;
+        s.Overlay.Layout = new() { new LegacyOverlayWidget { Id = "w" } };
         Assert.False(OverlaySupervisor.Desired(s, false, false));
 
         s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1", Hosted = true, Enabled = false };
         Assert.True(OverlaySupervisor.Desired(s, false, false));
         s.PanelDevices["a"].Hosted = false;
         Assert.False(OverlaySupervisor.Desired(s, false, false));
+    }
+
+    [Fact]
+    public void Find_primary_panel_names_the_hosted_record_on_the_primary_display()
+    {
+        var (registry, store) = Build();
+        store.Update(s =>
+        {
+            s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "P", AlwaysOnTop = false };
+            s.PanelDevices["b"] = new PanelDeviceRecord { Id = "b", DisplayId = "S" };
+        });
+
+        Assert.Equal("a", registry.FindPrimaryPanel(id => id == "P")!.Id);
+        Assert.Null(registry.FindPrimaryPanel(_ => false));
+        store.Update(s => s.PanelDevices["a"].Enabled = false);
+        Assert.Null(registry.FindPrimaryPanel(id => id == "P"));
     }
 
     [Fact]
@@ -367,7 +380,7 @@ public class DesktopPanelRecordTests
                 CellPx = 117.82,
                 CellUnits = "css",
                 Merge = true,
-                Widgets = { new OverlayWidgetDto { Id = "o", Type = "app:x", Locked = true, Col = 1.25 } },
+                Widgets = { new LegacyOverlayWidget { Id = "o", Type = "app:x", Locked = true, Col = 1.25 } },
             },
         };
 

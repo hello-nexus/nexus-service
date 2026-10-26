@@ -1,31 +1,21 @@
 // nexus-overlay-helper
 //
-// Per-screen transparent borderless NSWindow hosting WKWebView for the
-// floating desktop widgets. Companion to nexus-overlay.exe on Windows;
-// the service spawns this helper when the user has at least one widget
-// pinned, kills it when the last widget is unpinned.
+// Hosts the panel kiosks on macOS: one borderless NSWindow with a WKWebView per
+// display the user turned into a Nexus panel (see-through or opaque), plus the
+// off-screen renderers for streamed panels (streamhost.swift). Companion to
+// nexus-overlay.exe on Windows; the service spawns it while a panel is hosted.
 //
 // Why a sidecar: the AppKit / WebKit window-creation chain has subtle
 // ordering and notification semantics that are painful to drive through
-// raw objc_msgSend P/Invoke from Native AOT C#. Native Swift expresses
-// this in ~150 lines without the bridge friction.
+// raw objc_msgSend P/Invoke from Native AOT C#.
 //
 // CLI: nexus-overlay-helper --port=9400 --token=<bearer>
 //   --port  : nexus-service HTTP port. Defaults to 9400.
 //   --token : auth bearer token from /pair. Required - the WKWebView
-//             round-trips it to the service for /overlay routes.
+//             round-trips it to the service.
 // One-shot: nexus-overlay-helper --rotate-display=<CGDirectDisplayID>
 //   --rotate-degrees=<0|90|180|270> rotates that display and exits 0 once
 //   CGDisplayRotation reads the angle (MacDisplayOrientationProvider).
-//
-// Window contract:
-// * Borderless, transparent, click-through (window.ignoresMouseEvents = true).
-// * One window per NSScreen; each navigates to /overlay?monitor=N&token=T.
-// * Stays on every Space, doesn't appear in cmd-tab.
-// * Status-window level when --always-on-top, normal level otherwise.
-// * SPA -> host bridge via WKScriptMessageHandler named "nexusOverlay".
-//
-// Also hosts the off-screen renderers for streamed panels (streamhost.swift).
 //
 // Lifecycle: dies on parent process exit (we monitor stdin EOF). Re-spawned
 // by the service on demand. Single instance via PID file in
@@ -41,7 +31,6 @@ import IOKit.hid
 struct Options {
     var port: Int = 9400
     var token: String = ""
-    var alwaysOnTop: Bool = false
     var rotateDisplay: CGDirectDisplayID?
     var rotateDegrees: Int?
 }
@@ -57,7 +46,6 @@ func parseOptions() -> Options {
         switch k {
         case "port": if let n = Int(v) { o.port = n }
         case "token": o.token = v
-        case "always-on-top": o.alwaysOnTop = (v == "true" || v == "1")
         case "rotate-display": o.rotateDisplay = CGDirectDisplayID(v)
         case "rotate-degrees": o.rotateDegrees = Int(v)
         default: break
@@ -198,405 +186,6 @@ final class HitTestView: NSView {
     }
 }
 
-// MARK: - Bridge from JS -> overlay
-
-final class OverlayBridge: NSObject, WKScriptMessageHandler {
-    weak var owner: OverlayController?
-
-    func userContentController(_ userContentController: WKUserContentController,
-                               didReceive message: WKScriptMessage) {
-        // Bridge payloads are JSON.stringify'd in hostBridge.ts so a single
-        // string-typed body shape works on both Windows (WebView2) and macOS.
-        guard let json = message.body as? String,
-              let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = obj["type"] as? String
-        else { return }
-
-        switch type {
-        case "bridgeReady":
-            FileHandle.standardError.write("[overlay-helper] bridgeReady from \(obj["href"] ?? "?")\n".data(using: .utf8)!)
-        case "setAlwaysOnTop":
-            if let v = obj["value"] as? Bool {
-                DispatchQueue.main.async { self.owner?.applyAlwaysOnTop(v) }
-            }
-        case "reportLayout":
-            let widgets = (obj["widgets"] as? [[String: Any]]) ?? []
-            var parsed: [CGRect] = []
-            parsed.reserveCapacity(widgets.count + 1)
-            for w in widgets {
-                if let r = parseRect(w) { parsed.append(r) }
-            }
-            var hasPopover = false
-            if let popover = obj["popover"] as? [String: Any], let r = parseRect(popover) {
-                parsed.append(r)
-                hasPopover = true
-            }
-            FileHandle.standardError.write("[overlay-helper] reportLayout rects=\(parsed.count) popover=\(hasPopover)\n".data(using: .utf8)!)
-            DispatchQueue.main.async { [weak self] in
-                guard let webView = message.webView,
-                      let view = webView.window?.contentView as? HitTestView else { return }
-                view.setRects(parsed, popoverActive: hasPopover)
-                // Re-evaluate cursor gating + window levels on every
-                // report. Popover open -> status-bar level so the modal
-                // isn't covered by the user's other apps; popover close
-                // -> revert to the user's always-on-top setting (desktop
-                // icon level by default).
-                self?.owner?.evaluateCursor()
-                self?.owner?.applyLevels()
-            }
-        default:
-            break
-        }
-    }
-
-    private func parseRect(_ d: [String: Any]) -> CGRect? {
-        guard let x = (d["x"] as? NSNumber)?.doubleValue,
-              let y = (d["y"] as? NSNumber)?.doubleValue,
-              let w = (d["w"] as? NSNumber)?.doubleValue,
-              let h = (d["h"] as? NSNumber)?.doubleValue,
-              w > 0, h > 0
-        else { return nil }
-        return CGRect(x: x, y: y, width: w, height: h)
-    }
-}
-
-// MARK: - Overlay controller (one instance, owns all per-screen windows)
-
-final class OverlayController {
-    private let opts: Options
-    private let bridge = OverlayBridge()
-    private let processPool = WKProcessPool()
-    private let webViewDelegate = OverlayWebViewDelegate()
-    private var windows: [NSWindow] = []
-    private var alwaysOnTop: Bool
-    /// The legacy desktop widgets exist only while the service says the overlay is on; once the widgets
-    /// have moved to a panel record it is off and no window is created at all.
-    private var legacyEnabled = false
-    private var stateRetryScheduled = false
-
-    init(_ opts: Options) {
-        self.opts = opts
-        self.alwaysOnTop = opts.alwaysOnTop
-        bridge.owner = self
-    }
-
-    /// Reads overlayEnabled from /overlay/state and opens or closes the legacy windows to match. A failed
-    /// read changes nothing and is retried until the first success.
-    func refreshState() {
-        var c = URLComponents()
-        c.scheme = "http"
-        c.host = "localhost"
-        c.port = opts.port
-        c.path = "/overlay/state"
-        c.queryItems = [URLQueryItem(name: "token", value: opts.token)]
-        guard let url = c.url else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, _ in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                guard let data = data,
-                      let http = response as? HTTPURLResponse, http.statusCode == 200,
-                      let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                      let enabled = obj["overlayEnabled"] as? Bool
-                else {
-                    if !self.stateRetryScheduled {
-                        self.stateRetryScheduled = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                            self?.stateRetryScheduled = false
-                            self?.refreshState()
-                        }
-                    }
-                    return
-                }
-                self.setLegacyEnabled(enabled)
-            }
-        }.resume()
-    }
-
-    private func setLegacyEnabled(_ value: Bool) {
-        if legacyEnabled == value { return }
-        legacyEnabled = value
-        rebuild()
-    }
-
-    func start() {
-        startCursorTracking()
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(screensChanged),
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil)
-    }
-
-    // MARK: cursor-position click-through gating
-    //
-    // Custom hitTest returning nil DOES NOT make NSPanel.nonactivatingPanel
-    // pass clicks through to the next window. AppKit captures the event at
-    // the panel level when ignoresMouseEvents is false, regardless of
-    // contentView hit-test. The canonical fix: track cursor movement
-    // globally (NSEvent.addGlobalMonitorForEvents) and toggle
-    // ignoresMouseEvents on the panel based on whether the cursor sits
-    // inside any reported widget rect. The window then becomes click-eating
-    // exactly when the user is over a widget, click-through everywhere
-    // else.
-
-    private var globalMouseMonitor: Any?
-    private var localMouseMonitor: Any?
-
-    private func startCursorTracking() {
-        let mask: NSEvent.EventTypeMask = [
-            .mouseMoved,
-            .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
-            .leftMouseDown, .rightMouseDown, .otherMouseDown,
-        ]
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            guard let self = self else { return }
-            self.evaluateCursor()
-            // Fired only for events the helper does NOT receive (i.e. the
-            // cursor is outside any rect, ignoresMouseEvents=true, click
-            // went to another app). If a popover is open in any of our
-            // windows, ask the SPA to dismiss - mirrors Windows region
-            // mode where SetWindowRgn excludes outside areas and the
-            // SPA's mousedown listener wouldn't be reached either, but
-            // here we synthesize the dismiss explicitly.
-            let isMouseDown = [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type)
-            if isMouseDown && self.anyPopoverActive() {
-                self.dispatchDismissToWebViews()
-            }
-        }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.evaluateCursor()
-            return event
-        }
-        evaluateCursor()
-    }
-
-    private func anyPopoverActive() -> Bool {
-        for w in windows {
-            if (w.contentView as? HitTestView)?.popoverActive == true { return true }
-        }
-        return false
-    }
-
-    func evaluateCursor() {
-        let mouse = NSEvent.mouseLocation
-        for w in windows {
-            guard let hit = w.contentView as? HitTestView else { continue }
-            // Capture clicks only when the cursor is over a registered
-            // rect (widget OR popover). Outside both, the click falls
-            // through to whatever's underneath. Popover dismissal on
-            // outside-click is handled by injecting a synthetic body
-            // mousedown into the WebView from the global mouseDown
-            // monitor below - the user's click still reaches the
-            // underlying app AND the SPA's click-outside handler fires.
-            let windowPoint = w.convertPoint(fromScreen: mouse)
-            let local = hit.convert(windowPoint, from: nil)
-            let captureClicks = hit.containsPoint(local)
-            if w.ignoresMouseEvents != !captureClicks {
-                w.ignoresMouseEvents = !captureClicks
-            }
-        }
-    }
-
-    static let dismissJS = """
-        (function () {
-            // Synthesize a click on the document body so the SPA's
-            // click-outside listeners (WidgetContextMenu, WidgetEditSheet)
-            // fire their dismiss path. We use a real MouseEvent at
-            // coordinates that don't hit any panel-card or popover so the
-            // SPA's `keepOpenOnTarget` returns false.
-            try {
-                const ev = new MouseEvent('mousedown', {
-                    bubbles: true,
-                    cancelable: true,
-                    clientX: 0,
-                    clientY: 0,
-                });
-                document.body.dispatchEvent(ev);
-            } catch (e) { }
-        })();
-    """
-
-    func dispatchDismissToWebViews() {
-        for w in windows {
-            guard let webView = (w.contentView as? HitTestView)?.subviews.first as? WKWebView else { continue }
-            webView.evaluateJavaScript(Self.dismissJS, completionHandler: nil)
-        }
-    }
-
-    @objc private func screensChanged() {
-        // Display hot-plug, resolution change, sleep/wake. Tear down + rebuild
-        // is cheaper than reconciling per-window because the WKProcessPool is
-        // shared, so the WebContent process survives the rebuild.
-        rebuild()
-    }
-
-    private func rebuild() {
-        for w in windows { w.orderOut(nil); w.close() }
-        windows.removeAll()
-        if !legacyEnabled { return }
-
-        for (i, screen) in NSScreen.screens.enumerated() {
-            let w = makeWindow(for: screen, monitor: i)
-            windows.append(w)
-        }
-    }
-
-    func applyAlwaysOnTop(_ value: Bool) {
-        alwaysOnTop = value
-        applyLevels()
-    }
-
-    /// Compute the window level a panel should sit at right now. The user's
-    /// always-on-top toggle picks the baseline:
-    ///   - true  -> .statusBar (above every app window)
-    ///   - false -> kCGDesktopIconWindowLevel (between wallpaper and apps,
-    ///              so any opened app window covers the widgets)
-    /// While any popover (context menu / edit sheet) is open we override
-    /// to .statusBar regardless of the user setting, so the modal isn't
-    /// covered by the user's other apps mid-edit. Reverts on close.
-    func effectiveLevel(forPopover popoverActive: Bool) -> NSWindow.Level {
-        if alwaysOnTop || popoverActive {
-            return .statusBar
-        }
-        // CGWindowLevelKey.desktopIconWindow sits at the icon stratum -
-        // above the wallpaper, below normal app windows. Other apps draw
-        // on top automatically; the user can still see widgets through any
-        // gap they leave on the desktop.
-        let raw = Int(CGWindowLevelForKey(.desktopIconWindow))
-        return NSWindow.Level(rawValue: raw)
-    }
-
-    /// Re-evaluate every window's level against the current state.
-    /// Called on always-on-top toggle and on popover open/close.
-    func applyLevels() {
-        for w in windows {
-            let popover = (w.contentView as? HitTestView)?.popoverActive ?? false
-            let target = effectiveLevel(forPopover: popover)
-            if w.level != target { w.level = target }
-        }
-    }
-
-    // MARK: window creation
-
-    private func makeWindow(for screen: NSScreen, monitor: Int) -> NSWindow {
-        let frame = screen.frame
-        // NSPanel with .nonactivatingPanel is the canonical AppKit pattern
-        // for input-receiving overlays that should never become the key
-        // window. Plain NSWindow becomes key on first click; once it's
-        // key, AppKit routes all subsequent clicks to it regardless of our
-        // contentView's hitTest decisions, which is exactly the
-        // "everything blocks once a widget gets focus" symptom we hit
-        // with NSWindow.
-        let win = OverlayPanel(
-            contentRect: frame,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false,
-            screen: screen)
-        win.becomesKeyOnlyIfNeeded = true
-        win.hidesOnDeactivate = false
-        win.worksWhenModal = true
-        win.isOpaque = false
-        win.backgroundColor = .clear
-        win.hasShadow = false
-        win.isMovableByWindowBackground = false
-        // Hit-testing is per-rect via HitTestView.hitTest below: events
-        // inside a widget rect reach the WKWebView, events outside fall
-        // through to the desktop. So leave ignoresMouseEvents = false.
-        win.ignoresMouseEvents = false
-        win.collectionBehavior = [
-            .canJoinAllSpaces,
-            .stationary,
-            .ignoresCycle,
-            .fullScreenAuxiliary,
-        ]
-        win.level = effectiveLevel(forPopover: false)
-
-        let cfg = WKWebViewConfiguration()
-        cfg.processPool = processPool
-        cfg.userContentController.add(bridge, name: "nexusOverlay")
-
-        // Diagnostics: bridgeReady at document-end + 1Hz pulse so the helper
-        // can tell the difference between "SPA never loaded" and "SPA loaded
-        // but is paused / occluded / throttled by WebKit". The pulse stops
-        // firing if WebKit decides the window is offscreen and freezes RAF.
-        // One-shot bridgeReady probe so the helper can confirm the JS
-        // channel is reachable at page load. No periodic pulse - those
-        // were diagnostic-only and floor the log file at ~1 line / 2s.
-        let probe = WKUserScript(
-            source: "try { window.webkit.messageHandlers.nexusOverlay.postMessage(JSON.stringify({type:'bridgeReady',href:location.href})); } catch (e) { }",
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false)
-        cfg.userContentController.addUserScript(probe)
-
-        let webView = WKWebView(
-            frame: NSRect(origin: .zero, size: frame.size),
-            configuration: cfg)
-        webView.autoresizingMask = [.width, .height]
-        webView.navigationDelegate = webViewDelegate
-        // Private but stable since 10.10. Public underPageBackgroundColor
-        // alone leaves an opaque content backing on Tahoe.
-        webView.setValue(false, forKey: "drawsBackground")
-        // Private SPI: keep the page running at foreground priority even
-        // when AppKit reports the window as occluded. Without this, WKWebView
-        // sets document.visibilityState=hidden whenever the helper isn't
-        // the active app (which it never is - we're LSUIElement / accessory),
-        // and WebKit pauses requestAnimationFrame. The SPA's reportLayout
-        // pump is RAF-driven, so without foreground priority no rects ever
-        // reach our HitTestView and the entire overlay is dead-clickless.
-        // Enable Safari Web Inspector (right-click in the WKWebView ->
-        // "Inspect Element"). Required for diagnosing SPA bridge issues
-        // without instrumenting from outside the WebView.
-        if #available(macOS 13.3, *) {
-            webView.isInspectable = true
-        } else {
-            webView.setValue(true, forKey: "_developerExtrasEnabled")
-        }
-
-        // HitTestView consults the SPA-reported rects: clicks inside any
-        // rect reach the WKWebView (drag / context menu work as expected),
-        // clicks outside fall through to whatever's underneath (desktop,
-        // Finder, browser, etc). When rects are empty - the default state
-        // before the SPA's first reportLayout arrives - hitTest returns
-        // nil for everything, which means the entire overlay is
-        // click-through and the user can interact with their other apps
-        // unimpeded. Once the SPA reports rects, those specific patches
-        // become live.
-        let hit = HitTestView(frame: NSRect(origin: .zero, size: frame.size))
-        hit.autoresizingMask = [.width, .height]
-        hit.addSubview(webView)
-        win.contentView = hit
-        win.setFrame(frame, display: true)
-        // orderFrontRegardless (not orderFront) is required because the
-        // helper never activates - .nonactivatingPanel + LSUIElement keep
-        // the app non-frontmost, and plain orderFront is a no-op when the
-        // calling app isn't active. Without this, the panel exists but
-        // never appears on screen even though the WKWebView reports the
-        // page as visible and DOM rects are correct (the symptom: hit-test
-        // gating still fires, but the user sees nothing).
-        win.orderFrontRegardless()
-
-        if let url = overlayURL(monitor: monitor) {
-            webView.load(URLRequest(url: url))
-        }
-        return win
-    }
-
-    private func overlayURL(monitor: Int) -> URL? {
-        var c = URLComponents()
-        c.scheme = "http"
-        c.host = "localhost"
-        c.port = opts.port
-        c.path = "/overlay"
-        c.queryItems = [
-            URLQueryItem(name: "monitor", value: String(monitor)),
-            URLQueryItem(name: "token", value: opts.token),
-        ]
-        return c.url
-    }
-}
-
 // MARK: - Panel kiosk windows (promoted-monitor panels)
 //
 // Fullscreen opaque windows hosting /panel/{deviceId} on monitors the user
@@ -695,6 +284,25 @@ final class KioskPanelBridge: NSObject, WKScriptMessageHandler {
 }
 
 final class KioskController {
+    private static let dismissJS = """
+        (function () {
+            // Synthesize a click on the document body so the SPA's
+            // click-outside listeners (WidgetContextMenu, WidgetEditSheet)
+            // fire their dismiss path. We use a real MouseEvent at
+            // coordinates that don't hit any panel-card or popover so the
+            // SPA's `keepOpenOnTarget` returns false.
+            try {
+                const ev = new MouseEvent('mousedown', {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: 0,
+                    clientY: 0,
+                });
+                document.body.dispatchEvent(ev);
+            } catch (e) { }
+        })();
+    """
+
     private let opts: Options
     private let webViewDelegate = OverlayWebViewDelegate()
     private let touchRouter = TouchRouter()
@@ -805,7 +413,7 @@ final class KioskController {
 
     private func dismissRaisedPanels() {
         for state in kiosks.values where state.seeThrough && state.raised {
-            state.webView.evaluateJavaScript(OverlayController.dismissJS, completionHandler: nil)
+            state.webView.evaluateJavaScript(KioskController.dismissJS, completionHandler: nil)
         }
     }
 
@@ -1259,18 +867,12 @@ final class KioskController {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let opts: Options
-    var controller: OverlayController?
     var kiosk: KioskController?
     var streams: StreamHostController?
 
     init(_ opts: Options) { self.opts = opts }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let c = OverlayController(opts)
-        c.start()
-        c.refreshState()
-        controller = c
-
         let k = KioskController(opts)
         k.start()
         kiosk = k
@@ -1288,7 +890,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             while let line = readLine(strippingNewline: true) {
                 if line == "assignments-changed" {
                     DispatchQueue.main.async {
-                        self?.controller?.refreshState()
                         self?.kiosk?.refresh()
                         self?.streams?.refresh()
                     }

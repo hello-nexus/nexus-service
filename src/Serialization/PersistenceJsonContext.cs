@@ -93,7 +93,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(PanelSettings))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPreset))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceRecord))]
-[JsonSerializable(typeof(OverlaySettings))]
+[JsonSerializable(typeof(LegacyOverlaySettings))]
 [JsonSerializable(typeof(UnitsSettings))]
 [JsonSerializable(typeof(DiagnosticsSettings))]
 [JsonSerializable(typeof(DiagnosticsThresholds))]
