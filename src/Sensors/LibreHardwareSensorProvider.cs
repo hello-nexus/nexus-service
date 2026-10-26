@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using Nexus.Service.Models.Sensors;
+using Nexus.Service.Platform;
 using Nexus.Service.Sensors.Astral;
 using LibreHardwareMonitor.Hardware;
 
@@ -486,11 +487,24 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         return _lhm.Instance.Hardware.Where(h => types.Contains(h.HardwareType));
     }
 
+    private static readonly SensorHoldLast Hold = new();
+
     private static List<HardwareSensor> MapSensors(IHardware hw)
     {
+        var isGpu = hw.HardwareType is HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel;
         return hw.Sensors.Select(s =>
         {
-            var value = SensorValueSanitizer.Sanitize(s.Value ?? 0f);
+            var now = Environment.TickCount64;
+            var key = s.Identifier.ToString();
+            var value = Hold.Resolve(key, s.Value, now, out var missed);
+            if (missed && isGpu)
+            {
+                var count = Hold.NoteMiss(key, now);
+                if (count > 0)
+                {
+                    ServiceLog.Warn($"[lhm] GPU sensor {key} read null or non-finite, {count} miss(es) since last log");
+                }
+            }
             var min = SensorValueSanitizer.Sanitize(s.Min ?? 0f);
             var max = SensorValueSanitizer.Sanitize(s.Max ?? 0f);
             if (s.SensorType == SensorType.Data)
