@@ -84,7 +84,7 @@ public class DesktopPanelRecordTests
         var (registry, store) = Build();
         store.Update(s =>
         {
-            s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "P", ReserveMonitor = true, KeepCursorOff = true, AlwaysOnTop = true };
+            s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "P", ReserveMonitor = true, KeepCursorOff = true, AlwaysOnTop = true, Backdrop = "desktop" };
             s.PanelDevices["b"] = new PanelDeviceRecord { Id = "b", DisplayId = "S", ReserveMonitor = true, KeepCursorOff = true };
         });
 
@@ -113,6 +113,27 @@ public class DesktopPanelRecordTests
         store.Update(s => s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "P", Backdrop = backdrop, ClickThrough = stored });
 
         Assert.Equal(expected, Assert.Single(registry.ListAssignments()).ClickThrough);
+    }
+
+    [Theory]
+    [InlineData("desktop", null, true, true)]
+    [InlineData("desktop", null, null, true)]
+    [InlineData("wallpaper", null, true, false)]
+    [InlineData("", null, true, false)]
+    [InlineData("desktop", null, false, false)]
+    [InlineData("", "xeneon-edge", true, true)]
+    [InlineData("wallpaper", "xeneon-edge", null, true)]
+    public void Generic_display_is_on_top_only_while_see_through(string backdrop, string? family, bool? stored, bool expected)
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["a"] = new PanelDeviceRecord
+        {
+            Id = "a", DisplayId = "P", Backdrop = backdrop, AlwaysOnTop = stored,
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Family = family },
+        });
+
+        Assert.Equal(expected, Assert.Single(registry.ListAssignments()).AlwaysOnTop);
+        Assert.Equal(stored, store.Load().PanelDevices["a"].AlwaysOnTop);
     }
 
     [Fact]

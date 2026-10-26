@@ -640,6 +640,8 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
         Assert.Null(record.AlwaysOnTop);
+        // A generic display is on top only while see-through.
+        _registry.Patch(record.Id, new PanelDevicePatch { Backdrop = "desktop" });
         Assert.True(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
 
         var patched = _registry.Patch(record.Id, new PanelDevicePatch { AlwaysOnTop = false });
@@ -699,6 +701,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
         _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, AlwaysOnTop = false, BackgroundFrostLevel = 25 });
         _registry.UpdateXeneonEdgeSettings("DISPLAY-1", new XeneonEdgeSettingsDto { Brightness = 5 });
+        _registry.Patch(record.Id, new PanelDevicePatch { Backdrop = "desktop" });
 
         var reset = _registry.ResetHardwareSettings(record.Id);
 
