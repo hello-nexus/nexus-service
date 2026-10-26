@@ -19,13 +19,35 @@ public class JpegPanelLinuxCandidateTests
         Assert.Equal(expected, JpegPanelConnectionWorker.IsCandidate(JpegPanelModel.CorsairCapellix, Info(outLen), linux));
     }
 
-    [Theory]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    public void Model_with_control_channel_stays_off_linux(bool linux, bool expected)
+    public static TheoryData<string> AllHandlers()
     {
-        var model = JpegPanelModel.CorsairNautilusCap;
-        Assert.NotNull(model.Handshake);
-        Assert.Equal(expected, JpegPanelConnectionWorker.IsCandidate(model, Info(model.ReportLength), linux));
+        var data = new TheoryData<string>();
+        foreach (var m in JpegPanelModel.All)
+        {
+            data.Add(m.HandlerId);
+        }
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(AllHandlers))]
+    public void On_linux_only_models_without_a_control_channel_attach(string handlerId)
+    {
+        var m = JpegPanelModel.ByHandlerId(handlerId)!;
+        Assert.Equal(m.Handshake == null, JpegPanelConnectionWorker.IsCandidate(m, Info(m.ReportLength), true));
+        Assert.True(JpegPanelConnectionWorker.IsCandidate(m, Info(m.ReportLength), false));
+    }
+
+    [Theory]
+    [InlineData("corsair-capellix-lcd", true)]
+    [InlineData("corsair-xc7-lcd", true)]
+    [InlineData("idcooling-fx-lcd", true)]
+    [InlineData("asrock-lcd", false)]
+    [InlineData("asus-slc4-lcd", false)]
+    [InlineData("corsair-nautilus-lcd", false)]
+    public void Named_panels_on_linux(string handlerId, bool attaches)
+    {
+        var m = JpegPanelModel.ByHandlerId(handlerId)!;
+        Assert.Equal(attaches, JpegPanelConnectionWorker.IsCandidate(m, Info(m.ReportLength), true));
     }
 }
