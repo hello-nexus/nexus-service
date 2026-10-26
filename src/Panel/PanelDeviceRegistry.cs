@@ -794,7 +794,10 @@ public sealed class PanelDeviceRegistry
                 record.AlwaysOnTop = patch.AlwaysOnTop.Value;
             if (patch.ClickThrough.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.ClickThrough = patch.ClickThrough.Value;
-            if (patch.GridSlots is { } slots && slots is >= MinGridSlots and <= MaxGridSlots && slots % 2 == 0)
+            // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
+            if (patch.GridSlots is <= 0)
+                record.GridSlots = null;
+            else if (patch.GridSlots is { } slots && slots is >= MinGridSlots and <= MaxGridSlots && slots % 2 == 0)
                 record.GridSlots = slots;
             if (patch.ClearDesktopImport == true)
                 record.DesktopImport = null;
@@ -1284,7 +1287,7 @@ public sealed class PanelDeviceRegistry
             // Hosted wins when set; otherwise Enabled passes through, so an untouched record still reads as uncustomized.
             Enabled = r.Hosted ?? r.Enabled,
             ClickThrough = r.ClickThrough,
-            GridSlots = r.GridSlots,
+            GridSlots = r.GridSlots is > 0 ? r.GridSlots : null,
             DesktopImport = r.DesktopImport,
         };
     }

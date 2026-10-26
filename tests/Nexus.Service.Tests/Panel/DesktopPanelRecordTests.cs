@@ -205,10 +205,33 @@ public class DesktopPanelRecordTests
     }
 
     [Theory]
+    [InlineData(0)]
+    [InlineData(-4)]
+    public void Patch_with_zero_or_less_clears_the_grid_override(int slots)
+    {
+        var (registry, store) = Build();
+        var (r, _) = registry.AllocateForDisplay("D1", null, Monitor());
+        registry.Patch(r.Id, new PanelDevicePatch { GridSlots = 8 });
+
+        var clone = registry.Patch(r.Id, new PanelDevicePatch { GridSlots = slots })!;
+
+        Assert.Null(store.Load().PanelDevices[r.Id].GridSlots);
+        Assert.Null(clone.GridSlots);
+    }
+
+    [Fact]
+    public void A_stored_non_positive_grid_override_never_reaches_a_response()
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord { Id = "r", DisplayId = "D1", GridSlots = 0 });
+
+        Assert.Null(registry.FindByDisplayId("D1")!.GridSlots);
+    }
+
+    [Theory]
     [InlineData(1)]
     [InlineData(3)]
     [InlineData(66)]
-    [InlineData(0)]
     public void Patch_ignores_an_invalid_grid_slot_count(int slots)
     {
         var (registry, store) = Build();
