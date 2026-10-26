@@ -25,13 +25,19 @@ public sealed class OverlaySupervisor : BackgroundService
     private readonly Func<bool> _y70Present;
     private readonly Func<bool> _streamsWanted;
     private readonly Func<bool>? _identifyActive;
+    private readonly Func<NexusSettings, bool>? _migrationCanAdvance;
     private readonly SemaphoreSlim _wake = new(0, 1);
     private TimeSpan _backoff = MinBackoff;
     private DateTime _nextAttempt = DateTime.MinValue;
     private bool _wasDesired;
+    private long? _pendingSinceMs;
 
-    public OverlaySupervisor(IOverlayHost host, IConfigStore store, Func<bool> y70Present, Func<bool> streamsWanted, Func<bool>? identifyActive = null)
+    /// <summary>Monotonic, so a wall-clock jump neither shortens nor stretches the migration bound.</summary>
+    internal Func<long> MonoMs { get; set; } = () => Environment.TickCount64;
+
+    public OverlaySupervisor(IOverlayHost host, IConfigStore store, Func<bool> y70Present, Func<bool> streamsWanted, Func<bool>? identifyActive = null, Func<NexusSettings, bool>? migrationCanAdvance = null)
     {
+        _migrationCanAdvance = migrationCanAdvance;
         _host = host;
         _store = store;
         _y70Present = y70Present;
@@ -39,9 +45,12 @@ public sealed class OverlaySupervisor : BackgroundService
         _identifyActive = identifyActive;
     }
 
+    public static bool LegacyPending(NexusSettings s)
+        => s.Overlay.Enabled == true && s.Overlay.HasWidgets && !s.Overlay.MigratedToPanels;
+
     // Pending legacy widgets need a host: the Windows migration waits for the monitor map it publishes.
-    public static bool Desired(NexusSettings s, bool y70Present, bool streamsWanted)
-        => (s.Overlay.Enabled == true && s.Overlay.HasWidgets && !s.Overlay.MigratedToPanels)
+    public static bool Desired(NexusSettings s, bool y70Present, bool streamsWanted, bool migrationWantsHost = true)
+        => (LegacyPending(s) && migrationWantsHost)
            || (s.Panel.AutoLaunch && y70Present)
            || streamsWanted
            || s.PanelDevices.Values.Any(r => !string.IsNullOrEmpty(r.DisplayId) && PanelHosting.IsOn(r));
@@ -71,7 +80,8 @@ public sealed class OverlaySupervisor : BackgroundService
 
     internal void Reconcile(DateTime now)
     {
-        var desired = Desired(_store.Load(), _y70Present(), _streamsWanted());
+        var settings = _store.Load();
+        var desired = Desired(settings, _y70Present(), _streamsWanted(), MigrationWantsHost(settings));
         if (desired && !_wasDesired) ResetBackoff();
         _wasDesired = desired;
 
@@ -90,6 +100,20 @@ public sealed class OverlaySupervisor : BackgroundService
         // interval; the backoff is for one that started and did not stay.
         if (_host.Start()) _backoff = TimeSpan.FromTicks(Math.Min(_backoff.Ticks * 2, MaxBackoff.Ticks));
         else _backoff = MinBackoff;
+    }
+
+    // The term lapses after the migration's own grace, so an unresolvable target stops restarting the host.
+    private bool MigrationWantsHost(NexusSettings settings)
+    {
+        if (!LegacyPending(settings))
+        {
+            _pendingSinceMs = null;
+            return false;
+        }
+        var mono = MonoMs();
+        _pendingSinceMs ??= mono;
+        if (mono - _pendingSinceMs.Value >= DesktopWidgetsMigration.MissingMonitorGraceMs) return false;
+        return _migrationCanAdvance?.Invoke(settings) ?? true;
     }
 
     private void ResetBackoff()

@@ -2646,14 +2646,16 @@ public static class NexusServiceCollectionExtensions
             }
 #endif
             return new Nexus.Service.Panel.DisplayIdentifyService(
-                sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(), wakeOverlay);
+                sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(), wakeOverlay, null,
+                () => sp.GetService<Nexus.Service.Platform.Displays.DisplayTopologyService>()?.GetTopology().Displays.Select(d => d.Id));
         });
         services.AddHostedService(sp => new Nexus.Service.Panel.OverlaySupervisor(
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
             () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0,
-            () => sp.GetRequiredService<Nexus.Service.Panel.DisplayIdentifyService>().IsActive));
+            () => sp.GetRequiredService<Nexus.Service.Panel.DisplayIdentifyService>().IsActive,
+            settings => sp.GetRequiredService<Nexus.Service.Panel.DesktopWidgetsMigration>().HostCanAdvance(settings)));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
 
         // Registered on every OS so GET /sentry can answer supported:false where

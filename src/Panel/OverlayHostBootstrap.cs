@@ -105,8 +105,13 @@ internal static class OverlayHostBootstrap
         var parts = new List<string>();
         foreach (var record in snapshot.PanelDevices.Values)
         {
-            if (!string.IsNullOrEmpty(record.DisplayId) && PanelHosting.IsOn(record))
-                parts.Add($"{record.DisplayId}|{record.Id}|{record.ReserveMonitor ?? true}|{record.KeepCursorOff ?? false}|{record.AlwaysOnTop ?? true}|{record.Backdrop ?? ""}|{record.ClickThrough ?? false}|{isPrimary?.Invoke(record.DisplayId) ?? false}");
+            if (string.IsNullOrEmpty(record.DisplayId) || !PanelHosting.IsOn(record)) continue;
+            // Effective values as ListAssignments derives them, so a Family or backdrop change that flips one wakes the overlay.
+            var seeThrough = record.Backdrop == "desktop";
+            var generic = string.IsNullOrEmpty(record.Capabilities?.Family);
+            var onTop = (record.AlwaysOnTop ?? true) && (seeThrough || !generic);
+            var clickThrough = seeThrough && (generic || (record.ClickThrough ?? false));
+            parts.Add($"{record.DisplayId}|{record.Id}|{record.ReserveMonitor ?? true}|{record.KeepCursorOff ?? false}|{onTop}|{record.Backdrop ?? ""}|{clickThrough}|{isPrimary?.Invoke(record.DisplayId) ?? false}");
         }
         parts.Sort(StringComparer.Ordinal);
         return string.Join(";", parts);

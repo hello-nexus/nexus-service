@@ -1,17 +1,37 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nexus.Service.Auth;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Panel;
+using Nexus.Service.Platform.Displays;
 
 namespace Nexus.Service.Tests.Integration;
 
-public sealed class DisplayIdentifyRouteTests : IClassFixture<NexusAppFactory>
+public sealed class DisplayIdentifyRouteTests : IClassFixture<NexusAppFactory>, IDisposable
 {
-    private readonly NexusAppFactory _factory;
+    private readonly WebApplicationFactory<Program> _factory;
 
-    public DisplayIdentifyRouteTests(NexusAppFactory factory) => _factory = factory;
+    private sealed class OneDisplayProvider : IDisplayTopologyProvider
+    {
+        public bool PositionsAvailable => true;
+        public IReadOnlyList<RawDisplayInfo>? Enumerate() => new List<RawDisplayInfo>
+        {
+            new() { Id = "route-test-display", Number = 1, Name = "Left", Width = 1920, Height = 1080, ResolutionWidth = 1920, ResolutionHeight = 1080, Scale = 1, IsPrimary = true, Orientation = "Landscape" },
+        };
+    }
+
+    public DisplayIdentifyRouteTests(NexusAppFactory factory) => _factory = factory.WithWebHostBuilder(b =>
+        b.ConfigureTestServices(s =>
+        {
+            s.RemoveAll<IDisplayTopologyProvider>();
+            s.AddSingleton<IDisplayTopologyProvider>(new OneDisplayProvider());
+        }));
+
+    public void Dispose() => _factory.Dispose();
 
     private HttpClient AuthedClient()
     {
@@ -44,6 +64,18 @@ public sealed class DisplayIdentifyRouteTests : IClassFixture<NexusAppFactory>
         Assert.Equal("route-test-display", entry.DisplayId);
         Assert.Equal("3", entry.Label);
         Assert.Equal("Left", entry.Name);
+    }
+
+    [Fact]
+    public async Task Identify_drops_ids_that_match_no_display()
+    {
+        var res = await AuthedClient().PostAsJsonAsync("/displays/identify", new
+        {
+            displays = new[] { new { displayId = "ghost", label = "9", name = "Nowhere" } },
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, res.StatusCode);
+        Assert.Null(_factory.Services.GetRequiredService<DisplayIdentifyService>().Current());
     }
 
     [Fact]

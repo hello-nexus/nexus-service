@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Panel;
 using Xunit;
@@ -89,6 +91,37 @@ public class DisplayIdentifyServiceTests
         Assert.Null(svc.Current());
         Assert.False(svc.IsActive);
         Assert.Empty(host.Identifies);
+    }
+
+    [Fact]
+    public void Sanitize_drops_oversized_and_unknown_ids()
+    {
+        var known = new HashSet<string> { "a", new string('i', 200) };
+
+        var kept = DisplayIdentifyService.Sanitize(new[] { Entry("a", "1"), Entry("zz", "2"), Entry(new string('i', 200), "3") }, known);
+
+        Assert.Equal("a", Assert.Single(kept).DisplayId);
+    }
+
+    [Fact]
+    public void Sanitize_clips_by_text_element_never_splitting_a_surrogate_pair()
+    {
+        var kept = DisplayIdentifyService.Sanitize(new[] { Entry("a", new string('x', 7) + "\U0001F600\U0001F600", "\U0001F600" + new string('n', 60)) });
+
+        Assert.Equal(new string('x', 7) + "\U0001F600", kept[0].Label);
+        Assert.Equal("\U0001F600" + new string('n', 39), kept[0].Name);
+    }
+
+    [Fact]
+    public void Begin_drops_ids_the_topology_does_not_know()
+    {
+        var host = new FakeHost();
+        var svc = new DisplayIdentifyService(host, null, () => 0, () => new[] { "a" });
+
+        var kept = svc.Begin(new[] { Entry("a", "1"), Entry("ghost", "2") });
+
+        Assert.Equal("a", Assert.Single(kept).DisplayId);
+        Assert.DoesNotContain("ghost", Assert.Single(host.Identifies));
     }
 
     [Fact]

@@ -340,18 +340,35 @@ public class DesktopPanelRecordTests
     public void Assignments_signature_covers_backdrop_click_through_and_hosting()
     {
         var s = new NexusSettings();
-        s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1", Backdrop = "desktop" };
+        s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1", Backdrop = "desktop", Capabilities = new PanelDeviceCapabilities { Family = "xeneon" } };
         var baseline = OverlayHostBootstrap.AssignmentsSignature(s);
 
-        s.PanelDevices["a"].Backdrop = "wallpaper";
-        var backdrop = OverlayHostBootstrap.AssignmentsSignature(s);
         s.PanelDevices["a"].ClickThrough = true;
         var clickThrough = OverlayHostBootstrap.AssignmentsSignature(s);
+        s.PanelDevices["a"].Backdrop = "wallpaper";
+        var backdrop = OverlayHostBootstrap.AssignmentsSignature(s);
         s.PanelDevices["a"].Hosted = false;
         var hosting = OverlayHostBootstrap.AssignmentsSignature(s);
 
         Assert.Equal(4, new[] { baseline, backdrop, clickThrough, hosting }.Distinct().Count());
         Assert.Equal("", hosting);
+    }
+
+    [Fact]
+    public void Assignments_signature_changes_when_a_family_change_flips_the_effective_values()
+    {
+        var s = new NexusSettings();
+        s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1", Backdrop = "wallpaper", AlwaysOnTop = true };
+        var generic = OverlayHostBootstrap.AssignmentsSignature(s);
+        s.PanelDevices["a"].Capabilities = new PanelDeviceCapabilities { Family = "xeneon" };
+        var curated = OverlayHostBootstrap.AssignmentsSignature(s);
+
+        Assert.NotEqual(generic, curated);
+        s.PanelDevices["a"].Backdrop = "desktop";
+        s.PanelDevices["a"].ClickThrough = false;
+        var desktopCurated = OverlayHostBootstrap.AssignmentsSignature(s);
+        s.PanelDevices["a"].Capabilities = null;
+        Assert.NotEqual(desktopCurated, OverlayHostBootstrap.AssignmentsSignature(s));
     }
 
     [Fact]

@@ -191,6 +191,26 @@ public sealed class DesktopWidgetsMigration
         }
     }
 
+    /// <summary>
+    /// Whether a host is worth running for the pending widgets: the Windows monitor map comes from the host itself,
+    /// and a target display that exists or may still appear can take them. False when no pass could ever resolve one.
+    /// </summary>
+    public bool HostCanAdvance(NexusSettings s, DisplayTopologyResponse? topology = null)
+    {
+        if (Os == HostOs.Linux) return true;
+        if (Os == HostOs.Windows && !_monitors.HasMap) return true;
+        var displays = (topology ?? _topology?.GetTopology())?.Displays;
+        if (displays is null || displays.Count == 0) return true;
+        var primary = displays.FirstOrDefault(d => d.IsPrimary) ?? (displays.Count == 1 ? displays[0] : null);
+        static bool Usable(DisplayTopologyEntryDto? d) => d is not null && !d.IsY70 && d.HostingSupported;
+        var overlay = s.Overlay;
+        if (Os == HostOs.MacOS || (overlay.Monitor ?? -1) < 0) return Usable(primary);
+        var id = _monitors.DisplayIdForIndex(overlay.Monitor ?? -1);
+        var target = id is null ? null : displays.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.Ordinal));
+        // A legacy index not mapped yet may still appear, and the primary stands in after the grace.
+        return target is null || Usable(target) || Usable(primary);
+    }
+
     // An install migrated before the fields were cleared still carries them. Only a present record proves
     // the widgets landed, and the live block is re-checked so a profile switch cannot lose another profile's.
     private void ClearMigratedLegacy(LegacyOverlaySettings snapshot)

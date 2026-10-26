@@ -665,6 +665,18 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void ResetToDefaults_ClearsTheWidgetsLock()
+    {
+        var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
+        _registry.Patch(record.Id, new PanelDevicePatch { WidgetsLocked = true });
+
+        var reset = _registry.ResetToDefaults(record.Id);
+
+        Assert.Null(reset!.WidgetsLocked);
+        Assert.Null(_registry.Get(record.Id)!.WidgetsLocked);
+    }
+
+    [Fact]
     public void WidgetsLocked_round_trips_through_the_record_json()
     {
         var record = new PanelDeviceRecord { Id = "p", WidgetsLocked = true };

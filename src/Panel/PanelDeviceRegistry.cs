@@ -298,6 +298,8 @@ public sealed class PanelDeviceRegistry
                 if (!s.PanelDevices.TryGetValue(move.RecordId, out var record)) continue;
                 record.DisplayId = move.NewDisplayId;
                 record.DisplayFingerprint = move.Fingerprint;
+                // The reported viewport belongs to the old display's kiosk.
+                record.KioskViewport = null;
                 fingerprinted.Add(move.RecordId);
                 applied.Add((move.RecordId, move.OldDisplayId, move.NewDisplayId));
                 ServiceLog.Info($"[panel-relink] record {move.RecordId} display '{move.OldDisplayId}' -> '{move.NewDisplayId}' "
@@ -931,6 +933,7 @@ public sealed class PanelDeviceRegistry
             // the caller deletes.
             record.Presets = null;
             record.ActivePresetId = null;
+            record.WidgetsLocked = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
         });

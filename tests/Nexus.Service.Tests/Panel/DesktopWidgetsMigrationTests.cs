@@ -684,4 +684,69 @@ public class DesktopWidgetsMigrationTests
 
         Assert.Single(store.Load().Overlay.Layout!);
     }
+
+    private static NexusSettings PendingSettings(int? monitor = null)
+    {
+        var s = new NexusSettings();
+        s.Overlay.Enabled = true;
+        s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("w") };
+        s.Overlay.Monitor = monitor;
+        return s;
+    }
+
+    [Fact]
+    public void Host_can_advance_on_windows_while_the_monitor_map_is_missing()
+    {
+        var (m, _, _) = Build(HostOs.Windows, postMap: false, Widget("w"));
+
+        Assert.True(m.HostCanAdvance(PendingSettings(), Topology(Display("Y70", true, y70: true))));
+    }
+
+    [Fact]
+    public void Host_can_advance_with_a_usable_primary()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.True(m.HostCanAdvance(PendingSettings(), Two()));
+    }
+
+    [Fact]
+    public void Host_cannot_advance_when_the_primary_is_a_y70()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.False(m.HostCanAdvance(PendingSettings(), Topology(Display("Y70", true, y70: true), Display(Second, false))));
+    }
+
+    [Fact]
+    public void Host_cannot_advance_when_several_displays_and_none_is_primary()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.False(m.HostCanAdvance(PendingSettings(), Topology(Display(Primary, false), Display(Second, false))));
+    }
+
+    [Fact]
+    public void Host_can_advance_while_a_legacy_monitor_index_may_still_appear()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.True(m.HostCanAdvance(PendingSettings(monitor: 7), Topology(Display("Y70", true, y70: true))));
+    }
+
+    [Fact]
+    public void Host_can_advance_before_any_display_is_known()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.True(m.HostCanAdvance(PendingSettings(), Topology()));
+    }
+
+    [Fact]
+    public void Host_cannot_advance_on_macos_when_the_primary_is_unusable()
+    {
+        var (m, _, _) = Build(HostOs.MacOS, Widget("w"));
+
+        Assert.False(m.HostCanAdvance(PendingSettings(), Topology(Display(Primary, true, hosting: false))));
+    }
 }
