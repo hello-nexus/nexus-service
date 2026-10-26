@@ -290,24 +290,28 @@ public class MystiqueSessionTests
     }
 
     [Fact]
-    public void Apply_picks_the_shown_gif_by_its_place_and_only_when_it_moved()
+    public void Apply_picks_the_saved_gif_place_and_only_when_it_moved()
     {
-        const string a = "acd9325521f3493c86bfc0b0aa85658d";
-        const string b = "83182dc7830844c89ca5f01e57f63ad9";
         var pipe = new FakePipe();
         var session = new MystiqueSession(pipe, sleep: NoSleep);
-        var settings = new DeepCoolMystiqueSettings { SourceEdited = true, MediaSource = DeepCoolMystiqueSettings.SourceGif, GifOrder = new() { a, b }, ShownGif = b };
+        var settings = new DeepCoolMystiqueSettings { SourceEdited = true, MediaSource = DeepCoolMystiqueSettings.SourceGif, GifPlace = 1 };
         Assert.True(session.Open(settings, Now));
         Assert.Contains(pipe.Writes, w => w.Frame.SequenceEqual(MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceGif, 1)));
         pipe.Writes.Clear();
 
-        settings.ShownGif = a;
+        settings.GifPlace = 0;
         Assert.True(session.Apply(settings.Copy()));
         Assert.Equal(new[] { Convert.ToHexString(MystiqueProtocol.BuildMediaSource(DeepCoolMystiqueSettings.SourceGif, 0)) },
             pipe.Writes.Select(w => Convert.ToHexString(w.Frame)));
         pipe.Writes.Clear();
 
         settings.ShownGif = "";
+        Assert.True(session.Apply(settings.Copy()));
+        Assert.Empty(pipe.Writes);
+        Assert.True(session.Upload(MystiqueMedia.BuildGif(Enumerable.Repeat(new byte[100], MystiqueMedia.GifFrames).ToList(), "acd9325521f3493c86bfc0b0aa85658d"),
+            source: () => new MystiqueSourceAfter(DeepCoolMystiqueSettings.SourceGif, true, 3)));
+        pipe.Writes.Clear();
+        settings.GifPlace = 3;
         Assert.True(session.Apply(settings.Copy()));
         Assert.Empty(pipe.Writes);
     }

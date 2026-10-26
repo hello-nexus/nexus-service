@@ -222,7 +222,8 @@ public partial class DeepCoolMystiqueRoutesTests
                 new DeepCoolMystiqueMediaItem { Kind = "gif", Id = gifId },
             };
             (m.PictureSlot, m.ShownPicture, m.ShownGif) = (otherPicture, pictureId, gifId);
-            m.GifOrder = new() { gifId };
+            m.GifOrder = new() { "41c9bf307cba45a1aa3a1d92bbe93b96", gifId };
+            m.GifPlace = 1;
         });
 
         Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync($"/devices/deepcool-mystique/media/{otherPicture}")).StatusCode);
@@ -237,7 +238,8 @@ public partial class DeepCoolMystiqueRoutesTests
         Assert.Empty(m.Media);
         Assert.Empty(m.Freed);
         Assert.Equal((otherPicture, "", ""), (m.PictureSlot, m.ShownPicture, m.ShownGif));
-        Assert.Equal(new[] { "" }, m.GifOrder);
+        Assert.Equal(new[] { "41c9bf307cba45a1aa3a1d92bbe93b96", "" }, m.GifOrder);
+        Assert.Equal(1, m.GifPlace);
     }
 
     [Fact]
@@ -292,14 +294,15 @@ public partial class DeepCoolMystiqueRoutesTests
         const string b = "83182dc7830844c89ca5f01e57f63ad9";
         var m = new DeepCoolMystiqueSettings();
         Assert.True(DevicesRoutes.MystiqueGifNeedsFormat(m));
-        m.GifSlotUnsure = false;
+        m.GifOrderUnsure = false;
+        m.GifSlotUnsure = true;
         Assert.False(DevicesRoutes.MystiqueGifNeedsFormat(m));
 
         Assert.Equal(new MystiqueSourceAfter("gif", true, 0), DevicesRoutes.MystiqueGifLanded(m, a, chosenDuringStream: false));
         Assert.Equal(new MystiqueSourceAfter("gif", true, 1), DevicesRoutes.MystiqueGifLanded(m, b, chosenDuringStream: false));
         Assert.Equal(new MystiqueSourceAfter("gif", true, 2), DevicesRoutes.MystiqueGifLanded(m, a, chosenDuringStream: false));
         Assert.Equal(new[] { "", b, a }, m.GifOrder);
-        Assert.Equal(a, m.ShownGif);
+        Assert.Equal((a, 2), (m.ShownGif, m.GifPlace));
 
         m.MediaSource = "images";
         Assert.Equal(new MystiqueSourceAfter("images", true, 3), DevicesRoutes.MystiqueGifLanded(m, b, chosenDuringStream: true));
@@ -310,17 +313,17 @@ public partial class DeepCoolMystiqueRoutesTests
             m.GifOrder.Add("");
         }
         Assert.True(DevicesRoutes.MystiqueGifNeedsFormat(m));
-        Assert.False(DevicesRoutes.MystiqueGifsUnsure(m));
     }
 
     [Fact]
-    public void A_gif_slot_saved_by_an_earlier_build_leaves_the_stored_gifs_unknown()
+    public void Settings_saved_before_the_gif_order_leave_the_stored_gifs_unknown()
     {
-        var m = new DeepCoolMystiqueSettings { GifSlotUnsure = false, GifSlot = "acd9325521f3493c86bfc0b0aa85658d" };
+        const string saved = "{\"devices\":{\"deepCoolMystique\":{\"gifSlot\":\"acd9325521f3493c86bfc0b0aa85658d\",\"gifSlotUnsure\":false}}}";
 
-        Assert.True(DevicesRoutes.MystiqueGifsUnsure(m));
-        m.GifOrder.Add("83182dc7830844c89ca5f01e57f63ad9");
-        Assert.False(DevicesRoutes.MystiqueGifsUnsure(m));
+        var m = System.Text.Json.JsonSerializer.Deserialize(saved, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!.Devices.DeepCoolMystique.Copy();
+
+        Assert.True(m.GifOrderUnsure);
+        Assert.True(DevicesRoutes.MystiqueGifNeedsFormat(m));
     }
 
     [Fact]

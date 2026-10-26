@@ -150,7 +150,7 @@ public static partial class DevicesRoutes
         Media = m.Media.ConvertAll(i => new DeepCoolMystiqueMediaDto { Kind = i.Kind, Id = i.Id, Name = i.Name, Ext = i.Ext, Editable = MystiqueSourceExists(i) }).ToArray(),
         ShownGif = m.ShownGif,
         ShownPicture = m.ShownPicture,
-        GifSlotUnsure = MystiqueGifsUnsure(m) || MystiquePicturesUnsure(m),
+        GifSlotUnsure = m.GifSlotUnsure || MystiquePicturesUnsure(m),
         RecordingChosen = m.RecordingEdited,
         DeviceChosen = m.DeviceEdited,
         Mode = m.Mode,

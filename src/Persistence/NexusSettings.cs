@@ -2382,7 +2382,7 @@ public sealed class DeepCoolMystiqueSettings
     /// <summary>Legacy only: screen ids earlier builds freed, which a slot is taken from before a recorded one exists; nothing adds to it.</summary>
     public List<DeepCoolMystiqueMediaItem> Freed { get; set; } = new();
 
-    /// <summary>Legacy only: the one screen id earlier builds sent every GIF under; while set with <see cref="GifOrder"/> empty, the GIFs held are unknown.</summary>
+    /// <summary>Legacy only: the one screen id earlier builds sent every GIF under.</summary>
     public string GifSlot { get; set; } = "";
 
     /// <summary>
@@ -2391,7 +2391,13 @@ public sealed class DeepCoolMystiqueSettings
     /// </summary>
     public List<string> GifOrder { get; set; } = new();
 
-    /// <summary>The screen may hold pictures or GIFs Nexus did not record, so what it shows is a guess and the next new GIF goes up after a format, which clears it. Named for GIFs, as saved settings use it.</summary>
+    /// <summary>The place in <see cref="GifOrder"/> the last source command picked, which the screen plays while GIFs play.</summary>
+    public int GifPlace { get; set; }
+
+    /// <summary>The screen may hold GIFs <see cref="GifOrder"/> does not list, so the next new GIF goes up after a format, which clears it.</summary>
+    public bool GifOrderUnsure { get; set; } = true;
+
+    /// <summary>The screen may hold pictures or GIFs from before Nexus kept track of them, so what it shows is a guess; a format clears it. Named for GIFs, as saved settings use it.</summary>
     public bool GifSlotUnsure { get; set; } = true;
 
     /// <summary>

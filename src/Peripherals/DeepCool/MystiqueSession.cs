@@ -52,7 +52,6 @@ public sealed class MystiqueSession
     private long _clockSentMs;
     private TimeSpan _clockOffset;
     private int _unanswered;
-    private int _gifIndex;
     private readonly CancellationToken _stop;
 
     /// <param name="monotonicMs">Clock for the resend schedule; wall-clock steps must not move it.</param>
@@ -118,15 +117,11 @@ public sealed class MystiqueSession
         {
             return false;
         }
-        int gifIndex = s.ShownGif.Length > 0 && s.GifOrder.IndexOf(s.ShownGif) is >= 0 and var at ? at : _gifIndex;
-        bool gifMoved = s.MediaSource == DeepCoolMystiqueSettings.SourceGif && gifIndex != _gifIndex;
-        if (s.SourceEdited && (last is null || !last.SourceEdited || last.MediaSource != s.MediaSource || gifMoved))
+        bool gifMoved = s.MediaSource == DeepCoolMystiqueSettings.SourceGif && last?.GifPlace != s.GifPlace;
+        if (s.SourceEdited && (last is null || !last.SourceEdited || last.MediaSource != s.MediaSource || gifMoved)
+            && !Settings(MystiqueProtocol.BuildMediaSource(s.MediaSource, s.GifPlace)))
         {
-            if (!Settings(MystiqueProtocol.BuildMediaSource(s.MediaSource, gifIndex)))
-            {
-                return false;
-            }
-            SentGif(s.MediaSource, gifIndex);
+            return false;
         }
         if (s.RecordingEdited && (last is null || !last.RecordingEdited || last.RecordFrequency != s.RecordFrequency || last.RecordTemperature != s.RecordTemperature)
             && !(Settings(MystiqueProtocol.BuildRecording(s.RecordFrequency, s.RecordTemperature)) && Settings(MystiqueProtocol.BuildRecordingApply())))
@@ -196,24 +191,15 @@ public sealed class MystiqueSession
         {
             _applied.MediaSource = kept.Source;
             _applied.SourceEdited = true;
-            SentGif(kept.Source, kept.GifIndex);
+            _applied.GifPlace = kept.GifIndex;
         }
         return true;
-    }
-
-    private void SentGif(string source, int gifIndex)
-    {
-        if (source == DeepCoolMystiqueSettings.SourceGif)
-        {
-            _gifIndex = gifIndex;
-        }
     }
 
     /// <summary>Sends the source command; true when the screen answered it.</summary>
     internal bool SendSource(string source, int gifIndex = 0)
     {
         var command = MystiqueProtocol.BuildMediaSource(source, gifIndex);
-        SentGif(source, gifIndex);
         bool delivered = Exchange(MystiqueProtocol.SettingsWritePipe, MystiqueProtocol.SettingsReadPipe, command,
             out var reply, out bool answered, SourceReplyTimeoutMs);
         LogSetting(command, delivered && answered);
@@ -224,6 +210,7 @@ public sealed class MystiqueSession
         if (_applied is not null)
         {
             _applied.MediaSource = source;
+            _applied.GifPlace = gifIndex;
             _applied.SourceEdited = delivered && answered;
         }
         return delivered && answered;

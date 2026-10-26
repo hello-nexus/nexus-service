@@ -38,13 +38,9 @@ public static partial class DevicesRoutes
         return m.SourceEdited ? new MystiqueSourceAfter(m.MediaSource, true) : null;
     }
 
-    /// <summary>True while the GIFs the screen holds are not known in order, so the next new GIF goes up after a format.</summary>
-    internal static bool MystiqueGifsUnsure(DeepCoolMystiqueSettings m) =>
-        m.GifSlotUnsure || ((m.GifOrder?.Count ?? 0) == 0 && MystiqueMedia.IsId(m.GifSlot));
-
     /// <summary>Whether a new GIF goes up after a format instead of being added to those the screen holds.</summary>
     internal static bool MystiqueGifNeedsFormat(DeepCoolMystiqueSettings m) =>
-        MystiqueGifsUnsure(m) || (m.GifOrder?.Count ?? 0) >= MystiqueMedia.MaxGifs;
+        m.GifOrderUnsure || (m.GifOrder?.Count ?? 0) >= MystiqueMedia.MaxGifs;
 
     /// <summary>
     /// Records a GIF that landed as the last the screen holds and returns the source command after it, which picks the GIF
@@ -62,8 +58,9 @@ public static partial class DevicesRoutes
         }
         order.Add(itemId);
         m.ShownGif = itemId;
+        m.GifPlace = order.Count - 1;
         var chosen = MystiqueSourceAfterUpload(m, isGif: true, chosenDuringStream);
-        return new MystiqueSourceAfter(chosen?.Source ?? m.MediaSource, true, order.Count - 1);
+        return new MystiqueSourceAfter(chosen?.Source ?? m.MediaSource, true, m.GifPlace);
     }
 
     /// <summary>
@@ -147,9 +144,11 @@ public static partial class DevicesRoutes
             {
                 d.GifSlot = "";
                 d.GifOrder = new();
+                d.GifPlace = 0;
                 d.PictureSlot = picture?.Id ?? "";
                 d.Freed = new();
                 d.GifSlotUnsure = false;
+                d.GifOrderUnsure = false;
                 d.QuietSinceFormat = false;
             }
         });
@@ -175,7 +174,7 @@ public static partial class DevicesRoutes
         if (streamed == packages.Count - 1)
         {
             // A GIF stream that broke off may or may not be stored, so the places of later GIFs are unknown.
-            store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+            store.Update(s => s.Devices.DeepCoolMystique.GifOrderUnsure = true);
         }
         return streamed == packages.Count ? 1 : 0;
     }
@@ -198,7 +197,7 @@ public static partial class DevicesRoutes
         int streamed = await worker.UploadAsync(new[] { package }, SourceAfterStream, ct);
         if (streamed == 0)
         {
-            store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+            store.Update(s => s.Devices.DeepCoolMystique.GifOrderUnsure = true);
         }
         worker.RequestApply();
         return streamed;
@@ -407,9 +406,7 @@ public static partial class DevicesRoutes
                 }
                 bool isGif = item.Kind == DeepCoolMystiqueMediaItem.KindGif;
                 var shown = Results.Json(new DeepCoolMystiqueMediaResponse { Id = id }, AppJsonContext.Default.DeepCoolMystiqueMediaResponse);
-                bool stored = isGif
-                    ? !MystiqueGifsUnsure(m) && m.GifOrder.Contains(id)
-                    : m.ShownPicture == id && MystiqueMedia.IsId(m.PictureSlot);
+                bool stored = isGif ? m.GifOrder.Contains(id) : m.ShownPicture == id && MystiqueMedia.IsId(m.PictureSlot);
                 if (stored)
                 {
                     store.Update(s =>
@@ -418,6 +415,7 @@ public static partial class DevicesRoutes
                         if (isGif)
                         {
                             d.ShownGif = id;
+                            d.GifPlace = d.GifOrder.IndexOf(id);
                         }
                         d.MediaSource = isGif ? DeepCoolMystiqueSettings.SourceGif : DeepCoolMystiqueSettings.SourceImages;
                         d.SourceEdited = true;
@@ -494,10 +492,12 @@ public static partial class DevicesRoutes
                     m.Freed = new();
                     m.GifSlot = "";
                     m.GifOrder = new();
+                    m.GifPlace = 0;
                     m.ShownGif = "";
                     m.PictureSlot = "";
                     m.ShownPicture = "";
                     m.GifSlotUnsure = false;
+                    m.GifOrderUnsure = false;
                     m.QuietSinceFormat = true;
                 });
                 gone.ForEach(DeleteMystiqueFiles);

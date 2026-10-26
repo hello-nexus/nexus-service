@@ -345,29 +345,38 @@ public partial class DeepCoolMystiqueRoutesTests
     }
 
     [FfmpegFact]
-    public async Task A_gif_add_that_fails_leaves_the_stored_gifs_unknown_so_the_next_gif_goes_up_after_a_format()
+    public async Task A_gif_add_that_fails_keeps_stored_gifs_picked_by_the_source_command_and_the_next_new_gif_goes_up_after_a_format()
     {
         await using var screen = await Screen.StartAsync(MediaRoot());
         var first = MystiqueMediaTests.Png(120, 120, shift: 3);
+        var second = MystiqueMediaTests.Png(120, 120, shift: 9);
         Assert.True(Ok(await UploadGifAsync(screen, first)));
         var before = screen.Pipe;
         int next = before.Timeouts().Count;
         screen.Factory.Pipes.StallTimedWrite = i => i == next;
 
-        var failed = await UploadGifAsync(screen, MystiqueMediaTests.Png(120, 120, shift: 9));
+        var failed = await UploadGifAsync(screen, second);
         screen.Factory.Pipes.StallTimedWrite = null;
 
         Assert.False(Ok(failed));
         var m = screen.Settings();
-        Assert.True(m.GifSlotUnsure);
+        Assert.True(m.GifOrderUnsure);
         Assert.Equal(new[] { GifId(first) }, m.GifOrder);
         await WaitFor(() => screen.Worker.IsConnected && screen.Pipe != before);
+        await TwoTicks(screen);
         int mark = screen.Pipe.Writes().Count;
         Assert.True(Ok(await screen.ShowAsync(GifId(first))));
+        await TwoTicks(screen);
         var writes = WritesSince(screen, mark);
+        Assert.Equal(0, Commands(writes, MystiqueProtocol.CmdFormat));
+        Assert.Equal(0, Commands(writes, MystiqueProtocol.CmdUploadStart));
+
+        mark = screen.Pipe.Writes().Count;
+        Assert.True(Ok(await UploadGifAsync(screen, second)));
+        writes = WritesSince(screen, mark);
         Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdFormat));
         Assert.Equal(1, Commands(writes, MystiqueProtocol.CmdUploadStart));
-        Assert.Equal(new[] { GifId(first) }, screen.Settings().GifOrder);
+        Assert.Equal(new[] { GifId(second) }, screen.Settings().GifOrder);
     }
 
     [FfmpegFact]
@@ -379,7 +388,7 @@ public partial class DeepCoolMystiqueRoutesTests
         var second = MystiqueMediaTests.Png(120, 120, shift: 9);
         await screen.UploadAsync(picture);
         await UploadGifAsync(screen, first);
-        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifOrderUnsure = true);
         var before = screen.Pipe;
         int formats = Commands(before.Writes(), MystiqueProtocol.CmdFormat);
         screen.Factory.Pipes.Silence = c => c == MystiqueProtocol.CmdUploadStart;
@@ -394,7 +403,7 @@ public partial class DeepCoolMystiqueRoutesTests
         Assert.Equal(new[] { PictureId(picture), GifId(first) }, m.Media.ConvertAll(i => i.Id));
         Assert.Empty(m.GifOrder);
         Assert.Equal("", m.ShownGif);
-        Assert.False(m.GifSlotUnsure);
+        Assert.False(m.GifOrderUnsure);
         Assert.Equal((PictureId(picture), ""), (m.PictureSlot, m.ShownPicture));
 
         int mark = screen.Pipe.Writes().Count;
@@ -439,7 +448,7 @@ public partial class DeepCoolMystiqueRoutesTests
         var second = MystiqueMediaTests.Png(120, 120, shift: 9);
         await screen.UploadAsync(picture);
         await UploadGifAsync(screen, first);
-        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifOrderUnsure = true);
         var before = screen.Pipe;
         int mark = before.Writes().Count;
         int next = before.Timeouts().Count;
@@ -469,7 +478,7 @@ public partial class DeepCoolMystiqueRoutesTests
         var second = MystiqueMediaTests.Png(120, 120, shift: 9);
         await screen.UploadAsync(picture);
         await UploadGifAsync(screen, first);
-        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifOrderUnsure = true);
         var before = screen.Pipe;
         int mark = before.Writes().Count;
         int announces = 0;
@@ -486,7 +495,7 @@ public partial class DeepCoolMystiqueRoutesTests
         Assert.Equal((PictureId(picture), PictureId(picture)), (m.PictureSlot, m.ShownPicture));
         Assert.Empty(m.GifOrder);
         Assert.Equal("", m.ShownGif);
-        Assert.True(m.GifSlotUnsure);
+        Assert.True(m.GifOrderUnsure);
     }
 
     [FfmpegFact]
@@ -508,7 +517,7 @@ public partial class DeepCoolMystiqueRoutesTests
         }
         Assert.Equal(PictureId(lost), screen.Settings().ShownPicture);
         Lose(lost);
-        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifOrderUnsure = true);
         int mark = screen.Pipe.Writes().Count;
 
         Assert.True(Ok(await UploadGifAsync(screen, second)));
@@ -517,7 +526,7 @@ public partial class DeepCoolMystiqueRoutesTests
         Assert.Equal((PictureId(kept), PictureId(kept)), (m.PictureSlot, m.ShownPicture));
 
         Lose(kept);
-        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifOrderUnsure = true);
         mark = screen.Pipe.Writes().Count;
         Assert.True(Ok(await UploadGifAsync(screen, third)));
         Assert.Equal(1, Commands(WritesSince(screen, mark), MystiqueProtocol.CmdUploadStart));
@@ -567,7 +576,7 @@ public partial class DeepCoolMystiqueRoutesTests
         var picture = MystiqueMediaTests.Png(120, 120);
         await screen.UploadAsync(picture);
         await UploadGifAsync(screen, MystiqueMediaTests.Png(120, 120, shift: 3));
-        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifSlotUnsure = true);
+        screen.Store.Update(s => s.Devices.DeepCoolMystique.GifOrderUnsure = true);
         var before = screen.Pipe;
         int mark = before.Writes().Count;
         int next = before.Timeouts().Count;
