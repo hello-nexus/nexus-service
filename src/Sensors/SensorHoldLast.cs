@@ -20,7 +20,7 @@ internal sealed class SensorHoldLast
     private readonly ConcurrentDictionary<string, Good> _good = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, MissLog> _misses = new(StringComparer.Ordinal);
 
-    /// <summary>Returns the value to publish: the fresh reading, the held one inside the window, else 0. <paramref name="missed"/> is set only for a sensor that read good before, so a sensor LHM never supports stays quiet.</summary>
+    /// <summary>Returns the value to publish: the fresh reading, the held one inside the window, else 0. <paramref name="missed"/> is set only while a sensor that read good before is inside the hold window, so a sensor LHM never supports or one that stays null goes quiet.</summary>
     internal float Resolve(string id, float? raw, long nowMs, out bool missed)
     {
         if (raw is { } v && float.IsFinite(v))
@@ -36,8 +36,9 @@ internal sealed class SensorHoldLast
             return 0f;
         }
 
-        missed = true;
-        return nowMs - g.AtMs <= HoldWindowMs ? g.Value : 0f;
+        var held = nowMs - g.AtMs <= HoldWindowMs;
+        missed = held;
+        return held ? g.Value : 0f;
     }
 
     /// <summary>Counts a miss; returns the misses accumulated since the last log when one is due, else 0.</summary>

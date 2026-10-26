@@ -18,7 +18,8 @@ public class SensorHoldLastTests
     {
         var hold = new SensorHoldLast();
         hold.Resolve("a", 61f, 1000, out _);
-        Assert.Equal(0f, hold.Resolve("a", null, 1001 + SensorHoldLast.HoldWindowMs, out _));
+        Assert.Equal(0f, hold.Resolve("a", null, 1001 + SensorHoldLast.HoldWindowMs, out var missed));
+        Assert.False(missed);
     }
 
     [Fact]
