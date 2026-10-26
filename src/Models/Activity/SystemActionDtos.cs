@@ -62,6 +62,9 @@ public sealed class SystemCaseResponse
 {
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     public string? CaseId { get; set; }
+
+    /// <summary>True when the case was filled in by detection (a Y70 display) and the user has not chosen one.</summary>
+    public bool Auto { get; set; }
 }
 
 /// <summary>Installed font family names of this PC, usable as CSS font-family.</summary>
