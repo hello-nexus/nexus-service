@@ -97,14 +97,12 @@ public sealed class SystemCaseService
         return Task.FromResult(_store.Load().CaseId);
     }
 
-    /// <summary>Whether the stored case was assigned by detection rather than chosen.</summary>
-    public bool IsAuto
+    /// <summary>The local case and whether detection assigned it, from one read so the two agree.</summary>
+    public async Task<(string? CaseId, bool Auto)> GetWithOriginAsync(CancellationToken ct)
     {
-        get
-        {
-            var f = _store.Load();
-            return f.CaseId is not null && f.Origin == MachineCaseOrigin.Auto;
-        }
+        await GetAsync(ct).ConfigureAwait(false);
+        var f = _store.Load();
+        return (f.CaseId, f.CaseId is not null && f.Origin == MachineCaseOrigin.Auto);
     }
 
     /// <summary>Saves locally first (always pending) and returns; the active account is pushed in the background.</summary>
