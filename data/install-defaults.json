@@ -251,7 +251,7 @@
     "globalSpeedModifier": 1.0,
     "activePreset": "off",
     "presets": {
-      "silent":      { "responseTime": 3.0, "minTemp": 45, "maxTemp": 85, "minSpeed": 20, "maxSpeed": 70  },
+      "silent":      { "responseTime": 3.0, "minTemp": 45, "maxTemp": 85, "minSpeed": 20, "maxSpeed": 80  },
       "balanced":    { "responseTime": 1.5, "minTemp": 35, "maxTemp": 75, "minSpeed": 30, "maxSpeed": 90  },
       "turbo":       { "responseTime": 0.5, "minTemp": 30, "maxTemp": 65, "minSpeed": 50, "maxSpeed": 100 },
       "max":         { "responseTime": 0.5, "minTemp": 20, "maxTemp": 100, "minSpeed": 100, "maxSpeed": 100 }
