@@ -375,7 +375,7 @@ public class SetLightingColorAdjustBody
     public float? Blue { get; set; }
     public float? Temperature { get; set; }
     public float? Saturation { get; set; }
-    /// <summary>One of RGB, RBG, GRB, GBR, BRG, BGR; null leaves the stored order alone.</summary>
+    /// <summary>One of <see cref="Nexus.Service.Lighting.DeviceColorAdjust.OrderNames"/>; null leaves the stored order alone.</summary>
     public string? ColorOrder { get; set; }
     public int? Brightness { get; set; }
 }

@@ -808,7 +808,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             ? 0
             : (int)Math.Round(Math.Clamp(lighting.Brightness, 0, 4) * 25 * globalBrightness);
 
-        var sig = PresetSignature(lighting, brightnessPercent, ledCount);
+        // One animation plays on the whole chain, so the first zone's order stands for it.
+        var presetOrder = zones.Count > 0
+            ? DeviceColorAdjust.OrderOf(_store.Load().Devices.LightingDevicePrefs, zones[0].Id)
+            : null;
+        var sig = PresetSignature(lighting, brightnessPercent, ledCount, presetOrder);
         _lastSent.TryGetValue(macHex, out var last);
         var sinceLastPushMs = _lastPushTicks.TryGetValue(macHex, out var lastPush)
             ? (nowTicks - lastPush) / TimeSpan.TicksPerMillisecond
@@ -840,6 +844,16 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             catch (ArgumentException)
             {
                 return false;
+            }
+            if (DeviceColorAdjust.NormalizeOrder(presetOrder) is not (null or "RGB"))
+            {
+                // The renderer's frames may be shared, so permute a copy.
+                var permuted = (byte[])animation.Frames.Clone();
+                for (var i = 0; i + 2 < permuted.Length; i += 3)
+                {
+                    DeviceColorAdjust.ReorderChannels(presetOrder, ref permuted[i], ref permuted[i + 1], ref permuted[i + 2]);
+                }
+                animation = new Slv3StrimerAnimation { Frames = permuted, FrameCount = animation.FrameCount, IntervalMs = animation.IntervalMs };
             }
         }
 
@@ -885,7 +899,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             : new RgbColor(0, 0, 0);
     }
 
-    private static int PresetSignature(LianLiWirelessChainLighting lighting, int brightnessPercent, int ledCount)
+    private static int PresetSignature(LianLiWirelessChainLighting lighting, int brightnessPercent, int ledCount, string? order)
     {
         var hc = new HashCode();
         hc.Add(lighting.Mode);
@@ -894,6 +908,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         hc.Add(lighting.Merge);
         hc.Add(brightnessPercent);
         hc.Add(ledCount);
+        hc.Add(order);
         foreach (var c in lighting.Colors)
         {
             hc.Add(c);
