@@ -385,9 +385,8 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
             yield break;
 
         // A bus is a DDC/CI monitor only if it answers a VCP 0x10 read.
-        foreach (var bus in ProbeCandidates(SelectDdcCandidates(drmRoot, log: ScanLog), b => ReadDdcVcp(b, VcpBrightness) is not null))
+        foreach (var bus in ProbeCandidates(SelectDdcCandidates(drmRoot, log: ScanLog), b => ReadDdcVcp(b, VcpBrightness) is not null, ScanLog))
         {
-
             var (mfg, model, pnpId) = ReadEdidIdentity(bus);
             ScanLog($"i2c-{bus} accepted: mfg='{mfg}' model='{model}' pnp='{pnpId}'");
             var dto = new DisplayDto
@@ -420,13 +419,17 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     internal sealed record DdcCandidates(List<int> Primary, List<int> Fallback);
 
     /// <summary>Probes each group's primary buses, then its fallbacks only when no primary answered; a bus is probed at most once.</summary>
-    internal static List<int> ProbeCandidates(IEnumerable<DdcCandidates> groups, Func<int, bool> answers)
+    internal static List<int> ProbeCandidates(IEnumerable<DdcCandidates> groups, Func<int, bool> answers, Action<string>? log = null)
     {
         var probed = new Dictionary<int, bool>();
         bool Answers(int bus)
         {
-            if (!probed.TryGetValue(bus, out var ok))
-                probed[bus] = ok = answers(bus);
+            if (probed.TryGetValue(bus, out var ok))
+                return ok;
+            ok = answers(bus);
+            probed[bus] = ok;
+            if (!ok)
+                log?.Invoke($"i2c-{bus} rejected: no VCP 0x10 reply");
             return ok;
         }
 
@@ -441,10 +444,6 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
                     found.Add(bus);
                     any = true;
                 }
-                else
-                {
-                    ScanLog($"i2c-{bus} rejected: no VCP 0x10 reply");
-                }
             }
             if (any)
                 continue;
@@ -452,19 +451,10 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
             {
                 if (Answers(bus))
                     found.Add(bus);
-                else
-                    ScanLog($"i2c-{bus} rejected: no VCP 0x10 reply");
             }
         }
         return found.ToList();
     }
-
-    /// <summary>
-    /// I2c bus numbers to probe for DDC: buses of connected DRM connectors, plus every NVIDIA
-    /// adapter (the proprietary driver exposes no connector link). Probing any other /dev/i2c-* (GPU internal, SMBus) can hang the GPU.
-    /// </summary>
-    internal static List<int> SelectDdcBuses(string drmRoot, string i2cRoot = I2cDevicesRoot, Action<string>? log = null)
-        => SelectDdcCandidates(drmRoot, i2cRoot, log).SelectMany(g => g.Primary).Distinct().Order().ToList();
 
     /// <summary>
     /// Per connector, AUX children are the primary candidates and the ddc link a fallback used only when no primary answers

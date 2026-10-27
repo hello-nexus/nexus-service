@@ -116,8 +116,14 @@ public class LinuxDisplayBrightnessTests
             t.Dir($"drm/{name}/{childBus}");
     }
 
+    private static List<int> Primaries(TempDir t, Action<string>? log = null)
+        => LinuxDisplayBrightnessProvider.SelectDdcCandidates(t.At("drm"), t.At("devices"), log).SelectMany(g => g.Primary).Distinct().Order().ToList();
+
+    private static List<int> Fallbacks(TempDir t)
+        => LinuxDisplayBrightnessProvider.SelectDdcCandidates(t.At("drm"), t.At("devices")).SelectMany(g => g.Fallback).Distinct().Order().ToList();
+
     [Fact]
-    public void SelectDdcBuses_ReturnsOnlyConnectedConnectorBuses()
+    public void SelectDdcCandidates_ReturnsOnlyConnectedConnectorBuses()
     {
         using var t = new TempDir();
         Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-7");
@@ -126,46 +132,47 @@ public class LinuxDisplayBrightnessTests
         t.Dir("drm/card1"); // GPU node, not a connector
         t.Dir("devices/i2c-0"); // non-NVIDIA buses without a connector are never listed
 
-        Assert.Equal(new[] { 3, 7 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+        Assert.Equal(new[] { 3, 7 }, Primaries(t));
+        Assert.Empty(Fallbacks(t));
     }
 
     [Fact]
-    public void SelectDdcBuses_UsesI2cChildDirWhenThereIsNoDdcLink()
+    public void SelectDdcCandidates_UsesI2cChildDirWhenThereIsNoDdcLink()
     {
         using var t = new TempDir();
         Connector(t, "card0-DP-1", "connected", childBus: "i2c-5");
 
-        Assert.Equal(new[] { 5 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+        Assert.Equal(new[] { 5 }, Primaries(t));
     }
 
     [Fact]
-    public void SelectDdcBuses_ConnectedWithoutDdcLinkYieldsNothing()
+    public void SelectDdcCandidates_ConnectedWithoutDdcLinkYieldsNothing()
     {
         using var t = new TempDir();
         Connector(t, "card0-eDP-1", "connected");
 
-        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+        Assert.Empty(Primaries(t));
     }
 
     [Fact]
-    public void SelectDdcBuses_MissingRootYieldsNothing()
+    public void SelectDdcCandidates_MissingRootYieldsNothing()
     {
         using var t = new TempDir();
 
-        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("absent"), t.At("devices")));
+        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcCandidates(t.At("absent"), t.At("devices")));
     }
 
     [Fact]
-    public void SelectDdcBuses_IgnoresNonI2cLinkTarget()
+    public void SelectDdcCandidates_IgnoresNonI2cLinkTarget()
     {
         using var t = new TempDir();
         Connector(t, "card0-DP-1", "connected", ddcBus: "aux-0");
 
-        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+        Assert.Empty(Primaries(t));
     }
 
     [Fact]
-    public void SelectDdcBuses_SkipsSmuAdapterEvenWhenLinkedFromAConnector()
+    public void SelectDdcCandidates_SkipsSmuAdapterEvenWhenLinkedFromAConnector()
     {
         using var t = new TempDir();
         t.Write("devices/i2c-4/name", "AMDGPU SMU 4\n");
@@ -175,11 +182,12 @@ public class LinuxDisplayBrightnessTests
         t.Write("drm/card1-HDMI-A-1/i2c-9/name", "AMDGPU SMU 9\n");
         Connector(t, "card1-HDMI-A-1", "connected", childBus: "i2c-9");
 
-        Assert.Equal(new[] { 7 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+        Assert.Equal(new[] { 7 }, Primaries(t));
+        Assert.Empty(Fallbacks(t));
     }
 
     [Fact]
-    public void SelectDdcBuses_LogsSelectionAndRejectionReasons()
+    public void SelectDdcCandidates_LogsSelectionAndRejectionReasons()
     {
         using var t = new TempDir();
         t.Write("drm/card1-DP-2/i2c-5/name", "AMDGPU DM aux hw bus 1\n");
@@ -190,7 +198,7 @@ public class LinuxDisplayBrightnessTests
         Connector(t, "card1-DP-3", "connected");
         var lines = new List<string>();
 
-        var buses = LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices"), lines.Add);
+        var buses = Primaries(t, lines.Add);
 
         Assert.Equal(new[] { 5 }, buses);
         Assert.Contains(lines, l => l.Contains("card1-DP-2") && l.Contains("i2c-5 selected") && l.Contains("AMDGPU DM aux hw bus 1"));
@@ -200,7 +208,7 @@ public class LinuxDisplayBrightnessTests
     }
 
     [Fact]
-    public void SelectDdcBuses_UnionsNvidiaAdaptersWithConnectorBuses()
+    public void SelectDdcCandidates_UnionsNvidiaAdaptersWithConnectorBuses()
     {
         using var t = new TempDir();
         t.Write("devices/i2c-2/name", "NVIDIA i2c adapter 0 at 1:00.0\n");
@@ -211,11 +219,12 @@ public class LinuxDisplayBrightnessTests
         Connector(t, "card0-DP-1", "connected", ddcBus: "i2c-7");
         Connector(t, "card0-DP-2", "connected", ddcBus: "i2c-3");
 
-        Assert.Equal(new[] { 2, 3, 7 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+        Assert.Equal(new[] { 2, 3, 7 }, Primaries(t));
+        Assert.Empty(Fallbacks(t));
     }
 
     [Fact]
-    public void SelectDdcBuses_AmdDpPrefersAuxChildOverDdcLink_AndNeverSelectsSmu()
+    public void SelectDdcCandidates_AmdDpPrefersAuxChildOverDdcLink_AndNeverSelectsSmu()
     {
         using var t = new TempDir();
         t.Write("devices/i2c-4/name", "AMDGPU DM i2c hw bus 0\n");
@@ -228,29 +237,29 @@ public class LinuxDisplayBrightnessTests
         Connector(t, "card1-DP-2", "connected", ddcBus: "i2c-5", childBus: "i2c-10");
         Connector(t, "card1-HDMI-A-1", "disconnected", ddcBus: "i2c-6");
 
-        var buses = LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices"));
+        var buses = Primaries(t);
 
         Assert.Equal(new[] { 9, 10 }, buses);
+        Assert.Equal(new[] { 4, 5 }, Fallbacks(t));
         Assert.DoesNotContain(6, buses);
         Assert.DoesNotContain(7, buses);
     }
 
     [Fact]
-    public void SelectDdcBuses_SmuAuxChildIsNeverSelected()
+    public void SelectDdcCandidates_SmuAuxChildIsNeverSelected()
     {
         using var t = new TempDir();
         t.Write("devices/i2c-4/name", "AMDGPU DM i2c hw bus 0\n");
         t.Write("drm/card1-DP-1/i2c-6/name", "AMDGPU SMU 0\n");
         Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-4", childBus: "i2c-6");
 
-        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
         var g = Assert.Single(LinuxDisplayBrightnessProvider.SelectDdcCandidates(t.At("drm"), t.At("devices")));
         Assert.Empty(g.Primary);
         Assert.Equal(new[] { 4 }, g.Fallback);
     }
 
     [Fact]
-    public void SelectDdcBuses_SmuDdcLinkIsNeverACandidate()
+    public void SelectDdcCandidates_SmuDdcLinkIsNeverACandidate()
     {
         using var t = new TempDir();
         t.Write("devices/i2c-4/name", "AMDGPU SMU 0\n");
@@ -300,6 +309,21 @@ public class LinuxDisplayBrightnessTests
     }
 
     [Fact]
+    public void ProbeCandidates_LogsEachRejectedBusOnce()
+    {
+        var lines = new List<string>();
+        var groups = new[]
+        {
+            new LinuxDisplayBrightnessProvider.DdcCandidates(new List<int> { 9 }, new List<int>()),
+            new LinuxDisplayBrightnessProvider.DdcCandidates(new List<int> { 9 }, new List<int>()),
+        };
+
+        LinuxDisplayBrightnessProvider.ProbeCandidates(groups, _ => false, lines.Add);
+
+        Assert.Equal(new[] { "i2c-9 rejected: no VCP 0x10 reply" }, lines);
+    }
+
+    [Fact]
     public void ProbeCandidates_ProbesEachBusOnceAcrossGroups()
     {
         var probed = new List<int>();
@@ -315,14 +339,15 @@ public class LinuxDisplayBrightnessTests
     }
 
     [Fact]
-    public void SelectDdcBuses_TakesEveryI2cChildOfAConnector()
+    public void SelectDdcCandidates_TakesEveryI2cChildOfAConnector()
     {
         using var t = new TempDir();
         t.Write("drm/card0-DP-1/i2c-5/name", "AMDGPU DM aux\n");
         t.Write("drm/card0-DP-1/i2c-6/name", "AMDGPU DM aux\n");
         Connector(t, "card0-DP-1", "connected");
 
-        Assert.Equal(new[] { 5, 6 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+        Assert.Equal(new[] { 5, 6 }, Primaries(t));
+        Assert.Empty(Fallbacks(t));
     }
 
     private sealed class ScanFixture
