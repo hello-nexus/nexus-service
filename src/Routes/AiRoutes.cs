@@ -20,7 +20,9 @@ public static class AiRoutes
 
         app.MapPost("/ai/config", async (AiConfigPatch body, IConfigStore store, McpServerHost host, IMcpAuditSink audit) =>
         {
-            var wasEnabled = store.Load().AiIntegration.Enabled;
+            var before = store.Load().AiIntegration;
+            var wasEnabled = before.Enabled;
+            var wasRemote = before.AllowRemote;
             store.Update(s =>
             {
                 if (body.Enabled.HasValue)
@@ -31,6 +33,10 @@ public static class AiRoutes
                         s.AiIntegration.Token = MintToken();
                     }
                 }
+                if (body.AllowRemote.HasValue)
+                {
+                    s.AiIntegration.AllowRemote = body.AllowRemote.Value;
+                }
                 if (body.Capabilities is { } caps)
                 {
                     if (caps.Telemetry.HasValue) s.AiIntegration.AllowTelemetry = caps.Telemetry.Value;
@@ -40,11 +46,17 @@ public static class AiRoutes
                     if (caps.History.HasValue) s.AiIntegration.AllowHistory = caps.History.Value;
                 }
             });
-            var isEnabled = store.Load().AiIntegration.Enabled;
+            var after = store.Load().AiIntegration;
+            var isEnabled = after.Enabled;
+            var remoteChanged = wasRemote != after.AllowRemote;
             var enabledChanged = body.Enabled.HasValue && wasEnabled != isEnabled;
             if (enabledChanged)
             {
                 RecordLifecycleEvent(audit, isEnabled ? "ai_integration_enabled" : "ai_integration_disabled");
+            }
+            if (remoteChanged)
+            {
+                RecordLifecycleEvent(audit, after.AllowRemote ? "ai_remote_enabled" : "ai_remote_disabled");
             }
             // Capability flags are read live on every tool call (see
             // AiIntegrationSettings), so a capabilities-only patch must not
@@ -52,7 +64,7 @@ public static class AiRoutes
             // listener only when the desired state disagrees with reality: an
             // Enabled flip, or a re-posted enable after a failed bind (port
             // taken) where Enabled is already true but nothing is running.
-            if (enabledChanged || isEnabled != host.Running)
+            if (enabledChanged || (remoteChanged && isEnabled) || isEnabled != host.Running)
             {
                 await host.ApplyConfiguredStateAsync();
             }
@@ -78,6 +90,7 @@ public static class AiRoutes
             Enabled = settings.Enabled,
             Running = host.Running,
             Port = port,
+            AllowRemote = settings.AllowRemote,
             Endpoint = $"http://127.0.0.1:{port}/mcp",
             Token = settings.Token,
             LastError = host.LastError,

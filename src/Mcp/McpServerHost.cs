@@ -20,7 +20,8 @@ namespace Nexus.Service.Mcp;
 
 /// <summary>
 /// Owns the MCP (Model Context Protocol) listener: a separate slim Kestrel
-/// host bound to loopback only, serving one endpoint (POST /mcp) that speaks
+/// host bound to loopback by default (all interfaces only when
+/// AiIntegrationSettings.AllowRemote is set), serving one endpoint (POST /mcp) that speaks
 /// Streamable HTTP per MCP spec revision 2025-11-25. Stateless - every
 /// request is a single JSON-RPC message and no Mcp-Session-Id is ever issued.
 ///
@@ -56,6 +57,8 @@ public sealed class McpServerHost : IHostedService, IAsyncDisposable
     public bool Running { get; private set; }
     public int? BoundPort { get; private set; }
     public string? LastError { get; private set; }
+    /// <summary>True while the running listener is bound to all interfaces rather than loopback.</summary>
+    public bool BoundRemote { get; private set; }
 
     /// <summary>
     /// NEXUS_TEST_HOST hosts skip autostart entirely - the integration suite
@@ -82,7 +85,7 @@ public sealed class McpServerHost : IHostedService, IAsyncDisposable
             {
                 return;
             }
-            await StartInternalAsync(settings.Port, ct).ConfigureAwait(false);
+            await StartInternalAsync(settings.Port, settings.AllowRemote, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -90,14 +93,24 @@ public sealed class McpServerHost : IHostedService, IAsyncDisposable
         }
     }
 
-    private async Task StartInternalAsync(int port, CancellationToken ct)
+    private async Task StartInternalAsync(int port, bool allowRemote, CancellationToken ct)
     {
         WebApplication? app = null;
         try
         {
             var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = Array.Empty<string>() });
             builder.Logging.ClearProviders();
-            builder.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, port));
+            builder.WebHost.ConfigureKestrel(k =>
+            {
+                if (allowRemote)
+                {
+                    k.ListenAnyIP(port);
+                }
+                else
+                {
+                    k.Listen(IPAddress.Loopback, port);
+                }
+            });
 
             app = builder.Build();
             app.MapPost("/mcp", HandlePostAsync);
@@ -113,6 +126,7 @@ public sealed class McpServerHost : IHostedService, IAsyncDisposable
                 : port;
 
             _app = app;
+            BoundRemote = allowRemote;
             Running = true;
             LastError = null;
         }
@@ -133,6 +147,7 @@ public sealed class McpServerHost : IHostedService, IAsyncDisposable
             LastError = ex.Message;
             Running = false;
             BoundPort = null;
+            BoundRemote = false;
         }
     }
 

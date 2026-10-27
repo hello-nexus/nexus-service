@@ -2868,7 +2868,7 @@ public static class NexusServiceCollectionExtensions
     /// AI Integration: the read-only telemetry/history and cooling/lighting/profile
     /// write MCP tools, the consent-gated registry that dispatches them, the
     /// binary-file-backed audit event log + sink, and McpServerHost - the
-    /// loopback-only MCP listener, off by default (AiIntegrationSettings
+    /// MCP listener (loopback unless AllowRemote), off by default (AiIntegrationSettings
     /// .Enabled). Depends on IConfigStore (AddNexusCore), ISensorProvider
     /// (AddNexusSensors), IFanControlProvider / ICurveProvider (AddNexusCooling),
     /// ILightingProvider / LightingEngine (AddNexusLighting), ProfileManager

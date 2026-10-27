@@ -89,6 +89,43 @@ public sealed class AiRoutesIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Allow_remote_defaults_false_and_status_reports_it()
+    {
+        var client = AuthedClient();
+        var body = await (await client.GetAsync("/ai/status")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("allowRemote").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Allow_remote_patch_persists_and_rebinds_the_running_listener()
+    {
+        var client = AuthedClient();
+        await client.PostAsJsonAsync("/ai/config", new { enabled = true });
+        var host = _factory.Services.GetRequiredService<McpServerHost>();
+        Assert.False(host.BoundRemote);
+
+        var on = await (await client.PostAsJsonAsync("/ai/config", new { allowRemote = true })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(on.GetProperty("allowRemote").GetBoolean());
+        Assert.True(on.GetProperty("running").GetBoolean());
+        Assert.True(host.BoundRemote);
+        Assert.True(_factory.Services.GetRequiredService<IConfigStore>().Load().AiIntegration.AllowRemote);
+
+        var off = await (await client.PostAsJsonAsync("/ai/config", new { allowRemote = false })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(off.GetProperty("allowRemote").GetBoolean());
+        Assert.False(host.BoundRemote);
+        Assert.False(_factory.Services.GetRequiredService<IConfigStore>().Load().AiIntegration.AllowRemote);
+    }
+
+    [Fact]
+    public async Task Allow_remote_patch_while_disabled_persists_without_binding()
+    {
+        var client = AuthedClient();
+        var body = await (await client.PostAsJsonAsync("/ai/config", new { allowRemote = true })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("allowRemote").GetBoolean());
+        Assert.False(body.GetProperty("running").GetBoolean());
+    }
+
+    [Fact]
     public async Task Enabling_twice_keeps_the_same_token()
     {
         var client = AuthedClient();

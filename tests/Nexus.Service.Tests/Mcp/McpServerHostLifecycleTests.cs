@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -78,6 +80,69 @@ public sealed class McpServerHostLifecycleTests : IDisposable
 
         using var clientAfterStop = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         await Assert.ThrowsAsync<HttpRequestException>(() => clientAfterStop.GetAsync($"http://127.0.0.1:{boundPort}/mcp"));
+    }
+
+    private static IPAddress? NonLoopbackLocalIPv4() =>
+        System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up
+                && n.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+            .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+            .Select(u => u.Address)
+            .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a));
+
+    [Fact]
+    public async Task Default_binds_loopback_only()
+    {
+        var (store, host) = NewHost();
+        store.Update(s =>
+        {
+            s.AiIntegration.Enabled = true;
+            s.AiIntegration.Token = "some-token";
+            s.AiIntegration.Port = 0;
+        });
+
+        await host.ApplyConfiguredStateAsync();
+
+        Assert.True(host.Running);
+        Assert.False(host.BoundRemote);
+        var lan = NonLoopbackLocalIPv4();
+        if (lan is not null)
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync($"http://{lan}:{host.BoundPort}/mcp"));
+        }
+    }
+
+    [Fact]
+    public async Task Allow_remote_binds_all_interfaces_and_still_requires_the_token()
+    {
+        var (store, host) = NewHost();
+        store.Update(s =>
+        {
+            s.AiIntegration.Enabled = true;
+            s.AiIntegration.Token = "some-token";
+            s.AiIntegration.Port = 0;
+            s.AiIntegration.AllowRemote = true;
+        });
+
+        await host.ApplyConfiguredStateAsync();
+
+        Assert.True(host.Running);
+        Assert.True(host.BoundRemote);
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var targets = new List<string> { "127.0.0.1" };
+        var lan = NonLoopbackLocalIPv4();
+        if (lan is not null)
+        {
+            targets.Add(lan.ToString());
+        }
+        foreach (var target in targets)
+        {
+            var url = $"http://{target}:{host.BoundPort}/mcp";
+            Assert.Equal(HttpStatusCode.MethodNotAllowed, (await client.GetAsync(url)).StatusCode);
+            var unauth = await client.PostAsync(url, new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.Unauthorized, unauth.StatusCode);
+        }
     }
 
     [Fact]
