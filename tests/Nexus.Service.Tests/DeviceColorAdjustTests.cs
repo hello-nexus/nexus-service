@@ -102,4 +102,38 @@ public class DeviceColorAdjustTests
         Assert.True(DeviceColorAdjust.For(new LightingDevicePreference()).IsIdentity);
         Assert.True(DeviceColorAdjust.For(new LightingDevicePreference { Brightness = 40 }).IsIdentity);
     }
+
+    [Theory]
+    [InlineData("RGB", 10, 20, 30)]
+    [InlineData("RBG", 10, 30, 20)]
+    [InlineData("GRB", 20, 10, 30)]
+    [InlineData("GBR", 20, 30, 10)]
+    [InlineData("BRG", 30, 10, 20)]
+    [InlineData("BGR", 30, 20, 10)]
+    public void ColorOrder_PermutesOutputBytes(string order, int er, int eg, int eb)
+    {
+        var adjust = DeviceColorAdjust.Create(1f, 1f, 1f, 0f, 1f, order);
+        Assert.Equal(order == "RGB", adjust.IsIdentity);
+        adjust.Apply(10, 20, 30, 1.0, out var r, out var g, out var b);
+        Assert.Equal((byte)er, r);
+        Assert.Equal((byte)eg, g);
+        Assert.Equal((byte)eb, b);
+    }
+
+    [Fact]
+    public void ColorOrder_RunsAfterGainsAndBrightness()
+    {
+        var adjust = DeviceColorAdjust.Create(0.5f, 1f, 1f, 0f, 1f, "GRB");
+        adjust.Apply(100, 100, 100, 0.5, out var r, out var g, out var b);
+        Assert.Equal(50, r);
+        Assert.Equal(25, g);
+        Assert.Equal(50, b);
+    }
+
+    [Fact]
+    public void For_NonRgbOrderAlone_HasEffect()
+    {
+        Assert.False(DeviceColorAdjust.For(new LightingDevicePreference { ColorOrder = "GRB" }).IsIdentity);
+        Assert.True(DeviceColorAdjust.For(new LightingDevicePreference { ColorOrder = "RGB" }).IsIdentity);
+    }
 }

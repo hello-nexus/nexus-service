@@ -35,6 +35,8 @@ public readonly struct DeviceColorAdjust
     private readonly float _g;
     private readonly float _b;
     private readonly float _saturation;
+    // Index into OrderNames; 0 is RGB (no swizzle).
+    private readonly byte _order;
     /// <summary>False for the default-constructed value, which is why the flag
     ///  is stored this way round: `default(DeviceColorAdjust)` must read as a
     ///  no-op, not as three zeroed gains that would drive the strip black.</summary>
@@ -45,8 +47,42 @@ public readonly struct DeviceColorAdjust
 
     public static readonly DeviceColorAdjust Identity = default;
 
-    private DeviceColorAdjust(float r, float g, float b, float saturation)
+    /// <summary>Channel orders a device can expect on the wire, index 0 being identity.</summary>
+    public static readonly string[] OrderNames = { "RGB", "RBG", "GRB", "GBR", "BRG", "BGR" };
+
+    /// <summary>Canonical form of a stored or requested order, or null when it is not one of <see cref="OrderNames"/>. Null and empty read as RGB.</summary>
+    public static string? NormalizeOrder(string? order)
     {
+        if (string.IsNullOrEmpty(order))
+        {
+            return OrderNames[0];
+        }
+        foreach (var name in OrderNames)
+        {
+            if (string.Equals(name, order, StringComparison.OrdinalIgnoreCase))
+            {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    private static byte OrderIndex(string? order)
+    {
+        var canonical = NormalizeOrder(order);
+        for (var i = 0; i < OrderNames.Length; i++)
+        {
+            if (OrderNames[i] == canonical)
+            {
+                return (byte)i;
+            }
+        }
+        return 0;
+    }
+
+    private DeviceColorAdjust(float r, float g, float b, float saturation, byte order)
+    {
+        _order = order;
         _r = r;
         _g = g;
         _b = b;
@@ -61,8 +97,9 @@ public readonly struct DeviceColorAdjust
     /// trim IS a red/blue balance, and folding it keeps the hot loop to three
     /// multiplies.
     /// </summary>
-    public static DeviceColorAdjust Create(float red, float green, float blue, float temperature, float saturation)
+    public static DeviceColorAdjust Create(float red, float green, float blue, float temperature, float saturation, string? colorOrder = null)
     {
+        var order = OrderIndex(colorOrder);
         var r = Math.Clamp(red, MinChannel, MaxChannel);
         var g = Math.Clamp(green, MinChannel, MaxChannel);
         var b = Math.Clamp(blue, MinChannel, MaxChannel);
@@ -70,11 +107,11 @@ public readonly struct DeviceColorAdjust
         var s = Math.Clamp(saturation, MinSaturation, MaxSaturation);
         r *= 1f + TemperatureSpan * t;
         b *= 1f - TemperatureSpan * t;
-        if (r == 1f && g == 1f && b == 1f && s == 1f)
+        if (r == 1f && g == 1f && b == 1f && s == 1f && order == 0)
         {
             return Identity;
         }
-        return new DeviceColorAdjust(r, g, b, s);
+        return new DeviceColorAdjust(r, g, b, s, order);
     }
 
     /// <summary>
@@ -92,18 +129,20 @@ public readonly struct DeviceColorAdjust
                 && pref.AdjustGreen == 1f
                 && pref.AdjustBlue == 1f
                 && pref.AdjustTemperature == 0f
-                && pref.AdjustSaturation == 1f))
+                && pref.AdjustSaturation == 1f
+                && OrderIndex(pref.ColorOrder) == 0))
         {
             return Identity;
         }
-        return Create(pref.AdjustRed, pref.AdjustGreen, pref.AdjustBlue, pref.AdjustTemperature, pref.AdjustSaturation);
+        return Create(pref.AdjustRed, pref.AdjustGreen, pref.AdjustBlue, pref.AdjustTemperature, pref.AdjustSaturation, pref.ColorOrder);
     }
 
     /// <summary>
     /// Apply saturation, then the channel gains, then <paramref name="mul"/>
     /// (the brightness multiplier the caller already computed), clamping to
     /// byte range. Saturation runs first so a channel trim shifts the colour
-    /// the user actually sees on the strip.
+    /// the user actually sees on the strip. The colour order runs last: output
+    /// byte i is the input channel named by letter i of the order.
     /// </summary>
     public void Apply(byte sr, byte sg, byte sb, double mul, out byte or, out byte og, out byte ob)
     {
@@ -125,9 +164,18 @@ public readonly struct DeviceColorAdjust
             b = luma + (b - luma) * _saturation;
         }
         var m = (float)mul;
-        or = ToByte(r * _r * m);
-        og = ToByte(g * _g * m);
-        ob = ToByte(b * _b * m);
+        var cr = ToByte(r * _r * m);
+        var cg = ToByte(g * _g * m);
+        var cb = ToByte(b * _b * m);
+        switch (_order)
+        {
+            case 1: or = cr; og = cb; ob = cg; break;
+            case 2: or = cg; og = cr; ob = cb; break;
+            case 3: or = cg; og = cb; ob = cr; break;
+            case 4: or = cb; og = cr; ob = cg; break;
+            case 5: or = cb; og = cg; ob = cr; break;
+            default: or = cr; og = cg; ob = cb; break;
+        }
     }
 
     private static byte ToByte(float v) => (byte)Math.Clamp(v, 0f, 255f);
