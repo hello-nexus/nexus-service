@@ -808,10 +808,18 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             ? 0
             : (int)Math.Round(Math.Clamp(lighting.Brightness, 0, 4) * 25 * globalBrightness);
 
-        // One animation plays on the whole chain, so the first zone's order stands for it.
-        var presetOrder = zones.Count > 0
-            ? DeviceColorAdjust.OrderOf(_store.Load().Devices.LightingDevicePrefs, zones[0].Id)
-            : null;
+        // One animation plays on the whole chain, so the first non-RGB zone order stands for it.
+        string? presetOrder = null;
+        var presetPrefs = _store.Load().Devices.LightingDevicePrefs;
+        foreach (var zone in zones)
+        {
+            var zoneOrder = DeviceColorAdjust.OrderOf(presetPrefs, zone.Id);
+            if (DeviceColorAdjust.NormalizeOrder(zoneOrder) is not (null or "RGB"))
+            {
+                presetOrder = zoneOrder;
+                break;
+            }
+        }
         var sig = PresetSignature(lighting, brightnessPercent, ledCount, presetOrder);
         _lastSent.TryGetValue(macHex, out var last);
         var sinceLastPushMs = _lastPushTicks.TryGetValue(macHex, out var lastPush)

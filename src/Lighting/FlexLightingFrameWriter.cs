@@ -373,7 +373,8 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         {
             return;
         }
-        var signature = FlexStoredLook.Signature(unit, look, group);
+        var prefs = _store.Load().Devices.LightingDevicePrefs;
+        var signature = FlexStoredLook.Signature(unit, look, group, prefs);
         if (signature != st.PendingSignature)
         {
             st.PendingSignature = signature;
@@ -405,7 +406,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         }
         st.LastUploadAttemptMs = now;
         st.DriftRetries = st.UploadedSignature == signature ? st.DriftRetries + 1 : 0;
-        var package = FlexStoredLook.Build(unit, look, group);
+        var package = FlexStoredLook.Build(unit, look, group, prefs);
         if (package is null)
         {
             return;

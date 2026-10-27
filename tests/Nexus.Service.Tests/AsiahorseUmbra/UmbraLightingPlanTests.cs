@@ -38,6 +38,20 @@ public class UmbraLightingPlanTests
     }
 
     [Fact]
+    public void Firmware_sync_frames_follow_the_port_color_order()
+    {
+        var settings = new AsiahorseUmbraSettings { Source = "firmware" };
+        var plain = UmbraLightingPlan.Build(settings, Ports(8), 1f);
+        var prefs = new System.Collections.Generic.Dictionary<string, LightingDevicePreference>
+        {
+            [Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider.PortId(0)] = new() { ColorOrder = "GRB" },
+        };
+        var ordered = UmbraLightingPlan.Build(settings, Ports(8), 1f, prefs);
+
+        Assert.NotEqual(UmbraLightingPlan.Signature(plain), UmbraLightingPlan.Signature(ordered));
+    }
+
+    [Fact]
     public void Firmware_sync_takes_authority_then_plays_the_sync_effect()
     {
         var frames = UmbraLightingPlan.Build(new AsiahorseUmbraSettings { Source = "firmware" }, Ports(8), 1f);
