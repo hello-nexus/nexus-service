@@ -1116,7 +1116,7 @@ public sealed class PanelPhonePairingService
         });
     }
 
-    /// <summary>Copy of the live session list taken under the store lock, so callers can enumerate while Update mutates it. Null when the store has no auth section.</summary>
+    /// <summary>Copy of the live session list taken under the store lock, so callers can enumerate while Update mutates it. Only the list is copied: the elements are the live session objects. Null when the store has no auth section.</summary>
     private List<PanelPhoneSessionToken>? SnapshotSessionList()
     {
         List<PanelPhoneSessionToken>? copy = null;

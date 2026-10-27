@@ -1,3 +1,6 @@
+using Microsoft.AspNetCore.Http;
+using Nexus.Service.Models;
+using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Routes;
 
@@ -64,4 +67,17 @@ public static partial class DevicesRoutes
         }
         return result;
     }
+
+    /// <summary>
+    /// A firmware read that returned no data on a connected device. The read can lose a race
+    /// with an in-flight write or time out, so this is a retryable 503 rather than a 500 that
+    /// the error reporter would count as a service fault.
+    /// </summary>
+    internal static IResult FirmwareReadBusy(string message) =>
+        Results.Json(ApiResponse.Fail(message), AppJsonContext.Default.ApiResponse,
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    /// <summary>A device route refusal in the ApiResponse envelope, serialized with the source-generated type info.</summary>
+    internal static IResult DeviceFail(int statusCode, string message) =>
+        Results.Json(ApiResponse.Fail(message), AppJsonContext.Default.ApiResponse, statusCode: statusCode);
 }

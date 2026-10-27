@@ -5,7 +5,7 @@ using Nexus.Service.Relay;
 
 namespace Nexus.Service.Tests;
 
-public class PanelPhoneSessionSnapshotRaceTests
+public class PanelPhoneSessionListRaceTests
 {
     private static PanelPhoneSessionToken Session(int i, long now) => new()
     {
@@ -18,7 +18,7 @@ public class PanelPhoneSessionSnapshotRaceTests
     };
 
     [Fact]
-    public async Task GetActiveRelaySessions_survives_concurrent_session_list_mutation()
+    public async Task Session_list_readers_survive_concurrent_session_list_mutation()
     {
         var dir = Path.Combine(Path.GetTempPath(), "nexus-snapshot-race-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -56,6 +56,8 @@ public class PanelPhoneSessionSnapshotRaceTests
                     Assert.NotEmpty(service.GetActiveRelaySessions());
                     Assert.Empty(service.GetPushTargets());
                     _ = service.GetSessionDisplayName("s3");
+                    _ = service.TryValidateSessionToken("no-such-token", null, out _);
+                    _ = InvokeAlreadyPaired(service);
                 }
             }
             finally
@@ -69,4 +71,10 @@ public class PanelPhoneSessionSnapshotRaceTests
             try { Directory.Delete(dir, true); } catch { /* temp cleanup */ }
         }
     }
+
+    private static readonly System.Reflection.MethodInfo AlreadyPairedMethod =
+        typeof(PanelPhonePairingService).GetMethod("AlreadyPaired", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+    private static bool InvokeAlreadyPaired(PanelPhonePairingService service) =>
+        (bool)AlreadyPairedMethod.Invoke(service, new object[] { "no-such-device", "" })!;
 }
