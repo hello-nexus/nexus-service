@@ -196,6 +196,42 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
         return Task.CompletedTask;
     }
 
+    // Pause after the barrier reply: the reply proves the daemon read the last frame, not that its device write returned.
+    private static readonly TimeSpan QuiesceSettle = TimeSpan.FromMilliseconds(150);
+
+    /// <summary>
+    /// Frames are fire-and-forget with no per-frame ACK, but the daemon handles one
+    /// client's packets in order, so the reply to a request sent behind them proves
+    /// they were all taken off the socket. The send lock queues this behind any push
+    /// still in flight.
+    /// </summary>
+    public async Task QuiesceAsync(TimeSpan budget)
+    {
+        var session = Volatile.Read(ref _session);
+        if (session is null || session.Closed || !session.Ready)
+        {
+            return;
+        }
+        try
+        {
+            using var cts = new CancellationTokenSource(budget);
+            await WaitRequestLockAsync(cts.Token).ConfigureAwait(false);
+            try
+            {
+                await ReadAddressesLockedAsync(session, cts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _requestLock.Release();
+            }
+            await Task.Delay(QuiesceSettle, cts.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Bounded best effort: a wedged or closed daemon is killed regardless.
+        }
+    }
+
     public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default)
     {
         var session = Volatile.Read(ref _session);

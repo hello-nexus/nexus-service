@@ -74,10 +74,28 @@ internal static class OverlayHostBootstrap
             });
         });
 #endif
+#if LINUX
+        // Kiosk teardown is a browser kill plus waits. Run beside the hosted-service
+        // stops so fans and the Lian Li dongle are released first; ApplicationStopped
+        // joins it, bounded, before the DI container disposes (which kills OpenRGB).
+        Task? kioskStop = null;
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            kioskStop = Task.Run(() =>
+            {
+                try { linuxKiosks?.Shutdown(); } catch { }
+            });
+        });
+        app.Lifetime.ApplicationStopped.Register(() =>
+        {
+            try { kioskStop?.Wait(Platform.Linux.LinuxPanelKioskHost.ShutdownBudgetMs); } catch { }
+        });
+#else
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             try { overlayHost.Stop(); } catch { }
         });
+#endif
     }
 
     private static string AssignmentsSignature(NexusSettings snapshot)

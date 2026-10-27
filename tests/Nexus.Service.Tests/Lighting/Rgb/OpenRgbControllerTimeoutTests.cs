@@ -233,4 +233,44 @@ public class OpenRgbControllerTimeoutTests
         Assert.False(controller.IsConnected);
         Assert.True(sw.Elapsed < OpenRgbController.IoTimeout + TimeSpan.FromSeconds(10), $"pushes ran for {sw.Elapsed}");
     }
+
+    [Fact]
+    public async Task Quiesce_returns_after_the_daemon_answers_a_request_sent_behind_queued_frames()
+    {
+        await using var daemon = new FakeDaemon(answerHandshake: true, answerRequests: true);
+        await using var controller = new OpenRgbController(port: daemon.Port);
+        Assert.True(await controller.TryConnectAsync());
+
+        var frame = new RgbColor[16];
+        await controller.PushFrameAsync(0, frame);
+        await controller.PushFrameAsync(0, frame);
+
+        var elapsed = await TimeAsync(() => controller.QuiesceAsync(TimeSpan.FromSeconds(1.5)));
+
+        Assert.True(elapsed < TimeSpan.FromSeconds(1.5), $"quiesce took {elapsed}");
+        Assert.True(controller.IsConnected);
+    }
+
+    [Fact]
+    public async Task Quiesce_against_a_silent_daemon_stays_within_its_budget()
+    {
+        await using var daemon = new FakeDaemon(answerHandshake: true, answerRequests: false);
+        await using var controller = new OpenRgbController(port: daemon.Port);
+        Assert.True(await controller.TryConnectAsync());
+
+        var budget = TimeSpan.FromMilliseconds(400);
+        var elapsed = await TimeAsync(() => controller.QuiesceAsync(budget));
+
+        Assert.True(elapsed < budget + Slack, $"quiesce took {elapsed}");
+    }
+
+    [Fact]
+    public async Task Quiesce_without_a_session_returns_at_once()
+    {
+        await using var controller = new OpenRgbController(port: 1);
+
+        var elapsed = await TimeAsync(() => controller.QuiesceAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.True(elapsed < TimeSpan.FromMilliseconds(500), $"quiesce took {elapsed}");
+    }
 }
