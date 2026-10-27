@@ -33,7 +33,7 @@ public class JsonConfigStoreMigrationTests : IDisposable
           "schemaVersion": 5,
           "theme": { "themeMode": "dark", "accentColor": "#aabbcc", "language": "en" },
           "panel": { "autoLaunch": true, "themeMode": "system" },
-          "overlay": { "enabled": true, "scale": 120 },
+          "overlay": { "enabled": true, "scale": 120, "layout": [ { "id": "w", "type": "clock" } ] },
           "monitoring": { "showMacStatusBarIcon": true }
         }
         """;
@@ -47,13 +47,53 @@ public class JsonConfigStoreMigrationTests : IDisposable
             Assert.Equal("dark", s.Theme.ThemeMode);
             Assert.Equal("#aabbcc", s.Theme.AccentColor);
             Assert.True(s.Panel.AutoLaunch);
+            // A block that still holds widgets stays whole for the desktop widgets migration.
             Assert.True(s.Overlay.Enabled);
             Assert.Equal(120, s.Overlay.Scale);
+            Assert.Single(s.Overlay.Layout!);
         }
         finally
         {
             store.Dispose();
         }
+    }
+
+    [Fact]
+    public void Load_V26_WithoutDeepCoolExclusion_AddsItAndStampsCurrent()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "ui": { "conflictAutoKillExclusions": ["corsair-icue"] } }""");
+
+        using var store = new JsonConfigStore(_settingsPath);
+
+        var s = store.Load();
+        Assert.Equal(["corsair-icue", "deepcool"], s.Ui.ConflictAutoKillExclusions);
+        Assert.Equal(27, s.SchemaVersion);
+    }
+
+    [Fact]
+    public void Load_V26_WithDeepCoolExclusion_LeavesItUnchanged()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "ui": { "conflictAutoKillExclusions": ["deepcool", "corsair-icue"] } }""");
+
+        using var store = new JsonConfigStore(_settingsPath);
+
+        var s = store.Load();
+        Assert.Equal(["deepcool", "corsair-icue"], s.Ui.ConflictAutoKillExclusions);
+        Assert.Equal(27, s.SchemaVersion);
+    }
+
+    [Fact]
+    public void Load_ClearsTheRetiredOverlayBlockWhenItHoldsNoWidgets()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "overlay": { "enabled": true, "alwaysOnTop": true, "scale": 120, "layout": [] } }""");
+
+        using var store = new JsonConfigStore(_settingsPath);
+
+        var overlay = store.Load().Overlay;
+        Assert.Null(overlay.Enabled);
+        Assert.Null(overlay.Scale);
+        Assert.Null(overlay.Layout);
+        Assert.False(overlay.MigratedToPanels);
     }
 
     [Theory]
@@ -184,6 +224,83 @@ public class JsonConfigStoreMigrationTests : IDisposable
         {
             Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
             Assert.True(s.LightingOnboardingCompleted);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_FileWithoutViewPrefs_LeavesThemUnset()
+    {
+        File.WriteAllText(_settingsPath, "{ \"schemaVersion\": 25, \"ui\": { \"sidebarCollapsed\": true } }");
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var s = store.Load();
+            Assert.True(s.Ui.SidebarCollapsed);
+            Assert.Null(s.Ui.LightingView3d);
+            Assert.Null(s.Ui.CoolingView3d);
+            Assert.Null(s.Ui.CoolingFlowMode);
+            Assert.Null(s.Ui.CoolingCollisionShapes);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Save_ThenFreshStoreLoad_RoundTripsViewPrefs()
+    {
+        var writer = new JsonConfigStore(_settingsPath);
+        try
+        {
+            writer.Update(s =>
+            {
+                s.Ui.LightingView3d = true;
+                s.Ui.CoolingView3d = true;
+                s.Ui.CoolingFlowMode = "airflow";
+                s.Ui.CoolingCollisionShapes = true;
+            });
+            writer.FlushNow();
+        }
+        finally
+        {
+            writer.Dispose();
+        }
+
+        var reader = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var s = reader.Load();
+            Assert.True(s.Ui.LightingView3d);
+            Assert.True(s.Ui.CoolingView3d);
+            Assert.Equal("airflow", s.Ui.CoolingFlowMode);
+            Assert.True(s.Ui.CoolingCollisionShapes);
+        }
+        finally
+        {
+            reader.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_FileWithViewPrefs_ReadsThem()
+    {
+        File.WriteAllText(_settingsPath,
+            "{ \"schemaVersion\": 25, \"ui\": { \"lightingView3d\": true, \"coolingView3d\": false, \"coolingFlowMode\": \"case\", \"coolingCollisionShapes\": true } }");
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var s = store.Load();
+            Assert.True(s.Ui.LightingView3d);
+            Assert.False(s.Ui.CoolingView3d);
+            Assert.Equal("case", s.Ui.CoolingFlowMode);
+            Assert.True(s.Ui.CoolingCollisionShapes);
         }
         finally
         {

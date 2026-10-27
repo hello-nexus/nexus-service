@@ -613,6 +613,27 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.DevicePinTracker>();
         services.AddSingleton<Nexus.Service.Lighting.LedColorLockTracker>();
         services.AddSingleton<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>();
+#if LINUX
+        services.AddHostedService(sp =>
+        {
+            var gate = new Nexus.Service.Platform.Linux.LinuxKeyInputGate(
+                sp.GetService<Nexus.Service.Platform.Linux.DBus.DBusConnection>());
+            // Block at once on a lock or suspend; polling reopens once logind says the session is unlocked.
+            if (sp.GetService<Nexus.Service.Lighting.SessionLockListener>() is { } lockListener)
+            {
+                lockListener.LockChanged += locked =>
+                {
+                    if (locked) gate.ForceBlocked("locked");
+                };
+            }
+            if (sp.GetService<Nexus.Service.Platform.Linux.LinuxResumeListener>() is { } resume)
+            {
+                resume.Suspending += () => gate.ForceBlocked("suspending");
+            }
+            return new Nexus.Service.Platform.Linux.LinuxKeyPressWatcher(
+                sp.GetRequiredService<Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay>(), gate);
+        });
+#endif
         services.AddSingleton<LightingEngine>(sp =>
         {
             // Property, not ctor: the engine is constructed directly in tests
@@ -1602,6 +1623,12 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>());
         services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(
             sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>()));
+
+        // DeepCool Mystique AIO screen: bulk-pipe worker keeping it on live sensor data.
+        services.AddSingleton<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>());
+        services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.DeepCoolMystiqueHandler(
+            sp.GetRequiredService<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>()));
 
         // Corsair iCUE LINK System Hub: HID connection worker + lighting + cooling.
         // Auto-detects the daisy chain; no composition (each device is one fixed zone).
@@ -2609,11 +2636,32 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(),
             sp.GetRequiredService<Nexus.Service.Auth.TokenService>()));
 #endif
+        services.AddSingleton(sp =>
+        {
+            Action? wakeOverlay = null;
+#if WINDOWS
+            // Same wake OverlayHostBootstrap sends: the overlay refetches /overlay/state, which carries the identify.
+            var helperRegistry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
+            if (helperRegistry is not null)
+            {
+                wakeOverlay = () =>
+                {
+                    try { Nexus.Service.Helper.Domains.LifecycleCommands.NotifyOverlayPrefsChangedAsync(helperRegistry).ObserveFaults(); }
+                    catch { }
+                };
+            }
+#endif
+            return new Nexus.Service.Panel.DisplayIdentifyService(
+                sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(), wakeOverlay, null,
+                () => sp.GetService<Nexus.Service.Platform.Displays.DisplayTopologyService>()?.GetTopology().Displays.Select(d => d.Id));
+        });
         services.AddHostedService(sp => new Nexus.Service.Panel.OverlaySupervisor(
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
-            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0));
+            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0,
+            () => sp.GetRequiredService<Nexus.Service.Panel.DisplayIdentifyService>().IsActive,
+            settings => sp.GetRequiredService<Nexus.Service.Panel.DesktopWidgetsMigration>().HostCanAdvance(settings)));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
 
         // Registered on every OS so GET /sentry can answer supported:false where
@@ -2628,6 +2676,13 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Sentry.SentryCoordinator>());
         services.AddSingleton<Nexus.Service.Panel.PanelDeviceRegistry>();
         services.AddSingleton<Nexus.Service.Panel.PanelAutoPromotion>();
+        services.AddSingleton<Nexus.Service.Panel.OverlayMonitorMap>();
+        services.AddSingleton(sp => new Nexus.Service.Panel.DesktopWidgetsMigration(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Panel.OverlayMonitorMap>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayTopologyService>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
+            sp.GetService<Nexus.Service.Persistence.ProfileManager>()));
 
         // Corsair Xeneon Edge auto-orientation + native settings: reads the
         // panel's hardware orientation sensor over vendor HID and applies the
@@ -2682,6 +2737,7 @@ public static class NexusServiceCollectionExtensions
             }
 #endif
             var sockets = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            var configStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
             return new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
                 sp.GetServices<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(),
                 sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>(),
@@ -2691,7 +2747,8 @@ public static class NexusServiceCollectionExtensions
                 notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id),
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
-                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
+                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized,
+                fpsCap: () => configStore.Load().StreamedPanelFpsCap);
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());
@@ -2726,7 +2783,9 @@ public static class NexusServiceCollectionExtensions
 #if LINUX
         services.AddSingleton<Nexus.Service.Platform.Linux.DBus.DBusConnection>();
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxTrayService>();
-        services.AddHostedService<Nexus.Service.Platform.Linux.LinuxResumeListener>();
+        // Singleton so the key-press gate can subscribe to Suspending.
+        services.AddSingleton<Nexus.Service.Platform.Linux.LinuxResumeListener>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Platform.Linux.LinuxResumeListener>());
         services.AddHostedService<Nexus.Service.Platform.Linux.LinuxIdleDimWatch>();
 #endif
         return services;

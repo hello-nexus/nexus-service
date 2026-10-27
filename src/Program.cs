@@ -860,6 +860,10 @@ if (serviceMode)
 Nexus.Service.Lifecycle.BootTimer.Mark("after TrayBootstrap.WireHelperPipe (if service)");
 #endif
 
+// Linux has no OS theme source; a persisted value could never be corrected.
+if (OperatingSystem.IsLinux())
+    Nexus.Service.Platform.HostThemeSync.ClearUnsourced(app.Services.GetRequiredService<IConfigStore>());
+
 Nexus.Service.Panel.OverlayHostBootstrap.Wire(app);
 Nexus.Service.Lifecycle.BootTimer.Mark("after OverlayHostBootstrap.Wire");
 

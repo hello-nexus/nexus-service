@@ -29,6 +29,11 @@ public static class SmbiosParser
 {
     private const byte MemoryDeviceType = 17;
     private const byte EndOfTableType = 127;
+    private const byte BaseboardType = 2;
+
+    // SMBIOS Type 2 offsets. The serial number field after these is deliberately not read.
+    private const int OffsetBoardManufacturer = 0x04;
+    private const int OffsetBoardProduct = 0x05;
 
     // SMBIOS Type 17 field offsets, relative to the structure start (spec 3.x).
     private const int OffsetSize = 0x0C;
@@ -96,6 +101,39 @@ public static class SmbiosParser
             }
 
             offset = SkipStringSet(rawFirmwareTableBuffer, offset + length, end, out _);
+        }
+
+        return null;
+    }
+
+    /// <summary>The manufacturer and product name of the first Baseboard (Type 2) structure; null when absent. The serial number is never read.</summary>
+    internal static (string? Manufacturer, string? Product)? ParseBaseboard(byte[]? rawFirmwareTableBuffer)
+    {
+        if (rawFirmwareTableBuffer is null || rawFirmwareTableBuffer.Length < 8)
+        {
+            return null;
+        }
+
+        var end = Math.Min(8 + (int)BitConverter.ToUInt32(rawFirmwareTableBuffer, 4), rawFirmwareTableBuffer.Length);
+        var offset = 8;
+        while (offset + 4 <= end)
+        {
+            var type = rawFirmwareTableBuffer[offset];
+            var length = rawFirmwareTableBuffer[offset + 1];
+            if (length < 4 || offset + length > end || type == EndOfTableType)
+            {
+                return null;
+            }
+
+            var next = SkipStringSet(rawFirmwareTableBuffer, offset + length, end, out var strings);
+            if (type == BaseboardType)
+            {
+                return (
+                    NullIfEmpty(ReadString(rawFirmwareTableBuffer, offset, length, OffsetBoardManufacturer, strings)),
+                    NullIfEmpty(ReadString(rawFirmwareTableBuffer, offset, length, OffsetBoardProduct, strings)));
+            }
+
+            offset = next;
         }
 
         return null;

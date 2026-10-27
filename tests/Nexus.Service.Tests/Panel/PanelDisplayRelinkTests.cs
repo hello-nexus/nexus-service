@@ -224,6 +224,21 @@ public class PanelDisplayRelinkTests
     }
 
     [Fact]
+    public void Registry_relink_clears_the_reported_kiosk_viewport()
+    {
+        var store = new InMemoryConfigStore();
+        var registry = new PanelDeviceRegistry(store);
+        var (record, _) = registry.AllocateForDisplay("old-id", "Side panel", null);
+        registry.Patch(record.Id, new PanelDevicePatch { KioskViewport = new KioskViewportDto { CssWidth = 1920, CssHeight = 1152, Dpr = 1 } });
+        registry.ReconcileDisplayFingerprints(new[] { Disp("old-id", Fp(77)) });
+        Assert.NotNull(store.Load().PanelDevices[record.Id].KioskViewport);
+
+        registry.ReconcileDisplayFingerprints(new[] { Disp("new-id", Fp(77)) });
+
+        Assert.Null(store.Load().PanelDevices[record.Id].KioskViewport);
+    }
+
+    [Fact]
     public void Registry_never_resurrects_a_deleted_record()
     {
         var store = new InMemoryConfigStore();

@@ -144,6 +144,21 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// default (true). The Y70 kiosk uses the global Panel.AlwaysOnTop.
     /// </summary>
     public bool? AlwaysOnTop { get; set; }
+    /// <summary>Empty space passes input through to the desktop. Honored only while <see cref="Backdrop"/> is "desktop"
+    /// on a display-bound record; null = false.</summary>
+    public bool? ClickThrough { get; set; }
+    /// <summary>The panel's widgets cannot be moved or resized while true. Display-bound records only; null = unlocked.
+    /// Per-widget locks stay stored but the panel lock is what the page honors.</summary>
+    public bool? WidgetsLocked { get; set; }
+    /// <summary>Short-axis cell count of the page grid, even and within <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MinGridSlots"/> to <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MaxGridSlots"/>. Overrides the count <see cref="WidgetSize"/>
+    /// would derive; null = derive from <see cref="WidgetSize"/>.</summary>
+    public int? GridSlots { get; set; }
+    /// <summary>Downgrade guard. When non-null it replaces <see cref="Enabled"/> (see <see cref="Nexus.Service.Panel.PanelHosting"/>)
+    /// and <see cref="Enabled"/> is stored false, so a build that predates it hosts no kiosk for this record. Persisted only.</summary>
+    public bool? Hosted { get; set; }
+    /// <summary>Legacy desktop widgets waiting for the panel's own web client to place them on the grid
+    /// (planDesktopImport), which then clears it through <see cref="PanelDevicePatch.ClearDesktopImport"/>.</summary>
+    public DesktopImportDto? DesktopImport { get; set; }
     /// <summary>Turn the pushed frame 180 degrees; a cooler LCD's pump head rotates with the
     /// tubing. Applied in the transport, not the renderer. Pushed-frame panels only; null = off.</summary>
     public bool? Flip180 { get; set; }
@@ -169,9 +184,11 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
+    /// <summary>"large" (fewer, bigger widgets), "small" or "xsmall" (a denser grid); null = the panel's
     /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
     public string? WidgetSize { get; set; }
+    /// <summary>The window size the kiosk on a display-bound record measured, reported by the kiosk itself. Kept apart from <see cref="Capabilities"/>, which the topology sync rebuilds from OS facts.</summary>
+    public KioskViewportDto? KioskViewport { get; set; }
     /// <summary>Profile files only: hash of the monitor fingerprint this record was saved from (see <see cref="Nexus.Service.Persistence.PanelProfileData"/>). Never set on a live record.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? FingerprintKey { get; set; }
@@ -273,6 +290,7 @@ public interface IPanelPersonalization
     bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Travels with <see cref="Layout"/>: the web re-plans and saves both together.</summary>
     string? WidgetSize { get; set; }
+    int? GridSlots { get; set; }
 }
 
 /// <summary>
@@ -318,6 +336,7 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public string? WidgetSize { get; set; }
+    public int? GridSlots { get; set; }
 
     IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }
@@ -452,6 +471,14 @@ public sealed class PanelDevicePatch
     public bool? KeepCursorOff { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
     public bool? AlwaysOnTop { get; set; }
+    /// <summary>Display-bound records only; ignored for other panels.</summary>
+    public bool? ClickThrough { get; set; }
+    /// <summary>Display-bound records only; ignored for other panels.</summary>
+    public bool? WidgetsLocked { get; set; }
+    /// <summary>Even and within the registry's grid slot bounds; anything else is ignored.</summary>
+    public int? GridSlots { get; set; }
+    /// <summary>True drops the record's pending <see cref="PanelDeviceRecord.DesktopImport"/>; sent with the planned Layout and GridSlots.</summary>
+    public bool? ClearDesktopImport { get; set; }
     /// <summary>Turn the pushed frame 180 degrees; a cooler LCD's pump head rotates with the
     /// tubing. Applied in the transport, not the renderer. Pushed-frame panels only; null = off.</summary>
     public bool? Flip180 { get; set; }
@@ -473,10 +500,33 @@ public sealed class PanelDevicePatch
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large" (fewer, bigger widgets) or "small" (a denser grid); null = the panel's
-    /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
+    /// <summary>"large", "small" or "xsmall"; anything else is ignored. Null = leave it.</summary>
     public string? WidgetSize { get; set; }
+    /// <summary>Kiosk-measured window size; applied to display-bound records only.</summary>
+    public KioskViewportDto? KioskViewport { get; set; }
     public PanelDeviceCapabilities? Capabilities { get; set; }
+}
+
+/// <summary>CSS-px size of the kiosk window and its device pixel ratio.</summary>
+public sealed class KioskViewportDto
+{
+    public int CssWidth { get; set; }
+    public int CssHeight { get; set; }
+    public double Dpr { get; set; } = 1;
+}
+
+/// <summary>
+/// Legacy desktop widgets handed to a panel record for placement. <see cref="CellPx"/> is the legacy cell
+/// edge in <see cref="CellUnits"/> ("device" px on Windows, "css" px on macOS); <see cref="Merge"/> means
+/// the record already had a layout, so the planner keeps its grid and adds to it.
+/// </summary>
+public sealed class DesktopImportDto
+{
+    public int Version { get; set; } = 1;
+    public double CellPx { get; set; }
+    public string CellUnits { get; set; } = "device";
+    public bool Merge { get; set; }
+    public List<LegacyOverlayWidget> Widgets { get; set; } = new();
 }
 
 public sealed class PanelDeviceListResponse

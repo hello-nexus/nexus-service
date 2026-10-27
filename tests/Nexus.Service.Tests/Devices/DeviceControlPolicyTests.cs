@@ -45,6 +45,7 @@ public class DeviceControlPolicyTests
     [InlineData("streamdeck")]
     [InlineData("nzxt-kraken")]
     [InlineData("zmatrices-lcd")]
+    [InlineData("deepcool-mystique")]
     public void ConflictAppFor_KnownHandlers_ReturnsANonEmptyId(string handlerId)
     {
         Assert.False(string.IsNullOrEmpty(DeviceControlPolicy.ConflictAppFor(handlerId)));

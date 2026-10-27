@@ -45,6 +45,16 @@ public static class ConflictWhitelistMigration
         KeepOn(doc.Devices, "zmatrices-lcd");
     }
 
+    /// <summary>Schema v27 (v26 was also stamped by a branch build): DeepCool joined the catalog whitelisted, so an upgrading install keeps it running unless the Mystique is already on. Safe to re-run.</summary>
+    public static void WhitelistDeepCool(NexusSettings doc)
+    {
+        doc.Devices ??= new DevicesSettings();
+        doc.Ui ??= new UiSettings();
+        if (Contains(doc.Ui.ConflictAutoKillExclusions, "deepcool")) return;
+        if (DeviceControlPolicy.HandlersFor("deepcool").Any(h => Contains(doc.Devices.NexusControlEnabled, h))) return;
+        doc.Ui.ConflictAutoKillExclusions = doc.Ui.ConflictAutoKillExclusions.Append("deepcool").ToList();
+    }
+
     /// <summary>Runs on every load. Turning a device on took its app off the whitelist; while every device of the app is locked to beta builds, the app goes back on so it is neither ended nor announced. Once any of them is controllable again (a beta build, or a family promoted to stable), exactly that entry comes off. True when it changed anything.</summary>
     public static bool ReconcileBetaLock(NexusSettings doc)
     {

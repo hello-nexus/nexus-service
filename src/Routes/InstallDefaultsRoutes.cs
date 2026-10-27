@@ -26,7 +26,7 @@ public static class InstallDefaultsRoutes
             var s = store.Load();
             // Project the live profile into install-defaults shape. Cosmetic
             // fields are copied as-is; runtime-only fields (DashboardLayout,
-            // DashboardGaugeGradient, Overlay.Layout, Monitoring.DetailedCollapsed) are intentionally
+            // DashboardGaugeGradient, Monitoring.DetailedCollapsed) are intentionally
             // omitted so paste-back-to-install-defaults doesn't smuggle
             // per-user state into the shipped JSON. Layouts is populated by
             // projecting live desktop dashboard + first matching device
@@ -71,14 +71,6 @@ public static class InstallDefaultsRoutes
                                   ?? InstallDefaults.Panel.Layouts?.Q60 ?? new(),
                         Strip   = InstallDefaults.Panel.Layouts?.Strip ?? new(),
                     },
-                },
-                Overlay = new OverlaySettings
-                {
-                    Enabled = s.Overlay.Enabled,
-                    AlwaysOnTop = s.Overlay.AlwaysOnTop,
-                    Scale = s.Overlay.Scale,
-                    Opacity = s.Overlay.Opacity,
-                    Monitor = s.Overlay.Monitor,
                 },
                 Lighting = new LightingDefaults
                 {

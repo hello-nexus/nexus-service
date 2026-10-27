@@ -181,20 +181,21 @@ internal static class ServiceControlRoutes
             return Results.Ok(ApiResponse.Ok());
         }).LocalhostOnly();
 
-        app.MapPost("/service/open-app", () =>
+        app.MapPost("/service/open-app", (OpenAppBody? body) =>
         {
+            var route = OpenAppRoute.Normalize(body?.Route);
 #if WINDOWS
             // The service runs as LocalSystem in Session 0 - spawning Edge
             // --app from here would land in a non-interactive session and
             // never show. Delegate to a one-shot Nexus.exe --open-app in the
             // active console session (same schtasks hop the helper bootstrap
             // uses).
-            Nexus.Service.Lifecycle.UserHelperBootstrapper.LaunchOpenApp();
+            Nexus.Service.Lifecycle.UserHelperBootstrapper.LaunchOpenApp(route);
 #elif MACOS
-            // Focus only when a window exists (Windows parity - no reload).
-            Nexus.Service.Platform.Mac.MacAppWindow.OpenOrFocus(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0), navigateIfOpen: false);
+            // No route: focus only when a window exists (Windows parity, no reload). A route navigates it.
+            Nexus.Service.Platform.Mac.MacAppWindow.OpenOrFocus(OpenAppRoute.LocalUrl(0, route), navigateIfOpen: route is not null);
 #elif LINUX
-            Nexus.Service.Platform.Linux.LinuxBrowsers.OpenUrl(Nexus.Service.Platform.ServiceLaunchIntent.LocalDashboardUrl(0));
+            Nexus.Service.Platform.Linux.LinuxBrowsers.OpenUrl(OpenAppRoute.LocalUrl(0, route));
 #endif
             return Results.Ok(ApiResponse.Ok());
         }).LocalhostOnly();

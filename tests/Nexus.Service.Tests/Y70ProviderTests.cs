@@ -119,6 +119,17 @@ public class Y70ProviderTests
 
     // ── Linux DDC scan limiting ──
 
+    private static Y70Provider BuildLimited(CountingDdcProvider ddc, Func<long> clock)
+        => new(
+            new Y70DisplayHub(
+                new StubY70DisplayPortDiscovery(),
+                _ => throw new InvalidOperationException("Y70 transport is not expected in these tests")),
+            new InMemoryY70ConfigStore(),
+            new FakeY70OrientationProvider(),
+            ddc,
+            new HardwarePresence(new FixedUsbEnumerator()))
+        { LimitDdcScans = true, Clock = clock };
+
     private static Y70Provider BuildLimited(CountingDdcProvider ddc, params UsbDeviceEntry[] usb)
         => new(
             new Y70DisplayHub(
@@ -179,6 +190,35 @@ public class Y70ProviderTests
     }
 
     [Fact]
+    public void Heartbeat_never_requests_a_rescan_but_a_write_on_a_stale_cache_does()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = null };
+        var provider = BuildLimited(ddc);
+
+        provider.IsConnected();
+        provider.IsConnected();
+        Assert.Equal(0, ddc.RescanCalls);
+
+        provider.SetToggle(true);
+        Assert.Equal(1, ddc.RescanCalls);
+    }
+
+    [Fact]
+    public void Write_with_a_valid_cached_id_after_the_ttl_requests_no_rescan()
+    {
+        var ddc = new CountingDdcProvider { DisplayId = "display-rtk0004" };
+        long now = 1_000;
+        var provider = BuildLimited(ddc, () => now);
+        Assert.True(provider.IsConnected());
+
+        now += 120_000;
+        provider.SetToggle(true);
+
+        Assert.Equal(0, ddc.RescanCalls);
+        Assert.Equal(2, ddc.FindCalls);
+    }
+
+    [Fact]
     public void Failed_write_drops_the_cached_display_so_the_next_call_rescans()
     {
         var ddc = new CountingDdcProvider { DisplayId = "display-rtk0004", SetVcpResult = false };
@@ -213,6 +253,7 @@ public class Y70ProviderTests
     {
         public string? DisplayId;
         public int FindCalls;
+        public int RescanCalls;
         public bool SetVcpResult = true;
         public List<(string Id, byte Code, int Value)> Writes { get; } = new();
 
@@ -224,6 +265,7 @@ public class Y70ProviderTests
         public DisplayVcpDto? GetVcp(string id, byte code) => null;
         public bool SetVcp(string id, byte code, int value) { Writes.Add((id, code, value)); return SetVcpResult; }
         public string? FindDisplayIdByHardwareName(IReadOnlyList<string> nameFragments) { FindCalls++; return DisplayId; }
+        public void RequestRescan() => RescanCalls++;
     }
 
     // ── Brightness/power transport routing ──

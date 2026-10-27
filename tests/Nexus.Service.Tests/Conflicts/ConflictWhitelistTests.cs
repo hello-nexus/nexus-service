@@ -66,6 +66,7 @@ public class ConflictWhitelistTests
         Assert.Contains(ICue, whitelist);
         Assert.Contains("nzxt-cam", whitelist);
         Assert.Contains("zmatrices", whitelist);
+        Assert.Contains("deepcool", whitelist);
         Assert.DoesNotContain("signalrgb", whitelist);
     }
 
@@ -78,6 +79,22 @@ public class ConflictWhitelistTests
     {
         Assert.Equal(appId, DeviceControlPolicy.ConflictAppFor(handlerId));
         Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
+    }
+
+    [Fact]
+    public void AnUpgradeWhitelistsDeepCoolUnlessTheMystiqueIsOn()
+    {
+        var idle = new NexusSettings();
+        idle.Ui.ConflictAutoKillExclusions = new List<string> { Kanali };
+        var driving = new NexusSettings();
+        driving.Ui.ConflictAutoKillExclusions = new List<string> { Kanali };
+        driving.Devices.NexusControlEnabled = new List<string> { "deepcool-mystique" };
+
+        ConflictWhitelistMigration.WhitelistDeepCool(idle);
+        ConflictWhitelistMigration.WhitelistDeepCool(driving);
+
+        Assert.Equal(new[] { Kanali, "deepcool" }, idle.Ui.ConflictAutoKillExclusions);
+        Assert.Equal(new[] { Kanali }, driving.Ui.ConflictAutoKillExclusions);
     }
 
     [Fact]
