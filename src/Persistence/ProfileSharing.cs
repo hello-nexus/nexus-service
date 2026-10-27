@@ -103,7 +103,10 @@ public static class ProfileSharing
                 target.Cooling = source.Cooling;
                 break;
             case Theme:
+                // ResolvedThemeMode is the host OS theme, not profile content.
+                var hostTheme = target.Theme.ResolvedThemeMode;
                 target.Theme = source.Theme;
+                target.Theme.ResolvedThemeMode = hostTheme;
                 break;
             case Dashboard:
                 target.Monitoring = source.Monitoring;
@@ -154,7 +157,7 @@ public static class ProfileSharing
                 target.Cooling = new CoolingSettings();
                 break;
             case Theme:
-                target.Theme = new ThemeSettings();
+                target.Theme = new ThemeSettings { ResolvedThemeMode = target.Theme.ResolvedThemeMode };
                 break;
             case Dashboard:
                 target.Monitoring = new MonitoringSettings();
