@@ -13,6 +13,9 @@ namespace Nexus.Service.Persistence;
 
 public sealed class ThemeSettings
 {
+    /// <summary>All members are strings, so a shallow copy is a full copy.</summary>
+    public ThemeSettings Copy() => (ThemeSettings)MemberwiseClone();
+
     public string Language { get; set; } = "en";
     public string ThemeMode { get; set; } = "system";
     public string AccentColor { get; set; } = "#2563eb";

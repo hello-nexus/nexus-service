@@ -22,6 +22,18 @@ public class ProfileSharingTests
     }
 
     [Fact]
+    public void WriteCategory_Theme_never_touches_the_live_hosts_theme()
+    {
+        var live = new NexusSettings();
+        live.Theme.ResolvedThemeMode = "light";
+        var file = new NexusSettings();
+
+        ProfileSharing.WriteCategory(file, live, ProfileSharing.Theme);
+
+        Assert.Equal("light", live.Theme.ResolvedThemeMode);
+    }
+
+    [Fact]
     public void Theme_apply_and_reset_keep_the_targets_host_theme()
     {
         var source = new NexusSettings();
