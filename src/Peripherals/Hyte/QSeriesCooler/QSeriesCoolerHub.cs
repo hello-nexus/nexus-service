@@ -407,6 +407,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
         lastLogged = devices;
         var signature = string.Join(",", devices.Select(d => $"{d.Model}:{d.LedCount}"));
         ServiceLog.Info($"[qseries-cooler] channel {channel} devices: {(signature.Length == 0 ? "(none)" : signature)}");
+        ServiceLog.Info($"[qseries-cooler] channel {channel} raw: {Convert.ToHexString(buf, 0, n)}");
     }
 
     private static bool SameTopology(IReadOnlyList<QSeriesLinkDevice> a, IReadOnlyList<QSeriesLinkDevice> b)
