@@ -62,7 +62,8 @@ public static class AiRoutes
             // AiIntegrationSettings), so a capabilities-only patch must not
             // bounce the port and abort in-flight MCP requests. Reconcile the
             // listener only when the desired state disagrees with reality: an
-            // Enabled flip, or a re-posted enable after a failed bind (port
+            // Enabled flip, an AllowRemote flip while enabled (the bind address
+            // changes), or a re-posted enable after a failed bind (port
             // taken) where Enabled is already true but nothing is running.
             if (enabledChanged || (remoteChanged && isEnabled) || isEnabled != host.Running)
             {

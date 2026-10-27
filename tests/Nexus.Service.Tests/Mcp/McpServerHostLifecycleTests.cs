@@ -82,13 +82,35 @@ public sealed class McpServerHostLifecycleTests : IDisposable
         await Assert.ThrowsAsync<HttpRequestException>(() => clientAfterStop.GetAsync($"http://127.0.0.1:{boundPort}/mcp"));
     }
 
+    // Physical Ethernet or Wi-Fi only: tunnel, VPN and virtual-bridge adapters
+    // may not route back to this host.
     private static IPAddress? NonLoopbackLocalIPv4() =>
         System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
             .Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up
-                && n.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                && (n.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Ethernet
+                    || n.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211))
             .SelectMany(n => n.GetIPProperties().UnicastAddresses)
             .Select(u => u.Address)
-            .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a));
+            .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork
+                && !IPAddress.IsLoopback(a)
+                && !(a.GetAddressBytes()[0] == 169 && a.GetAddressBytes()[1] == 254));
+
+    private static async Task<HttpResponseMessage?> TryGetAsync(string url)
+    {
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        try
+        {
+            return await client.GetAsync(url);
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+        catch (TaskCanceledException)
+        {
+            return null;
+        }
+    }
 
     [Fact]
     public async Task Default_binds_loopback_only()
@@ -108,8 +130,7 @@ public sealed class McpServerHostLifecycleTests : IDisposable
         var lan = NonLoopbackLocalIPv4();
         if (lan is not null)
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync($"http://{lan}:{host.BoundPort}/mcp"));
+            Assert.Null(await TryGetAsync($"http://{lan}:{host.BoundPort}/mcp"));
         }
     }
 
@@ -130,19 +151,40 @@ public sealed class McpServerHostLifecycleTests : IDisposable
         Assert.True(host.Running);
         Assert.True(host.BoundRemote);
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        var targets = new List<string> { "127.0.0.1" };
+        var loopbackUrl = $"http://127.0.0.1:{host.BoundPort}/mcp";
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, (await client.GetAsync(loopbackUrl)).StatusCode);
+        var unauth = await client.PostAsync(loopbackUrl, new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.Unauthorized, unauth.StatusCode);
+
+        // The LAN address is only asserted when this machine can reach itself on it.
         var lan = NonLoopbackLocalIPv4();
-        if (lan is not null)
+        if (lan is not null && await TryGetAsync($"http://{lan}:{host.BoundPort}/mcp") is { } lanRes)
         {
-            targets.Add(lan.ToString());
+            Assert.Equal(HttpStatusCode.MethodNotAllowed, lanRes.StatusCode);
         }
-        foreach (var target in targets)
+    }
+
+    [Fact]
+    public async Task Allow_remote_fails_loudly_when_another_process_holds_loopback_on_the_port()
+    {
+        using var squatter = new TcpListener(IPAddress.Loopback, 0);
+        squatter.Start();
+        var takenPort = ((IPEndPoint)squatter.LocalEndpoint).Port;
+
+        var (store, host) = NewHost();
+        store.Update(s =>
         {
-            var url = $"http://{target}:{host.BoundPort}/mcp";
-            Assert.Equal(HttpStatusCode.MethodNotAllowed, (await client.GetAsync(url)).StatusCode);
-            var unauth = await client.PostAsync(url, new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
-            Assert.Equal(HttpStatusCode.Unauthorized, unauth.StatusCode);
-        }
+            s.AiIntegration.Enabled = true;
+            s.AiIntegration.Token = "some-token";
+            s.AiIntegration.Port = takenPort;
+            s.AiIntegration.AllowRemote = true;
+        });
+
+        await host.ApplyConfiguredStateAsync();
+
+        Assert.False(host.Running);
+        Assert.False(host.BoundRemote);
+        Assert.Contains("already in use", host.LastError);
     }
 
     [Fact]

@@ -225,7 +225,8 @@ public sealed class AiIntegrationSettings
     /// <summary>Bearer token the MCP client presents on every request. Minted on first enable; empty until then.</summary>
     public string Token { get; set; } = "";
     /// <summary>Port the MCP listener binds. 0 means an ephemeral port (test use only).</summary>
-    public int Port { get; set; } = 9420;
+    public const int DefaultPort = 9420;
+    public int Port { get; set; } = DefaultPort;
     /// <summary>Opt-in: bind all interfaces instead of loopback so an agent on another host (a tailnet or LAN peer) can reach the endpoint. The bearer token stays mandatory.</summary>
     public bool AllowRemote { get; set; }
     public bool AllowTelemetry { get; set; } = true;

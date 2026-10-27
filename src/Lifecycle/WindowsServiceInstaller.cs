@@ -8,6 +8,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
 using Microsoft.Win32;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform.Windows;
 
 namespace Nexus.Service.Lifecycle;
@@ -46,7 +47,7 @@ internal static class WindowsServiceInstaller
     public const string UninstallRegKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Nexus";
     public const int DefaultPort = 9400;
     public const int DefaultHttpsPort = 9443;
-    public const int DefaultMcpPort = 9420;
+    public const int DefaultMcpPort = AiIntegrationSettings.DefaultPort;
 
     /// <summary>
     /// `Nexus.exe --install` entry. Self-elevates if needed; copies files to

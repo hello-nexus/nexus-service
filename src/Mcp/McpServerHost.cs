@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -98,6 +99,10 @@ public sealed class McpServerHost : IHostedService, IAsyncDisposable
         WebApplication? app = null;
         try
         {
+            if (allowRemote && port != 0)
+            {
+                ProbeLoopbackFree(port);
+            }
             var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = Array.Empty<string>() });
             builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(k =>
@@ -151,6 +156,29 @@ public sealed class McpServerHost : IHostedService, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// A wildcard bind succeeds even when another process already holds
+    /// 127.0.0.1:port (measured on macOS and Windows), and loopback clients
+    /// then reach that process instead of this listener, handing it the bearer
+    /// token. Fail the start instead.
+    /// </summary>
+    private static void ProbeLoopbackFree(int port)
+    {
+        var probe = new TcpListener(IPAddress.Loopback, port);
+        try
+        {
+            probe.Start();
+        }
+        catch (SocketException ex)
+        {
+            throw new InvalidOperationException($"127.0.0.1:{port} is already in use by another process", ex);
+        }
+        finally
+        {
+            probe.Stop();
+        }
+    }
+
     private async Task StopListenerAsync()
     {
         await _lifecycleLock.WaitAsync().ConfigureAwait(false);
@@ -174,6 +202,7 @@ public sealed class McpServerHost : IHostedService, IAsyncDisposable
         _app = null;
         Running = false;
         BoundPort = null;
+        BoundRemote = false;
         try
         {
             await app.StopAsync().ConfigureAwait(false);
