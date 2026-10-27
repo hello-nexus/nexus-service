@@ -842,4 +842,25 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(3, commits);
     }
 
+
+    // Prefs are keyed by zone id, which differs from the device id once rings are
+    // split or the partition is custom; the segment must resolve through its zone.
+    [Fact]
+    public void OrderForSegment_resolves_through_the_zone_covering_the_segment()
+    {
+        var zones = new List<Nexus.Service.Lighting.Zones.ResolvedZone>
+        {
+            new() { Id = "hub:inner", Slices = new[] { new ZoneSlice { Segment = 0, Start = 0, Count = 4 } } },
+            new() { Id = "hub:outer", Slices = new[] { new ZoneSlice { Segment = 1, Start = 0, Count = 4 } } },
+        };
+        var prefs = new Dictionary<string, LightingDevicePreference>
+        {
+            ["hub"] = new() { ColorOrder = "BGR" },
+            ["hub:outer"] = new() { ColorOrder = "GRB" },
+        };
+
+        Assert.Null(LianLiLightingFrameWriter.OrderForSegment(prefs, zones, 0));
+        Assert.Equal("GRB", LianLiLightingFrameWriter.OrderForSegment(prefs, zones, 1));
+        Assert.Equal("GRB", LianLiLightingFrameWriter.FirstOrder(prefs, zones));
+    }
 }

@@ -130,9 +130,15 @@ public static class FlexStoredLook
     }
 
     /// <summary>Everything that changes the uploaded bytes, as one comparable string.</summary>
-    public static string Signature(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null)
+    public static string Signature(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null, Dictionary<string, LightingDevicePreference>? prefs = null)
     {
         var sb = new StringBuilder();
+        // Only a non-RGB order enters the string, so stored signatures of untouched units keep matching.
+        var signatureOrder = OrderOf(unit, group, prefs);
+        if (DeviceColorAdjust.NormalizeOrder(signatureOrder) is not (null or "RGB"))
+        {
+            sb.Append(signatureOrder).Append('#');
+        }
         if (InGroup(group, unit.Mac))
         {
             var g = group!;
@@ -161,8 +167,58 @@ public static class FlexStoredLook
         return sb.ToString();
     }
 
-    public static Package? Build(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null)
+    /// <summary>
+    /// The color order a stored look uploads with. One animation plays on the whole
+    /// unit (or merged group), so the first non-RGB order across its zone cards stands for it.
+    /// </summary>
+    public static string? OrderOf(FlexUnit unit, MergeGroup? group, Dictionary<string, LightingDevicePreference>? prefs)
     {
+        if (prefs is null)
+        {
+            return null;
+        }
+        if (InGroup(group, unit.Mac))
+        {
+            foreach (var p in group!.Participants)
+            {
+                if (FirstZoneOrder(p.Mac, p.Family, prefs) is { } o)
+                {
+                    return o;
+                }
+            }
+            return null;
+        }
+        return FirstZoneOrder(unit.Mac, unit.Family, prefs);
+    }
+
+    private static string? FirstZoneOrder(string mac, FlexFamily family, Dictionary<string, LightingDevicePreference> prefs)
+    {
+        foreach (var zone in FlexLightingDeviceProvider.ZonesOf(family))
+        {
+            var order = DeviceColorAdjust.OrderOf(prefs, FlexLightingDeviceProvider.ZoneIdFor(mac, zone));
+            if (DeviceColorAdjust.NormalizeOrder(order) is not (null or "RGB"))
+            {
+                return order;
+            }
+        }
+        return null;
+    }
+
+    private static void Permute(byte[] rgb, string? order)
+    {
+        if (DeviceColorAdjust.NormalizeOrder(order) is null or "RGB")
+        {
+            return;
+        }
+        for (var i = 0; i + 2 < rgb.Length; i += 3)
+        {
+            DeviceColorAdjust.ReorderChannels(order, ref rgb[i], ref rgb[i + 1], ref rgb[i + 2]);
+        }
+    }
+
+    public static Package? Build(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null, Dictionary<string, LightingDevicePreference>? prefs = null)
+    {
+        var order = OrderOf(unit, group, prefs);
         // P28 accepts stored packages, but only streaming is implemented for it.
         if (unit.Family == FlexFamily.P28V2)
         {
@@ -180,6 +236,7 @@ public static class FlexStoredLook
                 {
                     if (slice.Mac == unit.Mac)
                     {
+                        Permute(slice.Frames, order);
                         return new Package
                         {
                             Compressed = TinyUz.Compress(slice.Frames),
@@ -192,6 +249,7 @@ public static class FlexStoredLook
                 return null;
             }
             var anim = FlexAnimationComposer.Compose(unit.Family, unit.Fans, ZoneLooks(unit.Family, look), look.UpDownSwap, unit.Info.FanNum >= 10 ? 0 : 1);
+            Permute(anim.Raw, order);
             return new Package
             {
                 Compressed = TinyUz.Compress(anim.Raw),
