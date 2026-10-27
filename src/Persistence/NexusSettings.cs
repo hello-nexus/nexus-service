@@ -1744,6 +1744,8 @@ public sealed class LightingDevicePreference
     /// <summary>Negative is cooler, positive warmer.</summary>
     public float AdjustTemperature { get; set; }
     public float AdjustSaturation { get; set; } = 1f;
+    /// <summary>Channel order the device expects on the wire. Null is RGB; otherwise one of the names in DeviceColorAdjust.OrderNames.</summary>
+    public string? ColorOrder { get; set; }
 }
 
 public sealed class MotherboardLedChannel

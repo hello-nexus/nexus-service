@@ -426,6 +426,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 hc.Add(p.AdjustBlue);
                 hc.Add(p.AdjustTemperature);
                 hc.Add(p.AdjustSaturation);
+                hc.Add(p.ColorOrder);
             }
         }
         return hc.ToHashCode();
