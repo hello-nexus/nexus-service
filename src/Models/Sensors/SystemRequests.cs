@@ -65,4 +65,59 @@ public class SystemSpecsResponse
     // never serialized onto the shareable /system/specs response.
     [JsonIgnore]
     public string Oa3ProductKey { get; set; } = "";
+    // Model identifiers for the catalog match. Never a serial number, MAC address, key or host name.
+    public HardwareIdsDto HardwareIds { get; set; } = new();
+}
+
+/// <summary>
+/// Hardware model identifiers for matching the PC against the catalog. A list or block with no source on the
+/// platform is null; an individual value that could not be read is null. Serial numbers, MAC addresses, product keys and
+/// host names are never part of this block.
+/// </summary>
+public class HardwareIdsDto
+{
+    /// <summary>One entry per graphics card, in the order GraphicsCard lists them.</summary>
+    public List<GpuIdsDto>? Gpus { get; set; }
+    public List<RamModuleIdsDto>? RamModules { get; set; }
+    public List<DriveIdsDto>? Drives { get; set; }
+    public BoardIdsDto? Board { get; set; }
+    public List<MonitorIdsDto>? Monitors { get; set; }
+}
+
+/// <summary>PCI ids as four lowercase hex digits. Vendor and Device name the chip; SubVendor and SubDevice name the board partner's design.</summary>
+public class GpuIdsDto
+{
+    public string? Vendor { get; set; }
+    public string? Device { get; set; }
+    public string? SubVendor { get; set; }
+    public string? SubDevice { get; set; }
+}
+
+public class RamModuleIdsDto
+{
+    public string? Manufacturer { get; set; }
+    public string? PartNumber { get; set; }
+    public long? CapacityBytes { get; set; }
+    public int? ConfiguredSpeedMts { get; set; }
+}
+
+public class DriveIdsDto
+{
+    public string? Vendor { get; set; }
+    public string? Model { get; set; }
+}
+
+/// <summary>SMBIOS baseboard (Type 2) manufacturer and product name.</summary>
+public class BoardIdsDto
+{
+    public string? Manufacturer { get; set; }
+    public string? Product { get; set; }
+}
+
+/// <summary>EDID PnP manufacturer id, product code as four uppercase hex digits, and monitor name.</summary>
+public class MonitorIdsDto
+{
+    public string? Manufacturer { get; set; }
+    public string? ProductCode { get; set; }
+    public string? Name { get; set; }
 }

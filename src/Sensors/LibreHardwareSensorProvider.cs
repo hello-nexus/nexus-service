@@ -129,7 +129,9 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
     public IReadOnlyList<GpuCard> GetGpuCards()
     {
         var gpus = GetGpus();
-        return GpuBoardPartners.Resolve(gpus.Select(g => g.Name).ToList(), BoardsOfThisMachine(gpus));
+        var cards = GpuBoardPartners.Resolve(gpus.Select(g => g.Name).ToList(), BoardsOfThisMachine(gpus));
+        // Resolve returns one card per GPU in order; the chip ids come from the matched DXGI adapter, integrated GPUs included.
+        return cards.Select((c, i) => c with { VendorId = gpus[i].PciVendorId, DeviceId = gpus[i].PciDeviceId }).ToList();
     }
 
     private static IReadOnlyList<GpuBoard> BoardsOfThisMachine(IReadOnlyList<GpuReadout> gpus) =>
