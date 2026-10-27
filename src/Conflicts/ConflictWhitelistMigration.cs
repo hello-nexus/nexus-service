@@ -45,7 +45,7 @@ public static class ConflictWhitelistMigration
         KeepOn(doc.Devices, "zmatrices-lcd");
     }
 
-    /// <summary>Schema v26: DeepCool joined the catalog whitelisted, so an upgrading install keeps it running unless the Mystique is already on.</summary>
+    /// <summary>Schema v27 (v26 was also stamped by a branch build): DeepCool joined the catalog whitelisted, so an upgrading install keeps it running unless the Mystique is already on. Safe to re-run.</summary>
     public static void WhitelistDeepCool(NexusSettings doc)
     {
         doc.Devices ??= new DevicesSettings();

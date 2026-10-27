@@ -21,7 +21,7 @@
     "backgroundEffect": "plasma",
     "backgroundTemplate": 0,
     "backgroundOpacity": 1.0,
-    "widgetOpacity": 0.7,
+    "widgetOpacity": 1.0,
     "widgetLabels": false,
     "layouts": {
       "desktop": {
@@ -190,14 +190,6 @@
         ]
       }
     }
-  },
-
-  "overlay": {
-    "enabled": false,
-    "alwaysOnTop": false,
-    "scale": 100,
-    "opacity": 1.0,
-    "monitor": -1
   },
 
   "lighting": {

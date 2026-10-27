@@ -29,6 +29,7 @@ namespace Nexus.Service.Serialization;
 
 // Ping + Auth
 [JsonSerializable(typeof(ApiResponse))]
+[JsonSerializable(typeof(Nexus.Service.Platform.OpenAppBody))]
 [JsonSerializable(typeof(FeatureDisabledResponse))]
 [JsonSerializable(typeof(PingResponse))]
 [JsonSerializable(typeof(PairResponse))]
@@ -232,7 +233,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.ThemeSettings))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.MonitoringSettings))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelSettings))]
-[JsonSerializable(typeof(Nexus.Service.Persistence.OverlaySettings))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelLayoutsDefaults))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelLayoutDefault))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelLayoutWidget))]
@@ -242,7 +242,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.PreferencesPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.ThemeSettingsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.PanelSettingsPatch))]
-[JsonSerializable(typeof(Nexus.Service.Persistence.OverlaySettingsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.MonitoringSettingsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.CoolingPrefsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.DiagnosticsSettings))]
@@ -267,6 +266,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelGaugeGradientStop))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelGaugeGradientStop>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCapabilities))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.KioskViewportDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.XeneonEdgeSettingsDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDevicePatch))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCreateBody))]
@@ -279,12 +279,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PrefsChangedFrame))]
 
-// Desktop widgets - floating panel widgets on the Windows desktop.
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayWidgetDto))]
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayWidgetCreateBody))]
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayWidgetPatch))]
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayLockAllBody))]
-[JsonSerializable(typeof(List<Nexus.Service.Models.Panel.OverlayWidgetDto>))]
+// Overlay host monitor map and the legacy desktop widgets handed to a panel record.
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayMonitorsBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.DesktopImportDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.LegacyOverlayWidget))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.LightingChangedFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.CoolingChangedFrame))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.VolumeChangedFrame))]
@@ -373,6 +371,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamAssignmentsResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamSettingsDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayStateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.OverlayIdentifyDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Displays.IdentifyDisplaysBody))]
 
 // Weather
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherSnapshot))]

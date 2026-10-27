@@ -49,7 +49,6 @@ public class AppPrefixMigrationTests
         doc.Panel.Layouts = new PanelLayoutsDefaults();
         doc.Panel.Layouts.Y70.Widgets.Add(new PanelLayoutWidget { Type = "marketplace:com.example.widget" });
         doc.PanelDevices["dev1"] = new PanelDeviceRecord { Layout = Layout("marketplace:com.ibuypower.control") };
-        doc.Overlay.Layout.Add(new OverlayWidgetDto { Id = "o1", Type = "marketplace:com.ibuypower.control" });
 
         AppPrefixMigration.Apply(doc);
 
@@ -57,7 +56,6 @@ public class AppPrefixMigrationTests
         Assert.Equal("app:com.ibuypower.control", doc.Panel.DashboardLayout.Pages[0].Widgets[1].Type);
         Assert.Equal("app:com.example.widget", doc.Panel.Layouts.Y70.Widgets[0].Type);
         Assert.Equal("app:com.ibuypower.control", doc.PanelDevices["dev1"].Layout!.Pages[0].Widgets[0].Type);
-        Assert.Equal("app:com.ibuypower.control", doc.Overlay.Layout[0].Type);
     }
 
     [Fact]
@@ -78,7 +76,6 @@ public class AppPrefixMigrationTests
         doc.Panel.DashboardLayout = null;
         doc.Panel.Layouts = null;
         doc.PanelDevices["ghost"] = new PanelDeviceRecord { Layout = null };
-        doc.Overlay.Layout = null!;
         AppPrefixMigration.Apply(doc);
     }
 

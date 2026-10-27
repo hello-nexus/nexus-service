@@ -1112,6 +1112,16 @@
         "tags": [
           "Nexus"
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAppBody"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "200": {
             "description": "OK"
@@ -8653,6 +8663,28 @@
         }
       }
     },
+    "/displays/identify": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentifyDisplaysBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
     "/displays/touch-permission/open": {
       "post": {
         "tags": [
@@ -12884,112 +12916,6 @@
         "tags": [
           "Nexus"
         ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/overlay/widgets": {
-      "get": {
-        "tags": [
-          "Nexus"
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OverlayWidgetCreateBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/overlay/widgets/{id}": {
-      "patch": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OverlayWidgetPatch"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "Nexus"
-        ],
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
-    },
-    "/overlay/widgets/lock": {
-      "post": {
-        "tags": [
-          "Nexus"
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/OverlayLockAllBody"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "200": {
             "description": "OK"
@@ -20261,9 +20187,6 @@
           "panel": {
             "$ref": "#/components/schemas/PanelSettings"
           },
-          "overlay": {
-            "$ref": "#/components/schemas/OverlaySettings"
-          },
           "lighting": {
             "$ref": "#/components/schemas/LightingDefaults"
           },
@@ -22518,252 +22441,6 @@
           }
         }
       },
-      "OverlayLockAllBody": {
-        "type": "object",
-        "properties": {
-          "locked": {
-            "type": "boolean"
-          }
-        }
-      },
-      "OverlaySettings": {
-        "type": "object",
-        "properties": {
-          "enabled": {
-            "type": "boolean"
-          },
-          "alwaysOnTop": {
-            "type": "boolean"
-          },
-          "scale": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "opacity": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "number",
-              "string"
-            ],
-            "format": "double"
-          },
-          "monitor": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "layout": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/OverlayWidgetDto"
-            }
-          }
-        }
-      },
-      "OverlaySettingsPatch": {
-        "type": "object",
-        "properties": {
-          "enabled": {
-            "type": [
-              "null",
-              "boolean"
-            ]
-          },
-          "alwaysOnTop": {
-            "type": [
-              "null",
-              "boolean"
-            ]
-          },
-          "scale": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "null",
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "opacity": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "null",
-              "number",
-              "string"
-            ],
-            "format": "double"
-          },
-          "monitor": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "null",
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "layout": {
-            "type": [
-              "null",
-              "array"
-            ],
-            "items": {
-              "$ref": "#/components/schemas/OverlayWidgetDto"
-            }
-          }
-        }
-      },
-      "OverlayWidgetCreateBody": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string"
-          },
-          "size": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "monitor": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "null",
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "col": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "null",
-              "number",
-              "string"
-            ],
-            "format": "double"
-          },
-          "row": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "null",
-              "number",
-              "string"
-            ],
-            "format": "double"
-          },
-          "config": {
-            "type": [
-              "null",
-              "object"
-            ]
-          }
-        }
-      },
-      "OverlayWidgetDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "size": {
-            "type": "string"
-          },
-          "monitor": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "col": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "number",
-              "string"
-            ],
-            "format": "double"
-          },
-          "row": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "number",
-              "string"
-            ],
-            "format": "double"
-          },
-          "locked": {
-            "type": "boolean"
-          },
-          "config": {
-            "type": [
-              "null",
-              "object"
-            ]
-          }
-        }
-      },
-      "OverlayWidgetPatch": {
-        "type": "object",
-        "properties": {
-          "size": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "monitor": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "null",
-              "integer",
-              "string"
-            ],
-            "format": "int32"
-          },
-          "col": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "null",
-              "number",
-              "string"
-            ],
-            "format": "double"
-          },
-          "row": {
-            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
-            "type": [
-              "null",
-              "number",
-              "string"
-            ],
-            "format": "double"
-          },
-          "locked": {
-            "type": [
-              "null",
-              "boolean"
-            ]
-          },
-          "config": {
-            "type": [
-              "null",
-              "object"
-            ]
-          }
-        }
-      },
       "PairBroadcastSetRequest": {
         "type": "object",
         "properties": {
@@ -24158,9 +23835,6 @@
           "panel": {
             "$ref": "#/components/schemas/PanelSettings"
           },
-          "overlay": {
-            "$ref": "#/components/schemas/OverlaySettings"
-          },
           "monitoring": {
             "$ref": "#/components/schemas/MonitoringSettings"
           },
@@ -24215,16 +23889,6 @@
               },
               {
                 "$ref": "#/components/schemas/PanelSettingsPatch"
-              }
-            ]
-          },
-          "overlay": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/OverlaySettingsPatch"
               }
             ]
           },
@@ -28121,6 +27785,42 @@
           },
           "acknowledged": {
             "type": "boolean"
+          }
+        }
+      },
+      "IdentifyDisplayEntry": {
+        "type": "object",
+        "properties": {
+          "displayId": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "IdentifyDisplaysBody": {
+        "type": "object",
+        "properties": {
+          "displays": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IdentifyDisplayEntry"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "OpenAppBody": {
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "string",
+            "nullable": true
           }
         }
       },

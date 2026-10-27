@@ -61,7 +61,6 @@ public static class ProfileRoutes
                 {
                     Theme = s.Theme,
                     Panel = s.Panel,
-                    Overlay = s.Overlay,
                     Monitoring = s.Monitoring,
                     Cooling = new CoolingPrefs
                     {
@@ -248,7 +247,6 @@ public static class ProfileRoutes
             {
                 Theme = s.Theme,
                 Panel = s.Panel,
-                Overlay = s.Overlay,
                 Monitoring = s.Monitoring,
                 Cooling = new CoolingPrefs
                 {
@@ -516,46 +514,6 @@ public static class ProfileRoutes
                         s.Panel.DashboardLayout = panel.DashboardLayout;
                     }
                     if (panel.DashboardGaugeGradient is not null) s.Panel.DashboardGaugeGradient = panel.DashboardGaugeGradient;
-                }
-                if (body.Overlay is { } overlay)
-                {
-                    if (overlay.Enabled.HasValue)      s.Overlay.Enabled     = overlay.Enabled.Value;
-                    if (overlay.AlwaysOnTop.HasValue)  s.Overlay.AlwaysOnTop = overlay.AlwaysOnTop.Value;
-                    if (overlay.Scale.HasValue)
-                    {
-                        var newScale = Math.Clamp(overlay.Scale.Value, 50, 200);
-                        var oldScale = s.Overlay.Scale > 0 ? s.Overlay.Scale : 100;
-                        // Rescale every pinned widget's (col, row) so the *visual*
-                        // position stays put when the cell-size scale changes.
-                        // ratio = old / new because at 100→200% a widget at col 4
-                        // should land at col 2 (half as many cells cover the same
-                        // pixels). Snap to the 0.25 drag grid and clamp ≥0; max
-                        // clamp happens client-side where monitor size is known.
-                        if (oldScale != newScale && s.Overlay.Layout is { } layout)
-                        {
-                            var ratio = (double)oldScale / newScale;
-                            foreach (var w in layout)
-                            {
-                                w.Col = Math.Max(0, Math.Round(w.Col * ratio * 4) / 4);
-                                w.Row = Math.Max(0, Math.Round(w.Row * ratio * 4) / 4);
-                            }
-                        }
-                        s.Overlay.Scale = newScale;
-                    }
-                    if (overlay.Opacity.HasValue)
-                    {
-                        s.Overlay.Opacity = Math.Clamp(overlay.Opacity.Value, 0, 1);
-                    }
-                    if (overlay.Monitor.HasValue)
-                    {
-                        // -1 (primary) or any non-negative index. Don't clamp to a
-                        // max here - the overlay host validates against the
-                        // enumerated monitor count and falls back to primary if
-                        // the index is out of range.
-                        var v = overlay.Monitor.Value;
-                        s.Overlay.Monitor = v < -1 ? -1 : v;
-                    }
-                    if (overlay.Layout is not null) s.Overlay.Layout = overlay.Layout;
                 }
                 if (body.Monitoring is { } monitoring)
                 {

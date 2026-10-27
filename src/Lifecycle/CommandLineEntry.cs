@@ -26,9 +26,13 @@ internal static class CommandLineEntry
             ["--lighting-bench-child"] = Nexus.Service.Lighting.Bench.LightingBench.RunChild,
             // One-shot invoked by the service via schtasks when the desktop
             // widget context menu's "Open dashboard" item is clicked.
-            ["--open-app"] = static _ =>
+            ["--open-app"] = static a =>
             {
-                Nexus.Service.Platform.Windows.TrayIcon.OpenLocalWindow();
+                // An optional validated route deep-links the dashboard window; the overlay navigates and foregrounds it.
+                if (a.Length > 1 && Nexus.Service.Platform.OpenAppRoute.Normalize(a[1]) is { } route)
+                    Nexus.Service.Platform.Windows.TrayIcon.OpenLocalWindow(path: route);
+                else
+                    Nexus.Service.Platform.Windows.TrayIcon.OpenLocalWindow();
                 return 0;
             },
             // One-shot the service runs elevated via schtasks to focus an elevated window for the helper.

@@ -115,6 +115,8 @@ public static class ProfileSharing
                 target.Panel.DashboardPresets = source.Panel.DashboardPresets;
                 target.Panel.DashboardActivePresetId = source.Panel.DashboardActivePresetId;
                 target.Panel.DashboardGaugeGradient = source.Panel.DashboardGaugeGradient;
+                // The retired overlay's block still travels with its profile: its markers are per profile and
+                // an unloaded profile's widgets migrate when it is first loaded.
                 target.Overlay = source.Overlay;
                 target.Ui.ShowConflictAlerts = source.Ui.ShowConflictAlerts;
                 target.Ui.AutoKillConflictsAtStartup = source.Ui.AutoKillConflictsAtStartup;
@@ -166,7 +168,7 @@ public static class ProfileSharing
                 target.Panel.DashboardPresets = null;
                 target.Panel.DashboardActivePresetId = null;
                 target.Panel.DashboardGaugeGradient = null;
-                target.Overlay = new OverlaySettings();
+                target.Overlay = new LegacyOverlaySettings();
                 target.Ui.ShowConflictAlerts = true;
                 target.Ui.AutoKillConflictsAtStartup = false;
                 target.Ui.NotifyConflictLaunches = true;

@@ -226,6 +226,7 @@ public static class PanelProfileData
             record.Layout = PanelLayoutDefaults.StripSeedFor(record);
             record.Presets = null;
             record.ActivePresetId = null;
+            record.WidgetsLocked = null;
         }
 
         CopyCoolerContent(new NexusSettings(), target, creating: false);
@@ -242,7 +243,7 @@ public static class PanelProfileData
     /// <summary>True when a live record's look equals a never-customized one: no presets, no personalization, and a layout that is unset, the strip seed, or the surface's install default.</summary>
     public static bool IsDefaultLook(PanelDeviceRecord record)
     {
-        if (record.Presets is { Count: > 0 } || record.ActivePresetId is not null)
+        if (record.Presets is { Count: > 0 } || record.ActivePresetId is not null || record.WidgetsLocked is not null)
         {
             return false;
         }
@@ -356,6 +357,7 @@ public static class PanelProfileData
         PanelPresets.Copy(from, to);
         to.Presets = from.Presets?.Select(ClonePreset).ToList();
         to.ActivePresetId = from.ActivePresetId;
+        to.WidgetsLocked = from.WidgetsLocked;
     }
 
     private static PanelPreset ClonePreset(PanelPreset p)
