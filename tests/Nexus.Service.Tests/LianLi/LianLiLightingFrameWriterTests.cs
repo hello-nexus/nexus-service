@@ -842,7 +842,6 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(3, commits);
     }
 
-
     // Prefs are keyed by zone id, which differs from the device id once rings are
     // split or the partition is custom; the segment must resolve through its zone.
     [Fact]

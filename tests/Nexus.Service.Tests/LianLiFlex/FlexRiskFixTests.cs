@@ -103,13 +103,11 @@ public class FlexRiskFixTests
         var unit = r.Hub.Find(Mac)!;
         var look = new LianLiFlexUnitSettings { Mode = "wave" };
         var zone = Nexus.Service.Lighting.FlexLightingDeviceProvider.ZonesOf(unit.Family)[0];
-        var prefs = new System.Collections.Generic.Dictionary<string, Nexus.Service.Persistence.LightingDevicePreference>
-        {
-            [Nexus.Service.Lighting.FlexLightingDeviceProvider.ZoneIdFor(Mac, zone)] = new() { ColorOrder = "GRB" },
-        };
+        var settings = new Nexus.Service.Persistence.NexusSettings();
         var plain = FlexStoredLook.Signature(unit, look);
-        Assert.Equal(plain, FlexStoredLook.Signature(unit, look, null, new System.Collections.Generic.Dictionary<string, Nexus.Service.Persistence.LightingDevicePreference>()));
-        Assert.NotEqual(plain, FlexStoredLook.Signature(unit, look, null, prefs));
+        Assert.Equal(plain, FlexStoredLook.Signature(unit, look, null, settings));
+        settings.Devices.LightingDevicePrefs[Nexus.Service.Lighting.FlexLightingDeviceProvider.ZoneIdFor(Mac, zone)] = new() { ColorOrder = "GRB" };
+        Assert.NotEqual(plain, FlexStoredLook.Signature(unit, look, null, settings));
     }
 
     [Fact]

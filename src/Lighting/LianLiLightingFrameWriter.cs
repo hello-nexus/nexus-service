@@ -631,7 +631,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectMergeIdle, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
             Settle();
         }
-        var paletteBytes = FillPaletteBuffer(_channelBuf, mode, ls.Colors, profile.MaxFans, profile.LedsPerFanForChannel(0), perFan: false, profile.PaletteSlotsPerFan, FirstOrder(prefs, _firmwareZonesByDevice[composed.IndexOf(anchor)]));
+        var paletteBytes = FillPaletteBuffer(_channelBuf, mode, ls.Colors, profile.MaxFans, profile.LedsPerFanForChannel(0), perFan: false, profile.PaletteSlotsPerFan, FirstOrderOfAll(prefs, _firmwareZonesByDevice));
         if (!_hub.SendColorData(0, _channelBuf.AsSpan(0, paletteBytes))) return false;
         Settle();
         if (!_hub.SendModeCommit(0, mode.MergedEffectByte, speedByte, dirByte, brightnessByte)) return false;
@@ -711,13 +711,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return false;
     }
 
-    // perFan: colour i fills fan i's whole ring (cycling when fewer colours than
-    // fans). Otherwise each fan carries the palette in its own run of slots,
-    // missing colours black. No user colours means the mode's defaults. Input
-    // colours are RGB; SendColorData applies the R,B,G wire swap. Returns the
-    // bytes filled.
     // Cards and prefs are keyed by zone id, so the order of a segment is the
-    // order of the zone whose slices cover it (custom partitions and split rings
+    // first non-RGB order of the zones whose slices cover it (custom partitions and split rings
     // both have zone ids that differ from the device id).
     internal static string? OrderForSegment(Dictionary<string, LightingDevicePreference> prefs, IReadOnlyList<ResolvedZone> zones, int segment)
     {
@@ -727,8 +722,25 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 if (slice.Segment == segment)
                 {
-                    return DeviceColorAdjust.OrderOf(prefs, zone.Id);
+                    var order = DeviceColorAdjust.OrderOf(prefs, zone.Id);
+                    if (DeviceColorAdjust.NormalizeOrder(order) is not (null or "RGB"))
+                    {
+                        return order;
+                    }
                 }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The first non-RGB order across every member device, for the one merged animation.</summary>
+    internal static string? FirstOrderOfAll(Dictionary<string, LightingDevicePreference> prefs, List<IReadOnlyList<ResolvedZone>> zonesByDevice)
+    {
+        foreach (var zones in zonesByDevice)
+        {
+            if (FirstOrder(prefs, zones) is { } order)
+            {
+                return order;
             }
         }
         return null;
@@ -748,6 +760,11 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return null;
     }
 
+    // perFan: colour i fills fan i's whole ring (cycling when fewer colours than
+    // fans). Otherwise each fan carries the palette in its own run of slots,
+    // missing colours black. No user colours means the mode's defaults. Input
+    // colours are RGB; SendColorData applies the R,B,G wire swap. Returns the
+    // bytes filled.
     private static int FillPaletteBuffer(byte[] buf, LianLiModeInfo mode, IReadOnlyList<string> colors, int numFans, int ledsPerFan, bool perFan, int slotsPerFan, string? order)
     {
         Array.Clear(buf);
