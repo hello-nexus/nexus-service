@@ -484,7 +484,7 @@ public static class ProfileRoutes
                     if (theme.Language is not null)    s.Theme.Language    = theme.Language;
                     if (theme.ThemeMode is not null)   s.Theme.ThemeMode   = theme.ThemeMode;
                     if (theme.AccentColor is not null) s.Theme.AccentColor = theme.AccentColor;
-                    if (theme.ResolvedThemeMode is not null) s.Theme.ResolvedThemeMode = theme.ResolvedThemeMode;
+                    // ResolvedThemeMode is host-owned (HostThemeSync); a client value is dropped.
                     if (theme.BackgroundMode is not null) s.Theme.BackgroundMode = theme.BackgroundMode;
                     if (theme.AccentSource is not null) s.Theme.AccentSource = theme.AccentSource;
                     if (theme.CustomAccentColor is not null) s.Theme.CustomAccentColor = theme.CustomAccentColor;
