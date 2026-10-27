@@ -1118,14 +1118,20 @@ public sealed class PanelPhonePairingService
 
     private List<PanelPhoneSessionToken> GetNormalizedSessionSnapshot(long now)
     {
-        var sessions = _store.Load().Auth?.PanelPhoneSessions;
-        if (sessions is null)
-            return new List<PanelPhoneSessionToken>();
+        // The live list is mutated under the store lock by Update; enumerate it under the
+        // same lock via Read so a concurrent pair or revoke cannot invalidate the enumerator.
+        List<PanelPhoneSessionToken>? clean = null;
+        _store.Read(s =>
+        {
+            var sessions = s.Auth?.PanelPhoneSessions;
+            if (sessions is null)
+                clean = new List<PanelPhoneSessionToken>();
+            else if (!NeedsSessionNormalization(sessions, now))
+                clean = sessions.Select(CloneSession).ToList();
+        });
 
-        var needsUpdate = NeedsSessionNormalization(sessions, now);
-
-        if (!needsUpdate)
-            return sessions.Select(CloneSession).ToList();
+        if (clean is not null)
+            return clean;
 
         var snapshot = new List<PanelPhoneSessionToken>();
         _store.Update(s =>

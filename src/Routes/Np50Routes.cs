@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Nexus.Service.Models;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hyte.Np50;
+using Nexus.Service.Serialization;
 
 namespace Nexus.Service.Routes;
 
@@ -96,7 +97,7 @@ public static partial class DevicesRoutes
                 return Results.Conflict(new { error = "NP50 not connected" });
             var a = hub.GetFirmwareAnimation();
             if (a is null)
-                return Results.Problem("Failed to read firmware animation from NP50.");
+                return FirmwareReadBusy("Failed to read firmware animation from NP50.");
             return Results.Ok(new Np50FirmwareAnimationResponse
             {
                 Animation = a.Value.Animation,
@@ -165,6 +166,15 @@ public static partial class DevicesRoutes
 
         // Push an LED frame at one of the three ports. Body shape is a flat list
     }
+
+    /// <summary>
+    /// A firmware read that returned no data on a connected device. The read can lose a race
+    /// with an in-flight write or time out, so this is a retryable 503 rather than a 500 that
+    /// the error reporter would count as a service fault.
+    /// </summary>
+    internal static IResult FirmwareReadBusy(string message) =>
+        Results.Json(ApiResponse.Fail(message), AppJsonContext.Default.ApiResponse,
+            statusCode: StatusCodes.Status503ServiceUnavailable);
 }
 
 public sealed class Np50LightingRequest
