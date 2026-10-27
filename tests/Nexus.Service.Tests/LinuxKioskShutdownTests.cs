@@ -10,6 +10,7 @@ using Xunit;
 
 namespace Nexus.Service.Tests;
 
+[Collection("LinuxScreenInhibit")]
 public class LinuxKioskShutdownTests
 {
     private static Process StartSleeper()
@@ -108,6 +109,26 @@ public class LinuxKioskShutdownTests
         Assert.False(host.IsClosing("d1"));
         Assert.False(host.ReconcileDeferred);
         Assert.False(host.DeferIfClosingForTest("d1"));
+    }
+
+    [Fact]
+    public async Task An_exited_entry_closed_without_a_reservation_leaves_another_closers_reservation()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        using var host = NewHost();
+        var live = StartSleeper();
+        var dead = StartSleeper();
+        host.AddRunningForTest("d1", "dev1", live);
+        Assert.True(host.DetachForTest("d1", out var liveKiosk));
+        host.AddRunningForTest("d1", "dev1", dead);
+        Assert.True(host.DetachForTest("d1", out var deadKiosk, reserve: false));
+
+        await Task.Run(() => host.CloseDetachedForTest(deadKiosk!, "d1", reserved: false));
+        Assert.True(host.IsClosing("d1"));
+
+        await Task.Run(() => host.CloseDetachedForTest(liveKiosk!, "d1", reserved: true));
+        Assert.False(host.IsClosing("d1"));
     }
 
     [Fact]

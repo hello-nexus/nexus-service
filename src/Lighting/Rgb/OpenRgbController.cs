@@ -203,9 +203,10 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
     // The ACK for a frame is sent once the daemon's per-controller queue thread has accepted it
     // (openrgb-headless NetworkServer.cpp ControllerListenThread). The device write itself runs
     // later on the controller's own thread, which polls a raised flag each millisecond
-    // (RGBController.cpp DeviceCallThreadFunction), so no reply proves it finished. This pause
-    // covers that poll plus one device write.
-    private static readonly TimeSpan QuiesceSettle = TimeSpan.FromMilliseconds(150);
+    // (RGBController.cpp DeviceCallThreadFunction), so no reply proves it finished. This pause is
+    // a bound, not a measurement: it covers that poll plus the device writes of several DIMM
+    // controllers that share one SMBus and update one after another.
+    private static readonly TimeSpan QuiesceSettle = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan QuiescePoll = TimeSpan.FromMilliseconds(5);
 
     /// <summary>
