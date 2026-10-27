@@ -59,7 +59,7 @@ public static partial class DevicesRoutes
                 return Results.Conflict(new { error = "NP50 not connected" });
             var d = hub.GetFirmwareDefaults();
             if (d is null)
-                return Results.Problem("Failed to read firmware defaults from NP50.");
+                return FirmwareReadBusy("Failed to read firmware defaults from NP50.");
             return Results.Ok(new Np50FirmwareDefaultsResponse
             {
                 DefaultMode = d.Value.DefaultMode,

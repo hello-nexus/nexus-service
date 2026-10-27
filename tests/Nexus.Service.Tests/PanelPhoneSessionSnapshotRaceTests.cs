@@ -52,7 +52,11 @@ public class PanelPhoneSessionSnapshotRaceTests
             try
             {
                 for (var i = 0; i < 20000; i++)
+                {
                     Assert.NotEmpty(service.GetActiveRelaySessions());
+                    Assert.Empty(service.GetPushTargets());
+                    _ = service.GetSessionDisplayName("s3");
+                }
             }
             finally
             {

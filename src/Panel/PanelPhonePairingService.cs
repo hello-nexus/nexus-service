@@ -430,7 +430,7 @@ public sealed class PanelPhonePairingService
     private bool AlreadyPaired(string deviceId, string fingerprint)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var sessions = _store.Load().Auth?.PanelPhoneSessions;
+        var sessions = SnapshotSessionList();
         if (sessions is null)
         {
             return false;
@@ -689,7 +689,7 @@ public sealed class PanelPhonePairingService
     /// <summary>Display label for a paired session, used to attribute phone→PC transfers. Empty when the id is unknown.</summary>
     public string GetSessionDisplayName(string id)
     {
-        var s = _store.Load().Auth?.PanelPhoneSessions?.FirstOrDefault(t => t.Id == id);
+        var s = SnapshotSessionList()?.FirstOrDefault(t => t.Id == id);
         return s is null ? "" : DescribeSession(s).DisplayName;
     }
 
@@ -845,7 +845,7 @@ public sealed class PanelPhonePairingService
     /// <summary>Every registered push target, one per distinct token, in session order.</summary>
     public IReadOnlyList<PanelPhonePushTarget> GetPushTargets()
     {
-        var sessions = _store.Load().Auth?.PanelPhoneSessions;
+        var sessions = SnapshotSessionList();
         if (sessions is null)
             return Array.Empty<PanelPhonePushTarget>();
 
@@ -1022,7 +1022,7 @@ public sealed class PanelPhonePairingService
         var hash = HashToken(token);
         var provided = Encoding.UTF8.GetBytes(hash);
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var sessions = _store.Load().Auth?.PanelPhoneSessions;
+        var sessions = SnapshotSessionList();
         if (sessions is null)
             return false;
 
@@ -1114,6 +1114,14 @@ public sealed class PanelPhonePairingService
                 return lastSeen <= 0 || now - lastSeen > SessionIdleMs;
             });
         });
+    }
+
+    /// <summary>Copy of the live session list taken under the store lock, so callers can enumerate while Update mutates it. Null when the store has no auth section.</summary>
+    private List<PanelPhoneSessionToken>? SnapshotSessionList()
+    {
+        List<PanelPhoneSessionToken>? copy = null;
+        _store.Read(s => copy = s.Auth?.PanelPhoneSessions?.ToList());
+        return copy;
     }
 
     private List<PanelPhoneSessionToken> GetNormalizedSessionSnapshot(long now)
