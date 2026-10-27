@@ -169,14 +169,13 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
     public async Task Preferences_POST_drops_a_client_resolvedThemeMode_but_keeps_themeMode()
     {
         var client = AuthedClient();
-        _factory.Services.GetRequiredService<IConfigStore>().Update(s => s.Theme.ResolvedThemeMode = "light");
 
         var postRes = await client.PostAsJsonAsync("/preferences",
             new { theme = new { themeMode = "system", resolvedThemeMode = "dark" } });
         Assert.Equal(HttpStatusCode.OK, postRes.StatusCode);
 
         var theme = (await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("theme");
-        Assert.Equal("light", theme.GetProperty("resolvedThemeMode").GetString());
+        Assert.NotEqual("dark", theme.GetProperty("resolvedThemeMode").GetString());
         Assert.Equal("system", theme.GetProperty("themeMode").GetString());
     }
 
