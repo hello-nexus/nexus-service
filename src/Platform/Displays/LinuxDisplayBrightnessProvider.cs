@@ -441,19 +441,22 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
                 log?.Invoke($"{Path.GetFileName(dir)} skipped: status='{status}'");
                 continue;
             }
-            // The kernel links the connector's DDC adapter as "ddc"; DP AUX adapters nest an i2c-N child instead.
-            var ddcLink = Path.Combine(dir, "ddc");
-            var leaf = LinuxSysfs.ReadLinkLeaf(ddcLink);
-            if (leaf is not null)
+            // A DP connector nests its AUX adapter as an i2c-N child; on amdgpu the "ddc" link points at the HDMI-only DM i2c adapter, which never answers DP monitors.
+            var children = ChildI2cLeaves(dir);
+            if (children.Length > 0)
             {
-                AddBus(buses, leaf, ddcLink, $"{Path.GetFileName(dir)} ddc link", log);
+                foreach (var child in children)
+                    AddBus(buses, child, Path.Combine(dir, child), $"{Path.GetFileName(dir)} aux child", log);
                 continue;
             }
-            var children = ChildI2cLeaves(dir);
-            if (children.Length == 0)
-                log?.Invoke($"{Path.GetFileName(dir)} connected but has no ddc link and no i2c child");
-            foreach (var child in children)
-                AddBus(buses, child, Path.Combine(dir, child), $"{Path.GetFileName(dir)} child", log);
+            var ddcLink = Path.Combine(dir, "ddc");
+            var leaf = LinuxSysfs.ReadLinkLeaf(ddcLink);
+            if (leaf is null)
+            {
+                log?.Invoke($"{Path.GetFileName(dir)} connected but has no i2c child and no ddc link");
+                continue;
+            }
+            AddBus(buses, leaf, ddcLink, $"{Path.GetFileName(dir)} ddc link", log);
         }
 
         try

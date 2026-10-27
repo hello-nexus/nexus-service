@@ -196,7 +196,7 @@ public class LinuxDisplayBrightnessTests
         Assert.Contains(lines, l => l.Contains("card1-DP-2") && l.Contains("i2c-5 selected") && l.Contains("AMDGPU DM aux hw bus 1"));
         Assert.Contains(lines, l => l.Contains("card1-DP-1") && l.Contains("SMU adapter"));
         Assert.Contains(lines, l => l.Contains("card1-HDMI-A-1 skipped") && l.Contains("disconnected"));
-        Assert.Contains(lines, l => l.Contains("card1-DP-3") && l.Contains("no ddc link and no i2c child"));
+        Assert.Contains(lines, l => l.Contains("card1-DP-3") && l.Contains("no i2c child and no ddc link"));
     }
 
     [Fact]
@@ -212,6 +212,38 @@ public class LinuxDisplayBrightnessTests
         Connector(t, "card0-DP-2", "connected", ddcBus: "i2c-3");
 
         Assert.Equal(new[] { 2, 3, 7 }, LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+    }
+
+    [Fact]
+    public void SelectDdcBuses_AmdDpPrefersAuxChildOverDdcLink_AndNeverSelectsSmu()
+    {
+        using var t = new TempDir();
+        t.Write("devices/i2c-4/name", "AMDGPU DM i2c hw bus 0\n");
+        t.Write("devices/i2c-5/name", "AMDGPU DM i2c hw bus 1\n");
+        t.Write("devices/i2c-6/name", "AMDGPU SMU 0\n");
+        t.Write("devices/i2c-7/name", "AMDGPU SMU 1\n");
+        t.Write("drm/card1-DP-1/i2c-9/name", "AMDGPU DM aux hw bus 0\n");
+        t.Write("drm/card1-DP-2/i2c-10/name", "AMDGPU DM aux hw bus 1\n");
+        Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-4", childBus: "i2c-9");
+        Connector(t, "card1-DP-2", "connected", ddcBus: "i2c-5", childBus: "i2c-10");
+        Connector(t, "card1-HDMI-A-1", "disconnected", ddcBus: "i2c-6");
+
+        var buses = LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices"));
+
+        Assert.Equal(new[] { 9, 10 }, buses);
+        Assert.DoesNotContain(6, buses);
+        Assert.DoesNotContain(7, buses);
+    }
+
+    [Fact]
+    public void SelectDdcBuses_SmuAuxChildIsNeverSelectedAndDdcLinkIsNotUsedInstead()
+    {
+        using var t = new TempDir();
+        t.Write("devices/i2c-4/name", "AMDGPU DM i2c hw bus 0\n");
+        t.Write("drm/card1-DP-1/i2c-6/name", "AMDGPU SMU 0\n");
+        Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-4", childBus: "i2c-6");
+
+        Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
     }
 
     [Fact]
