@@ -121,7 +121,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         if (ls.Mode == "canvas")
         {
             _lastFirmwareSig = null;
-            TickCanvas(brightnessRaw, zones, uncontrolled);
+            TickCanvas(brightnessRaw, zones, uncontrolled, settings.Devices.LightingDevicePrefs);
             return;
         }
 
@@ -144,7 +144,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         _lastFirmwareSig = sig;
     }
 
-    private void TickCanvas(byte brightnessRaw, System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, System.Collections.Generic.IReadOnlyList<string> uncontrolled)
+    private void TickCanvas(byte brightnessRaw, System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, System.Collections.Generic.IReadOnlyList<string> uncontrolled, System.Collections.Generic.Dictionary<string, LightingDevicePreference> orders)
     {
         var devices = _engine.Devices;
         byte innerR = 0, innerG = 0, innerB = 0;
@@ -171,7 +171,6 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
             outerR = 0; outerG = 0; outerB = 0;
         }
 
-        var orders = _store.Load().Devices.LightingDevicePrefs;
         DeviceColorAdjust.ReorderChannels(DeviceColorAdjust.OrderOf(orders, "lianli-aio:ring:inner"), ref innerR, ref innerG, ref innerB);
         DeviceColorAdjust.ReorderChannels(DeviceColorAdjust.OrderOf(orders, "lianli-aio:ring:outer"), ref outerR, ref outerG, ref outerB);
 

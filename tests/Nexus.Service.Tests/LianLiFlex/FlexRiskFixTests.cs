@@ -97,6 +97,22 @@ public class FlexRiskFixTests
     }
 
     [Fact]
+    public void A_zone_color_order_changes_the_stored_look_signature()
+    {
+        var r = CreateRig();
+        var unit = r.Hub.Find(Mac)!;
+        var look = new LianLiFlexUnitSettings { Mode = "wave" };
+        var zone = Nexus.Service.Lighting.FlexLightingDeviceProvider.ZonesOf(unit.Family)[0];
+        var prefs = new System.Collections.Generic.Dictionary<string, Nexus.Service.Persistence.LightingDevicePreference>
+        {
+            [Nexus.Service.Lighting.FlexLightingDeviceProvider.ZoneIdFor(Mac, zone)] = new() { ColorOrder = "GRB" },
+        };
+        var plain = FlexStoredLook.Signature(unit, look);
+        Assert.Equal(plain, FlexStoredLook.Signature(unit, look, null, new System.Collections.Generic.Dictionary<string, Nexus.Service.Persistence.LightingDevicePreference>()));
+        Assert.NotEqual(plain, FlexStoredLook.Signature(unit, look, null, prefs));
+    }
+
+    [Fact]
     public void Renumbering_or_a_merge_toggle_does_not_change_what_is_uploaded_for_a_single_unit()
     {
         var r = CreateRig();

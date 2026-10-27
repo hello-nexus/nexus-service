@@ -412,11 +412,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         {
             if (hex.Length == 7 && hex[0] == '#' && uint.TryParse(hex.AsSpan(1), NumberStyles.HexNumber, null, out var rgb))
             {
-                var cr = (byte)(rgb >> 16);
-                var cg = (byte)(rgb >> 8);
-                var cb = (byte)rgb;
-                DeviceColorAdjust.ReorderChannels(pref?.ColorOrder, ref cr, ref cg, ref cb);
-                colors.Add((cr, cg, cb));
+                colors.Add(((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
             }
         }
         var (frames, interval) = HydroShift2RingEffects.Render(mode, colors, level, ls.Speed, ls.Direction == 1);
@@ -424,6 +420,15 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         for (int f = 0; f < frames.Count; f++)
         {
             frames[f].CopyTo(packed, f * _ring.Length);
+        }
+        // Permute the rendered output so generated colors (rainbow, twinkle, the
+        // default palette) follow the order too; the renderer is channel-symmetric.
+        if (DeviceColorAdjust.NormalizeOrder(pref?.ColorOrder) is not (null or "RGB"))
+        {
+            for (var i = 0; i + 2 < packed.Length; i += 3)
+            {
+                DeviceColorAdjust.ReorderChannels(pref!.ColorOrder, ref packed[i], ref packed[i + 1], ref packed[i + 2]);
+            }
         }
         _aio.SetRingAnimation(packed, frames.Count, interval);
     }

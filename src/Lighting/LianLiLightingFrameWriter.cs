@@ -562,7 +562,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                     var ledsPerFan = profile.LedsPerFanForChannel(ch);
                     var effectByte = effect.Mode.EffectByte;
                     var perFan = effectByte is LianLiProtocol.EffectStatic or LianLiProtocol.EffectBreathing;
-                    var byteCount = FillPaletteBuffer(_channelBuf, effect.Mode, effect.Colors, numFans, ledsPerFan, perFan, profile.PaletteSlotsPerFan, DeviceColorAdjust.OrderOf(prefs, device.Structure.DeviceId));
+                    var byteCount = FillPaletteBuffer(_channelBuf, effect.Mode, effect.Colors, numFans, ledsPerFan, perFan, profile.PaletteSlotsPerFan, OrderForSegment(prefs, zonesByDevice[i], seg));
                     var speedByte = LianLiLightingModes.SpeedCodes[Math.Clamp(effect.Speed, 0, 4)];
                     var dirByte = LianLiLightingModes.DirectionByte(effect.Direction);
                     var brightnessByte = DeviceBrightnessByte(device, effect.Brightness, globalBrightness, disabled);
@@ -631,7 +631,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectMergeIdle, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
             Settle();
         }
-        var paletteBytes = FillPaletteBuffer(_channelBuf, mode, ls.Colors, profile.MaxFans, profile.LedsPerFanForChannel(0), perFan: false, profile.PaletteSlotsPerFan, DeviceColorAdjust.OrderOf(prefs, anchor.Structure.DeviceId));
+        var paletteBytes = FillPaletteBuffer(_channelBuf, mode, ls.Colors, profile.MaxFans, profile.LedsPerFanForChannel(0), perFan: false, profile.PaletteSlotsPerFan, FirstOrder(prefs, _firmwareZonesByDevice[composed.IndexOf(anchor)]));
         if (!_hub.SendColorData(0, _channelBuf.AsSpan(0, paletteBytes))) return false;
         Settle();
         if (!_hub.SendModeCommit(0, mode.MergedEffectByte, speedByte, dirByte, brightnessByte)) return false;
@@ -716,6 +716,38 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // missing colours black. No user colours means the mode's defaults. Input
     // colours are RGB; SendColorData applies the R,B,G wire swap. Returns the
     // bytes filled.
+    // Cards and prefs are keyed by zone id, so the order of a segment is the
+    // order of the zone whose slices cover it (custom partitions and split rings
+    // both have zone ids that differ from the device id).
+    internal static string? OrderForSegment(Dictionary<string, LightingDevicePreference> prefs, IReadOnlyList<ResolvedZone> zones, int segment)
+    {
+        foreach (var zone in zones)
+        {
+            foreach (var slice in zone.Slices)
+            {
+                if (slice.Segment == segment)
+                {
+                    return DeviceColorAdjust.OrderOf(prefs, zone.Id);
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The first non-RGB order among a device's zones, for a look that cannot split per zone.</summary>
+    internal static string? FirstOrder(Dictionary<string, LightingDevicePreference> prefs, IReadOnlyList<ResolvedZone> zones)
+    {
+        foreach (var zone in zones)
+        {
+            var order = DeviceColorAdjust.OrderOf(prefs, zone.Id);
+            if (DeviceColorAdjust.NormalizeOrder(order) is not (null or "RGB"))
+            {
+                return order;
+            }
+        }
+        return null;
+    }
+
     private static int FillPaletteBuffer(byte[] buf, LianLiModeInfo mode, IReadOnlyList<string> colors, int numFans, int ledsPerFan, bool perFan, int slotsPerFan, string? order)
     {
         Array.Clear(buf);
@@ -866,10 +898,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
             hc.Add(NumFansForDevice(device, profile));
-            hc.Add(DeviceColorAdjust.OrderOf(prefs, device.Structure.DeviceId));
             hc.Add(DeviceBrightnessByte(device, ls.Brightness, globalBrightness, disabled));
             for (var seg = 0; seg < device.SegmentChannels.Count; seg++)
             {
+                hc.Add(OrderForSegment(prefs, zonesByDevice[i], seg));
                 foreach (var ch in device.SegmentChannels[seg])
                 {
                     hc.Add(ch);
