@@ -130,11 +130,11 @@ public static class FlexStoredLook
     }
 
     /// <summary>Everything that changes the uploaded bytes, as one comparable string.</summary>
-    public static string Signature(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null, Dictionary<string, LightingDevicePreference>? prefs = null)
+    public static string Signature(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null, NexusSettings? settings = null)
     {
         var sb = new StringBuilder();
         // Only a non-RGB order enters the string, so stored signatures of untouched units keep matching.
-        var signatureOrder = OrderOf(unit, group, prefs);
+        var signatureOrder = OrderOf(unit, group, settings);
         if (DeviceColorAdjust.NormalizeOrder(signatureOrder) is not (null or "RGB"))
         {
             sb.Append(signatureOrder).Append('#');
@@ -171,9 +171,9 @@ public static class FlexStoredLook
     /// The color order a stored look uploads with. One animation plays on the whole
     /// unit (or merged group), so the first non-RGB order across its zone cards stands for it.
     /// </summary>
-    public static string? OrderOf(FlexUnit unit, MergeGroup? group, Dictionary<string, LightingDevicePreference>? prefs)
+    public static string? OrderOf(FlexUnit unit, MergeGroup? group, NexusSettings? settings)
     {
-        if (prefs is null)
+        if (settings is null || !AnyColorOrder(settings.Devices.LightingDevicePrefs))
         {
             return null;
         }
@@ -181,21 +181,42 @@ public static class FlexStoredLook
         {
             foreach (var p in group!.Participants)
             {
-                if (FirstZoneOrder(p.Mac, p.Family, prefs) is { } o)
+                if (FirstZoneOrder(p.Mac, p.Family, p.Fans, settings) is { } o)
                 {
                     return o;
                 }
             }
             return null;
         }
-        return FirstZoneOrder(unit.Mac, unit.Family, prefs);
+        return FirstZoneOrder(unit.Mac, unit.Family, unit.Fans, settings);
     }
 
-    private static string? FirstZoneOrder(string mac, FlexFamily family, Dictionary<string, LightingDevicePreference> prefs)
+    // Keeps the common case (no order set anywhere) free of structure building.
+    private static bool AnyColorOrder(Dictionary<string, LightingDevicePreference> prefs)
     {
-        foreach (var zone in FlexLightingDeviceProvider.ZonesOf(family))
+        try
         {
-            var order = DeviceColorAdjust.OrderOf(prefs, FlexLightingDeviceProvider.ZoneIdFor(mac, zone));
+            foreach (var pref in prefs.Values)
+            {
+                if (pref is not null && DeviceColorAdjust.NormalizeOrder(pref.ColorOrder) is not (null or "RGB"))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        return false;
+    }
+
+    // Resolved against the live partition, so custom zone ids count, not just the defaults.
+    private static string? FirstZoneOrder(string mac, FlexFamily family, int fans, NexusSettings settings)
+    {
+        var structure = FlexLightingDeviceProvider.BuildStructure(mac, family, fans);
+        foreach (var zone in Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(structure, settings))
+        {
+            var order = DeviceColorAdjust.OrderOf(settings.Devices.LightingDevicePrefs, zone.Id);
             if (DeviceColorAdjust.NormalizeOrder(order) is not (null or "RGB"))
             {
                 return order;
@@ -216,9 +237,9 @@ public static class FlexStoredLook
         }
     }
 
-    public static Package? Build(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null, Dictionary<string, LightingDevicePreference>? prefs = null)
+    public static Package? Build(FlexUnit unit, LianLiFlexUnitSettings look, MergeGroup? group = null, NexusSettings? settings = null)
     {
-        var order = OrderOf(unit, group, prefs);
+        var order = OrderOf(unit, group, settings);
         try
         {
             if (InGroup(group, unit.Mac))
