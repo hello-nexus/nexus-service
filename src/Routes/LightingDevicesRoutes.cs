@@ -802,7 +802,7 @@ public static partial class DevicesRoutes
                         if (pref is null
                             || (pref.AdjustRed == 1f && pref.AdjustGreen == 1f && pref.AdjustBlue == 1f
                                 && pref.AdjustTemperature == 0f && pref.AdjustSaturation == 1f
-                                && Nexus.Service.Lighting.DeviceColorAdjust.NormalizeOrder(pref.ColorOrder) == "RGB"))
+                                && (Nexus.Service.Lighting.DeviceColorAdjust.NormalizeOrder(pref.ColorOrder) ?? "RGB") == "RGB"))
                         {
                             continue;
                         }

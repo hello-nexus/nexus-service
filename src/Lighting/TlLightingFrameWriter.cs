@@ -115,24 +115,26 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        var ls = _store.Load().Devices.TlLighting;
-        var sig = ComputeSig(ls, snap, _hub.ConnectGeneration);
+        var tlSettings = _store.Load();
+        var ls = tlSettings.Devices.TlLighting;
+        var order = DeviceColorAdjust.OrderOf(tlSettings.Devices.LightingDevicePrefs, "lianli-tl");
+        var sig = ComputeSig(ls, snap, _hub.ConnectGeneration, order);
         if (_lastSig is not null && string.Equals(_lastSig, sig, StringComparison.Ordinal))
         {
             return;
         }
 
-        if (!Commit(ls, snap))
+        if (!Commit(ls, snap, order))
         {
             ServiceLog.Warn("[lianli-tl] lighting commit incomplete; one or more writes failed");
         }
         _lastSig = sig;
     }
 
-    private bool Commit(TlLightingSettings ls, TlHubSnapshot snap)
+    private bool Commit(TlLightingSettings ls, TlHubSnapshot snap, string? order)
     {
         var mode = TlLightingModes.Find(ls.Mode);
-        var colors = PackColors(ls, out int colorCount);
+        var colors = PackColors(ls, out int colorCount, order);
         var scope = NormalizeScope(ls.Scope);
 
 
@@ -175,7 +177,7 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
     }
 
     /// <summary>Up to four colours packed R,G,B - the wire order this controller takes.</summary>
-    private static byte[] PackColors(TlLightingSettings ls, out int colorCount)
+    internal static byte[] PackColors(TlLightingSettings ls, out int colorCount, string? order = null)
     {
         int count = ls.Colors is null ? 0 : ls.Colors.Count;
         if (count > TlLightingModes.MaxColors)
@@ -186,6 +188,7 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
         for (int i = 0; i < count; i++)
         {
             var (r, g, b) = ParseHexColor(ls.Colors![i]);
+            DeviceColorAdjust.ReorderChannels(order, ref r, ref g, ref b);
             packed[i * 3] = r;
             packed[i * 3 + 1] = g;
             packed[i * 3 + 2] = b;
@@ -201,11 +204,11 @@ public sealed class TlLightingFrameWriter : IHostedService, IDisposable
         _ => "all",
     };
 
-    private static string ComputeSig(TlLightingSettings ls, TlHubSnapshot snap, int generation)
+    private static string ComputeSig(TlLightingSettings ls, TlHubSnapshot snap, int generation, string? order)
     {
         var colors = ls.Colors is null ? "" : string.Join(',', ls.Colors);
         var topology = string.Join('/', snap.PortFanCounts);
-        return $"{generation}|{ls.Mode}|{ls.Speed}|{ls.Direction}|{ls.Brightness}|{NormalizeScope(ls.Scope)}|{colors}|{topology}|{ls.ArgbSync}";
+        return $"{generation}|{ls.Mode}|{ls.Speed}|{ls.Direction}|{ls.Brightness}|{NormalizeScope(ls.Scope)}|{colors}|{topology}|{ls.ArgbSync}|{order}";
     }
 
     private static (byte r, byte g, byte b) ParseHexColor(string hex)

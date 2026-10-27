@@ -756,7 +756,7 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
     }
 
     [Fact]
-    public async Task Colour_order_rejects_an_invalid_value_and_stores_rgb_as_null()
+    public async Task Color_order_rejects_an_invalid_value_and_stores_rgb_as_null()
     {
         var bad = await _client.PostAsync(
             "/devices/lighting-devices/color-adjust",

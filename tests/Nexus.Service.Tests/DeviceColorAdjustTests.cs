@@ -136,4 +136,21 @@ public class DeviceColorAdjustTests
         Assert.False(DeviceColorAdjust.For(new LightingDevicePreference { ColorOrder = "GRB" }).IsIdentity);
         Assert.True(DeviceColorAdjust.For(new LightingDevicePreference { ColorOrder = "RGB" }).IsIdentity);
     }
+
+    [Theory]
+    [InlineData("RGB", 10, 20, 30)]
+    [InlineData("RBG", 10, 30, 20)]
+    [InlineData("GRB", 20, 10, 30)]
+    [InlineData("GBR", 20, 30, 10)]
+    [InlineData("BRG", 30, 10, 20)]
+    [InlineData("BGR", 30, 20, 10)]
+    [InlineData(null, 10, 20, 30)]
+    public void ReorderChannels_MatchesApplyPermutation(string? order, int er, int eg, int eb)
+    {
+        byte r = 10, g = 20, b = 30;
+        DeviceColorAdjust.ReorderChannels(order, ref r, ref g, ref b);
+        Assert.Equal((byte)er, r);
+        Assert.Equal((byte)eg, g);
+        Assert.Equal((byte)eb, b);
+    }
 }
