@@ -400,7 +400,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         // level, rounded up so a dim setting dims the ring rather than switching it off.
         var cap = Math.Min(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0, MasterBrightness.Effective(settings.Lighting));
         var level = Math.Min(ls.Brightness, (int)Math.Ceiling(cap * HydroShift2RingEffects.MaxLevel));
-        var signature = $"{mode}|{level}|{ls.Speed}|{ls.Direction}|{string.Join(',', ls.Colors)}";
+        var signature = $"{mode}|{level}|{ls.Speed}|{ls.Direction}|{string.Join(',', ls.Colors)}|{pref?.ColorOrder}";
         if (signature == _effectSignature)
         {
             return;
@@ -412,7 +412,11 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         {
             if (hex.Length == 7 && hex[0] == '#' && uint.TryParse(hex.AsSpan(1), NumberStyles.HexNumber, null, out var rgb))
             {
-                colors.Add(((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
+                var cr = (byte)(rgb >> 16);
+                var cg = (byte)(rgb >> 8);
+                var cb = (byte)rgb;
+                DeviceColorAdjust.ReorderChannels(pref?.ColorOrder, ref cr, ref cg, ref cb);
+                colors.Add((cr, cg, cb));
             }
         }
         var (frames, interval) = HydroShift2RingEffects.Render(mode, colors, level, ls.Speed, ls.Direction == 1);

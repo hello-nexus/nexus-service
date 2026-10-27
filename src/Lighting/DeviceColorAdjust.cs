@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting;
@@ -48,16 +49,19 @@ public readonly struct DeviceColorAdjust
     public static readonly DeviceColorAdjust Identity = default;
 
     /// <summary>Channel orders a device can expect on the wire, index 0 being identity.</summary>
-    public static readonly string[] OrderNames = { "RGB", "RBG", "GRB", "GBR", "BRG", "BGR" };
+    private static readonly string[] OrderNameArray = { "RGB", "RBG", "GRB", "GBR", "BRG", "BGR" };
+
+    /// <summary>The accepted order names, read-only.</summary>
+    public static IReadOnlyList<string> OrderNames { get; } = Array.AsReadOnly(OrderNameArray);
 
     /// <summary>Canonical form of a stored or requested order, or null when it is not one of <see cref="OrderNames"/>. Null and empty read as RGB.</summary>
     public static string? NormalizeOrder(string? order)
     {
         if (string.IsNullOrEmpty(order))
         {
-            return OrderNames[0];
+            return OrderNameArray[0];
         }
-        foreach (var name in OrderNames)
+        foreach (var name in OrderNameArray)
         {
             if (string.Equals(name, order, StringComparison.OrdinalIgnoreCase))
             {
@@ -70,9 +74,9 @@ public readonly struct DeviceColorAdjust
     private static byte OrderIndex(string? order)
     {
         var canonical = NormalizeOrder(order);
-        for (var i = 0; i < OrderNames.Length; i++)
+        for (var i = 0; i < OrderNameArray.Length; i++)
         {
-            if (OrderNames[i] == canonical)
+            if (OrderNameArray[i] == canonical)
             {
                 return (byte)i;
             }
@@ -141,7 +145,7 @@ public readonly struct DeviceColorAdjust
     /// Apply saturation, then the channel gains, then <paramref name="mul"/>
     /// (the brightness multiplier the caller already computed), clamping to
     /// byte range. Saturation runs first so a channel trim shifts the colour
-    /// the user actually sees on the strip. The colour order runs last: output
+    /// the user actually sees on the strip. The color order runs last: output
     /// byte i is the input channel named by letter i of the order.
     /// </summary>
     public void Apply(byte sr, byte sg, byte sb, double mul, out byte or, out byte og, out byte ob)
@@ -175,6 +179,37 @@ public readonly struct DeviceColorAdjust
             case 4: or = cb; og = cr; ob = cg; break;
             case 5: or = cb; og = cg; ob = cr; break;
             default: or = cr; og = cg; ob = cb; break;
+        }
+    }
+
+    /// <summary>
+    /// Channel order only, for paths that send a color to firmware without the
+    /// trims (firmware effect palettes). Same permutation as <see cref="Apply"/>.
+    /// </summary>
+    public static void ReorderChannels(string? order, ref byte r, ref byte g, ref byte b)
+    {
+        byte cr = r, cg = g, cb = b;
+        switch (OrderIndex(order))
+        {
+            case 1: g = cb; b = cg; break;
+            case 2: r = cg; g = cr; break;
+            case 3: r = cg; g = cb; b = cr; break;
+            case 4: r = cb; g = cr; b = cg; break;
+            case 5: r = cb; b = cr; break;
+            default: break;
+        }
+    }
+
+    /// <summary>The stored color order for one device id, or null for RGB or no entry.</summary>
+    public static string? OrderOf(Dictionary<string, LightingDevicePreference> prefs, string id)
+    {
+        try
+        {
+            return prefs.TryGetValue(id, out var pref) && pref is not null ? pref.ColorOrder : null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
         }
     }
 
