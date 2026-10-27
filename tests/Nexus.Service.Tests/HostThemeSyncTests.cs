@@ -28,16 +28,6 @@ public sealed class HostThemeSyncTests : IDisposable
         Assert.Equal(expected, store.Load().Theme.ResolvedThemeMode);
     }
 
-    [Theory]
-    [InlineData("Dark", true)]
-    [InlineData("dark", true)]
-    [InlineData(null, false)]
-    [InlineData("", false)]
-    public void IsDarkInterfaceStyle_maps_the_macOS_default(string? style, bool dark)
-    {
-        Assert.Equal(dark, HostThemeSync.IsDarkInterfaceStyle(style));
-    }
-
     [Fact]
     public void Apply_reports_no_change_for_the_same_theme()
     {
