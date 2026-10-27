@@ -16,10 +16,10 @@ public sealed class ThemeSettings
     public string Language { get; set; } = "en";
     public string ThemeMode { get; set; } = "system";
     public string AccentColor { get; set; } = "#2563eb";
-    // The desktop app's *resolved* theme ("dark"/"light"), republished whenever
-    // it changes. Lets remote panels in sync mode follow the desktop OS's
-    // light↔dark instead of re-resolving "system" against their own device's OS
-    // (the wrong OS). Empty = never published; panels fall back to ThemeMode.
+    // The host OS light/dark theme ("dark"/"light"). Written only by the service
+    // (HostThemeSync), never by clients or profile loads, so remote panels in sync
+    // mode follow the desktop OS rather than their own device. Empty = no host
+    // source; panels fall back to their local media query.
     public string ResolvedThemeMode { get; set; } = "";
     // Dashboard window backdrop ("glass"/"gradient"/"flat") and accent policy
     // ("system" follows the OS accent, "custom" uses AccentColor). Formerly

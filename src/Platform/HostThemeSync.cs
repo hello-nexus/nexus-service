@@ -26,4 +26,15 @@ public static class HostThemeSync
         });
         return changed;
     }
+
+    /// <summary>
+    /// For hosts with no OS theme source: drops a stale persisted value so panels
+    /// fall back to their local media query. Returns true when it cleared one.
+    /// </summary>
+    public static bool ClearUnsourced(IConfigStore store)
+    {
+        if (store.Load().Theme.ResolvedThemeMode.Length == 0) return false;
+        store.Update(s => s.Theme.ResolvedThemeMode = "");
+        return true;
+    }
 }

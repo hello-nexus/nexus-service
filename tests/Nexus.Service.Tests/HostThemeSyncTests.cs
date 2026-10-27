@@ -46,4 +46,15 @@ public sealed class HostThemeSyncTests : IDisposable
 
         Assert.False(HostThemeSync.Apply(store, true));
     }
+
+    [Fact]
+    public void ClearUnsourced_drops_a_stale_value_once()
+    {
+        var store = NewStore();
+        HostThemeSync.Apply(store, true);
+
+        Assert.True(HostThemeSync.ClearUnsourced(store));
+        Assert.Equal("", store.Load().Theme.ResolvedThemeMode);
+        Assert.False(HostThemeSync.ClearUnsourced(store));
+    }
 }
