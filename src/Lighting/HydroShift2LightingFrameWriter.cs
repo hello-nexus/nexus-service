@@ -245,6 +245,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             hc.Add(pref.AdjustBlue);
             hc.Add(pref.AdjustTemperature);
             hc.Add(pref.AdjustSaturation);
+            hc.Add(pref.ColorOrder);
         }
         if (_engine.LedColorLocks?.TryGet(id, out var locks) == true)
         {
