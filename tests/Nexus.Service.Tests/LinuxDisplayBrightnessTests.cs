@@ -130,7 +130,7 @@ public class LinuxDisplayBrightnessTests
     }
 
     [Fact]
-    public void SelectDdcBuses_FallsBackToI2cChildDir()
+    public void SelectDdcBuses_UsesI2cChildDirWhenThereIsNoDdcLink()
     {
         using var t = new TempDir();
         Connector(t, "card0-DP-1", "connected", childBus: "i2c-5");
@@ -236,7 +236,7 @@ public class LinuxDisplayBrightnessTests
     }
 
     [Fact]
-    public void SelectDdcBuses_SmuAuxChildIsNeverSelectedAndDdcLinkIsNotUsedInstead()
+    public void SelectDdcBuses_SmuAuxChildIsNeverSelected()
     {
         using var t = new TempDir();
         t.Write("devices/i2c-4/name", "AMDGPU DM i2c hw bus 0\n");
@@ -244,6 +244,74 @@ public class LinuxDisplayBrightnessTests
         Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-4", childBus: "i2c-6");
 
         Assert.Empty(LinuxDisplayBrightnessProvider.SelectDdcBuses(t.At("drm"), t.At("devices")));
+        var g = Assert.Single(LinuxDisplayBrightnessProvider.SelectDdcCandidates(t.At("drm"), t.At("devices")));
+        Assert.Empty(g.Primary);
+        Assert.Equal(new[] { 4 }, g.Fallback);
+    }
+
+    [Fact]
+    public void SelectDdcBuses_SmuDdcLinkIsNeverACandidate()
+    {
+        using var t = new TempDir();
+        t.Write("devices/i2c-4/name", "AMDGPU SMU 0\n");
+        t.Write("drm/card1-DP-1/i2c-9/name", "AMDGPU DM aux hw bus 0\n");
+        Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-4", childBus: "i2c-9");
+
+        var g = Assert.Single(LinuxDisplayBrightnessProvider.SelectDdcCandidates(t.At("drm"), t.At("devices")));
+        Assert.Equal(new[] { 9 }, g.Primary);
+        Assert.Empty(g.Fallback);
+    }
+
+    [Fact]
+    public void SelectDdcCandidates_AuxChildrenArePrimaryAndDdcLinkIsFallback()
+    {
+        using var t = new TempDir();
+        t.Write("devices/i2c-4/name", "AMDGPU DM i2c hw bus 0\n");
+        t.Write("drm/card1-DP-1/i2c-9/name", "AMDGPU DM aux hw bus 0\n");
+        Connector(t, "card1-DP-1", "connected", ddcBus: "i2c-4", childBus: "i2c-9");
+
+        var g = Assert.Single(LinuxDisplayBrightnessProvider.SelectDdcCandidates(t.At("drm"), t.At("devices")));
+        Assert.Equal(new[] { 9 }, g.Primary);
+        Assert.Equal(new[] { 4 }, g.Fallback);
+    }
+
+    [Fact]
+    public void ProbeCandidates_ChildAnswers_LinkIsNeverProbed()
+    {
+        var probed = new List<int>();
+        var groups = new[] { new LinuxDisplayBrightnessProvider.DdcCandidates(new List<int> { 9 }, new List<int> { 4 }) };
+
+        var found = LinuxDisplayBrightnessProvider.ProbeCandidates(groups, b => { probed.Add(b); return b == 9; });
+
+        Assert.Equal(new[] { 9 }, found);
+        Assert.Equal(new[] { 9 }, probed);
+    }
+
+    [Fact]
+    public void ProbeCandidates_NoChildAnswers_LinkIsProbedAndSelected()
+    {
+        var probed = new List<int>();
+        var groups = new[] { new LinuxDisplayBrightnessProvider.DdcCandidates(new List<int> { 9 }, new List<int> { 4 }) };
+
+        var found = LinuxDisplayBrightnessProvider.ProbeCandidates(groups, b => { probed.Add(b); return b == 4; });
+
+        Assert.Equal(new[] { 4 }, found);
+        Assert.Equal(new[] { 9, 4 }, probed);
+    }
+
+    [Fact]
+    public void ProbeCandidates_ProbesEachBusOnceAcrossGroups()
+    {
+        var probed = new List<int>();
+        var groups = new[]
+        {
+            new LinuxDisplayBrightnessProvider.DdcCandidates(new List<int> { 9 }, new List<int>()),
+            new LinuxDisplayBrightnessProvider.DdcCandidates(new List<int> { 9 }, new List<int>()),
+        };
+
+        LinuxDisplayBrightnessProvider.ProbeCandidates(groups, b => { probed.Add(b); return true; });
+
+        Assert.Equal(new[] { 9 }, probed);
     }
 
     [Fact]
