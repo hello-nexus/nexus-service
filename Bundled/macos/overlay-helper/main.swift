@@ -982,8 +982,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // command per line ("assignments-changed" -> kiosk and stream reconcile), and
         // EOF means the parent (nexus-service) is gone, so terminate. The
         // EOF half keeps the helper from leaking after a service crash that
-        // doesn't close its child cleanly.
-        DispatchQueue.global(qos: .background).async { [weak self] in
+        // doesn't close its child cleanly. Not .background: under load that QoS
+        // waited minutes for a thread, and every poke waited with it.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             while let line = readLine(strippingNewline: true) {
                 if line.hasPrefix("identify ") {
                     let json = String(line.dropFirst("identify ".count))
