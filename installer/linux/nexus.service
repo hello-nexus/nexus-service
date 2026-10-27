@@ -20,8 +20,7 @@ Restart=on-failure
 RestartSec=3
 # SIGTERM goes to Nexus alone. Its children (OpenRGB, the panel browser) are
 # stopped by Nexus in order, after fans are released and any OpenRGB frame has
-# landed; systemd SIGKILLs whatever remains at the end. With the default
-# control-group mode every child got SIGTERM at the same instant.
+# landed; systemd SIGKILLs whatever remains at the end.
 KillMode=mixed
 # Must exceed Nexus's own bounded shutdown (host stop budget plus teardown joins).
 TimeoutStopSec=45

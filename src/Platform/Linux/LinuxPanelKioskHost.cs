@@ -58,11 +58,15 @@ public sealed class LinuxPanelKioskHost : IDisposable
     private readonly Dictionary<string, int> _rapidFailures = new(StringComparer.Ordinal);
     // Reconcile runs on each assignment, launch and session change; without this the cap logs on each one.
     private readonly HashSet<string> _cappedLogged = new(StringComparer.Ordinal);
+    // Slots whose browser is being killed outside _lock. A spawn on the same profile while the
+    // old browser still holds its singleton lock exits at once and reads as a rapid failure.
+    private readonly HashSet<string> _closing = new(StringComparer.Ordinal);
+    private bool _reconcileDeferred;
     private bool _disposed;
     private bool _noBrowserLogged;
     private bool _noSessionLogged;
 
-    private sealed class Kiosk
+    internal sealed class Kiosk
     {
         public Kiosk(Process process, string deviceId, DateTime spawnedUtc, string? flatpakApp, IDisposable? placement = null)
         {
@@ -114,7 +118,7 @@ public sealed class LinuxPanelKioskHost : IDisposable
         lock (_lock)
             kiosk = DetachKiosk(Y70Slot);
         if (kiosk is not null)
-            TerminateKiosk(kiosk, Y70Slot);
+            CloseDetached(kiosk, Y70Slot, TerminateGraceMs);
     }
 
     /// <summary>
@@ -127,7 +131,6 @@ public sealed class LinuxPanelKioskHost : IDisposable
         if (!OperatingSystem.IsLinux())
             return;
         var detached = new List<(string DisplayId, Kiosk Kiosk)>();
-        var reopenAfterClose = false;
         lock (_lock)
         {
             if (_disposed)
@@ -156,7 +159,7 @@ public sealed class LinuxPanelKioskHost : IDisposable
             // Drop exited entries so the open pass below respawns them.
             foreach (var key in _running.Keys.ToList())
             {
-                if (_running[key].Process.HasExited && DetachKiosk(key) is { } gone)
+                if (_running[key].Process.HasExited && DetachKiosk(key, reserve: false) is { } gone)
                     detached.Add((key, gone));
             }
 
@@ -178,19 +181,15 @@ public sealed class LinuxPanelKioskHost : IDisposable
             }
             foreach (var (displayId, deviceId) in toOpen)
             {
-                // The old browser still owns the slot until it is gone; reopen on the next pass.
-                if (toClose.Contains(displayId))
-                    reopenAfterClose = true;
-                else
+                // A browser being closed still owns the slot; the close reconciles again when it is gone.
+                if (!DeferIfClosing(displayId))
                     SpawnKiosk(displayId, deviceId);
             }
         }
         // Kill, wait and dispose off _lock: Process.Dispose and WaitForExit take
         // the Process monitor, which the Exited callback holds while it runs.
         foreach (var (displayId, kiosk) in detached)
-            TerminateKiosk(kiosk, displayId);
-        if (reopenAfterClose)
-            Reconcile();
+            CloseDetached(kiosk, displayId, TerminateGraceMs);
     }
 
     /// <summary>
@@ -235,10 +234,12 @@ public sealed class LinuxPanelKioskHost : IDisposable
     }
 
     /// <summary>Removes the kiosk from state under <c>_lock</c>; the caller terminates it after releasing the lock.</summary>
-    private Kiosk? DetachKiosk(string displayId)
+    private Kiosk? DetachKiosk(string displayId, bool reserve = true)
     {
         if (!_running.Remove(displayId, out var kiosk))
             return null;
+        if (reserve)
+            _closing.Add(displayId);
         if (string.Equals(displayId, Y70Slot, StringComparison.Ordinal))
         {
             _y70Running = false;
@@ -247,14 +248,74 @@ public sealed class LinuxPanelKioskHost : IDisposable
         return kiosk;
     }
 
+    /// <summary>Caller holds <c>_lock</c>. True when a browser is still being closed on this slot, so the spawn must wait.</summary>
+    internal bool DeferIfClosing(string displayId)
+    {
+        if (!_closing.Contains(displayId))
+            return false;
+        _reconcileDeferred = true;
+        return true;
+    }
+
+    internal void AddRunningForTest(string displayId, string deviceId, Process process)
+    {
+        lock (_lock)
+            _running[displayId] = new Kiosk(process, deviceId, DateTime.UtcNow, null);
+    }
+
+    internal bool DetachForTest(string displayId, out object? kiosk)
+    {
+        lock (_lock)
+        {
+            var k = DetachKiosk(displayId);
+            kiosk = k;
+            return k is not null;
+        }
+    }
+
+    internal void CloseDetachedForTest(object kiosk, string displayId)
+        => CloseDetached((Kiosk)kiosk, displayId, ShutdownGraceMs);
+
+    internal bool DeferIfClosingForTest(string displayId)
+    {
+        lock (_lock)
+            return DeferIfClosing(displayId);
+    }
+
+    internal int RunningCount { get { lock (_lock) return _running.Count; } }
+    internal bool IsRunning(string displayId) { lock (_lock) return _running.ContainsKey(displayId); }
+    internal bool IsClosing(string displayId) { lock (_lock) return _closing.Contains(displayId); }
+    internal bool ReconcileDeferred { get { lock (_lock) return _reconcileDeferred; } }
+
+    /// <summary>Terminates a detached kiosk, frees its slot, and reconciles if a spawn was waiting on it. Must not run under <c>_lock</c>.</summary>
+    private void CloseDetached(Kiosk kiosk, string displayId, int graceMs)
+    {
+        try
+        {
+            TerminateKiosk(kiosk, displayId, graceMs);
+        }
+        finally
+        {
+            bool again;
+            lock (_lock)
+            {
+                _closing.Remove(displayId);
+                again = _reconcileDeferred;
+                _reconcileDeferred = false;
+            }
+            if (again)
+                Reconcile();
+        }
+    }
+
     /// <summary>Must not run under <c>_lock</c>.</summary>
-    private static void TerminateKiosk(Kiosk kiosk, string displayId)
+    internal static void TerminateKiosk(Kiosk kiosk, string displayId, int graceMs = TerminateGraceMs)
     {
         try { kiosk.Placement?.Dispose(); } catch { }
         try
         {
             if (!kiosk.Process.HasExited)
-                TerminateBrowser(kiosk);
+                TerminateBrowser(kiosk, graceMs);
         }
         catch (Exception ex)
         {
@@ -275,27 +336,30 @@ public sealed class LinuxPanelKioskHost : IDisposable
     /// aborts it. <c>flatpak kill</c> on the instance owning our pid is the
     /// sanctioned teardown; the pid-tree kill stays for a package browser.
     /// </summary>
-    private static void TerminateBrowser(Kiosk kiosk)
+    private static void TerminateBrowser(Kiosk kiosk, int graceMs)
     {
         if (kiosk.FlatpakApp is not null)
         {
-            var instance = FlatpakInstanceForPid(kiosk.Process.Id);
+            var instance = FlatpakInstanceForPid(kiosk.Process.Id, graceMs);
             if (instance is not null)
             {
-                RunAsSessionUser("flatpak", "kill", instance);
-                if (kiosk.Process.WaitForExit(TerminateGraceMs))
+                RunAsSessionUser(graceMs, "flatpak", new[] { "kill", instance });
+                if (kiosk.Process.WaitForExit(graceMs))
                     return;
             }
         }
         kiosk.Process.Kill(entireProcessTree: true);
-        kiosk.Process.WaitForExit(TerminateGraceMs);
+        kiosk.Process.WaitForExit(graceMs);
     }
 
-    private const int TerminateGraceMs = 3000;
+    internal const int TerminateGraceMs = 3000;
+    // Shutdown shares one overall budget across the flatpak ps, kill and tree-kill waits.
+    internal const int ShutdownGraceMs = 1500;
+    private const int ShutdownStdoutWaitMs = 500;
 
-    private static string? FlatpakInstanceForPid(int pid)
+    private static string? FlatpakInstanceForPid(int pid, int graceMs)
     {
-        var table = RunAsSessionUser("flatpak", "ps", "--columns=instance,pid");
+        var table = RunAsSessionUser(graceMs, "flatpak", new[] { "ps", "--columns=instance,pid" });
         foreach (var line in table.Split('\n'))
         {
             var cols = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
@@ -306,6 +370,9 @@ public sealed class LinuxPanelKioskHost : IDisposable
     }
 
     private static string RunAsSessionUser(string file, params string[] args)
+        => RunAsSessionUser(TerminateGraceMs, file, args);
+
+    private static string RunAsSessionUser(int graceMs, string file, string[] args)
     {
         try
         {
@@ -323,7 +390,8 @@ public sealed class LinuxPanelKioskHost : IDisposable
             if (proc is null) return "";
             // Read concurrently: a ReadToEnd ahead of the bounded wait never returns for a hung child.
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-            if (!proc.WaitForExit(TerminateGraceMs) || !stdoutTask.Wait(TerminateGraceMs))
+            // Once the child exited its pipe closes at once; the short second wait only covers a grandchild holding it.
+            if (!proc.WaitForExit(graceMs) || !stdoutTask.Wait(ShutdownStdoutWaitMs))
             {
                 try { proc.Kill(); } catch { }
                 return "";
@@ -526,7 +594,7 @@ user_pref("browser.tabs.warnOnClose", false);
             $"{output.Width}x{output.Height}+{output.X}+{output.Y}");
     }
 
-    private void OnKioskExited(string displayId, Process exited)
+    internal void OnKioskExited(string displayId, Process exited)
     {
         bool respawn = false, gaveUp = false;
         int failures = 0;
@@ -645,7 +713,7 @@ user_pref("browser.tabs.warnOnClose", false);
         }
         if (all.Count == 0)
             return;
-        var tasks = all.Select(k => Task.Run(() => TerminateKiosk(k.Kiosk, k.DisplayId))).ToArray();
+        var tasks = all.Select(k => Task.Run(() => CloseDetached(k.Kiosk, k.DisplayId, ShutdownGraceMs))).ToArray();
         try { Task.WaitAll(tasks, ShutdownBudgetMs); } catch { }
     }
 

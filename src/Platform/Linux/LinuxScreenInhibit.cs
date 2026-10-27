@@ -29,35 +29,45 @@ internal static class LinuxScreenInhibit
     /// session bus after the kiosk spawns, so the first call fails with ServiceUnknown.
     /// Retries with a capped backoff until it lands or <see cref="ReleaseAsync"/> runs.
     /// </summary>
-    public static async Task AcquireAsync(DBusConnection dbus)
+    public static Task AcquireAsync(DBusConnection dbus)
+        => AcquireAsync(() => InhibitCallAsync(dbus), c => UnInhibitAsync(dbus, c), RetryMin);
+
+    private static async Task<uint> InhibitCallAsync(DBusConnection dbus)
     {
-        CancellationToken ct;
+        try { await dbus.StartAsync(); } catch { }
+        var reply = await dbus.CallAsync("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver",
+            "org.freedesktop.ScreenSaver", "Inhibit", "ss",
+            w => { w.WriteString("Nexus"); w.WriteString("Y70 panel is showing"); });
+        return new DBusReader(reply.Body).ReadUInt32();
+    }
+
+    internal static async Task AcquireAsync(Func<Task<uint>> inhibit, Func<uint, Task<bool>> unInhibit, TimeSpan firstDelay)
+    {
+        CancellationTokenSource mine;
         lock (Gate)
         {
             if (_wanted is not null) return;
-            _wanted = new CancellationTokenSource();
-            ct = _wanted.Token;
+            mine = _wanted = new CancellationTokenSource();
         }
-        var delay = RetryMin;
+        var ct = mine.Token;
+        var delay = firstDelay;
         var logged = false;
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                try { await dbus.StartAsync(); } catch { }
-                var reply = await dbus.CallAsync("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver",
-                    "org.freedesktop.ScreenSaver", "Inhibit", "ss",
-                    w => { w.WriteString("Nexus"); w.WriteString("Y70 panel is showing"); });
-                var cookie = new DBusReader(reply.Body).ReadUInt32();
+                var cookie = await inhibit();
                 bool stale;
+                // Identity, not the token: Release clears _wanted under this same lock, so a
+                // reply that lands after it can never store a cookie nobody will release.
                 lock (Gate)
                 {
-                    stale = ct.IsCancellationRequested;
+                    stale = !ReferenceEquals(_wanted, mine);
                     if (!stale) _cookie = cookie;
                 }
                 if (stale)
                 {
-                    await UnInhibitAsync(dbus, cookie);
+                    await unInhibit(cookie);
                     return;
                 }
                 Console.Error.WriteLine($"[panel-kiosk] screen blanking inhibited (cookie {cookie})");
@@ -80,21 +90,22 @@ internal static class LinuxScreenInhibit
     internal static TimeSpan NextDelay(TimeSpan current)
         => TimeSpan.FromTicks(Math.Min(current.Ticks * 2, RetryMax.Ticks));
 
-    public static async Task ReleaseAsync(DBusConnection dbus)
+    public static Task ReleaseAsync(DBusConnection dbus)
+        => ReleaseAsync(c => UnInhibitAsync(dbus, c));
+
+    internal static async Task ReleaseAsync(Func<uint, Task<bool>> unInhibit)
     {
         uint? cookie;
-        CancellationTokenSource? wanted;
         lock (Gate)
         {
-            wanted = _wanted;
+            try { _wanted?.Cancel(); } catch { }
             _wanted = null;
             cookie = _cookie;
             _cookie = null;
         }
-        try { wanted?.Cancel(); } catch { }
         if (cookie is { } c)
         {
-            if (await UnInhibitAsync(dbus, c))
+            if (await unInhibit(c))
                 Console.Error.WriteLine("[panel-kiosk] screen blanking inhibit released");
         }
     }

@@ -62,6 +62,10 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
         public volatile bool Closed;
         // Set once the version is negotiated: the daemon reads a packet sent earlier at protocol 0, where the address is a list index.
         public volatile bool Ready;
+        /// <summary>Set by <see cref="QuiesceAsync"/>: later frames are dropped instead of sent.</summary>
+        public volatile bool Frozen;
+        /// <summary>Frames written whose ACK has not arrived yet.</summary>
+        public int UnackedFrames;
         public bool LocalClient;
     }
 
@@ -196,14 +200,17 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
         return Task.CompletedTask;
     }
 
-    // Pause after the barrier reply: the reply proves the daemon read the last frame, not that its device write returned.
+    // The ACK for a frame is sent once the daemon's per-controller queue thread has accepted it
+    // (openrgb-headless NetworkServer.cpp ControllerListenThread). The device write itself runs
+    // later on the controller's own thread, which polls a raised flag each millisecond
+    // (RGBController.cpp DeviceCallThreadFunction), so no reply proves it finished. This pause
+    // covers that poll plus one device write.
     private static readonly TimeSpan QuiesceSettle = TimeSpan.FromMilliseconds(150);
+    private static readonly TimeSpan QuiescePoll = TimeSpan.FromMilliseconds(5);
 
     /// <summary>
-    /// Frames are fire-and-forget with no per-frame ACK, but the daemon handles one
-    /// client's packets in order, so the reply to a request sent behind them proves
-    /// they were all taken off the socket. The send lock queues this behind any push
-    /// still in flight.
+    /// Freezes frame output, waits until every frame already written has been ACKed by
+    /// the daemon, then pauses for the device threads. Bounded by <paramref name="budget"/>; never throws.
     /// </summary>
     public async Task QuiesceAsync(TimeSpan budget)
     {
@@ -212,17 +219,20 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
         {
             return;
         }
+        session.Frozen = true;
         try
         {
             using var cts = new CancellationTokenSource(budget);
-            await WaitRequestLockAsync(cts.Token).ConfigureAwait(false);
-            try
+            // The frozen check runs under the send lock, so once this pass completes no
+            // frame that was dispatched earlier can still be written.
+            if (!await _sendLock.WaitAsync(budget, cts.Token).ConfigureAwait(false))
             {
-                await ReadAddressesLockedAsync(session, cts.Token).ConfigureAwait(false);
+                return;
             }
-            finally
+            _sendLock.Release();
+            while (Volatile.Read(ref session.UnackedFrames) > 0 && !session.Closed)
             {
-                _requestLock.Release();
+                await Task.Delay(QuiescePoll, cts.Token).ConfigureAwait(false);
             }
             await Task.Delay(QuiesceSettle, cts.Token).ConfigureAwait(false);
         }
@@ -574,11 +584,22 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
         var total = OpenRgbProtocol.HeaderSize + bodyLen;
         var buffer = ArrayPool<byte>.Shared.Rent(total);
         var timedOut = false;
+        var countedFrame = false;
+        var sent = false;
         try
         {
             if (session.Closed)
             {
                 throw new IOException("not connected");
+            }
+            if (IsFrame(packetId))
+            {
+                if (session.Frozen)
+                {
+                    return;
+                }
+                Interlocked.Increment(ref session.UnackedFrames);
+                countedFrame = true;
             }
             OpenRgbProtocol.WriteHeader(buffer.AsSpan(0, OpenRgbProtocol.HeaderSize), address, packetId, (uint)bodyLen);
             if (bodyLen > 0)
@@ -602,6 +623,7 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
                     throw new IOException($"OpenRGB write timed out after {IoTimeout.TotalSeconds:F0}s");
                 }
             }
+            sent = true;
         }
         catch (Exception ex) when (ex is not IOException && ex is not OperationCanceledException)
         {
@@ -610,6 +632,10 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
         }
         finally
         {
+            if (countedFrame && !sent)
+            {
+                Interlocked.Decrement(ref session.UnackedFrames);
+            }
             // An abandoned write still references the buffer until the socket is torn down.
             if (!timedOut)
             {
@@ -686,6 +712,10 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
             case OpenRgbProtocol.PacketId.Ack:
             {
                 var (acked, status) = OpenRgbProtocol.ParseAck(body);
+                if (IsFrame(acked) && Volatile.Read(ref session.UnackedFrames) > 0)
+                {
+                    Interlocked.Decrement(ref session.UnackedFrames);
+                }
                 if (pending is not null && !pending.ReplyOnly && pending.Request == acked && pending.Address == address)
                 {
                     pending.Done.TrySetResult((pending.Body, status));
@@ -714,6 +744,9 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
                 return;
         }
     }
+
+    private static bool IsFrame(OpenRgbProtocol.PacketId id)
+        => id is OpenRgbProtocol.PacketId.RgbControllerUpdateLeds or OpenRgbProtocol.PacketId.RgbControllerUpdateZoneLeds;
 
     private static bool IsWrite(OpenRgbProtocol.PacketId id) => id is OpenRgbProtocol.PacketId.RgbControllerUpdateLeds
         or OpenRgbProtocol.PacketId.RgbControllerUpdateZoneLeds

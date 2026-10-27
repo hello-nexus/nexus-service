@@ -484,6 +484,8 @@ public sealed class RgbBridge : IDisposable
     }
 
     internal static readonly TimeSpan LinuxQuiesceBudget = TimeSpan.FromSeconds(1.5);
+    // Covers the stop task's other steps: waiting for a deferred spawn, the process kill and the socket close.
+    private static readonly TimeSpan LinuxStopTaskSlack = TimeSpan.FromSeconds(4);
 
     /// <summary>
     /// Take the bridge offline: disconnect from the SDK server and hard-kill the
@@ -2822,7 +2824,7 @@ public sealed class RgbBridge : IDisposable
         // The process exits right after disposal; without the join the quiesce and the kill race it.
         if (OperatingSystem.IsLinux())
         {
-            AwaitShutdown(LinuxQuiesceBudget + TimeSpan.FromSeconds(4));
+            AwaitShutdown(LinuxQuiesceBudget + LinuxStopTaskSlack);
         }
     }
 }

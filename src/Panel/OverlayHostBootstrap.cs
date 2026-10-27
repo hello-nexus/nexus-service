@@ -75,9 +75,9 @@ internal static class OverlayHostBootstrap
         });
 #endif
 #if LINUX
-        // Kiosk teardown is a browser kill plus waits. Run beside the hosted-service
-        // stops so fans and the Lian Li dongle are released first; ApplicationStopped
-        // joins it, bounded, before the DI container disposes (which kills OpenRGB).
+        // Kiosk teardown is a browser kill plus waits. It runs beside the hosted-service
+        // stops, so a slow browser cannot delay the fan release or the Lian Li disconnect;
+        // ApplicationStopped joins it, bounded, before the DI container disposes (which kills OpenRGB).
         Task? kioskStop = null;
         app.Lifetime.ApplicationStopping.Register(() =>
         {
