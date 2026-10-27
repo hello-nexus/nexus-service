@@ -8,6 +8,10 @@ namespace Nexus.Service.Platform;
 /// </summary>
 public static class HostThemeSync
 {
+    /// <summary>macOS AppleInterfaceStyle is "Dark" in dark mode and absent in light mode.</summary>
+    public static bool IsDarkInterfaceStyle(string? appleInterfaceStyle) =>
+        string.Equals(appleInterfaceStyle, "Dark", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Stores the host theme; returns true when the value changed.</summary>
     public static bool Apply(IConfigStore store, bool dark)
     {
