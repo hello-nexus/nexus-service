@@ -104,8 +104,10 @@ public static class ProfileSharing
                 break;
             case Theme:
                 // ResolvedThemeMode is the host OS theme, not profile content.
+                // Copied, not shared: writing a profile file passes the live settings
+                // as source, and patching the host value into it would wipe the live one.
                 var hostTheme = target.Theme.ResolvedThemeMode;
-                target.Theme = source.Theme;
+                target.Theme = source.Theme.Copy();
                 target.Theme.ResolvedThemeMode = hostTheme;
                 break;
             case Dashboard:
