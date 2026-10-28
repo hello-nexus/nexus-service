@@ -109,7 +109,32 @@ public sealed class CorsairLinkHub : IDisposable
     }
 
     private const int TraceReplyBytes = 20;
-    private const int TraceMaxChars = 3000;
+    private const int TraceMaxChars = 1500;
+
+    // A reply to a command Nexus sent this recently is its own late echo, not another host.
+    private const long SelfEchoWindowMs = 5000;
+
+    private readonly long[] _lastSentMs = CreateNeverSent();
+
+    private static long[] CreateNeverSent()
+    {
+        var a = new long[256];
+        Array.Fill(a, long.MinValue / 2);
+        return a;
+    }
+
+    /// <summary>Listens without writing; a report echoing a command Nexus sent moments ago is flagged in <paramref name="ownEcho"/> and not counted.</summary>
+    public bool HearsOtherHost(IHidDevice device, int listenMs, out string heard, out bool ownEcho)
+    {
+        var buffer = new byte[CorsairLinkProtocol.WriteBufferLength];
+        var n = device.Read(buffer, listenMs);
+        heard = n > 0 ? $"n={n} {Hex(buffer, Math.Min(n, TraceReplyBytes))}" : "";
+        ownEcho = false;
+        if (n <= 0) return false;
+        var echo = n > 1 + CorsairLinkProtocol.ResponseCommandOffset ? buffer[1 + CorsairLinkProtocol.ResponseCommandOffset] : (byte)0;
+        lock (_lock) ownEcho = echo != 0 && NowMs() - _lastSentMs[echo] <= SelfEchoWindowMs;
+        return !ownEcho;
+    }
 
     private static string Hex(ReadOnlySpan<byte> bytes, int count)
     {
@@ -193,7 +218,7 @@ public sealed class CorsairLinkHub : IDisposable
             try
             {
                 var ok = InitializeLocked();
-                TraceNote(ok ? "init ok" : "init failed");
+                _trace.Append(" | ").Append(ok ? "init ok" : "init failed");
                 return ok;
             }
             finally
@@ -631,6 +656,7 @@ public sealed class CorsairLinkHub : IDisposable
             TraceNote("write failed");
             return -1;
         }
+        _lastSentMs[command[0]] = NowMs();
         var n = _device.Read(_readRaw, ReadTimeoutMs);
         if (n <= 0)
         {

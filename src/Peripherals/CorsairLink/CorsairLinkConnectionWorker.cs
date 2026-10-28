@@ -29,7 +29,6 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
     private const int MaxInitRetryMs = 60_000;
     // Longer than iCUE's telemetry read interval.
     private const int ListenMs = 2500;
-    private const long ListenLogEveryMs = 300_000;
     // Longer than iCUE's keep-alive ping interval to its Bragi devices.
     private const long QuietAfterOtherHostMs = 60_000;
     // A slotless or empty chain re-detects once it has stayed that way this long.
@@ -86,6 +85,14 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
         && !(DeviceControlPolicy.ConflictAppFor("corsair") is { } app && _conflicts?.IsAppRunning(app) == true);
 
     private static string Tag(CorsairLinkHub hub) => hub.Number == 1 ? "[corsair]" : $"[corsair hub {hub.Number}]";
+
+    // The trace suffix for a failure line: empty when it repeats the last one logged.
+    internal static string TraceIfNew(string trace, ref string? lastLogged)
+    {
+        if (trace.Length == 0 || trace == lastLogged) return "";
+        lastLogged = trace;
+        return $" trace: {trace}";
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -235,7 +242,9 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
             var initRetryMs = ConnectPollMs;
             // When another program last answered on the hub; null once Nexus holds it again.
             long? otherHostHeardMs = null;
-            long lastListenLogMs = 0;
+            // The full init trace is attached only when it differs from the last one logged this run.
+            string? lastLoggedTrace = null;
+            string? lastHeardHex = null;
             while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("corsair"))
             {
                 // Unplugged: the session ends and a new one starts when the hub returns.
@@ -249,18 +258,19 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                 }
 
                 var listenStartMs = Environment.TickCount64;
-                if (CorsairLinkHub.HearsAnotherHost(device, ListenMs, out var heardHex))
+                var heardOther = hub.HearsOtherHost(device, ListenMs, out var heardHex, out var ownEcho);
+                if (ownEcho && lastHeardHex != heardHex)
+                {
+                    lastHeardHex = heardHex;
+                    ServiceLog.Info($"{Tag(hub)} heard a reply to a command Nexus sent moments ago; not counted as another program ({heardHex})");
+                }
+                if (heardOther)
                 {
                     device.Dispose();
-                    if (otherHostHeardMs is null)
+                    if (otherHostHeardMs is null || lastHeardHex != heardHex)
                     {
+                        lastHeardHex = heardHex;
                         ServiceLog.Info($"{Tag(hub)} another program is driving the hub; waiting for it to stop (heard {heardHex} after {Environment.TickCount64 - listenStartMs}ms)");
-                        lastListenLogMs = Environment.TickCount64;
-                    }
-                    else if (Environment.TickCount64 - lastListenLogMs >= ListenLogEveryMs)
-                    {
-                        ServiceLog.Info($"{Tag(hub)} still hearing the hub while listening: {heardHex}");
-                        lastListenLogMs = Environment.TickCount64;
                     }
                     otherHostHeardMs = Environment.TickCount64;
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
@@ -287,7 +297,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                     {
                         if (otherHostHeardMs is null)
                         {
-                            ServiceLog.Warn($"{Tag(hub)} another program answered during initialize; releasing the hub ({hub.ForeignReplyHex}) trace: {hub.LastInitTrace}");
+                            ServiceLog.Warn($"{Tag(hub)} another program answered during initialize; releasing the hub ({hub.ForeignReplyHex}){TraceIfNew(hub.LastInitTrace, ref lastLoggedTrace)}");
                         }
                         otherHostHeardMs = Environment.TickCount64;
                         hub.Detach(handBack: false);
@@ -297,7 +307,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                     // firmware read itself never landed a full reply - the hub went
                     // silent (or answered short) before the device-list read.
                     var fw = hub.State.Firmware;
-                    ServiceLog.Warn($"{Tag(hub)} initialize failed, retrying in {initRetryMs / 1000}s (fw={(string.IsNullOrEmpty(fw) ? "none" : fw)}) trace: {hub.LastInitTrace}");
+                    ServiceLog.Warn($"{Tag(hub)} initialize failed, retrying in {initRetryMs / 1000}s (fw={(string.IsNullOrEmpty(fw) ? "none" : fw)}){TraceIfNew(hub.LastInitTrace, ref lastLoggedTrace)}");
                     hub.Detach(handBack: HandBack());
                     await Task.Delay(initRetryMs, stoppingToken).ConfigureAwait(false);
                     initRetryMs = Math.Min(initRetryMs * 2, MaxInitRetryMs);
@@ -306,7 +316,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                 initRetryMs = ConnectPollMs;
                 otherHostHeardMs = null;
 
-                ServiceLog.Info($"{Tag(hub)} connected fw={hub.State.Firmware} devices={hub.State.Devices.Count} trace: {hub.LastInitTrace}");
+                ServiceLog.Info($"{Tag(hub)} connected fw={hub.State.Firmware} devices={hub.State.Devices.Count}");
                 EnsureLcd();
                 _lighting.OnHubStateUpdated();
                 _cooling.ReassertControl(hub);
