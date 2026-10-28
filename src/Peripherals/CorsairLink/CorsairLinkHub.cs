@@ -107,13 +107,13 @@ public sealed class CorsairLinkHub : IDisposable
     private readonly long[] _owedSinceMs = new long[256];
     private bool _traceQuiet;
 
-    /// <summary>Listens without writing for the whole window. A report echoing a command whose reply Nexus is still owed is discounted once and flagged in <paramref name="ownEcho"/>; any other report is another host.</summary>
-    public bool HearsOtherHost(IHidDevice device, int listenMs, out string heard, out bool ownEcho)
+    /// <summary>Listens without writing for the whole window. A report echoing a command whose reply Nexus is still owed is discounted once and its hex put in <paramref name="ownHeard"/>; any other report is another host and its hex goes in <paramref name="heard"/>.</summary>
+    public bool HearsOtherHost(IHidDevice device, int listenMs, out string heard, out string ownHeard)
     {
         var buffer = new byte[CorsairLinkProtocol.WriteBufferLength];
         var deadline = Environment.TickCount64 + listenMs;
         heard = "";
-        ownEcho = false;
+        ownHeard = "";
         while (true)
         {
             var remaining = (int)Math.Max(1, deadline - Environment.TickCount64);
@@ -126,8 +126,7 @@ public sealed class CorsairLinkHub : IDisposable
                 heard = hex;
                 return true;
             }
-            if (!ownEcho) heard = hex;
-            ownEcho = true;
+            if (ownHeard.Length == 0) ownHeard = hex;
             if (Environment.TickCount64 >= deadline) return false;
         }
     }
@@ -170,7 +169,7 @@ public sealed class CorsairLinkHub : IDisposable
 
     private void TraceNote(string note)
     {
-        if (_trace is { } t && (t.Length < TraceMaxChars || note.StartsWith("step=", StringComparison.Ordinal))) t.Append(" | ").Append(note);
+        if (_trace is { } t && (t.Length < TraceMaxChars || note.StartsWith("step=", StringComparison.Ordinal) || note.StartsWith("color open", StringComparison.Ordinal))) t.Append(" | ").Append(note);
     }
 
     /// <summary>Another program answered on the hub; every write is refused from then on, since the hub's handles are shared by all hosts.</summary>
@@ -548,10 +547,10 @@ public sealed class CorsairLinkHub : IDisposable
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
         Transfer(CorsairLinkProtocol.CmdOpenEndpoint, m);
         var n = Transfer(CorsairLinkProtocol.CmdRead, m);
-        _traceQuiet = false;
         byte[]? copy = null;
         if (n > 0) copy = _read.AsSpan(0, CorsairLinkProtocol.ReportLength).ToArray();
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
+        _traceQuiet = false;
         return copy;
     }
 
@@ -565,7 +564,6 @@ public sealed class CorsairLinkHub : IDisposable
         Transfer(CorsairLinkProtocol.CmdOpenEndpoint, m);
         var n = Transfer(CorsairLinkProtocol.CmdRead, m);
         n = ResyncToDataType(n, dataType);
-        _traceQuiet = false;
         byte[]? copy = null;
         if (n > 0 && _read[4] == dataType[0] && _read[5] == dataType[1])
         {
@@ -576,6 +574,7 @@ public sealed class CorsairLinkHub : IDisposable
             if (_trace != null) TraceNote($"mode={mode:x2} want={Hex(dataType, 2)} got n={n} busy={_read[CorsairLinkProtocol.ResponseBusyOffset]:x2} status={_read[CorsairLinkProtocol.ResponseStatusOffset]:x2}");
         }
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
+        _traceQuiet = false;
         return copy;
     }
 
@@ -678,8 +677,10 @@ public sealed class CorsairLinkHub : IDisposable
         if (n <= 0)
         {
             if (_trace != null) TraceNote($"read n={n}");
+            var now = NowMs();
+            if (_owedReplies[command[0]] > 0 && now - _owedSinceMs[command[0]] > OwedReplyMaxAgeMs) _owedReplies[command[0]] = 0;
+            if (_owedReplies[command[0]] == 0) _owedSinceMs[command[0]] = now;
             if (_owedReplies[command[0]] < OwedReplyMaxCount) _owedReplies[command[0]]++;
-            _owedSinceMs[command[0]] = NowMs();
             return n;
         }
         if (_trace != null)
