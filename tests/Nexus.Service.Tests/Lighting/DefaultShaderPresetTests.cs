@@ -10,7 +10,7 @@ public class DefaultShaderPresetTests
     public static TheoryData<string> Effects => new()
     {
         "cosmicdust", "hyperspace", "nebula", "starfield", "ball",
-        "wave", "ferrofluid", "inkbloom", "liquidchrome", "jellyfish",
+        "wave", "ferrofluid", "inkbloom", "liquidchrome", "jellyfish", "sacredgeometry",
     };
 
     [Theory]
