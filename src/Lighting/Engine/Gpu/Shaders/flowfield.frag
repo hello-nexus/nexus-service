@@ -25,17 +25,17 @@ void main() {
     float streams = clamp(u_streams, 0.3, 4.0);
     float spread = clamp(u_colorSpread, 0.0, 2.0);
 
-    // Grain no finer than a few pixels, so strokes stay clean on small canvases.
-    float grain = min(34.0 * streams, max(10.0, u_resolution.y * 0.17));
+    // Low-frequency grain, never finer than a few pixels, so strokes stay soft and clean on small canvases.
+    float grain = min(20.0 * streams, max(8.0, u_resolution.y * 0.12));
     float acc = 0.0;
     float accP = 0.0;
     float wsum = 0.0;
     float ang0 = fieldAngle(uv, t);
     vec2 pf = uv;
     vec2 pb = uv;
-    float stepLen = 0.027;
-    for (int i = 0; i < 6; i++) {
-        float w = 1.0 - float(i) / 6.0;
+    float stepLen = 0.043;
+    for (int i = 0; i < 4; i++) {
+        float w = 1.0 - float(i) / 4.0;
         float fi = float(i);
         float af = fieldAngle(pf, t);
         float ab = fieldAngle(pb, t);
@@ -43,18 +43,18 @@ void main() {
         pb -= stepLen * vec2(cos(ab), sin(ab));
         float grainF = vnoise(pf * grain);
         float grainB = vnoise(pb * grain);
-        float pulseF = 0.55 + 0.45 * sin(-fi * 0.7 + t * 12.0 + grainF * 6.0);
-        float pulseB = 0.55 + 0.45 * sin(fi * 0.7 + t * 12.0 + grainB * 6.0);
+        float pulseF = 0.55 + 0.45 * sin(-fi * 0.9 + t * 6.0 + grainF * 2.0);
+        float pulseB = 0.55 + 0.45 * sin(fi * 0.9 + t * 6.0 + grainB * 2.0);
         acc += w * (grainF + grainB);
         accP += w * (pulseF * grainF + pulseB * grainB);
         wsum += 2.0 * w;
     }
-    float stroke = smoothstep(0.0, 1.0, (acc / wsum - 0.5) * 7.0 + 0.5);
+    float stroke = smoothstep(0.0, 1.0, (acc / wsum - 0.5) * 4.6 + 0.5);
     float pulse = clamp(accP / max(acc, 1e-3), 0.3, 1.0);
-    stroke *= 0.3 + 1.1 * pulse;
+    stroke *= 0.5 + 0.8 * pulse;
 
     vec3 body = tintedPalette(0.5 + ang0 / 12.0 + spread * (vnoise(uv * 2.0 + t * 0.1) - 0.5) + t * 0.03);
-    vec3 col = body * (0.15 + 1.6 * stroke);
+    vec3 col = body * (0.28 + 1.45 * stroke);
     col += tintedPalette(0.1 + ang0 / 12.0) * 0.1;
     fragColor = vec4(finalize(col), 1.0);
 }

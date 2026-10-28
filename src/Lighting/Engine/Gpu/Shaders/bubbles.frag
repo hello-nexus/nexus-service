@@ -84,66 +84,47 @@ void main() {
         float sway = sin(t * (0.6 + seed2 * 1.4) + fi * 2.7) * (0.025 + (1.0 - seed3) * 0.05);
         float cx = homeX + sway;
 
+        // Bubbles swell slightly as the pressure drops on the way up, and wobble out of round with their own phase.
+        float grow = 1.0 + 0.25 * cyclePos;
+        float wob = 0.05 * sin(t * (2.0 + seed3 * 2.0) + fi * 1.7);
+        float speed = 0.18 + seed2 * 0.35;
+        float squash = 0.04 * speed * rise;
+        vec2 sq = vec2(1.0 + wob + squash, 1.0 - wob - squash * 0.5);
+
         // Distance from bubble center, aspect-corrected.
         vec2 d = uv - vec2(cx, cy);
         d.x *= u_resolution.x / u_resolution.y;
-        float r = length(d);
-        float radius = 0.03 + seed * 0.09;
-        // Beyond the halo this bubble contributes nothing.
-        if (r > radius * 3.6) {
+        float radius = (0.03 + seed * 0.09) * grow;
+        // Beyond the soft glow this bubble contributes nothing.
+        if (dot(d, d) > radius * radius * 6.0) {
             continue;
         }
+        vec2 q = d / (radius * sq);
+        float rn = length(q);
 
-        // Real soap bubbles are nearly transparent - the visible "body" is
-        // entirely the thin-film interference on the soap film plus small
-        // specular spots. No thick white outline. A very soft halo is kept
-        // just to anchor each bubble against the background so it still
-        // reads in motion.
-
-        // Subtle glow halo - tones down, not a bright ring.
+        // Faint glow outside the film, only to anchor the bubble against the backdrop.
         vec3 haloHue = tintedPalette(seed2 + fi * 0.13);
-        float halo = gauss(r, radius * 1.8);
-        col += haloHue * halo * 0.3 * edgeFade;
-        // Soft refraction: the far inner side of the bubble catches focused light and tints the interior.
-        float inner = 1.0 - smoothstep(radius * 0.2, radius, r);
-        vec2 refrOff = vec2(0.35, 0.4) * radius;
-        col += haloHue * inner * 0.12 * edgeFade;
-        col += tintedPalette(seed2 + 0.4) * exp(-length(d - refrOff) / (radius * 0.28)) * 0.55 * edgeFade;
+        col += haloHue * exp(-rn * rn * 0.9) * 0.1 * edgeFade;
 
-        // Thin-film iridescence is the main colour of a real soap bubble.
-        // Mask: a smooth dome peaking at the rim (where refraction angle is
-        // shallowest on a sphere, so the visible film is brightest there)
-        // and dropping toward the centre.
-        float filmMask = smoothstep(radius * 1.05, radius * 0.35, r)
-                       * smoothstep(radius * 0.2,  radius * 0.55, r);
-        // Sample the palette with r + per-bubble phase drift so the swirl
-        // shifts smoothly across each bubble's surface, not a static ring.
-        vec3 film = vec3(0.0);
-        float phase1 = seed * 6.28 + r * 14.0 + t * 0.35;
-        float phase2 = seed * 6.28 + 2.1 + r * 9.0  - t * 0.25;
-        film += tintedPalette(phase1 * 0.15 + 0.10) * 0.7;
-        film += tintedPalette(phase2 * 0.15 + 0.55) * 0.5;
-        col += film * filmMask * irid * 1.35 * edgeFade;
+        // The body is almost clear: the background shows through, very slightly darkened and bent.
+        float body = 1.0 - smoothstep(0.85, 1.0, rn);
+        col *= 1.0 - 0.1 * body * edgeFade;
 
-        // Fresnel-ish brightening along the very outer edge of the film -
-        // a thin "line of light" that makes the bubble feel spherical
-        // without being a solid white ring. Width scales with radius so
-        // large and tiny bubbles both read correctly.
-        float edgeLine = ring(r, radius * 0.985, radius * 0.06);
-        col += (tintedPalette(seed + 0.5 + t * 0.1) * 0.7 + vec3(0.3)) * edgeLine * 0.9 * edgeFade;
+        // Thin-film color lives only near the rim and swirls over the surface.
+        float film = smoothstep(0.55, 0.95, rn) * (1.0 - smoothstep(0.97, 1.08, rn));
+        float swirl = dot(q, vec2(1.1, 0.7)) * 1.4 + rn * 2.0 + seed * 6.28 + t * 0.4;
+        vec3 filmCol = tintedPalette(swirl * 0.16 + 0.1) * 0.75 + tintedPalette(swirl * 0.11 + 0.6) * 0.45;
+        col += filmCol * film * irid * 0.9 * edgeFade;
 
-        // Primary specular highlight: bright dot offset toward upper-left,
-        // slightly smaller than before so it reads as a tight reflection
-        // pinpoint rather than a glob.
-        vec2 specOff = vec2(-0.32, -0.32) * radius;
-        float spec = exp(-length(d - specOff) / (radius * 0.08));
-        col += vec3(1.0, 0.98, 0.92) * spec * 1.4 * edgeFade;
+        // Thin bright rim.
+        float rim = exp(-pow((rn - 0.98) / 0.045, 2.0));
+        col += (tintedPalette(seed + 0.5 + t * 0.1) * 0.5 + vec3(0.4)) * rim * 0.75 * edgeFade;
 
-        // Secondary tiny specular: a second smaller reflection spot near
-        // the first, the way a real bubble shows multiple light sources.
-        vec2 specOff2 = vec2(-0.1, -0.42) * radius;
-        float spec2 = exp(-length(d - specOff2) / (radius * 0.05));
-        col += vec3(1.0) * spec2 * 0.8 * edgeFade;
+        // Window reflection: a soft curved arc near the upper-left edge, plus a small one opposite.
+        float ang = atan(q.y, q.x);
+        float arc1 = exp(-pow((rn - 0.72) / 0.07, 2.0)) * exp(-pow((ang + 2.35) / 0.34, 2.0));
+        float arc2 = exp(-pow((rn - 0.8) / 0.05, 2.0)) * exp(-pow((ang - 0.8) / 0.18, 2.0));
+        col += vec3(1.0, 0.98, 0.94) * (arc1 * 1.3 + arc2 * 0.5) * edgeFade;
     }
 
     fragColor = vec4(finalize(col), 1.0);
