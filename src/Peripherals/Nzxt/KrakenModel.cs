@@ -86,8 +86,10 @@ public sealed record KrakenModel(
         // at streaming rates, so live frames take the bucketless direct path.
         new(0x300C, "NZXT Kraken Elite", 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.None, true, DirectStream: true),
         // 2023 Kraken. Smaller panel, and the only model that takes uncompressed RGB565 -
-        // its firmware has no Q565 decoder.
-        new(0x300E, "NZXT Kraken", 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None, true),
+        // its firmware has no Q565 decoder, and it rejects bucket setup like the Plus V2, so
+        // frames take the same direct RGB565 transfer.
+        new(0x300E, "NZXT Kraken", 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None, true,
+            StreamFps: 20, Rgb565DirectStream: true),
 
         // Kraken Z3 (Z53/Z63/Z73). 320x320, and the only model still on raw RGBA. A filled
         // bucket rewritten in place is acked but never shown, so a stream deletes and
