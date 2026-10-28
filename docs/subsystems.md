@@ -288,7 +288,8 @@ base URL.
   diagnostics (health verdict, SMART, GPU throttling, crash incidents, driver
   problems, conflicts, updates) and history (sensors, temperatures, apps,
   screen time, game FPS sessions), and control cooling, lighting and profiles,
-  over a dedicated loopback listener speaking Streamable HTTP.
+  over a dedicated listener speaking Streamable HTTP, loopback unless the
+  user opts into remote connections (`AllowRemote`, then all interfaces).
 - A bearer token separate from the dashboard's pairing token; per-capability
   consent (telemetry, cooling, lighting, profiles, history) checked live on
   every call; every non-read-only call audited to an append-only binary log

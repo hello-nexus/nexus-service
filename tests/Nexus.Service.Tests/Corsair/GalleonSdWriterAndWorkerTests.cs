@@ -83,7 +83,7 @@ public class GalleonSdWriterAndWorkerTests
 
         public KeyboardRig(FeatureGates? gates = null)
         {
-            Hub = new GalleonSdHub(Hid);
+            Hub = new GalleonSdHub(Hid, matchOnLinux: true);
             Hub.Reconcile(true);
             var provider = new GalleonSdLightingDeviceProvider(Hub, Store, new Np50IdentifyTracker());
             Light(Engine, provider);
@@ -94,7 +94,6 @@ public class GalleonSdWriterAndWorkerTests
     [Fact]
     public void Keyboard_writer_streams_while_an_effect_runs_then_hands_back_once_when_it_stops()
     {
-        if (OperatingSystem.IsLinux()) return;
         var rig = new KeyboardRig();
         rig.Engine.SetEffect(new PaintEffect());
 
@@ -112,7 +111,6 @@ public class GalleonSdWriterAndWorkerTests
     [Fact]
     public void Keyboard_writer_with_no_effect_never_touches_the_board()
     {
-        if (OperatingSystem.IsLinux()) return;
         var rig = new KeyboardRig();
         rig.Writer.Tick();
         Assert.Empty(Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet));
@@ -123,7 +121,6 @@ public class GalleonSdWriterAndWorkerTests
     [Fact]
     public void Keyboard_writer_hands_back_when_every_zone_is_uncontrolled()
     {
-        if (OperatingSystem.IsLinux()) return;
         var rig = new KeyboardRig();
         rig.Engine.SetEffect(new PaintEffect());
         rig.Writer.Tick();
@@ -138,7 +135,6 @@ public class GalleonSdWriterAndWorkerTests
     [Fact]
     public async Task Keyboard_writer_stop_hands_the_board_back()
     {
-        if (OperatingSystem.IsLinux()) return;
         var rig = new KeyboardRig();
         rig.Engine.SetEffect(new PaintEffect());
         rig.Writer.Tick();

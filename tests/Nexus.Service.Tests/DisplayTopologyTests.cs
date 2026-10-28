@@ -248,6 +248,17 @@ public sealed class DisplayTopologyTests : IDisposable
         Assert.Null(KnownPanelDisplays.Match(null, null, null));
     }
 
+    [Theory]
+    [InlineData(1920, 515, true)]
+    [InlineData(515, 1920, true)]
+    [InlineData(1920, 1080, false)]
+    [InlineData(null, null, false)]
+    public void HyteY60_matches_only_at_native_resolution(int? width, int? height, bool expected)
+    {
+        Assert.Equal(expected, KnownPanelDisplays.Match("RTK", "BC32", "RTK BC32", width, height)?.Family == "hyte-y60");
+        Assert.Equal(expected, KnownPanelDisplays.Match(null, null, "RTK FHD HDR", width, height)?.Family == "hyte-y60");
+    }
+
     [Fact]
     public void Known_display_match_finds_icue_link_5_inch_lcd()
     {

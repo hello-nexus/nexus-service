@@ -721,6 +721,7 @@ public static class AppRoutes
             Immersive = entry.Manifest.Immersive,
             ImmersiveDoubleSwipe = entry.Manifest.ImmersiveDoubleSwipe,
             SingleInstance = entry.Manifest.SingleInstance,
+            Freeform = entry.Manifest.Freeform,
         };
     }
 

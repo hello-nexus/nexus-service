@@ -498,6 +498,21 @@ public static class ConflictAppCatalog
             ProcessNames = new[] { "ZMatrices", "zmUsbSendJpg" },
         },
 
+        // ── DeepCool ───────────────────────────────────────────────────────
+        new()
+        {
+            // DeepCool app (C:\DeepCool). Its deep_service helper
+            // (resources\service\x64) keeps running after the app closes.
+            Id = "deepcool",
+            DefaultWhitelisted = true,
+            DisplayName = "DeepCool",
+            Category = "cooling",
+            DisplayHandlers = new[] { "deepcool-mystique" },
+            ProcessNames = new[] { "DeepCool", "deep_service" },
+            // Unconfirmed as an SCM service; a missing one stops as NotFound and the process is still ended.
+            WindowsServiceNames = new[] { "deep_service" },
+        },
+
         // ── Elgato ─────────────────────────────────────────────────────────
         new()
         {

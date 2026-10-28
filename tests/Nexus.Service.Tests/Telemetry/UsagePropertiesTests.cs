@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Persistence;
 using Nexus.Service.Telemetry;
@@ -144,5 +146,70 @@ public class UsagePropertiesTests
 
         Assert.DoesNotContain("Nicola", flat);
         Assert.DoesNotContain("secret", flat);
+    }
+
+    [Fact]
+    public void Counts_paired_phones_and_those_seen_in_the_last_week()
+    {
+        var now = DateTimeOffset.UtcNow;
+        long Ms(TimeSpan ago) => now.Subtract(ago).ToUnixTimeMilliseconds();
+        var s = new NexusSettings();
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, LastSeenAt = Ms(TimeSpan.FromHours(1)) });
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, LastSeenAt = Ms(TimeSpan.FromDays(6)) });
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, LastSeenAt = Ms(TimeSpan.FromDays(8)) });
+        // No LastSeenAt yet: falls back to CreatedAt.
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, CreatedAt = Ms(TimeSpan.FromDays(1)) });
+        // Past the 30-day idle limit: stored but no longer a live pairing.
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = true, CreatedAt = Ms(TimeSpan.FromDays(40)) });
+        // A plain-HTTP session has a 24-hour limit, so 2 days idle is stale.
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = false, LastSeenAt = Ms(TimeSpan.FromDays(2)) });
+        s.Auth!.PanelPhoneSessions.Add(new PanelPhoneSessionToken { ClaimedOverHttps = false, LastSeenAt = Ms(TimeSpan.FromHours(2)) });
+
+        var props = SystemProfileService.BuildUsageProperties(s, 0, 0, now);
+
+        Assert.Equal(5, Value(props, "paired_phones"));
+        Assert.Equal(4, Value(props, "phones_active_7d"));
+    }
+
+    [Fact]
+    public void Reports_zero_phones_and_relay_off_by_default()
+    {
+        var props = SystemProfileService.BuildUsageProperties(new NexusSettings(), 0, 0);
+        Assert.Equal(0, Value(props, "paired_phones"));
+        Assert.Equal(0, Value(props, "phones_active_7d"));
+        Assert.Equal(false, Value(props, "relay_enabled"));
+    }
+
+    [Fact]
+    public void Reports_the_relay_opt_in()
+    {
+        var s = new NexusSettings();
+        s.Auth!.RelayEnabled = true;
+        Assert.Equal(true, Value(SystemProfileService.BuildUsageProperties(s, 0, 0), "relay_enabled"));
+    }
+
+    [Fact]
+    public async Task Phone_props_reach_the_usage_mirror_on_identify_and_layout_snapshot()
+    {
+        var phoneKeys = new[] { "paired_phones", "phones_active_7d", "relay_enabled" };
+        var props = SystemProfileService.BuildUsageProperties(new NexusSettings(), 0, 0)!
+            .Select(p => new KeyValuePair<string, object?>(p.Item1, p.Item2)).ToList();
+
+        var sink = new UsageTelemetrySink(true);
+        await sink.SendAsync("id", new[]
+        {
+            new TelemetryEvent { Id = "a", Name = "$identify", Timestamp = DateTimeOffset.UtcNow, Set = props },
+            new TelemetryEvent { Id = "b", Name = TelemetryEvents.LayoutSnapshot, Timestamp = DateTimeOffset.UtcNow, Properties = props },
+        }, default);
+
+        var queued = sink.Take(10);
+        Assert.Equal(new[] { TelemetryEvents.ProfileRefresh, TelemetryEvents.LayoutSnapshot }, queued.Select(e => e.Name));
+        foreach (var e in queued)
+        {
+            foreach (var k in phoneKeys)
+            {
+                Assert.Contains(e.Props, p => p.Key == k);
+            }
+        }
     }
 }

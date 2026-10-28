@@ -24,8 +24,8 @@ public sealed class PanelDeviceRegistry
 {
     private readonly IConfigStore _store;
 
-    /// <summary>Only the Windows overlay can host a see-through kiosk; the macOS and Linux kiosks are opaque.</summary>
-    internal bool SeeThroughHost { get; init; } = OperatingSystem.IsWindows();
+    /// <summary>The Windows overlay and the macOS helper can host a see-through kiosk; the Linux kiosk is opaque.</summary>
+    internal bool SeeThroughHost { get; init; } = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
 
     public PanelDeviceRegistry(IConfigStore store)
     {
@@ -131,19 +131,11 @@ public sealed class PanelDeviceRegistry
     /// monitor and orphan a record on demote. Returns
     /// <c>Created == false</c> with the existing record when already bound.
     /// </summary>
-    public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities, Nexus.Service.Models.Displays.DisplayFingerprint? fingerprint = null)
+    public (PanelDeviceRecord Record, bool Activated) AllocateForDisplay(string displayId, string? displayName, PanelDeviceCapabilities? capabilities, Nexus.Service.Models.Displays.DisplayFingerprint? fingerprint = null, bool primary = false)
     {
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var record = new PanelDeviceRecord
-        {
-            Id = NewId(),
-            DisplayName = NormalizeName(displayName) ?? DefaultName(now),
-            FirstSeenAt = now,
-            LastSeenAt = now,
-            Capabilities = capabilities,
-            DisplayId = displayId,
-            DisplayFingerprint = fingerprint,
-        };
+        var record = NewDisplayRecord(displayId, displayName, capabilities, fingerprint);
+        if (primary) ApplyPrimaryDefaults(record);
+        var now = record.FirstSeenAt;
 
         PanelDeviceRecord? result = null;
         var activated = false;
@@ -152,13 +144,15 @@ public sealed class PanelDeviceRegistry
             foreach (var candidate in s.PanelDevices.Values)
             {
                 if (!string.Equals(candidate.DisplayId, displayId, StringComparison.Ordinal)) continue;
-                if (candidate.Enabled == false)
+                if (!PanelHosting.IsOn(candidate))
                 {
                     // Turning the panel back on: same record, so layout,
-                    // theme, name, and reserve persist through off/on
-                    // cycles. Viewport hints refresh from the current OS
+                    // theme, name, and options persist through off/on
+                    // cycles (a primary display fills only unset options with
+                    // its defaults). Viewport hints refresh from the current OS
                     // facts (resolution/scale/touch may have changed).
-                    candidate.Enabled = true;
+                    if (primary) ApplyPrimaryDefaults(candidate);
+                    else PanelHosting.Set(candidate, true);
                     candidate.Capabilities = capabilities ?? candidate.Capabilities;
                     candidate.LastSeenAt = now;
                     candidate.DisplayFingerprint ??= fingerprint;
@@ -178,6 +172,48 @@ public sealed class PanelDeviceRegistry
         if (activated) DisplayRecordReady?.Invoke(result!);
         return (result!, activated);
     }
+
+    // The primary display is the one the user works on: a panel there behaves like the desktop
+    // (see-through, click-through, under windows, no guards) rather than a dedicated screen. A saved option
+    // wins over the default. Hosting goes through Hosted so a build without it never sees a fullscreen kiosk
+    // on the primary display.
+    private void ApplyPrimaryDefaults(PanelDeviceRecord record)
+    {
+        if (SeeThroughHost)
+        {
+            record.Backdrop ??= "desktop";
+            record.ClickThrough ??= true;
+        }
+        record.AlwaysOnTop ??= false;
+        record.ReserveMonitor ??= false;
+        record.KeepCursorOff ??= false;
+        record.Hosted = true;
+        record.Enabled = false;
+    }
+
+    private static bool ValidViewport(KioskViewportDto v) =>
+        v.CssWidth is >= 1 and <= 32768 && v.CssHeight is >= 1 and <= 32768 && double.IsFinite(v.Dpr) && v.Dpr is >= 0.25 and <= 8;
+
+    public const int MinGridSlots = 2;
+    public const int MaxGridSlots = 64;
+
+    internal static PanelDeviceRecord NewDisplayRecord(string displayId, string? displayName, PanelDeviceCapabilities? capabilities, Nexus.Service.Models.Displays.DisplayFingerprint? fingerprint)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return new PanelDeviceRecord
+        {
+            Id = NewId(),
+            DisplayName = NormalizeName(displayName) ?? DefaultName(now),
+            FirstSeenAt = now,
+            LastSeenAt = now,
+            Capabilities = capabilities,
+            DisplayId = displayId,
+            DisplayFingerprint = fingerprint,
+        };
+    }
+
+    /// <summary>Widget card opacity a migrated desktop overlay gets when it never set one.</summary>
+    public const double FullWidgetOpacity = 1.0;
 
     /// <summary>Minimum gap between two identical weak plans before the second applies.</summary>
     internal const long WeakRelinkConfirmMs = 5000;
@@ -262,6 +298,8 @@ public sealed class PanelDeviceRegistry
                 if (!s.PanelDevices.TryGetValue(move.RecordId, out var record)) continue;
                 record.DisplayId = move.NewDisplayId;
                 record.DisplayFingerprint = move.Fingerprint;
+                // The reported viewport belongs to the old display's kiosk.
+                record.KioskViewport = null;
                 fingerprinted.Add(move.RecordId);
                 applied.Add((move.RecordId, move.OldDisplayId, move.NewDisplayId));
                 ServiceLog.Info($"[panel-relink] record {move.RecordId} display '{move.OldDisplayId}' -> '{move.NewDisplayId}' "
@@ -288,8 +326,8 @@ public sealed class PanelDeviceRegistry
             foreach (var record in s.PanelDevices.Values)
             {
                 if (!string.Equals(record.DisplayId, displayId, StringComparison.Ordinal)) continue;
-                if (record.Enabled == false) return;
-                record.Enabled = false;
+                if (!PanelHosting.IsOn(record)) return;
+                PanelHosting.Set(record, false);
                 snapshot = Clone(record);
                 return;
             }
@@ -300,6 +338,9 @@ public sealed class PanelDeviceRegistry
         return snapshot;
     }
 
+    /// <summary>Raised after a display's orientation was persisted, with its display id.</summary>
+    internal event Action<string>? DisplayOrientationUpdated;
+
     /// <summary>
     /// Persist the last orientation applied through Nexus on the display's
     /// record (settings permanence, same model as the Y70's persisted
@@ -309,6 +350,12 @@ public sealed class PanelDeviceRegistry
     public void UpdateDisplayOrientation(string displayId, string orientation)
     {
         if (string.IsNullOrWhiteSpace(displayId)) return;
+        try { PersistDisplayOrientation(displayId, orientation); }
+        finally { DisplayOrientationUpdated?.Invoke(displayId); }
+    }
+
+    private void PersistDisplayOrientation(string displayId, string orientation)
+    {
         _store.Update(s =>
         {
             foreach (var record in s.PanelDevices.Values)
@@ -410,6 +457,17 @@ public sealed class PanelDeviceRegistry
         return null;
     }
 
+    /// <summary>The hosted panel on the primary display (per <paramref name="isPrimary"/>), or null when there is none.</summary>
+    public PanelDeviceRecord? FindPrimaryPanel(Func<string, bool> isPrimary)
+    {
+        foreach (var record in _store.Load().PanelDevices.Values)
+        {
+            if (!string.IsNullOrEmpty(record.DisplayId) && PanelHosting.IsOn(record) && isPrimary(record.DisplayId))
+                return Clone(record);
+        }
+        return null;
+    }
+
     /// <summary>
     /// Solid "#rrggbb" colour that best represents this panel's current
     /// background, for callers that need to blend with it without importing
@@ -430,13 +488,31 @@ public sealed class PanelDeviceRegistry
 
     /// <summary>Active displayId -> panelDeviceId bindings (kiosk reconcile
     /// input). Disabled panels keep their record but host no kiosk.</summary>
-    public IReadOnlyList<(string DisplayId, string PanelDeviceId, bool ReserveMonitor, string Backdrop, bool KeepCursorOff, bool AlwaysOnTop)> ListAssignments()
+    /// <remarks>
+    /// <paramref name="isPrimary"/> names the OS primary display. There the keep-off guards read false whatever the
+    /// record stores: a panel on the display the user works on never evicts windows or fences the mouse.
+    /// ClickThrough only reads true with a "desktop" backdrop, where a generic display (no curated family) always passes
+    /// empty-space clicks. A generic display is on top only with that backdrop; the stored choices are kept.
+    /// </remarks>
+    public IReadOnlyList<(string DisplayId, string PanelDeviceId, bool ReserveMonitor, string Backdrop, bool KeepCursorOff, bool AlwaysOnTop, bool ClickThrough, bool IsPrimary)> ListAssignments(Func<string, bool>? isPrimary = null)
     {
-        var assignments = new List<(string, string, bool, string, bool, bool)>();
+        var assignments = new List<(string, string, bool, string, bool, bool, bool, bool)>();
         foreach (var record in _store.Load().PanelDevices.Values)
         {
-            if (!string.IsNullOrEmpty(record.DisplayId) && record.Enabled != false)
-                assignments.Add((record.DisplayId, record.Id, record.ReserveMonitor ?? true, record.Backdrop ?? "", record.KeepCursorOff ?? false, record.AlwaysOnTop ?? true));
+            if (string.IsNullOrEmpty(record.DisplayId) || !PanelHosting.IsOn(record)) continue;
+            var primary = isPrimary?.Invoke(record.DisplayId) ?? false;
+            var backdrop = record.Backdrop ?? "";
+            var seeThrough = backdrop == "desktop";
+            var generic = string.IsNullOrEmpty(record.Capabilities?.Family);
+            assignments.Add((
+                record.DisplayId,
+                record.Id,
+                !primary && (record.ReserveMonitor ?? true),
+                backdrop,
+                !primary && (record.KeepCursorOff ?? false),
+                (record.AlwaysOnTop ?? true) && (seeThrough || !generic),
+                seeThrough && (generic || (record.ClickThrough ?? false)),
+                primary));
         }
         return assignments;
     }
@@ -749,6 +825,17 @@ public sealed class PanelDeviceRegistry
                 record.KeepCursorOff = patch.KeepCursorOff.Value;
             if (patch.AlwaysOnTop.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.AlwaysOnTop = patch.AlwaysOnTop.Value;
+            if (patch.ClickThrough.HasValue && !string.IsNullOrEmpty(record.DisplayId))
+                record.ClickThrough = patch.ClickThrough.Value;
+            if (patch.WidgetsLocked.HasValue && !string.IsNullOrEmpty(record.DisplayId))
+                record.WidgetsLocked = patch.WidgetsLocked.Value;
+            // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
+            if (patch.GridSlots is <= 0)
+                record.GridSlots = null;
+            else if (patch.GridSlots is { } slots && slots is >= MinGridSlots and <= MaxGridSlots && slots % 2 == 0)
+                record.GridSlots = slots;
+            if (patch.ClearDesktopImport == true)
+                record.DesktopImport = null;
             // Orientation is a property of how the glass is physically mounted, so it
             // applies to any record; the transport ignores it on surfaces it cannot turn.
             if (patch.Flip180.HasValue)
@@ -767,8 +854,10 @@ public sealed class PanelDeviceRegistry
                 record.Portrait = patch.Portrait.Value;
             if (patch.HighResolution.HasValue)
                 record.HighResolution = patch.HighResolution.Value;
-            if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.Small)
+            if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.Small or PanelWidgetSizes.XSmall)
                 record.WidgetSize = patch.WidgetSize;
+            if (patch.KioskViewport is { } viewport && !string.IsNullOrEmpty(record.DisplayId) && ValidViewport(viewport))
+                record.KioskViewport = new KioskViewportDto { CssWidth = viewport.CssWidth, CssHeight = viewport.CssHeight, Dpr = viewport.Dpr };
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
@@ -848,10 +937,12 @@ public sealed class PanelDeviceRegistry
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
             record.WidgetSize = null;
+            record.GridSlots = null;
             // Presets are personalization too, and they reference the media
             // the caller deletes.
             record.Presets = null;
             record.ActivePresetId = null;
+            record.WidgetsLocked = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
         });
@@ -885,6 +976,7 @@ public sealed class PanelDeviceRegistry
             record.AutoOrient = null;
             record.KeepCursorOff = null;
             record.AlwaysOnTop = null;
+            record.ClickThrough = null;
             record.Flip180 = null;
             record.Mirror = null;
             record.LcdBrightness = null;
@@ -1219,6 +1311,7 @@ public sealed class PanelDeviceRegistry
             Portrait = r.Portrait,
             HighResolution = r.HighResolution,
             WidgetSize = r.WidgetSize,
+            KioskViewport = r.KioskViewport,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
                 : new XeneonEdgeSettingsDto
@@ -1230,7 +1323,12 @@ public sealed class PanelDeviceRegistry
                     Green = r.XeneonEdgeSettings.Green,
                     Blue = r.XeneonEdgeSettings.Blue,
                 },
-            Enabled = r.Enabled,
+            // Hosted wins when set; otherwise Enabled passes through, so an untouched record still reads as uncustomized.
+            Enabled = r.Hosted ?? r.Enabled,
+            ClickThrough = r.ClickThrough,
+            WidgetsLocked = r.WidgetsLocked,
+            GridSlots = r.GridSlots is > 0 ? r.GridSlots : null,
+            DesktopImport = r.DesktopImport,
         };
     }
 }

@@ -141,14 +141,13 @@ public static class GalleryPlaylistUseSurfaces
 {
     public const string Dashboard = "dashboard";
     public const string Panel = "panel";
-    public const string Desktop = "desktop";
 }
 
 /// <summary>Gallery widgets on one surface that play a playlist.</summary>
 public sealed class GalleryPlaylistUse
 {
     public string Surface { get; set; } = "";
-    /// <summary>The panel device's name; empty for the dashboard and desktop widgets.</summary>
+    /// <summary>The panel device's name; empty for the dashboard.</summary>
     public string Name { get; set; } = "";
     public int Count { get; set; }
 }

@@ -76,6 +76,9 @@ public sealed class GpuReadout
     // PCI subsystem vendor and device ids of the matched adapter; 0 when unread.
     public int SubsystemVendorId { get; set; }
     public int SubsystemDeviceId { get; set; }
+    // PCI vendor and device ids of the chip; 0 when unread.
+    public int PciVendorId { get; set; }
+    public int PciDeviceId { get; set; }
     public List<HardwareSensor> Sensors { get; set; } = new();
 }
 

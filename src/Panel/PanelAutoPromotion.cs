@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -30,11 +33,90 @@ public sealed class PanelAutoPromotion
     // new callback while a prior one is still inside the helper round-trip,
     // and the seen-set read below must not race its own Update.
     private readonly object _reconcileLock = new();
+    private readonly IDisplayOrientationProvider? _orientation;
+    // First-promotion default orientations that could not be applied yet (on
+    // Windows the rotate goes through the user-session helper, which may not
+    // be connected at boot). displayId -> orientation, replayed on helper
+    // connect. In memory only: the model is already marked seen, so a restart
+    // before the replay falls back to the manual orientation picker.
+    private readonly ConcurrentDictionary<string, string> _pendingOrientation = new(StringComparer.Ordinal);
+    /// <summary>Queue failed rotations for replay; only meaningful where a replay trigger exists.</summary>
+    internal bool QueueFailedRotations { get; init; } =
+#if WINDOWS
+        true;
+#else
+        false;
+#endif
+    private Task _rotationTask = Task.CompletedTask;
+    internal Task RotationsIdle => _rotationTask;
+    // The helper's read loop starts just after Connected fires, so the first
+    // replay attempt can race it; keep the attempt count small.
+    private const int ReplayAttempts = 2;
+    private const int ReplayGapMs = 400;
 
-    public PanelAutoPromotion(PanelDeviceRegistry registry, IConfigStore store)
+    public PanelAutoPromotion(
+        PanelDeviceRegistry registry,
+        IConfigStore store,
+        IDisplayOrientationProvider? orientation = null
+#if WINDOWS
+        , Nexus.Service.Helper.HelperRegistry? helpers = null
+#endif
+        )
     {
         _registry = registry;
         _store = store;
+        _orientation = orientation;
+        // A manual rotation (POST /displays/{id}/rotation) or any later orientation write
+        // supersedes a queued default.
+        _registry.DisplayOrientationUpdated += id => _pendingOrientation.TryRemove(id, out _);
+#if WINDOWS
+        helpers?.Connected += OnHelperConnected;
+#endif
+    }
+
+#if WINDOWS
+    private void OnHelperConnected(Nexus.Service.Helper.HelperConnection connection)
+    {
+        if (_pendingOrientation.IsEmpty) return;
+        _ = Task.Run(ReplayPendingAsync);
+    }
+#endif
+
+    internal async Task ReplayPendingAsync()
+    {
+        var started = _pendingOrientation.Keys.ToArray();
+        for (var attempt = 0; attempt < ReplayAttempts; attempt++)
+        {
+            foreach (var (displayId, orientation) in _pendingOrientation.ToArray())
+            {
+                if (TryApplyOrientation(displayId, orientation)) _pendingOrientation.TryRemove(displayId, out _);
+            }
+            if (_pendingOrientation.IsEmpty) return;
+            try { await Task.Delay(ReplayGapMs).ConfigureAwait(false); }
+            catch { return; }
+        }
+        // Only what this replay started with: a concurrent first promotion may have queued more.
+        foreach (var id in started) _pendingOrientation.TryRemove(id, out _);
+        ServiceLog.Warn($"[panel-auto-promote] orientation replay gave up after {ReplayAttempts} attempts");
+    }
+
+    private bool TryApplyOrientation(string displayId, string orientation)
+    {
+        if (_orientation is null) return false;
+        var record = _registry.FindByDisplayId(displayId);
+        // The panel record was removed: nothing to rotate for.
+        if (record is null) return true;
+        var (ok, error) = _orientation.SetDisplayOrientation(displayId, orientation, PanelDeviceRegistry.ResolveCoverBackgroundHex(record));
+        ServiceLog.Info($"[panel-auto-promote] default orientation {orientation} displayId={displayId} ok={ok} detail='{error}'");
+        // Same persistence as POST /displays/{id}/rotation.
+        if (ok) _registry.UpdateDisplayOrientation(displayId, orientation);
+        return ok;
+    }
+
+    /// <summary>Applies a first-promotion default orientation now, or queues it for the helper-connect replay.</summary>
+    private void ApplyDefaultOrientation(string displayId, string orientation)
+    {
+        if (!TryApplyOrientation(displayId, orientation) && QueueFailedRotations) _pendingOrientation[displayId] = orientation;
     }
 
     /// <summary>
@@ -44,6 +126,8 @@ public sealed class PanelAutoPromotion
     /// </summary>
     public IReadOnlyList<string> Reconcile(DisplayTopologyResponse topology)
     {
+        List<(string DisplayId, string Orientation)>? rotations = null;
+        IReadOnlyList<string> result;
         lock (_reconcileLock)
         {
             List<string>? promoted = null;
@@ -55,7 +139,9 @@ public sealed class PanelAutoPromotion
             {
                 if (string.IsNullOrEmpty(display.Id)) continue;
                 if (display.IsY70 || !display.HostingSupported) continue;
-                if (KnownPanelDisplays.Match(display.Manufacturer, display.Model, display.Name) is null) continue;
+                var known = KnownPanelDisplays.Match(
+                    display.Manufacturer, display.Model, display.Name, display.Resolution?.Width, display.Resolution?.Height);
+                if (known is null) continue;
                 var identity = ModelIdentity(display);
                 if (seen.Contains(identity)) continue;
 
@@ -76,6 +162,10 @@ public sealed class PanelAutoPromotion
                 var (record, _) = _registry.AllocateForDisplay(display.Id, display.Name, capabilities, display.Fingerprint);
                 (markSeen ??= new List<string>()).Add(identity);
                 (promoted ??= new List<string>()).Add(record.Id);
+                if (known.DefaultOrientation is { } target && IsLandscape(display))
+                {
+                    (rotations ??= new List<(string, string)>()).Add((display.Id, target));
+                }
                 ServiceLog.Info($"[panel-auto-promote] '{display.Name}' ({identity}) promoted to panel {record.Id}");
             }
 
@@ -89,8 +179,32 @@ public sealed class PanelAutoPromotion
                     }
                 });
             }
-            return (IReadOnlyList<string>?)promoted ?? Array.Empty<string>();
+            result = (IReadOnlyList<string>?)promoted ?? Array.Empty<string>();
         }
+        // Off this thread: the rotate is a blocking helper round-trip, and the
+        // display change it causes triggers a fresh topology pass.
+        if (rotations is not null)
+        {
+            var batch = rotations;
+            _rotationTask = Task.Run(() =>
+            {
+                foreach (var (displayId, orientation) in batch)
+                {
+                    try { ApplyDefaultOrientation(displayId, orientation); }
+                    catch (Exception ex) { ServiceLog.Warn($"[panel-auto-promote] default orientation failed displayId={displayId}: {ex.Message}"); }
+                }
+            });
+        }
+        return result;
+    }
+
+    private static bool IsLandscape(DisplayTopologyEntryDto display)
+    {
+        if (!string.IsNullOrEmpty(display.Orientation))
+        {
+            return display.Orientation is DisplayOrientations.Landscape or DisplayOrientations.LandscapeFlipped;
+        }
+        return display.Resolution is { } size && size.Width > size.Height;
     }
 
     private static string ModelIdentity(DisplayTopologyEntryDto display)

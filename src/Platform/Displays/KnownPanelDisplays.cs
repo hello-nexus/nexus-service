@@ -8,8 +8,10 @@ namespace Nexus.Service.Platform.Displays;
 /// <see cref="Touch"/> asserts the model has an integrated touch digitizer even
 /// when the OS pointer-device association misses it (see
 /// <see cref="Match"/>), so its promoted panel is interactive.
+/// <see cref="DefaultOrientation"/> is the orientation applied once when the
+/// model is first auto-promoted from a different one (null = leave as is).
 /// </summary>
-public sealed record KnownPanelDisplay(string Family, double Dpi, bool Touch);
+public sealed record KnownPanelDisplay(string Family, double Dpi, bool Touch, string? DefaultOrientation = null);
 
 /// <summary>
 /// Curated displays commonly promoted to Nexus panels, matched by the EDID
@@ -36,8 +38,36 @@ public static class KnownPanelDisplays
     // pump cap, no touch; dpi is the native diagonal over the 5" panel.
     private static readonly KnownPanelDisplay IcueLinkLcd5 = new(IcueLinkLcd5Family, 294, Touch: false);
 
-    public static KnownPanelDisplay? Match(string? manufacturer, string? model, string? name)
+    public const string HyteY60Family = "hyte-y60";
+
+    // HYTE Y60 upgrade kit: non-touch bar mounted vertically; dpi is the
+    // native diagonal over the panel's physical diagonal.
+    private static readonly KnownPanelDisplay HyteY60 = new(
+        HyteY60Family, 158, Touch: false, DefaultOrientation: Nexus.Service.Models.Displays.DisplayOrientations.PortraitFlipped);
+
+    private const int Y60NativeWidth = 1920;
+    private const int Y60NativeHeight = 515;
+
+    // The kit ships the generic Realtek scaler EDID (manufacturer RTK, product
+    // BC32, name "RTK FHD HDR"), which other monitors share, so identity alone
+    // is not enough: the native panel size (either way round, since rotation
+    // swaps it) must match too. Unknown size never matches.
+    private static bool IsY60Resolution(int? width, int? height) =>
+        (width == Y60NativeWidth && height == Y60NativeHeight)
+        || (width == Y60NativeHeight && height == Y60NativeWidth);
+
+    /// <summary>True when this EDID identity is generic and only identifies a known display together with its resolution.</summary>
+    public static bool NeedsResolutionGate(string? manufacturer, string? model) =>
+        EqualsIgnoreCase(manufacturer, "RTK") && EqualsIgnoreCase(model, "BC32");
+
+    public static KnownPanelDisplay? Match(string? manufacturer, string? model, string? name, int? width = null, int? height = null)
     {
+        if (IsY60Resolution(width, height)
+            && ((EqualsIgnoreCase(manufacturer, "RTK") && EqualsIgnoreCase(model, "BC32"))
+                || ContainsIgnoreCase(name, "RTK FHD HDR")))
+        {
+            return HyteY60;
+        }
         // Corsair EISA id "CRX", Xeneon Edge product code 0xED00.
         if (EqualsIgnoreCase(manufacturer, "CRX") && EqualsIgnoreCase(model, "ED00"))
             return XeneonEdge;

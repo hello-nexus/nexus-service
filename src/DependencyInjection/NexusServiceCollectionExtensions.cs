@@ -1624,6 +1624,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.GlacialLcdHandler(
             sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.GlacialLcdWorker>()));
 
+        // DeepCool Mystique AIO screen: bulk-pipe worker keeping it on live sensor data.
+        services.AddSingleton<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>());
+        services.AddSingleton<IDeviceHandler>(sp => new Nexus.Service.Devices.Handlers.DeepCoolMystiqueHandler(
+            sp.GetRequiredService<Nexus.Service.Peripherals.DeepCool.MystiqueWorker>()));
+
         // Corsair iCUE LINK System Hub: HID connection worker + lighting + cooling.
         // Auto-detects the daisy chain; no composition (each device is one fixed zone).
         services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkHubs>();
@@ -2630,11 +2636,32 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(),
             sp.GetRequiredService<Nexus.Service.Auth.TokenService>()));
 #endif
+        services.AddSingleton(sp =>
+        {
+            Action? wakeOverlay = null;
+#if WINDOWS
+            // Same wake OverlayHostBootstrap sends: the overlay refetches /overlay/state, which carries the identify.
+            var helperRegistry = sp.GetService<Nexus.Service.Helper.HelperRegistry>();
+            if (helperRegistry is not null)
+            {
+                wakeOverlay = () =>
+                {
+                    try { Nexus.Service.Helper.Domains.LifecycleCommands.NotifyOverlayPrefsChangedAsync(helperRegistry).ObserveFaults(); }
+                    catch { }
+                };
+            }
+#endif
+            return new Nexus.Service.Panel.DisplayIdentifyService(
+                sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(), wakeOverlay, null,
+                () => sp.GetService<Nexus.Service.Platform.Displays.DisplayTopologyService>()?.GetTopology().Displays.Select(d => d.Id));
+        });
         services.AddHostedService(sp => new Nexus.Service.Panel.OverlaySupervisor(
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
-            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0));
+            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0,
+            () => sp.GetRequiredService<Nexus.Service.Panel.DisplayIdentifyService>().IsActive,
+            settings => sp.GetRequiredService<Nexus.Service.Panel.DesktopWidgetsMigration>().HostCanAdvance(settings)));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
 
         // Registered on every OS so GET /sentry can answer supported:false where
@@ -2649,6 +2676,13 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Sentry.SentryCoordinator>());
         services.AddSingleton<Nexus.Service.Panel.PanelDeviceRegistry>();
         services.AddSingleton<Nexus.Service.Panel.PanelAutoPromotion>();
+        services.AddSingleton<Nexus.Service.Panel.OverlayMonitorMap>();
+        services.AddSingleton(sp => new Nexus.Service.Panel.DesktopWidgetsMigration(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Panel.OverlayMonitorMap>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayTopologyService>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>(),
+            sp.GetService<Nexus.Service.Persistence.ProfileManager>()));
 
         // Corsair Xeneon Edge auto-orientation + native settings: reads the
         // panel's hardware orientation sensor over vendor HID and applies the
@@ -2834,7 +2868,7 @@ public static class NexusServiceCollectionExtensions
     /// AI Integration: the read-only telemetry/history and cooling/lighting/profile
     /// write MCP tools, the consent-gated registry that dispatches them, the
     /// binary-file-backed audit event log + sink, and McpServerHost - the
-    /// loopback-only MCP listener, off by default (AiIntegrationSettings
+    /// MCP listener (loopback unless AllowRemote), off by default (AiIntegrationSettings
     /// .Enabled). Depends on IConfigStore (AddNexusCore), ISensorProvider
     /// (AddNexusSensors), IFanControlProvider / ICurveProvider (AddNexusCooling),
     /// ILightingProvider / LightingEngine (AddNexusLighting), ProfileManager

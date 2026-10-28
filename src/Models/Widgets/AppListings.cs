@@ -29,6 +29,7 @@ public sealed class AppInstalledListing
     public bool Immersive { get; set; }      // widget opts into the panel's fullscreen view
     public bool ImmersiveDoubleSwipe { get; set; } // immersive view requires a second swipe to close
     public bool SingleInstance { get; set; } // only one instance per panel
+    public bool Freeform { get; set; }       // widget resizes freely on panels
 }
 
 public sealed class AppInstalledListingResponse

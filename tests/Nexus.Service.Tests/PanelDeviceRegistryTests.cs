@@ -640,12 +640,50 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
         Assert.Null(record.AlwaysOnTop);
+        // A generic display is on top only while see-through.
+        _registry.Patch(record.Id, new PanelDevicePatch { Backdrop = "desktop" });
         Assert.True(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
 
         var patched = _registry.Patch(record.Id, new PanelDevicePatch { AlwaysOnTop = false });
 
         Assert.False(patched!.AlwaysOnTop);
         Assert.False(Assert.Single(_registry.ListAssignments()).AlwaysOnTop);
+    }
+
+    [Fact]
+    public void WidgetsLocked_DefaultsUnlocked_PatchAppliesOnlyToDisplayBoundRecords()
+    {
+        var (display, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
+        var other = _registry.Allocate("Q-series", Caps(PanelSurfaces.Q60));
+        Assert.Null(display.WidgetsLocked);
+
+        Assert.True(_registry.Patch(display.Id, new PanelDevicePatch { WidgetsLocked = true })!.WidgetsLocked);
+        Assert.True(_registry.Patch(display.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.WidgetsLocked);
+        Assert.False(_registry.Patch(display.Id, new PanelDevicePatch { WidgetsLocked = false })!.WidgetsLocked);
+
+        Assert.Null(_registry.Patch(other.Id, new PanelDevicePatch { WidgetsLocked = true })!.WidgetsLocked);
+    }
+
+    [Fact]
+    public void ResetToDefaults_ClearsTheWidgetsLock()
+    {
+        var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
+        _registry.Patch(record.Id, new PanelDevicePatch { WidgetsLocked = true });
+
+        var reset = _registry.ResetToDefaults(record.Id);
+
+        Assert.Null(reset!.WidgetsLocked);
+        Assert.Null(_registry.Get(record.Id)!.WidgetsLocked);
+    }
+
+    [Fact]
+    public void WidgetsLocked_round_trips_through_the_record_json()
+    {
+        var record = new PanelDeviceRecord { Id = "p", WidgetsLocked = true };
+
+        var json = System.Text.Json.JsonSerializer.Serialize(record, Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord);
+
+        Assert.Contains("\"widgetsLocked\":true", json);
     }
 
     [Fact]
@@ -675,6 +713,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
         _registry.Patch(record.Id, new PanelDevicePatch { ReserveMonitor = false, AutoOrient = false, KeepCursorOff = true, AlwaysOnTop = false, BackgroundFrostLevel = 25 });
         _registry.UpdateXeneonEdgeSettings("DISPLAY-1", new XeneonEdgeSettingsDto { Brightness = 5 });
+        _registry.Patch(record.Id, new PanelDevicePatch { Backdrop = "desktop" });
 
         var reset = _registry.ResetHardwareSettings(record.Id);
 
@@ -709,7 +748,8 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
         Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "small" })!.WidgetSize);
         Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "huge" })!.WidgetSize);
-        Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.WidgetSize);
+        Assert.Equal("xsmall", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = PanelWidgetSizes.XSmall })!.WidgetSize);
+        Assert.Equal("xsmall", _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.WidgetSize);
         Assert.Equal("large", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "large" })!.WidgetSize);
 
         // A layout choice: the hardware reset leaves the layout, so it leaves the size too.

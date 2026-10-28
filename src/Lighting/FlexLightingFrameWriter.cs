@@ -243,7 +243,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             else
             {
                 st.Streaming = false;
-                TickStored(unit, st, look, now, group);
+                TickStored(unit, st, look, now, group, settings);
             }
         }
         foreach (var gone in _argbRequests.Keys.Where(k => !live.Contains(k)).ToList())
@@ -399,13 +399,13 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         return hc.ToHashCode();
     }
 
-    private void TickStored(FlexUnit unit, UnitState st, LianLiFlexUnitSettings look, long now, FlexStoredLook.MergeGroup? group)
+    private void TickStored(FlexUnit unit, UnitState st, LianLiFlexUnitSettings look, long now, FlexStoredLook.MergeGroup? group, NexusSettings settings)
     {
         if (CollectUpload(unit, st))
         {
             return;
         }
-        var signature = FlexStoredLook.Signature(unit, look, group);
+        var signature = FlexStoredLook.Signature(unit, look, group, settings);
         if (signature != st.PendingSignature)
         {
             st.PendingSignature = signature;
@@ -437,7 +437,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         }
         st.LastUploadAttemptMs = now;
         st.DriftRetries = st.UploadedSignature == signature ? st.DriftRetries + 1 : 0;
-        var package = FlexStoredLook.Build(unit, look, group);
+        var package = FlexStoredLook.Build(unit, look, group, settings);
         if (package is null)
         {
             return;

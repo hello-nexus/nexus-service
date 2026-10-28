@@ -11,7 +11,7 @@ namespace Nexus.Service.Panel;
 
 /// <summary>
 /// Spawns and supervises nexus-overlay.exe, the WebView2 host that
-/// renders floating widgets on the Windows desktop. The host lives in the
+/// hosts the panel kiosks on the Windows desktop. The host lives in the
 /// `overlay/` subdirectory next to the service exe; that layout is enforced
 /// by the PublishOverlayHost MSBuild target. The overlay is a raw-Win32 +
 /// direct WebView2 C-API P/Invoke binary published with PublishAot=true -
@@ -22,13 +22,6 @@ namespace Nexus.Service.Panel;
 /// </summary>
 public sealed class PanelOverlayHostLauncher : IOverlayHost
 {
-    /// <summary>
-    /// Always-on-top is pushed to the Windows sidecar via the SPA WebMessage
-    /// bridge and via a 5s prefs poll. The service-side abstraction is a
-    /// no-op so tray and reconcile callers can target IOverlayHost uniformly.
-    /// </summary>
-    public void SetAlwaysOnTop(bool value) { }
-
     /// <summary>No-op: nexus-overlay re-polls assignments on the PrefsChanged push.</summary>
     public void NotifyDisplayAssignmentsChanged() { }
 
@@ -112,7 +105,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             if (!_missingHostLogged)
             {
                 _missingHostLogged = true;
-                Console.Error.WriteLine($"[overlay-host] nexus-overlay.exe not found at expected path '{hostPath ?? "<null>"}'; the PublishOverlayHost target must populate <publish>/overlay/. Desktop widgets disabled.");
+                Console.Error.WriteLine($"[overlay-host] nexus-overlay.exe not found at expected path '{hostPath ?? "<null>"}'; the PublishOverlayHost target must populate <publish>/overlay/. Panel kiosks disabled.");
             }
             return false;
         }

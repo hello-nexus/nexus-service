@@ -33,7 +33,7 @@ public class JsonConfigStoreMigrationTests : IDisposable
           "schemaVersion": 5,
           "theme": { "themeMode": "dark", "accentColor": "#aabbcc", "language": "en" },
           "panel": { "autoLaunch": true, "themeMode": "system" },
-          "overlay": { "enabled": true, "scale": 120 },
+          "overlay": { "enabled": true, "scale": 120, "layout": [ { "id": "w", "type": "clock" } ] },
           "monitoring": { "showMacStatusBarIcon": true }
         }
         """;
@@ -47,13 +47,53 @@ public class JsonConfigStoreMigrationTests : IDisposable
             Assert.Equal("dark", s.Theme.ThemeMode);
             Assert.Equal("#aabbcc", s.Theme.AccentColor);
             Assert.True(s.Panel.AutoLaunch);
+            // A block that still holds widgets stays whole for the desktop widgets migration.
             Assert.True(s.Overlay.Enabled);
             Assert.Equal(120, s.Overlay.Scale);
+            Assert.Single(s.Overlay.Layout!);
         }
         finally
         {
             store.Dispose();
         }
+    }
+
+    [Fact]
+    public void Load_V26_WithoutDeepCoolExclusion_AddsItAndStampsCurrent()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "ui": { "conflictAutoKillExclusions": ["corsair-icue"] } }""");
+
+        using var store = new JsonConfigStore(_settingsPath);
+
+        var s = store.Load();
+        Assert.Equal(["corsair-icue", "deepcool"], s.Ui.ConflictAutoKillExclusions);
+        Assert.Equal(27, s.SchemaVersion);
+    }
+
+    [Fact]
+    public void Load_V26_WithDeepCoolExclusion_LeavesItUnchanged()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "ui": { "conflictAutoKillExclusions": ["deepcool", "corsair-icue"] } }""");
+
+        using var store = new JsonConfigStore(_settingsPath);
+
+        var s = store.Load();
+        Assert.Equal(["deepcool", "corsair-icue"], s.Ui.ConflictAutoKillExclusions);
+        Assert.Equal(27, s.SchemaVersion);
+    }
+
+    [Fact]
+    public void Load_ClearsTheRetiredOverlayBlockWhenItHoldsNoWidgets()
+    {
+        File.WriteAllText(_settingsPath, """{ "schemaVersion": 26, "overlay": { "enabled": true, "alwaysOnTop": true, "scale": 120, "layout": [] } }""");
+
+        using var store = new JsonConfigStore(_settingsPath);
+
+        var overlay = store.Load().Overlay;
+        Assert.Null(overlay.Enabled);
+        Assert.Null(overlay.Scale);
+        Assert.Null(overlay.Layout);
+        Assert.False(overlay.MigratedToPanels);
     }
 
     [Theory]

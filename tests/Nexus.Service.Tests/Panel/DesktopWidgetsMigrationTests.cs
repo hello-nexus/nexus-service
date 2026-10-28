@@ -1,0 +1,822 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using Nexus.Service.Models.Displays;
+using Nexus.Service.Models.Panel;
+using Nexus.Service.Panel;
+using Nexus.Service.Persistence;
+using Nexus.Service.Serialization;
+using Xunit;
+using static Nexus.Service.Panel.DesktopWidgetsMigration;
+
+namespace Nexus.Service.Tests.Panel;
+
+public class DesktopWidgetsMigrationTests
+{
+    private const string Primary = "DEL41B7-1";
+    private const string Second = "DEL41B7-2";
+
+    private static DisplayTopologyEntryDto Display(string id, bool primary, bool y70 = false, bool hosting = true) => new()
+    {
+        Id = id,
+        Name = "Monitor " + id,
+        Manufacturer = "DEL",
+        Model = "41B7",
+        Resolution = new DisplaySizeDto { Width = 2560, Height = 1440 },
+        ScaleFactor = 1.0,
+        IsPrimary = primary,
+        IsY70 = y70,
+        HostingSupported = hosting,
+        Fingerprint = new DisplayFingerprint { Manufacturer = "DEL", Product = "41B7", Serial = 7 },
+    };
+
+    private static DisplayTopologyResponse Topology(params DisplayTopologyEntryDto[] displays)
+    {
+        var r = new DisplayTopologyResponse();
+        r.Displays.AddRange(displays);
+        return r;
+    }
+
+    private static DisplayTopologyResponse Two() => Topology(Display(Primary, true), Display(Second, false));
+    private static DisplayTopologyResponse One() => Topology(Display(Primary, true));
+
+    private static LegacyOverlayWidget Widget(string id, string type = "clock", double col = 0, double row = 0, bool locked = false, string size = "2x2", Dictionary<string, JsonElement>? config = null) => new()
+    {
+        Id = id,
+        Type = type,
+        Size = size,
+        Col = col,
+        Row = row,
+        Locked = locked,
+        Config = config,
+    };
+
+    private static OverlayMonitorDto[] Seeded() => new[]
+    {
+        new OverlayMonitorDto { Index = 0, DisplayId = Primary, Primary = true },
+        new OverlayMonitorDto { Index = 1, DisplayId = Second },
+    };
+
+    // Windows has a posted map (a new overlay host) unless a test says otherwise.
+    private static (DesktopWidgetsMigration Migration, InMemoryConfigStore Store, OverlayMonitorMap Map) Build(HostOs os, params LegacyOverlayWidget[] widgets)
+        => Build(os, postMap: os == HostOs.Windows, widgets);
+
+    private static (DesktopWidgetsMigration Migration, InMemoryConfigStore Store, OverlayMonitorMap Map) Build(HostOs os, bool postMap, params LegacyOverlayWidget[] widgets)
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Overlay.Enabled = true;
+            s.Overlay.Layout = widgets.ToList();
+        });
+        var map = new OverlayMonitorMap();
+        if (postMap) map.Set(Seeded());
+        return (new DesktopWidgetsMigration(store, map, null, null) { Os = os }, store, map);
+    }
+
+    private static PanelDeviceRecord Only(InMemoryConfigStore store) => Assert.Single(store.Load().PanelDevices.Values);
+
+    private static string Snapshot(InMemoryConfigStore store) =>
+        JsonSerializer.Serialize(store.Load(), PersistenceJsonContext.Default.NexusSettings);
+
+    [Fact]
+    public void Empty_layout_sets_the_marker_and_creates_nothing()
+    {
+        var (m, store, _) = Build(HostOs.Windows);
+
+        Assert.Null(m.Run(One()));
+
+        Assert.True(store.Load().Overlay.MigratedToPanels);
+        Assert.Empty(store.Load().PanelDevices);
+    }
+
+    [Fact]
+    public void Second_run_changes_nothing()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        Assert.NotNull(m.Run(One()));
+        var before = Snapshot(store);
+
+        Assert.Null(m.Run(One()));
+
+        Assert.Equal(before, Snapshot(store));
+    }
+
+    [Fact]
+    public void Negative_monitor_targets_the_primary()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.Overlay.Monitor = -1);
+
+        m.Run(Two());
+
+        Assert.Equal(Primary, Only(store).DisplayId);
+    }
+
+    [Fact]
+    public void Index_resolves_through_the_posted_map()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.Overlay.Monitor = 1);
+
+        m.Run(Two());
+
+        Assert.Equal(Second, Only(store).DisplayId);
+    }
+
+    [Fact]
+    public void Windows_without_a_posted_map_always_defers_even_for_primary_single_display_and_empty_layouts()
+    {
+        var (m, store, _) = Build(HostOs.Windows, postMap: false, Widget("a"));
+        Assert.Null(m.Run(One()));
+        Assert.Null(m.Run(Two()));
+        store.Update(s => s.Overlay.Monitor = 1);
+        Assert.Null(m.Run(Two()));
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+        Assert.Empty(store.Load().PanelDevices);
+
+        var (m2, store2, _) = Build(HostOs.Windows, postMap: false);
+        Assert.Null(m2.Run(One()));
+        Assert.False(store2.Load().Overlay.MigratedToPanels);
+    }
+
+    [Fact]
+    public void A_missing_index_accumulates_monotonic_time_then_falls_back_to_primary()
+    {
+        var clock = 5_000L;
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        m.MonoMs = () => clock;
+        store.Update(s => s.Overlay.Monitor = 5);
+
+        Assert.Null(m.Run(Two()));
+        Assert.Equal(0L, store.Load().Overlay.MonitorMissingForMs);
+        Assert.True(m.RecheckArmed);
+
+        clock += 3_600_000;
+        Assert.Null(m.Run(Two()));
+        Assert.Equal(3_600_000L, store.Load().Overlay.MonitorMissingForMs);
+
+        clock += DesktopWidgetsMigration.MissingMonitorGraceMs - 3_600_000 - 1;
+        Assert.Null(m.Run(Two()));
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+
+        clock += 1;
+        Assert.NotNull(m.Run(Two()));
+        Assert.Equal(Primary, Only(store).DisplayId);
+        Assert.Null(store.Load().Overlay.MonitorMissingForMs);
+        Assert.False(m.RecheckArmed);
+    }
+
+    [Fact]
+    public void A_resolved_index_clears_the_stamp_and_disarms_the_recheck()
+    {
+        var clock = 0L;
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        m.MonoMs = () => clock;
+        store.Update(s => s.Overlay.Monitor = 1);
+        Assert.Null(m.Run(One()));
+        clock += 10_000;
+        Assert.Null(m.Run(One()));
+        Assert.Equal(10_000L, store.Load().Overlay.MonitorMissingForMs);
+
+        // The display is back but the target is unusable, so nothing migrates and the stamp must not linger.
+        Assert.Null(m.Run(Topology(Display(Primary, true, hosting: false), Display(Second, false, hosting: false))));
+
+        Assert.Null(store.Load().Overlay.MonitorMissingForMs);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+        Assert.False(m.RecheckArmed);
+    }
+
+    [Fact]
+    public void A_mapped_display_that_is_not_attached_waits_and_migrates_when_it_returns()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.Overlay.Monitor = 1);
+
+        Assert.Null(m.Run(One()));
+        Assert.NotNull(store.Load().Overlay.MonitorMissingForMs);
+
+        Assert.NotNull(m.Run(Two()));
+        Assert.Equal(Second, Only(store).DisplayId);
+        Assert.Null(store.Load().Overlay.MonitorMissingForMs);
+    }
+
+    [Fact]
+    public void MacOS_ignores_the_monitor_index()
+    {
+        var (m, store, map) = Build(HostOs.MacOS, Widget("a"));
+        store.Update(s => s.Overlay.Monitor = 1);
+        map.Set(Seeded());
+
+        m.Run(Two());
+
+        Assert.Equal(Primary, Only(store).DisplayId);
+    }
+
+    [Fact]
+    public void Missing_topology_defers()
+    {
+        var (m, store, _) = Build(HostOs.MacOS, Widget("a"));
+
+        Assert.Null(m.Run(new DisplayTopologyResponse()));
+        Assert.Null(m.Run());
+
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+    }
+
+    [Fact]
+    public void Linux_does_nothing_and_sets_no_marker()
+    {
+        var (m, store, _) = Build(HostOs.Linux, Widget("a"));
+
+        Assert.Null(m.Run(One()));
+
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+        Assert.Empty(store.Load().PanelDevices);
+    }
+
+    [Fact]
+    public void Y70_target_falls_back_to_the_primary()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.Overlay.Monitor = 1);
+
+        m.Run(Topology(Display(Primary, true), Display(Second, false, y70: true)));
+
+        Assert.Equal(Primary, Only(store).DisplayId);
+    }
+
+    [Theory]
+    [InlineData(true, false, 0.0, true)]
+    [InlineData(false, true, 0.35, false)]
+    [InlineData(true, true, 1.0, true)]
+    public void New_record_carries_the_desktop_flags(bool onTop, bool overlayEnabled, double opacity, bool expectedOnTop)
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s =>
+        {
+            s.Overlay.AlwaysOnTop = onTop;
+            s.Overlay.Enabled = overlayEnabled;
+            s.Overlay.Opacity = opacity;
+        });
+
+        m.Run(One());
+
+        var r = Only(store);
+        Assert.Equal("desktop", r.Backdrop);
+        Assert.True(r.ClickThrough);
+        Assert.Equal(expectedOnTop, r.AlwaysOnTop);
+        Assert.False(r.ReserveMonitor);
+        Assert.False(r.KeepCursorOff);
+        Assert.Equal(opacity, r.WidgetOpacity);
+        Assert.True(r.ThemeSyncWithDesktop);
+        Assert.True(r.AccentSyncWithDesktop);
+        Assert.Equal(overlayEnabled, r.Hosted);
+        Assert.Equal(overlayEnabled, PanelHosting.IsOn(r));
+        Assert.False(r.Enabled);
+        Assert.Equal("monitor", r.Capabilities?.Surface);
+        Assert.NotNull(r.DisplayFingerprint);
+        var layout = Assert.IsType<PanelLayoutDto>(r.Layout);
+        Assert.Equal(2, layout.LayoutSchemaVersion);
+        Assert.Empty(Assert.Single(layout.Pages).Widgets);
+        Assert.False(r.DesktopImport!.Merge);
+    }
+
+    [Fact]
+    public void The_import_leaves_grid_slots_unset_and_carries_the_cell_size_for_the_web_to_pick_a_widget_size()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        m.Run(One());
+
+        var r = Only(store);
+        Assert.Null(r.GridSlots);
+        Assert.Null(r.WidgetSize);
+        Assert.Null(r.WidgetsLocked);
+        Assert.True(r.DesktopImport!.CellPx > 0);
+        Assert.Equal("device", r.DesktopImport.CellUnits);
+    }
+
+    [Fact]
+    public void An_unset_legacy_opacity_gives_full_widget_opacity()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.Overlay.Opacity = null);
+
+        m.Run(One());
+
+        Assert.Equal(1.0, Only(store).WidgetOpacity);
+    }
+
+    [Theory]
+    [InlineData(50, 43.0)]
+    [InlineData(100, 86.0)]
+    [InlineData(137, 117.82)]
+    [InlineData(200, 172.0)]
+    [InlineData(10, 43.0)]
+    [InlineData(900, 172.0)]
+    public void Cell_px_follows_the_clamped_scale(int scale, double expected)
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.Overlay.Scale = scale);
+
+        m.Run(One());
+
+        Assert.Equal(expected, Only(store).DesktopImport!.CellPx, 2);
+    }
+
+    [Theory]
+    [InlineData(HostOs.Windows, "device")]
+    [InlineData(HostOs.MacOS, "css")]
+    public void Cell_units_follow_the_host_os(HostOs os, string units)
+    {
+        var (m, store, _) = Build(os, Widget("a"));
+
+        m.Run(One());
+
+        Assert.Equal(units, Only(store).DesktopImport!.CellUnits);
+        Assert.Equal(1, Only(store).DesktopImport!.Version);
+    }
+
+    [Fact]
+    public void Discord_is_dropped_and_apps_pins_config_and_locks_survive()
+    {
+        using var doc = JsonDocument.Parse("{\"panelOnly\":true,\"n\":3}");
+        var config = doc.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
+        var (m, store, _) = Build(HostOs.Windows,
+            Widget("d", "discord"),
+            Widget("p", "app:com.example.thing", 4.25, 1.5, locked: true, size: "2x4", config: config),
+            Widget("c", "clock", 1, 1));
+
+        m.Run(One());
+
+        var widgets = Only(store).DesktopImport!.Widgets;
+        Assert.Equal(new[] { "p", "c" }, widgets.Select(w => w.Id));
+        var pin = widgets[0];
+        Assert.Equal("app:com.example.thing", pin.Type);
+        Assert.True(pin.Locked);
+        Assert.Equal(4.25, pin.Col);
+        Assert.Equal("2x4", pin.Size);
+        Assert.True(pin.Config!["panelOnly"].GetBoolean());
+        Assert.NotNull(pin);
+    }
+
+    [Fact]
+    public void Only_discord_widgets_set_the_marker_without_a_record()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("d", "discord"));
+
+        Assert.Null(m.Run(One()));
+
+        Assert.True(store.Load().Overlay.MigratedToPanels);
+        Assert.Empty(store.Load().PanelDevices);
+    }
+
+    [Fact]
+    public void Existing_active_record_keeps_its_flags_and_looks_and_merges()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.PanelDevices["r1"] = new PanelDeviceRecord
+        {
+            Id = "r1",
+            DisplayId = Primary,
+            Backdrop = "wallpaper",
+            ClickThrough = false,
+            AlwaysOnTop = true,
+            ReserveMonitor = true,
+            WidgetOpacity = 0.9,
+            Layout = new PanelLayoutDto { LayoutSchemaVersion = 2, Surface = "monitor" },
+        });
+
+        Assert.Equal("r1", m.Run(One()));
+
+        var r = Only(store);
+        Assert.Equal("wallpaper", r.Backdrop);
+        Assert.False(r.ClickThrough);
+        Assert.True(r.AlwaysOnTop);
+        Assert.True(r.ReserveMonitor);
+        Assert.Equal(0.9, r.WidgetOpacity);
+        Assert.Null(r.Hosted);
+        Assert.True(r.DesktopImport!.Merge);
+        Assert.Equal("r1", store.Load().Overlay.MigratedRecordId);
+    }
+
+    [Fact]
+    public void Existing_disabled_record_gets_the_desktop_flags_and_keeps_its_layout()
+    {
+        var layout = new PanelLayoutDto
+        {
+            LayoutSchemaVersion = 2,
+            Surface = "monitor",
+            Pages = new List<PanelPageDto> { new() { Id = "pg", Widgets = new List<PanelWidgetDto> { new() { Id = "w", Type = "clock" } } } },
+        };
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s => s.PanelDevices["r1"] = new PanelDeviceRecord { Id = "r1", DisplayId = Primary, Enabled = false, Layout = layout });
+
+        m.Run(One());
+
+        var r = Only(store);
+        Assert.Same(layout, r.Layout);
+        Assert.Equal("desktop", r.Backdrop);
+        Assert.True(r.ClickThrough);
+        Assert.True(r.Hosted);
+        Assert.False(r.Enabled);
+        Assert.True(r.DesktopImport!.Merge);
+    }
+
+    private static string OverlayJson(InMemoryConfigStore store) =>
+        JsonSerializer.Serialize(store.Load().Overlay, PersistenceJsonContext.Default.LegacyOverlaySettings);
+
+    [Fact]
+    public void A_migrated_block_persists_only_its_markers()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"), Widget("d", "discord"));
+        store.Update(s =>
+        {
+            s.Overlay.Scale = 137;
+            s.Overlay.Opacity = 0.4;
+            s.Overlay.Monitor = -1;
+            s.Overlay.AlwaysOnTop = true;
+        });
+
+        var id = m.Run(One());
+
+        using var doc = JsonDocument.Parse(OverlayJson(store));
+        var names = doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray();
+        Assert.Equal(new[] { "migratedRecordId", "migratedToPanels" }, names);
+        Assert.Equal(id, doc.RootElement.GetProperty("migratedRecordId").GetString());
+        // The settings document as written to disk carries the same two markers and no legacy field.
+        using var whole = JsonDocument.Parse(JsonSerializer.Serialize(store.Load(), PersistenceJsonContext.Default.NexusSettings));
+        Assert.Equal(names, whole.RootElement.GetProperty("overlay").EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray());
+        Assert.Null(store.Load().Overlay.Layout);
+    }
+
+    private static PanelLayoutDto LayoutWith(params string[] ids) => new()
+    {
+        LayoutSchemaVersion = 2,
+        Surface = "monitor",
+        Pages = new List<PanelPageDto> { new() { Id = "pg", Widgets = ids.Select(i => new PanelWidgetDto { Id = i, Type = "clock" }).ToList() } },
+    };
+
+    [Fact]
+    public void A_migrated_block_with_widgets_the_record_lacks_hands_them_over_before_clearing()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("placed"), Widget("pending"), Widget("new1", "weather", col: 3, row: 2), Widget("d", "discord"));
+        store.Update(s =>
+        {
+            s.Overlay.MigratedToPanels = true;
+            s.Overlay.MigratedRecordId = "r1";
+            s.Overlay.Scale = 150;
+            s.PanelDevices["r1"] = new PanelDeviceRecord
+            {
+                Id = "r1",
+                DisplayId = Primary,
+                Layout = LayoutWith("placed"),
+                DesktopImport = new DesktopImportDto { CellPx = 99, Widgets = new List<LegacyOverlayWidget> { Widget("pending") } },
+            };
+        });
+
+        Assert.Null(m.Run(One()));
+
+        var r = Only(store);
+        Assert.Equal(new[] { "pending", "new1" }, r.DesktopImport!.Widgets.Select(w => w.Id).ToArray());
+        Assert.Equal(99, r.DesktopImport.CellPx);
+        Assert.True(r.DesktopImport.Merge);
+        Assert.Equal(3, r.DesktopImport.Widgets[1].Col);
+        Assert.Null(store.Load().Overlay.Layout);
+        Assert.Null(store.Load().Overlay.Scale);
+        Assert.Equal("r1", store.Load().Overlay.MigratedRecordId);
+    }
+
+    [Fact]
+    public void A_migrated_block_whose_widgets_the_record_holds_is_cleared_without_an_import()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"), Widget("b"));
+        store.Update(s =>
+        {
+            s.Overlay.MigratedToPanels = true;
+            s.Overlay.MigratedRecordId = "r1";
+            s.PanelDevices["r1"] = new PanelDeviceRecord { Id = "r1", DisplayId = Primary, Layout = LayoutWith("a", "b") };
+        });
+
+        m.Run(One());
+
+        Assert.Null(Only(store).DesktopImport);
+        Assert.Null(store.Load().Overlay.Layout);
+    }
+
+    [Fact]
+    public void A_migrated_block_whose_record_is_gone_keeps_its_widgets()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        store.Update(s =>
+        {
+            s.Overlay.MigratedToPanels = true;
+            s.Overlay.MigratedRecordId = "gone";
+        });
+
+        m.Run(One());
+
+        Assert.Single(store.Load().Overlay.Layout!);
+        Assert.Empty(store.Load().PanelDevices);
+    }
+
+    [Fact]
+    public void Empty_and_discord_only_blocks_are_cleared_with_the_marker()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("d", "discord"));
+        store.Update(s => s.Overlay.Scale = 120);
+
+        Assert.Null(m.Run(One()));
+
+        Assert.True(store.Load().Overlay.MigratedToPanels);
+        using var doc = JsonDocument.Parse(OverlayJson(store));
+        Assert.Equal(new[] { "migratedToPanels" }, doc.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
+
+        var (m2, store2, _) = Build(HostOs.Windows);
+        store2.Update(s => s.Overlay.Scale = 120);
+        m2.Run(One());
+        using var doc2 = JsonDocument.Parse(OverlayJson(store2));
+        Assert.Equal(new[] { "migratedToPanels" }, doc2.RootElement.EnumerateObject().Select(p => p.Name).ToArray());
+    }
+
+    [Fact]
+    public void A_deferred_block_keeps_its_widgets_for_a_later_pass()
+    {
+        var (m, store, _) = Build(HostOs.Windows, postMap: false, Widget("a"));
+
+        Assert.Null(m.Run(One()));
+
+        Assert.Single(store.Load().Overlay.Layout!);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+    }
+
+    [Fact]
+    public void Linux_clears_a_widgetless_block_and_keeps_one_with_widgets()
+    {
+        var (m, store, _) = Build(HostOs.Linux);
+        store.Update(s => { s.Overlay.Enabled = true; s.Overlay.Scale = 120; s.Overlay.Layout = new(); });
+        m.Run(One());
+        Assert.Null(store.Load().Overlay.Enabled);
+        Assert.Null(store.Load().Overlay.Layout);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+
+        var (m2, store2, _) = Build(HostOs.Linux, Widget("a"));
+        m2.Run(One());
+        Assert.True(store2.Load().Overlay.Enabled);
+        Assert.Single(store2.Load().Overlay.Layout!);
+    }
+
+    [Fact]
+    public void Posting_the_monitor_map_after_a_deferral_migrates()
+    {
+        var (m, store, map) = Build(HostOs.Windows, postMap: false, Widget("a"));
+        store.Update(s => s.Overlay.Monitor = 1);
+        Assert.Null(m.Run(Two()));
+
+        map.Set(Seeded());
+
+        Assert.NotNull(m.Run(Two()));
+        Assert.Equal(Second, Only(store).DisplayId);
+    }
+
+    private static readonly LegacyOverlayWidget[] OneWidget = { new() { Id = "a", Type = "clock" } };
+
+    private sealed class ProfileFixture : System.IDisposable
+    {
+        public string Dir { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-desktop-mig-" + System.Guid.NewGuid().ToString("N")[..8]);
+        public JsonConfigStore Store { get; }
+        public ProfileManager Profiles { get; }
+        public string TargetId { get; }
+
+        public ProfileFixture(bool panelsShared, string? priorRecordId = "prev")
+        {
+            System.IO.Directory.CreateDirectory(Dir);
+            Store = new JsonConfigStore(System.IO.Path.Combine(Dir, "settings.json"));
+            Profiles = new ProfileManager(Store);
+            Profiles.Initialize();
+            TargetId = Profiles.CreateProfile("Target").Id;
+            Profiles.CreateProfile("Other");
+            Store.Update(s =>
+            {
+                s.Overlay.MigratedToPanels = true;
+                s.Overlay.MigratedRecordId = priorRecordId;
+                s.SharedCategories = panelsShared ? new List<string> { ProfileSharing.Panels } : new List<string>();
+            });
+            System.IO.File.WriteAllText(
+                System.IO.Path.Combine(Dir, $"profile-{TargetId}.json"),
+                "{\"overlay\":{\"enabled\":true,\"layout\":[{\"id\":\"x\",\"type\":\"clock\",\"size\":\"2x2\"}]}}");
+        }
+
+        public void Dispose()
+        {
+            Profiles.Dispose();
+            Store.Dispose();
+            try { System.IO.Directory.Delete(Dir, recursive: true); } catch { }
+        }
+    }
+
+    private static OverlayMonitorMap MappedWindows()
+    {
+        var map = new OverlayMonitorMap();
+        map.Set(Seeded());
+        return map;
+    }
+
+    [Fact]
+    public void A_shared_profile_with_widgets_after_an_empty_one_is_imported()
+    {
+        using var f = new ProfileFixture(panelsShared: true, priorRecordId: null);
+
+        f.Profiles.SwitchProfile(f.TargetId);
+
+        Assert.False(f.Store.Load().Overlay.MigratedToPanels);
+        var m = new DesktopWidgetsMigration(f.Store, MappedWindows(), null, null) { Os = HostOs.Windows };
+        Assert.NotNull(m.Run(One()));
+        Assert.Equal("x", Assert.Single(Assert.Single(f.Store.Load().PanelDevices.Values).DesktopImport!.Widgets).Id);
+    }
+
+    [Fact]
+    public void A_later_profile_with_shared_panels_gets_only_the_marker()
+    {
+        using var f = new ProfileFixture(panelsShared: true);
+
+        f.Profiles.SwitchProfile(f.TargetId);
+
+        Assert.True(f.Store.Load().Overlay.MigratedToPanels);
+        Assert.Single(f.Store.Load().Overlay.Layout!);
+        var m = new DesktopWidgetsMigration(f.Store, MappedWindows(), null, null) { Os = HostOs.Windows };
+        Assert.Null(m.Run(One()));
+        Assert.Empty(f.Store.Load().PanelDevices);
+    }
+
+    [Fact]
+    public void A_later_profile_with_per_profile_panels_migrates_normally()
+    {
+        using var f = new ProfileFixture(panelsShared: false);
+
+        f.Profiles.SwitchProfile(f.TargetId);
+
+        Assert.False(f.Store.Load().Overlay.MigratedToPanels);
+        var m = new DesktopWidgetsMigration(f.Store, MappedWindows(), null, null) { Os = HostOs.Windows };
+        Assert.NotNull(m.Run(One()));
+        Assert.Equal("x", Assert.Single(Assert.Single(f.Store.Load().PanelDevices.Values).DesktopImport!.Widgets).Id);
+    }
+
+    [Fact]
+    public void MarkLaterProfile_needs_a_migrated_predecessor()
+    {
+        var s = new NexusSettings();
+        s.Overlay.Layout = OneWidget.ToList();
+
+        DesktopWidgetsMigration.MarkLaterProfile(s, priorMigrated: false);
+
+        Assert.False(s.Overlay.MigratedToPanels);
+    }
+
+    // Load hands out a detached copy; the swap runs once, just before the first Update, as a profile switch would.
+    private sealed class SwapBeforeUpdateStore : IConfigStore
+    {
+        private readonly InMemoryConfigStore _inner = new();
+        private System.Action<NexusSettings>? _swap;
+
+        public SwapBeforeUpdateStore(System.Action<NexusSettings> seed, System.Action<NexusSettings> swap)
+        {
+            _inner.Update(seed);
+            _swap = swap;
+        }
+
+        public string SettingsPath => _inner.SettingsPath;
+        public NexusSettings Load() => JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(_inner.Load(), PersistenceJsonContext.Default.NexusSettings),
+            PersistenceJsonContext.Default.NexusSettings)!;
+        public NexusSettings Live => _inner.Load();
+        public void Update(System.Action<NexusSettings> mutator)
+        {
+            var swap = _swap;
+            _swap = null;
+            if (swap is not null) _inner.Update(swap);
+            _inner.Update(mutator);
+        }
+        public void FlushNow() { }
+        public void Reload() { }
+        public event System.Action? OnChanged { add { } remove { } }
+    }
+
+    [Theory]
+    [InlineData(HostOs.Windows)]
+    [InlineData(HostOs.MacOS)]
+    [InlineData(HostOs.Linux)]
+    public void A_block_swapped_to_one_with_widgets_after_the_snapshot_is_not_cleared(HostOs os)
+    {
+        var store = new SwapBeforeUpdateStore(
+            s => { s.Overlay.Enabled = true; s.Overlay.Layout = new(); },
+            s => { s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("kept") }; });
+        var map = new OverlayMonitorMap();
+        map.Set(Seeded());
+        var m = new DesktopWidgetsMigration(store, map, null, null) { Os = os };
+
+        m.Run(One());
+
+        Assert.False(store.Live.Overlay.MigratedToPanels);
+        Assert.Equal("kept", Assert.Single(store.Live.Overlay.Layout!).Id);
+    }
+
+    [Fact]
+    public void A_migrated_block_drops_its_legacy_fields_once_the_record_exists()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        var id = m.Run(One());
+        store.Update(s =>
+        {
+            s.Overlay.Enabled = true;
+            s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("old") };
+        });
+
+        Assert.Null(m.Run(One()));
+
+        Assert.Null(store.Load().Overlay.Layout);
+        Assert.Null(store.Load().Overlay.Enabled);
+        Assert.Equal(id, store.Load().Overlay.MigratedRecordId);
+    }
+
+    [Fact]
+    public void A_migrated_block_keeps_its_legacy_fields_while_the_record_is_missing()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        var id = m.Run(One());
+        store.Update(s =>
+        {
+            s.PanelDevices.Remove(id!);
+            s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("old") };
+        });
+
+        m.Run(One());
+
+        Assert.Single(store.Load().Overlay.Layout!);
+    }
+
+    private static NexusSettings PendingSettings(int? monitor = null)
+    {
+        var s = new NexusSettings();
+        s.Overlay.Enabled = true;
+        s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("w") };
+        s.Overlay.Monitor = monitor;
+        return s;
+    }
+
+    [Fact]
+    public void Host_can_advance_on_windows_while_the_monitor_map_is_missing()
+    {
+        var (m, _, _) = Build(HostOs.Windows, postMap: false, Widget("w"));
+
+        Assert.True(m.HostCanAdvance(PendingSettings(), Topology(Display("Y70", true, y70: true))));
+    }
+
+    [Fact]
+    public void Host_can_advance_with_a_usable_primary()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.True(m.HostCanAdvance(PendingSettings(), Two()));
+    }
+
+    [Fact]
+    public void Host_cannot_advance_when_the_primary_is_a_y70()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.False(m.HostCanAdvance(PendingSettings(), Topology(Display("Y70", true, y70: true), Display(Second, false))));
+    }
+
+    [Fact]
+    public void Host_cannot_advance_when_several_displays_and_none_is_primary()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.False(m.HostCanAdvance(PendingSettings(), Topology(Display(Primary, false), Display(Second, false))));
+    }
+
+    [Fact]
+    public void Host_can_advance_while_a_legacy_monitor_index_may_still_appear()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.True(m.HostCanAdvance(PendingSettings(monitor: 7), Topology(Display("Y70", true, y70: true))));
+    }
+
+    [Fact]
+    public void Host_can_advance_before_any_display_is_known()
+    {
+        var (m, _, _) = Build(HostOs.Windows, Widget("w"));
+
+        Assert.True(m.HostCanAdvance(PendingSettings(), Topology()));
+    }
+
+    [Fact]
+    public void Host_cannot_advance_on_macos_when_the_primary_is_unusable()
+    {
+        var (m, _, _) = Build(HostOs.MacOS, Widget("w"));
+
+        Assert.False(m.HostCanAdvance(PendingSettings(), Topology(Display(Primary, true, hosting: false))));
+    }
+}
