@@ -19,8 +19,11 @@ public interface IVirtualMonitorHost
     /// <summary>The driver package ships with this install, so the setting is worth offering.</summary>
     bool IsAvailable { get; }
 
-    /// <summary>Null when the monitor cannot be created; <paramref name="failureState"/> then says why.</summary>
-    IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState);
+    /// <summary>Null when the monitor cannot be created; <paramref name="failureState"/> then says why. <paramref name="dpi"/> is the owning device's real density.</summary>
+    IVirtualMonitor? Create(int width, int height, double? dpi, CancellationToken ct, out string failureState);
+
+    /// <summary>The owning device's density when <paramref name="adapterName"/> is the live monitor this host created and its device has one; null otherwise.</summary>
+    double? OwnedDisplayDpi(string adapterName);
 }
 
 /// <summary>A live virtual monitor. Disposing removes it from Windows.</summary>
@@ -40,9 +43,11 @@ public sealed class NullVirtualMonitorHost : IVirtualMonitorHost
 {
     public bool IsAvailable => false;
 
-    public IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState)
+    public IVirtualMonitor? Create(int width, int height, double? dpi, CancellationToken ct, out string failureState)
     {
         failureState = SecondaryMonitorStates.Failed;
         return null;
     }
+
+    public double? OwnedDisplayDpi(string adapterName) => null;
 }
