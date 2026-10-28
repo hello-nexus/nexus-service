@@ -85,7 +85,7 @@ public sealed record KrakenModel(
         // SpeedChannelsFollowFirmware. Bucket uploads are reported to wedge its 2.x firmware
         // at streaming rates, so live frames take the bucketless direct path.
         new(0x300C, "NZXT Kraken Elite", 640, 640, KrakenLcdFormat.Q565, KrakenLightingProtocol.None, true, DirectStream: true),
-        // 2023 Kraken. Smaller panel, and the only model that takes uncompressed RGB565 -
+        // 2023 Kraken. Smaller panel, and a model that takes uncompressed RGB565 like the Plus V2 -
         // its firmware has no Q565 decoder, and it rejects bucket setup like the Plus V2, so
         // frames take the same direct RGB565 transfer.
         new(0x300E, "NZXT Kraken", 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None, true,

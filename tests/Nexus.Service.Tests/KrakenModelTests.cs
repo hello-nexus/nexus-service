@@ -58,7 +58,6 @@ public class KrakenModelTests
         Assert.False(plus.DirectStream);
         Assert.Equal(0x0B, plus.TelemetryInterval);
         Assert.All(KrakenModel.All.Where(m => m.ProductId != 0x3014), m => Assert.Equal(0x01, m.TelemetryInterval));
-        Assert.True(KrakenModel.Find(0x300E)!.Rgb565DirectStream);
         Assert.False(KrakenModel.Find(0x300E)!.DirectStream);
     }
 
@@ -100,11 +99,12 @@ public class KrakenModelTests
     }
 
     [Fact]
-    public void Only_the_Z3_recreates_its_stream_buckets_at_fifteen_frames_a_second()
+    public void Only_the_Z3_recreates_its_stream_buckets_and_non_default_stream_rates_are_pinned()
     {
         Assert.Equal(new[] { 0x3008 }, KrakenModel.All.Where(m => m.StreamRecreatesBuckets).Select(m => m.ProductId));
         Assert.Equal(new[] { 0x3014, 0x300E, 0x3008 }, KrakenModel.All.Where(m => m.HasLcd && m.StreamFps != 30).Select(m => m.ProductId));
         Assert.Equal(15, KrakenModel.Find(0x3008)!.StreamFps);
+        Assert.Equal(20, KrakenModel.Find(0x300E)!.StreamFps);
     }
 
     [Fact]

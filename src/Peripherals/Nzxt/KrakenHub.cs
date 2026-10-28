@@ -1264,7 +1264,7 @@ public sealed class KrakenHub : IDisposable
     }
 
 
-    // Plus V2 live stream (KrakenModel.Rgb565DirectStream). The wire buffer holds the last
+    // RGB565 direct live stream, Plus V2 and Kraken 2023 (KrakenModel.Rgb565DirectStream). The wire buffer holds the last
     // encoded frame, which is what the idle refresh resends; the source copy lets an
     // unchanged frame skip the encode. Buffers are guarded by _lcdTransferLock.
     //
@@ -1342,7 +1342,7 @@ public sealed class KrakenHub : IDisposable
     }
 
     /// <summary>
-    /// One live frame on the Plus V2: <c>36 01 00 01 06</c>, a 20-byte header, RGB565 with
+    /// One live frame on the RGB565 direct-stream models (Plus V2, Kraken 2023): <c>36 01 00 01 06</c>, a 20-byte header, RGB565 with
     /// the high byte first, <c>36 02</c>. No bucket exists on this firmware. An unchanged
     /// frame is not re-encoded and is held back until the idle refresh is due.
     /// </summary>
