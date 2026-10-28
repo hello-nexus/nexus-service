@@ -24,6 +24,9 @@ public interface IVirtualMonitorHost
 
     /// <summary>The owning device's density when <paramref name="adapterName"/> is the live monitor this host created and its device has one; null otherwise.</summary>
     double? OwnedDisplayDpi(string adapterName);
+
+    /// <summary>Raised once a monitor's owned density is set.</summary>
+    event Action? OwnedDisplayClaimed;
 }
 
 /// <summary>A live virtual monitor. Disposing removes it from Windows.</summary>
@@ -50,4 +53,6 @@ public sealed class NullVirtualMonitorHost : IVirtualMonitorHost
     }
 
     public double? OwnedDisplayDpi(string adapterName) => null;
+
+    public event Action? OwnedDisplayClaimed { add { } remove { } }
 }

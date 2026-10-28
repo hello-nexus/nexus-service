@@ -50,25 +50,17 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
         File.Exists(Path.Combine(_packageDir, "NexusVirtualDisplay.inf"))
         && File.Exists(Path.Combine(_packageDir, "NexusVirtualDisplayHost.exe"));
 
-    // Only one monitor exists system-wide, so one density covers the adapter.
-    private readonly object _ownedLock = new();
-    private double? _ownedDpi;
+    // Only one monitor exists system-wide, so one claim covers the adapter.
+    private readonly VirtualDisplayClaim _claim = new();
 
-    public double? OwnedDisplayDpi(string adapterName)
+    public event Action? OwnedDisplayClaimed
     {
-        lock (_ownedLock)
-        {
-            return string.Equals(adapterName, AdapterName, StringComparison.OrdinalIgnoreCase) ? _ownedDpi : null;
-        }
+        add => _claim.Claimed += value;
+        remove => _claim.Claimed -= value;
     }
 
-    private void SetOwnedDpi(double? dpi)
-    {
-        lock (_ownedLock)
-        {
-            _ownedDpi = dpi;
-        }
-    }
+    public double? OwnedDisplayDpi(string adapterName) =>
+        string.Equals(adapterName, AdapterName, StringComparison.OrdinalIgnoreCase) ? _claim.Dpi : null;
 
     public IVirtualMonitor? Create(int width, int height, double? dpi, CancellationToken ct, out string failureState)
     {
@@ -132,7 +124,7 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
                     var ready = EventWaitHandle.OpenExisting(FrameSection.ReadyName);
                     ServiceLog.Info($"[virtual-monitor] {width}x{height} up in {sw.ElapsedMilliseconds} ms");
                     var monitor = new Monitor(this, new FrameSection(map, ready, width, height), stop, process, _helpers);
-                    SetOwnedDpi(dpi);
+                    _claim.Set(monitor, dpi);
                     return monitor;
                 }
                 catch (Exception ex) when (ex is FileNotFoundException or WaitHandleCannotBeOpenedException)
@@ -501,8 +493,8 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
                 return;
             }
             _frames.Dispose();
-            _owner.SetOwnedDpi(null);
             _owner.StopMonitor(_stop, _process);
+            _owner._claim.Clear(this);
             ServiceLog.Info("[virtual-monitor] removed");
         }
     }

@@ -370,6 +370,8 @@ public sealed class DisplayTopologyTests : IDisposable
     {
         public double? Owned;
         public bool IsAvailable => true;
+        public event Action? OwnedDisplayClaimed;
+        public void RaiseClaimed() => OwnedDisplayClaimed?.Invoke();
         public Nexus.Service.Panel.Streams.IVirtualMonitor? Create(int width, int height, double? dpi, System.Threading.CancellationToken ct, out string failureState)
         {
             failureState = "";
@@ -413,7 +415,7 @@ public sealed class DisplayTopologyTests : IDisposable
     }
 
     [Fact]
-    public void Promoted_virtual_display_record_follows_the_claim_and_reverts_when_it_goes()
+    public void Promoted_virtual_display_record_follows_the_claim()
     {
         var display = VirtualDisplay();
         var host = new FakeVirtualHost { Owned = null };
@@ -424,12 +426,44 @@ public sealed class DisplayTopologyTests : IDisposable
 
         host.Owned = 225;
         service.GetTopology();
+
         Assert.Equal(225, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
         Assert.Single(changed);
+    }
 
-        host.Owned = null;
+    [Fact]
+    public void A_claim_set_after_the_arrival_scan_triggers_a_rescan_that_corrects_the_record()
+    {
+        var display = VirtualDisplay();
+        var host = new FakeVirtualHost { Owned = null };
+        var service = new DisplayTopologyService(new FakeProvider { Displays = new List<RawDisplayInfo> { display } }, _registry, null, host);
+        _registry.AllocateForDisplay(display.Id, display.Name, new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Dpi = 96 });
         service.GetTopology();
         Assert.Equal(96, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
+
+        host.Owned = 225;
+        host.RaiseClaimed();
+
+        Assert.True(System.Threading.SpinWait.SpinUntil(() => _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi == 225, 5000));
+    }
+
+    [Fact]
+    public void Virtual_display_claim_is_cleared_only_by_the_monitor_that_set_it()
+    {
+        var claim = new VirtualDisplayClaim();
+        var older = new object();
+        var newer = new object();
+        int raised = 0;
+        claim.Claimed += () => raised++;
+
+        claim.Set(older, 225);
+        Assert.Equal(225, claim.Dpi);
+        claim.Set(newer, 300);
+        claim.Clear(older);
+        Assert.Equal(300, claim.Dpi);
+        claim.Clear(newer);
+        Assert.Null(claim.Dpi);
+        Assert.Equal(2, raised);
     }
 
     // A Dell U2415 EDID with its detailed timing descriptor filled in.

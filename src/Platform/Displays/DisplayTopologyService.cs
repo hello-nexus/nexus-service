@@ -61,9 +61,17 @@ public sealed class DisplayTopologyService : IDisposable
         _panelRegistry = panelRegistry;
         _store = store;
         _virtualMonitors = virtualMonitors;
+        // The arrival scan can run before the claim exists; rescan so the record corrects itself.
+        _virtualMonitors?.OwnedDisplayClaimed += OnOwnedDisplayClaimed;
     }
 
-    // The service-created virtual display reports its EDID's 96 dpi; its owning device's real density wins.
+    private void OnOwnedDisplayClaimed() => System.Threading.Tasks.Task.Run(() =>
+    {
+        try { CacheAttachedIds(_provider.Enumerate()); }
+        catch (Exception ex) { Console.Error.WriteLine($"[displays] claim rescan failed: {ex.Message}"); }
+    });
+
+    // The service-created virtual display's EDID carries a placeholder density; its owning device's real density wins.
     private double? EffectiveDpi(RawDisplayInfo info)
         => _virtualMonitors?.OwnedDisplayDpi(info.AdapterName) ?? info.Dpi;
 
@@ -276,6 +284,7 @@ public sealed class DisplayTopologyService : IDisposable
 
     public void Dispose()
     {
+        _virtualMonitors?.OwnedDisplayClaimed -= OnOwnedDisplayClaimed;
         lock (_recheckLock)
         {
             _disposed = true;

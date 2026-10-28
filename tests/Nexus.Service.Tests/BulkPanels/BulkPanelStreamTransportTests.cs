@@ -132,6 +132,7 @@ public class BulkPanelStreamTransportTests
 
         public double? CreatedDpi { get; private set; }
         public double? OwnedDisplayDpi(string adapterName) => null;
+        public event Action? OwnedDisplayClaimed { add { } remove { } }
 
         public IVirtualMonitor? Create(int width, int height, double? dpi, CancellationToken ct, out string failureState)
         {
