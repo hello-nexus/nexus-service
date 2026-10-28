@@ -97,8 +97,12 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     private bool _disposed;
     private string? _openFailedPath;
 
-    public GalleonSdHub(IHidEnumerator hid, Func<long>? clock = null)
+    private readonly bool _matchOnLinux;
+
+    /// <param name="matchOnLinux">Lets the interface match run on Linux. Off in production; tests turn it on so the sequencing is exercised on every OS.</param>
+    public GalleonSdHub(IHidEnumerator hid, Func<long>? clock = null, bool matchOnLinux = false)
     {
+        _matchOnLinux = matchOnLinux;
         _hid = hid;
         _clock = clock ?? Stopwatch.GetTimestamp;
     }
@@ -125,7 +129,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             foreach (var info in _hid.Find(GalleonSdProtocol.VendorId, GalleonSdProtocol.ProductId))
             {
                 // hidraw report lengths are unvalidated for this interface, so Linux units stay unopened.
-                if (OperatingSystem.IsLinux()) continue;
+                if (OperatingSystem.IsLinux() && !_matchOnLinux) continue;
                 if (!GalleonSdProtocol.IsCommandInterface(info.OutputReportByteLength)) continue;
                 if (chosen is null || info.UsagePage == GalleonSdProtocol.VendorUsagePage) chosen = info;
             }
