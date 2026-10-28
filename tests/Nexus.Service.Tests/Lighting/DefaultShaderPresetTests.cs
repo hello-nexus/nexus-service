@@ -11,7 +11,7 @@ public class DefaultShaderPresetTests
     {
         "cosmicdust", "hyperspace", "nebula", "starfield", "ball",
         "wave", "ferrofluid", "inkbloom", "liquidchrome", "jellyfish", "sacredgeometry",
-        "lavalamp", "radar", "voronoi", "circuit",
+        "lavalamp", "radar", "voronoi", "circuit", "sandstorm", "bubbles", "flowfield", "vapor", "lavafissure",
     };
 
     [Theory]

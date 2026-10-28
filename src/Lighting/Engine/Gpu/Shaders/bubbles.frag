@@ -1,6 +1,8 @@
 uniform float u_count; // hint_range(4.0, 24.0, 1.0) = 12.0  bubble count
 uniform float u_rise; // hint_range(0.2, 2.5, 0.05) = 1.0  upward speed
 uniform float u_irid; // hint_range(0.0, 1.5, 0.05) = 0.8  iridescent band strength
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Soft radial gaussian mask - used for halos and glow falloffs.
 float gauss(float r, float sigma) {
@@ -29,8 +31,8 @@ void main() {
     vec3 bgTop = tintedPalette(0.55);
     vec3 bgMid = tintedPalette(0.72);
     vec3 bgBot = tintedPalette(0.85);
-    vec3 bg = mix(bgTop * 0.35, bgMid * 0.22, smoothstep(0.0, 0.6, uv.y));
-    bg = mix(bg, bgBot * 0.18, smoothstep(0.55, 1.0, uv.y));
+    vec3 bg = mix(bgTop * 0.55, bgMid * 0.38, smoothstep(0.0, 0.6, uv.y));
+    bg = mix(bg, bgBot * 0.3, smoothstep(0.55, 1.0, uv.y));
 
     // Light rays streaming down. Each ray tilts slightly and pulses.
     for (int ri = 0; ri < 3; ri++) {
@@ -48,8 +50,8 @@ void main() {
     // perf: caustic fbm->fbm3 (low-freq blotches, fine octaves invisible)
     float blob1 = fbm3(cq + fbm3(cq * 1.3 + t * 0.05));
     float blob2 = fbm3(cq * 0.7 + vec2(3.1, 7.9) - t * 0.04);
-    bg += tintedPalette(0.2) * smoothstep(0.45, 0.7, blob1) * 0.28;
-    bg += tintedPalette(0.9) * smoothstep(0.5, 0.75, blob2) * 0.22;
+    bg += tintedPalette(0.2) * smoothstep(0.4, 0.7, blob1) * 0.45;
+    bg += tintedPalette(0.9) * smoothstep(0.45, 0.75, blob2) * 0.38;
 
     vec3 col = bg;
 
@@ -86,7 +88,11 @@ void main() {
         vec2 d = uv - vec2(cx, cy);
         d.x *= u_resolution.x / u_resolution.y;
         float r = length(d);
-        float radius = 0.025 + seed * 0.07;
+        float radius = 0.03 + seed * 0.09;
+        // Beyond the halo this bubble contributes nothing.
+        if (r > radius * 3.6) {
+            continue;
+        }
 
         // Real soap bubbles are nearly transparent - the visible "body" is
         // entirely the thin-film interference on the soap film plus small
@@ -97,7 +103,12 @@ void main() {
         // Subtle glow halo - tones down, not a bright ring.
         vec3 haloHue = tintedPalette(seed2 + fi * 0.13);
         float halo = gauss(r, radius * 1.8);
-        col += haloHue * halo * 0.22 * edgeFade;
+        col += haloHue * halo * 0.3 * edgeFade;
+        // Soft refraction: the far inner side of the bubble catches focused light and tints the interior.
+        float inner = 1.0 - smoothstep(radius * 0.2, radius, r);
+        vec2 refrOff = vec2(0.35, 0.4) * radius;
+        col += haloHue * inner * 0.12 * edgeFade;
+        col += tintedPalette(seed2 + 0.4) * exp(-length(d - refrOff) / (radius * 0.28)) * 0.55 * edgeFade;
 
         // Thin-film iridescence is the main colour of a real soap bubble.
         // Mask: a smooth dome peaking at the rim (where refraction angle is
@@ -112,14 +123,14 @@ void main() {
         float phase2 = seed * 6.28 + 2.1 + r * 9.0  - t * 0.25;
         film += tintedPalette(phase1 * 0.15 + 0.10) * 0.7;
         film += tintedPalette(phase2 * 0.15 + 0.55) * 0.5;
-        col += film * filmMask * irid * edgeFade;
+        col += film * filmMask * irid * 1.35 * edgeFade;
 
         // Fresnel-ish brightening along the very outer edge of the film -
         // a thin "line of light" that makes the bubble feel spherical
         // without being a solid white ring. Width scales with radius so
         // large and tiny bubbles both read correctly.
-        float edgeLine = ring(r, radius * 0.985, radius * 0.045);
-        col += tintedPalette(seed + 0.5 + t * 0.1) * edgeLine * 0.45 * edgeFade;
+        float edgeLine = ring(r, radius * 0.985, radius * 0.06);
+        col += (tintedPalette(seed + 0.5 + t * 0.1) * 0.7 + vec3(0.3)) * edgeLine * 0.9 * edgeFade;
 
         // Primary specular highlight: bright dot offset toward upper-left,
         // slightly smaller than before so it reads as a tight reflection

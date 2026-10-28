@@ -4,7 +4,7 @@ uniform float u_splash; // hint_range(0.0, 1.0, 0.02) = 0.85  puddle reflection 
 
 void main() {
     vec2 uv = uv01();
-    float t = mod(u_time * u_speed * 0.7, 1000.0);
+    float t = mod(u_time * u_speed * 0.45, 1000.0);
     float cols = max(8.0, u_density);
     float len = clamp(u_length, 0.02, 0.6);
     float splash = clamp(u_splash, 0.0, 1.0);
@@ -26,7 +26,8 @@ void main() {
         float head = fract(fall / span + colRand) * span - 0.15;
         float dy = uv.y - head;
         // Streak: single falloff from the head trailing upward.
-        float streak = smoothstep(0.0, -len * 1.6, dy);
+        float up = -dy;
+        float streak = step(0.0, up) * (1.0 - smoothstep(0.0, len * 1.6, up));
         // Neon tip glow.
         float tip = exp(-dy * dy * 320.0) * 1.1;
         float xLocal = fract((uv.x + xOff) * cols) - 0.5;
@@ -44,7 +45,7 @@ void main() {
     float reflFall = t * (1.5 + reflRand * 2.5);
     float reflHead = fract(reflFall / span + reflRand) * span - 0.15;
     float reflDy = puddleY - reflHead;
-    float reflStreak = smoothstep(0.0, -len * 1.6, reflDy);
+    float reflStreak = step(0.0, -reflDy) * (1.0 - smoothstep(0.0, len * 1.6, -reflDy));
     float reflXLocal = fract(uv.x * cols) - 0.5;
     float reflXMask = 1.0 - smoothstep(0.1, 0.2 + aa, abs(reflXLocal));
     vec3 reflTint = tintedPalette(reflRand * 0.6);

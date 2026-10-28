@@ -22,6 +22,7 @@ void main() {
     float body = smoothstep(0.2, 0.75, haze);
     vec3 col = tintedPalette(0.05 + haze * 1.0 + uv.x * 0.45 + t * 0.1) * (0.30 + 1.2 * body);
 
+    float clusterField = fbm3(p * 1.25 + vec2(0.0, t * 0.05));
     for (int i = 0; i < 3; i++) {
         float layerZ = float(i) / 3.0;
         // Each layer has its own grid scale, rotation and offset, and drifts in its own direction, so no lattice lines up between them.
@@ -34,18 +35,21 @@ void main() {
         vec2 cell = floor(q);
         vec2 gv = fract(q) - 0.5;
         float rnd = hash21(cell + float(i) * 31.0);
-        float has = step(0.4 + float(i) * 0.04, rnd);
+        // Density follows a slow low-frequency field, so some regions are nearly empty and others gather stars.
+        float cluster = smoothstep(0.4, 0.68, clusterField + 0.12 * sin(p.x * 2.3 + float(i) * 2.1) * sin(p.y * 1.9 + float(i)));
+        float thr = mix(0.985, 0.64, cluster);
+        float has = smoothstep(thr, thr + 0.07, rnd);
         // Full-cell jitter; the halo fades out before the cell edge so nothing is cut.
         vec2 off = vec2(hash21(cell + 7.1), hash21(cell + 13.7)) - 0.5;
         float d = length(gv - off * 0.62);
         float rnd2 = hash21(cell + 91.7);
         float phase = fract(t * twk * (0.35 + rnd2 * 0.6) + rnd * 7.3);
         float tw = 0.25 + 0.75 * sin(phase * 6.28318) * sin(phase * 6.28318);
-        float size = mix(1.0, 0.6, layerZ) * (0.55 + rnd2 * 0.9);
+        float size = mix(1.0, 0.6, layerZ) * (0.35 + rnd2 * rnd2 * 2.6);
         float core = exp(-d * d * 120.0 / size) * (1.0 - smoothstep(0.1, 0.19, d));
         float halo = exp(-d * d * 30.0 / size) * (1.0 - smoothstep(0.08, 0.19, d)) * 0.7;
         vec3 tint = tintedPalette(rnd * 1.3 + t * 0.2);
-        float br = mix(1.0, 0.6, layerZ) * tw * has * (0.5 + rnd2);
+        float br = mix(1.0, 0.6, layerZ) * tw * has * (0.3 + 1.4 * rnd2 * rnd2 * rnd2);
         col += (vec3(1.0) * core * 1.4 + tint * (core * 1.0 + halo * 1.8)) * br;
     }
 

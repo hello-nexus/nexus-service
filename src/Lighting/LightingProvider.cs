@@ -711,7 +711,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             }
             else
             {
-                effect.RenderFrame(canvas, ThumbnailFrameTimeMs);
+                effect.RenderFrame(canvas, ThumbnailTimeMs(name, state, frozen));
             }
         }
         finally
@@ -742,6 +742,30 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "sweepcycle" => (3170.0, 2000.0),
         _ => null,
     };
+
+    // The lightning thumbnail is taken just after the first bolt strikes, so it shows the bright moment
+    // rather than the decay; every other effect uses the shared settled time.
+    private static double ThumbnailTimeMs(string name, Nexus.Service.Persistence.AnimateEffectState? state, bool frozen)
+    {
+        if (name != "lightning" || frozen)
+        {
+            return ThumbnailFrameTimeMs;
+        }
+        var rate = 0.8f;
+        if (state?.Params is { } p && p.TryGetValue("u_boltRate", out var r))
+        {
+            rate = r;
+        }
+        var speed = (state?.Speed ?? 60) / 50f;
+        if (speed <= 0.01f || rate <= 0.01f)
+        {
+            return ThumbnailFrameTimeMs;
+        }
+        // Bolt zero's cycle position advances at this fixed ratio of the shader clock; land at a bright point of it.
+        const double StrikePhase = 0.07;
+        const double CyclePerClockSecond = 0.35 * 0.55;
+        return StrikePhase / (CyclePerClockSecond * rate * speed) * 1000.0;
+    }
 
     private static void RenderTimeLapse(IEffect effect, Engine.CanvasBuffer canvas, double startMs, double spanMs)
     {

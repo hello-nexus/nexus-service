@@ -23,23 +23,21 @@ void main() {
     float rip = clamp(u_ripple, 0.2, 4.0);
 
     vec2 p = uv * (1.5 * rip + 0.6);
-    float e = 0.02;
+    float e = 0.06;
     float h = chromeH(p, t);
     float hx = chromeH(p + vec2(e, 0.0), t);
     float hy = chromeH(p + vec2(0.0, e), t);
-    vec3 n = normalize(vec3((h - hx) / e * 0.35 * thick, (h - hy) / e * 0.35 * thick, 1.0));
+    vec3 n = normalize(vec3((h - hx) / e * 0.3 * thick, (h - hy) / e * 0.3 * thick, 1.0));
 
     // Banded environment: bright sky above, dark horizon, bright ground, like a studio chrome map.
     vec3 r = reflect(vec3(0.0, 0.0, -1.0), n);
-    float env = 0.5 + 0.5 * sin(r.y * 5.5 + r.x * 2.5 + 1.2);
-    env = env * env * (3.0 - 2.0 * env);
+    float env = 0.5 + 0.5 * sin(r.y * 4.4 + r.x * 2.2 + 1.2);
     vec3 tint = tintedPalette(r.x * 0.45 + r.y * 0.35 + h * 0.07 + t * 0.06);
     vec3 col = tint * (0.40 + 1.15 * env);
-    col += tintedPalette(r.y * 0.5 + 0.5 - t * 0.05) * pow(1.0 - n.z, 2.0) * 0.8;
 
     vec3 light = normalize(vec3(cos(t * 0.8) * 0.8, sin(t * 0.6) * 0.6, 0.7));
-    float spec = pow(max(dot(reflect(-light, n), vec3(0.0, 0.0, 1.0)), 0.0), 36.0);
-    col += vec3(1.0, 0.98, 0.95) * spec * 1.6;
+    float spec = pow(max(dot(reflect(-light, n), vec3(0.0, 0.0, 1.0)), 0.0), 20.0);
+    col += vec3(1.0, 0.98, 0.95) * spec * 1.3;
 
     fragColor = vec4(finalize(col), 1.0);
 }
