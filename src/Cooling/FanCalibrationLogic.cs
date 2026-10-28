@@ -62,6 +62,14 @@ public static class FanCalibrationLogic
         return Math.Abs(secondMean - firstMean) <= tol;
     }
 
+    /// <summary>True when a fan that was spinning before the sweep never read above
+    /// the unresponsive floor during it (or every read failed). A fan that really
+    /// stops under control still reads at its top duty, so this means the sweep's
+    /// readings, not the fan, are wrong.</summary>
+    public static bool IsImplausibleSweep(int priorRpm, int sweepMaxRpm, int failedSamples, int totalSamples)
+        => priorRpm > UnresponsiveMaxRpm
+           && (sweepMaxRpm <= UnresponsiveMaxRpm || (totalSamples > 0 && failedSamples == totalSamples));
+
     public static FanCalibration Classify(string fanId, List<FanCalibrationPoint> curve)
     {
         var rpms = curve.Select(p => p.Rpm).ToList();

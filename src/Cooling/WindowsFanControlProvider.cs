@@ -254,6 +254,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             : mappings.Where(m => fanIds.Contains(m.Id)).ToList();
 
         FanCalibration[] results;
+        // Read before the lease so the snapshot is the fans' live state, not what the sweep drives.
+        var priorRpm = SnapshotRpm(toCalibrate);
+        ServiceLog.Info($"[fan-control] calibration started for {toCalibrate.Count} fans");
         BeginCalibrationLease(toCalibrate);
         try
         {
@@ -261,12 +264,21 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             {
                 try
                 {
-                    return await FanCalibrator.CalibrateOneAsync(
+                    var r = await FanCalibrator.CalibrateOneAsync(
                         m.Id,
                         duty => WriteCalibrationDuty(m, duty),
                         () => ReadCalibrationRpm(m),
+                        priorRpm.TryGetValue(m.Id, out var before) ? before : 0,
                         progress,
                         ct);
+                    ServiceLog.Info($"[fan-control] calibration {m.Id}: max {r.MaxRpm} RPM, {r.Classification}");
+                    return r;
+                }
+                catch (CalibrationRejectedException ex)
+                {
+                    // Keeps the previous calibration: persisting would mark a spinning fan Unresponsive.
+                    ServiceLog.Warn($"[fan-control] calibration of {m.Id} rejected: {ex.Message}");
+                    return null;
                 }
                 catch (CalibrationWriteRefusedException)
                 {
@@ -293,6 +305,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             foreach (var r in results)
                 s.Cooling.FanCalibrations[r.FanId] = r;
         });
+        ServiceLog.Info($"[fan-control] calibration finished: {results.Length} of {toCalibrate.Count} saved");
 
         return results;
     }
@@ -381,10 +394,19 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         return (control.ControlMode, control.SoftwareValue);
     }
 
-    private int ReadCalibrationRpm(ChannelMapping mapping)
+    private int? ReadCalibrationRpm(ChannelMapping mapping)
     {
         _lhm.Update(SensorRefresh.Fast);
-        return (int)(mapping.FanSensor.Value ?? 0f);
+        return mapping.FanSensor.Value is { } v && float.IsFinite(v) ? (int)v : null;
+    }
+
+    private Dictionary<string, int> SnapshotRpm(IReadOnlyList<ChannelMapping> mappings)
+    {
+        _lhm.Update(SensorRefresh.Fast);
+        var snapshot = new Dictionary<string, int>(mappings.Count, StringComparer.Ordinal);
+        foreach (var m in mappings)
+            snapshot[m.Id] = m.FanSensor.Value is { } v && float.IsFinite(v) ? (int)v : 0;
+        return snapshot;
     }
 
     // ── ICoolingProvider ──

@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Platform.Linux;
 
 namespace Nexus.Service.Cooling;
@@ -260,6 +261,8 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
         // cancelled mid-ramp, so a header is never left stopped at 0%.
         var priorEnable = LinuxSysfs.ReadText(paths.EnablePath);
         var priorPwm = LinuxSysfs.ReadText(paths.PwmPath);
+        var priorRpm = paths.FanInputPath is not null ? LinuxSysfs.ReadInt(paths.FanInputPath) ?? 0 : 0;
+        var failedReads = 0;
         try
         {
             LinuxSysfs.WriteText(paths.EnablePath, "1");
@@ -269,7 +272,9 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
                 var duty = CalibrationDuties[step];
                 LinuxSysfs.WriteText(paths.PwmPath, DutyToRaw(duty).ToString(CultureInfo.InvariantCulture));
                 await Task.Delay(_stepSettle, ct).ConfigureAwait(false);
-                var rpm = paths.FanInputPath is not null ? LinuxSysfs.ReadInt(paths.FanInputPath) ?? 0 : 0;
+                var read = paths.FanInputPath is not null ? LinuxSysfs.ReadInt(paths.FanInputPath) : null;
+                if (read is null) failedReads++;
+                var rpm = read ?? 0;
                 points.Add(new FanCalibrationPoint { Duty = duty, Rpm = rpm });
                 progress?.Report(new FanCalibrationProgress
                 {
@@ -289,7 +294,13 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
 
         // Shared classifier: maxRpm<=100 -> "Unresponsive", small spread ->
         // "Fixed", drops to 0 mid-range -> "Stalling", else "Controllable".
-        return FanCalibrationLogic.Classify(id, points);
+        var result = FanCalibrationLogic.Classify(id, points);
+        if (FanCalibrationLogic.IsImplausibleSweep(priorRpm, result.MaxRpm, failedReads, points.Count))
+        {
+            ServiceLog.Warn($"[fan-control] calibration of {id} rejected: read {priorRpm} RPM before the sweep but at most {result.MaxRpm} during it ({failedReads} of {points.Count} reads failed)");
+            return null;
+        }
+        return result;
     }
 
     private void ApplyDuty(string channelId, int dutyPercent)
