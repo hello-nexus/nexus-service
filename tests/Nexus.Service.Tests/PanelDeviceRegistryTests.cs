@@ -665,6 +665,55 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void RestrictedMode_DefaultsFalse_AndSerializesAsRestrictedMode()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        Assert.False(record.RestrictedMode);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(record, Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord);
+
+        Assert.Contains("\"restrictedMode\":false", json);
+    }
+
+    [Theory]
+    [InlineData(PanelSurfaces.Y70)]
+    [InlineData(PanelSurfaces.Q60)]
+    [InlineData(PanelSurfaces.Phone)]
+    public void RestrictedMode_PatchAppliesToAnyPanelKind_AndOtherPatchesKeepIt(string surface)
+    {
+        var record = _registry.Allocate(null, Caps(surface));
+
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true })!.RestrictedMode);
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.RestrictedMode);
+        Assert.False(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = false })!.RestrictedMode);
+    }
+
+    [Fact]
+    public void RestrictedMode_AppliesToDisplayBoundRecords_AndSurvivesReload()
+    {
+        var (display, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
+        var y70 = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        _registry.Patch(display.Id, new PanelDevicePatch { RestrictedMode = true });
+        _registry.Patch(y70.Id, new PanelDevicePatch { RestrictedMode = true });
+        _store.FlushNow();
+
+        using var store2 = new JsonConfigStore(_path);
+        var reloaded = new PanelDeviceRegistry(store2) { SeeThroughHost = false };
+
+        Assert.True(reloaded.Get(display.Id)!.RestrictedMode);
+        Assert.True(reloaded.Get(y70.Id)!.RestrictedMode);
+    }
+
+    [Fact]
+    public void ResetToDefaults_KeepsRestrictedMode()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true });
+
+        Assert.True(_registry.ResetToDefaults(record.Id)!.RestrictedMode);
+    }
+
+    [Fact]
     public void ResetToDefaults_ClearsTheWidgetsLock()
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
