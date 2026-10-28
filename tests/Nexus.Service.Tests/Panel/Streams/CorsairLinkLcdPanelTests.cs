@@ -78,6 +78,51 @@ public class CorsairLinkLcdPanelTests
         Assert.Equal(0, transport.QualityLevel);
     }
 
+    [Theory]
+    [InlineData(1000, 1000, 0)]
+    [InlineData(1000, 900, 0)]
+    [InlineData(1000, 1100, 100)]
+    [InlineData(1000, 9000, CorsairLinkLcdStreamTransport.MaxRateWaitMs)]
+    public void Rate_wait_is_the_time_left_before_the_next_frame_may_start(long now, long notBefore, int expected)
+    {
+        Assert.Equal(expected, CorsairLinkLcdStreamTransport.RateWaitMs(now, notBefore));
+    }
+
+    [Fact]
+    public void A_32_kb_frame_holds_the_next_one_back_for_its_share_of_the_byte_budget()
+    {
+        Assert.Equal(1000 + 106, CorsairLinkLcdStreamTransport.NotBeforeAfter(1000, 32_000));
+    }
+
+    [Fact]
+    public void A_reopened_screen_restarts_the_stream_at_reduced_quality()
+    {
+        var device = new RecordingHidDevice();
+        var info = new HidDeviceInfo
+        {
+            VendorId = CorsairLinkLcd.LcdVendorId,
+            ProductId = CorsairLinkLcd.AioPid,
+            Path = "/dev/hid-lcd",
+            Serial = "S1",
+            OutputReportByteLength = 1024,
+        };
+        var chain = new CorsairLinkDevice[] { new() { Channel = 1, Type = 6, Serial = "S1" } };
+        var hid = new SingleDeviceHidEnumerator(info, device);
+        var lcd = new CorsairLinkLcd();
+        lcd.DiscoverAndAttach(chain, hid);
+        using var transport = new CorsairLinkLcdStreamTransport(lcd, "S1");
+        transport.Open();
+        var frame = new byte[CorsairLinkLcd.PanelWidth * CorsairLinkLcd.PanelHeight * 4];
+
+        transport.Write(frame);
+        Assert.Equal(0, transport.QualityLevel);
+
+        lcd.Detach();
+        lcd.DiscoverAndAttach(chain, hid);
+        transport.Write(frame);
+        Assert.Equal(2, transport.QualityLevel);
+    }
+
     [Fact]
     public void Transport_pushes_one_jpeg_once_a_whole_frame_has_arrived()
     {

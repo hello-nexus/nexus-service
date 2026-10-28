@@ -42,6 +42,18 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
     internal const long SlowSendMs = 250;
     internal const long FastSendMs = 100;
     internal const int StepUpAfterFrames = 60;
+
+    // Measured on the GIF drops: 32 KB frames at 28 fps (about 0.9 MB/s, near the one report per
+    // millisecond ceiling of this endpoint) ran with no slow send at all, then one write hung
+    // 1.9 s and the device reset itself off USB. Plasma at 16 fps held for 30 minutes. Rate, not
+    // send time, is therefore capped: a frame of N bytes holds the next one back N / budget.
+    internal const int ByteBudgetPerSec = 300_000;
+    internal const int MaxRateWaitMs = 500;
+    private long _notBeforeMs;
+    private int _seenAttachGeneration = -1;
+    private long _statsAtMs;
+    private long _statFrames;
+    private long _statBytes;
     private readonly PanelOrientationFilter _orientation = new();
 
     // The firmware falls back to its own screen when frames stop (30-40 s on a TITAN RX LCD),
@@ -109,8 +121,32 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
         }
     }
 
+    internal static int RateWaitMs(long nowMs, long notBeforeMs) =>
+        (int)Math.Clamp(notBeforeMs - nowMs, 0, MaxRateWaitMs);
+
+    internal static long NotBeforeAfter(long sentAtMs, int jpegBytes) =>
+        sentAtMs + (long)jpegBytes * 1000 / ByteBudgetPerSec;
+
     private void PushFrame()
     {
+        // A re-opened screen comes back with an empty buffer and is the most fragile right
+        // then; the drop loop re-triggered at once at full quality, so restart reduced.
+        var generation = _lcd.AttachGeneration;
+        if (_seenAttachGeneration != generation)
+        {
+            if (_seenAttachGeneration >= 0)
+            {
+                _level = Math.Max(_level, 2);
+                _fastRun = 0;
+                ServiceLog.Warn($"[corsair-lcd] screen re-opened; JPEG quality restarts at {StepDownQualities[_level - 1]}");
+            }
+            _seenAttachGeneration = generation;
+        }
+        var rateWait = RateWaitMs(Environment.TickCount64, _notBeforeMs);
+        if (rateWait > 0)
+        {
+            Thread.Sleep(rateWait);
+        }
         ReadOnlySpan<byte> jpeg;
         try
         {
@@ -145,6 +181,8 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
         var sw = Stopwatch.StartNew();
         var sent = SendCounted(jpeg);
         AdaptQuality(sent, jpeg.Length, sw.ElapsedMilliseconds);
+        _notBeforeMs = NotBeforeAfter(Environment.TickCount64, jpeg.Length);
+        NoteStats(jpeg.Length);
         if (sent)
         {
             _dropLogged = false;
@@ -186,6 +224,27 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
     }
 
     internal int QualityLevel => _level;
+
+    // One line per 10 s so a bundle shows bytes per frame and per second at the moment of a drop.
+    private void NoteStats(int jpegBytes)
+    {
+        var now = Environment.TickCount64;
+        if (_statsAtMs == 0)
+        {
+            _statsAtMs = now;
+        }
+        _statFrames++;
+        _statBytes += jpegBytes;
+        if (now - _statsAtMs < 10_000)
+        {
+            return;
+        }
+        var secs = (now - _statsAtMs) / 1000.0;
+        ServiceLog.Info($"[corsair-lcd] stream {_statFrames / secs:F1} fps, avg {_statBytes / _statFrames} B/frame, {_statBytes / secs / 1000:F0} KB/s, quality level {_level}");
+        _statsAtMs = now;
+        _statFrames = 0;
+        _statBytes = 0;
+    }
 
     /// <summary>
     /// Re-pushes the last rendered frame so the panel keeps latching between the render
