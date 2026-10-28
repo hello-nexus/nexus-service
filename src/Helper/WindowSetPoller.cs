@@ -64,6 +64,7 @@ public sealed class WindowSetPoller : IDisposable
     private int _enumerated;
     private readonly object _hookGate = new();
     private bool _hooksOn;
+    private bool _pollerActive;
 
     private readonly WindowCloakCache _cloakCache;
     private readonly WindowCloakWatcher _cloakWatcher;
@@ -107,14 +108,18 @@ public sealed class WindowSetPoller : IDisposable
     private void SyncHooks(bool active)
     {
         var hooksSwitchedOff = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetHooks);
-        _cloakCache.ServeWithoutEvents = active && hooksSwitchedOff;
-        active = active && !hooksSwitchedOff;
+        var serve = active && hooksSwitchedOff;
+        var hooksWanted = active && !hooksSwitchedOff;
         lock (_hookGate)
         {
-            if (active == _hooksOn) return;
-            _hooksOn = active;
+            var resumed = active && !_pollerActive;
+            _pollerActive = active;
+            if (resumed || serve != _cloakCache.ServeWithoutEvents) _cloakCache.Clear();
+            _cloakCache.ServeWithoutEvents = serve;
+            if (hooksWanted == _hooksOn) return;
+            _hooksOn = hooksWanted;
             _cloakCache.Clear();
-            if (active) _cloakWatcher.Start();
+            if (hooksWanted) _cloakWatcher.Start();
             else _cloakWatcher.Stop();
         }
     }
@@ -200,6 +205,10 @@ public sealed class WindowSetPoller : IDisposable
 
     private static string ProcessNameOf(int pid)
     {
+        if (pid <= 0) return "?";
+        var path = ScreenTimePoller.TryGetExePath((uint)pid);
+        var name = path is null ? "" : ScreenTimeProcessName.ProcessNameFromPath(path);
+        if (name.Length > 0) return name;
         try
         {
             using var process = Process.GetProcessById(pid);

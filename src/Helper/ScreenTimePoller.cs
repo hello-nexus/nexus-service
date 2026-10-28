@@ -265,7 +265,7 @@ public sealed class ScreenTimePoller : IDisposable
     // path of an elevated or EAC-protected title this helper cannot otherwise
     // introspect. Null on failure rather than throwing - denial is expected
     // for some titles, not exceptional.
-    private static string? TryGetExePath(uint pid)
+    internal static string? TryGetExePath(uint pid)
     {
         var handle = OpenProcess(ProcessQueryLimitedInformation, false, pid);
         if (handle == IntPtr.Zero) return null;
