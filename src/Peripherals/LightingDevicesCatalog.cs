@@ -314,6 +314,10 @@ public static class LightingDevicesCatalog
         Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x1031", screen: true),
         Native("Tryx",    "Panorama v2",            "aio",      "0x391A", "0x10B1", screen: true),
 
+        // SteelSeries Apex Pro TKL OLED screen only (a streamed panel); lighting stays with OpenRGB.
+        // PIDs from src/Peripherals/SteelSeries/ApexOledProtocol.cs.
+        Native("SteelSeries", "Apex Pro TKL 2023 OLED",  "keyboard", "0x1038", "0x1628", screen: true, rgb: false),
+        Native("SteelSeries", "Apex Pro TKL Gen 3 OLED", "keyboard", "0x1038", "0x1642", screen: true, rgb: false),
         // Corsair Galleon 100 SD keyboard - IDs from src/Peripherals/Corsair/Galleon.
         Native("Corsair", "Galleon 100 SD Keyboard", "keyboard", "0x1B1C", "0x2B0C"),
         Native("Corsair", "Galleon 100 SD Dials", "keyboard", "0x1B1C", "0x2B18"),

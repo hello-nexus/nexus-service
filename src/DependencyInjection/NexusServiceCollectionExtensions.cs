@@ -2720,6 +2720,14 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Panel.Streams.KrakenPanelDiscovery(
                 sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.KrakenHub>()));
 #endif
+        // The Apex Pro TKL OLED is plain HID, so it is a streamed panel on every platform. Its
+        // lock hand-back reads the same LcdLockState the cooler LCDs do.
+        services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
+            new Nexus.Service.Panel.Streams.ApexOledPanelDiscovery(
+                sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
+                sp.GetService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+                sp.GetService<Nexus.Service.Lighting.LcdLockState>()));
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.ApexOledHandler>();
         services.AddSingleton<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(sp =>
         {
             Action? notifyOverlay = null;

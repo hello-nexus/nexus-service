@@ -1,0 +1,86 @@
+using System;
+using System.Collections.Generic;
+using Nexus.Service.Devices.Detection;
+using Nexus.Service.Lighting;
+using Nexus.Service.Models.Panel;
+using Nexus.Service.Peripherals.Hid;
+using Nexus.Service.Peripherals.SteelSeries;
+
+namespace Nexus.Service.Panel.Streams;
+
+/// <summary>
+/// Presents an attached Apex Pro TKL's OLED as a streamed panel. The screen interface is plain
+/// HID, so discovery just looks for it each pass; absence is a normal result.
+///
+/// The profile asks for <see cref="StreamCodec.RawBgra"/> at the screen's own 128x40 and the
+/// transport reduces each frame to one bit.
+/// </summary>
+public sealed class ApexOledPanelDiscovery : IStreamedPanelDiscovery
+{
+    public const string Id = "steelseries-apex-oled";
+
+    /// <summary>Widgets on a 128x40 mono screen change slowly; unchanged frames are not even sent, so ten a second is plenty and light on the keyboard.</summary>
+    internal const int StreamFps = 10;
+
+    private readonly IHidEnumerator _hid;
+    private readonly HardwarePresence? _presence;
+    private readonly LcdLockState? _lock;
+
+    public ApexOledPanelDiscovery(IHidEnumerator hid, HardwarePresence? presence = null, LcdLockState? lockState = null)
+    {
+        _hid = hid;
+        _presence = presence;
+        _lock = lockState;
+    }
+
+    public string HandlerId => Id;
+
+    public IReadOnlyList<StreamedPanelDeviceInfo> Discover()
+    {
+        if (_presence is not null && !_presence.UsbPresent(ApexOledProtocol.VendorId, ApexOledProtocol.ProductIds))
+        {
+            return Array.Empty<StreamedPanelDeviceInfo>();
+        }
+        foreach (var model in ApexOledProtocol.Models)
+        {
+            foreach (var info in _hid.Find(ApexOledProtocol.VendorId, model.ProductId))
+            {
+                if (info.UsagePage != ApexOledProtocol.ControlUsagePage)
+                {
+                    continue;
+                }
+                return new[]
+                {
+                    new StreamedPanelDeviceInfo
+                    {
+                        Serial = $"{Id}:{model.ProductId:x4}:{info.Serial}",
+                        Profile = new StreamedPanelProfile
+                        {
+                            Kind = Id,
+                            DisplayName = model.Name,
+                            Surface = PanelSurfaces.LcdWide,
+                            Family = Id,
+                            CssWidth = ApexOledProtocol.Width,
+                            CssHeight = ApexOledProtocol.Height,
+                            Dpr = 1.0,
+                            Fps = StreamFps,
+                            Codec = StreamCodec.RawBgra,
+                            MultiInstance = true,
+                        },
+                    },
+                };
+            }
+        }
+        return Array.Empty<StreamedPanelDeviceInfo>();
+    }
+
+    public IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info)
+    {
+        // Serial is "<id>:<pid hex>:<usb serial>".
+        var parts = info.Serial.Split(':', 3);
+        var model = (parts.Length == 3 && int.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var pid)
+            ? ApexOledProtocol.ModelFor(pid)
+            : null) ?? throw new System.IO.IOException($"not an Apex OLED panel: {info.Serial}");
+        return new ApexOledStreamTransport(_hid, model, info.Serial, _lock);
+    }
+}
