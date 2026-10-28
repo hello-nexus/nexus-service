@@ -210,11 +210,6 @@ public sealed class WindowSetPoller : IDisposable
         EnumWindows(_pinnedEnumProc, IntPtr.Zero);
         _cloakCache.EndPass();
         _enumerated = enumerated;
-        if (_diagEnabled)
-        {
-            Nexus.Service.Platform.HelperLog.Write(
-                $"[window-diag] pass items={enumerated} dwm={_cloakCache.Reads} titles={_titleReads} pids={string.Join(",", pids.Order())}");
-        }
         return pids;
     }
 
