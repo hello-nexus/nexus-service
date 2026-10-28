@@ -36,7 +36,8 @@ void main() {
         float d = length(dir);
         float ang = atan(dir.y, dir.x);
         vec2 dn = dir / max(d, 1e-3);
-        float edgeN = fbm3(dn * 1.2 + vec2(age * 5.0 + idx * 4.0 + d * 5.0, t)) - 0.5;
+        vec2 np = dn * 1.2 + vec2(age * 5.0 + idx * 4.0 + d * 5.0, t);
+        float edgeN = 0.56 * vnoise(np) + 0.34 * vnoise(np * 2.02) - 0.5 + 0.05;
         float edge = d - rad + edgeN * curl * 0.5 * (0.3 + age);
         float blob = smoothstep(0.14, -0.04, edge);
         // Denser pigment toward the leading edge reads as ink, not a flat disc.

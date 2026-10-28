@@ -22,7 +22,8 @@ void main() {
     float body = smoothstep(0.2, 0.75, haze);
     vec3 col = tintedPalette(0.05 + haze * 1.0 + uv.x * 0.45 + t * 0.1) * (0.30 + 1.2 * body);
 
-    float clusterField = fbm3(p * 1.25 + vec2(0.0, t * 0.05));
+    vec2 cq = p * 1.25 + vec2(0.0, t * 0.05);
+    float clusterField = 0.62 * vnoise(cq) + 0.38 * vnoise(cq * 2.03 + 4.1) + 0.04;
     for (int i = 0; i < 3; i++) {
         float layerZ = float(i) / 3.0;
         // Each layer has its own grid scale, rotation and offset, and drifts in its own direction, so no lattice lines up between them.
@@ -38,6 +39,10 @@ void main() {
         // Density follows a slow low-frequency field, so some regions are nearly empty and others gather stars.
         float cluster = smoothstep(0.4, 0.68, clusterField + 0.12 * sin(p.x * 2.3 + float(i) * 2.1) * sin(p.y * 1.9 + float(i)));
         float thr = mix(0.985, 0.64, cluster);
+        // Most cells hold no star, so skip all of the star work for them.
+        if (rnd < thr) {
+            continue;
+        }
         float has = smoothstep(thr, thr + 0.07, rnd);
         // Full-cell jitter; the halo fades out before the cell edge so nothing is cut.
         vec2 off = vec2(hash21(cell + 7.1), hash21(cell + 13.7)) - 0.5;

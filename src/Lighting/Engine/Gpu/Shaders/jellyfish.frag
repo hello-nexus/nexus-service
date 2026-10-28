@@ -90,6 +90,11 @@ void main() {
         vec2  center   = drift;
         vec2  local    = uv - center;
 
+        float attachY   = 0.16 * size;
+        float tLen      = size * (1.8 + fract(fi * 0.71) * 1.2);
+        // Bell and tentacles only exist in a band around the creature; everywhere else only its halo counts.
+        vec3 bodyCol = vec3(0.0);
+        if (abs(local.x) < size * 0.8 && local.y > -size * 0.9 && local.y < attachY + tLen + 0.1) {
         // Bell.
         float bd       = bellDist(local, phase, size);
         float bellMask = smoothstep(0.05, -0.1, bd);
@@ -108,26 +113,24 @@ void main() {
         // inside the silhouette rather than bulging past the rim.
         float tentacles = 0.0;
         int   tCount    = 5 + int(fract(fi * 0.53) * 4.0); // 5..8
-        float attachY   = 0.16 * size;
-        float tLen      = size * (1.8 + fract(fi * 0.71) * 1.2);
         float tThick    = size * 0.05;
-        // Tentacles live in a narrow band under the bell, so skip the loop everywhere else.
-        bool nearTentacles = abs(local.x) < size * 0.6 && local.y > attachY - 0.05 && local.y < attachY + tLen + 0.1;
         for (int j = 0; j < 8; j++) {
-            if (j >= tCount || !nearTentacles) break;
+            if (j >= tCount) break;
             float fj   = float(j);
             float tX   = (fj / float(max(tCount - 1, 1)) - 0.5) * size * 0.62;
             vec2  tp   = local - vec2(tX, attachY);
             tentacles += tentacleMask(tp, fi * 7.0 + fj * 3.0, t, tLen, tThick);
         }
         vec3 tentCol = tintedPalette(fi * 0.14 + 0.32) * min(tentacles, 1.0) * 1.1;
+        bodyCol = bellCol * bellMask + tentCol;
+        }
 
         // Soft bioluminescent halo around the whole creature.
         float halo    = exp(-length(local) / (size * 2.6)) * 0.5 * glowStr;
         vec3  haloCol = tintedPalette(fi * 0.14 + 0.35) * halo;
 
         float depth = 1.0 - fi * 0.1;
-        col += (bellCol * bellMask + tentCol + haloCol) * depth;
+        col += (bodyCol + haloCol) * depth;
     }
     fragColor = vec4(finalize(col), 1.0);
 }

@@ -123,7 +123,10 @@ vec3 moodPalette(float t, float mood) {
     vec3 a = i == 0 ? s0 : (i == 1 ? s1 : (i == 2 ? s2 : s3));
     vec3 b = i == 0 ? s1 : (i == 1 ? s2 : (i == 2 ? s3 : s0));
     vec3 c = mix(a, b, f);
-    // Hue still rotates the mood's colors around the grey axis.
+    // Hue still rotates the mood's colors around the grey axis; no rotation is needed at zero.
+    if (abs(u_hue) < 0.0005) {
+        return c;
+    }
     float ca = cos(u_hue * 6.28318);
     float sa = sin(u_hue * 6.28318);
     vec3 k = vec3(0.57735);

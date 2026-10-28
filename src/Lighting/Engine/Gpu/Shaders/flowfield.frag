@@ -33,9 +33,9 @@ void main() {
     float ang0 = fieldAngle(uv, t);
     vec2 pf = uv;
     vec2 pb = uv;
-    float stepLen = 0.016;
-    for (int i = 0; i < 10; i++) {
-        float w = 1.0 - float(i) / 10.0;
+    float stepLen = 0.027;
+    for (int i = 0; i < 6; i++) {
+        float w = 1.0 - float(i) / 6.0;
         float fi = float(i);
         float af = fieldAngle(pf, t);
         float ab = fieldAngle(pb, t);
