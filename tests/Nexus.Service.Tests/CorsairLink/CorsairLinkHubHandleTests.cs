@@ -388,6 +388,52 @@ public class CorsairLinkHubHandleTests
     }
 
     [Fact]
+    public void A_reply_echoing_a_command_Nexus_just_sent_is_not_another_program()
+    {
+        var hub = new CorsairLinkHub();
+        hub.Attach(new FakeLinkHub());
+        Assert.True(hub.Initialize());
+        hub.Detach();
+
+        var own = new FakeLinkHub();
+        own.InjectReply(0x05);
+        Assert.False(hub.HearsOtherHost(own, 10, out var heard, out var ownEcho));
+        Assert.True(ownEcho);
+        Assert.StartsWith("n=", heard);
+
+        var foreign = new FakeLinkHub();
+        foreign.InjectReply(0x09);
+        Assert.True(hub.HearsOtherHost(foreign, 10, out _, out ownEcho));
+        Assert.False(ownEcho);
+    }
+
+    [Fact]
+    public void A_reply_echoing_a_command_Nexus_sent_long_ago_still_counts()
+    {
+        var now = 1_000_000L;
+        var hub = new CorsairLinkHub { NowMs = () => now };
+        hub.Attach(new FakeLinkHub());
+        Assert.True(hub.Initialize());
+        now += 60_000;
+
+        var late = new FakeLinkHub();
+        late.InjectReply(0x05);
+        Assert.True(hub.HearsOtherHost(late, 10, out _, out var ownEcho));
+        Assert.False(ownEcho);
+    }
+
+    [Fact]
+    public void An_identical_repeat_failure_logs_no_trace()
+    {
+        string? last = null;
+
+        Assert.Equal(" trace: step=firmware | init failed", CorsairLinkConnectionWorker.TraceIfNew("step=firmware | init failed", ref last));
+        Assert.Equal("", CorsairLinkConnectionWorker.TraceIfNew("step=firmware | init failed", ref last));
+        Assert.Equal(" trace: step=refresh | init failed", CorsairLinkConnectionWorker.TraceIfNew("step=refresh | init failed", ref last));
+        Assert.Equal("", CorsairLinkConnectionWorker.TraceIfNew("", ref last));
+    }
+
+    [Fact]
     public async Task Redetect_starts_detection_then_pings_until_the_hub_is_idle()
     {
         var (hub, device) = Connected();
