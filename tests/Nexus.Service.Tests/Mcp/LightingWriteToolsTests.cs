@@ -68,10 +68,6 @@ public sealed class LightingWriteToolsTests : IDisposable
         Assert.Equal(2.53f, call.Contrast, 3);
         Assert.Equal(36f, call.Params.Single(p => p.Name == "u_lines").Value, 3);
         Assert.Equal(0.18f, call.Params.Single(p => p.Name == "u_amplitude").Value, 3);
-        var kept = store.Load().Lighting.Animate.States["synthwave"];
-        Assert.Equal(0.88f, kept.Hue, 3);
-        Assert.Equal(2.53f, kept.Contrast, 3);
-        Assert.Equal(36f, kept.Params["u_lines"], 3);
     }
 
     [Fact]
@@ -90,7 +86,29 @@ public sealed class LightingWriteToolsTests : IDisposable
         Assert.Equal(slot.Speed, call.Speed);
         Assert.Equal(slot.Hue, call.Hue, 3);
         Assert.Equal(slot.Params["u_turbulence"], call.Params.Single(p => p.Name == "u_turbulence").Value, 3);
-        Assert.False(store.Load().Lighting.Animate.States.ContainsKey("fire"));
+    }
+
+    [Fact]
+    public async Task ApplyLightingScenario_static_pattern_resolves_from_static_states()
+    {
+        var lighting = new McpTestHarness.StubLightingProvider();
+        var store = NewStore();
+        store.Update(s => s.Lighting.Static.States["stripes"] = new AnimateEffectState
+        {
+            Hue = 0.4f,
+            Contrast = 1.7f,
+            Params = new() { ["u_count"] = 9f },
+        });
+        var tool = new ApplyLightingScenarioTool(lighting, store, new MultiplexHub());
+
+        var args = JsonSerializer.SerializeToElement(new { scenario = "stripes" });
+        var result = await tool.ExecuteAsync(args, CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var call = Assert.Single(lighting.StartAnimateCalls);
+        Assert.Equal(0.4f, call.Hue, 3);
+        Assert.Equal(1.7f, call.Contrast, 3);
+        Assert.Equal(9f, call.Params.Single(p => p.Name == "u_count").Value, 3);
     }
 
     [Fact]

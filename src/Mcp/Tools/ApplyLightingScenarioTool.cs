@@ -68,12 +68,14 @@ public sealed class ApplyLightingScenarioTool : IMcpTool
         }
 
         // Same resolution as the restore paths: saved delta, else the selected
-        // template slot, else defaults. Starting from defaults with Persist
-        // would overwrite the user's tuned state.
-        var animate = _store.Load().Lighting.Animate;
-        if (!animate.States.TryGetValue(scenario, out var look) || look is null)
+        // template slot, else defaults. Static keys are forwarded by StartAnimate
+        // to StartStatic, which persists into Static.States, so they resolve there.
+        // Starting from defaults with Persist would overwrite the user's tuning.
+        var lighting = _store.Load().Lighting;
+        var states = StaticEffectCatalog.Contains(scenario) ? lighting.Static.States : lighting.Animate.States;
+        if (!states.TryGetValue(scenario, out var look) || look is null)
         {
-            look = AnimateTemplateDefaults.ResolveSelected(animate.Templates, scenario) ?? new AnimateEffectState();
+            look = AnimateTemplateDefaults.ResolveSelected(lighting.Animate.Templates, scenario) ?? new AnimateEffectState();
         }
         var start = new AnimateHeadlessStart
         {
@@ -87,9 +89,12 @@ public sealed class ApplyLightingScenarioTool : IMcpTool
             Sensors = look.Sensors,
             Persist = true,
         };
-        foreach (var kv in look.Params)
+        if (look.Params is not null)
         {
-            start.Params.Add(new ShaderParam { Name = kv.Key, Value = kv.Value });
+            foreach (var kv in look.Params)
+            {
+                start.Params.Add(new ShaderParam { Name = kv.Key, Value = kv.Value });
+            }
         }
         _lighting.StartAnimate(start);
         PanelTopics.BroadcastLighting(_hub);
