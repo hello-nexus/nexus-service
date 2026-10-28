@@ -38,6 +38,8 @@ public static class PanelTopics
     /// </summary>
     public const string Gallery = "gallery";
     public const string CoolingWarnings = "cooling/warnings";
+    /// <summary>Windows first-boot setup state, payload <c>{ "oobe": bool }</c>; snapshot on subscribe, broadcast on change.</summary>
+    public const string SystemSession = "system/session";
     public const string PanelDevice = "panel/device";
     /// <summary>
     /// Display topology or monitor-panel assignment changed. Subscribers

@@ -69,6 +69,14 @@ public static class DevSimRoutes
             return Results.Json(Describe(sim), AppJsonContext.Default.DevSimEventsResponse);
         });
 
+        // PUT /dev/oobe?on=true forces system/session oobe:true until PUT ?on=false or restart.
+        app.MapPut("/dev/oobe", (bool on, Nexus.Service.Lifecycle.OobeSessionPublisher oobe) =>
+        {
+            Nexus.Service.Lifecycle.OobeSessionPublisher.DevForce = on;
+            oobe.Publish();
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+
         app.MapPost("/dev/sim/clear", (DevSimEvents sim) =>
         {
             sim.Clear();
