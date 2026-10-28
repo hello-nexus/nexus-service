@@ -569,6 +569,71 @@ public sealed class UiSettings
     public bool? CoolingCollisionShapes { get; set; }
     /// <summary>Sidebar DEVICES row keys the user hid. A row is omitted only while its Nexus Control is also off. Workstation-level: no profile category carries it. Non-null so the client always receives a list.</summary>
     public List<string> HiddenSidebarDevices { get; set; } = new();
+    /// <summary>Static colors the user recently applied in the lighting widget, "#RRGGBB", newest first. Workstation-level. POST /preferences caps and validates through <see cref="UiRecents"/>.</summary>
+    public List<string> RecentStaticColors { get; set; } = new();
+    /// <summary>Animation effect keys the user recently applied in the lighting widget, newest first. Workstation-level. POST /preferences caps and validates through <see cref="UiRecents"/>.</summary>
+    public List<string> RecentAnimations { get; set; } = new();
+}
+
+/// <summary>Validation shared by every writer of the lighting widget's recently-used lists.</summary>
+public static class UiRecents
+{
+    public const int MaxEntries = 32;
+    public const int MaxKeyLength = 128;
+
+    /// <summary>Keeps valid "#RRGGBB" entries in order, without case-insensitive duplicates, up to <see cref="MaxEntries"/>.</summary>
+    public static List<string> SanitizeColors(IEnumerable<string?> source)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+        foreach (var c in source)
+        {
+            if (result.Count >= MaxEntries)
+            {
+                break;
+            }
+            if (IsHexColor(c) && seen.Add(c!))
+            {
+                result.Add(c!);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Keeps non-empty keys of bounded length in order, without duplicates, up to <see cref="MaxEntries"/>.</summary>
+    public static List<string> SanitizeKeys(IEnumerable<string?> source)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+        foreach (var k in source)
+        {
+            if (result.Count >= MaxEntries)
+            {
+                break;
+            }
+            if (!string.IsNullOrWhiteSpace(k) && k.Length <= MaxKeyLength && !k.Any(char.IsControl) && seen.Add(k))
+            {
+                result.Add(k);
+            }
+        }
+        return result;
+    }
+
+    private static bool IsHexColor(string? c)
+    {
+        if (c is not { Length: 7 } || c[0] != '#')
+        {
+            return false;
+        }
+        for (var i = 1; i < 7; i++)
+        {
+            if (!char.IsAsciiHexDigit(c[i]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 }
 
 /// <summary>
@@ -598,6 +663,8 @@ public sealed class UiSettingsPatch
     public string? CoolingFlowMode { get; set; }
     public bool? CoolingCollisionShapes { get; set; }
     public List<string>? HiddenSidebarDevices { get; set; }
+    public List<string>? RecentStaticColors { get; set; }
+    public List<string>? RecentAnimations { get; set; }
 }
 
 /// <summary>

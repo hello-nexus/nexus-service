@@ -100,6 +100,21 @@ public class ProfileSharingTests
     }
 
     [Fact]
+    public void Dashboard_LeavesTheRecentLightingListsAlone()
+    {
+        var source = new NexusSettings();
+        var target = new NexusSettings();
+        target.Ui.RecentStaticColors = new List<string> { "#FF8800" };
+        target.Ui.RecentAnimations = new List<string> { "fire" };
+
+        ProfileSharing.ApplyCategory(target, source, ProfileSharing.Dashboard);
+        ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
+
+        Assert.Equal(new[] { "#FF8800" }, target.Ui.RecentStaticColors);
+        Assert.Equal(new[] { "fire" }, target.Ui.RecentAnimations);
+    }
+
+    [Fact]
     public void ApplyCategory_Device_ReplacesTargetStreamDeckWithSources()
     {
         var source = new NexusSettings();
