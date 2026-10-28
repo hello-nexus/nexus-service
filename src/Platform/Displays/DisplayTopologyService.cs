@@ -340,7 +340,8 @@ public sealed class DisplayTopologyService : IDisposable
             foreach (var recordId in _panelRegistry.FindRecordIdsForDisplays(owned))
             {
                 if (RemoveOwnedRecord is { } remove) remove(recordId);
-                else _panelRegistry.Remove(recordId);
+                else if (_panelRegistry.Remove(recordId))
+                    DeviceOwnedDisplays.DeleteRecordMedia(Nexus.Service.Media.MediaLibrary.DeviceStoreDir("panel-backgrounds"), recordId);
             }
             var attached = new List<RelinkDisplay>(raw.Count);
             foreach (var info in raw)

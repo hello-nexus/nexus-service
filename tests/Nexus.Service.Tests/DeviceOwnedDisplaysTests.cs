@@ -135,7 +135,8 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
             s.PanelDevices["lianli"] = new PanelDeviceRecord { Id = "lianli", DisplayId = lianLiId };
             s.PanelDevices["plain"] = new PanelDeviceRecord { Id = "plain", DisplayId = plainId };
         });
-        var service = new DisplayTopologyService(provider, new PanelDeviceRegistry(store));
+        var registry = new PanelDeviceRegistry(store);
+        var service = new DisplayTopologyService(provider, registry) { RemoveOwnedRecord = registry.Remove };
 
         var topo = service.GetTopology();
 
@@ -330,5 +331,31 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
 
         Assert.Equal(new[] { "rec" }, removed.ToArray());
         Assert.Empty(store.Load().PanelDevices);
+    }
+
+    [Fact]
+    public void Load_deletes_pruned_record_media_inside_the_store_root_only()
+    {
+        var path = Path.Combine(_dir, "settings.json");
+        var mediaDir = Path.Combine(_dir, "devices", "panel-backgrounds", "stale");
+        Directory.CreateDirectory(mediaDir);
+        File.WriteAllText(Path.Combine(mediaDir, "bg.jpg"), "x");
+        var keepDir = Path.Combine(_dir, "devices", "panel-backgrounds", "keep");
+        Directory.CreateDirectory(keepDir);
+        File.WriteAllText(path, $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "panelDevices": {
+            "stale": { "id": "stale", "displayId": "NXS0001-1-10f369c6-0-UID256" },
+            "keep": { "id": "keep", "displayId": "DEL41B7-1" }
+          }
+        }
+        """);
+
+        using var store = new JsonConfigStore(path);
+        store.Load();
+
+        Assert.False(Directory.Exists(mediaDir));
+        Assert.True(Directory.Exists(keepDir));
     }
 }

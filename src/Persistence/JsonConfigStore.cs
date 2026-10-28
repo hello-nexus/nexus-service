@@ -208,18 +208,14 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     }
 
     // Uploaded background media lives outside the record; a removed record must not leave it behind.
-    private static void DeleteRecordMedia(string recordId)
+    // The machine's media store applies only to the real settings location, so a store on another path stays inside it.
+    private void DeleteRecordMedia(string recordId)
     {
-        try
-        {
-            if (!Nexus.Service.Panel.PanelBgLibrary.IsValidId(recordId)) return;
-            var dir = Path.Combine(Nexus.Service.Media.MediaLibrary.DeviceStoreDir("panel-backgrounds"), recordId);
-            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[config-store] media cleanup for pruned record failed: {ex.Message}");
-        }
+        var dataDir = Path.GetDirectoryName(SettingsPath) ?? "";
+        var mediaRoot = string.Equals(Path.GetFullPath(dataDir), Path.GetFullPath(NexusDataPaths.NexusRoot()), StringComparison.Ordinal)
+            ? Nexus.Service.Media.MediaLibrary.DeviceStoreDir("panel-backgrounds")
+            : Path.Combine(dataDir, "devices", "panel-backgrounds");
+        Nexus.Service.Platform.Displays.DeviceOwnedDisplays.DeleteRecordMedia(mediaRoot, recordId);
     }
 
     private sealed class UnparseableSettingsException(Exception? inner) : Exception("settings.json did not parse", inner);

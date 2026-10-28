@@ -64,9 +64,6 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
                         IsInternal = isInternal,
                         IsTouch = touchMonitors.Contains(hMonitor),
                         RawHardwareId = WindowsDisplayIdentity.ReadMonitorDeviceId(info.szDevice),
-                        AdapterEvidence = DeviceOwnedDisplays.NeedsAdapterEvidence(manufacturer, model)
-                            ? WindowsDisplayIdentity.ReadAdapterEvidence(info.szDevice)
-                            : "",
                     };
 
                     // Native mode pixels: the registry-backed current mode is
@@ -94,6 +91,11 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
                     entry.Dpi = DisplayDensity.FromEdid(edid, entry.ResolutionWidth, entry.ResolutionHeight);
                     entry.Fingerprint = EdidFingerprint.FromEdid(edid)
                         ?? EdidFingerprint.FromParts(entry.Manufacturer, entry.Model);
+                    if (DeviceOwnedDisplays.NeedsAdapterEvidence(manufacturer, model)
+                        || DeviceOwnedDisplays.NeedsAdapterEvidence(entry.Fingerprint?.Manufacturer, entry.Fingerprint?.Product))
+                    {
+                        entry.AdapterEvidence = WindowsDisplayIdentity.ReadAdapterEvidence(info.szDevice);
+                    }
 
                     results.Add(entry);
                 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Persistence;
 
@@ -110,5 +111,20 @@ public static class DeviceOwnedDisplays
         }
         foreach (var id in stale) records.Remove(id);
         return stale;
+    }
+
+    /// <summary>Deletes a removed panel record's uploaded background media under <paramref name="mediaRoot"/>; best-effort.</summary>
+    public static void DeleteRecordMedia(string mediaRoot, string recordId)
+    {
+        try
+        {
+            if (!Nexus.Service.Panel.PanelBgLibrary.IsValidId(recordId)) return;
+            var dir = Path.Combine(mediaRoot, recordId);
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[displays] media cleanup for removed record failed: {ex.Message}");
+        }
     }
 }
