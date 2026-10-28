@@ -146,17 +146,26 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             _cached.GameSyncRemovedNotice = true;
             pinsMigrated = true;
         }
-        // Panel records earlier builds allocated for displays a device owns; runs every load, not schema-gated.
-        var ownedDisplaysPruned = Nexus.Service.Platform.Displays.DeviceOwnedDisplays.PruneRecords(_cached);
+        // Panel records for displays a device owns; runs every load, not schema-gated. Best-effort: a failure skips it.
+        var ownedDisplaysPruned = false;
+        try
+        {
+            ownedDisplaysPruned = Nexus.Service.Platform.Displays.DeviceOwnedDisplays.PruneRecords(_cached);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[config-store] device-owned display prune skipped: {ex.Message}");
+        }
         if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
         {
             Migrate(_cached);
             Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
             Persist(_cached);
+            ownedDisplaysPruned = false;
         }
         else
         {
-            var recovered = pinsMigrated || ownedDisplaysPruned;
+            var recovered = pinsMigrated;
             if (NeedsDeckModesRecovery(_cached))
             {
                 // A downgrade to a pre-deck-modes build (then a re-upgrade)
@@ -185,7 +194,14 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             if (recovered)
             {
                 Persist(_cached);
+                ownedDisplaysPruned = false;
             }
+        }
+        if (ownedDisplaysPruned)
+        {
+            // The pruned document stays in memory if the write fails; the next change persists it.
+            try { Persist(_cached); }
+            catch (Exception ex) { Console.Error.WriteLine($"[config-store] persisting pruned display records failed: {ex.Message}"); }
         }
     }
 

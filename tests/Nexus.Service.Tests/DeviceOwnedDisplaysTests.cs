@@ -50,8 +50,7 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
     [Theory]
     [InlineData("NXS", "0001", true)]
     [InlineData("nxs", "0001", true)]
-    [InlineData("TUR", "0000", true)]
-    [InlineData("TUR", "0001", false)]
+    [InlineData("TUR", "0000", false)]
     [InlineData("DEL", "41B7", false)]
     [InlineData("CRX", "ED00", false)]
     [InlineData("", "", false)]
@@ -64,15 +63,15 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
     [Fact]
     public void IsOwned_ignores_resolution()
     {
-        // 1920x480 is the Universal Screen's size; an ordinary monitor of that size is not owned.
+        // Size never decides ownership.
         Assert.False(DeviceOwnedDisplays.IsOwned(Monitor("DEL41B7-1", "DEL", "41B7", 1920, 480)));
         Assert.True(DeviceOwnedDisplays.IsOwned(Monitor("NXS0001-1", "NXS", "0001", 2560, 1440)));
     }
 
     [Theory]
-    [InlineData(@"\\?\DISPLAY#TUR0000#5&512482b&0&UID256#{guid}", true)]
+    [InlineData(@"\\?\DISPLAY#TUR0000#5&512482b&0&UID256#{guid}", false)]
     [InlineData("NXS0001-1-10f369c6-0-UID256", true)]
-    [InlineData("TUR0000-a-512482b-0-UID256", true)]
+    [InlineData("TUR0000-a-512482b-0-UID256", false)]
     [InlineData(@"\\?\DISPLAY#DEL41B7#5&abc#{guid}", false)]
     [InlineData("", false)]
     public void IsOwnedHardwareId_matches_pnp_path_and_display_id(string id, bool expected)
@@ -81,7 +80,7 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
     }
 
     [Fact]
-    public void Topology_omits_owned_displays_and_keeps_others()
+    public void Topology_omits_owned_displays_and_keeps_others_including_plain_TUR()
     {
         var provider = new FakeProvider
         {
@@ -97,7 +96,7 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
 
         var topo = service.GetTopology();
 
-        Assert.Equal(new[] { "DEL41B7-1" }, topo.Displays.Select(d => d.Id).ToArray());
+        Assert.Equal(new[] { "DEL41B7-1", "TUR0000-a-512482b-0-UID256" }, topo.Displays.Select(d => d.Id).ToArray());
         Assert.Null(service.FindDisplay("NXS0001-1-10f369c6-0-UID256"));
     }
 
@@ -131,7 +130,13 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
             DisplayId = "NXS0001-1-10f369c6-0-UID256",
             DisplayFingerprint = new DisplayFingerprint { Manufacturer = "NXS", Product = "0001" },
         };
-        settings.PanelDevices["b"] = new PanelDeviceRecord { Id = "b", DisplayId = "TUR0000-a-512482b-0-UID256" };
+        settings.PanelDevices["b"] = new PanelDeviceRecord { Id = "b", DisplayId = "NXS0001-2-aa-0-UID1" };
+        settings.PanelDevices["t"] = new PanelDeviceRecord
+        {
+            Id = "t",
+            DisplayId = "TUR0000-a-512482b-0-UID256",
+            DisplayFingerprint = new DisplayFingerprint { Manufacturer = "TUR", Product = "0000" },
+        };
         settings.PanelDevices["c"] = new PanelDeviceRecord
         {
             Id = "c",
@@ -142,7 +147,7 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
 
         Assert.True(DeviceOwnedDisplays.PruneRecords(settings));
 
-        Assert.Equal(new[] { "c", "d" }, settings.PanelDevices.Keys.OrderBy(k => k).ToArray());
+        Assert.Equal(new[] { "c", "d", "t" }, settings.PanelDevices.Keys.OrderBy(k => k).ToArray());
         Assert.False(DeviceOwnedDisplays.PruneRecords(settings));
     }
 
@@ -156,7 +161,7 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
           "panelDevices": {
             "1xJ3LyCG8eJF": { "id": "1xJ3LyCG8eJF", "displayId": "NXS0001-1-10f369c6-0-UID256",
               "displayFingerprint": { "manufacturer": "NXS", "product": "0001" } },
-            "ekTI0p_1XnZD": { "id": "ekTI0p_1XnZD", "displayId": "TUR0000-a-512482b-0-UID256",
+            "plainTur": { "id": "plainTur", "displayId": "TUR0000-a-512482b-0-UID256",
               "displayFingerprint": { "manufacturer": "TUR", "product": "0000" } },
             "keep": { "id": "keep", "displayId": "DEL41B7-1" }
           }
@@ -165,11 +170,79 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
 
         using (var store = new JsonConfigStore(path))
         {
-            Assert.Equal(new[] { "keep" }, store.Load().PanelDevices.Keys.ToArray());
+            Assert.Equal(new[] { "keep", "plainTur" }, store.Load().PanelDevices.Keys.OrderBy(k => k).ToArray());
             store.FlushNow();
         }
 
         using var reloaded = new JsonConfigStore(path);
-        Assert.Equal(new[] { "keep" }, reloaded.Load().PanelDevices.Keys.ToArray());
+        Assert.Equal(new[] { "keep", "plainTur" }, reloaded.Load().PanelDevices.Keys.OrderBy(k => k).ToArray());
+    }
+
+    [Fact]
+    public void Load_with_null_panelDevices_keeps_the_config()
+    {
+        var path = Path.Combine(_dir, "settings.json");
+        File.WriteAllText(path, $$"""
+        { "schemaVersion": {{NexusSettings.CurrentSchemaVersion}}, "theme": { "accentColor": "#aabbcc" }, "panelDevices": null }
+        """);
+
+        using var store = new JsonConfigStore(path);
+
+        Assert.Equal("#aabbcc", store.Load().Theme.AccentColor);
+    }
+
+    [Fact]
+    public void Load_with_null_record_value_keeps_the_config()
+    {
+        var path = Path.Combine(_dir, "settings.json");
+        File.WriteAllText(path, $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "theme": { "accentColor": "#aabbcc" },
+          "panelDevices": {
+            "nul": null,
+            "stale": { "id": "stale", "displayId": "NXS0001-1-10f369c6-0-UID256" }
+          }
+        }
+        """);
+
+        using var store = new JsonConfigStore(path);
+        var loaded = store.Load();
+
+        Assert.Equal("#aabbcc", loaded.Theme.AccentColor);
+        Assert.False(loaded.PanelDevices.ContainsKey("stale"));
+    }
+
+    [Fact]
+    public void Prune_tolerates_null_collection_and_null_entries()
+    {
+        var withNull = new NexusSettings { PanelDevices = null! };
+        Assert.False(DeviceOwnedDisplays.PruneRecords(withNull));
+
+        var settings = new NexusSettings();
+        settings.PanelDevices["x"] = null!;
+        Assert.False(DeviceOwnedDisplays.PruneRecords(settings));
+    }
+
+    [Fact]
+    public void Load_survives_a_failing_persist_of_the_pruned_document()
+    {
+        var path = Path.Combine(_dir, "settings.json");
+        File.WriteAllText(path, $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "theme": { "accentColor": "#aabbcc" },
+          "panelDevices": { "stale": { "id": "stale", "displayId": "NXS0001-1-10f369c6-0-UID256" } }
+        }
+        """);
+        // A directory squatting on the temp file name makes the atomic write fail.
+        Directory.CreateDirectory(AtomicJsonFile.TempPathFor(path));
+
+        using var store = new JsonConfigStore(path);
+        var loaded = store.Load();
+
+        Assert.Equal("#aabbcc", loaded.Theme.AccentColor);
+        Assert.Empty(loaded.PanelDevices);
+        Assert.False(File.Exists(path + ".corrupt"));
     }
 }

@@ -1,27 +1,24 @@
 using System;
-using System.Linq;
+using System.Collections.Generic;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Platform.Displays;
 
 /// <summary>
-/// Monitors that exist only because a Nexus device integration created or owns
-/// them: the Nexus virtual display a streamed panel's "secondary monitor" mode
-/// brings up, and the USB display a Lian Li LCD exposes in its USB-display mode.
-/// The device's own entry represents them, so they never become a generic
+/// Monitors that exist only because a Nexus device integration created them,
+/// such as the virtual display a streamed panel's secondary monitor mode brings
+/// up. The device's own entry represents them, so they never become a generic
 /// display panel record and never appear as standalone displays. Matched on the
-/// EDID manufacturer and product code (the strongest identity the topology
-/// carries), never on resolution.
+/// EDID manufacturer and product code, never on resolution. Identities shared
+/// with unrelated hardware are not listed: the topology carries no evidence
+/// that separates them.
 /// </summary>
 public static class DeviceOwnedDisplays
 {
-    // EISA id + product code. NXS/0001 is the Nexus virtual display driver;
-    // TUR/0000 is the Lian Li LCD in USB-display mode (USB 1A86:AD20).
     private static readonly (string Manufacturer, string Product)[] Owned =
     {
         ("NXS", "0001"),
-        ("TUR", "0000"),
     };
 
     public static bool IsOwned(string? manufacturer, string? product)
@@ -63,15 +60,21 @@ public static class DeviceOwnedDisplays
     /// <summary>
     /// Removes panel records that earlier builds allocated for an owned display.
     /// Returns true when it removed any. Matches the stored fingerprint, falling
-    /// back to the display id, which starts with the EDID identity.
+    /// back to the display id, which starts with the EDID identity. Tolerates
+    /// missing collections and null entries.
     /// </summary>
     public static bool PruneRecords(NexusSettings settings)
     {
-        var stale = settings.PanelDevices
-            .Where(kv => IsOwned(kv.Value.DisplayFingerprint) || IsOwnedHardwareId(kv.Value.DisplayId))
-            .Select(kv => kv.Key)
-            .ToList();
-        foreach (var id in stale) settings.PanelDevices.Remove(id);
+        var records = settings?.PanelDevices;
+        if (records is null || records.Count == 0) return false;
+        var stale = new List<string>();
+        foreach (var kv in records)
+        {
+            var record = kv.Value;
+            if (record is null) continue;
+            if (IsOwned(record.DisplayFingerprint) || IsOwnedHardwareId(record.DisplayId)) stale.Add(kv.Key);
+        }
+        foreach (var id in stale) records.Remove(id);
         return stale.Count > 0;
     }
 }
