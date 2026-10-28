@@ -72,6 +72,13 @@ public static class SmartClassifier
     // Ids whose raw count escalates watch -> act above 100 (5, 197, 198 per the Backblaze study).
     private static readonly HashSet<byte> EscalatingIds = new() { 5, 197, 198 };
 
+    // Seagate packs attribute 188 as three 16-bit counters; the largest word never undercounts any of them.
+    private static ulong DecodeCount(SmartAttributeSample att)
+    {
+        if (att.Id != 188 || att.Raw <= 0xFFFF) return att.Raw;
+        return Math.Max(att.Raw & 0xFFFF, Math.Max((att.Raw >> 16) & 0xFFFF, (att.Raw >> 32) & 0xFFFF));
+    }
+
     public static SmartClassification Classify(SmartClassifierInput input)
     {
         var reasons = new List<SmartReason>();
@@ -86,13 +93,14 @@ public static class SmartClassifier
             foreach (var att in input.Attributes)
             {
                 if (!BackblazeAttributes.TryGetValue(att.Id, out var meta)) continue;
-                if (att.Raw == 0) continue;
+                var count = DecodeCount(att);
+                if (count == 0) continue;
 
-                var severity = EscalatingIds.Contains(att.Id) && att.Raw > 100 ? ReasonSeverity.Act : ReasonSeverity.Watch;
-                var plural = att.Raw == 1 ? meta.Noun : meta.Noun + "s";
+                var severity = EscalatingIds.Contains(att.Id) && count > 100 ? ReasonSeverity.Act : ReasonSeverity.Watch;
+                var plural = count == 1 ? meta.Noun : meta.Noun + "s";
                 reasons.Add(new SmartReason(meta.Code, severity,
-                    $"{att.Raw} {plural}",
-                    $"SMART attribute {att.Id:D2} ({att.Name}) raw value is {att.Raw}."));
+                    $"{count} {plural}",
+                    $"SMART attribute {att.Id:D2} ({att.Name}) raw value is {att.Raw}, counted as {count}."));
                 flagged.Add(att.Id);
             }
         }

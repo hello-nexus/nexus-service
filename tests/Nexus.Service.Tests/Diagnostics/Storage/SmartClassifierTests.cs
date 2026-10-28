@@ -269,4 +269,40 @@ public class SmartClassifierTests
         Assert.Contains((byte)9, result.FlaggedAttributeIds);
         Assert.DoesNotContain((byte)194, result.FlaggedAttributeIds);
     }
+
+    private static SmartClassification ClassifyCommandTimeout(ulong raw) =>
+        SmartClassifier.Classify(new SmartClassifierInput(
+            StorageBusKind.Sata,
+            new List<SmartAttributeSample> { new(188, "Command Timeout", 100, 99, 0, Raw: raw) },
+            Nvme: null,
+            VendorHealth: null,
+            PredictsFailure: null));
+
+    [Fact]
+    public void Command_timeout_packed_seagate_raw_decodes_to_largest_word()
+    {
+        var result = ClassifyCommandTimeout(4295032833);
+
+        var reason = Assert.Single(result.Reasons);
+        Assert.Equal("smart.commandTimeout", reason.Code);
+        Assert.Equal("1 command timeout", reason.Summary);
+        Assert.DoesNotContain("4295032833 command", reason.Summary);
+    }
+
+    [Fact]
+    public void Command_timeout_plain_raw_is_unchanged()
+    {
+        var reason = Assert.Single(ClassifyCommandTimeout(3).Reasons);
+
+        Assert.Equal("3 command timeouts", reason.Summary);
+    }
+
+    [Fact]
+    public void Command_timeout_zero_raw_does_not_flag()
+    {
+        var result = ClassifyCommandTimeout(0);
+
+        Assert.Empty(result.Reasons);
+        Assert.Empty(result.FlaggedAttributeIds);
+    }
 }
