@@ -85,6 +85,37 @@ internal static class WindowsDisplayIdentity
     }
 
     /// <summary>
+    /// Description and device id of the GDI adapter (\\.\DISPLAYn) and of the monitor child it drives, joined by spaces;
+    /// empty when neither can be read. Matched as text by <see cref="DeviceOwnedDisplays"/>.
+    /// </summary>
+    internal static string ReadAdapterEvidence(string adapterDeviceName)
+    {
+        var parts = new List<string>();
+        try
+        {
+            for (uint i = 0; ; i++)
+            {
+                var adapter = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+                if (!EnumDisplayDevicesW(null!, i, ref adapter, 0)) break;
+                if (!string.Equals(adapter.DeviceName, adapterDeviceName, StringComparison.OrdinalIgnoreCase)) continue;
+                parts.Add(adapter.DeviceString ?? "");
+                parts.Add(adapter.DeviceID ?? "");
+                break;
+            }
+            if (TryGetDrivenMonitor(adapterDeviceName, 0, out var monitor))
+            {
+                parts.Add(monitor.DeviceString ?? "");
+                parts.Add(monitor.DeviceID ?? "");
+            }
+        }
+        catch
+        {
+            // Evidence is best-effort; an unreadable adapter simply is not owned.
+        }
+        return string.Join(" ", parts);
+    }
+
+    /// <summary>
     /// Raw monitor PnP DeviceID (e.g. \\?\DISPLAY#RTK0004#...) for the monitor
     /// child an adapter is driving - used to match a controller name before we
     /// collapse it to the sanitized stable id.

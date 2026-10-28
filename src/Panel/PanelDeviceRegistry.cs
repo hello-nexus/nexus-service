@@ -870,6 +870,25 @@ public sealed class PanelDeviceRegistry
         return snapshot;
     }
 
+    /// <summary>Removes the records bound to any of <paramref name="displayIds"/>; returns how many were removed.</summary>
+    public int RemoveForDisplays(IReadOnlyCollection<string> displayIds)
+    {
+        if (displayIds.Count == 0) return 0;
+        var removed = 0;
+        _store.Update(s =>
+        {
+            foreach (var key in s.PanelDevices
+                .Where(kv => kv.Value?.DisplayId is { } d && displayIds.Contains(d))
+                .Select(kv => kv.Key)
+                .ToList())
+            {
+                s.PanelDevices.Remove(key);
+                removed++;
+            }
+        });
+        return removed;
+    }
+
     public bool Remove(string id)
     {
         if (string.IsNullOrWhiteSpace(id))

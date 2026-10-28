@@ -312,6 +312,9 @@ public sealed class DisplayTopologyService : IDisposable
     {
         try
         {
+            // Records earlier builds allocated for a display a device owns, identified by what is attached now.
+            var owned = raw.Where(DeviceOwnedDisplays.IsOwned).Select(i => i.Id).ToList();
+            if (owned.Count > 0) _panelRegistry.RemoveForDisplays(owned);
             var attached = new List<RelinkDisplay>(raw.Count);
             foreach (var info in raw)
             {

@@ -6,22 +6,33 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Platform.Displays;
 
 /// <summary>
-/// Monitors that exist only because a Nexus device integration created them,
-/// such as the virtual display a streamed panel's secondary monitor mode brings
-/// up. The device's own entry represents them, so they never become a generic
-/// display panel record and never appear as standalone displays. Matched on the
-/// EDID manufacturer and product code, never on resolution. Identities shared
-/// with unrelated hardware are not listed: the topology carries no evidence
-/// that separates them.
+/// Monitors that exist only because a Nexus device integration created or owns
+/// them: the virtual display a streamed panel's secondary monitor mode brings
+/// up, and a Lian Li LCD running in its USB display mode. The device's own entry
+/// represents them, so they never become a generic display panel record and
+/// never appear as standalone displays. Matched on the EDID manufacturer and
+/// product code, never on resolution. The Lian Li identity is shared with
+/// unrelated USB displays, so it counts only together with adapter evidence
+/// naming the Lian Li device.
 /// </summary>
 public static class DeviceOwnedDisplays
 {
+    // Always device-owned on EDID identity alone.
     private static readonly (string Manufacturer, string Product)[] Owned =
     {
         ("NXS", "0001"),
     };
 
-    public static bool IsOwned(string? manufacturer, string? product)
+    // Shared EDID identity that is owned only with adapter evidence.
+    private const string SharedUsbManufacturer = "TUR";
+    private const string SharedUsbProduct = "0000";
+
+    private static bool HasLianLiEvidence(string? evidence)
+        => !string.IsNullOrEmpty(evidence)
+           && (evidence.Contains("LIANLI", StringComparison.OrdinalIgnoreCase)
+               || evidence.Contains("VID_1A86&PID_AD20", StringComparison.OrdinalIgnoreCase));
+
+    public static bool IsOwned(string? manufacturer, string? product, string? adapterEvidence = null)
     {
         if (string.IsNullOrEmpty(manufacturer) || string.IsNullOrEmpty(product)) return false;
         foreach (var (m, p) in Owned)
@@ -32,14 +43,22 @@ public static class DeviceOwnedDisplays
                 return true;
             }
         }
-        return false;
+        return string.Equals(manufacturer, SharedUsbManufacturer, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(product, SharedUsbProduct, StringComparison.OrdinalIgnoreCase)
+            && HasLianLiEvidence(adapterEvidence);
     }
 
+    /// <summary>EDID identity only: a stored record carries no adapter evidence, so only always-owned identities match.</summary>
     public static bool IsOwned(DisplayFingerprint? fingerprint)
         => fingerprint is not null && IsOwned(fingerprint.Manufacturer, fingerprint.Product);
 
     public static bool IsOwned(RawDisplayInfo info)
-        => IsOwned(info.Fingerprint) || IsOwned(info.Manufacturer, info.Model) || IsOwnedHardwareId(info.RawHardwareId);
+    {
+        var evidence = info.AdapterEvidence;
+        return IsOwned(info.Fingerprint?.Manufacturer, info.Fingerprint?.Product, evidence)
+            || IsOwned(info.Manufacturer, info.Model, evidence)
+            || IsOwnedHardwareId(info.RawHardwareId);
+    }
 
     /// <summary>The Windows PnP interface path (\\?\DISPLAY#TUR0000#...) or a display id names the owned EDID identity.</summary>
     public static bool IsOwnedHardwareId(string? hardwareId)

@@ -29,7 +29,7 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
         public IReadOnlyList<RawDisplayInfo>? Enumerate() => Displays;
     }
 
-    private static RawDisplayInfo Monitor(string id, string mfg, string model, int w = 1920, int h = 1080, bool primary = false)
+    private static RawDisplayInfo Monitor(string id, string mfg, string model, int w = 1920, int h = 1080, bool primary = false, string evidence = "")
         => new()
         {
             Id = id,
@@ -45,6 +45,7 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
             IsPrimary = primary,
             RawHardwareId = $@"\\?\DISPLAY#{mfg}{model}#5&abc#{{guid}}",
             Fingerprint = new DisplayFingerprint { Manufacturer = mfg, Product = model },
+            AdapterEvidence = evidence,
         };
 
     [Theory]
@@ -89,6 +90,7 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
                 Monitor("DEL41B7-1", "DEL", "41B7", primary: true),
                 Monitor("NXS0001-1-10f369c6-0-UID256", "NXS", "0001", 1920, 480),
                 Monitor("TUR0000-a-512482b-0-UID256", "TUR", "0000", 480, 480),
+                Monitor("TUR0000-b-9-0-UID1", "TUR", "0000", 480, 480, evidence: "LIANLI USB Secondary Display-60hz USB\\VID_1A86&PID_AD20\\5"),
             },
         };
         using var store = new JsonConfigStore(Path.Combine(_dir, "settings.json"));
@@ -98,6 +100,45 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
 
         Assert.Equal(new[] { "DEL41B7-1", "TUR0000-a-512482b-0-UID256" }, topo.Displays.Select(d => d.Id).ToArray());
         Assert.Null(service.FindDisplay("NXS0001-1-10f369c6-0-UID256"));
+    }
+
+    [Theory]
+    [InlineData("LIANLI USB Secondary Display-60hz", true)]
+    [InlineData(@"USB\VID_1A86&PID_AD20\5&1", true)]
+    [InlineData("Generic PnP Monitor", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void Shared_usb_identity_is_owned_only_with_lianli_evidence(string? evidence, bool expected)
+    {
+        Assert.Equal(expected, DeviceOwnedDisplays.IsOwned("TUR", "0000", evidence));
+        Assert.False(DeviceOwnedDisplays.IsOwned("DEL", "41B7", evidence));
+    }
+
+    [Fact]
+    public void Lianli_usb_display_is_hidden_and_its_stale_record_pruned_while_plain_TUR_record_stays()
+    {
+        const string lianLiId = "TUR0000-b-9-0-UID1";
+        const string plainId = "TUR0000-a-512482b-0-UID256";
+        var provider = new FakeProvider
+        {
+            Displays = new List<RawDisplayInfo>
+            {
+                Monitor(lianLiId, "TUR", "0000", 480, 480, evidence: "LIANLI USB Secondary Display-60hz"),
+                Monitor(plainId, "TUR", "0000", 480, 480),
+            },
+        };
+        using var store = new JsonConfigStore(Path.Combine(_dir, "settings.json"));
+        store.Update(s =>
+        {
+            s.PanelDevices["lianli"] = new PanelDeviceRecord { Id = "lianli", DisplayId = lianLiId };
+            s.PanelDevices["plain"] = new PanelDeviceRecord { Id = "plain", DisplayId = plainId };
+        });
+        var service = new DisplayTopologyService(provider, new PanelDeviceRegistry(store));
+
+        var topo = service.GetTopology();
+
+        Assert.Equal(new[] { plainId }, topo.Displays.Select(d => d.Id).ToArray());
+        Assert.Equal(new[] { "plain" }, store.Load().PanelDevices.Keys.ToArray());
     }
 
     [Fact]

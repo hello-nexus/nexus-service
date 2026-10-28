@@ -48,6 +48,11 @@ public sealed class RawDisplayInfo
     /// for Y70 controller-name matching. Never sent to clients.
     /// </summary>
     public string RawHardwareId { get; set; } = "";
+    /// <summary>
+    /// Description and hardware id of the adapter and monitor devices driving this display (Windows),
+    /// used to tell a device-owned display from unrelated hardware sharing its EDID identity. Never sent to clients.
+    /// </summary>
+    public string AdapterEvidence { get; set; } = "";
     /// <summary>EDID-derived hardware identity that survives a changed <see cref="Id"/>; null when unreadable.</summary>
     public DisplayFingerprint? Fingerprint { get; set; }
 }
