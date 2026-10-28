@@ -34,6 +34,16 @@ public static class HelperPollerDiagnostics
 
     public static readonly string[] Known = { WindowSet, ScreenTime, Audio, Watchdog, LockInput };
 
+    // Each sub-switch turns off exactly one piece of the window-set pass while
+    // the rest keeps running, so a field bisect can name the costly call.
+    public const string WindowSetHooks = "windowset-hooks";
+    public const string WindowSetDwm = "windowset-dwm";
+    public const string WindowSetFallback = "windowset-fallback";
+    public const string WindowSetTrickle = "windowset-trickle";
+    public const string WindowSetEnum = "windowset-enum";
+
+    public static readonly string[] SubSwitches = { WindowSetHooks, WindowSetDwm, WindowSetFallback, WindowSetTrickle, WindowSetEnum };
+
     /// <summary>
     /// A tick slower than this is worth a log line. Set at the rough floor of
     /// human-perceptible hitching: below it there is nothing for a user to
@@ -184,6 +194,7 @@ public static class HelperPollerDiagnostics
         foreach (var name in disabled)
         {
             (Array.Exists(Known, k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase))
+                || Array.Exists(SubSwitches, k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase))
                 ? recognized
                 : unrecognized).Add(name);
         }
@@ -193,7 +204,7 @@ public static class HelperPollerDiagnostics
             : "[helper-perf] all pollers enabled";
         if (unrecognized.Count > 0)
         {
-            line += $" (unrecognized, ignored: {string.Join(",", unrecognized)}; known: {string.Join(",", Known)})";
+            line += $" (unrecognized, ignored: {string.Join(",", unrecognized)}; known: {string.Join(",", Known)}; sub-switches: {string.Join(",", SubSwitches)})";
         }
         return line;
     }

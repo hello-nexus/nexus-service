@@ -133,6 +133,41 @@ public class WindowCloakCacheTests
     }
 
     [Fact]
+    public void TrickleDisabled_NeverRereadsATrustedEntry_AndCountsNone()
+    {
+        var c = Make(every: 2, max: 4);
+        c.TrickleEnabled = false;
+        _truth[1] = true;
+        Pass(c, 1);
+        _truth[1] = false;
+        for (var p = 0; p < 8; p++)
+        {
+            c.BeginPass();
+            Assert.True(Ask(c, 1));
+            c.EndPass();
+            Assert.Equal(0, c.Trickles);
+        }
+        Assert.Equal(1, _reads);
+    }
+
+    [Fact]
+    public void Trickles_CountsPerPass()
+    {
+        var c = Make(every: 2, max: 4);
+        _truth[1] = true;
+        Pass(c, 1);
+        var total = 0;
+        for (var p = 0; p < 6; p++)
+        {
+            c.BeginPass();
+            Ask(c, 1);
+            c.EndPass();
+            total += c.Trickles;
+        }
+        Assert.True(total > 0);
+    }
+
+    [Fact]
     public void Trickle_PicksUpMissedEvent_Eventually()
     {
         var c = Make(every: 3, max: 4);

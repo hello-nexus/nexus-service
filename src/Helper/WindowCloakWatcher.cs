@@ -15,9 +15,9 @@ namespace Nexus.Service.Helper;
 [SupportedOSPlatform("windows")]
 public sealed class WindowCloakWatcher : IDisposable
 {
-    private const uint EventObjectDestroy = 0x8001;
-    private const uint EventObjectCloaked = 0x8017;
-    private const uint EventObjectUncloaked = 0x8018;
+    private const uint EventObjectDestroy = WindowHookCounters.EventObjectDestroy;
+    private const uint EventObjectCloaked = WindowHookCounters.EventObjectCloaked;
+    private const uint EventObjectUncloaked = WindowHookCounters.EventObjectUncloaked;
     private const uint WineventOutofcontext = 0x0000;
     private const uint WineventSkipownprocess = 0x0002;
     private const int ObjidWindow = 0;
@@ -33,6 +33,9 @@ public sealed class WindowCloakWatcher : IDisposable
     private Thread? _thread;
     private volatile uint _threadId;
     private volatile bool _cloakHookLive;
+
+    /// <summary>Events received by type, counted before the window-object filter.</summary>
+    public WindowHookCounters Counters { get; } = new();
 
     public WindowCloakWatcher(WindowCloakCache cache)
     {
@@ -83,6 +86,7 @@ public sealed class WindowCloakWatcher : IDisposable
 
     private void OnEvent(IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        Counters.Count(eventType);
         if (idObject != ObjidWindow || idChild != ChildidSelf || hwnd == IntPtr.Zero) return;
         if (eventType == EventObjectDestroy) _cache.Evict(hwnd.ToInt64());
         else _cache.MarkDirty(hwnd.ToInt64());

@@ -73,6 +73,34 @@ public class HelperPollerDiagnosticsTests
     }
 
     [Fact]
+    public void Parse_KeepsEverySubSwitch_AndTheyAreDistinctFromWindowset()
+    {
+        var set = HelperPollerDiagnostics.Parse(string.Join(",", HelperPollerDiagnostics.SubSwitches));
+        Assert.Equal(HelperPollerDiagnostics.SubSwitches.Length, set.Count);
+        Assert.DoesNotContain(HelperPollerDiagnostics.WindowSet, set);
+        Assert.Contains(HelperPollerDiagnostics.WindowSetDwm, set);
+    }
+
+    [Fact]
+    public void FormatStartupLine_NamesActiveSubSwitchesAsRecognized()
+    {
+        var line = HelperPollerDiagnostics.FormatStartupLine(
+            HelperPollerDiagnostics.Parse("windowset-hooks windowset-trickle"));
+        Assert.Contains("disabled:", line);
+        Assert.Contains("windowset-hooks", line);
+        Assert.Contains("windowset-trickle", line);
+        Assert.DoesNotContain("unrecognized", line);
+    }
+
+    [Fact]
+    public void FormatStartupLine_ListsSubSwitchesInTheTypoHint()
+    {
+        var line = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("windowset-dwn"));
+        Assert.Contains("unrecognized, ignored: windowset-dwn", line);
+        Assert.Contains("sub-switches: windowset-hooks,windowset-dwm,windowset-fallback,windowset-trickle,windowset-enum", line);
+    }
+
+    [Fact]
     public void FormatStartupLine_SeparatesRecognizedFromTypos()
     {
         var line = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("audio,windowsett"));

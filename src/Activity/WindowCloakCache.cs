@@ -61,6 +61,12 @@ public sealed class WindowCloakCache
     /// <summary>Cloak reads issued in the current pass, for the perf line.</summary>
     public int Reads { get; private set; }
 
+    /// <summary>Safety-net re-reads of otherwise trusted entries in the current pass.</summary>
+    public int Trickles { get; private set; }
+
+    /// <summary>False stops the safety-net re-reads; events still invalidate entries.</summary>
+    public bool TrickleEnabled { get; set; } = true;
+
     public int Count
     {
         get { lock (_gate) return _entries.Count; }
@@ -72,6 +78,7 @@ public sealed class WindowCloakCache
         {
             _pass++;
             Reads = 0;
+            Trickles = 0;
             // Each entry is refreshed once per window of passes, so the
             // per-pass share is the entry count over that window.
             var share = (_entries.Count + _refreshEveryPasses - 1) / _refreshEveryPasses;
@@ -106,6 +113,7 @@ public sealed class WindowCloakCache
                     return e.Cloaked;
                 }
                 _trickleLeft--;
+                Trickles++;
             }
             _reading = hwnd;
             _readingDirty = false;
@@ -174,5 +182,5 @@ public sealed class WindowCloakCache
     }
 
     private bool NeedsTrickle(Entry e) =>
-        _trickleLeft > 0 && _pass - e.ReadPass >= _refreshEveryPasses;
+        TrickleEnabled && _trickleLeft > 0 && _pass - e.ReadPass >= _refreshEveryPasses;
 }
