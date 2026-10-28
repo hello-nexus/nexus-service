@@ -188,6 +188,38 @@ public sealed class McpServerHostLifecycleTests : IDisposable
     }
 
     [Fact]
+    public async Task Allow_remote_fails_loudly_when_another_process_holds_ipv6_loopback_on_the_port()
+    {
+        TcpListener squatter;
+        try
+        {
+            squatter = new TcpListener(IPAddress.IPv6Loopback, 0);
+            squatter.Start();
+        }
+        catch (SocketException)
+        {
+            return;
+        }
+        using (squatter)
+        {
+            var takenPort = ((IPEndPoint)squatter.LocalEndpoint).Port;
+            var (store, host) = NewHost();
+            store.Update(s =>
+            {
+                s.AiIntegration.Enabled = true;
+                s.AiIntegration.Token = "some-token";
+                s.AiIntegration.Port = takenPort;
+                s.AiIntegration.AllowRemote = true;
+            });
+
+            await host.ApplyConfiguredStateAsync();
+
+            Assert.False(host.Running);
+            Assert.Contains("already in use", host.LastError);
+        }
+    }
+
+    [Fact]
     public async Task Re_enabling_after_disable_binds_a_fresh_listening_port()
     {
         var (store, host) = NewHost();
