@@ -7,6 +7,7 @@ using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine.Gpu;
 using Nexus.Service.Models.Lighting;
 using Nexus.Service.Models.Mcp;
+using Nexus.Service.Persistence;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
 
@@ -29,12 +30,14 @@ public sealed class ApplyLightingScenarioTool : IMcpTool
         "]}},\"required\":[\"scenario\"],\"additionalProperties\":false}";
 
     private readonly ILightingProvider _lighting;
+    private readonly IConfigStore _store;
     private readonly MultiplexHub _hub;
     private readonly FeatureGates _gates;
 
-    public ApplyLightingScenarioTool(ILightingProvider lighting, MultiplexHub hub, FeatureGates? gates = null)
+    public ApplyLightingScenarioTool(ILightingProvider lighting, IConfigStore store, MultiplexHub hub, FeatureGates? gates = null)
     {
         _lighting = lighting;
+        _store = store;
         _hub = hub;
         _gates = gates ?? FeatureGates.AllEnabled;
     }
@@ -64,7 +67,36 @@ public sealed class ApplyLightingScenarioTool : IMcpTool
             return Task.FromResult(McpToolExecutionResult.Error($"Unknown scenario '{scenario}'. Expected one of: {known}."));
         }
 
-        _lighting.StartAnimate(new AnimateHeadlessStart { Effect = scenario, Speed = 50, Persist = true });
+        // Same resolution as the restore paths: saved delta, else the selected
+        // template slot, else defaults. Static keys are forwarded by StartAnimate
+        // to StartStatic, which persists into Static.States, so they resolve there.
+        // Starting from defaults with Persist would overwrite the user's tuning.
+        var lighting = _store.Load().Lighting;
+        var states = StaticEffectCatalog.Contains(scenario) ? lighting.Static.States : lighting.Animate.States;
+        if (!states.TryGetValue(scenario, out var look) || look is null)
+        {
+            look = AnimateTemplateDefaults.ResolveSelected(lighting.Animate.Templates, scenario) ?? new AnimateEffectState();
+        }
+        var start = new AnimateHeadlessStart
+        {
+            Effect = scenario,
+            Speed = look.Speed,
+            Intensity = look.Intensity,
+            Hue = look.Hue,
+            Colorize = look.Colorize,
+            Saturation = look.Saturation,
+            Contrast = look.Contrast,
+            Sensors = look.Sensors,
+            Persist = true,
+        };
+        if (look.Params is not null)
+        {
+            foreach (var kv in look.Params)
+            {
+                start.Params.Add(new ShaderParam { Name = kv.Key, Value = kv.Value });
+            }
+        }
+        _lighting.StartAnimate(start);
         PanelTopics.BroadcastLighting(_hub);
 
         var result = new McpApplyLightingScenarioResult { Scenario = scenario };
