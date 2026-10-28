@@ -168,6 +168,8 @@ public sealed class WindowSetPoller : IDisposable
             var maxClass = _stats.MaxTicks > 0 ? ClassNameOf(new IntPtr(_stats.MaxHwnd)) : null;
             var detail = $"cached={_cloakCache.Count} "
                 + _stats.Format(Stopwatch.Frequency, _cloakCache.Trickles, passDestroy, passCloaked, passUncloaked, maxClass);
+            var targets = _stats.FormatFallbackTargets(Stopwatch.Frequency, ProcessNameOf);
+            if (targets.Length > 0) detail += " " + targets;
             if (everyPass)
             {
                 Nexus.Service.Platform.HelperLog.Write(
@@ -193,6 +195,19 @@ public sealed class WindowSetPoller : IDisposable
             _hooksAtLastRate = hooks;
             _slowSinceRate = false;
             _sinceHookRate.Restart();
+        }
+    }
+
+    private static string ProcessNameOf(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return process.ProcessName;
+        }
+        catch
+        {
+            return "?";
         }
     }
 
@@ -314,6 +329,11 @@ public sealed class WindowSetPoller : IDisposable
                     _stats.FallbackTicks += fallbackTicks;
                     _stats.FallbackCount++;
                     _stats.Note("fallback", hwnd.ToInt64(), fallbackTicks);
+                    if (_stats.WouldKeepFallback(fallbackTicks))
+                    {
+                        GetWindowThreadProcessId(hwnd, out var fbPid);
+                        _stats.AddFallback(hwnd.ToInt64(), fallbackTicks, (int)fbPid, ClassNameOf(hwnd) ?? "?");
+                    }
                 }
                 hasTitle = titleLength > 0;
             }

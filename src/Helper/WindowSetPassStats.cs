@@ -26,8 +26,62 @@ public sealed class WindowSetPassStats
     public string MaxCall = "";
     public long MaxHwnd;
 
+    public const int MaxFallbackTargets = 5;
+
+    public readonly record struct FallbackTarget(long Hwnd, long Ticks, int Pid, string ClassName);
+
+    private readonly FallbackTarget[] _fallbackTargets = new FallbackTarget[MaxFallbackTargets];
+    private int _fallbackTargetCount;
+
+    /// <summary>True when a fallback of this length would make the bounded slowest list.</summary>
+    public bool WouldKeepFallback(long ticks)
+    {
+        if (_fallbackTargetCount < MaxFallbackTargets) return true;
+        foreach (var t in _fallbackTargets)
+        {
+            if (ticks > t.Ticks) return true;
+        }
+        return false;
+    }
+
+    public void AddFallback(long hwnd, long ticks, int pid, string className)
+    {
+        var entry = new FallbackTarget(hwnd, ticks, pid, className);
+        if (_fallbackTargetCount < MaxFallbackTargets)
+        {
+            _fallbackTargets[_fallbackTargetCount++] = entry;
+            return;
+        }
+        var min = 0;
+        for (var i = 1; i < MaxFallbackTargets; i++)
+        {
+            if (_fallbackTargets[i].Ticks < _fallbackTargets[min].Ticks) min = i;
+        }
+        if (ticks > _fallbackTargets[min].Ticks) _fallbackTargets[min] = entry;
+    }
+
+    /// <summary>The slowest fallback calls of the pass, longest first, with the
+    /// owning process named by <paramref name="processName"/>. Empty when none ran.</summary>
+    public string FormatFallbackTargets(long frequency, Func<int, string> processName)
+    {
+        if (_fallbackTargetCount == 0) return "";
+        var ordered = new FallbackTarget[_fallbackTargetCount];
+        Array.Copy(_fallbackTargets, ordered, _fallbackTargetCount);
+        Array.Sort(ordered, static (a, b) => b.Ticks.CompareTo(a.Ticks));
+        var inv = CultureInfo.InvariantCulture;
+        var sb = new StringBuilder("fallbackTargets=[");
+        for (var i = 0; i < ordered.Length; i++)
+        {
+            var t = ordered[i];
+            if (i > 0) sb.Append("; ");
+            sb.Append(inv, $"{ToMs(t.Ticks, frequency):F1}ms {processName(t.Pid)} {t.ClassName} hwnd=0x{t.Hwnd:X}");
+        }
+        return sb.Append(']').ToString();
+    }
+
     public void Reset()
     {
+        _fallbackTargetCount = 0;
         EnumTicks = CheapTicks = TitleTicks = FallbackTicks = DwmTicks = 0;
         FallbackCount = DwmCount = 0;
         MaxTicks = 0;

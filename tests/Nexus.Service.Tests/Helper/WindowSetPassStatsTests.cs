@@ -75,4 +75,31 @@ public class WindowSetPassStatsTests
             "[window-cloak] events over 60s destroy=12 cloaked=3 uncloaked=2",
             WindowSetPassStats.FormatHookRate(60.2, 12, 3, 2));
     }
+
+    [Fact]
+    public void FallbackTargets_KeepTheFiveSlowestAndNameTheirOwners()
+    {
+        var s = new WindowSetPassStats();
+        for (var i = 1; i <= 8; i++)
+        {
+            Assert.True(s.WouldKeepFallback(i * 1000) || i <= 3);
+            s.AddFallback(0x100 + i, i * 1000, 40 + i, "Cls" + i);
+        }
+        Assert.False(s.WouldKeepFallback(1000));
+        var line = s.FormatFallbackTargets(1_000_000, pid => "proc" + pid);
+        Assert.Equal(
+            "fallbackTargets=[8.0ms proc48 Cls8 hwnd=0x108; 7.0ms proc47 Cls7 hwnd=0x107; 6.0ms proc46 Cls6 hwnd=0x106; "
+            + "5.0ms proc45 Cls5 hwnd=0x105; 4.0ms proc44 Cls4 hwnd=0x104]",
+            line);
+    }
+
+    [Fact]
+    public void FallbackTargets_EmptyWhenNoneRan_AndResetClears()
+    {
+        var s = new WindowSetPassStats();
+        Assert.Equal("", s.FormatFallbackTargets(1_000_000, _ => "x"));
+        s.AddFallback(1, 5, 2, "C");
+        s.Reset();
+        Assert.Equal("", s.FormatFallbackTargets(1_000_000, _ => "x"));
+    }
 }
