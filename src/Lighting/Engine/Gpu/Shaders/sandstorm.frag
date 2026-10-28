@@ -105,5 +105,5 @@ void main() {
     float gustEnv = smoothstep(0.0, 0.08, gustPhase) * smoothstep(1.0, 0.88, gustPhase);
     col += palD * gustBand * gustEnv * dens * 2.2;
 
-    fragColor = vec4(finalize(col * 2.6), 1.0);
+    fragColor = vec4(finalize(col * 3.0), 1.0);
 }

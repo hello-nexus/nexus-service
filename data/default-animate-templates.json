@@ -3295,8 +3295,8 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.4,
-    "contrast": 1.15,
+    "saturation": 1.1,
+    "contrast": 0.95,
     "params": {
      "u_wind": 1.2,
      "u_density": 1.0,
