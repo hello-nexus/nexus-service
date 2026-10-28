@@ -72,7 +72,7 @@ public static class SmartClassifier
     // Ids whose raw count escalates watch -> act above 100 (5, 197, 198 per the Backblaze study).
     private static readonly HashSet<byte> EscalatingIds = new() { 5, 197, 198 };
 
-    // Seagate packs attribute 188 as three 16-bit counters; the largest word never undercounts any of them.
+    // Any attribute 188 raw above 0xFFFF is read as three packed 16-bit counters; the largest word never undercounts any of them.
     private static ulong DecodeCount(SmartAttributeSample att)
     {
         if (att.Id != 188 || att.Raw <= 0xFFFF) return att.Raw;
@@ -100,7 +100,7 @@ public static class SmartClassifier
                 var plural = count == 1 ? meta.Noun : meta.Noun + "s";
                 reasons.Add(new SmartReason(meta.Code, severity,
                     $"{count} {plural}",
-                    $"SMART attribute {att.Id:D2} ({att.Name}) raw value is {att.Raw}, counted as {count}."));
+                    $"SMART attribute {att.Id:D2} ({att.Name}) raw value is {att.Raw}{(count != att.Raw ? $", counted as {count}" : "")}."));
                 flagged.Add(att.Id);
             }
         }
