@@ -256,7 +256,6 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.FeaturesSettingsPatch))]
 
 // Panel widget engine - per-device records, layouts, control-state push frames.
-[JsonSerializable(typeof(Nexus.Service.Lifecycle.OobeSessionState))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelLayoutDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPageDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelWidgetDto))]
@@ -942,6 +941,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(WillStartResponse))]
 [JsonSerializable(typeof(PawnIoStatus))]
 [JsonSerializable(typeof(Nexus.Service.Lifecycle.PawnIoUpgradeMarker))]
+[JsonSerializable(typeof(Nexus.Service.Lifecycle.OobeSessionState))]
 
 // Processes
 [JsonSerializable(typeof(ProcessInfo))]

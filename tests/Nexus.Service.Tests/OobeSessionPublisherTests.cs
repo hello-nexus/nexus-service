@@ -6,7 +6,7 @@ namespace Nexus.Service.Tests;
 
 public sealed class OobeSessionPublisherTests
 {
-    private static (OobeSessionPublisher publisher, MultiplexHub hub, List<string> frames, Func<bool> setter) Rig(Func<bool> detect)
+    private static (OobeSessionPublisher publisher, MultiplexHub hub, List<string> frames) Rig(Func<bool> detect)
     {
         var hub = new MultiplexHub();
         var frames = new List<string>();
@@ -14,14 +14,14 @@ public sealed class OobeSessionPublisherTests
         {
             if (topic == PanelTopics.SystemSession) frames.Add(Encoding.UTF8.GetString(payload.ToArray()));
         };
-        return (new OobeSessionPublisher(hub, detect), hub, frames, detect);
+        return (new OobeSessionPublisher(hub, detect), hub, frames);
     }
 
     [Fact]
     public void Snapshot_CarriesCurrentValue()
     {
         var oobe = true;
-        var (_, hub, _, _) = Rig(() => oobe);
+        var (_, hub, _) = Rig(() => oobe);
 
         Assert.True(hub.TryGetTopicSnapshot(PanelTopics.SystemSession, out var env));
         Assert.Equal("{\"t\":\"system/session\",\"d\":{\"oobe\":true}}", Encoding.UTF8.GetString(env.ToArray()));
@@ -35,7 +35,7 @@ public sealed class OobeSessionPublisherTests
     public void Publish_BroadcastsOnlyOnChange()
     {
         var oobe = true;
-        var (publisher, hub, frames, _) = Rig(() => oobe);
+        var (publisher, hub, frames) = Rig(() => oobe);
         using var sub = hub.AddTestSubscription(PanelTopics.SystemSession);
 
         publisher.Publish();
@@ -50,9 +50,26 @@ public sealed class OobeSessionPublisherTests
     }
 
     [Fact]
+    public void SnapshotForNewSubscriber_DoesNotSwallowChangeForExistingOnes()
+    {
+        var oobe = true;
+        var (publisher, hub, frames) = Rig(() => oobe);
+        using var a = hub.AddTestSubscription(PanelTopics.SystemSession);
+        publisher.Publish();
+        frames.Clear();
+
+        oobe = false;
+        Assert.True(hub.TryGetTopicSnapshot(PanelTopics.SystemSession, out _));
+        publisher.Publish();
+
+        Assert.Single(frames);
+        Assert.Contains("\"oobe\":false", frames[0]);
+    }
+
+    [Fact]
     public void DetectorThrowing_ReportsFalse()
     {
-        var (publisher, _, _, _) = Rig(() => throw new InvalidOperationException());
+        var (publisher, _, _) = Rig(() => throw new InvalidOperationException());
         Assert.False(publisher.Current());
     }
 
@@ -60,7 +77,7 @@ public sealed class OobeSessionPublisherTests
     [Fact]
     public void DevForce_OverridesDetector()
     {
-        var (publisher, hub, frames, _) = Rig(() => false);
+        var (publisher, hub, frames) = Rig(() => false);
         using var sub = hub.AddTestSubscription(PanelTopics.SystemSession);
         publisher.Publish();
         try

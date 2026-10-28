@@ -45,8 +45,8 @@ public sealed class OobeSessionPublisher : BackgroundService
         _detect = detect;
         _hub.RegisterSnapshotProvider(PanelTopics.SystemSession, GetSnapshot);
 #if WINDOWS
-        WindowsServiceHost.SessionLogon += () => Publish();
-        WindowsServiceHost.ConsoleSessionChanged += () => Publish();
+        WindowsServiceHost.SessionLogon += () => _ = Task.Run(Publish);
+        WindowsServiceHost.ConsoleSessionChanged += () => _ = Task.Run(Publish);
 #endif
     }
 
@@ -72,15 +72,12 @@ public sealed class OobeSessionPublisher : BackgroundService
         catch { return false; }
     }
 
-    private ReadOnlyMemory<byte>? GetSnapshot()
-    {
-        lock (_lock)
-        {
-            var oobe = Current();
-            _last = oobe;
-            return Build(oobe);
-        }
-    }
+    /// <summary>
+    /// Does not touch <c>_last</c>: that is the value already broadcast to
+    /// existing subscribers, and a snapshot for a new one must not hide a
+    /// change from them.
+    /// </summary>
+    private ReadOnlyMemory<byte>? GetSnapshot() => Build(Current());
 
     /// <summary>Broadcasts only when the value differs from the last one seen.</summary>
     internal void Publish()
@@ -102,21 +99,22 @@ public sealed class OobeSessionPublisher : BackgroundService
 internal static partial class OobeDetector
 {
     /// <summary>
-    /// Windows: kernel32 OOBEComplete. If the export is missing on this build,
-    /// falls back to the SystemSetupInProgress registry flag. Other platforms: false.
+    /// Windows: kernel32 OOBEComplete. If the export is missing on this build
+    /// or the call fails, falls back to the SystemSetupInProgress registry flag. Other platforms: false.
     /// </summary>
     internal static bool IsInOobe()
     {
 #if WINDOWS
         try
         {
-            return OOBEComplete(out var complete) ? !complete : false;
+            if (OOBEComplete(out var complete))
+                return !complete;
         }
-        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
+        catch (EntryPointNotFoundException)
         {
-            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\Setup");
-            return key?.GetValue("SystemSetupInProgress") is int v && v != 0;
         }
+        using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\Setup");
+        return key?.GetValue("SystemSetupInProgress") is int v && v != 0;
 #else
         return false;
 #endif
