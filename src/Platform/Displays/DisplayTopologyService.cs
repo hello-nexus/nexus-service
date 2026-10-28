@@ -397,7 +397,7 @@ public sealed class DisplayTopologyService : IDisposable
         double? measuredDpi)
     {
         var scale = scaleFactor is > 0 ? scaleFactor.Value : 1.0;
-        var known = KnownPanelDisplays.Match(manufacturer, model, name);
+        var known = KnownPanelDisplays.Match(manufacturer, model, name, resolutionWidth, resolutionHeight);
         return new PanelDeviceCapabilities
         {
             Surface = PanelSurfaces.Monitor,

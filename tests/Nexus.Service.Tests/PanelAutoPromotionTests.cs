@@ -1,5 +1,8 @@
+using System.Threading.Tasks;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Panel;
+using Nexus.Service.Tests.Corsair;
+using Nexus.Service.Platform.Displays;
 using Xunit;
 
 namespace Nexus.Service.Tests;
@@ -113,5 +116,103 @@ public class PanelAutoPromotionTests
         Assert.Empty(promotion.Reconcile(Topology(plain, y70, unhosted)));
         Assert.Empty(store.Load().PanelDevices);
         Assert.Empty(store.Load().AutoPromotedPanelModels);
+    }
+
+    private const string Y60DisplayId = "DISPLAY\\RTKBC32\\5&2b3c4d5e&0&UID256";
+
+    private static DisplayTopologyEntryDto Y60(int width = 1920, int height = 515, string id = Y60DisplayId) => new()
+    {
+        Id = id,
+        Name = "RTK BC32",
+        Manufacturer = "RTK",
+        Model = "BC32",
+        Resolution = new DisplaySizeDto { Width = width, Height = height },
+        ScaleFactor = 1.0,
+        IsTouch = false,
+        HostingSupported = true,
+    };
+
+    private static (PanelAutoPromotion Promotion, PanelDeviceRegistry Registry, InMemoryConfigStore Store, FakeDisplayOrientationProvider Orientation) BuildWithOrientation()
+    {
+        var store = new InMemoryConfigStore();
+        var registry = new PanelDeviceRegistry(store);
+        var orientation = new FakeDisplayOrientationProvider();
+        return (new PanelAutoPromotion(registry, store, orientation), registry, store, orientation);
+    }
+
+    [Fact]
+    public void Y60_kit_is_promoted_with_family_dpi_and_no_touch()
+    {
+        var (promotion, registry, store, _) = BuildWithOrientation();
+
+        Assert.Single(promotion.Reconcile(Topology(Y60())));
+
+        var record = registry.FindByDisplayId(Y60DisplayId);
+        Assert.Equal("hyte-y60", record!.Capabilities?.Family);
+        Assert.Equal(158, record.Capabilities?.Dpi);
+        Assert.False(record.Capabilities?.Touch);
+        Assert.Contains("RTK:BC32", store.Load().AutoPromotedPanelModels);
+    }
+
+    [Fact]
+    public void Y60_first_promotion_rotates_to_portrait_flipped_and_persists_once()
+    {
+        var (promotion, registry, _, orientation) = BuildWithOrientation();
+
+        promotion.Reconcile(Topology(Y60()));
+
+        var call = Assert.Single(orientation.Calls);
+        Assert.Equal((Y60DisplayId, "PortraitFlipped"), (call.DisplayId, call.Orientation));
+        Assert.Equal("PortraitFlipped", registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
+
+        // Rotated: resolution swaps; later passes and a user-picked orientation are left alone.
+        var record = registry.FindByDisplayId(Y60DisplayId)!;
+        promotion.Reconcile(Topology(Y60(515, 1920)));
+        registry.UpdateDisplayOrientation(Y60DisplayId, "Portrait");
+        promotion.Reconcile(Topology(Y60()));
+        Assert.Single(orientation.Calls);
+        Assert.Equal("Portrait", registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
+        Assert.Equal(record.Id, registry.FindByDisplayId(Y60DisplayId)!.Id);
+    }
+
+    [Fact]
+    public void Y60_already_portrait_is_promoted_without_rotating()
+    {
+        var (promotion, _, _, orientation) = BuildWithOrientation();
+
+        Assert.Single(promotion.Reconcile(Topology(Y60(515, 1920))));
+
+        Assert.Empty(orientation.Calls);
+    }
+
+    [Fact]
+    public async Task Y60_rotation_that_fails_is_replayed_and_then_persisted()
+    {
+        var (promotion, registry, _, orientation) = BuildWithOrientation();
+        orientation.NextOk = false;
+        orientation.NextError = "no helper connected";
+
+        promotion.Reconcile(Topology(Y60()));
+        Assert.Null(registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
+
+        orientation.NextOk = true;
+        await promotion.ReplayPendingAsync();
+
+        Assert.Equal(2, orientation.Calls.Count);
+        Assert.Equal("PortraitFlipped", registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
+        await promotion.ReplayPendingAsync();
+        Assert.Equal(2, orientation.Calls.Count);
+    }
+
+    [Fact]
+    public void Generic_rtk_bc32_monitor_at_other_resolution_is_not_promoted()
+    {
+        var (promotion, _, store, orientation) = BuildWithOrientation();
+        var generic = Y60(1920, 1080, id: "DISPLAY\\RTKBC32\\generic");
+        generic.Name = "RTK FHD HDR";
+
+        Assert.Empty(promotion.Reconcile(Topology(generic)));
+        Assert.Empty(store.Load().PanelDevices);
+        Assert.Empty(orientation.Calls);
     }
 }
