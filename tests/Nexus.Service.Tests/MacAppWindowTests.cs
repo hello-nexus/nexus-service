@@ -53,4 +53,25 @@ public class MacAppWindowTests
     [InlineData(NarrowPageSettingsLeft + 100)] // right of the gear: drags
     public void NarrowWidth_BeyondGear_Drags(double x)
         => Assert.False(MacAppWindow.IsTopBarButtonColumn(x, NarrowWidth));
+
+    // --search-w: clamped, growing with window width past the floor width; centered.
+    [Theory]
+    [InlineData(1280, 460)]
+    [InlineData(1400, 580)]
+    [InlineData(1580, 760)]
+    [InlineData(2000, 760)]
+    public void SearchPill_FollowsClampedWidth(double w, double pill)
+    {
+        double left = w / 2 - pill / 2;
+        double right = w / 2 + pill / 2;
+        Assert.True(MacAppWindow.IsTopBarButtonColumn(left + 1, w));
+        Assert.True(MacAppWindow.IsTopBarButtonColumn(right - 1, w));
+    }
+
+    [Theory]
+    [InlineData(1400, 580)]
+    [InlineData(2000, 760)]
+    public void SearchPill_PastGear_Drags(double w, double pill)
+        // pill edge + gap + gear + margin + slack.
+        => Assert.False(MacAppWindow.IsTopBarButtonColumn(w / 2 + pill / 2 + 7 + 34 + 4 + 2, w));
 }
