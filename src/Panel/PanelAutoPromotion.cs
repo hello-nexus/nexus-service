@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Persistence;
@@ -83,6 +84,7 @@ public sealed class PanelAutoPromotion
 
     internal async Task ReplayPendingAsync()
     {
+        var started = _pendingOrientation.Keys.ToArray();
         for (var attempt = 0; attempt < ReplayAttempts; attempt++)
         {
             foreach (var (displayId, orientation) in _pendingOrientation.ToArray())
@@ -93,7 +95,8 @@ public sealed class PanelAutoPromotion
             try { await Task.Delay(ReplayGapMs).ConfigureAwait(false); }
             catch { return; }
         }
-        _pendingOrientation.Clear();
+        // Only what this replay started with: a concurrent first promotion may have queued more.
+        foreach (var id in started) _pendingOrientation.TryRemove(id, out _);
         ServiceLog.Warn($"[panel-auto-promote] orientation replay gave up after {ReplayAttempts} attempts");
     }
 
@@ -185,7 +188,11 @@ public sealed class PanelAutoPromotion
             var batch = rotations;
             _rotationTask = Task.Run(() =>
             {
-                foreach (var (displayId, orientation) in batch) ApplyDefaultOrientation(displayId, orientation);
+                foreach (var (displayId, orientation) in batch)
+                {
+                    try { ApplyDefaultOrientation(displayId, orientation); }
+                    catch (Exception ex) { ServiceLog.Warn($"[panel-auto-promote] default orientation failed displayId={displayId}: {ex.Message}"); }
+                }
             });
         }
         return result;

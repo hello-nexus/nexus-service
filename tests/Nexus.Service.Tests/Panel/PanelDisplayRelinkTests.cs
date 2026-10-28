@@ -200,11 +200,11 @@ public class PanelDisplayRelinkTests
     [InlineData(1920, 515, 1)]
     [InlineData(515, 1920, 1)]
     [InlineData(1920, 1080, 0)]
-    public void Y60_family_record_relinks_only_onto_a_display_at_its_native_resolution(int width, int height, int moves)
+    public void Y60_edid_record_relinks_only_onto_a_display_at_its_native_resolution(int width, int height, int moves)
     {
         var fp = Fp(0, null, "RTK", "BC32");
         var plan = PanelDisplayRelink.Plan(
-            new[] { new RelinkRecord("p1", "old", fp, null, "hyte-y60") },
+            new[] { new RelinkRecord("p1", "old", fp) },
             new[] { new RelinkDisplay("new", fp, false, width, height) });
 
         Assert.Equal(moves, plan.Moves.Count);

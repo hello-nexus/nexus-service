@@ -56,6 +56,10 @@ public static class KnownPanelDisplays
         (width == Y60NativeWidth && height == Y60NativeHeight)
         || (width == Y60NativeHeight && height == Y60NativeWidth);
 
+    /// <summary>True when this EDID identity is generic and only identifies a known display together with its resolution.</summary>
+    public static bool NeedsResolutionGate(string? manufacturer, string? model) =>
+        EqualsIgnoreCase(manufacturer, "RTK") && EqualsIgnoreCase(model, "BC32");
+
     public static KnownPanelDisplay? Match(string? manufacturer, string? model, string? name, int? width = null, int? height = null)
     {
         if (IsY60Resolution(width, height)

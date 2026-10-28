@@ -10,8 +10,7 @@ internal readonly record struct RelinkRecord(
     string RecordId,
     string DisplayId,
     DisplayFingerprint? Fingerprint,
-    IReadOnlyList<string>? Siblings = null,
-    string? Family = null);
+    IReadOnlyList<string>? Siblings = null);
 
 internal readonly record struct RelinkDisplay(string Id, DisplayFingerprint? Fingerprint, bool IsPrimary = false, int Width = 0, int Height = 0);
 
@@ -71,12 +70,12 @@ internal static class PanelDisplayRelink
             .ToList();
 
         // A monitor that was attached beside the record's own display is a different one.
-        // A resolution-gated family (generic EDID shared with other monitors) only follows a display that still passes its gate.
+        // A generic EDID shared with other monitors only follows a display that still passes its resolution gate. Keyed on the fingerprint, not the record's stored family, which is cleared at non-native modes.
         static bool Eligible(RelinkRecord orphan, RelinkDisplay d)
             => (orphan.Siblings is null || !orphan.Siblings.Contains(d.Id, StringComparer.Ordinal))
-               && (orphan.Family != KnownPanelDisplays.HyteY60Family
+               && (!KnownPanelDisplays.NeedsResolutionGate(orphan.Fingerprint!.Manufacturer, orphan.Fingerprint.Product)
                    || (d.Fingerprint is not null
-                       && KnownPanelDisplays.Match(d.Fingerprint.Manufacturer, d.Fingerprint.Product, null, d.Width, d.Height)?.Family == orphan.Family));
+                       && KnownPanelDisplays.Match(d.Fingerprint.Manufacturer, d.Fingerprint.Product, null, d.Width, d.Height) is not null));
 
         foreach (var orphan in orphans.Where(o => IsStrong(o.Fingerprint!)).ToList())
         {
