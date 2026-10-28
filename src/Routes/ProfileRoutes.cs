@@ -568,6 +568,8 @@ public static class ProfileRoutes
                             .Distinct(StringComparer.Ordinal)
                             .ToList();
                     }
+                    if (ui.RecentStaticColors is not null) s.Ui.RecentStaticColors = UiRecents.SanitizeColors(ui.RecentStaticColors);
+                    if (ui.RecentAnimations is not null) s.Ui.RecentAnimations = UiRecents.SanitizeKeys(ui.RecentAnimations);
                     if (ui.LightingDashboardMode is "simple" or "advanced")
                     {
                         if (!string.Equals(s.Ui.LightingDashboardMode, ui.LightingDashboardMode, StringComparison.Ordinal))

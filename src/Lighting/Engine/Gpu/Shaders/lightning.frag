@@ -90,7 +90,7 @@ void main() {
             float d = abs(across - disp);
             float taper = smoothstep(aLen, aLen - 0.35, proj)
                         * smoothstep(-0.05, 0.15, proj);
-            col += (hot * exp(-d * 90.0) + bTint * exp(-d * 10.0 / glw) * 0.55)
+            col += (hot * exp(-d * 8.5) + bTint * exp(-d * 2.0 / glw) * 0.9)
                  * life * taper;
         }
 
@@ -116,7 +116,7 @@ void main() {
                 float fd = abs(fAcross - boltPath(fcp, bid + ff * 31.0 + 200.0));
                 float ft = (1.0 - smoothstep(0.0, fLen, fProj))
                          * smoothstep(-0.02, 0.06, fProj);
-                col += (hot * exp(-fd * 120.0) + bTint * exp(-fd * 14.0 / glw) * 0.35)
+                col += (hot * exp(-fd * 14.0) + bTint * exp(-fd * 3.2 / glw) * 0.6)
                      * life * ft * 0.65;
             }
         }

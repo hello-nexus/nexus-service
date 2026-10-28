@@ -1,5 +1,7 @@
 uniform float u_count; // hint_range(1.0, 6.0, 1.0) = 3.0  number of jellyfish
 uniform float u_glow; // hint_range(0.2, 2.5, 0.05) = 1.0  bioluminescence intensity
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Half-dome bell: full ellipse with the bottom clipped so the shape
 // reads as a cap with a flat-ish underside. In our uvCentered frame
@@ -44,10 +46,18 @@ void main() {
     int count = int(clamp(u_count, 1.0, 6.0));
     float glowStr = max(0.1, u_glow);
 
-    // Deep water background with caustic shimmer that also drifts.
-    // perf: caustic is a soft low-amplitude tint -> fbm3 (3 oct), look unchanged
-    float caustic = fbm3(uv * 2.6 + vec2(t * 0.12, -t * 0.18)) * 0.14;
-    vec3 water = tintedPalette(0.6) * 0.05 + vec3(caustic * 0.25, caustic * 0.45, caustic);
+    // Lit deep water: a color gradient from a bright surface to a saturated
+    // abyss, slow light shafts falling from the top, and drifting plankton.
+    float caustic = fbm3(uv * 2.2 + vec2(t * 0.12, -t * 0.18));
+    vec3 water = tintedPalette(0.52 + uv.y * 0.4 + uv.x * 0.25 + caustic * 0.35 + t * 0.02) * (0.38 - uv.y * 0.12);
+    float shafts = pow(0.5 + 0.5 * sin(uv.x * 5.0 + uv.y * 1.6 + sin(t * 0.4 + uv.x * 2.0) * 1.2), 3.0);
+    water += tintedPalette(0.35 + uv.x * 0.1) * shafts * smoothstep(0.9, -1.0, uv.y) * 0.28;
+    water += tintedPalette(0.7 + caustic * 0.3) * smoothstep(0.45, 0.8, caustic) * 0.25;
+    vec2 pg = uv * 9.0 + vec2(t * 0.25, -t * 0.4);
+    vec2 pc = floor(pg);
+    float pr = hash21(pc);
+    vec2 pd = fract(pg) - 0.5 - (vec2(hash21(pc + 3.1), hash21(pc + 8.7)) - 0.5) * 0.5;
+    water += tintedPalette(0.2 + pr) * step(0.7, pr) * exp(-dot(pd, pd) * 70.0) * 0.9;
     vec3 col = water;
 
     for (int i = 0; i < 6; i++) {
@@ -74,22 +84,28 @@ void main() {
             cos(t * 0.55 + fi * 1.4) * 0.08
         );
 
-        float size     = 0.26 + fract(fi * 0.37) * 0.22;
+        float size     = 0.34 + fract(fi * 0.37) * 0.24;
         float bellRate = 1.1 + fract(fi * 0.41) * 0.9;
         float phase    = t * bellRate + fi * 1.5;
         vec2  center   = drift;
         vec2  local    = uv - center;
 
+        float attachY   = 0.16 * size;
+        float tLen      = size * (1.8 + fract(fi * 0.71) * 1.2);
+        // Bell and tentacles only exist in a band around the creature; everywhere else only its halo counts.
+        vec3 bodyCol = vec3(0.0);
+        if (abs(local.x) < size * 0.8 && local.y > -size * 0.9 && local.y < attachY + tLen + 0.1) {
         // Bell.
         float bd       = bellDist(local, phase, size);
         float bellMask = smoothstep(0.05, -0.1, bd);
         // Inner dome lit brighter near the top of the cap.
         float inner    = smoothstep(0.0, -0.55 * size, local.y);
         vec3  bellBase = tintedPalette(fi * 0.14 + 0.18);
-        vec3  bellCol  = bellBase * (0.28 + inner * 0.9);
+        float ringBands = 0.5 + 0.5 * sin(local.x / size * 9.0 + phase * 0.5);
+        vec3  bellCol  = bellBase * (0.75 + inner * 1.4 + ringBands * 0.35 * smoothstep(0.0, -0.8 * size, bd));
         // Rim glow around the silhouette.
         float rim      = smoothstep(0.08, 0.0, abs(bd + 0.04)) * 0.75;
-        bellCol       += bellBase * rim * glowStr;
+        bellCol       += tintedPalette(fi * 0.14 + 0.45) * rim * glowStr * 1.4;
 
         // Tentacles hang below the bell: attach along the rim (positive
         // y = downward in uvCentered) and extend deeper. Attach band
@@ -97,8 +113,6 @@ void main() {
         // inside the silhouette rather than bulging past the rim.
         float tentacles = 0.0;
         int   tCount    = 5 + int(fract(fi * 0.53) * 4.0); // 5..8
-        float attachY   = 0.16 * size;
-        float tLen      = size * (1.8 + fract(fi * 0.71) * 1.2);
         float tThick    = size * 0.05;
         for (int j = 0; j < 8; j++) {
             if (j >= tCount) break;
@@ -107,14 +121,16 @@ void main() {
             vec2  tp   = local - vec2(tX, attachY);
             tentacles += tentacleMask(tp, fi * 7.0 + fj * 3.0, t, tLen, tThick);
         }
-        vec3 tentCol = bellBase * min(tentacles, 1.0) * 0.55;
+        vec3 tentCol = tintedPalette(fi * 0.14 + 0.32) * min(tentacles, 1.0) * 1.1;
+        bodyCol = bellCol * bellMask + tentCol;
+        }
 
         // Soft bioluminescent halo around the whole creature.
-        float halo    = exp(-length(local) / (size * 2.0)) * 0.22 * glowStr;
+        float halo    = exp(-length(local) / (size * 2.6)) * 0.5 * glowStr;
         vec3  haloCol = tintedPalette(fi * 0.14 + 0.35) * halo;
 
         float depth = 1.0 - fi * 0.1;
-        col += (bellCol * bellMask + tentCol + haloCol) * depth;
+        col += (bodyCol + haloCol) * depth;
     }
     fragColor = vec4(finalize(col), 1.0);
 }

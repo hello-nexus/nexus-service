@@ -50,15 +50,27 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
         File.Exists(Path.Combine(_packageDir, "NexusVirtualDisplay.inf"))
         && File.Exists(Path.Combine(_packageDir, "NexusVirtualDisplayHost.exe"));
 
-    public IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState)
+    // Only one monitor exists system-wide, so one claim covers the adapter.
+    private readonly VirtualDisplayClaim _claim = new();
+
+    public event Action? OwnedDisplayClaimed
+    {
+        add => _claim.Claimed += value;
+        remove => _claim.Claimed -= value;
+    }
+
+    public double? OwnedDisplayDpi(string adapterName) =>
+        string.Equals(adapterName, AdapterName, StringComparison.OrdinalIgnoreCase) ? _claim.Dpi : null;
+
+    public IVirtualMonitor? Create(int width, int height, double? dpi, CancellationToken ct, out string failureState)
     {
         lock (_gate)
         {
-            return CreateLocked(width, height, ct, out failureState);
+            return CreateLocked(width, height, dpi, ct, out failureState);
         }
     }
 
-    private IVirtualMonitor? CreateLocked(int width, int height, CancellationToken ct, out string failureState)
+    private IVirtualMonitor? CreateLocked(int width, int height, double? dpi, CancellationToken ct, out string failureState)
     {
         failureState = SecondaryMonitorStates.Failed;
         var inf = Path.Combine(_packageDir, "NexusVirtualDisplay.inf");
@@ -111,7 +123,9 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
                     map = MemoryMappedFile.OpenExisting(FrameSection.SectionName, MemoryMappedFileRights.Read);
                     var ready = EventWaitHandle.OpenExisting(FrameSection.ReadyName);
                     ServiceLog.Info($"[virtual-monitor] {width}x{height} up in {sw.ElapsedMilliseconds} ms");
-                    return new Monitor(this, new FrameSection(map, ready, width, height), stop, process, _helpers);
+                    var monitor = new Monitor(this, new FrameSection(map, ready, width, height), stop, process, _helpers);
+                    _claim.Set(monitor, dpi);
+                    return monitor;
                 }
                 catch (Exception ex) when (ex is FileNotFoundException or WaitHandleCannotBeOpenedException)
                 {
@@ -480,6 +494,7 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
             }
             _frames.Dispose();
             _owner.StopMonitor(_stop, _process);
+            _owner._claim.Clear(this);
             ServiceLog.Info("[virtual-monitor] removed");
         }
     }

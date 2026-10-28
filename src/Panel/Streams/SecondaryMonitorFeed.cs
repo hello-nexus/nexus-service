@@ -85,7 +85,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
     {
         int width = _hub.Width;
         int height = _hub.Height;
-        var monitor = _host.Create(width, height, _cts.Token, out var failure);
+        var monitor = _host.Create(width, height, _hub.Driver.Dpi, _cts.Token, out var failure);
         if (monitor is null)
         {
             SetState(failure);
