@@ -229,7 +229,7 @@ public class SmartLightProviderTests : IDisposable
         Assert.Single(_provider.GetAll().Devices);   // online -> shown
 
         _driver.PingResult = false;
-        await _provider.GetSmartLightDtosAsync(CancellationToken.None);
+        await ProbeAsync(3);
         Assert.Empty(_provider.GetAll().Devices);     // offline -> card hidden
 
         _driver.PingResult = true;
@@ -248,12 +248,82 @@ public class SmartLightProviderTests : IDisposable
         _driver.PingResult = true;
         await _provider.GetSmartLightDtosAsync(CancellationToken.None);  // absent->online: no transition
         _driver.PingResult = false;
-        await _provider.GetSmartLightDtosAsync(CancellationToken.None);  // online->offline: +1
+        await ProbeAsync(3);  // online->offline: +1
         await _provider.GetSmartLightDtosAsync(CancellationToken.None);  // still offline: no event
         _driver.PingResult = true;
         await _provider.GetSmartLightDtosAsync(CancellationToken.None);  // offline->online: +1
 
         Assert.Equal(2, events);
+    }
+
+    private async Task ProbeAsync(int times)
+    {
+        for (var i = 0; i < times; i++)
+            await _provider.GetSmartLightDtosAsync(CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task MissedProbes_belowThreshold_keepLightOnlineAndFiresNoEvent(int misses)
+    {
+        await _provider.PairAsync(
+            new PairSmartLightBody { Brand = "fake", Host = "1.2.3.4", StableKey = "bridge" }, CancellationToken.None);
+        var events = 0;
+        _provider.OnlineChanged += () => Interlocked.Increment(ref events);
+
+        _driver.PingResult = false;
+        await ProbeAsync(misses);
+
+        Assert.Single(_provider.GetAll().Devices);
+        Assert.Equal(0, events);
+    }
+
+    [Fact]
+    public async Task ThreeConsecutiveMisses_markLightOffline()
+    {
+        await _provider.PairAsync(
+            new PairSmartLightBody { Brand = "fake", Host = "1.2.3.4", StableKey = "bridge" }, CancellationToken.None);
+        var events = 0;
+        _provider.OnlineChanged += () => Interlocked.Increment(ref events);
+
+        _driver.PingResult = false;
+        await ProbeAsync(3);
+
+        Assert.Empty(_provider.GetAll().Devices);
+        Assert.Equal(1, events);
+    }
+
+    [Fact]
+    public async Task AnsweredProbe_resetsMissCount()
+    {
+        await _provider.PairAsync(
+            new PairSmartLightBody { Brand = "fake", Host = "1.2.3.4", StableKey = "bridge" }, CancellationToken.None);
+
+        _driver.PingResult = false;
+        await ProbeAsync(2);
+        _driver.PingResult = true;
+        await ProbeAsync(1);
+        _driver.PingResult = false;
+        await ProbeAsync(2);   // two more misses: the earlier two no longer count
+
+        Assert.Single(_provider.GetAll().Devices);
+        await ProbeAsync(1);   // third consecutive miss since the hit
+        Assert.Empty(_provider.GetAll().Devices);
+    }
+
+    [Fact]
+    public async Task OfflineLight_returnsOnFirstAnsweredProbe()
+    {
+        await _provider.PairAsync(
+            new PairSmartLightBody { Brand = "fake", Host = "1.2.3.4", StableKey = "bridge" }, CancellationToken.None);
+        _driver.PingResult = false;
+        await ProbeAsync(3);
+        Assert.Empty(_provider.GetAll().Devices);
+
+        _driver.PingResult = true;
+        await ProbeAsync(1);
+        Assert.Single(_provider.GetAll().Devices);
     }
 
     [Fact]
@@ -262,7 +332,7 @@ public class SmartLightProviderTests : IDisposable
         await _provider.PairAsync(
             new PairSmartLightBody { Brand = "fake", Host = "1.2.3.4", StableKey = "bridge" }, CancellationToken.None);
         _driver.PingResult = false;
-        await _provider.GetSmartLightDtosAsync(CancellationToken.None);
+        await ProbeAsync(3);
 
         Assert.Empty(_provider.GetAll().Devices);   // card hidden
         Assert.Single(_provider.BuildFrames(0));      // engine keeps sending (the reconnect signal)
@@ -279,7 +349,7 @@ public class SmartLightProviderTests : IDisposable
         _provider.BuildFrames(0); // populate the per-tick cache SubmitFrame needs
 
         _driver.PingResult = false;
-        await _provider.GetSmartLightDtosAsync(CancellationToken.None); // probe -> offline
+        await ProbeAsync(3); // probes -> offline
         Assert.Empty(_provider.GetAll().Devices);
 
         var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -334,20 +404,20 @@ public class SmartLightProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task ReachabilityPolling_probesAndHidesCard_whenOffline()
+    public async Task ReachabilityPolling_probesImmediately_andOneMissKeepsCard()
     {
         await _provider.PairAsync(
             new PairSmartLightBody { Brand = "fake", Host = "1.2.3.4", StableKey = "bridge" }, CancellationToken.None);
 
-        var flipped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _provider.OnlineChanged += () => flipped.TrySetResult();
+        var probed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _driver.OnPing = () => probed.TrySetResult();
 
         _driver.PingResult = false;
         _provider.StartReachabilityPolling();   // probes immediately, then on interval
 
-        await flipped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await probed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         _provider.StopReachabilityPolling();
-        Assert.Empty(_provider.GetAll().Devices);
+        Assert.Single(_provider.GetAll().Devices); // one miss keeps the card
     }
 
     [Fact]
@@ -533,6 +603,7 @@ public class SmartLightProviderTests : IDisposable
         public Action<byte, byte, byte>? OnAccumulate;
         public bool CanStreamResult;
         public bool PingResult = true;
+        public Action? OnPing;
         // What a scan discovers; defaults to the one paired light's host/key.
         public List<DiscoveredLight> DiscoverResult = new() { new DiscoveredLight("fake", "1.2.3.4", "Fake", "bridge") };
 
@@ -554,7 +625,8 @@ public class SmartLightProviderTests : IDisposable
         public Task IdentifyAsync(SmartLight dev, CancellationToken ct) => Task.CompletedTask;
         public int MinIntervalMs(SmartLight dev) => 10;
         public string RateLimitKey(SmartLight dev) => dev.Id;
-        public Task<bool> PingAsync(SmartLight dev, CancellationToken ct) => Task.FromResult(PingResult);
+        public Task<bool> PingAsync(SmartLight dev, CancellationToken ct)
+        { OnPing?.Invoke(); return Task.FromResult(PingResult); }
 
         public bool CanStream(SmartLight dev) => CanStreamResult;
         public void Accumulate(SmartLight dev, byte r, byte g, byte b) => OnAccumulate?.Invoke(r, g, b);

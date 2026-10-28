@@ -42,6 +42,11 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // Serializes the SetOnline read-modify; the probe loop and the
     // /smart-lights/all route both write _online.
     private readonly object _onlineLock = new();
+    // id -> consecutive missed probes; guarded by _onlineLock.
+    private readonly Dictionary<string, int> _missedProbes = new();
+    // A streaming light answers many status probes late or not at all, so one
+    // miss must not hide the card or stop the stream.
+    private const int MissedProbesBeforeOffline = 3;
     // id -> live snapshot, refreshed each BuildFrames so the 33 Hz writer's
     // SubmitFrame lookups don't re-parse settings per device per tick.
     private readonly ConcurrentDictionary<string, SmartLight> _cache = new();
@@ -792,6 +797,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         });
         _throttle.Remove(id);
         _online.TryRemove(id, out _);
+        lock (_onlineLock) _missedProbes.Remove(id);
         _cache.TryRemove(id, out _);
         _plans.TryRemove(id, out _);
         _streamedStatic.TryRemove(id, out _);
@@ -877,6 +883,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         {
             _throttle.Remove(id);
             _online.TryRemove(id, out _);
+            lock (_onlineLock) _missedProbes.Remove(id);
             _cache.TryRemove(id, out _);
             _plans.TryRemove(id, out _);
             _streamedStatic.TryRemove(id, out _);
@@ -939,6 +946,16 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         lock (_onlineLock)
         {
             var wasOnline = !_online.TryGetValue(id, out var prev) || prev;
+            if (online)
+            {
+                _missedProbes.Remove(id);
+            }
+            else
+            {
+                var missed = _missedProbes.GetValueOrDefault(id) + 1;
+                _missedProbes[id] = missed;
+                if (wasOnline && missed < MissedProbesBeforeOffline) return false;
+            }
             _online[id] = online;
             return wasOnline != online;
         }
