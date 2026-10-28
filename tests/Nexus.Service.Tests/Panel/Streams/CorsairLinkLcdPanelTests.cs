@@ -57,6 +57,28 @@ public class CorsairLinkLcdPanelTests
     }
 
     [Fact]
+    public void A_slow_send_lowers_the_jpeg_quality_and_a_run_of_fast_sends_restores_it()
+    {
+        var (lcd, device) = AttachLcd();
+        using var transport = new CorsairLinkLcdStreamTransport(lcd, "S1");
+        transport.Open();
+        var frame = new byte[CorsairLinkLcd.PanelWidth * CorsairLinkLcd.PanelHeight * 4];
+
+        device.WriteDelayMs = (int)CorsairLinkLcdStreamTransport.SlowSendMs + 50;
+        transport.Write(frame);
+        Assert.Equal(1, transport.QualityLevel);
+
+        device.WriteDelayMs = 0;
+        for (var i = 0; i < CorsairLinkLcdStreamTransport.StepUpAfterFrames - 1; i++)
+        {
+            transport.Write(frame);
+        }
+        Assert.Equal(1, transport.QualityLevel);
+        transport.Write(frame);
+        Assert.Equal(0, transport.QualityLevel);
+    }
+
+    [Fact]
     public void Transport_pushes_one_jpeg_once_a_whole_frame_has_arrived()
     {
         var (lcd, device) = AttachLcd();
@@ -178,6 +200,7 @@ public class CorsairLinkLcdPanelTests
     {
         public List<byte[]> Writes { get; } = new();
         public List<byte[]> Features { get; } = new();
+        public int WriteDelayMs { get; set; }
 
         public int VendorId => CorsairLinkLcd.LcdVendorId;
         public int ProductId => CorsairLinkLcd.AioPid;
@@ -193,6 +216,10 @@ public class CorsairLinkLcdPanelTests
         }
         public bool Write(ReadOnlySpan<byte> report)
         {
+            if (WriteDelayMs > 0)
+            {
+                System.Threading.Thread.Sleep(WriteDelayMs);
+            }
             Writes.Add(report.ToArray());
             return true;
         }
