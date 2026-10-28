@@ -31,6 +31,7 @@ public sealed class ScreenTimePoller : IDisposable
     private readonly HelperOutbound _outbound;
     private readonly JitteredPeriodicTimer _timer;
     private readonly object _lock = new();
+    private readonly ForegroundIdentityCache _identity = new();
 
     private string _currentApp = "";
     private int _currentPid;
@@ -70,15 +71,31 @@ public sealed class ScreenTimePoller : IDisposable
             GetWindowThreadProcessId(hwnd, out var pid);
             if (pid == 0) return;
 
-            string appName;
-            try
+            // Name and path are stable for a given (hwnd, pid); geometry is
+            // re-read every pass because it can change while focus holds.
+            if (!_identity.TryGet(hwnd, (int)pid, out var appName, out var exePath))
             {
-                using var proc = Process.GetProcessById((int)pid);
-                appName = proc.ProcessName;
-            }
-            catch { return; }
+                exePath = TryGetExePath(pid);
+                var fromPath = exePath is null ? "" : ForegroundIdentityCache.ProcessNameFromPath(exePath);
+                if (fromPath.Length > 0)
+                {
+                    appName = fromPath;
+                }
+                else
+                {
+                    // Path unreadable: Process.ProcessName also resolves names the
+                    // image-path query cannot, at the cost of a process snapshot.
+                    try
+                    {
+                        using var proc = Process.GetProcessById((int)pid);
+                        appName = proc.ProcessName;
+                    }
+                    catch { return; }
+                }
 
-            var exePath = TryGetExePath(pid);
+                _identity.Store(hwnd, (int)pid, appName, exePath);
+            }
+
             var (winW, winH, monitorDevice) = ReadWindowGeometry(hwnd);
 
             ApplyFocus(appName, (int)pid, exePath, winW, winH, monitorDevice);
