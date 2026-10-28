@@ -484,6 +484,18 @@ public class SmartLightProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task SlowSpacedMisses_keepTheirStreak_andGoOffline()
+    {
+        await PairOneAsync();
+        _driver.PingResult = false;
+        await ProbeAsync();
+        Advance(20_000);                    // beyond the offline window, inside the stale gap
+        await ProbeAsync();
+
+        Assert.Empty(_provider.GetAll().Devices);
+    }
+
+    [Fact]
     public async Task MissesFromBeforeAGap_doNotCarryForward()
     {
         await PairOneAsync();

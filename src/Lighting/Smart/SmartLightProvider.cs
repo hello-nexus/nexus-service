@@ -31,10 +31,12 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // interval is the only signal that drops/restores the card.
     private const int ReachabilityPollSeconds = 5;
     // A streaming light answers many status probes late or not at all. It goes
-    // offline only after this many misses spanning at least this long. A gap
-    // between probes longer than this starts a fresh streak.
+    // offline only after this many misses spanning at least this long.
     private const long OfflineAfterMs = 15_000;
     private const int MissesBeforeOffline = 2;
+    // A gap between probes longer than this (no lighting view open) starts a
+    // fresh streak; a poll stretched by slow dead hosts stays inside it.
+    private const long StaleProbeGapMs = 60_000;
 
     private readonly Dictionary<string, ILightDriver> _drivers;
     private readonly IConfigStore _store;
@@ -978,7 +980,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
                 // Leftover misses from before a gap (no lighting view, brand off)
                 // must not count toward this streak.
                 var fresh = !_probeState.TryGetValue(id, out var st) || st.Misses == 0
-                    || now - st.LastProbe > OfflineAfterMs;
+                    || now - st.LastProbe > StaleProbeGapMs;
                 var firstMiss = fresh ? now : st.FirstMiss;
                 var misses = fresh ? 1 : st.Misses + 1;
                 _probeState[id] = (now, firstMiss, misses);
