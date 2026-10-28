@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nexus.Service.Models.Displays;
+using Nexus.Service.Platform.Displays;
 
 namespace Nexus.Service.Panel;
 
@@ -9,9 +10,10 @@ internal readonly record struct RelinkRecord(
     string RecordId,
     string DisplayId,
     DisplayFingerprint? Fingerprint,
-    IReadOnlyList<string>? Siblings = null);
+    IReadOnlyList<string>? Siblings = null,
+    string? Family = null);
 
-internal readonly record struct RelinkDisplay(string Id, DisplayFingerprint? Fingerprint, bool IsPrimary = false);
+internal readonly record struct RelinkDisplay(string Id, DisplayFingerprint? Fingerprint, bool IsPrimary = false, int Width = 0, int Height = 0);
 
 /// <param name="Weak">The match rests on model alone (a serial is missing or placeholder on a side); such moves need confirmation across scans.</param>
 internal readonly record struct RelinkMove(string RecordId, string OldDisplayId, string NewDisplayId, DisplayFingerprint Fingerprint, bool Weak);
@@ -37,11 +39,13 @@ internal static class PanelDisplayRelink
         var plan = new RelinkPlan();
         var shown = Demote(displays);
         var attached = new Dictionary<string, DisplayFingerprint?>(StringComparer.Ordinal);
+        var sizes = new Dictionary<string, (int Width, int Height)>(StringComparer.Ordinal);
         var primary = new HashSet<string>(StringComparer.Ordinal);
         foreach (var d in shown)
         {
             if (string.IsNullOrEmpty(d.Id)) continue;
             attached.TryAdd(d.Id, d.Fingerprint);
+            sizes.TryAdd(d.Id, (d.Width, d.Height));
             if (d.IsPrimary) primary.Add(d.Id);
         }
         var claimed = new HashSet<string>(records.Select(r => r.DisplayId), StringComparer.Ordinal);
@@ -63,12 +67,16 @@ internal static class PanelDisplayRelink
 
         var unclaimed = attached
             .Where(kv => kv.Value is not null && !claimed.Contains(kv.Key))
-            .Select(kv => new RelinkDisplay(kv.Key, kv.Value))
+            .Select(kv => new RelinkDisplay(kv.Key, kv.Value, false, sizes[kv.Key].Width, sizes[kv.Key].Height))
             .ToList();
 
         // A monitor that was attached beside the record's own display is a different one.
+        // A resolution-gated family (generic EDID shared with other monitors) only follows a display that still passes its gate.
         static bool Eligible(RelinkRecord orphan, RelinkDisplay d)
-            => orphan.Siblings is null || !orphan.Siblings.Contains(d.Id, StringComparer.Ordinal);
+            => (orphan.Siblings is null || !orphan.Siblings.Contains(d.Id, StringComparer.Ordinal))
+               && (orphan.Family != KnownPanelDisplays.HyteY60Family
+                   || (d.Fingerprint is not null
+                       && KnownPanelDisplays.Match(d.Fingerprint.Manufacturer, d.Fingerprint.Product, null, d.Width, d.Height)?.Family == orphan.Family));
 
         foreach (var orphan in orphans.Where(o => IsStrong(o.Fingerprint!)).ToList())
         {

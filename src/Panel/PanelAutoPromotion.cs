@@ -39,6 +39,15 @@ public sealed class PanelAutoPromotion
     // connect. In memory only: the model is already marked seen, so a restart
     // before the replay falls back to the manual orientation picker.
     private readonly ConcurrentDictionary<string, string> _pendingOrientation = new(StringComparer.Ordinal);
+    /// <summary>Queue failed rotations for replay; only meaningful where a replay trigger exists.</summary>
+    internal bool QueueFailedRotations { get; init; } =
+#if WINDOWS
+        true;
+#else
+        false;
+#endif
+    private Task _rotationTask = Task.CompletedTask;
+    internal Task RotationsIdle => _rotationTask;
     // The helper's read loop starts just after Connected fires, so the first
     // replay attempt can race it; keep the attempt count small.
     private const int ReplayAttempts = 2;
@@ -56,6 +65,9 @@ public sealed class PanelAutoPromotion
         _registry = registry;
         _store = store;
         _orientation = orientation;
+        // A manual rotation (POST /displays/{id}/rotation) or any later orientation write
+        // supersedes a queued default.
+        _registry.DisplayOrientationUpdated += id => _pendingOrientation.TryRemove(id, out _);
 #if WINDOWS
         helpers?.Connected += OnHelperConnected;
 #endif
@@ -81,6 +93,7 @@ public sealed class PanelAutoPromotion
             try { await Task.Delay(ReplayGapMs).ConfigureAwait(false); }
             catch { return; }
         }
+        _pendingOrientation.Clear();
         ServiceLog.Warn($"[panel-auto-promote] orientation replay gave up after {ReplayAttempts} attempts");
     }
 
@@ -88,6 +101,8 @@ public sealed class PanelAutoPromotion
     {
         if (_orientation is null) return false;
         var record = _registry.FindByDisplayId(displayId);
+        // The panel record was removed: nothing to rotate for.
+        if (record is null) return true;
         var (ok, error) = _orientation.SetDisplayOrientation(displayId, orientation, PanelDeviceRegistry.ResolveCoverBackgroundHex(record));
         ServiceLog.Info($"[panel-auto-promote] default orientation {orientation} displayId={displayId} ok={ok} detail='{error}'");
         // Same persistence as POST /displays/{id}/rotation.
@@ -98,7 +113,7 @@ public sealed class PanelAutoPromotion
     /// <summary>Applies a first-promotion default orientation now, or queues it for the helper-connect replay.</summary>
     private void ApplyDefaultOrientation(string displayId, string orientation)
     {
-        if (!TryApplyOrientation(displayId, orientation)) _pendingOrientation[displayId] = orientation;
+        if (!TryApplyOrientation(displayId, orientation) && QueueFailedRotations) _pendingOrientation[displayId] = orientation;
     }
 
     /// <summary>
@@ -144,9 +159,7 @@ public sealed class PanelAutoPromotion
                 var (record, _) = _registry.AllocateForDisplay(display.Id, display.Name, capabilities, display.Fingerprint);
                 (markSeen ??= new List<string>()).Add(identity);
                 (promoted ??= new List<string>()).Add(record.Id);
-                // Landscape is detected from the pixel shape: width > height.
-                if (known.DefaultOrientation is { } target
-                    && display.Resolution is { } size && size.Width > size.Height)
+                if (known.DefaultOrientation is { } target && IsLandscape(display))
                 {
                     (rotations ??= new List<(string, string)>()).Add((display.Id, target));
                 }
@@ -165,12 +178,26 @@ public sealed class PanelAutoPromotion
             }
             result = (IReadOnlyList<string>?)promoted ?? Array.Empty<string>();
         }
-        // Outside the lock: the rotate is a blocking helper round-trip.
+        // Off this thread: the rotate is a blocking helper round-trip, and the
+        // display change it causes triggers a fresh topology pass.
         if (rotations is not null)
         {
-            foreach (var (displayId, orientation) in rotations) ApplyDefaultOrientation(displayId, orientation);
+            var batch = rotations;
+            _rotationTask = Task.Run(() =>
+            {
+                foreach (var (displayId, orientation) in batch) ApplyDefaultOrientation(displayId, orientation);
+            });
         }
         return result;
+    }
+
+    private static bool IsLandscape(DisplayTopologyEntryDto display)
+    {
+        if (!string.IsNullOrEmpty(display.Orientation))
+        {
+            return display.Orientation is DisplayOrientations.Landscape or DisplayOrientations.LandscapeFlipped;
+        }
+        return display.Resolution is { } size && size.Width > size.Height;
     }
 
     private static string ModelIdentity(DisplayTopologyEntryDto display)

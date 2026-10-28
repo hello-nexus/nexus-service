@@ -137,7 +137,7 @@ public class PanelAutoPromotionTests
         var store = new InMemoryConfigStore();
         var registry = new PanelDeviceRegistry(store);
         var orientation = new FakeDisplayOrientationProvider();
-        return (new PanelAutoPromotion(registry, store, orientation), registry, store, orientation);
+        return (new PanelAutoPromotion(registry, store, orientation) { QueueFailedRotations = true }, registry, store, orientation);
     }
 
     [Fact]
@@ -155,11 +155,12 @@ public class PanelAutoPromotionTests
     }
 
     [Fact]
-    public void Y60_first_promotion_rotates_to_portrait_flipped_and_persists_once()
+    public async Task Y60_first_promotion_rotates_to_portrait_flipped_and_persists_once()
     {
         var (promotion, registry, _, orientation) = BuildWithOrientation();
 
         promotion.Reconcile(Topology(Y60()));
+        await promotion.RotationsIdle;
 
         var call = Assert.Single(orientation.Calls);
         Assert.Equal((Y60DisplayId, "PortraitFlipped"), (call.DisplayId, call.Orientation));
@@ -170,17 +171,19 @@ public class PanelAutoPromotionTests
         promotion.Reconcile(Topology(Y60(515, 1920)));
         registry.UpdateDisplayOrientation(Y60DisplayId, "Portrait");
         promotion.Reconcile(Topology(Y60()));
+        await promotion.RotationsIdle;
         Assert.Single(orientation.Calls);
         Assert.Equal("Portrait", registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
         Assert.Equal(record.Id, registry.FindByDisplayId(Y60DisplayId)!.Id);
     }
 
     [Fact]
-    public void Y60_already_portrait_is_promoted_without_rotating()
+    public async Task Y60_already_portrait_is_promoted_without_rotating()
     {
         var (promotion, _, _, orientation) = BuildWithOrientation();
 
         Assert.Single(promotion.Reconcile(Topology(Y60(515, 1920))));
+        await promotion.RotationsIdle;
 
         Assert.Empty(orientation.Calls);
     }
@@ -193,7 +196,8 @@ public class PanelAutoPromotionTests
         orientation.NextError = "no helper connected";
 
         promotion.Reconcile(Topology(Y60()));
-        Assert.Null(registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
+        await promotion.RotationsIdle;
+        Assert.NotEqual("PortraitFlipped", registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
 
         orientation.NextOk = true;
         await promotion.ReplayPendingAsync();
@@ -202,6 +206,39 @@ public class PanelAutoPromotionTests
         Assert.Equal("PortraitFlipped", registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
         await promotion.ReplayPendingAsync();
         Assert.Equal(2, orientation.Calls.Count);
+    }
+
+    [Fact]
+    public async Task Y60_pending_rotation_is_dropped_when_user_rotates_by_hand()
+    {
+        var (promotion, registry, _, orientation) = BuildWithOrientation();
+        orientation.NextOk = false;
+        promotion.Reconcile(Topology(Y60()));
+        await promotion.RotationsIdle;
+
+        // Manual rotation route persists the user's choice, then the helper reconnects.
+        registry.UpdateDisplayOrientation(Y60DisplayId, "Landscape");
+        orientation.NextOk = true;
+        await promotion.ReplayPendingAsync();
+
+        Assert.Single(orientation.Calls);
+        Assert.Equal("Landscape", registry.FindByDisplayId(Y60DisplayId)!.Capabilities?.Orientation);
+    }
+
+    [Fact]
+    public async Task Y60_failed_rotation_is_not_queued_without_a_replay_path()
+    {
+        var store = new InMemoryConfigStore();
+        var registry = new PanelDeviceRegistry(store);
+        var orientation = new FakeDisplayOrientationProvider { NextOk = false };
+        var promotion = new PanelAutoPromotion(registry, store, orientation) { QueueFailedRotations = false };
+
+        promotion.Reconcile(Topology(Y60()));
+        await promotion.RotationsIdle;
+        orientation.NextOk = true;
+        await promotion.ReplayPendingAsync();
+
+        Assert.Single(orientation.Calls);
     }
 
     [Fact]

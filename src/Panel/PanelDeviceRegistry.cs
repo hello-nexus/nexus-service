@@ -240,7 +240,7 @@ public sealed class PanelDeviceRegistry
         static List<RelinkRecord> Snapshot(IEnumerable<PanelDeviceRecord> records)
             => records
                 .Where(r => !string.IsNullOrEmpty(r.DisplayId))
-                .Select(r => new RelinkRecord(r.Id, r.DisplayId!, r.DisplayFingerprint, r.SiblingDisplayIds?.ToList()))
+                .Select(r => new RelinkRecord(r.Id, r.DisplayId!, r.DisplayFingerprint, r.SiblingDisplayIds?.ToList(), r.Capabilities?.Family))
                 .ToList();
 
         RelinkPlan precheck = null!;
@@ -344,9 +344,18 @@ public sealed class PanelDeviceRegistry
     /// orientation). The live OS rotation in /displays/topology stays the
     /// authoritative read; this survives service restarts and replug.
     /// </summary>
+    /// <summary>Raised after a display's orientation was persisted, with its display id.</summary>
+    internal event Action<string>? DisplayOrientationUpdated;
+
     public void UpdateDisplayOrientation(string displayId, string orientation)
     {
         if (string.IsNullOrWhiteSpace(displayId)) return;
+        try { PersistDisplayOrientation(displayId, orientation); }
+        finally { DisplayOrientationUpdated?.Invoke(displayId); }
+    }
+
+    private void PersistDisplayOrientation(string displayId, string orientation)
+    {
         _store.Update(s =>
         {
             foreach (var record in s.PanelDevices.Values)

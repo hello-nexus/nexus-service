@@ -40,8 +40,8 @@ public static class KnownPanelDisplays
 
     public const string HyteY60Family = "hyte-y60";
 
-    // HYTE Y60 upgrade kit: 12.6" 1920x515 non-touch bar mounted vertically.
-    // sqrt(1920^2 + 515^2) / 12.6 = 158 px/inch.
+    // HYTE Y60 upgrade kit: non-touch bar mounted vertically; dpi is the
+    // native diagonal over the panel's physical diagonal.
     private static readonly KnownPanelDisplay HyteY60 = new(
         HyteY60Family, 158, Touch: false, DefaultOrientation: Nexus.Service.Models.Displays.DisplayOrientations.PortraitFlipped);
 
