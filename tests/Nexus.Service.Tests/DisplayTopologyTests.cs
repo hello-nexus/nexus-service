@@ -366,6 +366,106 @@ public sealed class DisplayTopologyTests : IDisposable
         Assert.Null(_registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
     }
 
+    private sealed class FakeVirtualHost : Nexus.Service.Panel.Streams.IVirtualMonitorHost
+    {
+        public double? Owned;
+        public bool IsAvailable => true;
+        public event Action? OwnedDisplayClaimed;
+        public void RaiseClaimed() => OwnedDisplayClaimed?.Invoke();
+        public Nexus.Service.Panel.Streams.IVirtualMonitor? Create(int width, int height, double? dpi, System.Threading.CancellationToken ct, out string failureState)
+        {
+            failureState = "";
+            return null;
+        }
+        public double? OwnedDisplayDpi(string adapterName) => adapterName == "Owned Adapter" ? Owned : null;
+    }
+
+    private static RawDisplayInfo VirtualDisplay()
+    {
+        var d = Monitor("NXS0001-9");
+        d.AdapterName = "Owned Adapter";
+        d.ResolutionWidth = 1920;
+        d.ResolutionHeight = 480;
+        d.Scale = 1.0;
+        d.Dpi = 96;
+        return d;
+    }
+
+    [Fact]
+    public void Owned_virtual_display_reports_the_device_dpi_and_other_monitors_keep_theirs()
+    {
+        var other = Monitor("DEL41B7-1");
+        other.Dpi = 140;
+        var provider = new FakeProvider { Displays = new List<RawDisplayInfo> { VirtualDisplay(), other } };
+        var service = new DisplayTopologyService(provider, _registry, null, new FakeVirtualHost { Owned = 225 });
+
+        var topo = service.GetTopology();
+
+        Assert.Equal(225, topo.Displays[0].Dpi);
+        Assert.Equal(140, topo.Displays[1].Dpi);
+    }
+
+    [Fact]
+    public void Owned_virtual_display_without_a_device_dpi_keeps_the_edid_dpi()
+    {
+        var provider = new FakeProvider { Displays = new List<RawDisplayInfo> { VirtualDisplay() } };
+        var service = new DisplayTopologyService(provider, _registry, null, new FakeVirtualHost { Owned = null });
+
+        Assert.Equal(96, service.GetTopology().Displays[0].Dpi);
+    }
+
+    [Fact]
+    public void Promoted_virtual_display_record_follows_the_claim()
+    {
+        var display = VirtualDisplay();
+        var host = new FakeVirtualHost { Owned = null };
+        var service = new DisplayTopologyService(new FakeProvider { Displays = new List<RawDisplayInfo> { display } }, _registry, null, host);
+        _registry.AllocateForDisplay(display.Id, display.Name, new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Dpi = 96 });
+        var changed = new List<IReadOnlyList<string>>();
+        service.PromotedPanelCapabilitiesChanged += ids => changed.Add(ids);
+
+        host.Owned = 225;
+        service.GetTopology();
+
+        Assert.Equal(225, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
+        Assert.Single(changed);
+    }
+
+    [Fact]
+    public void A_claim_set_after_the_arrival_scan_triggers_a_rescan_that_corrects_the_record()
+    {
+        var display = VirtualDisplay();
+        var host = new FakeVirtualHost { Owned = null };
+        var service = new DisplayTopologyService(new FakeProvider { Displays = new List<RawDisplayInfo> { display } }, _registry, null, host);
+        _registry.AllocateForDisplay(display.Id, display.Name, new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Dpi = 96 });
+        service.GetTopology();
+        Assert.Equal(96, _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi);
+
+        host.Owned = 225;
+        host.RaiseClaimed();
+
+        Assert.True(System.Threading.SpinWait.SpinUntil(() => _registry.FindByDisplayId(display.Id)!.Capabilities?.Dpi == 225, 5000));
+    }
+
+    [Fact]
+    public void Virtual_display_claim_is_cleared_only_by_the_monitor_that_set_it()
+    {
+        var claim = new VirtualDisplayClaim();
+        var older = new object();
+        var newer = new object();
+        int raised = 0;
+        claim.Claimed += () => raised++;
+
+        claim.Set(older, 225);
+        Assert.Equal(225, claim.Dpi);
+        claim.Set(newer, 300);
+        claim.Clear(older);
+        Assert.Equal(300, claim.Dpi);
+        claim.Clear(newer);
+        Assert.Null(claim.Dpi);
+        Assert.Equal(2, raised);
+    }
+
     // A Dell U2415 EDID with its detailed timing descriptor filled in.
     private static byte[] U2415Edid()
     {

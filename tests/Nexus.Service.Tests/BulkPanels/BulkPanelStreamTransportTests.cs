@@ -85,6 +85,21 @@ public class BulkPanelStreamTransportTests
     }
 
     [Fact]
+    public void Secondary_monitor_is_created_with_the_driver_density()
+    {
+        using var hub = new BulkPanelHub(new UndimmableDriver { SecondaryMonitor = true });
+        Assert.True(hub.Attach(new RecordingPipe(), null));
+        var host = new FakeMonitorHost();
+        using var transport = new BulkPanelStreamTransport(hub, "serial", host);
+        transport.BindSecondaryMonitor(() => true);
+
+        transport.ApplySecondaryMonitor();
+
+        Assert.True(SpinWait.SpinUntil(() => host.Monitor is not null, 5000));
+        Assert.Equal(225, host.CreatedDpi);
+    }
+
+    [Fact]
     public void Secondary_monitor_reports_a_missing_driver()
     {
         using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
@@ -115,8 +130,13 @@ public class BulkPanelStreamTransportTests
         public string? Failure { get; init; }
         public FakeMonitor? Monitor { get; private set; }
 
-        public IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState)
+        public double? CreatedDpi { get; private set; }
+        public double? OwnedDisplayDpi(string adapterName) => null;
+        public event Action? OwnedDisplayClaimed { add { } remove { } }
+
+        public IVirtualMonitor? Create(int width, int height, double? dpi, CancellationToken ct, out string failureState)
         {
+            CreatedDpi = dpi;
             failureState = Failure ?? SecondaryMonitorStates.Failed;
             if (Failure is not null)
             {
@@ -157,6 +177,9 @@ public class BulkPanelStreamTransportTests
     /// <summary>A panel with no backlight command that connects on any pipe.</summary>
     private sealed class UndimmableDriver : IBulkPanelDriver
     {
+        public bool SecondaryMonitor { get; init; }
+        public bool SupportsSecondaryMonitor => SecondaryMonitor;
+        public double? Dpi => SecondaryMonitor ? 225 : null;
         public string HandlerId => "test-undimmable";
         public string Name => "Undimmable";
         public int VendorId => 0x1234;
