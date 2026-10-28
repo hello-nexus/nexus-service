@@ -244,7 +244,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
             long? otherHostHeardMs = null;
             // The full init trace is attached only when it differs from the last one logged this run.
             string? lastLoggedTrace = null;
-            string? lastHeardHex = null;
+            var ownEchoLogged = false;
             while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("corsair"))
             {
                 // Unplugged: the session ends and a new one starts when the hub returns.
@@ -259,17 +259,16 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
 
                 var listenStartMs = Environment.TickCount64;
                 var heardOther = hub.HearsOtherHost(device, ListenMs, out var heardHex, out var ownEcho);
-                if (ownEcho && lastHeardHex != heardHex)
+                if (ownEcho && !ownEchoLogged)
                 {
-                    lastHeardHex = heardHex;
-                    ServiceLog.Info($"{Tag(hub)} heard a reply to a command Nexus sent moments ago; not counted as another program ({heardHex})");
+                    ownEchoLogged = true;
+                    ServiceLog.Info($"{Tag(hub)} heard a late reply to a command Nexus sent; not counted as another program ({heardHex})");
                 }
                 if (heardOther)
                 {
                     device.Dispose();
-                    if (otherHostHeardMs is null || lastHeardHex != heardHex)
+                    if (otherHostHeardMs is null)
                     {
-                        lastHeardHex = heardHex;
                         ServiceLog.Info($"{Tag(hub)} another program is driving the hub; waiting for it to stop (heard {heardHex} after {Environment.TickCount64 - listenStartMs}ms)");
                     }
                     otherHostHeardMs = Environment.TickCount64;
@@ -315,6 +314,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                 }
                 initRetryMs = ConnectPollMs;
                 otherHostHeardMs = null;
+                ownEchoLogged = false;
 
                 ServiceLog.Info($"{Tag(hub)} connected fw={hub.State.Firmware} devices={hub.State.Devices.Count}");
                 EnsureLcd();
