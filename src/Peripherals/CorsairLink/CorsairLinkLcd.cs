@@ -54,6 +54,18 @@ public sealed class CorsairLinkLcd
     private bool _retired;
     private int _repaintRequested;
     private int _attachGeneration;
+    private long _lastFrameEndMs = long.MinValue / 2;
+
+    /// <summary>
+    /// Idle time guaranteed between one frame's last chunk and the next frame's first. Frames
+    /// sent back to back fill the LCD's buffer, one chunk then blocks 250-700 ms, and a
+    /// sustained run of that drops the device off USB; a 25 ms gap measured zero stalls.
+    /// The paced stream writer catches up after a slow send, so it cannot supply this itself.
+    /// </summary>
+    internal const int MinFrameGapMs = 25;
+
+    internal static int GapRemainingMs(long nowMs, long lastFrameEndMs) =>
+        (int)Math.Clamp(lastFrameEndMs + MinFrameGapMs - nowMs, 0, MinFrameGapMs);
 
     public CorsairLinkLcd(Nexus.Service.Lighting.LcdLockState? lockState = null)
     {
@@ -260,38 +272,52 @@ public sealed class CorsairLinkLcd
         {
             if (_device is null) return false;
 
-            _claimed = true;
-            if (!_hostMode)
+            var wait = GapRemainingMs(Environment.TickCount64, _lastFrameEndMs);
+            if (wait > 0) System.Threading.Thread.Sleep(wait);
+            try
             {
-                _hostMode = _device.SetFeature(HostModeOn);
+                return SendFrameLocked(jpeg);
             }
-            var lcdSlice = _writeBuffer.AsSpan(0, LcdBufferSize);
-            var offset = 0;
-            var total = jpeg.Length;
-            var chunkIndex = 0;
-
-            while (offset < total)
+            finally
             {
-                var remaining = total - offset;
-                var isLast = remaining <= MaxPayloadPerChunk;
-                var chunkSize = ComputeChunkSize(offset, total, isLast);
-
-                lcdSlice.Clear();
-                FillChunkHeader(lcdSlice, chunkIndex, chunkSize, isLast);
-                jpeg.Slice(offset, chunkSize).CopyTo(lcdSlice.Slice(LcdHeaderSize));
-
-                if (!_device.Write(_writeBuffer))
-                {
-                    if (++_failedWrites >= FailedWritesBeforeDrop) DropDevice();
-                    return false;
-                }
-                _failedWrites = 0;
-
-                offset += chunkSize;
-                chunkIndex++;
+                _lastFrameEndMs = Environment.TickCount64;
             }
-            return true;
         }
+    }
+
+    private bool SendFrameLocked(System.ReadOnlySpan<byte> jpeg)
+    {
+        _claimed = true;
+        if (!_hostMode)
+        {
+            _hostMode = _device!.SetFeature(HostModeOn);
+        }
+        var lcdSlice = _writeBuffer.AsSpan(0, LcdBufferSize);
+        var offset = 0;
+        var total = jpeg.Length;
+        var chunkIndex = 0;
+
+        while (offset < total)
+        {
+            var remaining = total - offset;
+            var isLast = remaining <= MaxPayloadPerChunk;
+            var chunkSize = ComputeChunkSize(offset, total, isLast);
+
+            lcdSlice.Clear();
+            FillChunkHeader(lcdSlice, chunkIndex, chunkSize, isLast);
+            jpeg.Slice(offset, chunkSize).CopyTo(lcdSlice.Slice(LcdHeaderSize));
+
+            if (!_device!.Write(_writeBuffer))
+            {
+                if (++_failedWrites >= FailedWritesBeforeDrop) DropDevice();
+                return false;
+            }
+            _failedWrites = 0;
+
+            offset += chunkSize;
+            chunkIndex++;
+        }
+        return true;
     }
 
     public bool SetBrightness(byte value)

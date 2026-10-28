@@ -206,6 +206,29 @@ public class CorsairLinkLcdTests
         Assert.Equal(new byte[] { 0x03, 0x1d, 0x00, 0x01 }, device.Features[2]);
     }
 
+    [Theory]
+    [InlineData(1000, 1000, 25)]
+    [InlineData(1000, 990, 15)]
+    [InlineData(1000, 975, 0)]
+    [InlineData(1000, 500, 0)]
+    [InlineData(1000, long.MinValue / 2, 0)]
+    public void Gap_remaining_is_the_idle_time_left_since_the_last_frame_ended(long now, long lastEnd, int expected)
+    {
+        Assert.Equal(expected, CorsairLinkLcd.GapRemainingMs(now, lastEnd));
+    }
+
+    [Fact]
+    public void Back_to_back_frames_are_separated_by_the_minimum_idle_gap()
+    {
+        var (lcd, _) = AttachLcd();
+        var jpeg = new byte[] { 0xFF, 0xD8, 0xFF };
+        lcd.SendFrame(jpeg);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        lcd.SendFrame(jpeg);
+        // Lower bound only; the sleep may overshoot but never undershoots by more than a tick.
+        Assert.True(sw.ElapsedMilliseconds >= CorsairLinkLcd.MinFrameGapMs - 2, $"gap was {sw.ElapsedMilliseconds} ms");
+    }
+
     [Fact]
     public void Host_mode_is_entered_once_and_again_after_a_screen_select()
     {
