@@ -30,10 +30,10 @@ void main() {
         vec2 range = vec2(ar - rad, 1.0 - rad);
         vec2 rate = vec2(0.13 + fract(fi * 0.173) * 0.17, 0.11 + fract(fi * 0.241) * 0.19);
         vec3 tint = tintedPalette(fi * 0.137 + t * 0.03);
-        for (int kk = 0; kk < 4; kk++) {
-            int k = 3 - kk;
+        for (int kk = 0; kk < 3; kk++) {
+            int k = 2 - kk;
             if (k > 0 && trail < 0.02) continue;
-            float lag = float(k) * 0.045 * trail;
+            float lag = float(k) * 0.06 * trail;
             vec2 ph = (t - lag) * rate + vec2(fi * 0.317, fi * 0.531);
             vec2 c = (vec2(tri(ph.x), tri(ph.y)) * 2.0 - 1.0) * range;
             vec2 wall = (1.0 - abs(c) / range);
@@ -41,7 +41,10 @@ void main() {
             float sqy = smoothstep(0.12, 0.0, wall.y);
             vec2 axes = vec2(1.0 + 0.3 - 0.55 * sqx + 0.25 * sqy, 1.0 - 0.15 + 0.3 * sqx - 0.55 * sqy);
             float d = length((uv - c) / (rad * axes));
-            float fade = k == 0 ? 1.0 : (0.55 - float(k) * 0.14) * trail;
+            if (d > 3.2) {
+                continue;
+            }
+            float fade = k == 0 ? 1.0 : (0.55 - float(k) * 0.2) * trail;
             float body = smoothstep(1.0, 0.8, d);
             float lit = 1.0 - smoothstep(0.0, 1.0, length((uv - c) / (rad * axes) - vec2(-0.3, -0.35)));
             col += tint * exp(-d * d * 0.7) * 0.55 * fade;

@@ -6,9 +6,11 @@ uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full s
 
 // Flow direction at a point: a smooth angle field that slowly evolves.
 float fieldAngle(vec2 p, float t) {
-    return 2.3 * sin(p.x * 1.25 + p.y * 0.8 + t * 0.6)
-         + 1.9 * cos(p.y * 1.6 - p.x * 0.7 - t * 0.45)
-         + 1.1 * sin((p.x + p.y) * 2.1 + t * 0.9);
+    // The whole field also turns slowly, so stroke directions keep sweeping around.
+    return 2.3 * sin(p.x * 1.25 + p.y * 0.8 + t * 1.2)
+         + 1.9 * cos(p.y * 1.6 - p.x * 0.7 - t * 0.95)
+         + 1.1 * sin((p.x + p.y) * 2.1 + t * 1.7)
+         + t * 0.35;
 }
 
 // Streamlines made visible: each pixel averages fine grain along the field line
@@ -18,6 +20,8 @@ float fieldAngle(vec2 p, float t) {
 void main() {
     vec2 uv = uvCentered();
     float t = mod(u_time * u_speed * u_flow * 0.5, 1000.0);
+    // Gentle drift of the whole pattern.
+    uv += vec2(sin(t * 0.35), cos(t * 0.28)) * 0.18;
     float streams = clamp(u_streams, 0.3, 4.0);
     float spread = clamp(u_colorSpread, 0.0, 2.0);
 
@@ -39,15 +43,15 @@ void main() {
         pb -= stepLen * vec2(cos(ab), sin(ab));
         float grainF = vnoise(pf * grain);
         float grainB = vnoise(pb * grain);
-        float pulseF = 0.55 + 0.45 * sin(-fi * 0.7 + t * 6.0 + grainF * 6.0);
-        float pulseB = 0.55 + 0.45 * sin(fi * 0.7 + t * 6.0 + grainB * 6.0);
+        float pulseF = 0.55 + 0.45 * sin(-fi * 0.7 + t * 12.0 + grainF * 6.0);
+        float pulseB = 0.55 + 0.45 * sin(fi * 0.7 + t * 12.0 + grainB * 6.0);
         acc += w * (grainF + grainB);
         accP += w * (pulseF * grainF + pulseB * grainB);
         wsum += 2.0 * w;
     }
     float stroke = smoothstep(0.0, 1.0, (acc / wsum - 0.5) * 7.0 + 0.5);
     float pulse = clamp(accP / max(acc, 1e-3), 0.3, 1.0);
-    stroke *= 0.45 + 0.8 * pulse;
+    stroke *= 0.3 + 1.1 * pulse;
 
     vec3 body = tintedPalette(0.5 + ang0 / 12.0 + spread * (vnoise(uv * 2.0 + t * 0.1) - 0.5) + t * 0.03);
     vec3 col = body * (0.15 + 1.6 * stroke);

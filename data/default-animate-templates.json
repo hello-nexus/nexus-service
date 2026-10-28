@@ -3295,8 +3295,8 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.3,
-    "contrast": 1.1,
+    "saturation": 1.45,
+    "contrast": 1.15,
     "params": {
      "u_wind": 1.2,
      "u_density": 1.0,
@@ -3309,8 +3309,8 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.3,
-    "contrast": 1.1,
+    "saturation": 1.45,
+    "contrast": 1.15,
     "params": {
      "u_wind": 2.0,
      "u_density": 1.4,
@@ -3323,8 +3323,8 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.3,
-    "contrast": 1.1,
+    "saturation": 1.45,
+    "contrast": 1.15,
     "params": {
      "u_wind": 0.6,
      "u_density": 0.7,
@@ -3337,8 +3337,8 @@
     "intensity": 1,
     "hue": 0.04,
     "colorize": 0,
-    "saturation": 1.3,
-    "contrast": 1.1,
+    "saturation": 1.45,
+    "contrast": 1.15,
     "params": {
      "u_wind": 1.6,
      "u_density": 1.2,

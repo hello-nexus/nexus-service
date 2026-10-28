@@ -111,8 +111,10 @@ void main() {
         float attachY   = 0.16 * size;
         float tLen      = size * (1.8 + fract(fi * 0.71) * 1.2);
         float tThick    = size * 0.05;
+        // Tentacles live in a narrow band under the bell, so skip the loop everywhere else.
+        bool nearTentacles = abs(local.x) < size * 0.6 && local.y > attachY - 0.05 && local.y < attachY + tLen + 0.1;
         for (int j = 0; j < 8; j++) {
-            if (j >= tCount) break;
+            if (j >= tCount || !nearTentacles) break;
             float fj   = float(j);
             float tX   = (fj / float(max(tCount - 1, 1)) - 0.5) * size * 0.62;
             vec2  tp   = local - vec2(tX, attachY);

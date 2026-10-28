@@ -44,8 +44,8 @@ void main() {
 
     // Warm desert sky backdrop using palA..palB so the gradient itself
     // shifts under hue rotation.
-    vec3 bgTop = palA * 0.34;
-    vec3 bgBot = palB * 0.55;
+    vec3 bgTop = palA * 0.2;
+    vec3 bgBot = palB * 0.36;
     vec3 col = mix(bgTop, bgBot, smoothstep(0.0, 1.0, uv.y));
     // perf: backdrop haze tint, smooth low-detail -> fbm3
     col += palC * fbm3(uv * 1.4 + t * 0.08) * 0.10;
@@ -56,7 +56,7 @@ void main() {
     p1 += vec2(fbm3(p1 * 0.9 + t * 0.15), fbm3(p1 * 1.1 - t * 0.13)) * 0.8;
     float haze = fbm3(p1);
     haze = smoothstep(0.32, 0.7, haze) * dens;
-    col += palA * haze * 0.8;
+    col += palA * haze * 1.15;
 
     // -------- Layer 2: mid streaks ----------------------------------
     vec2 p2 = vec2(w.x * 2.2 - t * 1.0, w.y * 18.0);
@@ -64,7 +64,7 @@ void main() {
     p2 += vec2(fbm3(p2 * 0.35 + t * 0.1), fbm3(p2 * 0.35 + 9.0 - t * 0.12)) * 0.35;
     float mid = fbm3(p2);
     mid = pow(smoothstep(0.42, 0.85, mid), 1.2) * dens;
-    col += palB * mid * 1.3;
+    col += palB * mid * 1.7;
 
     // -------- Layer 3: fine grains ----------------------------------
     vec2 p3 = vec2(w.x * 4.0 - t * 2.2, w.y * 55.0);
@@ -74,7 +74,7 @@ void main() {
     p3.y += (fbm3(vec2(w.x * 3.0, t * 0.8)) - 0.5) * 1.5;
     float fine = fbm3(p3);
     fine = pow(smoothstep(0.5, 0.92, fine), 1.5) * dens;
-    col += palC * fine * 1.25;
+    col += palC * fine * 1.6;
 
     // -------- Layer 4: hot specks -----------------------------------
     vec2 cellSpace = vec2(w.x * 140.0 - t * 70.0, w.y * 180.0);
