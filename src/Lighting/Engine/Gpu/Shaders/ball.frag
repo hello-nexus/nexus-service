@@ -1,44 +1,52 @@
 uniform float u_size; // hint_range(0.03, 0.25, 0.005) = 0.08  ball radius
 uniform float u_count; // hint_range(1.0, 24.0, 1.0) = 8.0  ball count
+uniform float u_trail; // hint_range(0.0, 1.0, 0.02) = 0.6  trail length
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
-// Glossy balls bouncing over a flowing color wash. The backdrop is a slow
-// two-point gradient that always fills the frame; every ball has a lit core,
-// a wide colored glow that lights the wash around it, and a soft reflection
-// on the floor. Radius scales the whole ball, so a larger value also widens
-// the glow. In uvCentered() y = +1 is the BOTTOM, so the floor is at the
-// positive end of y.
+// Elastic balls ricocheting off the frame edges in straight lines. Each ball
+// stretches along its motion, squashes flat against the wall it hits, and drags
+// a trail of fading ghosts; every ball also lights the backdrop around it, so
+// the whole frame fills with moving color.
+float tri(float x) {
+    return abs(fract(x) * 2.0 - 1.0);
+}
+
 void main() {
     vec2 uv = uvCentered();
-    float t = u_time * u_speed;
-    float s = clamp(u_size, 0.02, 0.4) * 2.3;
+    float ar = u_resolution.x / u_resolution.y;
+    float t = u_time * u_speed * 0.35;
+    float s = clamp(u_size, 0.02, 0.4) * 3.4;
     int count = int(clamp(u_count, 1.0, 24.0));
+    float trail = clamp(u_trail, 0.0, 1.0);
 
-    vec3 col = tintedPalette(0.55 + uv.y * 0.18 + sin(t * 0.15) * 0.1) * 0.5;
-    col += tintedPalette(0.05 + uv.x * 0.14 - t * 0.02) * (0.14 + 0.16 * sin(uv.x * 1.7 + t * 0.4));
+    vec3 col = tintedPalette(0.1 + uv.y * 0.25 + sin(t * 0.5 + uv.x) * 0.1) * 0.40;
+    col += tintedPalette(0.55 + uv.x * 0.15 - t * 0.04) * 0.18;
 
     for (int i = 0; i < 24; i++) {
         if (i >= count) break;
         float fi = float(i);
-        float xFreq   = 0.35 + fract(fi * 0.173) * 0.9;
-        float x       = 1.55 * sin(t * xFreq + fi * 1.37);
-        float yFreq   = 0.9  + fract(fi * 0.241) * 1.1;
-        float hop     = pow(abs(sin(t * yFreq + fi * 0.83)), 0.55);
-        float y       = mix(0.85, -0.9, hop);
-        float squash  = mix(0.5, 1.0, smoothstep(0.0, 0.2, hop));
-        vec2 ballUv   = (uv - vec2(x, y)) / vec2(1.0, squash);
-        float d       = length(ballUv);
-        vec3 tint     = tintedPalette(fi * 0.137 + t * 0.03);
-        float core    = smoothstep(s, s * 0.75, d);
-        float lit     = 1.0 - smoothstep(0.0, s, length(ballUv - vec2(-0.3, -0.35) * s));
-        float glow    = exp(-d * d / (s * s * 4.0));
-        col += tint * glow * 0.9;
-        col = mix(col, tint * (0.7 + 0.9 * lit) + vec3(lit * lit * 0.5), core);
-        // Reflection on the floor, stretched along y and fading with height.
-        vec2 rUv = uv - vec2(x, 1.7 - y);
-        float rd = length(rUv / vec2(1.0, 0.45));
-        col += tint * exp(-rd * rd / (s * s * 3.0)) * 0.30 * smoothstep(0.4, 0.95, uv.y) * (1.0 - hop * 0.6);
+        float rad = s * (0.75 + fract(fi * 0.37) * 0.5);
+        vec2 range = vec2(ar - rad, 1.0 - rad);
+        vec2 rate = vec2(0.13 + fract(fi * 0.173) * 0.17, 0.11 + fract(fi * 0.241) * 0.19);
+        vec3 tint = tintedPalette(fi * 0.137 + t * 0.03);
+        for (int kk = 0; kk < 4; kk++) {
+            int k = 3 - kk;
+            if (k > 0 && trail < 0.02) continue;
+            float lag = float(k) * 0.045 * trail;
+            vec2 ph = (t - lag) * rate + vec2(fi * 0.317, fi * 0.531);
+            vec2 c = (vec2(tri(ph.x), tri(ph.y)) * 2.0 - 1.0) * range;
+            vec2 wall = (1.0 - abs(c) / range);
+            float sqx = smoothstep(0.12, 0.0, wall.x);
+            float sqy = smoothstep(0.12, 0.0, wall.y);
+            vec2 axes = vec2(1.0 + 0.3 - 0.55 * sqx + 0.25 * sqy, 1.0 - 0.15 + 0.3 * sqx - 0.55 * sqy);
+            float d = length((uv - c) / (rad * axes));
+            float fade = k == 0 ? 1.0 : (0.55 - float(k) * 0.14) * trail;
+            float body = smoothstep(1.0, 0.8, d);
+            float lit = 1.0 - smoothstep(0.0, 1.0, length((uv - c) / (rad * axes) - vec2(-0.3, -0.35)));
+            col += tint * exp(-d * d * 0.7) * 0.55 * fade;
+            col = mix(col, tint * (0.8 + 0.9 * lit) + vec3(lit * lit * 0.45), body * min(fade * 1.4, 1.0));
+        }
     }
-    float floorLine = smoothstep(0.03, 0.0, abs(uv.y - 0.92)) * 0.25;
-    col += tintedPalette(0.7) * floorLine;
-    fragColor = vec4(finalize(col * 1.25), 1.0);
+    fragColor = vec4(finalize(col * 1.2), 1.0);
 }

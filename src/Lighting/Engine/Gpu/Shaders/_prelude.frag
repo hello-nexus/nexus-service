@@ -93,6 +93,39 @@ vec3 tintedPalette(float t) {
     return art ? artPalette(t) : rainbowPalette(t + u_hue);
 }
 
+// Restricted palettes for effects that offer a mood: 0 keeps the full spectrum
+// (and Hue), the rest walk a cyclic four-stop gradient so a preset can be warm,
+// cool, neon and so on without becoming a rainbow.
+vec3 moodPalette(float t, float mood) {
+    int m = int(floor(mood + 0.5));
+    if (m <= 0) {
+        return tintedPalette(t);
+    }
+    vec3 s0, s1, s2, s3;
+    if (m == 1) {
+        s0 = vec3(1.0, 0.12, 0.05); s1 = vec3(1.0, 0.5, 0.0); s2 = vec3(1.0, 0.82, 0.12); s3 = vec3(0.95, 0.1, 0.35);
+    } else if (m == 2) {
+        s0 = vec3(0.05, 0.25, 0.95); s1 = vec3(0.0, 0.62, 0.95); s2 = vec3(0.0, 0.92, 0.8); s3 = vec3(0.55, 0.88, 1.0);
+    } else if (m == 3) {
+        s0 = vec3(1.0, 0.0, 0.7); s1 = vec3(0.5, 0.1, 1.0); s2 = vec3(0.0, 0.9, 1.0); s3 = vec3(0.5, 0.1, 1.0);
+    } else if (m == 4) {
+        s0 = vec3(0.45, 0.05, 0.75); s1 = vec3(1.0, 0.1, 0.4); s2 = vec3(1.0, 0.55, 0.05); s3 = vec3(1.0, 0.85, 0.2);
+    } else {
+        s0 = vec3(0.0, 0.9, 0.4); s1 = vec3(0.0, 0.8, 0.8); s2 = vec3(0.4, 0.2, 1.0); s3 = vec3(0.6, 1.0, 0.2);
+    }
+    float x = fract(t) * 4.0;
+    float f = smoothstep(0.0, 1.0, fract(x));
+    int i = int(floor(x));
+    vec3 a = i == 0 ? s0 : (i == 1 ? s1 : (i == 2 ? s2 : s3));
+    vec3 b = i == 0 ? s1 : (i == 1 ? s2 : (i == 2 ? s3 : s0));
+    vec3 c = mix(a, b, f);
+    // Hue still rotates the mood's colors around the grey axis.
+    float ca = cos(u_hue * 6.28318);
+    float sa = sin(u_hue * 6.28318);
+    vec3 k = vec3(0.57735);
+    return c * ca + cross(k, c) * sa + k * dot(k, c) * (1.0 - ca);
+}
+
 // 0..1 sweep across the frame along an axis rotated `deg` degrees, covering the
 // full rotated bounding box so a gradient reaches both edges at any angle.
 float axis01(float deg) {

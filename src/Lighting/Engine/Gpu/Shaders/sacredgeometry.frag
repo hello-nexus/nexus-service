@@ -1,6 +1,8 @@
 uniform float u_layers; // hint_range(2.0, 8.0, 1.0) = 5.0  nested shape count
 uniform float u_edge; // hint_range(0.2, 1.2, 0.02) = 0.6  edge glow width
 uniform float u_pulse; // hint_range(0.3, 3.0, 0.05) = 1.0  pulsation rate
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Filled mandala. The plane is folded into a mirrored wedge, then cut into
 // concentric bands that drift outward; every band is a full color field with

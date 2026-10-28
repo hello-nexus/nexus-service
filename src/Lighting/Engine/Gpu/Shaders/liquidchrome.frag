@@ -1,6 +1,8 @@
 uniform float u_flow; // hint_range(0.2, 3.0, 0.05) = 1.0  surface flow rate
 uniform float u_thickness; // hint_range(0.3, 2.0, 0.05) = 1.0  surface variation
 uniform float u_ripple; // hint_range(0.3, 3.0, 0.05) = 1.0  ripple frequency
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Liquid chrome: a heightfield of interlocking sine swells that bend each
 // other as they travel is lit like polished metal. The surface normal looks

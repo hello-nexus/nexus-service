@@ -1,6 +1,8 @@
 uniform float u_streaks; // hint_range(8.0, 120.0, 1.0) = 40.0  angular streak bins
 uniform float u_depth; // hint_range(0.2, 2.0, 0.05) = 1.0  travel rate spread
 uniform float u_core; // hint_range(0.0, 3.0, 0.05) = 1.0  centre bloom
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Warp tunnel: a colored vortex fills the whole frame (angle and depth map to
 // palette, with spiral swirl bands travelling outward), and bright comet streaks

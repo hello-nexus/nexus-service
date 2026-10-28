@@ -1,6 +1,8 @@
 uniform float u_density; // hint_range(8.0, 60.0, 1.0) = 45.0  stars per layer
 uniform float u_layers; // hint_range(1.0, 8.0, 1.0) = 5.0  depth layers
 uniform float u_trail; // hint_range(0.0, 1.0, 0.02) = 0.6  motion streak length
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Warp-speed flight through a colored sky. Each depth layer cycles a zoom so
 // its grid of stars streams outward from the center; a slow palette wash and a

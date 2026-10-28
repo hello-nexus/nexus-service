@@ -11,6 +11,7 @@ public class DefaultShaderPresetTests
     {
         "cosmicdust", "hyperspace", "nebula", "starfield", "ball",
         "wave", "ferrofluid", "inkbloom", "liquidchrome", "jellyfish", "sacredgeometry",
+        "lavalamp", "radar", "voronoi", "circuit",
     };
 
     [Theory]
@@ -42,9 +43,14 @@ public class DefaultShaderPresetTests
             .Select(s => AnimateTemplateDefaults.Slot(effect, s)!).ToList();
         // Colorize collapses the palette to one tint, so a vivid default keeps it off.
         Assert.All(looks, l => Assert.Equal(0f, l.Colorize, 3));
-        Assert.All(looks, l => Assert.True(l.Saturation >= 1f));
-        // No two presets share a palette position.
-        Assert.Equal(looks.Count, looks.Select(l => System.Math.Round(l.Hue, 2)).Distinct().Count());
+        Assert.All(looks, l => Assert.InRange(l.Saturation, 1f, 1.5f));
+        // Every preset is its own look: no two share palette, speed and parameters.
+        var signatures = looks.Select(l => string.Join("|", new object[] { System.Math.Round(l.Hue, 2), l.Speed }
+            .Concat(l.Params.OrderBy(kv => kv.Key).Select(kv => (object)$"{kv.Key}={kv.Value}")))).Distinct().Count();
+        Assert.Equal(looks.Count, signatures);
+        // Palette alone tells the presets apart: no two share both mood and hue.
+        var palettes = looks.Select(l => (l.Params.GetValueOrDefault("u_mood"), System.Math.Round(l.Hue, 2))).Distinct().Count();
+        Assert.Equal(looks.Count, palettes);
     }
 
     private static bool IsBase(string name) =>

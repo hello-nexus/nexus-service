@@ -10,6 +10,11 @@ void main() {
     float splash = clamp(u_splash, 0.0, 1.0);
 
     vec3 col = vec3(0.01, 0.005, 0.02);
+    // A drop travels past both frame edges before it wraps, so it never pops in or out; the
+    // rate is scaled to keep its on-screen speed.
+    float span = 1.0 + len * 1.8 + 0.3;
+    // One pixel in column units: the edge softness that keeps thin streaks from shimmering.
+    float aa = cols / u_resolution.x;
     // Rain streaks.
     float x = floor(uv.x * cols);
     for (int layer = 0; layer < 3; layer++) {
@@ -18,14 +23,14 @@ void main() {
         float xi = floor((uv.x + xOff) * cols);
         float colRand = hash21(vec2(xi, 17.0 + fl * 43.0));
         float fall = t * (1.5 + colRand * 2.5 + fl * 0.8);
-        float head = fract(fall + colRand);
+        float head = fract(fall / span + colRand) * span - 0.15;
         float dy = uv.y - head;
         // Streak: single falloff from the head trailing upward.
         float streak = smoothstep(0.0, -len * 1.6, dy);
         // Neon tip glow.
         float tip = exp(-dy * dy * 320.0) * 1.1;
         float xLocal = fract((uv.x + xOff) * cols) - 0.5;
-        float xMask = smoothstep(0.14, 0.0, abs(xLocal));
+        float xMask = 1.0 - smoothstep(0.08, 0.16 + aa, abs(xLocal));
         vec3 tint = tintedPalette(colRand * 0.6 + fl * 0.1);
         float depth = 1.0 - fl * 0.22;
         col += tint * (streak * 0.75 + tip) * xMask * depth;
@@ -37,14 +42,14 @@ void main() {
     float reflX = floor(uv.x * cols);
     float reflRand = hash21(vec2(reflX, 17.0));
     float reflFall = t * (1.5 + reflRand * 2.5);
-    float reflHead = fract(reflFall + reflRand);
+    float reflHead = fract(reflFall / span + reflRand) * span - 0.15;
     float reflDy = puddleY - reflHead;
     float reflStreak = smoothstep(0.0, -len * 1.6, reflDy);
     float reflXLocal = fract(uv.x * cols) - 0.5;
-    float reflXMask = smoothstep(0.18, 0.0, abs(reflXLocal));
+    float reflXMask = 1.0 - smoothstep(0.1, 0.2 + aa, abs(reflXLocal));
     vec3 reflTint = tintedPalette(reflRand * 0.6);
     col += reflTint * reflStreak * 0.35 * reflXMask * puddleMask;
     // Wet ground shimmer.
-    col += vec3(0.03, 0.02, 0.045) * puddleMask * (0.5 + 0.5 * vnoise(vec2(uv.x * 40.0, t)));
+    col += vec3(0.03, 0.02, 0.045) * puddleMask * (0.5 + 0.5 * vnoise(vec2(uv.x * 12.0, t * 0.25)));
     fragColor = vec4(finalize(col), 1.0);
 }

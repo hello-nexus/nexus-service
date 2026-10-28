@@ -24,11 +24,11 @@ void main() {
         if (i >= blobs) break;
         float fi = float(i);
         // Each blob oscillates on its own sine path.
-        float xf = 0.3 + fract(fi * 0.317) * 0.5;
+        float xf = 0.3 + fract(fi * 0.317) * 0.6;
         float yf = 0.2 + fract(fi * 0.431) * 0.4;
         float blobR = sz * (0.7 + fract(fi * 0.53) * 0.6);
         vec2 center = vec2(
-            sin(t * xf + fi * 2.1) * 0.8,
+            sin(t * xf + fi * 2.1) * 1.45,
             sin(t * yf + fi * 1.7) * 0.75
         );
         float d = length(uv - center) - blobR;
@@ -37,14 +37,14 @@ void main() {
 
     // Colour: map the field distance to a smooth gradient.
     // Inside the blobs (field < 0) is bright; outside fades to the bg.
-    float inside = smoothstep(0.05, -0.15, field);
-    float edge   = smoothstep(0.08, 0.0, abs(field)) * 0.6;
+    float inside = smoothstep(0.22, -0.02, field);
+    float edge   = smoothstep(0.1, 0.0, abs(field - 0.1)) * 0.7;
     // Pick colour from palette based on vertical position (warm bottom, cool top).
     float palIdx = (uv.y + 1.0) * 0.25;
     vec3 body = tintedPalette(palIdx) * inside;
     vec3 glow = tintedPalette(palIdx + 0.15) * edge;
     // Subtle background warmth.
-    vec3 bg = tintedPalette(0.05) * 0.04;
+    vec3 bg = tintedPalette(0.05) * 0.10;
     vec3 col = body + glow + bg * (1.0 - inside);
     fragColor = vec4(finalize(col * 1.5), 1.0);
 }

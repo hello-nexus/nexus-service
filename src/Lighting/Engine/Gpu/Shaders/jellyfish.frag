@@ -1,5 +1,7 @@
 uniform float u_count; // hint_range(1.0, 6.0, 1.0) = 3.0  number of jellyfish
 uniform float u_glow; // hint_range(0.2, 2.5, 0.05) = 1.0  bioluminescence intensity
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Half-dome bell: full ellipse with the bottom clipped so the shape
 // reads as a cap with a flat-ish underside. In our uvCentered frame

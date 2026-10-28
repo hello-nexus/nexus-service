@@ -1,6 +1,8 @@
 uniform float u_density; // hint_range(3.0, 14.0, 1.0) = 8.0  spike grid density
 uniform float u_sharpness; // hint_range(0.4, 3.0, 0.05) = 1.5  spike sharpness
 uniform float u_motion; // hint_range(0.0, 2.0, 0.05) = 1.0  spike height variation
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Magnetic liquid sea. The whole field sways in a slow swirl, magnetic waves
 // roll across it raising and lowering the spikes, and every spike is a bright
