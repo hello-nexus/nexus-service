@@ -77,6 +77,8 @@ void main() {
         // Fade-out when drifting above the frame instead of hard-clipping at
         // the top.
         float edgeFade = smoothstep(-0.25, 0.02, cy);
+        // Each bubble has its own slight opacity.
+        edgeFade *= 0.75 + 0.25 * hash21(vec2(fi * 3.7, 1.9));
 
         // Horizontal position + sinusoidal sway that scales with bubble size
         // (smaller bubbles jiggle more).
