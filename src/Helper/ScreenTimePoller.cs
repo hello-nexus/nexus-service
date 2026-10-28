@@ -31,8 +31,6 @@ public sealed class ScreenTimePoller : IDisposable
     private readonly HelperOutbound _outbound;
     private readonly JitteredPeriodicTimer _timer;
     private readonly object _lock = new();
-    private readonly ForegroundIdentityCache _identity = new();
-    private readonly MonitorIdentityCache _monitorIds = new(MonitorIdentityCache.DefaultTtl);
 
     private string _currentApp = "";
     private int _currentPid;
@@ -55,6 +53,7 @@ public sealed class ScreenTimePoller : IDisposable
     {
         if (HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.ScreenTime)) return;
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        var identityRead = false;
         try
         {
             // Pipe reconnect: the helper-side cached focus survives across
@@ -72,30 +71,32 @@ public sealed class ScreenTimePoller : IDisposable
             GetWindowThreadProcessId(hwnd, out var pid);
             if (pid == 0) return;
 
-            if (!_identity.TryGet(hwnd, (int)pid, out var appName, out var exePath))
+            // ApplyFocus ignores the name, path and geometry unless the pid changed,
+            // so those reads (and the monitor identity lookup) run only then.
+            int currentPid;
+            lock (_lock) { currentPid = _currentPid; }
+            if ((int)pid == currentPid)
             {
-                exePath = TryGetExePath(pid);
-                var fromPath = exePath is null ? "" : ForegroundIdentityCache.ProcessNameFromPath(exePath);
-                if (fromPath.Length > 0)
-                {
-                    appName = fromPath;
-                }
-                else
-                {
-                    // Path unreadable: Process.ProcessName also resolves names the
-                    // image-path query cannot, at the cost of a process snapshot.
-                    try
-                    {
-                        using var proc = Process.GetProcessById((int)pid);
-                        appName = proc.ProcessName;
-                    }
-                    catch { return; }
-                }
-
-                _identity.Store(hwnd, (int)pid, appName, exePath);
+                ApplyFocus("", (int)pid, null, 0, 0, null);
+                return;
             }
 
-            var (winW, winH, monitorDevice) = ReadWindowGeometry(hwnd, _monitorIds);
+            identityRead = true;
+            var exePath = TryGetExePath(pid);
+            var appName = exePath is null ? "" : ScreenTimeProcessName.ProcessNameFromPath(exePath);
+            if (appName.Length == 0)
+            {
+                // Path unreadable: Process.ProcessName also resolves names the
+                // image-path query cannot, at the cost of a process snapshot.
+                try
+                {
+                    using var proc = Process.GetProcessById((int)pid);
+                    appName = proc.ProcessName;
+                }
+                catch { return; }
+            }
+
+            var (winW, winH, monitorDevice) = ReadWindowGeometry(hwnd);
 
             ApplyFocus(appName, (int)pid, exePath, winW, winH, monitorDevice);
         }
@@ -103,11 +104,10 @@ public sealed class ScreenTimePoller : IDisposable
         finally
         {
             sw.Stop();
-            var (idHits, idMisses) = _monitorIds.TakeCounts();
             if (sw.ElapsedMilliseconds >= HelperPollerDiagnostics.SlowPassMs
                 && HelperPollerDiagnostics.TryFormatSlowPass(
                     HelperPollerDiagnostics.ScreenTime, sw.Elapsed.TotalMilliseconds, 1, out var slow,
-                    $"monitor id cache {idHits} hits {idMisses} misses"))
+                    identityRead ? "identity read" : "same pid, no reads"))
             {
                 Nexus.Service.Platform.HelperLog.Write(slow);
             }
@@ -284,13 +284,13 @@ public sealed class ScreenTimePoller : IDisposable
     // The helper sets no process-wide DPI awareness, so without this
     // GetClientRect/GetMonitorInfoW return 96-DPI-virtualized units on a
     // scaled display (see WindowsDisplayTopologyProvider.TrySetPerMonitorAwareV2).
-    private static (int Width, int Height, string? MonitorDevice) ReadWindowGeometry(IntPtr hwnd, MonitorIdentityCache monitorIds)
+    private static (int Width, int Height, string? MonitorDevice) ReadWindowGeometry(IntPtr hwnd)
     {
         var previousContext = TrySetPerMonitorAwareV2();
         try
         {
             var (winW, winH) = GetClientRect(hwnd, out var rect) ? (rect.Right - rect.Left, rect.Bottom - rect.Top) : (0, 0);
-            return (winW, winH, ResolveMonitorDevice(hwnd, monitorIds));
+            return (winW, winH, ResolveMonitorDevice(hwnd));
         }
         finally
         {
@@ -314,7 +314,7 @@ public sealed class ScreenTimePoller : IDisposable
     // (WindowsDisplayTopologyProvider uses the identical ResolveIdentity call
     // on its own GetMonitorInfoW szDevice), so FpsSessionRecorder can join a
     // session's monitor directly against a display topology query.
-    private static string? ResolveMonitorDevice(IntPtr hwnd, MonitorIdentityCache monitorIds)
+    private static string? ResolveMonitorDevice(IntPtr hwnd)
     {
         var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
         if (monitor == IntPtr.Zero) return null;
@@ -322,16 +322,12 @@ public sealed class ScreenTimePoller : IDisposable
         var info = new MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<MONITORINFOEX>() };
         if (!GetMonitorInfoW(monitor, ref info)) return null;
 
-        return monitorIds.GetOrResolve(
-            info.szDevice,
-            GetSystemMetrics(SmCMonitors),
-            static device => Nexus.Service.Platform.Displays.WindowsDisplayIdentity.ResolveIdentity(device).Id);
+        return Nexus.Service.Platform.Displays.WindowsDisplayIdentity.ResolveIdentity(info.szDevice).Id;
     }
 
     private const uint ProcessQueryLimitedInformation = 0x1000;
     private const uint MonitorDefaultToNearest = 2;
     private const int CchDeviceName = 32;
-    private const int SmCMonitors = 80;
     private static readonly IntPtr DpiAwarenessContextPerMonitorAwareV2 = new(-4);
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -351,9 +347,6 @@ public sealed class ScreenTimePoller : IDisposable
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFOEX lpmi);
-
-    [DllImport("user32.dll")]
-    private static extern int GetSystemMetrics(int nIndex);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
