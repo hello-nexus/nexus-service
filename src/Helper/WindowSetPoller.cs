@@ -62,11 +62,17 @@ public sealed class WindowSetPoller : IDisposable
     /// <summary>Windows walked by the last EnumWindows pass - the size of the
     /// per-window Win32 work the slow-pass line is reporting on.</summary>
     private int _enumerated;
+    private int _titleReads;
+
+    private readonly WindowCloakCache _cloakCache;
+    private readonly WindowCloakWatcher _cloakWatcher;
 
     public WindowSetPoller(HelperOutbound outbound)
     {
         _outbound = outbound;
         _diagEnabled = WindowDiagnostics.IsEnabled(Environment.GetEnvironmentVariable(WindowDiagnostics.EnvVarName));
+        _cloakCache = new WindowCloakCache(hwnd => IsCloaked(new IntPtr(hwnd)));
+        _cloakWatcher = new WindowCloakWatcher(_cloakCache);
         _timer = new JitteredPeriodicTimer(periodMs: PeriodMs, jitterMs: 500, Poll);
     }
 
@@ -98,7 +104,8 @@ public sealed class WindowSetPoller : IDisposable
                 && HelperPollerDiagnostics.TryFormatSlowPass(
                     HelperPollerDiagnostics.WindowSet, sw.Elapsed.TotalMilliseconds, _enumerated, out var slow))
             {
-                Nexus.Service.Platform.HelperLog.Write(slow);
+                Nexus.Service.Platform.HelperLog.Write(
+                    $"{slow} dwm={_cloakCache.Reads} titles={_titleReads} cached={_cloakCache.Count}");
             }
             if (!justReconnected && current.SetEquals(_lastSent)) return;
 
@@ -115,6 +122,8 @@ public sealed class WindowSetPoller : IDisposable
     {
         var pids = new HashSet<int>();
         var enumerated = 0;
+        _titleReads = 0;
+        _cloakCache.BeginPass();
 
         // Computed once per poll, not per window: the bounding box of every
         // monitor, for the off-screen-window exclusion.
@@ -150,25 +159,20 @@ public sealed class WindowSetPoller : IDisposable
                     rect.Left, rect.Top, rect.Right, rect.Bottom,
                     virtualLeft, virtualTop, virtualRight, virtualBottom);
 
-            // The two calls below leave this process: DwmGetWindowAttribute is an
-            // RPC into dwm.exe and GetWindowTextLength sends WM_GETTEXTLENGTH to
-            // the owning UI thread. Running them for every window cost ~240 ms per
-            // pass on a 467-window desktop and stalled composition system-wide
-            // (Discord report, 2026-08-27). IsCountableWindow only reaches the
-            // terms they feed when owner/bounds/foreground/visible/tool-window
-            // already allow it, so gating on exactly that condition is pure
-            // short-circuit evaluation - the classification is unchanged.
+            // DwmGetWindowAttribute is an RPC into dwm.exe, so cloak state comes from
+            // WindowCloakCache. The title read is InternalGetWindowText, which
+            // reads the kernel-stored caption; GetWindowTextLength sends
+            // WM_GETTEXTLENGTH to the owning UI thread and stalls on a hung one.
+            // Both run only when IsCountableWindow would reach the terms they feed.
             var isCloaked = false;
             var coversMonitor = false;
             var titleLength = 0;
             var hasTitle = false;
-            var titleReadError = 0;
-            var titleBlockedByUipi = false;
             if (_diagEnabled
                 || (owner == IntPtr.Zero && hasOnScreenBounds && !isForegroundWindow
                     && isVisible && !isToolWindow))
             {
-                isCloaked = IsCloaked(hwnd);
+                isCloaked = _cloakCache.IsCloaked(hwnd.ToInt64(), rect.Left, rect.Top, rect.Right, rect.Bottom);
                 // Only load-bearing through IsCountableWindow's (!isCloaked ||
                 // coversMonitor) check - skip the extra monitor lookup when
                 // isCloaked is false and the value cannot change the outcome.
@@ -177,17 +181,14 @@ public sealed class WindowSetPoller : IDisposable
                     WindowClassification.CoversMonitor(
                         rect.Left, rect.Top, rect.Right, rect.Bottom,
                         monitorRect.Left, monitorRect.Top, monitorRect.Right, monitorRect.Bottom);
-                titleLength = GetWindowTextLength(hwnd);
+                titleLength = InternalGetWindowText(hwnd, _titleBuffer, _titleBuffer.Length);
+                _titleReads++;
                 hasTitle = titleLength > 0;
-                // Must read immediately after GetWindowTextLength, before any other
-                // P/Invoke call, or the Win32 last-error value is clobbered.
-                titleReadError = !hasTitle ? Marshal.GetLastWin32Error() : 0;
-                titleBlockedByUipi = titleReadError == ErrorAccessDenied;
             }
 
             var isCountable = WindowClassification.IsCountableWindow(
                 isVisible, owner, isToolWindow, isCloaked, hasTitle, hasOnScreenBounds,
-                coversMonitor, titleBlockedByUipi, isForegroundWindow);
+                coversMonitor, titleBlockedByUipi: false, isForegroundWindow);
 
             if (isCountable || _diagEnabled)
             {
@@ -200,14 +201,20 @@ public sealed class WindowSetPoller : IDisposable
                 {
                     LogDiagnostic(
                         (int)pid, isVisible, owner, isToolWindow, isCloaked,
-                        hasTitle, titleLength, titleReadError, hasOnScreenBounds,
+                        hasTitle, titleLength, 0, hasOnScreenBounds,
                         coversMonitor, isForegroundWindow, isCountable);
                 }
             }
             return true;
         };
         EnumWindows(_pinnedEnumProc, IntPtr.Zero);
+        _cloakCache.EndPass();
         _enumerated = enumerated;
+        if (_diagEnabled)
+        {
+            Nexus.Service.Platform.HelperLog.Write(
+                $"[window-diag] pass items={enumerated} dwm={_cloakCache.Reads} titles={_titleReads} pids={string.Join(",", pids.Order())}");
+        }
         return pids;
     }
 
@@ -289,7 +296,11 @@ public sealed class WindowSetPoller : IDisposable
             hasTitle, titleLength, titleReadError, hasOnScreenBounds, coversMonitor, isForegroundWindow, isCountable));
     }
 
-    public void Dispose() => _timer.Dispose();
+    public void Dispose()
+    {
+        _timer.Dispose();
+        _cloakWatcher.Dispose();
+    }
 
     private const uint GwOwner = 4;
     private const int GwlExstyle = -20;
@@ -299,7 +310,6 @@ public sealed class WindowSetPoller : IDisposable
     private const int SmYvirtualscreen = 77;
     private const int SmCxvirtualscreen = 78;
     private const int SmCyvirtualscreen = 79;
-    private const int ErrorAccessDenied = 5;
     private const uint MonitorDefaulttonearest = 2;
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
@@ -337,11 +347,11 @@ public sealed class WindowSetPoller : IDisposable
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
-    // SetLastError so a diagnostic read (Marshal.GetLastWin32Error right after
-    // this call, when the result is 0) reflects this call's outcome and not
-    // some unrelated prior native call.
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern int GetWindowTextLength(IntPtr hWnd);
+    // Only the poll thread calls this, one pass at a time, so one buffer is safe.
+    private readonly char[] _titleBuffer = new char[256];
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int InternalGetWindowText(IntPtr hWnd, [Out] char[] lpString, int nMaxCount);
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
