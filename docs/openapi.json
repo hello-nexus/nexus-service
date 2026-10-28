@@ -25330,6 +25330,12 @@
             ],
             "format": "float"
           },
+          "colorOrder": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "brightness": {
             "pattern": "^-?(?:0|[1-9]\\d*)$",
             "type": [

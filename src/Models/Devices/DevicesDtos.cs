@@ -348,6 +348,8 @@ public class LightingColorAdjustDto
     public float Blue { get; set; } = 1f;
     public float Temperature { get; set; }
     public float Saturation { get; set; } = 1f;
+    /// <summary>Channel order the device expects on the wire; always present, "RGB" when unset.</summary>
+    public string ColorOrder { get; set; } = "RGB";
 }
 
 /// <summary>GET /devices/lighting-devices/color-adjust: the trims of every card
@@ -373,6 +375,8 @@ public class SetLightingColorAdjustBody
     public float? Blue { get; set; }
     public float? Temperature { get; set; }
     public float? Saturation { get; set; }
+    /// <summary>One of <see cref="Nexus.Service.Lighting.DeviceColorAdjust.OrderNames"/>; null leaves the stored order alone.</summary>
+    public string? ColorOrder { get; set; }
     public int? Brightness { get; set; }
 }
 

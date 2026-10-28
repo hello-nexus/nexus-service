@@ -256,6 +256,7 @@ public static partial class DevicesRoutes
                 AdjustBlue = kv.Value.AdjustBlue,
                 AdjustTemperature = kv.Value.AdjustTemperature,
                 AdjustSaturation = kv.Value.AdjustSaturation,
+                ColorOrder = kv.Value.ColorOrder,
             };
         }
         return copy;
@@ -800,7 +801,8 @@ public static partial class DevicesRoutes
                     {
                         if (pref is null
                             || (pref.AdjustRed == 1f && pref.AdjustGreen == 1f && pref.AdjustBlue == 1f
-                                && pref.AdjustTemperature == 0f && pref.AdjustSaturation == 1f))
+                                && pref.AdjustTemperature == 0f && pref.AdjustSaturation == 1f
+                                && (Nexus.Service.Lighting.DeviceColorAdjust.NormalizeOrder(pref.ColorOrder) ?? "RGB") == "RGB"))
                         {
                             continue;
                         }
@@ -811,6 +813,7 @@ public static partial class DevicesRoutes
                             Blue = pref.AdjustBlue,
                             Temperature = pref.AdjustTemperature,
                             Saturation = pref.AdjustSaturation,
+                            ColorOrder = Nexus.Service.Lighting.DeviceColorAdjust.NormalizeOrder(pref.ColorOrder) ?? "RGB",
                         };
                     }
                     break;
@@ -835,6 +838,18 @@ public static partial class DevicesRoutes
             if (!gates.Lighting)
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            string? colorOrder = null;
+            if (body.ColorOrder is not null)
+            {
+                colorOrder = Nexus.Service.Lighting.DeviceColorAdjust.NormalizeOrder(body.ColorOrder);
+                if (string.IsNullOrEmpty(body.ColorOrder) || colorOrder is null)
+                {
+                    return Results.Json(
+                        ApiResponse.Fail("Invalid colorOrder"),
+                        Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
+                        statusCode: 400);
+                }
             }
             // Clamped here as well as in DeviceColorAdjust: the stored value is
             // what the UI reads back, so a client sending an out-of-range trim
@@ -869,6 +884,7 @@ public static partial class DevicesRoutes
                     if (blue is not null) pref.AdjustBlue = blue.Value;
                     if (temperature is not null) pref.AdjustTemperature = temperature.Value;
                     if (saturation is not null) pref.AdjustSaturation = saturation.Value;
+                    if (colorOrder is not null) pref.ColorOrder = colorOrder == "RGB" ? null : colorOrder;
                 }
             });
             // Brightness keeps going through the provider, which is what the

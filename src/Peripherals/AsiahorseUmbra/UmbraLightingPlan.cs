@@ -18,8 +18,24 @@ internal static class UmbraLightingPlan
     // An unknown stored source falls back to the default.
     public static string SourceOf(AsiahorseUmbraSettings s) => IsSource(s.Source) ? s.Source : SourceNexus;
 
-    public static byte[][] Build(AsiahorseUmbraSettings s, UmbraPort[] ports, float master)
+    // prefs carries the per-card color order: async effects use the port's own card, merge and sync use the first non-RGB port order.
+    public static byte[][] Build(AsiahorseUmbraSettings s, UmbraPort[] ports, float master, Dictionary<string, LightingDevicePreference>? prefs = null)
     {
+        string? PortOrder(int p) => prefs is null
+            ? null
+            : Nexus.Service.Lighting.DeviceColorAdjust.OrderOf(prefs, Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider.PortId(p));
+        string? SharedOrder()
+        {
+            for (var p = 0; p < ports.Length; p++)
+            {
+                var o = ports[p].LedCount > 0 ? PortOrder(p) : null;
+                if (Nexus.Service.Lighting.DeviceColorAdjust.NormalizeOrder(o) is not (null or "RGB"))
+                {
+                    return o;
+                }
+            }
+            return null;
+        }
         var frames = new List<byte[]>();
         var source = SourceOf(s);
         if (source == SourceArgbInput)
@@ -42,7 +58,7 @@ internal static class UmbraLightingPlan
             case UmbraEffects.GroupMerge:
             {
                 var (info, values) = Current(UmbraEffects.GroupMerge, s.Merge);
-                frames.Add(UmbraProtocol.EncodeMergeEffect(UmbraEffects.ToBlock(UmbraEffects.GroupMerge, info, values, master)));
+                frames.Add(UmbraProtocol.EncodeMergeEffect(UmbraEffects.ToBlock(UmbraEffects.GroupMerge, info, values, master, SharedOrder())));
                 break;
             }
             case UmbraEffects.GroupAsync:
@@ -56,14 +72,14 @@ internal static class UmbraLightingPlan
                     UmbraEffectGroupSettings? state = null;
                     s.Async?.TryGetValue(p.ToString(CultureInfo.InvariantCulture), out state);
                     var (info, values) = Current(UmbraEffects.GroupAsync, state ?? new UmbraEffectGroupSettings());
-                    frames.Add(UmbraProtocol.EncodeAsyncEffect(p, UmbraEffects.ToBlock(UmbraEffects.GroupAsync, info, values, master)));
+                    frames.Add(UmbraProtocol.EncodeAsyncEffect(p, UmbraEffects.ToBlock(UmbraEffects.GroupAsync, info, values, master, PortOrder(p))));
                 }
                 break;
             }
             default:
             {
                 var (info, values) = Current(UmbraEffects.GroupSync, s.Sync);
-                frames.Add(UmbraProtocol.EncodeSyncEffect(UmbraEffects.ToBlock(UmbraEffects.GroupSync, info, values, master)));
+                frames.Add(UmbraProtocol.EncodeSyncEffect(UmbraEffects.ToBlock(UmbraEffects.GroupSync, info, values, master, SharedOrder())));
                 break;
             }
         }

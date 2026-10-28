@@ -105,7 +105,7 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         var ls = settings.Devices.AsiahorseUmbra;
         var source = UmbraLightingPlan.SourceOf(ls);
         var master = MasterBrightness.Effective(settings.Lighting);
-        var plan = UmbraLightingPlan.Build(ls, _hub.Snapshot.Ports, master);
+        var plan = UmbraLightingPlan.Build(ls, _hub.Snapshot.Ports, master, settings.Devices.LightingDevicePrefs);
         var signature = UmbraLightingPlan.Signature(plan);
         if (_planSignature == signature && epoch == _planEpoch)
         {

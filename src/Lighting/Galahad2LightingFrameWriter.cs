@@ -121,7 +121,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         if (ls.Mode == "canvas")
         {
             _lastFirmwareSig = null;
-            TickCanvas(brightnessRaw, zones, uncontrolled);
+            TickCanvas(brightnessRaw, zones, uncontrolled, settings.Devices.LightingDevicePrefs);
             return;
         }
 
@@ -131,18 +131,20 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        var sig = ComputeFirmwareSig(ls, brightnessRaw);
+        var innerOrder = DeviceColorAdjust.OrderOf(settings.Devices.LightingDevicePrefs, "lianli-aio:ring:inner");
+        var outerOrder = DeviceColorAdjust.OrderOf(settings.Devices.LightingDevicePrefs, "lianli-aio:ring:outer");
+        var sig = ComputeFirmwareSig(ls, brightnessRaw, innerOrder, outerOrder);
         if (_lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value)
         {
             return;
         }
 
         _lastWasCanvas = false;
-        CommitFirmwareMode(ls, mode, brightnessRaw);
+        CommitFirmwareMode(ls, mode, brightnessRaw, innerOrder, outerOrder);
         _lastFirmwareSig = sig;
     }
 
-    private void TickCanvas(byte brightnessRaw, System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, System.Collections.Generic.IReadOnlyList<string> uncontrolled)
+    private void TickCanvas(byte brightnessRaw, System.Collections.Generic.IReadOnlyList<ResolvedZone> zones, System.Collections.Generic.IReadOnlyList<string> uncontrolled, System.Collections.Generic.Dictionary<string, LightingDevicePreference> orders)
     {
         var devices = _engine.Devices;
         byte innerR = 0, innerG = 0, innerB = 0;
@@ -169,6 +171,9 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
             outerR = 0; outerG = 0; outerB = 0;
         }
 
+        DeviceColorAdjust.ReorderChannels(DeviceColorAdjust.OrderOf(orders, "lianli-aio:ring:inner"), ref innerR, ref innerG, ref innerB);
+        DeviceColorAdjust.ReorderChannels(DeviceColorAdjust.OrderOf(orders, "lianli-aio:ring:outer"), ref outerR, ref outerG, ref outerB);
+
         if (_lastWasCanvas
             && innerR == _lastInnerR && innerG == _lastInnerG && innerB == _lastInnerB
             && outerR == _lastOuterR && outerG == _lastOuterG && outerB == _lastOuterB)
@@ -185,21 +190,25 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         _lastWasCanvas = true;
     }
 
-    private void CommitFirmwareMode(Galahad2LightingSettings ls, Galahad2ModeInfo mode, byte brightnessRaw)
+    private void CommitFirmwareMode(Galahad2LightingSettings ls, Galahad2ModeInfo mode, byte brightnessRaw, string? innerOrder, string? outerOrder)
     {
         var speed     = (byte)Math.Clamp(ls.Speed, 0, 4);
         var direction = (byte)Math.Clamp(ls.Direction, 0, 1);
 
-        _hub.SendLighting(2, mode.WireByte, brightnessRaw, speed, direction, BuildColorBytes(ls, mode));
+        _hub.SendLighting(2, mode.WireByte, brightnessRaw, speed, direction, BuildColorBytes(ls, mode, innerOrder, outerOrder));
     }
 
     // staticColor: slot0 = InnerColor, slot1 = OuterColor. All other modes use ls.Colors.
-    internal static byte[] BuildColorBytes(Galahad2LightingSettings ls, Galahad2ModeInfo mode)
+    // The inner ring's color order also covers the shared palette modes: they send
+    // one list for both rings, so there is no per-ring split to honor.
+    internal static byte[] BuildColorBytes(Galahad2LightingSettings ls, Galahad2ModeInfo mode, string? innerOrder = null, string? outerOrder = null)
     {
         if (mode.Key == "staticColor")
         {
             var (ir, ig, ib) = ParseHex(ls.InnerColor);
             var (or2, og, ob) = ParseHex(ls.OuterColor);
+            DeviceColorAdjust.ReorderChannels(innerOrder, ref ir, ref ig, ref ib);
+            DeviceColorAdjust.ReorderChannels(outerOrder, ref or2, ref og, ref ob);
             return new byte[] { ir, ig, ib, or2, og, ob };
         }
         var maxColors  = mode.ColorsMax;
@@ -208,6 +217,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         for (var i = 0; i < colorCount; i++)
         {
             var (r, g, b) = ParseHex(ls.Colors[i]);
+            DeviceColorAdjust.ReorderChannels(innerOrder, ref r, ref g, ref b);
             colorBytes[i * 3]     = r;
             colorBytes[i * 3 + 1] = g;
             colorBytes[i * 3 + 2] = b;
@@ -230,7 +240,7 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         return (r, g, b);
     }
 
-    private static int ComputeFirmwareSig(Galahad2LightingSettings ls, byte brightnessRaw)
+    private static int ComputeFirmwareSig(Galahad2LightingSettings ls, byte brightnessRaw, string? innerOrder, string? outerOrder)
     {
         var hc = new HashCode();
         hc.Add(ls.Mode);
@@ -239,6 +249,8 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         hc.Add(brightnessRaw);
         hc.Add(ls.InnerColor);
         hc.Add(ls.OuterColor);
+        hc.Add(innerOrder);
+        hc.Add(outerOrder);
         foreach (var c in ls.Colors)
         {
             hc.Add(c);
