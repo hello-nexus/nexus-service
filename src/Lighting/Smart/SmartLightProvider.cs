@@ -34,8 +34,8 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // offline only after this many misses spanning at least this long.
     private const long OfflineAfterMs = 15_000;
     private const int MissesBeforeOffline = 2;
-    // A gap between probes longer than this (no lighting view open) starts a
-    // fresh streak; a poll stretched by slow dead hosts stays inside it.
+    // A miss arriving after a longer gap since the previous probe starts a
+    // fresh streak.
     private const long StaleProbeGapMs = 60_000;
 
     private readonly Dictionary<string, ILightDriver> _drivers;
@@ -892,10 +892,11 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
             var next = new List<SmartLightConfig>(s.SmartLights.Devices.Count);
             foreach (var c in s.SmartLights.Devices)
             {
-                // Prune only a probed-and-unreachable light of this brand that the
-                // debounced state already shows offline, so one lost reply never
-                // prunes a streaming light; if we couldn't probe its host, keep it.
-                if (c.Brand == brand && hostReachable.TryGetValue(c.Host, out var ok) && !ok && !IsOnline(c.Id))
+                // Prune only a probed-and-unreachable light of this brand whose
+                // current miss streak already meets the offline rule, so neither
+                // one lost reply nor an old offline flag prunes a streaming light;
+                // if we couldn't probe its host, keep it.
+                if (c.Brand == brand && hostReachable.TryGetValue(c.Host, out var ok) && !ok && StreakIsOffline(c.Id))
                 { pruned.Add(c.Id); continue; }
                 next.Add(c);
             }
@@ -997,6 +998,18 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         foreach (var c in _store.Load().SmartLights.Devices)
             if (c.Id == id) return true;
         return false;
+    }
+
+    private bool StreakIsOffline(string id)
+    {
+        lock (_onlineLock)
+        {
+            if (!_probeState.TryGetValue(id, out var st)) return false;
+            var now = _tick();
+            return st.Misses >= MissesBeforeOffline
+                && now - st.FirstMiss >= OfflineAfterMs
+                && now - st.LastProbe <= StaleProbeGapMs;
+        }
     }
 
     private bool IsOnline(string id) => !_online.TryGetValue(id, out var on) || on;

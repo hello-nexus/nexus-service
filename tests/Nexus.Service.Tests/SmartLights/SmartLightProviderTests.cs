@@ -334,13 +334,30 @@ public class SmartLightProviderTests : IDisposable
     [Fact]
     public async Task ReachabilityPolling_probesImmediately()
     {
-        await PairOneAsync();
+        // A long interval: only an immediate first probe can satisfy the wait.
+        var provider = new SmartLightProvider(new ILightDriver[] { _driver }, _store, _throttle,
+            TimeSpan.FromHours(1), () => Interlocked.Read(ref _now));
+        provider.SetBrandEnabled("fake", true);
+        await provider.PairAsync(
+            new PairSmartLightBody { Brand = "fake", Host = "1.2.3.4", StableKey = "bridge" }, CancellationToken.None);
         var probed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _driver.OnPing = () => probed.TrySetResult();
 
-        _provider.StartReachabilityPolling();
+        provider.StartReachabilityPolling();
         try { await probed.Task.WaitAsync(TimeSpan.FromSeconds(30)); }
-        finally { _provider.StopReachabilityPolling(); }
+        finally { provider.StopReachabilityPolling(); }
+    }
+
+    [Fact]
+    public async Task ScanBrand_keepsLight_whoseOfflineFlagIsStale()
+    {
+        await PairOneAsync();
+        await GoOfflineAsync();
+        Advance(3_600_000);                 // idle gap, then the light came back and streams
+        await ProbeAsync();                 // page-open route probe misses: a fresh streak
+        await _provider.ScanBrandAsync("fake", CancellationToken.None);
+
+        Assert.Contains(_store.Load().SmartLights.Devices, d => d.Id == "fake:bridge:1");
     }
 
     private Task PairOneAsync() => _provider.PairAsync(
@@ -443,7 +460,8 @@ public class SmartLightProviderTests : IDisposable
         cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _provider.GetSmartLightDtosAsync(cts.Token));
 
-        await ProbeAsync();                 // the only recorded miss
+        Advance(15_000);
+        await ProbeAsync();                 // the only recorded miss; a leaked one would flip the light
         Assert.Single(_provider.GetAll().Devices);
     }
 
@@ -553,7 +571,7 @@ public class SmartLightProviderTests : IDisposable
     public async Task CancelledScan_doesNotPrune()
     {
         await PairOneAsync();
-        _driver.PingResult = false;
+        await GoOfflineAsync();             // prunable unless the scan is cancelled
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _provider.ScanBrandAsync("fake", cts.Token));
