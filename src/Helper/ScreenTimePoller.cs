@@ -32,6 +32,7 @@ public sealed class ScreenTimePoller : IDisposable
     private readonly JitteredPeriodicTimer _timer;
     private readonly object _lock = new();
     private readonly ForegroundIdentityCache _identity = new();
+    private readonly MonitorIdentityCache _monitorIds = new(MonitorIdentityCache.DefaultTtl);
 
     private string _currentApp = "";
     private int _currentPid;
@@ -94,7 +95,7 @@ public sealed class ScreenTimePoller : IDisposable
                 _identity.Store(hwnd, (int)pid, appName, exePath);
             }
 
-            var (winW, winH, monitorDevice) = ReadWindowGeometry(hwnd);
+            var (winW, winH, monitorDevice) = ReadWindowGeometry(hwnd, _monitorIds);
 
             ApplyFocus(appName, (int)pid, exePath, winW, winH, monitorDevice);
         }
@@ -102,9 +103,11 @@ public sealed class ScreenTimePoller : IDisposable
         finally
         {
             sw.Stop();
+            var (idHits, idMisses) = _monitorIds.TakeCounts();
             if (sw.ElapsedMilliseconds >= HelperPollerDiagnostics.SlowPassMs
                 && HelperPollerDiagnostics.TryFormatSlowPass(
-                    HelperPollerDiagnostics.ScreenTime, sw.Elapsed.TotalMilliseconds, 1, out var slow))
+                    HelperPollerDiagnostics.ScreenTime, sw.Elapsed.TotalMilliseconds, 1, out var slow,
+                    $"monitor id cache {idHits} hits {idMisses} misses"))
             {
                 Nexus.Service.Platform.HelperLog.Write(slow);
             }
@@ -281,13 +284,13 @@ public sealed class ScreenTimePoller : IDisposable
     // The helper sets no process-wide DPI awareness, so without this
     // GetClientRect/GetMonitorInfoW return 96-DPI-virtualized units on a
     // scaled display (see WindowsDisplayTopologyProvider.TrySetPerMonitorAwareV2).
-    private static (int Width, int Height, string? MonitorDevice) ReadWindowGeometry(IntPtr hwnd)
+    private static (int Width, int Height, string? MonitorDevice) ReadWindowGeometry(IntPtr hwnd, MonitorIdentityCache monitorIds)
     {
         var previousContext = TrySetPerMonitorAwareV2();
         try
         {
             var (winW, winH) = GetClientRect(hwnd, out var rect) ? (rect.Right - rect.Left, rect.Bottom - rect.Top) : (0, 0);
-            return (winW, winH, ResolveMonitorDevice(hwnd));
+            return (winW, winH, ResolveMonitorDevice(hwnd, monitorIds));
         }
         finally
         {
@@ -311,7 +314,7 @@ public sealed class ScreenTimePoller : IDisposable
     // (WindowsDisplayTopologyProvider uses the identical ResolveIdentity call
     // on its own GetMonitorInfoW szDevice), so FpsSessionRecorder can join a
     // session's monitor directly against a display topology query.
-    private static string? ResolveMonitorDevice(IntPtr hwnd)
+    private static string? ResolveMonitorDevice(IntPtr hwnd, MonitorIdentityCache monitorIds)
     {
         var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
         if (monitor == IntPtr.Zero) return null;
@@ -319,12 +322,16 @@ public sealed class ScreenTimePoller : IDisposable
         var info = new MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<MONITORINFOEX>() };
         if (!GetMonitorInfoW(monitor, ref info)) return null;
 
-        return Nexus.Service.Platform.Displays.WindowsDisplayIdentity.ResolveIdentity(info.szDevice).Id;
+        return monitorIds.GetOrResolve(
+            info.szDevice,
+            GetSystemMetrics(SmCMonitors),
+            static device => Nexus.Service.Platform.Displays.WindowsDisplayIdentity.ResolveIdentity(device).Id);
     }
 
     private const uint ProcessQueryLimitedInformation = 0x1000;
     private const uint MonitorDefaultToNearest = 2;
     private const int CchDeviceName = 32;
+    private const int SmCMonitors = 80;
     private static readonly IntPtr DpiAwarenessContextPerMonitorAwareV2 = new(-4);
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -344,6 +351,9 @@ public sealed class ScreenTimePoller : IDisposable
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFOEX lpmi);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int nIndex);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
