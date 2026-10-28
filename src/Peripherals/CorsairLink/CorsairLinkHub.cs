@@ -96,44 +96,56 @@ public sealed class CorsairLinkHub : IDisposable
 
     public bool IsConnected => State.IsConnected;
 
-    /// <summary>Listens without writing. The hub never reports unprompted, so any input report answers another program's command.</summary>
-    public static bool HearsAnotherHost(IHidDevice device, int listenMs) => HearsAnotherHost(device, listenMs, out _);
-
-    /// <param name="heard">Hex of the report that was heard (raw, report-id first), empty when silent.</param>
-    public static bool HearsAnotherHost(IHidDevice device, int listenMs, out string heard)
-    {
-        var buffer = new byte[CorsairLinkProtocol.WriteBufferLength];
-        var n = device.Read(buffer, listenMs);
-        heard = n > 0 ? $"n={n} {Hex(buffer, Math.Min(n, TraceReplyBytes))}" : "";
-        return n > 0;
-    }
-
     private const int TraceReplyBytes = 20;
     private const int TraceMaxChars = 1500;
+    // Upper bound on how long a timed-out command is still owed a late reply.
+    private const long OwedReplyMaxAgeMs = 30_000;
+    private const int OwedReplyMaxCount = 4;
 
-    // A reply to a command Nexus sent this recently is its own late echo, not another host.
-    private const long SelfEchoWindowMs = 5000;
+    // Commands whose reply timed out on Nexus's side, by command byte; survives Detach and Attach.
+    private readonly int[] _owedReplies = new int[256];
+    private readonly long[] _owedSinceMs = new long[256];
+    private bool _traceQuiet;
 
-    private readonly long[] _lastSentMs = CreateNeverSent();
-
-    private static long[] CreateNeverSent()
-    {
-        var a = new long[256];
-        Array.Fill(a, long.MinValue / 2);
-        return a;
-    }
-
-    /// <summary>Listens without writing; a report echoing a command Nexus sent moments ago is flagged in <paramref name="ownEcho"/> and not counted.</summary>
+    /// <summary>Listens without writing for the whole window. A report echoing a command whose reply Nexus is still owed is discounted once and flagged in <paramref name="ownEcho"/>; any other report is another host.</summary>
     public bool HearsOtherHost(IHidDevice device, int listenMs, out string heard, out bool ownEcho)
     {
         var buffer = new byte[CorsairLinkProtocol.WriteBufferLength];
-        var n = device.Read(buffer, listenMs);
-        heard = n > 0 ? $"n={n} {Hex(buffer, Math.Min(n, TraceReplyBytes))}" : "";
+        var deadline = Environment.TickCount64 + listenMs;
+        heard = "";
         ownEcho = false;
-        if (n <= 0) return false;
-        var echo = n > 1 + CorsairLinkProtocol.ResponseCommandOffset ? buffer[1 + CorsairLinkProtocol.ResponseCommandOffset] : (byte)0;
-        lock (_lock) ownEcho = echo != 0 && NowMs() - _lastSentMs[echo] <= SelfEchoWindowMs;
-        return !ownEcho;
+        while (true)
+        {
+            var remaining = (int)Math.Max(1, deadline - Environment.TickCount64);
+            var n = device.Read(buffer, remaining);
+            if (n <= 0) return false;
+            var hex = $"n={n} {Hex(buffer, Math.Min(n, TraceReplyBytes))}";
+            var echo = n > 1 + CorsairLinkProtocol.ResponseCommandOffset ? buffer[1 + CorsairLinkProtocol.ResponseCommandOffset] : (byte)0;
+            if (!TakeOwedReply(echo))
+            {
+                heard = hex;
+                return true;
+            }
+            if (!ownEcho) heard = hex;
+            ownEcho = true;
+            if (Environment.TickCount64 >= deadline) return false;
+        }
+    }
+
+    private bool TakeOwedReply(byte echo)
+    {
+        if (echo == 0) return false;
+        lock (_lock)
+        {
+            if (_owedReplies[echo] <= 0) return false;
+            if (NowMs() - _owedSinceMs[echo] > OwedReplyMaxAgeMs)
+            {
+                _owedReplies[echo] = 0;
+                return false;
+            }
+            _owedReplies[echo]--;
+            return true;
+        }
     }
 
     private static string Hex(ReadOnlySpan<byte> bytes, int count)
@@ -158,7 +170,7 @@ public sealed class CorsairLinkHub : IDisposable
 
     private void TraceNote(string note)
     {
-        if (_trace is { } t && t.Length < TraceMaxChars) t.Append(" | ").Append(note);
+        if (_trace is { } t && (t.Length < TraceMaxChars || note.StartsWith("step=", StringComparison.Ordinal))) t.Append(" | ").Append(note);
     }
 
     /// <summary>Another program answered on the hub; every write is refused from then on, since the hub's handles are shared by all hosts.</summary>
@@ -532,9 +544,11 @@ public sealed class CorsairLinkHub : IDisposable
     private byte[]? ReadEndpointRawLocked(byte mode)
     {
         Span<byte> m = stackalloc byte[] { mode };
+        _traceQuiet = true;
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
         Transfer(CorsairLinkProtocol.CmdOpenEndpoint, m);
         var n = Transfer(CorsairLinkProtocol.CmdRead, m);
+        _traceQuiet = false;
         byte[]? copy = null;
         if (n > 0) copy = _read.AsSpan(0, CorsairLinkProtocol.ReportLength).ToArray();
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
@@ -546,10 +560,12 @@ public sealed class CorsairLinkHub : IDisposable
     private byte[]? ReadEndpointLocked(byte mode, ReadOnlySpan<byte> dataType)
     {
         Span<byte> m = stackalloc byte[] { mode };
+        _traceQuiet = mode != CorsairLinkProtocol.ModeGetDevices;
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
         Transfer(CorsairLinkProtocol.CmdOpenEndpoint, m);
         var n = Transfer(CorsairLinkProtocol.CmdRead, m);
         n = ResyncToDataType(n, dataType);
+        _traceQuiet = false;
         byte[]? copy = null;
         if (n > 0 && _read[4] == dataType[0] && _read[5] == dataType[1])
         {
@@ -557,7 +573,7 @@ public sealed class CorsairLinkHub : IDisposable
         }
         else
         {
-            TraceNote($"mode={mode:x2} want={Hex(dataType, 2)} got n={n} busy={_read[CorsairLinkProtocol.ResponseBusyOffset]:x2} status={_read[CorsairLinkProtocol.ResponseStatusOffset]:x2}");
+            if (_trace != null) TraceNote($"mode={mode:x2} want={Hex(dataType, 2)} got n={n} busy={_read[CorsairLinkProtocol.ResponseBusyOffset]:x2} status={_read[CorsairLinkProtocol.ResponseStatusOffset]:x2}");
         }
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
         return copy;
@@ -584,6 +600,7 @@ public sealed class CorsairLinkHub : IDisposable
         if (_device == null) return -1;
         var n = _device.Read(_readRaw, ResyncReadTimeoutMs);
         if (n <= 0) return n;
+        if (_trace != null) TraceNote(_traceQuiet ? $"drain n={n}" : $"drain n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
         NoteEcho(0);
         return n - 1;
@@ -601,11 +618,12 @@ public sealed class CorsairLinkHub : IDisposable
     private void NoteEcho(byte sent)
     {
         var echo = _read[CorsairLinkProtocol.ResponseCommandOffset];
+        if (echo != 0 && echo != sent && _owedReplies[echo] > 0) _owedReplies[echo]--;
         if (echo != 0 && echo != sent && !IsOwnCommand(echo))
         {
             ForeignHostSeen = true;
             ForeignReplyHex = $"sent={sent:x2} echo={echo:x2} reply={Hex(_read, TraceReplyBytes)}";
-            TraceNote($"foreign {ForeignReplyHex}");
+            if (_trace != null) TraceNote($"foreign {ForeignReplyHex}");
         }
     }
 
@@ -653,17 +671,21 @@ public sealed class CorsairLinkHub : IDisposable
         if (_trace != null) TraceNote($"out {Hex(_write.AsSpan(CorsairLinkProtocol.HeaderSize), command.Length + payload.Length > 8 ? 8 : command.Length + payload.Length)}");
         if (!_device.Write(_write))
         {
-            TraceNote("write failed");
+            if (_trace != null) TraceNote("write failed");
             return -1;
         }
-        _lastSentMs[command[0]] = NowMs();
         var n = _device.Read(_readRaw, ReadTimeoutMs);
         if (n <= 0)
         {
-            TraceNote($"read n={n}");
+            if (_trace != null) TraceNote($"read n={n}");
+            if (_owedReplies[command[0]] < OwedReplyMaxCount) _owedReplies[command[0]]++;
+            _owedSinceMs[command[0]] = NowMs();
             return n;
         }
-        if (_trace != null) TraceNote($"in n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
+        if (_trace != null)
+        {
+            TraceNote(_traceQuiet ? $"in n={n} status={_readRaw[1 + CorsairLinkProtocol.ResponseStatusOffset]:x2}" : $"in n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
+        }
         // Windows ReadFile returns the report with the report-id byte at [0]; hidapi
         // (which the parsers mirror) drops it. Strip it and report the stripped length.
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
