@@ -45,6 +45,8 @@ public sealed class DisplayBrightnessController
     {
         var disabled = DdcDisabled();
         var displays = new List<DisplayDto>(_provider.Enumerate(disabled));
+        // Owned by a device integration: listed through that device, not as a monitor.
+        displays.RemoveAll(d => DeviceOwnedDisplays.IsOwnedHardwareId(d.Id));
         foreach (var display in displays)
         {
             if (disabled.Contains(display.Id))

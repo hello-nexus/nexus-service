@@ -84,6 +84,8 @@ public sealed class DisplayTopologyService : IDisposable
         var ddcDisabled = DdcDisabled();
         foreach (var info in raw)
         {
+            // A device-owned display is represented by its device, never listed as a standalone display.
+            if (DeviceOwnedDisplays.IsOwned(info)) continue;
             var isY70 = IsY70Display(info.RawHardwareId);
             // A disabled (turned-off) panel keeps its record but the display
             // reads as unassigned: the UI offers "Use as Nexus panel", which
@@ -313,7 +315,7 @@ public sealed class DisplayTopologyService : IDisposable
             var attached = new List<RelinkDisplay>(raw.Count);
             foreach (var info in raw)
             {
-                if (IsY70Display(info.RawHardwareId)) continue;
+                if (IsY70Display(info.RawHardwareId) || DeviceOwnedDisplays.IsOwned(info)) continue;
                 attached.Add(new RelinkDisplay(info.Id, info.Fingerprint, info.IsPrimary, info.ResolutionWidth, info.ResolutionHeight));
             }
             var (applied, pending) = _panelRegistry.ReconcileDisplayFingerprints(attached);

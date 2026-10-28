@@ -146,6 +146,8 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             _cached.GameSyncRemovedNotice = true;
             pinsMigrated = true;
         }
+        // Panel records earlier builds allocated for displays a device owns; runs every load, not schema-gated.
+        var ownedDisplaysPruned = Nexus.Service.Platform.Displays.DeviceOwnedDisplays.PruneRecords(_cached);
         if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
         {
             Migrate(_cached);
@@ -154,7 +156,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         }
         else
         {
-            var recovered = pinsMigrated;
+            var recovered = pinsMigrated || ownedDisplaysPruned;
             if (NeedsDeckModesRecovery(_cached))
             {
                 // A downgrade to a pre-deck-modes build (then a re-upgrade)
