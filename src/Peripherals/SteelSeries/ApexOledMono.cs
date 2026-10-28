@@ -3,8 +3,8 @@ using System;
 namespace Nexus.Service.Peripherals.SteelSeries;
 
 /// <summary>
-/// Turns a rendered BGRA panel frame into the lit/unlit pixels of the 1-bit OLED. A fixed luma
-/// threshold, not a dither: at 128x40 the panel's text and numbers are the content, and a
+/// Turns a rendered BGRA panel frame into the lit/unlit pixels of the mono OLED. A fixed luma
+/// threshold, not a dither: on a screen this small the panel's text and numbers are the content, and a
 /// dither speckles anti-aliased glyph edges where a threshold keeps them crisp.
 /// </summary>
 public static class ApexOledMono
@@ -24,7 +24,7 @@ public static class ApexOledMono
         for (var i = 0; i < lit.Length; i++)
         {
             var p = i * 4;
-            // Integer Rec.601 luma, weights summing to 256.
+            // Integer Rec.601 luma, scaled so the weights sum to a power of two.
             var luma = (bgra[p] * 29 + bgra[p + 1] * 150 + bgra[p + 2] * 77) >> 8;
             lit[i] = luma >= LumaThreshold;
         }

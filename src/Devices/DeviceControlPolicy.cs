@@ -39,6 +39,7 @@ public static class DeviceControlPolicy
         ["lianli-galahad2-lcd"] = "lian-li-l-connect",
         ["corsair"] = "icue",
         ["corsair-link-lcd"] = "icue",
+        ["steelseries-apex-oled"] = "steelseries-gg",
     };
 
     // Lian Li (incl. Strimer) and Corsair handlers drive the hardware whose

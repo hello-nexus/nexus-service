@@ -3,13 +3,13 @@ using System.Collections.Generic;
 
 namespace Nexus.Service.Peripherals.SteelSeries;
 
-/// <summary>How a model packs the 128x40 bitmap into the 640 frame bytes.</summary>
+/// <summary>How a model packs the screen bitmap into the frame bytes.</summary>
 public enum ApexOledLayout
 {
-    /// <summary>Row-major, sixteen bytes per row, leftmost pixel in the high bit.</summary>
+    /// <summary>Row-major, leftmost pixel in the high bit of each byte.</summary>
     Rows,
 
-    /// <summary>Eight-row pages, one byte per column, topmost pixel in the low bit.</summary>
+    /// <summary>Pages of eight rows, one byte per column, topmost pixel in the low bit.</summary>
     Columns,
 }
 
@@ -17,7 +17,7 @@ public sealed record ApexOledModel(int ProductId, string Name, ApexOledLayout La
 
 /// <summary>
 /// Wire format of the Apex Pro TKL keyboards' OLED. Protocol details from a patch by spudge;
-/// only the 2023 model's packing has been seen working on hardware.
+/// only the row packing has been seen working on hardware.
 /// </summary>
 public static class ApexOledProtocol
 {

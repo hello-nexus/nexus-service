@@ -198,7 +198,7 @@ public static class LightingDevicesCatalog
                 Category = ResolveCategory(detector, d.Controller, d.Kind, d.Type),
                 VendorId = d.Vid ?? "-",
                 ProductId = d.Pid ?? "-",
-                Capabilities = new List<string> { "rgb" },
+                Capabilities = HasNativeScreen(d.Vid, d.Pid) ? new List<string> { "rgb", "screen" } : new List<string> { "rgb" },
                 Source = "openrgb",
             });
         }
@@ -314,10 +314,6 @@ public static class LightingDevicesCatalog
         Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x1031", screen: true),
         Native("Tryx",    "Panorama v2",            "aio",      "0x391A", "0x10B1", screen: true),
 
-        // SteelSeries Apex Pro TKL OLED screen only (a streamed panel); lighting stays with OpenRGB.
-        // PIDs from src/Peripherals/SteelSeries/ApexOledProtocol.cs.
-        Native("SteelSeries", "Apex Pro TKL 2023 OLED",  "keyboard", "0x1038", "0x1628", screen: true, rgb: false),
-        Native("SteelSeries", "Apex Pro TKL Gen 3 OLED", "keyboard", "0x1038", "0x1642", screen: true, rgb: false),
         // Corsair Galleon 100 SD keyboard - IDs from src/Peripherals/Corsair/Galleon.
         Native("Corsair", "Galleon 100 SD Keyboard", "keyboard", "0x1B1C", "0x2B0C"),
         Native("Corsair", "Galleon 100 SD Dials", "keyboard", "0x1B1C", "0x2B18"),
@@ -400,6 +396,14 @@ public static class LightingDevicesCatalog
         Capabilities = BuildCapabilities(rgb, screen),
         Source = "nexus",
     };
+
+    /// <summary>
+    /// A keyboard whose OLED Nexus drives as a panel. It stays an OpenRGB row so the keyboard keeps its
+    /// name and system-device identity; only the screen capability is added.
+    /// </summary>
+    private static bool HasNativeScreen(string? vid, string? pid) =>
+        string.Equals(vid, $"0x{Peripherals.SteelSeries.ApexOledProtocol.VendorId:X4}", System.StringComparison.OrdinalIgnoreCase)
+        && System.Array.Exists(Peripherals.SteelSeries.ApexOledProtocol.ProductIds, id => string.Equals(pid, $"0x{id:X4}", System.StringComparison.OrdinalIgnoreCase));
 
     private static List<string> BuildCapabilities(bool rgb, bool screen)
     {

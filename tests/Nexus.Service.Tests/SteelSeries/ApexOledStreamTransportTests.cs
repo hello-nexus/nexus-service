@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using Nexus.Service.Peripherals.JpegPanels;
 using Nexus.Service.Lighting;
 using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.Hid;
@@ -16,8 +18,11 @@ public class ApexOledStreamTransportTests
     {
         public readonly List<byte[]> Features = new();
         public readonly List<byte[]> Outputs = new();
-        public bool AcceptFeatures = true;
-        public bool Disposed;
+        public volatile bool AcceptFeatures = true;
+        public volatile bool AcceptOutputs = true;
+        public volatile bool Disposed;
+        public ManualResetEventSlim? HoldFeature;
+        public readonly ManualResetEventSlim InFeature = new(false);
 
         public int VendorId => ApexOledProtocol.VendorId;
         public int ProductId { get; init; }
@@ -28,7 +33,9 @@ public class ApexOledStreamTransportTests
 
         public bool SetFeature(ReadOnlySpan<byte> report)
         {
-            Features.Add(report.ToArray());
+            lock (Features) { Features.Add(report.ToArray()); }
+            InFeature.Set();
+            HoldFeature?.Wait(5000);
             return AcceptFeatures;
         }
 
@@ -37,8 +44,8 @@ public class ApexOledStreamTransportTests
 
         public bool Write(ReadOnlySpan<byte> report)
         {
-            Outputs.Add(report.ToArray());
-            return true;
+            lock (Outputs) { Outputs.Add(report.ToArray()); }
+            return AcceptOutputs;
         }
 
         public bool SetOutputReport(ReadOnlySpan<byte> report) => false;
@@ -51,10 +58,10 @@ public class ApexOledStreamTransportTests
         public readonly List<HidDeviceInfo> Infos = new();
         public readonly Dictionary<string, FakeScreen> Screens = new();
 
-        public FakeScreen Add(int pid, int usagePage = ApexOledProtocol.ControlUsagePage, string? serial = "SN1")
+        public FakeScreen Add(int pid, int usagePage = ApexOledProtocol.ControlUsagePage, string? serial = "SN1", int featureLength = ApexOledProtocol.FeatureReportLength)
         {
-            var path = $"fake-{pid:x}-{usagePage:x}";
-            Infos.Add(new HidDeviceInfo { VendorId = ApexOledProtocol.VendorId, ProductId = pid, Path = path, UsagePage = usagePage, Serial = serial });
+            var path = $"fake-{pid:x}-{usagePage:x}-{serial}-{featureLength}";
+            Infos.Add(new HidDeviceInfo { VendorId = ApexOledProtocol.VendorId, ProductId = pid, Path = path, UsagePage = usagePage, Serial = serial, FeatureReportByteLength = featureLength });
             return Screens[path] = new FakeScreen { ProductId = pid };
         }
 
@@ -65,11 +72,31 @@ public class ApexOledStreamTransportTests
         public IHidDevice? Open(string path, bool forInput = false) => Screens.GetValueOrDefault(path);
     }
 
+    private static ApexOledStreamTransport Create(FakeHid hid, int pid, LcdLockState? state = null, Func<long>? clock = null, AttachBackoff? backoff = null, int tickMs = 20, int disposeWaitMs = 1000)
+    {
+        var screen = ApexOledScreens.Find(hid).First(s => s.Model.ProductId == pid);
+        return new ApexOledStreamTransport(hid, screen.Model, ApexOledPanelDiscovery.PanelSerial(screen), state, clock, backoff, tickMs, disposeWaitMs);
+    }
+
     private static ApexOledStreamTransport Open(FakeHid hid, int pid, LcdLockState? state = null, Func<long>? clock = null)
     {
-        var transport = new ApexOledStreamTransport(hid, ApexOledProtocol.ModelFor(pid)!, "apex", state, clock);
+        var transport = Create(hid, pid, state, clock);
         transport.Open();
         return transport;
+    }
+
+    private static bool WaitFor(Func<bool> condition)
+    {
+        var until = Environment.TickCount64 + 3000;
+        while (Environment.TickCount64 < until)
+        {
+            if (condition())
+            {
+                return true;
+            }
+            Thread.Sleep(5);
+        }
+        return condition();
     }
 
     private static byte[] Frame(byte gray) => ApexOledMonoTests.Solid(gray, gray, gray);
@@ -247,8 +274,155 @@ public class ApexOledStreamTransportTests
     {
         var hid = new FakeHid();
         hid.Add(0x1628, usagePage: 0x0001);
-        var transport = new ApexOledStreamTransport(hid, ApexOledProtocol.ModelFor(0x1628)!, "apex");
+        var transport = new ApexOledStreamTransport(hid, ApexOledProtocol.ModelFor(0x1628)!, "steelseries-apex-oled:1628:SN1");
 
         Assert.Throws<IOException>(transport.Open);
+    }
+
+    [Fact]
+    public void A_static_page_is_repainted_by_the_timer_after_the_keepalive()
+    {
+        var hid = new FakeHid();
+        var screen = hid.Add(0x1628);
+        long now = 1000;
+        using var transport = Create(hid, 0x1628, clock: () => Interlocked.Read(ref now));
+        transport.Open();
+        transport.StartPlayer();
+        transport.Write(Frame(255));
+        Assert.Single(screen.Features);
+
+        Interlocked.Add(ref now, ApexOledStreamTransport.KeepAliveMs);
+
+        Assert.True(WaitFor(() => screen.Features.Count >= 2));
+        Assert.Equal(screen.Features[0], screen.Features[1]);
+    }
+
+    [Fact]
+    public void The_timer_hands_back_on_lock_and_repaints_on_unlock_without_new_frames()
+    {
+        var hid = new FakeHid();
+        var screen = hid.Add(0x1628);
+        var state = new LcdLockState();
+        using var transport = Create(hid, 0x1628, state);
+        transport.Open();
+        transport.StartPlayer();
+        transport.Write(Frame(255));
+
+        state.Set(true);
+        Assert.True(WaitFor(() => screen.Outputs.Count == 1));
+
+        state.Set(false);
+        Assert.True(WaitFor(() => screen.Features.Count == 2));
+        Assert.Single(screen.Outputs);
+    }
+
+    [Fact]
+    public void A_refused_hand_back_is_retried_not_counted_as_done()
+    {
+        var hid = new FakeHid();
+        var screen = hid.Add(0x1628);
+        screen.AcceptOutputs = false;
+        var state = new LcdLockState();
+        using var transport = Create(hid, 0x1628, state);
+        transport.Open();
+        transport.StartPlayer();
+        transport.Write(Frame(255));
+
+        state.Set(true);
+        Assert.True(WaitFor(() => screen.Outputs.Count >= 2));
+
+        screen.AcceptOutputs = true;
+        var seen = screen.Outputs.Count;
+        Assert.True(WaitFor(() => screen.Outputs.Count > seen));
+        Thread.Sleep(100);
+        var settled = screen.Outputs.Count;
+        Thread.Sleep(100);
+        Assert.Equal(settled, screen.Outputs.Count);
+    }
+
+    [Fact]
+    public void Dispose_leaves_the_handle_to_a_write_still_in_the_keyboard()
+    {
+        var hid = new FakeHid();
+        var screen = hid.Add(0x1628);
+        screen.HoldFeature = new ManualResetEventSlim(false);
+        var transport = Create(hid, 0x1628, disposeWaitMs: 50);
+        transport.Open();
+        var writer = new Thread(() => transport.Write(Frame(255)));
+        writer.Start();
+        Assert.True(screen.InFeature.Wait(3000));
+
+        transport.Dispose();
+
+        Assert.False(screen.Disposed);
+        Assert.Empty(screen.Outputs);
+
+        screen.HoldFeature.Set();
+        writer.Join(3000);
+        Assert.True(screen.Disposed);
+        Assert.Single(screen.Outputs);
+    }
+
+    [Fact]
+    public void Refused_frames_back_discovery_off_instead_of_retrying_every_pass()
+    {
+        long now = 1000;
+        var hid = new FakeHid();
+        var screen = hid.Add(0x1628);
+        screen.AcceptFeatures = false;
+        var discovery = new ApexOledPanelDiscovery(hid, clock: () => Interlocked.Read(ref now));
+        var info = Assert.Single(discovery.Discover());
+        using var transport = discovery.CreateTransport(info);
+        transport.Open();
+
+        Assert.Throws<IOException>(() => transport.Write(Frame(255)));
+
+        Assert.Empty(discovery.Discover());
+        Interlocked.Add(ref now, AttachBackoff.BaseDelayMs);
+        Assert.Single(discovery.Discover());
+    }
+
+    [Fact]
+    public void A_collection_too_short_for_a_frame_is_never_opened()
+    {
+        var hid = new FakeHid();
+        hid.Add(0x1628, featureLength: 64);
+        var transport = new ApexOledStreamTransport(hid, ApexOledProtocol.ModelFor(0x1628)!, "steelseries-apex-oled:1628:SN1");
+
+        Assert.Empty(ApexOledScreens.Find(hid));
+        Assert.Throws<IOException>(transport.Open);
+    }
+
+    [Fact]
+    public void The_collection_that_fits_is_chosen_over_a_short_one_on_the_same_keyboard()
+    {
+        var hid = new FakeHid();
+        hid.Add(0x1628, featureLength: 64);
+        var fits = hid.Add(0x1628, featureLength: 644);
+        using var transport = Open(hid, 0x1628);
+
+        transport.Write(Frame(255));
+
+        Assert.Single(fits.Features);
+        Assert.Single(ApexOledScreens.Find(hid));
+    }
+
+    [Fact]
+    public void Two_keyboards_are_two_panels_and_each_transport_drives_its_own()
+    {
+        var hid = new FakeHid();
+        var a = hid.Add(0x1628, serial: "A");
+        var b = hid.Add(0x1628, serial: "B");
+        var discovery = new ApexOledPanelDiscovery(hid);
+        var infos = discovery.Discover();
+        Assert.Equal(2, infos.Count);
+        Assert.NotEqual(infos[0].Serial, infos[1].Serial);
+
+        using var second = discovery.CreateTransport(infos[1]);
+        second.Open();
+        second.Write(Frame(255));
+
+        Assert.Empty(a.Features);
+        Assert.Single(b.Features);
     }
 }
