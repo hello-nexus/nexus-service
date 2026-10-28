@@ -48,14 +48,6 @@ void main() {
     vec3 col = mix(rock, lava * 1.6, cracks);
     // Heat bleeds into the rock around the cracks.
     col += tintedPalette(lavaHue) * pow(cracks, 0.5) * 0.12 * pulse;
-    // Embers rise through the frame and flicker out.
-    vec2 ep = vec2(uv.x * 34.0, uv.y * 20.0 + t * 7.0);
-    vec2 ec = floor(ep);
-    vec2 ef = fract(ep) - 0.5;
-    float eh = hash21(ec);
-    vec2 ejit = vec2(hash21(ec + 3.3), hash21(ec + 8.8)) - 0.5;
-    float ember = step(0.93, eh) * exp(-dot(ef - ejit * 0.5, ef - ejit * 0.5) * 70.0)
-                * (0.5 + 0.5 * sin(t * 6.0 + eh * 60.0));
-    col += mix(vec3(1.0, 0.6, 0.2), tintedPalette(lavaHue), 0.4) * ember * 2.4 * (0.3 + 0.7 * smoothstep(0.0, 0.8, 1.0 - uv.y));
+
     fragColor = vec4(finalize(col), 1.0);
 }
