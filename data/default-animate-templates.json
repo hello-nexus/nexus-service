@@ -3295,7 +3295,7 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.45,
+    "saturation": 1.4,
     "contrast": 1.15,
     "params": {
      "u_wind": 1.2,
@@ -3309,7 +3309,7 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.45,
+    "saturation": 1.4,
     "contrast": 1.15,
     "params": {
      "u_wind": 2.0,
@@ -3323,27 +3323,27 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.45,
+    "saturation": 1.4,
     "contrast": 1.15,
     "params": {
      "u_wind": 0.6,
-     "u_density": 0.7,
-     "u_gusts": 0.3,
-     "u_mood": 1
+     "u_density": 0.8,
+     "u_gusts": 0.4,
+     "u_mood": 2
     }
    },
    {
     "speed": 75,
     "intensity": 1,
-    "hue": 0.04,
+    "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.45,
+    "saturation": 1.4,
     "contrast": 1.15,
     "params": {
      "u_wind": 1.6,
      "u_density": 1.2,
      "u_gusts": 1.0,
-     "u_mood": 6
+     "u_mood": 3
     }
    }
   ]

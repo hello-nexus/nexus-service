@@ -29,9 +29,9 @@ void main() {
         float up = -dy;
         float streak = step(0.0, up) * (1.0 - smoothstep(0.0, len * 1.6, up));
         // Neon tip glow.
-        float tip = exp(-dy * dy * 320.0) * 1.1;
+        float tip = exp(-dy * dy * 190.0) * 1.1;
         float xLocal = fract((uv.x + xOff) * cols) - 0.5;
-        float xMask = 1.0 - smoothstep(0.08, 0.16 + aa, abs(xLocal));
+        float xMask = 1.0 - smoothstep(0.17, 0.3 + aa, abs(xLocal));
         vec3 tint = tintedPalette(colRand * 0.6 + fl * 0.1);
         float depth = 1.0 - fl * 0.22;
         col += tint * (streak * 0.75 + tip) * xMask * depth;
@@ -47,7 +47,7 @@ void main() {
     float reflDy = puddleY - reflHead;
     float reflStreak = step(0.0, -reflDy) * (1.0 - smoothstep(0.0, len * 1.6, -reflDy));
     float reflXLocal = fract(uv.x * cols) - 0.5;
-    float reflXMask = 1.0 - smoothstep(0.1, 0.2 + aa, abs(reflXLocal));
+    float reflXMask = 1.0 - smoothstep(0.2, 0.34 + aa, abs(reflXLocal));
     vec3 reflTint = tintedPalette(reflRand * 0.6);
     col += reflTint * reflStreak * 0.35 * reflXMask * puddleMask;
     // Wet ground shimmer.

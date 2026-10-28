@@ -44,8 +44,8 @@ void main() {
 
     // Warm desert sky backdrop using palA..palB so the gradient itself
     // shifts under hue rotation.
-    vec3 bgTop = palA * 0.2;
-    vec3 bgBot = palB * 0.36;
+    vec3 bgTop = palA * 0.38;
+    vec3 bgBot = palB * 0.58;
     vec3 col = mix(bgTop, bgBot, smoothstep(0.0, 1.0, uv.y));
     // perf: backdrop haze tint, smooth low-detail -> fbm3
     col += palC * fbm3(uv * 1.4 + t * 0.08) * 0.10;
@@ -105,5 +105,5 @@ void main() {
     float gustEnv = smoothstep(0.0, 0.08, gustPhase) * smoothstep(1.0, 0.88, gustPhase);
     col += palD * gustBand * gustEnv * dens * 2.2;
 
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finalize(col * 2.6), 1.0);
 }
