@@ -447,7 +447,7 @@ public class CorsairLinkHubHandleTests
         Assert.NotEqual("", ownHeard);
 
         var second = new FakeLinkHub();
-        second.InjectReply(0x08);
+        second.InjectReply(0x09);
         Assert.True(hub.HearsOtherHost(second, 10, out var heard, out ownHeard));
         Assert.NotEqual("", heard);
         Assert.Equal("", ownHeard);
