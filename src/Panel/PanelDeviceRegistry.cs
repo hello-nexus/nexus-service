@@ -830,7 +830,7 @@ public sealed class PanelDeviceRegistry
             if (patch.WidgetsLocked.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.WidgetsLocked = patch.WidgetsLocked.Value;
             if (patch.RestrictedMode.HasValue)
-                record.RestrictedMode = patch.RestrictedMode.Value;
+                record.RestrictedMode = patch.RestrictedMode.Value ? true : null;
             // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
             if (patch.GridSlots is <= 0)
                 record.GridSlots = null;

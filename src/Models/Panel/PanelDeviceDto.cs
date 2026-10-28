@@ -150,8 +150,8 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>The panel's widgets cannot be moved or resized while true. Display-bound records only; null = unlocked.
     /// Per-widget locks stay stored but the panel lock is what the page honors.</summary>
     public bool? WidgetsLocked { get; set; }
-    /// <summary>Manual Restricted mode for this panel, set from the dashboard. Applies to every panel kind; the page ORs it with the system/session state.</summary>
-    public bool RestrictedMode { get; set; }
+    /// <summary>Manual Restricted mode for this panel, set from the dashboard. Applies to every panel kind; the page ORs it with the system/session state. Null = off; kept null rather than false so default records serialize without the key and profile payload hashes do not move.</summary>
+    public bool? RestrictedMode { get; set; }
     /// <summary>Short-axis cell count of the page grid, even and within <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MinGridSlots"/> to <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MaxGridSlots"/>. Overrides the count <see cref="WidgetSize"/>
     /// would derive; null = derive from <see cref="WidgetSize"/>.</summary>
     public int? GridSlots { get; set; }

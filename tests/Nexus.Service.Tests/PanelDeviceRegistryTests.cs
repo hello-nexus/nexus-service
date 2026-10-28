@@ -668,11 +668,18 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     public void RestrictedMode_DefaultsFalse_AndSerializesAsRestrictedMode()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
-        Assert.False(record.RestrictedMode);
+        Assert.Null(record.RestrictedMode);
 
         var json = System.Text.Json.JsonSerializer.Serialize(record, Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord);
+        var persisted = System.Text.Json.JsonSerializer.Serialize(record, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
 
-        Assert.Contains("\"restrictedMode\":false", json);
+        Assert.DoesNotContain("restrictedMode", json);
+        Assert.DoesNotContain("restrictedMode", persisted);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true });
+        Assert.Contains("\"restrictedMode\":true", System.Text.Json.JsonSerializer.Serialize(_registry.Get(record.Id), Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord));
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = false });
+        Assert.Null(_registry.Get(record.Id)!.RestrictedMode);
     }
 
     [Theory]
@@ -685,7 +692,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
         Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true })!.RestrictedMode);
         Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.RestrictedMode);
-        Assert.False(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = false })!.RestrictedMode);
+        Assert.Null(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = false })!.RestrictedMode);
     }
 
     [Fact]

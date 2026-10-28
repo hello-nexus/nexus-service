@@ -537,6 +537,7 @@ public static class PanelRoutes
             {
                 ResetPersonalization(registry, bgLibrary, id);
                 registry.ResetHardwareSettings(id);
+                registry.Patch(id, new PanelDevicePatch { RestrictedMode = false });
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }
