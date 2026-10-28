@@ -31,10 +31,10 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // interval is the only signal that drops/restores the card.
     private const int ReachabilityPollSeconds = 5;
     // A streaming light answers many status probes late or not at all. It goes
-    // offline only after this long without an answer AND this many misses.
+    // offline only after this many misses spanning at least this long. A gap
+    // between probes longer than this starts a fresh streak.
     private const long OfflineAfterMs = 15_000;
     private const int MissesBeforeOffline = 2;
-    private const int ScanPingAttempts = 3;
 
     private readonly Dictionary<string, ILightDriver> _drivers;
     private readonly IConfigStore _store;
@@ -47,8 +47,9 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // Serializes the SetOnline read-modify; the probe loop and the
     // /smart-lights/all route both write _online.
     private readonly object _onlineLock = new();
-    // id -> tick of the last answered probe and misses since; guarded by _onlineLock.
-    private readonly Dictionary<string, (long LastSeen, int Misses)> _probeState = new();
+    // id -> latest probe tick, first miss of the current streak and its miss
+    // count (0 after an answer); guarded by _onlineLock.
+    private readonly Dictionary<string, (long LastProbe, long FirstMiss, int Misses)> _probeState = new();
     private readonly Func<long> _tick = static () => Environment.TickCount64;
     private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(ReachabilityPollSeconds);
     // id -> live snapshot, refreshed each BuildFrames so the 33 Hz writer's
@@ -875,13 +876,9 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
             var reachable = false;
             if (driver is not null)
             {
-                // One lost status reply must not prune a streaming light.
-                for (var attempt = 0; attempt < ScanPingAttempts && !reachable; attempt++)
-                {
-                    try { reachable = await driver.PingAsync(ToSmartLight(cfg), ct).ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                    catch { reachable = false; }
-                }
+                try { reachable = await driver.PingAsync(ToSmartLight(cfg), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch { reachable = false; }
             }
             hostReachable[cfg.Host] = reachable;
         }
@@ -893,9 +890,10 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
             var next = new List<SmartLightConfig>(s.SmartLights.Devices.Count);
             foreach (var c in s.SmartLights.Devices)
             {
-                // Prune only a probed-and-unreachable light of this brand; if we
-                // couldn't probe its host, keep it.
-                if (c.Brand == brand && hostReachable.TryGetValue(c.Host, out var ok) && !ok)
+                // Prune only a probed-and-unreachable light of this brand that the
+                // debounced state already shows offline, so one lost reply never
+                // prunes a streaming light; if we couldn't probe its host, keep it.
+                if (c.Brand == brand && hostReachable.TryGetValue(c.Host, out var ok) && !ok && !IsOnline(c.Id))
                 { pruned.Add(c.Id); continue; }
                 next.Add(c);
             }
@@ -959,11 +957,10 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
 
     // Records reachability and returns true when it flips the device's visible
     // state. The optimistic baseline (absent or true = online) means a device
-    // shows until the probe first reports it unreachable. Serialized so the poll
-    // loop and the /smart-lights/all route can't interleave the read-modify and
-    // drop or duplicate the transition broadcast.
-    // An answered probe restores the light at once; a miss hides it only once
-    // OfflineAfterMs has passed since the last answer and enough misses piled up.
+    // shows until enough misses spanning OfflineAfterMs say otherwise; an
+    // answered probe restores it at once. Serialized so the poll loop and the
+    // /smart-lights/all route can't interleave the read-modify and drop or
+    // duplicate the transition broadcast.
     private bool SetOnline(string id, bool online)
     {
         lock (_onlineLock)
@@ -974,14 +971,18 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
             var now = _tick();
             if (online)
             {
-                _probeState[id] = (now, 0);
+                _probeState[id] = (now, now, 0);
             }
             else
             {
-                var state = _probeState.TryGetValue(id, out var st) ? st : (LastSeen: now, Misses: 0);
-                state.Misses++;
-                _probeState[id] = state;
-                if (wasOnline && (now - state.LastSeen < OfflineAfterMs || state.Misses < MissesBeforeOffline))
+                // Leftover misses from before a gap (no lighting view, brand off)
+                // must not count toward this streak.
+                var fresh = !_probeState.TryGetValue(id, out var st) || st.Misses == 0
+                    || now - st.LastProbe > OfflineAfterMs;
+                var firstMiss = fresh ? now : st.FirstMiss;
+                var misses = fresh ? 1 : st.Misses + 1;
+                _probeState[id] = (now, firstMiss, misses);
+                if (wasOnline && (misses < MissesBeforeOffline || now - firstMiss < OfflineAfterMs))
                     return false;
             }
             _online[id] = online;

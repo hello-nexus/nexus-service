@@ -350,7 +350,7 @@ public class SmartLightProviderTests : IDisposable
 
     private void Advance(long ms) => Interlocked.Add(ref _now, ms);
 
-    // Two misses with the fake clock 15 s apart: the earliest an unseen light can go offline.
+    // Two misses a full window apart: the earliest a light can go offline.
     private async Task GoOfflineAsync()
     {
         _driver.PingResult = false;
@@ -400,11 +400,10 @@ public class SmartLightProviderTests : IDisposable
         _driver.PingResult = true;
         await ProbeAsync();
         _driver.PingResult = false;
-        Advance(20_000);
         await ProbeAsync();                 // first miss: still online
         Assert.Single(_provider.GetAll().Devices);
-        Advance(5_000);
-        await ProbeAsync();                 // second miss, 25 s since the answer: offline
+        Advance(15_000);
+        await ProbeAsync();                 // second miss, window elapsed since the first: offline
         await ProbeAsync();                 // already offline: no further event
 
         Assert.Empty(_provider.GetAll().Devices);
@@ -424,11 +423,11 @@ public class SmartLightProviderTests : IDisposable
         Assert.Single(_provider.GetAll().Devices);
 
         _driver.PingResult = false;
-        Advance(60_000);
         await ProbeAsync();                 // one miss since the answer
         Assert.Single(_provider.GetAll().Devices);
 
-        await ProbeAsync();                 // second miss, well past the window
+        Advance(15_000);
+        await ProbeAsync();                 // second miss, window elapsed
         Assert.Empty(_provider.GetAll().Devices);
     }
 
@@ -449,16 +448,93 @@ public class SmartLightProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task ScanBrand_retriesPing_beforePruning()
+    public async Task ScanBrand_keepsOnlineLight_thatFailsItsScanPing()
     {
         await PairOneAsync();
-        _driver.PingScript = new Queue<bool>(new[] { false, false, true });
+        _driver.PingResult = true;
+        await ProbeAsync();
+        _driver.PingResult = false;
         await _provider.ScanBrandAsync("fake", CancellationToken.None);
-        Assert.Contains(_store.Load().SmartLights.Devices, d => d.Id == "fake:bridge:1");
 
-        _driver.PingScript = new Queue<bool>(new[] { false, false, false });
+        Assert.Contains(_store.Load().SmartLights.Devices, d => d.Id == "fake:bridge:1");
+    }
+
+    [Fact]
+    public async Task ScanBrand_prunesOfflineLight_thatFailsItsScanPing()
+    {
+        await PairOneAsync();
+        await GoOfflineAsync();
         await _provider.ScanBrandAsync("fake", CancellationToken.None);
+
         Assert.DoesNotContain(_store.Load().SmartLights.Devices, d => d.Id == "fake:bridge:1");
+    }
+
+    [Fact]
+    public async Task PageOpenDoubleMiss_afterIdleGap_keepsLightOnline()
+    {
+        await PairOneAsync();
+        _driver.PingResult = true;
+        await ProbeAsync();
+        Advance(600_000);
+        _driver.PingResult = false;
+        await ProbeAsync();                 // route refresh
+        await ProbeAsync();                 // the loop's immediate probe
+
+        Assert.Single(_provider.GetAll().Devices);
+    }
+
+    [Fact]
+    public async Task MissesFromBeforeAGap_doNotCarryForward()
+    {
+        await PairOneAsync();
+        _driver.PingResult = false;
+        await ProbeAsync();                 // streak starts
+        Advance(600_000);
+        await ProbeAsync();                 // gap: fresh streak, one miss
+        await ProbeAsync();                 // two misses, no span
+
+        Assert.Single(_provider.GetAll().Devices);
+    }
+
+    [Fact]
+    public async Task ProbeFinishingAfterRemove_doesNotResurrectState()
+    {
+        await PairOneAsync();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _driver.PingResult = false;
+        _driver.OnPing = () => entered.TrySetResult();
+        _driver.PingGate = release.Task;
+        var probe = ProbeAsync();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        _provider.Remove("fake:bridge:1");
+        release.SetResult();
+        await probe;
+        _driver.PingGate = null;
+        _driver.OnPing = null;
+
+        // A resurrected streak would make this single miss the offline one.
+        await PairOneAsync();
+        Advance(15_000);
+        await ProbeAsync();
+
+        Assert.Single(_provider.GetAll().Devices);
+    }
+
+    [Fact]
+    public async Task PollLoop_recordsReachability()
+    {
+        await PairOneAsync();
+        var offline = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _provider.OnlineChanged += () => offline.TrySetResult();
+        _driver.PingResult = false;
+        _driver.OnPing = () => Advance(15_000); // each polled probe lands a window later
+
+        _provider.StartReachabilityPolling();
+        try { await offline.Task.WaitAsync(TimeSpan.FromSeconds(30)); }
+        finally { _provider.StopReachabilityPolling(); }
+
+        Assert.Empty(_provider.GetAll().Devices);
     }
 
     [Fact]
@@ -615,7 +691,7 @@ public class SmartLightProviderTests : IDisposable
         _store.Update(s => s.Devices.DeviceLedOverrides["fake:bridge:1"] =
             new List<SegmentLedOverride> { new() { Segment = 0, LedIndex = 0, U = 0.5f, V = 0.5f } });
 
-        _driver.PingResult = false; // unreachable -> the light was removed
+        await GoOfflineAsync(); // unreachable -> the light was removed
         await _provider.ScanBrandAsync("fake", CancellationToken.None);
 
         Assert.DoesNotContain(_store.Load().SmartLights.Devices, d => d.Id == "fake:bridge:1");
@@ -656,7 +732,7 @@ public class SmartLightProviderTests : IDisposable
         public bool CanStreamResult;
         public bool PingResult = true;
         public Action? OnPing;
-        public Queue<bool>? PingScript;
+        public Task? PingGate;
         // What a scan discovers; defaults to the one paired light's host/key.
         public List<DiscoveredLight> DiscoverResult = new() { new DiscoveredLight("fake", "1.2.3.4", "Fake", "bridge") };
 
@@ -678,12 +754,14 @@ public class SmartLightProviderTests : IDisposable
         public Task IdentifyAsync(SmartLight dev, CancellationToken ct) => Task.CompletedTask;
         public int MinIntervalMs(SmartLight dev) => 10;
         public string RateLimitKey(SmartLight dev) => dev.Id;
-        public Task<bool> PingAsync(SmartLight dev, CancellationToken ct)
+        public async Task<bool> PingAsync(SmartLight dev, CancellationToken ct)
         {
             // Like the real drivers: cancellation reads as "not reachable", never throws.
-            if (ct.IsCancellationRequested) return Task.FromResult(false);
+            if (ct.IsCancellationRequested) return false;
+            var result = PingResult;
             OnPing?.Invoke();
-            return Task.FromResult(PingScript is { Count: > 0 } q ? q.Dequeue() : PingResult);
+            if (PingGate is { } gate) await gate;
+            return result;
         }
 
         public bool CanStream(SmartLight dev) => CanStreamResult;
