@@ -748,6 +748,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
         Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "small" })!.WidgetSize);
         Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "huge" })!.WidgetSize);
+        Assert.Equal("medium", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = PanelWidgetSizes.Medium })!.WidgetSize);
         Assert.Equal("xsmall", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = PanelWidgetSizes.XSmall })!.WidgetSize);
         Assert.Equal("xsmall", _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.WidgetSize);
         Assert.Equal("large", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "large" })!.WidgetSize);
