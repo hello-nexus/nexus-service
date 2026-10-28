@@ -125,6 +125,49 @@ public sealed class AiRoutesIntegrationTests : IDisposable
         Assert.False(body.GetProperty("running").GetBoolean());
     }
 
+    private List<Nexus.Service.Transfer.TransferAttentionNotice> CaptureNotices()
+    {
+        var notices = new List<Nexus.Service.Transfer.TransferAttentionNotice>();
+        _factory.Services.GetRequiredService<Nexus.Service.Transfer.TransferInbox>().TransferNeedsAttention += notices.Add;
+        return notices;
+    }
+
+    [Fact]
+    public async Task Notifies_the_user_only_on_false_to_true_transitions()
+    {
+        var client = AuthedClient();
+        var notices = CaptureNotices();
+
+        await client.PostAsJsonAsync("/ai/config", new { enabled = true });
+        Assert.Equal(new[] { "AI Integration turned on" }, notices.Select(n => n.Title));
+
+        await client.PostAsJsonAsync("/ai/config", new { enabled = true });
+        await client.PostAsJsonAsync("/ai/config", new { capabilities = new { cooling = false } });
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = false });
+        Assert.Single(notices);
+
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = true });
+        Assert.Equal("Remote AI connections turned on", notices[^1].Title);
+        Assert.Equal(2, notices.Count);
+
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = true });
+        await client.PostAsJsonAsync("/ai/config", new { enabled = false });
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = false });
+        Assert.Equal(2, notices.Count);
+        Assert.All(notices, n => Assert.Null(n.FolderPath));
+    }
+
+    [Fact]
+    public async Task Notifies_when_remote_is_turned_on_while_integration_is_disabled()
+    {
+        var client = AuthedClient();
+        var notices = CaptureNotices();
+
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = true });
+
+        Assert.Equal(new[] { "Remote AI connections turned on" }, notices.Select(n => n.Title));
+    }
+
     [Fact]
     public async Task Enabling_twice_keeps_the_same_token()
     {
