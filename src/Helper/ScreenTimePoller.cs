@@ -151,6 +151,8 @@ public sealed class ScreenTimePoller : IDisposable
 
     private void ApplyFocus(string appName, int pid, string? exePath, int winW, int winH, string? monitorDevice)
     {
+        // appName, exePath, winW, winH and monitorDevice are read only when the pid
+        // changed: Poll's same-pid fast path passes placeholders.
         FireMode mode;
         string priorApp = "";
         long priorStart = 0;
