@@ -62,7 +62,6 @@ public sealed class WindowSetPoller : IDisposable
     /// <summary>Windows walked by the last EnumWindows pass - the size of the
     /// per-window Win32 work the slow-pass line is reporting on.</summary>
     private int _enumerated;
-    private int _titleFallbacks;
     private readonly object _hookGate = new();
     private bool _hooksOn;
 
@@ -70,7 +69,9 @@ public sealed class WindowSetPoller : IDisposable
     private readonly WindowCloakWatcher _cloakWatcher;
 
     private readonly WindowSetPassStats _stats = new();
-    private readonly Stopwatch _sinceStart = Stopwatch.StartNew();
+    private readonly Stopwatch _everyPassWindow = Stopwatch.StartNew();
+    private int _switchChanges = HelperPollerDiagnostics.ChangeCount;
+    private bool _slowSinceRate;
     private readonly Stopwatch _sinceHookRate = Stopwatch.StartNew();
     private HashSet<int> _lastSnapshot = new();
     private (long Destroy, long Cloaked, long Uncloaked) _hooksAtLastPass;
@@ -105,7 +106,9 @@ public sealed class WindowSetPoller : IDisposable
     // Every (re)start drops the cache: its pass-counted trust cannot span a pause.
     private void SyncHooks(bool active)
     {
-        active = active && !HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetHooks);
+        var hooksSwitchedOff = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetHooks);
+        _cloakCache.ServeWithoutEvents = active && hooksSwitchedOff;
+        active = active && !hooksSwitchedOff;
         lock (_hookGate)
         {
             if (active == _hooksOn) return;
@@ -150,12 +153,20 @@ public sealed class WindowSetPoller : IDisposable
         var passUncloaked = hooks.Uncloaked - _hooksAtLastPass.Uncloaked;
         _hooksAtLastPass = hooks;
 
-        var everyPass = WindowSetPassStats.LogsEveryPass(_sinceStart.Elapsed);
+        var changes = HelperPollerDiagnostics.ChangeCount;
+        if (changes != _switchChanges)
+        {
+            _switchChanges = changes;
+            _everyPassWindow.Restart();
+        }
+
+        var everyPass = WindowSetPassStats.LogsEveryPass(_everyPassWindow.Elapsed);
         var slow = sw.ElapsedMilliseconds >= HelperPollerDiagnostics.SlowPassMs;
+        _slowSinceRate |= slow;
         if (everyPass || slow)
         {
             var maxClass = _stats.MaxTicks > 0 ? ClassNameOf(new IntPtr(_stats.MaxHwnd)) : null;
-            var detail = $"dwm={_cloakCache.Reads} fallbacks={_titleFallbacks} cached={_cloakCache.Count} "
+            var detail = $"cached={_cloakCache.Count} "
                 + _stats.Format(Stopwatch.Frequency, _cloakCache.Trickles, passDestroy, passCloaked, passUncloaked, maxClass);
             if (everyPass)
             {
@@ -171,12 +182,16 @@ public sealed class WindowSetPoller : IDisposable
 
         if (_hooksOn && _sinceHookRate.Elapsed >= TimeSpan.FromSeconds(60))
         {
-            Nexus.Service.Platform.HelperLog.Write(WindowSetPassStats.FormatHookRate(
-                _sinceHookRate.Elapsed.TotalSeconds,
-                hooks.Destroy - _hooksAtLastRate.Destroy,
-                hooks.Cloaked - _hooksAtLastRate.Cloaked,
-                hooks.Uncloaked - _hooksAtLastRate.Uncloaked));
+            if (everyPass || _slowSinceRate)
+            {
+                Nexus.Service.Platform.HelperLog.Write(WindowSetPassStats.FormatHookRate(
+                    _sinceHookRate.Elapsed.TotalSeconds,
+                    hooks.Destroy - _hooksAtLastRate.Destroy,
+                    hooks.Cloaked - _hooksAtLastRate.Cloaked,
+                    hooks.Uncloaked - _hooksAtLastRate.Uncloaked));
+            }
             _hooksAtLastRate = hooks;
+            _slowSinceRate = false;
             _sinceHookRate.Restart();
         }
     }
@@ -204,14 +219,16 @@ public sealed class WindowSetPoller : IDisposable
     private HashSet<int> SnapshotWindowedPids()
     {
         _stats.Reset();
-        _titleFallbacks = 0;
         _skipDwm = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetDwm);
         _skipFallback = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetFallback);
         _cloakCache.TrickleEnabled = !HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetTrickle);
-        if (HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetEnum))
+        _cloakCache.StoreReads = !_skipDwm;
+        var skipEnum = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetEnum);
+        _cloakCache.NoteSkippedPasses(skipEnum);
+        if (skipEnum)
         {
             _enumerated = 0;
-            return new HashSet<int>(_lastSnapshot);
+            return _lastSnapshot;
         }
 
         var pids = new HashSet<int>();
@@ -288,7 +305,6 @@ public sealed class WindowSetPoller : IDisposable
                 _stats.Note("title", hwnd.ToInt64(), titleTicks);
                 if (titleLength == 0 && !_skipFallback)
                 {
-                    _titleFallbacks++;
                     var tFallback = Stopwatch.GetTimestamp();
                     titleLength = GetWindowTextLength(hwnd);
                     // Must read immediately, before any other P/Invoke clobbers it.
@@ -329,7 +345,7 @@ public sealed class WindowSetPoller : IDisposable
         _cloakCache.EndPass();
         _enumerated = enumerated;
         _lastSnapshot = pids;
-        return new HashSet<int>(pids);
+        return pids;
     }
 
     // DWMWA_CLOAKED reports non-zero for a window Explorer keeps alive but

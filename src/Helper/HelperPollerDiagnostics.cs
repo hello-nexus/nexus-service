@@ -134,8 +134,15 @@ public static class HelperPollerDiagnostics
             s_fromEnv = pinned.Count > 0;
             s_disabled = s_fromEnv ? pinned : ReadFile(filePath);
             s_nextCheckTicks = Environment.TickCount64 + (long)RecheckInterval.TotalMilliseconds;
+            Interlocked.Increment(ref s_changeCount);
         }
     }
+
+    private static int s_changeCount;
+
+    /// <summary>Bumped whenever the effective switch set changes (including the
+    /// initial Configure), so a consumer can restart its own per-change window.</summary>
+    public static int ChangeCount => Volatile.Read(ref s_changeCount);
 
     public static bool IsDisabled(string poller)
     {
@@ -160,6 +167,7 @@ public static class HelperPollerDiagnostics
             var next = ReadFile(s_filePath);
             if (next.SetEquals(s_disabled)) return;
             s_disabled = next;
+            Interlocked.Increment(ref s_changeCount);
             Log?.Invoke(FormatStartupLine(next));
         }
     }

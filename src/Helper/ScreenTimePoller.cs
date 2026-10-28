@@ -71,8 +71,6 @@ public sealed class ScreenTimePoller : IDisposable
             GetWindowThreadProcessId(hwnd, out var pid);
             if (pid == 0) return;
 
-            // ApplyFocus ignores the name, path and geometry unless the pid changed,
-            // so those reads (and the monitor identity lookup) run only then.
             int currentPid;
             lock (_lock) { currentPid = _currentPid; }
             if ((int)pid == currentPid)

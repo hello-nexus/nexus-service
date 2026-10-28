@@ -11,8 +11,8 @@ namespace Nexus.Service.Helper;
 /// </summary>
 public sealed class WindowSetPassStats
 {
-    /// <summary>Every pass is logged for this long after helper start; after
-    /// that only slow passes are.</summary>
+    /// <summary>Every pass is logged for this long after helper start and after
+    /// each change of the disable switches; after that only slow passes are.</summary>
     public static readonly TimeSpan LogEveryPassWindow = TimeSpan.FromMinutes(10);
 
     public long EnumTicks;
@@ -43,7 +43,7 @@ public sealed class WindowSetPassStats
         MaxHwnd = hwnd;
     }
 
-    public static bool LogsEveryPass(TimeSpan sinceHelperStart) => sinceHelperStart < LogEveryPassWindow;
+    public static bool LogsEveryPass(TimeSpan sinceWindowStart) => sinceWindowStart < LogEveryPassWindow;
 
     public static double ToMs(long ticks, long frequency) =>
         frequency <= 0 ? 0 : ticks * 1000.0 / frequency;

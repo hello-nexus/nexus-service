@@ -260,4 +260,79 @@ public class WindowCloakCacheTests
         c.BeginPass();
         Assert.False(c.IsCloaked(1, 0, 0, 100, 100));
     }
+
+    [Fact]
+    public void WithoutEvents_EntriesAreNotServed()
+    {
+        var c = Make(live: false);
+        _truth[1] = true;
+        Pass(c, 1);
+        c.BeginPass();
+        Ask(c, 1);
+        Assert.Equal(1, c.Reads);
+    }
+
+    [Fact]
+    public void ServeWithoutEvents_ServesStoredEntries_AndTrickleStillRefreshes()
+    {
+        var c = Make(every: 2, max: 4, live: false);
+        c.ServeWithoutEvents = true;
+        _truth[1] = true;
+        Pass(c, 1);
+        c.BeginPass();
+        Assert.True(Ask(c, 1));
+        Assert.Equal(0, c.Reads);
+        c.EndPass();
+        _truth[1] = false;
+        var seen = true;
+        for (var p = 0; p < 6 && seen; p++)
+        {
+            c.BeginPass();
+            seen = Ask(c, 1);
+            c.EndPass();
+        }
+        Assert.False(seen);
+    }
+
+    [Fact]
+    public void StoreReadsOff_NeverRemembersAFakeRead_AndFlippingDropsEntries()
+    {
+        var c = Make();
+        _truth[1] = true;
+        Pass(c, 1);
+        c.StoreReads = false;
+        _truth[1] = false;
+        for (var p = 0; p < 3; p++)
+        {
+            c.BeginPass();
+            Assert.False(Ask(c, 1));
+            Assert.Equal(1, c.Reads);
+            c.EndPass();
+        }
+        Assert.Equal(0, c.Count);
+        c.StoreReads = true;
+        c.BeginPass();
+        Assert.False(Ask(c, 1));
+        c.EndPass();
+        c.BeginPass();
+        Ask(c, 1);
+        Assert.Equal(0, c.Reads);
+    }
+
+    [Fact]
+    public void NoteSkippedPasses_ClearsOnEachTransition_ButNotWhileSteady()
+    {
+        var c = Make();
+        _truth[1] = true;
+        Pass(c, 1);
+        c.NoteSkippedPasses(false);
+        Assert.Equal(1, c.Count);
+        c.NoteSkippedPasses(true);
+        Assert.Equal(0, c.Count);
+        Pass(c, 1);
+        c.NoteSkippedPasses(true);
+        Assert.Equal(1, c.Count);
+        c.NoteSkippedPasses(false);
+        Assert.Equal(0, c.Count);
+    }
 }

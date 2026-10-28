@@ -67,6 +67,42 @@ public sealed class WindowCloakCache
     /// <summary>False stops the safety-net re-reads; events still invalidate entries.</summary>
     public bool TrickleEnabled { get; set; } = true;
 
+    /// <summary>Serve stored entries although no event source is live, leaving the
+    /// trickle as the only refresh. For a diagnostic switch that removes the hooks
+    /// on purpose; a real hook-install failure keeps the always-read behavior.</summary>
+    public bool ServeWithoutEvents { get; set; }
+
+    private bool _storeReads = true;
+    private bool _wasSkipping;
+
+    /// <summary>False reads without remembering the result, for a pass whose reads are
+    /// not real. Flipping it drops every entry so nothing stored outside it is trusted.</summary>
+    public bool StoreReads
+    {
+        get => _storeReads;
+        set
+        {
+            lock (_gate)
+            {
+                if (_storeReads == value) return;
+                _storeReads = value;
+                _entries.Clear();
+            }
+        }
+    }
+
+    /// <summary>Called once per poll with whether the pass is being skipped. A skipped
+    /// pass does not advance the pass counter, so entries must not outlive the skip.</summary>
+    public void NoteSkippedPasses(bool skipping)
+    {
+        lock (_gate)
+        {
+            if (_wasSkipping == skipping) return;
+            _wasSkipping = skipping;
+            _entries.Clear();
+        }
+    }
+
     public int Count
     {
         get { lock (_gate) return _entries.Count; }
@@ -104,7 +140,7 @@ public sealed class WindowCloakCache
     {
         lock (_gate)
         {
-            if (_eventsLive && _entries.TryGetValue(hwnd, out var e) && IsTrusted(e, left, top, right, bottom))
+            if ((_eventsLive || ServeWithoutEvents) && _entries.TryGetValue(hwnd, out var e) && IsTrusted(e, left, top, right, bottom))
             {
                 if (!NeedsTrickle(e))
                 {
@@ -127,17 +163,20 @@ public sealed class WindowCloakCache
         {
             _reading = 0;
             Reads++;
-            _entries[hwnd] = new Entry
+            if (_storeReads)
             {
-                Cloaked = cloaked,
-                Dirty = _readingDirty,
-                ReadPass = _pass,
-                TouchedPass = _pass,
-                Left = left,
-                Top = top,
-                Right = right,
-                Bottom = bottom,
-            };
+                _entries[hwnd] = new Entry
+                {
+                    Cloaked = cloaked,
+                    Dirty = _readingDirty,
+                    ReadPass = _pass,
+                    TouchedPass = _pass,
+                    Left = left,
+                    Top = top,
+                    Right = right,
+                    Bottom = bottom,
+                };
+            }
         }
         return cloaked;
     }

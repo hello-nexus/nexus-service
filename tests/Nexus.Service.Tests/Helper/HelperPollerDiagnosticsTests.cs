@@ -82,6 +82,15 @@ public class HelperPollerDiagnosticsTests
     }
 
     [Fact]
+    public void Configure_BumpsTheChangeCount()
+    {
+        var before = HelperPollerDiagnostics.ChangeCount;
+        HelperPollerDiagnostics.Configure("audio", null);
+        Assert.True(HelperPollerDiagnostics.ChangeCount > before);
+        HelperPollerDiagnostics.Configure(null, null);
+    }
+
+    [Fact]
     public void FormatStartupLine_NamesActiveSubSwitchesAsRecognized()
     {
         var line = HelperPollerDiagnostics.FormatStartupLine(
