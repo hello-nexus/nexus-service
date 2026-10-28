@@ -47,7 +47,7 @@ void main() {
     // Lit deep water: a color gradient from a bright surface to a saturated
     // abyss, slow light shafts falling from the top, and drifting plankton.
     float caustic = fbm3(uv * 2.2 + vec2(t * 0.12, -t * 0.18));
-    vec3 water = tintedPalette(0.52 + uv.y * 0.16 + caustic * 0.12) * (0.28 - uv.y * 0.1);
+    vec3 water = tintedPalette(0.52 + uv.y * 0.4 + uv.x * 0.25 + caustic * 0.35 + t * 0.02) * (0.38 - uv.y * 0.12);
     float shafts = pow(0.5 + 0.5 * sin(uv.x * 5.0 + uv.y * 1.6 + sin(t * 0.4 + uv.x * 2.0) * 1.2), 3.0);
     water += tintedPalette(0.35 + uv.x * 0.1) * shafts * smoothstep(0.9, -1.0, uv.y) * 0.28;
     water += tintedPalette(0.7 + caustic * 0.3) * smoothstep(0.45, 0.8, caustic) * 0.25;

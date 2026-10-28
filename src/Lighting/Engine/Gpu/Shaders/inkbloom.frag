@@ -20,7 +20,7 @@ void main() {
     float sn = sin(sw);
     vec2 puv = vec2(cs * uv.x - sn * uv.y, sn * uv.x + cs * uv.y);
 
-    vec3 col = tintedPalette(0.55 + puv.x * 0.12 + sin(t * 0.7 + puv.y * 1.3) * 0.08) * 0.20;
+    vec3 col = tintedPalette(0.55 + puv.x * 0.3 + sin(t * 0.7 + puv.y * 1.3) * 0.15) * 0.42;
     for (int i = 0; i < 4; i++) {
         float idx = float(i);
         float lifespan = 3.4;

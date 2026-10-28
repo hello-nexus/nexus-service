@@ -12,8 +12,8 @@ void main() {
     float starBr = clamp(u_stars, 0.0, 1.5);
     int layers = int(clamp(u_depth, 1.0, 3.0));
 
-    vec3 col = tintedPalette(0.62 + uv.y * 0.12 + sin(t * 0.2) * 0.05) * 0.12;
-    col += tintedPalette(0.1 + uv.x * 0.1 - t * 0.02) * 0.06;
+    vec3 col = tintedPalette(0.62 + uv.y * 0.35 + sin(t * 0.2) * 0.08) * 0.34;
+    col += tintedPalette(0.1 + uv.x * 0.3 - t * 0.03) * 0.22;
 
     vec2 starGrid = floor(uv * 60.0);
     float starVal = hash21(starGrid);
@@ -29,11 +29,11 @@ void main() {
         q += vec2(fbm3(q + t * 0.14), fbm3(q + vec2(3.0, 7.0) + t * 0.11)) * 0.6;
         float n = fbm3(q);
         n = n * 0.75 + fbm3(q * 2.6 - t * 0.04) * 0.25;
-        float cloud = smoothstep(0.30, 0.72, n * dens);
+        float cloud = smoothstep(0.22, 0.62, n * dens);
         float core = smoothstep(0.62, 0.95, n * dens);
-        vec3 tint = tintedPalette(fi * 0.11 + 0.02 + n * 0.45);
+        vec3 tint = tintedPalette(fi * 0.3 + 0.02 + n * 0.7);
         col += tint * cloud * (0.50 + 0.10 * fi);
-        col += tintedPalette(fi * 0.11 + 0.28) * core * 0.9;
+        col += tintedPalette(fi * 0.3 + 0.3) * core * 0.9;
     }
     fragColor = vec4(finalize(col), 1.0);
 }

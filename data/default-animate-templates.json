@@ -149,7 +149,7 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.25,
+    "saturation": 1.8,
     "contrast": 1.05,
     "params": {
      "u_count": 8,
@@ -161,7 +161,7 @@
     "intensity": 1,
     "hue": 0.45,
     "colorize": 0,
-    "saturation": 1.25,
+    "saturation": 1.8,
     "contrast": 1.05,
     "params": {
      "u_count": 14,
@@ -173,7 +173,7 @@
     "intensity": 1,
     "hue": 0.7,
     "colorize": 0,
-    "saturation": 1.25,
+    "saturation": 1.8,
     "contrast": 1.05,
     "params": {
      "u_count": 5,
@@ -185,7 +185,7 @@
     "intensity": 1,
     "hue": 0.25,
     "colorize": 0,
-    "saturation": 1.25,
+    "saturation": 1.8,
     "contrast": 1.05,
     "params": {
      "u_count": 10,
@@ -1797,7 +1797,7 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.25,
+    "saturation": 1.8,
     "contrast": 1.1,
     "params": {
      "u_count": 4,
@@ -1809,7 +1809,7 @@
     "intensity": 1,
     "hue": 0.55,
     "colorize": 0,
-    "saturation": 1.25,
+    "saturation": 1.8,
     "contrast": 1.1,
     "params": {
      "u_count": 6,
@@ -1821,7 +1821,7 @@
     "intensity": 1,
     "hue": 0.78,
     "colorize": 0,
-    "saturation": 1.25,
+    "saturation": 1.8,
     "contrast": 1.1,
     "params": {
      "u_count": 3,
@@ -1833,7 +1833,7 @@
     "intensity": 1,
     "hue": 0.3,
     "colorize": 0,
-    "saturation": 1.25,
+    "saturation": 1.8,
     "contrast": 1.1,
     "params": {
      "u_count": 5,
@@ -2412,7 +2412,7 @@
     "intensity": 1,
     "hue": 0.72,
     "colorize": 0,
-    "saturation": 1.35,
+    "saturation": 1.9,
     "contrast": 1.1,
     "params": {
      "u_density": 1.0,
@@ -2425,7 +2425,7 @@
     "intensity": 1,
     "hue": 0.0,
     "colorize": 0,
-    "saturation": 1.35,
+    "saturation": 1.9,
     "contrast": 1.1,
     "params": {
      "u_density": 1.05,
@@ -2438,7 +2438,7 @@
     "intensity": 1,
     "hue": 0.35,
     "colorize": 0,
-    "saturation": 1.35,
+    "saturation": 1.9,
     "contrast": 1.1,
     "params": {
      "u_density": 0.95,
@@ -2451,7 +2451,7 @@
     "intensity": 1,
     "hue": 0.55,
     "colorize": 0,
-    "saturation": 1.35,
+    "saturation": 1.9,
     "contrast": 1.1,
     "params": {
      "u_density": 1.1,

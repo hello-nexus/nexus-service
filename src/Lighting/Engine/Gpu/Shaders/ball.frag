@@ -13,7 +13,7 @@ void main() {
     float s = clamp(u_size, 0.02, 0.4) * 2.3;
     int count = int(clamp(u_count, 1.0, 24.0));
 
-    vec3 col = tintedPalette(0.55 + uv.y * 0.18 + sin(t * 0.15) * 0.1) * 0.46;
+    vec3 col = tintedPalette(0.55 + uv.y * 0.18 + sin(t * 0.15) * 0.1) * 0.5;
     col += tintedPalette(0.05 + uv.x * 0.14 - t * 0.02) * (0.14 + 0.16 * sin(uv.x * 1.7 + t * 0.4));
 
     for (int i = 0; i < 24; i++) {

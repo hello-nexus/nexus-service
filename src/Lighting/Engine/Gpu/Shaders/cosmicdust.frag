@@ -18,7 +18,7 @@ void main() {
     float warp = fbm3(w + t);
     float haze = fbm3(w + vec2(warp, warp * 1.7 + 0.3) * 1.3 - t * 0.5);
     float body = smoothstep(0.2, 0.75, haze);
-    vec3 col = tintedPalette(0.05 + haze * 0.55 + uv.x * 0.18 + t * 0.1) * (0.14 + 1.25 * body);
+    vec3 col = tintedPalette(0.05 + haze * 1.0 + uv.x * 0.45 + t * 0.1) * (0.30 + 1.2 * body);
 
     for (int i = 0; i < 3; i++) {
         float layerZ = float(i) / 3.0;
