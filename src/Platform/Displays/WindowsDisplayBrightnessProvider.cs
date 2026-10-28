@@ -150,7 +150,13 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                 dto.BrightnessControl.UnsupportedReason = "Brightness control is not available for this display.";
 
                 // Owned by a device integration: never listed, so never probed over DDC/CI.
-                if (DeviceOwnedDisplays.IsOwned(manufacturer, model, WindowsDisplayIdentity.ReadAdapterEvidence(entry.AdapterDevice))) continue;
+                if (DeviceOwnedDisplays.IsOwned(
+                        manufacturer,
+                        model,
+                        DeviceOwnedDisplays.NeedsAdapterEvidence(manufacturer, model) ? WindowsDisplayIdentity.ReadAdapterEvidence(entry.AdapterDevice) : null))
+                {
+                    continue;
+                }
 
                 // The user's own opt-out. Enforced here rather than at the
                 // route because this is where the transaction would happen:

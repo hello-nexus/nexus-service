@@ -262,6 +262,28 @@ public sealed class DisplayTopologyService : IDisposable
         return ids;
     }
 
+    /// <summary>
+    /// Removes a panel record the way the delete route does (media and change notice included);
+    /// wired at startup. Without it the record is dropped from the registry only.
+    /// </summary>
+    public Func<string, bool>? RemoveOwnedRecord { get; set; }
+
+    private readonly HashSet<string> _loggedOwnedCandidates = new(StringComparer.Ordinal);
+
+    // One line per display per session, so a support bundle shows the real adapter strings behind the verdict.
+    private void LogOwnedCandidates(IReadOnlyList<RawDisplayInfo> raw)
+    {
+        foreach (var info in raw)
+        {
+            if (!DeviceOwnedDisplays.IsCandidate(info)) continue;
+            bool first;
+            lock (_loggedOwnedCandidates) first = _loggedOwnedCandidates.Add(info.Id);
+            if (!first) continue;
+            ServiceLog.Info(
+                $"[displays] device-owned candidate id={info.Id} manufacturer={info.Manufacturer} product={info.Model} owned={DeviceOwnedDisplays.IsOwned(info)} evidence='{info.AdapterEvidence}'");
+        }
+    }
+
     private const int RelinkRecheckDelayMs = 6000;
     private const int RelinkRecheckMax = 5;
     private readonly object _recheckLock = new();
@@ -313,8 +335,13 @@ public sealed class DisplayTopologyService : IDisposable
         try
         {
             // Records earlier builds allocated for a display a device owns, identified by what is attached now.
+            LogOwnedCandidates(raw);
             var owned = raw.Where(DeviceOwnedDisplays.IsOwned).Select(i => i.Id).ToList();
-            if (owned.Count > 0) _panelRegistry.RemoveForDisplays(owned);
+            foreach (var recordId in _panelRegistry.FindRecordIdsForDisplays(owned))
+            {
+                if (RemoveOwnedRecord is { } remove) remove(recordId);
+                else _panelRegistry.Remove(recordId);
+            }
             var attached = new List<RelinkDisplay>(raw.Count);
             foreach (var info in raw)
             {

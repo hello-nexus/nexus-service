@@ -104,6 +104,8 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
 
     [Theory]
     [InlineData("LIANLI USB Secondary Display-60hz", true)]
+    [InlineData("Lian Li USB Secondary Display", true)]
+    [InlineData("LIAN LI Display", true)]
     [InlineData(@"USB\VID_1A86&PID_AD20\5&1", true)]
     [InlineData("Generic PnP Monitor", false)]
     [InlineData("", false)]
@@ -186,10 +188,10 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
         };
         settings.PanelDevices["d"] = new PanelDeviceRecord { Id = "d" };
 
-        Assert.True(DeviceOwnedDisplays.PruneRecords(settings));
+        Assert.Equal(new[] { "a", "b" }, DeviceOwnedDisplays.PruneRecords(settings).OrderBy(k => k).ToArray());
 
         Assert.Equal(new[] { "c", "d", "t" }, settings.PanelDevices.Keys.OrderBy(k => k).ToArray());
-        Assert.False(DeviceOwnedDisplays.PruneRecords(settings));
+        Assert.Empty(DeviceOwnedDisplays.PruneRecords(settings));
     }
 
     [Fact]
@@ -258,11 +260,11 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
     public void Prune_tolerates_null_collection_and_null_entries()
     {
         var withNull = new NexusSettings { PanelDevices = null! };
-        Assert.False(DeviceOwnedDisplays.PruneRecords(withNull));
+        Assert.Empty(DeviceOwnedDisplays.PruneRecords(withNull));
 
         var settings = new NexusSettings();
         settings.PanelDevices["x"] = null!;
-        Assert.False(DeviceOwnedDisplays.PruneRecords(settings));
+        Assert.Empty(DeviceOwnedDisplays.PruneRecords(settings));
     }
 
     [Fact]
@@ -285,5 +287,48 @@ public sealed class DeviceOwnedDisplaysTests : IDisposable
         Assert.Equal("#aabbcc", loaded.Theme.AccentColor);
         Assert.Empty(loaded.PanelDevices);
         Assert.False(File.Exists(path + ".corrupt"));
+    }
+
+    [Fact]
+    public void Scan_with_nothing_to_remove_writes_nothing_and_raises_no_change()
+    {
+        var provider = new FakeProvider
+        {
+            Displays = new List<RawDisplayInfo>
+            {
+                Monitor("NXS0001-1-10f369c6-0-UID256", "NXS", "0001", 1920, 480),
+                Monitor("DEL41B7-1", "DEL", "41B7", primary: true),
+            },
+        };
+        using var store = new JsonConfigStore(Path.Combine(_dir, "settings.json"));
+        var service = new DisplayTopologyService(provider, new PanelDeviceRegistry(store));
+        service.GetTopology();
+        var changes = 0;
+        store.OnChanged += () => changes++;
+
+        service.GetTopology();
+        service.GetTopology();
+
+        Assert.Equal(0, changes);
+    }
+
+    [Fact]
+    public void Owned_record_is_removed_through_the_remover_hook()
+    {
+        const string nxsId = "NXS0001-1-10f369c6-0-UID256";
+        var provider = new FakeProvider { Displays = new List<RawDisplayInfo> { Monitor(nxsId, "NXS", "0001", 1920, 480) } };
+        using var store = new JsonConfigStore(Path.Combine(_dir, "settings.json"));
+        store.Update(s => s.PanelDevices["rec"] = new PanelDeviceRecord { Id = "rec", DisplayId = nxsId });
+        var removed = new List<string>();
+        var registry = new PanelDeviceRegistry(store);
+        var service = new DisplayTopologyService(provider, registry)
+        {
+            RemoveOwnedRecord = id => { removed.Add(id); return registry.Remove(id); },
+        };
+
+        service.GetTopology();
+
+        Assert.Equal(new[] { "rec" }, removed.ToArray());
+        Assert.Empty(store.Load().PanelDevices);
     }
 }

@@ -27,10 +27,25 @@ public static class DeviceOwnedDisplays
     private const string SharedUsbManufacturer = "TUR";
     private const string SharedUsbProduct = "0000";
 
+    // Spacing in the vendor name varies between drivers, so it is ignored.
     private static bool HasLianLiEvidence(string? evidence)
-        => !string.IsNullOrEmpty(evidence)
-           && (evidence.Contains("LIANLI", StringComparison.OrdinalIgnoreCase)
-               || evidence.Contains("VID_1A86&PID_AD20", StringComparison.OrdinalIgnoreCase));
+    {
+        if (string.IsNullOrEmpty(evidence)) return false;
+        var compact = evidence.Replace(" ", "", StringComparison.Ordinal);
+        return compact.Contains("LIANLI", StringComparison.OrdinalIgnoreCase)
+            || compact.Contains("VID_1A86&PID_AD20", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>True when the identity is owned only together with adapter evidence, so reading that evidence is worthwhile.</summary>
+    public static bool NeedsAdapterEvidence(string? manufacturer, string? product)
+        => string.Equals(manufacturer, SharedUsbManufacturer, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(product, SharedUsbProduct, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>An owned or conditionally owned identity, worth one diagnostic line.</summary>
+    public static bool IsCandidate(RawDisplayInfo info)
+        => IsOwned(info)
+           || NeedsAdapterEvidence(info.Manufacturer, info.Model)
+           || NeedsAdapterEvidence(info.Fingerprint?.Manufacturer, info.Fingerprint?.Product);
 
     public static bool IsOwned(string? manufacturer, string? product, string? adapterEvidence = null)
     {
@@ -77,16 +92,16 @@ public static class DeviceOwnedDisplays
     }
 
     /// <summary>
-    /// Removes panel records that earlier builds allocated for an owned display.
-    /// Returns true when it removed any. Matches the stored fingerprint, falling
+    /// Removes panel records that earlier builds allocated for an always-owned
+    /// display and returns their ids. Matches the stored fingerprint, falling
     /// back to the display id, which starts with the EDID identity. Tolerates
     /// missing collections and null entries.
     /// </summary>
-    public static bool PruneRecords(NexusSettings settings)
+    public static IReadOnlyList<string> PruneRecords(NexusSettings settings)
     {
         var records = settings?.PanelDevices;
-        if (records is null || records.Count == 0) return false;
         var stale = new List<string>();
+        if (records is null || records.Count == 0) return stale;
         foreach (var kv in records)
         {
             var record = kv.Value;
@@ -94,6 +109,6 @@ public static class DeviceOwnedDisplays
             if (IsOwned(record.DisplayFingerprint) || IsOwnedHardwareId(record.DisplayId)) stale.Add(kv.Key);
         }
         foreach (var id in stale) records.Remove(id);
-        return stale.Count > 0;
+        return stale;
     }
 }

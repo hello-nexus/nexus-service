@@ -277,6 +277,9 @@ public static class PanelRoutes
             Platform.Displays.TouchRoutingStatus touchRouting,
             Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
+            // Enumerating the attached displays can drop a record a device owns, so it runs before the snapshot.
+            var hasDisplayRecords = registry.List().Any(d => !string.IsNullOrEmpty(d.DisplayId));
+            var attached = hasDisplayRecords ? topology.GetAttachedIds() : null;
             var devices = registry.List().ToList();
             // Streamed panels (Kraken LCD, D213) have no curated device and no display
             // behind them, so the list is the only place their presence can be reported.
@@ -296,9 +299,8 @@ public static class PanelRoutes
             // (promoted monitors): false hides the row while the monitor is
             // unplugged, null = topology unknown (no helper), so the UI keeps
             // showing the panel rather than flickering it away.
-            if (devices.Any(d => !string.IsNullOrEmpty(d.DisplayId)))
+            if (hasDisplayRecords)
             {
-                var attached = topology.GetAttachedIds();
                 foreach (var device in devices)
                 {
                     if (string.IsNullOrEmpty(device.DisplayId)) continue;

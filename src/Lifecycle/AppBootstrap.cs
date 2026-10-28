@@ -239,6 +239,11 @@ internal static class AppBootstrap
         }
         panelRegistry.DisplayRecordReady += AdoptSavedLook;
         panelRegistry.RecordCreated += AdoptSavedLook;
+        // A record dropped for a device-owned display goes through the same cleanup as a user delete.
+        if (sp.GetService<Nexus.Service.Platform.Displays.DisplayTopologyService>() is { } displayTopology)
+        {
+            displayTopology.RemoveOwnedRecord = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove;
+        }
         profileManager.PanelsChanged += () => ReapplyPanelsAfterProfileSwitch(sp, configStore);
     }
 

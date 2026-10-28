@@ -150,7 +150,9 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         var ownedDisplaysPruned = false;
         try
         {
-            ownedDisplaysPruned = Nexus.Service.Platform.Displays.DeviceOwnedDisplays.PruneRecords(_cached);
+            var prunedIds = Nexus.Service.Platform.Displays.DeviceOwnedDisplays.PruneRecords(_cached);
+            ownedDisplaysPruned = prunedIds.Count > 0;
+            foreach (var prunedId in prunedIds) DeleteRecordMedia(prunedId);
         }
         catch (Exception ex)
         {
@@ -202,6 +204,21 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             // The pruned document stays in memory if the write fails; the next change persists it.
             try { Persist(_cached); }
             catch (Exception ex) { Console.Error.WriteLine($"[config-store] persisting pruned display records failed: {ex.Message}"); }
+        }
+    }
+
+    // Uploaded background media lives outside the record; a removed record must not leave it behind.
+    private static void DeleteRecordMedia(string recordId)
+    {
+        try
+        {
+            if (!Nexus.Service.Panel.PanelBgLibrary.IsValidId(recordId)) return;
+            var dir = Path.Combine(Nexus.Service.Media.MediaLibrary.DeviceStoreDir("panel-backgrounds"), recordId);
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[config-store] media cleanup for pruned record failed: {ex.Message}");
         }
     }
 

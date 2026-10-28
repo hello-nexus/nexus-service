@@ -870,23 +870,19 @@ public sealed class PanelDeviceRegistry
         return snapshot;
     }
 
-    /// <summary>Removes the records bound to any of <paramref name="displayIds"/>; returns how many were removed.</summary>
-    public int RemoveForDisplays(IReadOnlyCollection<string> displayIds)
+    /// <summary>Ids of the records bound to any of <paramref name="displayIds"/>. Read-only, so a scan that finds none writes nothing.</summary>
+    public IReadOnlyList<string> FindRecordIdsForDisplays(IReadOnlyCollection<string> displayIds)
     {
-        if (displayIds.Count == 0) return 0;
-        var removed = 0;
-        _store.Update(s =>
+        var found = new List<string>();
+        if (displayIds.Count == 0) return found;
+        _store.Read(s =>
         {
-            foreach (var key in s.PanelDevices
-                .Where(kv => kv.Value?.DisplayId is { } d && displayIds.Contains(d))
-                .Select(kv => kv.Key)
-                .ToList())
+            foreach (var kv in s.PanelDevices)
             {
-                s.PanelDevices.Remove(key);
-                removed++;
+                if (kv.Value?.DisplayId is { } d && displayIds.Contains(d)) found.Add(kv.Key);
             }
         });
-        return removed;
+        return found;
     }
 
     public bool Remove(string id)
