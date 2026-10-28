@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using Nexus.Service.Helper;
 using Xunit;
 
@@ -17,6 +18,18 @@ public class ForegroundIdentityCacheTests
     public void ProcessNameFromPath_MatchesProcessNameForm(string path, string expected)
     {
         Assert.Equal(expected, ForegroundIdentityCache.ProcessNameFromPath(path));
+    }
+
+    [Fact]
+    public void ProcessNameFromPath_MatchesProcessNameForCurrentProcess()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var self = Process.GetCurrentProcess();
+        Assert.Equal(self.ProcessName, ForegroundIdentityCache.ProcessNameFromPath(Environment.ProcessPath!));
     }
 
     [Fact]
@@ -57,16 +70,6 @@ public class ForegroundIdentityCacheTests
         Assert.True(cache.TryGet(new IntPtr(10), 5, out var app, out var path));
         Assert.Equal("taskmgr", app);
         Assert.Null(path);
-    }
-
-    [Fact]
-    public void Clear_Invalidates()
-    {
-        var cache = new ForegroundIdentityCache();
-        cache.Store(new IntPtr(10), 5, "notepad", null);
-        cache.Clear();
-
-        Assert.False(cache.TryGet(new IntPtr(10), 5, out _, out _));
     }
 
     [Fact]

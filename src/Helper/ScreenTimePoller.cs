@@ -71,8 +71,6 @@ public sealed class ScreenTimePoller : IDisposable
             GetWindowThreadProcessId(hwnd, out var pid);
             if (pid == 0) return;
 
-            // Name and path are stable for a given (hwnd, pid); geometry is
-            // re-read every pass because it can change while focus holds.
             if (!_identity.TryGet(hwnd, (int)pid, out var appName, out var exePath))
             {
                 exePath = TryGetExePath(pid);

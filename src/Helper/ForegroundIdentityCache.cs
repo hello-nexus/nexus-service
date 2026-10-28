@@ -40,13 +40,6 @@ public sealed class ForegroundIdentityCache
         _valid = true;
     }
 
-    public void Clear()
-    {
-        _valid = false;
-        _app = "";
-        _exePath = null;
-    }
-
     /// <summary>
     /// The name System.Diagnostics.Process.ProcessName yields on Windows for
     /// an image path: everything after the last backslash, minus a trailing
