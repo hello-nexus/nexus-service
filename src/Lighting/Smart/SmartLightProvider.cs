@@ -29,9 +29,12 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // Reachability probe cadence while a lighting view is open. Govee is UDP, so
     // its frames never error on a dead device; an active devStatus probe at this
     // interval is the only signal that drops/restores the card.
-    private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(5);
+    private const int ReachabilityPollSeconds = 5;
+    // A streaming light answers many status probes late or not at all. It goes
+    // offline only after this long without an answer AND this many misses.
+    private const long OfflineAfterMs = 15_000;
+    private const int MissesBeforeOffline = 2;
     private const int ScanPingAttempts = 3;
-    private readonly TimeSpan _pollInterval;
 
     private readonly Dictionary<string, ILightDriver> _drivers;
     private readonly IConfigStore _store;
@@ -44,11 +47,10 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // Serializes the SetOnline read-modify; the probe loop and the
     // /smart-lights/all route both write _online.
     private readonly object _onlineLock = new();
-    // id -> consecutive missed polls and the tick of the latest one; guarded by _onlineLock.
-    private readonly Dictionary<string, (int Count, long At)> _missedProbes = new();
-    // A streaming light answers many status probes late or not at all, so one
-    // miss must not hide the card or stop the stream.
-    private const int MissedProbesBeforeOffline = 3;
+    // id -> tick of the last answered probe and misses since; guarded by _onlineLock.
+    private readonly Dictionary<string, (long LastSeen, int Misses)> _probeState = new();
+    private readonly Func<long> _tick = static () => Environment.TickCount64;
+    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(ReachabilityPollSeconds);
     // id -> live snapshot, refreshed each BuildFrames so the 33 Hz writer's
     // SubmitFrame lookups don't re-parse settings per device per tick.
     private readonly ConcurrentDictionary<string, SmartLight> _cache = new();
@@ -72,14 +74,21 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // DevicesChanged (which forces a full topology rebuild).
     public event Action? OnlineChanged;
 
-    public SmartLightProvider(IEnumerable<ILightDriver> drivers, IConfigStore store, NetworkSendThrottle throttle,
-        TimeSpan? pollInterval = null)
+    public SmartLightProvider(IEnumerable<ILightDriver> drivers, IConfigStore store, NetworkSendThrottle throttle)
     {
-        _pollInterval = pollInterval ?? DefaultPollInterval;
         _drivers = new Dictionary<string, ILightDriver>(StringComparer.OrdinalIgnoreCase);
         foreach (var d in drivers) _drivers[d.Brand] = d;
         _store = store;
         _throttle = throttle;
+    }
+
+    /// <summary>Test ctor: injects the poll interval and a monotonic tick source.</summary>
+    internal SmartLightProvider(IEnumerable<ILightDriver> drivers, IConfigStore store, NetworkSendThrottle throttle,
+        TimeSpan pollInterval, Func<long> tick)
+        : this(drivers, store, throttle)
+    {
+        _pollInterval = pollInterval;
+        _tick = tick;
     }
 
     public bool IsConnected
@@ -611,7 +620,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         }
         if (registered.Count == 0) return resp;
 
-        var hostOnline = await ProbeReachabilityAsync(registered, countMisses: false, ct).ConfigureAwait(false);
+        var hostOnline = await ProbeReachabilityAsync(registered, ct).ConfigureAwait(false);
         foreach (var cfg in registered)
         {
             resp.Devices.Add(new SmartLightDto
@@ -635,7 +644,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // HTTP). Hue lights share their bridge's host, so the probe is
     // bridge-level for Hue and per-device for Govee.
     private async Task<Dictionary<(string brand, string host), bool>> ProbeReachabilityAsync(
-        IReadOnlyList<SmartLightConfig> devices, bool countMisses, CancellationToken ct)
+        IReadOnlyList<SmartLightConfig> devices, CancellationToken ct)
     {
         var brandEnabled = _store.Load().SmartLights.BrandEnabled;
         var hostOnline = new Dictionary<(string brand, string host), bool>();
@@ -654,14 +663,14 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
             }
             hostOnline[key] = online;
         }
+        // Real drivers swallow cancellation and report false; an aborted probe
+        // must not record misses.
+        ct.ThrowIfCancellationRequested();
         var changed = false;
-        // A probe can outlive a Remove or prune; don't resurrect state for it.
-        var paired = new HashSet<string>();
-        foreach (var c in _store.Load().SmartLights.Devices) paired.Add(c.Id);
         foreach (var cfg in devices)
         {
-            if (!BrandOn(brandEnabled, cfg.Brand) || !_drivers.ContainsKey(cfg.Brand) || !paired.Contains(cfg.Id)) continue;
-            changed |= SetOnline(cfg.Id, hostOnline.TryGetValue((cfg.Brand, cfg.Host), out var on) && on, countMisses);
+            if (!BrandOn(brandEnabled, cfg.Brand) || !_drivers.ContainsKey(cfg.Brand)) continue;
+            changed |= SetOnline(cfg.Id, hostOnline.TryGetValue((cfg.Brand, cfg.Host), out var on) && on);
         }
         if (changed) RaiseOnlineChanged();
         return hostOnline;
@@ -705,7 +714,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
                 {
                     var devices = _store.Load().SmartLights.Devices;
                     if (devices.Count > 0)
-                        await ProbeReachabilityAsync(devices, countMisses: true, ct).ConfigureAwait(false);
+                        await ProbeReachabilityAsync(devices, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { break; }
                 catch { /* transient probe failure; keep polling */ }
@@ -804,8 +813,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
             s.SmartLights.Devices = next;
         });
         _throttle.Remove(id);
-        _online.TryRemove(id, out _);
-        lock (_onlineLock) _missedProbes.Remove(id);
+        ClearOnlineState(id);
         _cache.TryRemove(id, out _);
         _plans.TryRemove(id, out _);
         _streamedStatic.TryRemove(id, out _);
@@ -871,12 +879,13 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
                 for (var attempt = 0; attempt < ScanPingAttempts && !reachable; attempt++)
                 {
                     try { reachable = await driver.PingAsync(ToSmartLight(cfg), ct).ConfigureAwait(false); }
-                    catch (OperationCanceledException) { throw; }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                     catch { reachable = false; }
                 }
             }
             hostReachable[cfg.Host] = reachable;
         }
+        ct.ThrowIfCancellationRequested();
 
         var pruned = new List<string>();
         _store.Update(s =>
@@ -895,8 +904,7 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         foreach (var id in pruned)
         {
             _throttle.Remove(id);
-            _online.TryRemove(id, out _);
-            lock (_onlineLock) _missedProbes.Remove(id);
+            ClearOnlineState(id);
             _cache.TryRemove(id, out _);
             _plans.TryRemove(id, out _);
             _streamedStatic.TryRemove(id, out _);
@@ -954,34 +962,48 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
     // shows until the probe first reports it unreachable. Serialized so the poll
     // loop and the /smart-lights/all route can't interleave the read-modify and
     // drop or duplicate the transition broadcast.
-    private bool IsOnline(string id) => !_online.TryGetValue(id, out var on) || on;
-
-    // Only the poll loop counts misses: route probes overlap and share one
-    // reply, so their misses are correlated. A route probe may still restore a
-    // light on a hit.
-    private bool SetOnline(string id, bool online, bool countMisses)
+    // An answered probe restores the light at once; a miss hides it only once
+    // OfflineAfterMs has passed since the last answer and enough misses piled up.
+    private bool SetOnline(string id, bool online)
     {
         lock (_onlineLock)
         {
+            // A probe can outlive a Remove or prune; don't resurrect its state.
+            if (!IsPaired(id)) return false;
             var wasOnline = !_online.TryGetValue(id, out var prev) || prev;
+            var now = _tick();
             if (online)
             {
-                _missedProbes.Remove(id);
+                _probeState[id] = (now, 0);
             }
             else
             {
-                if (!countMisses) return false;
-                var now = Environment.TickCount64;
-                var missed = 1;
-                // The poll pauses when no lighting view is open; a stale miss
-                // is not part of the current streak.
-                if (_missedProbes.TryGetValue(id, out var m) && now - m.At <= _pollInterval.TotalMilliseconds * 3)
-                    missed = m.Count + 1;
-                _missedProbes[id] = (missed, now);
-                if (wasOnline && missed < MissedProbesBeforeOffline) return false;
+                var state = _probeState.TryGetValue(id, out var st) ? st : (LastSeen: now, Misses: 0);
+                state.Misses++;
+                _probeState[id] = state;
+                if (wasOnline && (now - state.LastSeen < OfflineAfterMs || state.Misses < MissesBeforeOffline))
+                    return false;
             }
             _online[id] = online;
             return wasOnline != online;
+        }
+    }
+
+    private bool IsPaired(string id)
+    {
+        foreach (var c in _store.Load().SmartLights.Devices)
+            if (c.Id == id) return true;
+        return false;
+    }
+
+    private bool IsOnline(string id) => !_online.TryGetValue(id, out var on) || on;
+
+    private void ClearOnlineState(string id)
+    {
+        lock (_onlineLock)
+        {
+            _online.TryRemove(id, out _);
+            _probeState.Remove(id);
         }
     }
 
