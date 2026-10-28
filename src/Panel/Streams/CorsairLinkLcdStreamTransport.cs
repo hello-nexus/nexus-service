@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Diagnostics;
 using System.Threading;
 using Nexus.Service.Peripherals.CorsairLink;
 using Nexus.Service.Peripherals.JpegPanels;
@@ -21,6 +22,9 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
 {
     private readonly CorsairLinkLcd _lcd;
     private readonly BgraJpegEncoder _encoder;
+    private BgraJpegEncoder?[]? _stepDown;
+    private int _level;
+    private int _fastRun;
     private readonly byte[] _frame;
     private int _filled;
     private bool _disposed;
@@ -29,6 +33,15 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
     // A stall shows up as the queue trimming rather than an exception, so a dropped frame
     // is only worth logging once per run of drops.
     private bool _dropLogged;
+
+    // A device that cannot keep up with the byte rate blocks one write for a second or more
+    // and then resets itself off USB (the GIF drop: sends of 1.2 s, then 1.9 s, then the
+    // device left the bus). Send time is the signal: a slow send lowers the JPEG quality for
+    // the next frames, and a run of fast sends raises it back.
+    internal static readonly int[] StepDownQualities = { 70, 55, 40, 25 };
+    internal const long SlowSendMs = 250;
+    internal const long FastSendMs = 100;
+    internal const int StepUpAfterFrames = 60;
     private readonly PanelOrientationFilter _orientation = new();
 
     // The firmware falls back to its own screen when frames stop (30-40 s on a TITAN RX LCD),
@@ -101,7 +114,7 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
         ReadOnlySpan<byte> jpeg;
         try
         {
-            jpeg = _encoder.Encode(
+            jpeg = EncoderFor(_level).Encode(
                 _orientation.Apply(_frame, CorsairLinkLcd.PanelWidth, CorsairLinkLcd.PanelHeight));
         }
         catch (Exception ex)
@@ -129,7 +142,10 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
         }
         _lcd.NoteStreamFrame(this);
 
-        if (SendCounted(jpeg))
+        var sw = Stopwatch.StartNew();
+        var sent = SendCounted(jpeg);
+        AdaptQuality(sent, jpeg.Length, sw.ElapsedMilliseconds);
+        if (sent)
         {
             _dropLogged = false;
         }
@@ -139,6 +155,37 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
             ServiceLog.Warn("[corsair-lcd] frame rejected; the next frame retries and a run of failures reopens the screen");
         }
     }
+
+    private BgraJpegEncoder EncoderFor(int level)
+    {
+        if (level == 0)
+        {
+            return _encoder;
+        }
+        _stepDown ??= new BgraJpegEncoder?[StepDownQualities.Length];
+        return _stepDown[level - 1] ??= new BgraJpegEncoder(
+            CorsairLinkLcd.PanelWidth, CorsairLinkLcd.PanelHeight, StepDownQualities[level - 1]);
+    }
+
+    private void AdaptQuality(bool sent, int jpegBytes, long elapsedMs)
+    {
+        if (sent && elapsedMs >= SlowSendMs)
+        {
+            _fastRun = 0;
+            if (_level < StepDownQualities.Length)
+            {
+                _level++;
+                ServiceLog.Warn($"[corsair-lcd] slow send {elapsedMs} ms for {jpegBytes} B; JPEG quality now {StepDownQualities[_level - 1]}");
+            }
+        }
+        else if (sent && elapsedMs <= FastSendMs && _level > 0 && ++_fastRun >= StepUpAfterFrames)
+        {
+            _fastRun = 0;
+            _level--;
+        }
+    }
+
+    internal int QualityLevel => _level;
 
     /// <summary>
     /// Re-pushes the last rendered frame so the panel keeps latching between the render
@@ -211,5 +258,12 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
             _lcd.ReleaseStream(this);
         }
         _encoder.Dispose();
+        if (_stepDown is not null)
+        {
+            foreach (var e in _stepDown)
+            {
+                e?.Dispose();
+            }
+        }
     }
 }
