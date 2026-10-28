@@ -27,14 +27,22 @@ public sealed class ApexOledPanelDiscovery : IStreamedPanelDiscovery
     private readonly IHidEnumerator _hid;
     private readonly HardwarePresence? _presence;
     private readonly LcdLockState? _lock;
-    private readonly AttachBackoff _backoff;
+    private readonly Dictionary<string, AttachBackoff> _backoffs = new(StringComparer.Ordinal);
+    private readonly object _backoffLock = new();
+    private readonly Func<long> _clock;
+    private readonly bool? _enforceLength;
+    private long _lastPassMs = long.MinValue;
 
-    public ApexOledPanelDiscovery(IHidEnumerator hid, HardwarePresence? presence = null, LcdLockState? lockState = null, Func<long>? clock = null)
+    /// <summary>A gap this long between passes means the gate was off meanwhile (the coordinator polls far more often), so earlier failures no longer apply.</summary>
+    private const long GateOffGapMs = 15_000;
+
+    public ApexOledPanelDiscovery(IHidEnumerator hid, HardwarePresence? presence = null, LcdLockState? lockState = null, Func<long>? clock = null, bool? enforceLength = null)
     {
+        _enforceLength = enforceLength;
         _hid = hid;
         _presence = presence;
         _lock = lockState;
-        _backoff = new AttachBackoff(clock ?? (() => Environment.TickCount64));
+        _clock = clock ?? (() => Environment.TickCount64);
     }
 
     public string HandlerId => Id;
@@ -44,17 +52,40 @@ public sealed class ApexOledPanelDiscovery : IStreamedPanelDiscovery
 
     public IReadOnlyList<StreamedPanelDeviceInfo> Discover()
     {
-        if (_backoff.DelayMs > 0)
+        var now = _clock();
+        lock (_backoffLock)
         {
-            return Array.Empty<StreamedPanelDeviceInfo>();
+            if (_lastPassMs != long.MinValue && now - _lastPassMs > GateOffGapMs)
+            {
+                _backoffs.Clear();
+            }
+            _lastPassMs = now;
         }
         if (_presence is not null && !_presence.UsbPresent(ApexOledProtocol.VendorId, ApexOledProtocol.ProductIds))
         {
+            lock (_backoffLock) { _backoffs.Clear(); }
             return Array.Empty<StreamedPanelDeviceInfo>();
         }
-        var panels = new List<StreamedPanelDeviceInfo>();
-        foreach (var screen in ApexOledScreens.Find(_hid))
+        var screens = ApexOledScreens.Find(_hid, _enforceLength);
+        lock (_backoffLock)
         {
+            // A keyboard that left starts over when it returns.
+            var present = new HashSet<string>(screens.ConvertAll(PanelSerial), StringComparer.Ordinal);
+            foreach (var gone in new List<string>(_backoffs.Keys))
+            {
+                if (!present.Contains(gone))
+                {
+                    _backoffs.Remove(gone);
+                }
+            }
+        }
+        var panels = new List<StreamedPanelDeviceInfo>();
+        foreach (var screen in screens)
+        {
+            if (BackoffFor(PanelSerial(screen)).DelayMs > 0)
+            {
+                continue;
+            }
             panels.Add(new StreamedPanelDeviceInfo
             {
                 Serial = PanelSerial(screen),
@@ -83,6 +114,18 @@ public sealed class ApexOledPanelDiscovery : IStreamedPanelDiscovery
         var model = (parts.Length == 3 && int.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out var pid)
             ? ApexOledProtocol.ModelFor(pid)
             : null) ?? throw new System.IO.IOException($"not an Apex OLED panel: {info.Serial}");
-        return new ApexOledStreamTransport(_hid, model, info.Serial, _lock, backoff: _backoff);
+        return new ApexOledStreamTransport(_hid, model, info.Serial, _lock, backoff: BackoffFor(info.Serial), enforceLength: _enforceLength);
+    }
+
+    private AttachBackoff BackoffFor(string serial)
+    {
+        lock (_backoffLock)
+        {
+            if (!_backoffs.TryGetValue(serial, out var backoff))
+            {
+                _backoffs[serial] = backoff = new AttachBackoff(_clock);
+            }
+            return backoff;
+        }
     }
 }

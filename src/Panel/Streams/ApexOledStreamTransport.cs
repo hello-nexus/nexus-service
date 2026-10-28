@@ -35,6 +35,7 @@ public sealed class ApexOledStreamTransport : IStreamedPanelTransport, IOrientab
     private readonly Func<long> _clock;
     private readonly int _tickMs;
     private readonly int _disposeWaitMs;
+    private readonly bool? _enforceLength;
     private readonly PanelOrientationFilter _orientation = new();
     private readonly byte[] _frame = new byte[ApexOledMono.FrameLength];
     private readonly bool[] _lit = new bool[ApexOledProtocol.Width * ApexOledProtocol.Height];
@@ -59,8 +60,10 @@ public sealed class ApexOledStreamTransport : IStreamedPanelTransport, IOrientab
         Func<long>? clock = null,
         AttachBackoff? backoff = null,
         int tickMs = TickMs,
-        int disposeWaitMs = 1000)
+        int disposeWaitMs = 1000,
+        bool? enforceLength = null)
     {
+        _enforceLength = enforceLength;
         _hid = hid;
         _model = model;
         _serial = serial;
@@ -93,7 +96,7 @@ public sealed class ApexOledStreamTransport : IStreamedPanelTransport, IOrientab
             _handedBack = false;
             _handBackWarned = false;
 
-            var screen = ApexOledScreens.Find(_hid).Find(s => ApexOledPanelDiscovery.PanelSerial(s) == _serial)
+            var screen = ApexOledScreens.Find(_hid, _enforceLength).Find(s => ApexOledPanelDiscovery.PanelSerial(s) == _serial)
                 ?? throw new IOException($"{_model.Name}: screen interface not found (usage page 0x{ApexOledProtocol.ControlUsagePage:X4}, feature report of at least {ApexOledScreens.MinFeatureLength} bytes)");
             _device = _hid.Open(screen.Info.Path) ?? throw new IOException($"{_model.Name}: could not open {screen.Info.Path}");
             _openedMs = _clock();
@@ -141,18 +144,19 @@ public sealed class ApexOledStreamTransport : IStreamedPanelTransport, IOrientab
             return;
         }
         var device = _device ?? throw new IOException($"{_model.Name}: screen not open");
-        if (_lock is { IsLocked: true })
-        {
-            HandBackLocked(device);
-            return;
-        }
         var oriented = _orientation.Apply(_frame, ApexOledProtocol.Width, ApexOledProtocol.Height);
         if (!ApexOledMono.Convert(oriented, _lit))
         {
             return;
         }
         var packed = ApexOledProtocol.Pack(_lit, _model.Layout);
+        // Kept while locked too, so the unlock repaint has a frame even when this transport opened under the lock.
         _latest = packed;
+        if (_lock is { IsLocked: true })
+        {
+            HandBackLocked(device);
+            return;
+        }
         if (!_handedBack && _shown is not null && packed.AsSpan().SequenceEqual(_shown) && _clock() - _lastSentMs < KeepAliveMs)
         {
             return;
@@ -215,6 +219,11 @@ public sealed class ApexOledStreamTransport : IStreamedPanelTransport, IOrientab
         {
             _handBackWarned = true;
             ServiceLog.Warn($"[steelseries-apex-oled] {_model.Name}: the keyboard did not accept the hand back; retrying while locked");
+        }
+        if (_disposed)
+        {
+            // Dispose could not wait for this write; the handle is released here instead.
+            TeardownLocked();
         }
     }
 

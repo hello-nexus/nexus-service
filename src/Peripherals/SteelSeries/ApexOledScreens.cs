@@ -19,8 +19,18 @@ public static class ApexOledScreens
 
     private static readonly HashSet<string> Logged = new(StringComparer.Ordinal);
 
-    public static List<ApexOledScreen> Find(IHidEnumerator hid)
+    /// <summary>Key of a keyboard whose HID interfaces carry no serial: stable across replug, unlike a device path. Such keyboards are told apart by model only, so two serial-less units of one model count as one.</summary>
+    private const string UnitKey = "unit0";
+
+    /// <summary>
+    /// <paramref name="enforceLength"/> drops collections whose reported feature length cannot carry a
+    /// frame. Only Windows needs it, where a feature report longer than the collection's is refused; the
+    /// other platforms size collections from the first top-level collection of the descriptor, which
+    /// is not reliable for this one.
+    /// </summary>
+    public static List<ApexOledScreen> Find(IHidEnumerator hid, bool? enforceLength = null)
     {
+        var enforce = enforceLength ?? OperatingSystem.IsWindows();
         var screens = new List<ApexOledScreen>();
         foreach (var model in ApexOledProtocol.Models)
         {
@@ -36,11 +46,11 @@ public static class ApexOledScreens
                 onPage++;
                 // A length of zero means the platform could not size the collection; only a known
                 // short one is ruled out (Windows refuses a feature report longer than the collection's).
-                if (info.FeatureReportByteLength is > 0 and < MinFeatureLength)
+                if (enforce && info.FeatureReportByteLength is > 0 and < MinFeatureLength)
                 {
                     continue;
                 }
-                var key = string.IsNullOrEmpty(info.Serial) ? info.Path : info.Serial;
+                var key = string.IsNullOrEmpty(info.Serial) ? UnitKey : info.Serial;
                 if (!best.TryGetValue(key, out var held))
                 {
                     order.Add(key);
