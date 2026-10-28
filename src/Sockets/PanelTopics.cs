@@ -38,7 +38,7 @@ public static class PanelTopics
     /// </summary>
     public const string Gallery = "gallery";
     public const string CoolingWarnings = "cooling/warnings";
-    /// <summary>Windows first-boot setup state, payload <c>{ "oobe": bool }</c>; snapshot on subscribe, broadcast on change.</summary>
+    /// <summary>Restricted mode (active while Windows is in OOBE), payload <c>{ "restricted": bool }</c>; snapshot on subscribe, broadcast on change.</summary>
     public const string SystemSession = "system/session";
     public const string PanelDevice = "panel/device";
     /// <summary>

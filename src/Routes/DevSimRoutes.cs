@@ -69,11 +69,11 @@ public static class DevSimRoutes
             return Results.Json(Describe(sim), AppJsonContext.Default.DevSimEventsResponse);
         });
 
-        // PUT /dev/oobe?on=true forces system/session oobe:true until PUT ?on=false or restart.
-        app.MapPut("/dev/oobe", (bool on, Nexus.Service.Lifecycle.OobeSessionPublisher oobe) =>
+        // PUT /dev/restricted?on=true forces system/session restricted:true until PUT ?on=false or restart.
+        app.MapPut("/dev/restricted", (bool on, Nexus.Service.Lifecycle.RestrictedModePublisher restricted) =>
         {
-            Nexus.Service.Lifecycle.OobeSessionPublisher.DevForce = on;
-            oobe.Publish();
+            Nexus.Service.Lifecycle.RestrictedModePublisher.DevForce = on;
+            restricted.Publish();
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 

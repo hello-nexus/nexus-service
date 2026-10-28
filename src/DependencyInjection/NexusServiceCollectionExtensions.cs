@@ -60,8 +60,8 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.MonitoringBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Monitoring.MonitoringBroadcaster>());
         services.AddHostedService<Nexus.Service.Activity.MediaTopicPublisher>();
-        services.AddSingleton<Nexus.Service.Lifecycle.OobeSessionPublisher>();
-        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lifecycle.OobeSessionPublisher>());
+        services.AddSingleton<Nexus.Service.Lifecycle.RestrictedModePublisher>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lifecycle.RestrictedModePublisher>());
         // ConflictWatcher polls the running process list against
         // ConflictAppCatalog and publishes to the "conflicts" multiplex
         // topic. OpenRgbProcessManager is only registered on Win/Mac, so

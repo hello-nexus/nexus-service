@@ -8,24 +8,24 @@ using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Lifecycle;
 
-public sealed class OobeSessionState
+public sealed class RestrictedModeState
 {
-    public bool Oobe { get; set; }
+    public bool Restricted { get; set; }
 }
 
 /// <summary>
-/// Publishes whether Windows is still in first-boot setup on the
-/// <c>system/session</c> topic so the panel UI can restrict itself. The kiosk
-/// launches under the temporary OOBE account, so the service only reports
-/// state; nothing server-side is enforced. Re-evaluated on session events and
+/// Publishes Restricted mode on the <c>system/session</c> topic so the panel UI
+/// can restrict itself. It is active while Windows is in OOBE: the kiosk
+/// launches under the temporary OOBE account. The service only reports state;
+/// nothing server-side is enforced. Re-evaluated on session events and
 /// on a slow poll while a client is subscribed.
 /// </summary>
-public sealed class OobeSessionPublisher : BackgroundService
+public sealed class RestrictedModePublisher : BackgroundService
 {
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
 #if DEV_TOOLS
-    /// <summary>Dev-tools stand-in that forces <c>oobe: true</c>. In-memory: resets with the service.</summary>
+    /// <summary>Dev-tools stand-in that forces <c>restricted: true</c>. In-memory: resets with the service.</summary>
     public static volatile bool DevForce;
 #endif
 
@@ -34,12 +34,12 @@ public sealed class OobeSessionPublisher : BackgroundService
     private readonly object _lock = new();
     private bool? _last;
 
-    public OobeSessionPublisher(MultiplexHub hub)
+    public RestrictedModePublisher(MultiplexHub hub)
         : this(hub, OobeDetector.IsInOobe)
     {
     }
 
-    internal OobeSessionPublisher(MultiplexHub hub, Func<bool> detect)
+    internal RestrictedModePublisher(MultiplexHub hub, Func<bool> detect)
     {
         _hub = hub;
         _detect = detect;
@@ -84,16 +84,16 @@ public sealed class OobeSessionPublisher : BackgroundService
     {
         lock (_lock)
         {
-            var oobe = Current();
-            if (_last == oobe) return;
-            _last = oobe;
+            var restricted = Current();
+            if (_last == restricted) return;
+            _last = restricted;
             if (!_hub.TopicHasSubscribers(PanelTopics.SystemSession)) return;
-            _ = _hub.BroadcastTopicAsync(PanelTopics.SystemSession, Build(oobe));
+            _ = _hub.BroadcastTopicAsync(PanelTopics.SystemSession, Build(restricted));
         }
     }
 
-    private static ReadOnlyMemory<byte> Build(bool oobe)
-        => WsEnvelope.Build(PanelTopics.SystemSession, new OobeSessionState { Oobe = oobe }, AppJsonContext.Default.OobeSessionState);
+    private static ReadOnlyMemory<byte> Build(bool restricted)
+        => WsEnvelope.Build(PanelTopics.SystemSession, new RestrictedModeState { Restricted = restricted }, AppJsonContext.Default.RestrictedModeState);
 }
 
 internal static partial class OobeDetector
