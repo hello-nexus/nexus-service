@@ -374,9 +374,9 @@ public class CorsairLinkHubHandleTests
 
         Assert.False(hub.HearsOtherHost(new FakeLinkHub(), 10, out var none, out _));
         Assert.Equal("", none);
-        Assert.True(hub.HearsOtherHost(busy, 10, out var heard, out var ownEcho));
+        Assert.True(hub.HearsOtherHost(busy, 10, out var heard, out var ownHeard));
         Assert.StartsWith("n=", heard);
-        Assert.False(ownEcho);
+        Assert.Equal("", ownHeard);
         Assert.Empty(busy.Commands);
     }
 
@@ -401,8 +401,8 @@ public class CorsairLinkHubHandleTests
 
         var other = new FakeLinkHub();
         other.InjectReply(0x05);
-        Assert.True(hub.HearsOtherHost(other, 10, out _, out var ownEcho));
-        Assert.False(ownEcho);
+        Assert.True(hub.HearsOtherHost(other, 10, out _, out var ownHeard));
+        Assert.Equal("", ownHeard);
     }
 
     [Fact]
@@ -412,13 +412,13 @@ public class CorsairLinkHubHandleTests
 
         var late = new FakeLinkHub();
         late.InjectReply(0x02);
-        Assert.False(hub.HearsOtherHost(late, 10, out _, out var ownEcho));
-        Assert.True(ownEcho);
+        Assert.False(hub.HearsOtherHost(late, 10, out _, out var ownHeard));
+        Assert.NotEqual("", ownHeard);
 
         var again = new FakeLinkHub();
         again.InjectReply(0x02);
-        Assert.True(hub.HearsOtherHost(again, 10, out _, out ownEcho));
-        Assert.False(ownEcho);
+        Assert.True(hub.HearsOtherHost(again, 10, out _, out ownHeard));
+        Assert.Equal("", ownHeard);
     }
 
     [Fact]
@@ -430,8 +430,47 @@ public class CorsairLinkHubHandleTests
         device.InjectReply(0x02);
         device.InjectReply(0x09);
 
-        Assert.True(hub.HearsOtherHost(device, 10, out var heard, out _));
+        Assert.True(hub.HearsOtherHost(device, 10, out var heard, out var ownHeard));
         Assert.Contains("00 00 00 09", heard);
+        Assert.NotEqual("", ownHeard);
+        Assert.DoesNotContain("00 00 00 09", ownHeard);
+    }
+
+    [Fact]
+    public void A_report_in_the_listen_after_a_discount_counts_as_another_program()
+    {
+        var hub = HubOwedFirmwareReply();
+
+        var first = new FakeLinkHub();
+        first.InjectReply(0x02);
+        Assert.False(hub.HearsOtherHost(first, 10, out _, out var ownHeard));
+        Assert.NotEqual("", ownHeard);
+
+        var second = new FakeLinkHub();
+        second.InjectReply(0x08);
+        Assert.True(hub.HearsOtherHost(second, 10, out var heard, out ownHeard));
+        Assert.NotEqual("", heard);
+        Assert.Equal("", ownHeard);
+    }
+
+    [Fact]
+    public void Repeated_timeouts_on_one_command_do_not_keep_it_owed_past_the_bound_from_the_first()
+    {
+        var now = 1_000_000L;
+        var hub = new CorsairLinkHub { NowMs = () => now };
+        hub.Attach(new FakeLinkHub { TimedOutReads = 1000 });
+        Assert.False(hub.Initialize());
+        hub.Detach(handBack: false);
+        now += 20_000;
+        hub.Attach(new FakeLinkHub { TimedOutReads = 1000 });
+        Assert.False(hub.Initialize());
+        hub.Detach(handBack: false);
+        now += 20_000;
+
+        var late = new FakeLinkHub();
+        late.InjectReply(0x02);
+        Assert.True(hub.HearsOtherHost(late, 10, out _, out var ownHeard));
+        Assert.Equal("", ownHeard);
     }
 
     [Fact]
@@ -443,8 +482,8 @@ public class CorsairLinkHubHandleTests
 
         var late = new FakeLinkHub();
         late.InjectReply(0x02);
-        Assert.True(hub.HearsOtherHost(late, 10, out _, out var ownEcho));
-        Assert.False(ownEcho);
+        Assert.True(hub.HearsOtherHost(late, 10, out _, out var ownHeard));
+        Assert.Equal("", ownHeard);
     }
 
     [Fact]

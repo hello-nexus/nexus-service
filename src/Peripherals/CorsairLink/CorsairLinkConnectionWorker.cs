@@ -258,11 +258,11 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                 }
 
                 var listenStartMs = Environment.TickCount64;
-                var heardOther = hub.HearsOtherHost(device, ListenMs, out var heardHex, out var ownEcho);
-                if (ownEcho && !ownEchoLogged)
+                var heardOther = hub.HearsOtherHost(device, ListenMs, out var heardHex, out var ownHex);
+                if (ownHex.Length > 0 && !ownEchoLogged)
                 {
                     ownEchoLogged = true;
-                    ServiceLog.Info($"{Tag(hub)} heard a late reply to a command Nexus sent; not counted as another program ({heardHex})");
+                    ServiceLog.Info($"{Tag(hub)} heard a late reply to a command Nexus sent; not counted as another program ({ownHex})");
                 }
                 if (heardOther)
                 {
@@ -273,6 +273,16 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
                     }
                     otherHostHeardMs = Environment.TickCount64;
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+                // A listen that discounted a report is inconclusive: another host's report can share an owed command byte.
+                if (ownHex.Length > 0)
+                {
+                    device.Dispose();
+                    if (Environment.TickCount64 - listenStartMs < ListenMs)
+                    {
+                        await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                    }
                     continue;
                 }
                 // Listens back to back until the hub has been silent long enough: a ping
