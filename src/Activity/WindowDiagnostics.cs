@@ -25,7 +25,7 @@ public static class WindowDiagnostics
     /// One [window-diag] line: process identity, the IsCountableWindow
     /// inputs, the raw title-read outcome, and the classification result.
     /// titleLength/titleReadError distinguish a legitimately empty title
-    /// (no stored caption, and the WM_GETTEXTLENGTH fallback returned 0 with
+    /// (no stored caption, and the GetWindowTextLength fallback returned 0 with
     /// error 0) from a blocked read (e.g. UIPI denying a lower-integrity
     /// caller access to an elevated window, which fails the fallback with a
     /// nonzero Win32 error). A window with a stored caption never reaches the

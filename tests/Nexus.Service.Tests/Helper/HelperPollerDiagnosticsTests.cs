@@ -120,10 +120,10 @@ public class HelperPollerDiagnosticsTests
     public void TryFormatSlowPass_PutsDetailBeforeTheSuppressedSuffix()
     {
         var poller = "detail-" + Guid.NewGuid();
-        Assert.True(HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 sends=1"));
-        Assert.False(HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 sends=1"));
-        HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 sends=1");
-        Assert.Equal("[helper-perf] x pass=1.0ms items=2 dwm=3 sends=1", HelperPollerDiagnostics.FormatSlowPass("x", 1.0, 2, "dwm=3 sends=1"));
+        Assert.True(HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 fallbacks=1"));
+        Assert.False(HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 fallbacks=1"));
+        HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 fallbacks=1");
+        Assert.Equal("[helper-perf] x pass=1.0ms items=2 dwm=3 fallbacks=1", HelperPollerDiagnostics.FormatSlowPass("x", 1.0, 2, "dwm=3 fallbacks=1"));
     }
 
     [Fact]

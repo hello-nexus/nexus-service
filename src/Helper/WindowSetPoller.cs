@@ -62,7 +62,7 @@ public sealed class WindowSetPoller : IDisposable
     /// <summary>Windows walked by the last EnumWindows pass - the size of the
     /// per-window Win32 work the slow-pass line is reporting on.</summary>
     private int _enumerated;
-    private int _titleSends;
+    private int _titleFallbacks;
     private readonly object _hookGate = new();
     private bool _hooksOn;
 
@@ -123,7 +123,7 @@ public sealed class WindowSetPoller : IDisposable
             if (sw.ElapsedMilliseconds >= HelperPollerDiagnostics.SlowPassMs
                 && HelperPollerDiagnostics.TryFormatSlowPass(
                     HelperPollerDiagnostics.WindowSet, sw.Elapsed.TotalMilliseconds, _enumerated, out var slow,
-                    detail: $"dwm={_cloakCache.Reads} sends={_titleSends} cached={_cloakCache.Count}"))
+                    detail: $"dwm={_cloakCache.Reads} fallbacks={_titleFallbacks} cached={_cloakCache.Count}"))
             {
                 Nexus.Service.Platform.HelperLog.Write(slow);
             }
@@ -142,7 +142,7 @@ public sealed class WindowSetPoller : IDisposable
     {
         var pids = new HashSet<int>();
         var enumerated = 0;
-        _titleSends = 0;
+        _titleFallbacks = 0;
         _cloakCache.BeginPass();
 
         // Computed once per poll, not per window: the bounding box of every
@@ -181,9 +181,9 @@ public sealed class WindowSetPoller : IDisposable
 
             // DwmGetWindowAttribute is an RPC into dwm.exe, so cloak state comes from
             // WindowCloakCache. The title is read from the kernel-stored caption
-            // (InternalGetWindowText, no message sent). Only a window with no stored
-            // caption pays for WM_GETTEXTLENGTH, because a window can answer it
-            // itself, and an elevated one fails it with access denied (UIPI).
+            // (InternalGetWindowText, no message sent); only a window whose stored
+            // caption is empty repeats the original GetWindowTextLength call, so
+            // an empty-caption or UIPI-blocked window classifies exactly as before.
             // Both run only when IsCountableWindow would reach the terms they feed.
             var isCloaked = false;
             var coversMonitor = false;
@@ -207,18 +207,11 @@ public sealed class WindowSetPoller : IDisposable
                 titleLength = InternalGetWindowText(hwnd, _titleBuffer, _titleBuffer.Length);
                 if (titleLength == 0)
                 {
-                    _titleSends++;
-                    if (SendMessageTimeoutW(hwnd, WmGetTextLength, IntPtr.Zero, IntPtr.Zero,
-                        SmtoAbortIfHung, TitleSendTimeoutMs, out var sentLength) != IntPtr.Zero)
-                    {
-                        titleLength = (int)sentLength;
-                    }
-                    else
-                    {
-                        // Must read immediately, before any other P/Invoke clobbers it.
-                        titleReadError = Marshal.GetLastWin32Error();
-                        titleBlockedByUipi = titleReadError == ErrorAccessDenied;
-                    }
+                    _titleFallbacks++;
+                    titleLength = GetWindowTextLength(hwnd);
+                    // Must read immediately, before any other P/Invoke clobbers it.
+                    titleReadError = titleLength == 0 ? Marshal.GetLastWin32Error() : 0;
+                    titleBlockedByUipi = titleReadError == ErrorAccessDenied;
                 }
                 hasTitle = titleLength > 0;
             }
@@ -338,9 +331,6 @@ public sealed class WindowSetPoller : IDisposable
     private const int GwlExstyle = -20;
     private const int WsExToolwindow = 0x00000080;
     private const int DwmwaCloaked = 14;
-    private const uint WmGetTextLength = 0x000E;
-    private const uint SmtoAbortIfHung = 0x0002;
-    private const uint TitleSendTimeoutMs = 50;
     private const int ErrorAccessDenied = 5;
     private const int SmXvirtualscreen = 76;
     private const int SmYvirtualscreen = 77;
@@ -389,9 +379,9 @@ public sealed class WindowSetPoller : IDisposable
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int InternalGetWindowText(IntPtr hWnd, [Out] char[] lpString, int nMaxCount);
 
+    // SetLastError so the error read right after a 0 result is this call's outcome.
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SendMessageTimeoutW(
-        IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, uint flags, uint timeoutMs, out IntPtr result);
+    private static extern int GetWindowTextLength(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
