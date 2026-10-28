@@ -27,7 +27,7 @@ void main() {
         if (i >= count) break;
         float fi = float(i);
         float rad = s * (0.75 + fract(fi * 0.37) * 0.5);
-        vec2 range = vec2(ar - rad, 1.0 - rad);
+        vec2 range = max(vec2(ar - rad, 1.0 - rad), vec2(0.001));
         vec2 rate = vec2(0.13 + fract(fi * 0.173) * 0.17, 0.11 + fract(fi * 0.241) * 0.19);
         // The head and its ghosts all stay near the head, so skip a ball that is far from this pixel.
         vec2 ph0 = t * rate + vec2(fi * 0.317, fi * 0.531);
