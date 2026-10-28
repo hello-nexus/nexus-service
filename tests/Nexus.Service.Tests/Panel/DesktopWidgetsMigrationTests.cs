@@ -235,15 +235,84 @@ public class DesktopWidgetsMigrationTests
         Assert.Empty(store.Load().PanelDevices);
     }
 
+    private static PanelDeviceRecord Y70Record(InMemoryConfigStore store)
+    {
+        var record = new PanelDeviceRecord
+        {
+            Id = "y70rec",
+            Capabilities = new PanelDeviceCapabilities { Surface = "y70" },
+            Layout = new PanelLayoutDto { LayoutSchemaVersion = 2, Surface = "y70" },
+            Backdrop = "kiosk",
+            ClickThrough = false,
+            Hosted = false,
+            Enabled = true,
+        };
+        store.Update(s => s.PanelDevices[record.Id] = record);
+        return record;
+    }
+
     [Fact]
-    public void Y70_target_falls_back_to_the_primary()
+    public void Y70_target_merges_into_the_y70_record_and_keeps_its_settings()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        Y70Record(store);
+        store.Update(s => { s.Overlay.Monitor = 1; s.Overlay.Scale = 60; s.Overlay.AlwaysOnTop = true; });
+
+        var id = m.Run(Topology(Display(Primary, true), Display(Second, false, y70: true)));
+
+        Assert.Equal("y70rec", id);
+        var r = Only(store);
+        Assert.Null(r.DisplayId);
+        Assert.Equal("kiosk", r.Backdrop);
+        Assert.False(r.ClickThrough);
+        Assert.True(r.Enabled);
+        Assert.False(r.Hosted);
+        Assert.True(r.DesktopImport!.Merge);
+        Assert.Equal(LegacyCellPx * 0.6, r.DesktopImport.CellPx, 6);
+        Assert.Equal("a", Assert.Single(r.DesktopImport.Widgets).Id);
+        Assert.Equal("y70rec", store.Load().Overlay.MigratedRecordId);
+    }
+
+    [Fact]
+    public void Y70_target_waits_for_the_y70_record()
     {
         var (m, store, _) = Build(HostOs.Windows, Widget("a"));
         store.Update(s => s.Overlay.Monitor = 1);
 
-        m.Run(Topology(Display(Primary, true), Display(Second, false, y70: true)));
+        Assert.Null(m.Run(Topology(Display(Primary, true), Display(Second, false, y70: true))));
+
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+        Assert.Empty(store.Load().PanelDevices);
+    }
+
+    [Fact]
+    public void Y70_target_falls_back_to_the_primary_after_the_grace_without_a_y70_record()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        long now = 0;
+        m.MonoMs = () => now;
+        store.Update(s => s.Overlay.Monitor = 1);
+        var topology = Topology(Display(Primary, true), Display(Second, false, y70: true));
+        Assert.Null(m.Run(topology));
+
+        now = MissingMonitorGraceMs + 1;
+        m.Run(topology);
 
         Assert.Equal(Primary, Only(store).DisplayId);
+    }
+
+    [Fact]
+    public void Non_y70_target_still_gets_its_own_record_with_desktop_flags()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        Y70Record(store);
+        store.Update(s => s.Overlay.Monitor = 1);
+
+        m.Run(Two());
+
+        var created = store.Load().PanelDevices.Values.Single(r => r.DisplayId == Second);
+        Assert.Equal("desktop", created.Backdrop);
+        Assert.Null(store.Load().PanelDevices["y70rec"].DesktopImport);
     }
 
     [Theory]
@@ -781,11 +850,11 @@ public class DesktopWidgetsMigrationTests
     }
 
     [Fact]
-    public void Host_cannot_advance_when_the_primary_is_a_y70()
+    public void Host_can_advance_when_the_primary_is_a_y70()
     {
         var (m, _, _) = Build(HostOs.Windows, Widget("w"));
 
-        Assert.False(m.HostCanAdvance(PendingSettings(), Topology(Display("Y70", true, y70: true), Display(Second, false))));
+        Assert.True(m.HostCanAdvance(PendingSettings(), Topology(Display("Y70", true, y70: true), Display(Second, false))));
     }
 
     [Fact]
