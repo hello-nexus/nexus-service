@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Nexus.Service.Activity;
 using Xunit;
@@ -9,8 +10,11 @@ public class WindowCloakCacheTests
     private readonly Dictionary<long, bool> _truth = new();
     private int _reads;
 
-    private WindowCloakCache Make(int every = 12, int max = 16) =>
-        new(h => { _reads++; return _truth.GetValueOrDefault(h); }, every, max);
+    private WindowCloakCache Make(int every = 12, int max = 16, bool live = true)
+    {
+        Func<long, bool> read = h => { _reads++; return _truth.GetValueOrDefault(h); };
+        return new WindowCloakCache(read, every, max) { EventsLive = live };
+    }
 
     private static bool Ask(WindowCloakCache c, long h, int right = 100) => c.IsCloaked(h, 0, 0, right, 100);
 
@@ -143,5 +147,82 @@ public class WindowCloakCacheTests
             c.EndPass();
         }
         Assert.False(seen);
+    }
+
+    [Fact]
+    public void WithoutLiveEvents_EveryAsk_ReadsDwm()
+    {
+        var c = Make(live: false);
+        _truth[1] = true;
+        Pass(c, 1);
+        _truth[1] = false;
+        c.BeginPass();
+        Assert.False(Ask(c, 1));
+        Assert.Equal(1, c.Reads);
+        c.EndPass();
+        c.BeginPass();
+        Ask(c, 1);
+        Assert.Equal(1, c.Reads);
+    }
+
+    [Fact]
+    public void Clear_DropsTrust_SoTheNextPassRereads()
+    {
+        var c = Make();
+        _truth[1] = true;
+        Pass(c, 1);
+        c.Clear();
+        _truth[1] = false;
+        c.BeginPass();
+        Assert.False(Ask(c, 1));
+        Assert.Equal(1, c.Reads);
+        Assert.Equal(1, c.Count);
+    }
+
+    [Fact]
+    public void ResumeAfterPause_DoesNotServeAPreGapEntry()
+    {
+        var c = Make();
+        _truth[1] = true;
+        Pass(c, 1);
+        _truth[1] = false;
+        // a paused poller runs no passes, so pass counting alone would trust the entry
+        c.Clear();
+        c.BeginPass();
+        Assert.False(Ask(c, 1));
+    }
+
+    [Fact]
+    public void Read_RunsOutsideTheLock_AndEventDuringReadMarksEntryDirty()
+    {
+        WindowCloakCache? c = null;
+        var calls = 0;
+        c = new WindowCloakCache(h =>
+        {
+            calls++;
+            // re-entering the cache from the read would deadlock if the lock were held
+            _ = c!.Count;
+            if (calls == 1) c.MarkDirty(h);
+            return calls == 1;
+        }) { EventsLive = true };
+        c.BeginPass();
+        Assert.True(c.IsCloaked(1, 0, 0, 100, 100));
+        c.EndPass();
+        c.BeginPass();
+        Assert.False(c.IsCloaked(1, 0, 0, 100, 100));
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public void DestroyDuringRead_DoesNotLeaveATrustedEntry()
+    {
+        WindowCloakCache? c = null;
+        var calls = 0;
+        c = new WindowCloakCache(h => { calls++; if (calls == 1) c!.Evict(h); return calls == 1; }) { EventsLive = true };
+        c.BeginPass();
+        c.IsCloaked(1, 0, 0, 100, 100);
+        c.EndPass();
+        c.BeginPass();
+        Assert.False(c.IsCloaked(1, 0, 0, 100, 100));
     }
 }

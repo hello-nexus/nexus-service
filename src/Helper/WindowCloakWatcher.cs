@@ -29,17 +29,56 @@ public sealed class WindowCloakWatcher : IDisposable
 
     private readonly WindowCloakCache _cache;
     private readonly WinEventProc _proc;
-    private readonly Thread _thread;
+    private readonly object _gate = new();
+    private Thread? _thread;
     private volatile uint _threadId;
+    private volatile bool _cloakHookLive;
 
     public WindowCloakWatcher(WindowCloakCache cache)
     {
         _cache = cache;
         _proc = OnEvent;
-        using var started = new ManualResetEventSlim();
-        _thread = new Thread(() => Run(started)) { IsBackground = true, Name = "window-cloak-watcher" };
-        _thread.Start();
-        started.Wait();
+    }
+
+    /// <summary>True while the cloak/uncloak hook is installed and pumping.</summary>
+    public bool CloakHookLive => _cloakHookLive;
+
+    /// <summary>Installs the hooks on a fresh message-loop thread. A no-op when
+    /// already running. The cache is only told events are live when the cloak
+    /// hook itself installed.</summary>
+    public void Start()
+    {
+        lock (_gate)
+        {
+            if (_thread is not null) return;
+            using var started = new ManualResetEventSlim();
+            _thread = new Thread(() => Run(started)) { IsBackground = true, Name = "window-cloak-watcher" };
+            _thread.Start();
+            started.Wait();
+            _cache.EventsLive = _cloakHookLive;
+            if (_threadId == 0)
+            {
+                _thread.Join();
+                _thread = null;
+            }
+        }
+    }
+
+    /// <summary>Removes the hooks and ends the thread.</summary>
+    public void Stop()
+    {
+        lock (_gate)
+        {
+            _cache.EventsLive = false;
+            var thread = _thread;
+            if (thread is null) return;
+            _thread = null;
+            if (_threadId != 0) PostThreadMessageW(_threadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
+            thread.Join(TimeSpan.FromSeconds(2));
+            _threadId = 0;
+            _cloakHookLive = false;
+            Platform.HelperLog.Write("[window-cloak] hooks removed");
+        }
     }
 
     private void OnEvent(IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
@@ -51,19 +90,30 @@ public sealed class WindowCloakWatcher : IDisposable
 
     private void Run(ManualResetEventSlim started)
     {
-        _threadId = GetCurrentThreadId();
         var destroy = SetWinEventHook(
             EventObjectDestroy, EventObjectDestroy, IntPtr.Zero, _proc, 0, 0,
             WineventOutofcontext | WineventSkipownprocess);
+        var destroyErr = destroy == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
         var cloak = SetWinEventHook(
             EventObjectCloaked, EventObjectUncloaked, IntPtr.Zero, _proc, 0, 0,
             WineventOutofcontext | WineventSkipownprocess);
-        started.Set();
-        if (destroy == IntPtr.Zero && cloak == IntPtr.Zero)
+        var cloakErr = cloak == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
+        _cloakHookLive = cloak != IntPtr.Zero;
+        if (destroy == IntPtr.Zero)
         {
-            Platform.HelperLog.Write($"[window-cloak] SetWinEventHook failed err={Marshal.GetLastWin32Error()}");
-            return;
+            Platform.HelperLog.Write($"[window-cloak] destroy hook failed err={destroyErr}");
         }
+        if (cloak == IntPtr.Zero)
+        {
+            Platform.HelperLog.Write($"[window-cloak] cloak hook failed err={cloakErr}; reading DWM every pass");
+        }
+        if (destroy != IntPtr.Zero || cloak != IntPtr.Zero)
+        {
+            _threadId = GetCurrentThreadId();
+            Platform.HelperLog.Write($"[window-cloak] hooks installed destroy={destroy != IntPtr.Zero} cloak={cloak != IntPtr.Zero}");
+        }
+        started.Set();
+        if (_threadId == 0) return;
         try
         {
             while (GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
@@ -78,11 +128,7 @@ public sealed class WindowCloakWatcher : IDisposable
         }
     }
 
-    public void Dispose()
-    {
-        if (_threadId != 0) PostThreadMessageW(_threadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
-        _thread.Join(TimeSpan.FromSeconds(2));
-    }
+    public void Dispose() => Stop();
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MSG

@@ -198,8 +198,8 @@ public static class HelperPollerDiagnostics
         return line;
     }
 
-    public static string FormatSlowPass(string poller, double elapsedMs, int items) =>
-        $"[helper-perf] {poller} pass={elapsedMs:F1}ms items={items}";
+    public static string FormatSlowPass(string poller, double elapsedMs, int items, string? detail = null) =>
+        $"[helper-perf] {poller} pass={elapsedMs:F1}ms items={items}" + (detail is null ? "" : " " + detail);
 
     /// <summary>
     /// Rate-limited slow-pass line. Returns false when this poller already
@@ -207,7 +207,7 @@ public static class HelperPollerDiagnostics
     /// occurrence is counted and reported on the next line that does emit.
     /// Callers on several poller threads, so the gate is locked.
     /// </summary>
-    public static bool TryFormatSlowPass(string poller, double elapsedMs, int items, out string line)
+    public static bool TryFormatSlowPass(string poller, double elapsedMs, int items, out string line, string? detail = null)
     {
         int suppressed;
         lock (s_gate)
@@ -224,7 +224,7 @@ public static class HelperPollerDiagnostics
             s_slowPassGate[poller] = (now + (long)SlowPassLogInterval.TotalMilliseconds, 0);
         }
 
-        line = FormatSlowPass(poller, elapsedMs, items);
+        line = FormatSlowPass(poller, elapsedMs, items, detail);
         if (suppressed > 0) line += $" (+{suppressed} more in the last {SlowPassLogInterval.TotalSeconds:F0}s)";
         return true;
     }

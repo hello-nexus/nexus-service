@@ -8,9 +8,10 @@ namespace Nexus.Service.Activity;
 /// The cloak read is an RPC into dwm.exe, so re-asking for every candidate
 /// on every pass cost hundreds of milliseconds and stalled composition.
 /// Cloak changes are pushed by WinEvents instead (<see cref="MarkDirty"/>,
-/// <see cref="Evict"/>), and a bounded round-robin trickle re-reads old
-/// entries as the safety net for a missed event. Platform-neutral: the
-/// actual read is injected, mirroring WindowClassification's split.
+/// <see cref="Evict"/>), and a bounded trickle re-reads entries older than the
+/// refresh window as the safety net for a missed event. While the event source
+/// is not live (<see cref="EventsLive"/>) every ask reads. Platform-neutral:
+/// the actual read is injected, mirroring WindowClassification's split.
 ///
 /// An entry is trusted only while its window was a candidate in the
 /// immediately preceding pass, so a window that became visible, lost its
@@ -38,12 +39,23 @@ public sealed class WindowCloakCache
     private readonly List<long> _stale = new();
     private long _pass;
     private int _trickleLeft;
+    private long _reading;
+    private bool _readingDirty;
+    private volatile bool _eventsLive;
 
     public WindowCloakCache(Func<long, bool> read, int refreshEveryPasses = 12, int maxTrickle = 16)
     {
         _read = read ?? throw new ArgumentNullException(nameof(read));
         _refreshEveryPasses = Math.Max(1, refreshEveryPasses);
         _maxTrickle = Math.Max(0, maxTrickle);
+    }
+
+    /// <summary>True while the cloak WinEvent hook is installed. When false the
+    /// cache never serves a stored value, which is the pre-cache behavior.</summary>
+    public bool EventsLive
+    {
+        get => _eventsLive;
+        set => _eventsLive = value;
     }
 
     /// <summary>Cloak reads issued in the current pass, for the perf line.</summary>
@@ -85,7 +97,7 @@ public sealed class WindowCloakCache
     {
         lock (_gate)
         {
-            if (_entries.TryGetValue(hwnd, out var e) && IsTrusted(e, left, top, right, bottom))
+            if (_eventsLive && _entries.TryGetValue(hwnd, out var e) && IsTrusted(e, left, top, right, bottom))
             {
                 if (!NeedsTrickle(e))
                 {
@@ -95,8 +107,37 @@ public sealed class WindowCloakCache
                 }
                 _trickleLeft--;
             }
-            return ReadLocked(hwnd, left, top, right, bottom);
+            _reading = hwnd;
+            _readingDirty = false;
         }
+
+        // The read is an RPC into dwm.exe, so it runs outside the lock; an
+        // event for this window that lands meanwhile marks the entry dirty.
+        var cloaked = _read(hwnd);
+
+        lock (_gate)
+        {
+            _reading = 0;
+            Reads++;
+            _entries[hwnd] = new Entry
+            {
+                Cloaked = cloaked,
+                Dirty = _readingDirty,
+                ReadPass = _pass,
+                TouchedPass = _pass,
+                Left = left,
+                Top = top,
+                Right = right,
+                Bottom = bottom,
+            };
+        }
+        return cloaked;
+    }
+
+    /// <summary>Forgets everything, so no entry from before a pause is trusted.</summary>
+    public void Clear()
+    {
+        lock (_gate) _entries.Clear();
     }
 
     /// <summary>Cloak or uncloak event: re-read on the next ask.</summary>
@@ -104,6 +145,7 @@ public sealed class WindowCloakCache
     {
         lock (_gate)
         {
+            if (_reading == hwnd) _readingDirty = true;
             if (_entries.TryGetValue(hwnd, out var e))
             {
                 e.Dirty = true;
@@ -115,7 +157,11 @@ public sealed class WindowCloakCache
     /// <summary>Destroy event: forget the handle so a reuse cannot hit it.</summary>
     public void Evict(long hwnd)
     {
-        lock (_gate) _entries.Remove(hwnd);
+        lock (_gate)
+        {
+            if (_reading == hwnd) _readingDirty = true;
+            _entries.Remove(hwnd);
+        }
     }
 
     private bool IsTrusted(Entry e, int left, int top, int right, int bottom)
@@ -129,21 +175,4 @@ public sealed class WindowCloakCache
 
     private bool NeedsTrickle(Entry e) =>
         _trickleLeft > 0 && _pass - e.ReadPass >= _refreshEveryPasses;
-
-    private bool ReadLocked(long hwnd, int left, int top, int right, int bottom)
-    {
-        var cloaked = _read(hwnd);
-        Reads++;
-        _entries[hwnd] = new Entry
-        {
-            Cloaked = cloaked,
-            ReadPass = _pass,
-            TouchedPass = _pass,
-            Left = left,
-            Top = top,
-            Right = right,
-            Bottom = bottom,
-        };
-        return cloaked;
-    }
 }
