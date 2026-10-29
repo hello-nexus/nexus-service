@@ -40,24 +40,40 @@ float tentacleMask(vec2 p, float seed, float t, float len, float thickness) {
     return core * tipFade;
 }
 
+// Plankton specks on a scrolling hash grid. The grid coordinate must stay small
+// (hash21 collapses at large cell indices), so the caller feeds a wrapped clock.
+vec3 planktonLayer(vec2 uv, float tn) {
+    vec2 pg = uv * 9.0 + vec2(tn * 0.25, -tn * 0.4);
+    vec2 pc = floor(pg);
+    float pr = hash21(pc);
+    vec2 pd = fract(pg) - 0.5 - (vec2(hash21(pc + 3.1), hash21(pc + 8.7)) - 0.5) * 0.5;
+    return tintedPalette(0.2 + pr) * step(0.7, pr) * exp(-dot(pd, pd) * 70.0) * 0.9;
+}
+
 void main() {
     vec2 uv = uvCentered();
-    float t = mod(u_time * u_speed * 0.55, 1000.0);
+    // Unwrapped clock for every sin/linear term: wrapping it would jump each phase.
+    float t = u_time * u_speed * 0.55;
+    // Noise needs a bounded clock, so two copies half a period apart are crossfaded:
+    // each is hidden (weight 0) at exactly the moment it wraps.
+    float nA = mod(t, 300.0);
+    float nB = mod(t + 150.0, 300.0);
+    float wA = 0.5 - 0.5 * cos(6.28318 * nA / 300.0);
+    float wB = 1.0 - wA;
     int count = int(clamp(u_count, 1.0, 6.0));
     float glowStr = max(0.1, u_glow);
 
     // Lit deep water: a color gradient from a bright surface to a saturated
     // abyss, slow light shafts falling from the top, and drifting plankton.
-    float caustic = fbm3(uv * 2.2 + vec2(t * 0.12, -t * 0.18));
+    vec2 cq = uv * 2.2;
+    float caustic = fbm3(cq + vec2(nA * 0.12, -nA * 0.18)) * wA + fbm3(cq + vec2(nB * 0.12, -nB * 0.18)) * wB;
+    // Blending two independent fields shrinks contrast mid-fade; restore it around the fbm3 mean.
+    caustic = 0.4375 + (caustic - 0.4375) * inversesqrt(wA * wA + wB * wB);
     vec3 water = tintedPalette(0.52 + uv.y * 0.4 + uv.x * 0.25 + caustic * 0.35 + t * 0.02) * (0.38 - uv.y * 0.12);
     float shafts = pow(0.5 + 0.5 * sin(uv.x * 5.0 + uv.y * 1.6 + sin(t * 0.4 + uv.x * 2.0) * 1.2), 3.0);
     water += tintedPalette(0.35 + uv.x * 0.1) * shafts * smoothstep(0.9, -1.0, uv.y) * 0.28;
     water += tintedPalette(0.7 + caustic * 0.3) * smoothstep(0.45, 0.8, caustic) * 0.25;
-    vec2 pg = uv * 9.0 + vec2(t * 0.25, -t * 0.4);
-    vec2 pc = floor(pg);
-    float pr = hash21(pc);
-    vec2 pd = fract(pg) - 0.5 - (vec2(hash21(pc + 3.1), hash21(pc + 8.7)) - 0.5) * 0.5;
-    water += tintedPalette(0.2 + pr) * step(0.7, pr) * exp(-dot(pd, pd) * 70.0) * 0.9;
+    water += planktonLayer(uv, nA) * wA + planktonLayer(uv, nB) * wB;
     vec3 col = water;
 
     for (int i = 0; i < 6; i++) {

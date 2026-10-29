@@ -110,4 +110,15 @@ public class ShaderLibraryTests
         }
         Assert.False(ShaderLibrary.IsSweepEffect("rainbow"));
     }
+
+    [Fact]
+    public void Jellyfish_does_not_wrap_the_master_clock()
+    {
+        // A wrapped clock jumps every sin phase and re-rolls the noise field at each wrap.
+        // The noise terms crossfade two offset copies instead.
+        var src = ShaderLibrary.Get("jellyfish");
+        Assert.DoesNotContain("mod(u_time", src);
+        Assert.Contains("float t = u_time * u_speed * 0.55;", src);
+        Assert.Contains("wA", src);
+    }
 }
