@@ -862,4 +862,173 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal("GRB", LianLiLightingFrameWriter.OrderForSegment(prefs, zones, 1));
         Assert.Equal("GRB", LianLiLightingFrameWriter.FirstOrder(prefs, zones));
     }
+
+    [Fact]
+    public void A_dead_hub_on_the_real_backoff_schedule_flags_once_and_stays_flagged_for_minutes()
+    {
+        var health = new LightingWriteHealth(() => TimeSpan.FromMilliseconds(_now));
+        var flips = 0;
+        health.Changed += () => flips++;
+        _writer.Health = health;
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+
+        var flaggedAtMs = -1L;
+        for (; _now <= 240_000; _now += 100)
+        {
+            _writer.Tick();
+            health.Sweep();
+            if (flaggedAtMs < 0 && health.IsFailing(_hub.DeviceId))
+            {
+                flaggedAtMs = _now;
+            }
+            if (flaggedAtMs >= 0)
+            {
+                Assert.True(health.IsFailing(_hub.DeviceId), $"cleared at {_now} ms");
+            }
+        }
+
+        Assert.InRange(flaggedAtMs, 15_000, 40_000);
+        Assert.Equal(1, flips);
+    }
+
+    // ── A retry that is no longer wanted must not keep the hub flagged ──
+
+    private LightingWriteHealth UseHealth()
+    {
+        var health = new LightingWriteHealth(() => TimeSpan.FromMilliseconds(_now));
+        _writer.Health = health;
+        UseFakeClock();
+        return health;
+    }
+
+    private void Run(LightingWriteHealth health, long ms, long assertNotFailingAfterMs = long.MaxValue)
+    {
+        var start = _now;
+        for (var end = _now + ms; _now < end; _now += 100)
+        {
+            _writer.Tick();
+            health.Sweep();
+            if (_now - start >= assertNotFailingAfterMs)
+            {
+                Assert.False(health.IsFailing(_hub.DeviceId), $"flagged at {_now} ms");
+            }
+        }
+    }
+
+    private const long RejectPhaseMs = 20_000;
+    private const long SettleMs = 30_000;
+    private const long QuietMs = 120_000;
+
+    [Fact]
+    public void Argb_sync_rejected_then_turned_off_does_not_leave_the_hub_flagged()
+    {
+        var health = UseHealth();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+        _spy.RejectWrites = true;
+        Run(health, RejectPhaseMs);
+        Assert.True(health.IsFailing(_hub.DeviceId), "the rejecting phase must flag, or the test proves nothing");
+
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = false);
+        _spy.RejectWrites = false;
+        Run(health, QuietMs, SettleMs);
+    }
+
+    [Fact]
+    public void Firmware_commit_rejected_then_the_old_mode_restored_does_not_leave_the_hub_flagged()
+    {
+        var health = UseHealth();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        Run(health, 1_000);
+        SetMode("static");
+        _spy.RejectWrites = true;
+        Run(health, RejectPhaseMs);
+        Assert.True(health.IsFailing(_hub.DeviceId), "the rejecting phase must flag, or the test proves nothing");
+
+        SetMode("rainbowWave");
+        _spy.RejectWrites = false;
+        Run(health, QuietMs, SettleMs);
+    }
+
+    [Fact]
+    public void A_rejected_commit_followed_by_argb_sync_does_not_leave_the_hub_flagged()
+    {
+        var health = UseHealth();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+        Run(health, RejectPhaseMs);
+        Assert.True(health.IsFailing(_hub.DeviceId), "the rejecting phase must flag, or the test proves nothing");
+
+        _spy.RejectWrites = false;
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+        Run(health, QuietMs, SettleMs);
+    }
+
+    [Fact]
+    public void A_rejected_commit_followed_by_an_empty_device_set_does_not_leave_the_hub_flagged()
+    {
+        var health = UseHealth();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+        Run(health, RejectPhaseMs);
+        Assert.True(health.IsFailing(_hub.DeviceId), "the rejecting phase must flag, or the test proves nothing");
+
+        _spy.RejectWrites = false;
+        _engine.UpdateDevices(Array.Empty<DeviceFrame>());
+        Run(health, QuietMs, SettleMs);
+    }
+
+    private void AssertFlagsOnceAndStaysFlagged(LightingWriteHealth health)
+    {
+        var flips = 0;
+        health.Changed += () => flips++;
+        var flaggedAtMs = -1L;
+        for (; _now <= 240_000; _now += 100)
+        {
+            _writer.Tick();
+            health.Sweep();
+            if (flaggedAtMs < 0 && health.IsFailing(_hub.DeviceId))
+            {
+                flaggedAtMs = _now;
+            }
+            if (flaggedAtMs >= 0)
+            {
+                Assert.True(health.IsFailing(_hub.DeviceId), $"cleared at {_now} ms");
+            }
+        }
+
+        Assert.InRange(flaggedAtMs, 15_000, 40_000);
+        Assert.Equal(1, flips);
+    }
+
+    [Fact]
+    public void Argb_sync_wanted_and_rejected_forever_flags_once_and_stays_flagged()
+    {
+        var health = UseHealth();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+        _spy.RejectWrites = true;
+
+        AssertFlagsOnceAndStaysFlagged(health);
+    }
+
+    [Fact]
+    public void Hub_init_rejected_forever_in_custom_mode_flags_once_and_stays_flagged()
+    {
+        var health = UseHealth();
+        // A family whose attach sequence sends commands, so init has something to reject.
+        Attach(0xA100, port: 2, fans: 3);
+        SetMode("custom");
+        _spy.RejectWrites = true;
+
+        AssertFlagsOnceAndStaysFlagged(health);
+    }
 }

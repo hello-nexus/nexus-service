@@ -378,6 +378,9 @@ public sealed class RgbBridge : IDisposable
 
     public bool IsConnected => _controller.IsConnected;
 
+    /// <summary>Ids of this bridge's own OpenRGB frames as of the last refresh.</summary>
+    internal IReadOnlySet<string> BridgeFrameIds => _bridgeFrameIds;
+
     /// <summary>
     /// Bring the bridge online. Idempotent. Non-blocking - the actual subprocess
     /// boot + handshake happens on a background task. The first lighting frame

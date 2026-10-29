@@ -12,7 +12,7 @@ namespace Nexus.Service.Telemetry;
 /// Drains the in-memory telemetry queue and ships batches to every configured
 /// sink. Mirrors HeartbeatService: post-boot, off the critical path, gated by
 /// the same opt-out, and a failed flush never takes the worker down. Stays
-/// dormant when no sink is configured (e.g. no PostHog key), so an unconfigured
+/// dormant when no sink is configured (e.g. unofficial build), so an unconfigured
 /// build pays nothing.
 /// </summary>
 internal sealed class TelemetryFlushService : BackgroundService
@@ -79,7 +79,7 @@ internal sealed class TelemetryFlushService : BackgroundService
         {
             foreach (var sink in _sinks)
             {
-                // One sink failing (PostHog blocked) must not starve the others.
+                // One sink failing (nexus-api blocked) must not starve the others.
                 try { await sink.SendAsync(distinctId, batch, ct).ConfigureAwait(false); }
                 catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
                 {

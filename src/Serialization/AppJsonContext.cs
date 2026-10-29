@@ -168,6 +168,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(DeleteCoolingPresetResponse))]
 [JsonSerializable(typeof(ApplyProfileResponse))]
 [JsonSerializable(typeof(StartupModeBody))]
+[JsonSerializable(typeof(RestartBody))]
 [JsonSerializable(typeof(StartupModeDto))]
 [JsonSerializable(typeof(FastStartupBody))]
 [JsonSerializable(typeof(FastStartupDto))]

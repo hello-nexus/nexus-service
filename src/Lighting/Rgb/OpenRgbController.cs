@@ -26,7 +26,7 @@ namespace Nexus.Service.Lighting.Rgb;
 ///
 /// AOT: pure System.Net.Sockets + ArrayPool, zero reflection.
 /// </summary>
-public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
+public sealed class OpenRgbController : IRgbController, INexusCoolingTransport, IOpenRgbWriteHealthTransport
 {
     private const string ClientName = "nexus";
     private const uint ClientFlags = OpenRgbProtocol.ClientFlagSupportsRgbController
@@ -141,6 +141,7 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
 
             var session = new Session { Tcp = tcp, Stream = stream };
             Volatile.Write(ref _session, session);
+            Interlocked.Increment(ref _connectionGeneration);
             _ = Task.Run(() => ReadLoopAsync(session));
 
             try
@@ -440,6 +441,50 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
         catch (IOException)
         {
             return new NexusCoolingStatusResult(NexusCoolingOutcome.Failed, null);
+        }
+    }
+
+    private int _connectionGeneration;
+
+    public int ConnectionGeneration => Volatile.Read(ref _connectionGeneration);
+
+    public async Task<OpenRgbWriteHealthResult> GetWriteHealthAsync(int address, CancellationToken ct = default)
+    {
+        var failed = new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Failed, default);
+        var session = Volatile.Read(ref _session);
+        if (session is null || session.Closed || !session.Ready)
+        {
+            return failed;
+        }
+        try
+        {
+            await WaitRequestLockAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var (body, status) = await RequestLockedAsync(session, OpenRgbProtocol.PacketId.NexusWriteHealth, (uint)address,
+                    null, OpenRgbProtocol.PacketId.NexusWriteHealth, replyOnly: false, ct).ConfigureAwait(false);
+                if (status == OpenRgbProtocol.StatusInvalidId)
+                {
+                    return new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.UnknownController, default);
+                }
+                if (status == OpenRgbProtocol.StatusUnsupported)
+                {
+                    return new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Unsupported, default);
+                }
+                if (status != OpenRgbProtocol.StatusOk || body is null || !NexusWriteHealthProtocol.TryParse(body, out var health))
+                {
+                    return failed;
+                }
+                return new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Ok, health);
+            }
+            finally
+            {
+                _requestLock.Release();
+            }
+        }
+        catch (IOException)
+        {
+            return failed;
         }
     }
 
