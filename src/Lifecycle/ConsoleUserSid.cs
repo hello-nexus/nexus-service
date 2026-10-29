@@ -29,7 +29,7 @@ internal static class ConsoleUserSid
     /// (no console user, no unique profile match, or the hive/path isn't
     /// there) and, other than the no-console-user case, warns once per
     /// failure streak.</summary>
-    public static string? Resolve(string requiredSubPath)
+    public static string? Resolve(string requiredSubPath, bool quietIfHiveMissing = false)
     {
         var username = UserHelperBootstrapper.ResolveActiveConsoleUsername();
         if (string.IsNullOrEmpty(username))
@@ -47,7 +47,10 @@ internal static class ConsoleUserSid
         using var hive = Registry.Users.OpenSubKey($@"{sid}\{requiredSubPath}");
         if (hive is null)
         {
-            WarnResolveFailure($"SID {sid}'s {requiredSubPath} hive is unloaded or empty");
+            // A caller whose key legitimately may not exist (Windows writes
+            // some keys only once a page is touched) polls this, so a missing
+            // key is its normal answer, not a streak worth a warning.
+            if (!quietIfHiveMissing) WarnResolveFailure($"SID {sid}'s {requiredSubPath} hive is unloaded or empty");
             return null;
         }
 
