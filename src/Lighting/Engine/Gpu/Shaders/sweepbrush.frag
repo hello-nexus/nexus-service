@@ -20,15 +20,17 @@ void main() {
     // LEDs see a continuous gradient.
     float streak = vnoise(vec2(uv.x * 2.0 - t * 2.0 / max(1.0, u_strokes), uv.y * 4.0 + mod(u_time, 600.0) * 0.05));
     grain *= 0.88 + 0.24 * streak;
-    // Silk-style folds: two sines crossing at different angles with drifting
-    // phases, so brightness undulates along y like cloth. Low frequency keeps
-    // neighbouring LEDs on a smooth slope; the x term tilts the folds and the
-    // time term keeps a 1D strip (fixed y) breathing.
-    float fold = 0.5 * sin(uv.y * 5.0 + uv.x * 1.5 + t * 0.35)
-               + 0.3 * sin(uv.y * 9.0 - uv.x * 0.8 - t * 0.25 + 0.9)
-               + 0.2 * sin(uv.y * 3.0 + uv.x * 0.5 + t * 0.15 + 2.1);
-    grain *= 1.0 + 0.1 * fold;
-    float f = uv.x * u_strokes - t;
+    // Silk-style folds: three sines crossing at different angles with drifting
+    // phases, so the frame undulates along y like cloth. Low frequency keeps
+    // neighbouring LEDs on a smooth slope; the time terms keep a 1D strip
+    // (fixed y) moving.
+    float fold = 0.5 * sin(uv.y * 5.0 + uv.x * 1.5 + t * 0.9)
+               + 0.3 * sin(uv.y * 9.0 - uv.x * 0.8 - t * 0.65 + 0.9)
+               + 0.2 * sin(uv.y * 3.0 + uv.x * 0.5 + t * 0.4 + 2.1);
+    float crest = fold * 0.5 + 0.5;
+    grain *= 0.35 + 0.65 * crest;
+    // The folds bend the sheet: stroke position sways along x with y and time, in stroke widths.
+    float f = uv.x * u_strokes + 0.3 * fold - t;
     float cell = floor(f);
     float d = f - cell;
     float feather = clamp(u_feather, 0.02, 0.4);
@@ -38,5 +40,7 @@ void main() {
     float body = smoothstep(0.0, feather, d) * smoothstep(fill, fill - feather, d);
     // One hue step per stroke.
     vec3 col = hsv2rgb(vec3(cell * u_step + u_hue + 0.03 * (streak - 0.5) + 0.008 * fold, 1.0, 1.0)) * body * grain;
+    // Sheen: crests lift slightly toward white inside the paint.
+    col += vec3(0.35) * smoothstep(0.5, 0.95, crest) * body;
     fragColor = vec4(finalize(col), 1.0);
 }
