@@ -185,6 +185,9 @@ public class SupportBundleLiteTests : IDisposable
     [InlineData(@"C:\Users\alice2\x", @"C:\Users\alice2\x")]
     [InlineData(@"C:\Users\alice", @"C:\Users\<user>")]
     [InlineData("GAMING-PC-2 and xGAMING-PC", "GAMING-PC-2 and xGAMING-PC")]
+    [InlineData("PATH=/Users/alice:/usr/bin", "PATH=/Users/<user>:/usr/bin")]
+    [InlineData(@"see C:\Users\alice.", @"see C:\Users\<user>.")]
+    [InlineData("<file:///home/alice>", "<file:///home/<user>>")]
     public void Redactor_replaces_the_user_in_home_paths_and_the_machine_name(string input, string expected)
     {
         Assert.Equal(expected, new BundleRedactor(new[] { "alice" }, "gaming-pc").Apply(input));
@@ -391,5 +394,36 @@ public class SupportBundleLiteTests : IDisposable
         log.WaitIdle();
         var text = File.ReadAllText(Path.Combine(_root, DeviceIncidentLog.FileName));
         Assert.Single(System.Text.RegularExpressions.Regex.Matches(text, "^=== ", System.Text.RegularExpressions.RegexOptions.Multiline));
+    }
+
+    [Fact]
+    public void Host_line_and_json_name_fields_are_redacted_even_for_a_generic_machine_name()
+    {
+        var redactor = new BundleRedactor(Array.Empty<string>(), "NEXUS");
+        Assert.Equal("host: <pc> | Windows 11", redactor.Apply("host: NEXUS | Windows 11"));
+        Assert.Equal("{\"pcName\":\"<pc>\"}", redactor.Apply("{\"pcName\":\"NEXUS\"}"));
+        Assert.Equal("Nexus service", redactor.Apply("Nexus service"));
+    }
+
+    [Fact]
+    public void Queue_overflow_drops_extra_snapshots_without_hanging_and_pending_returns_to_zero()
+    {
+        using var gate = new ManualResetEventSlim(false);
+        var log = new DeviceIncidentLog(() => { gate.Wait(); return _root; }, () => 5000);
+        var queued = 0;
+        for (var i = 0; i < 200; i++)
+        {
+            log.Note("d" + i, "x", DeviceEventKind.Stall);
+            if (log.Snapshot("d" + i, "r"))
+            {
+                queued++;
+            }
+        }
+        Assert.InRange(queued, 1, 66);
+        gate.Set();
+        log.WaitIdle();
+        Assert.Equal(0, log.Pending);
+        var text = File.ReadAllText(Path.Combine(_root, DeviceIncidentLog.FileName));
+        Assert.Equal(queued, System.Text.RegularExpressions.Regex.Matches(text, "^=== ", System.Text.RegularExpressions.RegexOptions.Multiline).Count);
     }
 }
