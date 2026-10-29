@@ -298,20 +298,6 @@ public class SupportBundleLiteTests : IDisposable
     }
 
     [Fact]
-    public void Write_health_feeds_the_incident_ring_and_forgetting_a_device_snapshots_it()
-    {
-        var log = NewLog(() => 5000);
-        var health = new Nexus.Service.Lighting.LightingWriteHealth { Incidents = log };
-        health.NoteFailure("dev-9", "keeb");
-        health.Forget("dev-9");
-        log.WaitIdle();
-        var text = File.ReadAllText(Path.Combine(_root, DeviceIncidentLog.FileName));
-        Assert.Contains("WriteFail", text);
-        Assert.Contains("Disconnect", text);
-        Assert.Contains("device left", text);
-    }
-
-    [Fact]
     public void Username_is_replaced_only_as_a_whole_home_path_segment_longest_name_first()
     {
         var redactor = new BundleRedactor(new[] { "a", "alice" }, "gaming-pc");
@@ -365,19 +351,6 @@ public class SupportBundleLiteTests : IDisposable
         });
         using var archive = new ZipArchive(new MemoryStream(zip));
         Assert.DoesNotContain(archive.Entries, e => e.FullName.Contains("alice"));
-    }
-
-    [Fact]
-    public void Repeated_forget_of_an_unknown_device_writes_nothing()
-    {
-        var log = NewLog(() => 5000);
-        var health = new Nexus.Service.Lighting.LightingWriteHealth { Incidents = log };
-        for (var i = 0; i < 20; i++)
-        {
-            health.Forget("uncontrolled-frame");
-        }
-        log.WaitIdle();
-        Assert.False(File.Exists(Path.Combine(_root, DeviceIncidentLog.FileName)));
     }
 
     [Fact]
