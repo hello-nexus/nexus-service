@@ -14,7 +14,7 @@ public class MacAppWindowTests
     // .topBar padding-left + --mac-traffic-light-inset.
     private const double ClusterLeft = 8 + 96;
     // Search pill right edge (bar center + half --search-w) + pill->gear gap (0.4rem).
-    private const double PageSettingsLeft = BarWidth / 2 + 540 / 2.0 + 7;
+    private const double PageSettingsLeft = BarWidth / 2 + 590 / 2.0 + 7;
     // .pageSettingsButton width - the gear is the whole cluster.
     private const double PageSettingsClusterWidth = 34;
 
@@ -42,7 +42,7 @@ public class MacAppWindowTests
     // The gear column is a fixed width now, so a narrower window carves out
     // exactly the same cluster.
     private const double NarrowWidth = 1040;
-    private const double NarrowPageSettingsLeft = NarrowWidth / 2 + 460 / 2.0 + 7;
+    private const double NarrowPageSettingsLeft = NarrowWidth / 2 + 480 / 2.0 + 7;
 
     [Theory]
     [InlineData(NarrowPageSettingsLeft + 10)]  // gear button
@@ -56,10 +56,10 @@ public class MacAppWindowTests
 
     // --search-w: floor, then half-rate growth past the grow-from width, then the ceiling; centered.
     [Theory]
-    [InlineData(1024, 460)]
-    [InlineData(1100, 460)]
-    [InlineData(1300, 560)]
-    [InlineData(1500, 660)]
+    [InlineData(900, 460)]
+    [InlineData(1000, 460)]
+    [InlineData(1200, 560)]
+    [InlineData(1400, 660)]
     [InlineData(2000, 660)]
     public void SearchPill_FollowsClampedWidth(double w, double pill)
     {
@@ -72,16 +72,17 @@ public class MacAppWindowTests
     // Just past the gear the bar drags. A pill wider than the true width (early
     // grow-from, steeper slope, or higher ceiling) would carve this point.
     [Theory]
-    [InlineData(1100, 460)]
-    [InlineData(1300, 560)]
-    [InlineData(1500, 660)]
+    [InlineData(1000, 460)]
+    [InlineData(1200, 560)]
+    [InlineData(1400, 660)]
     [InlineData(2000, 660)]
     public void SearchPill_PastGear_Drags(double w, double pill)
         // pill edge + gap + gear + margin + slack.
         => Assert.False(MacAppWindow.IsTopBarButtonColumn(w / 2 + pill / 2 + 7 + 34 + 4 + 2, w));
 
-    // Pins growth: a floor-width pill would leave the grown pill's gear center dragging.
+    // Pins growth and the grow-from width: a narrower pill (floor width, or a
+    // later grow-from) would leave the grown pill's gear center dragging.
     [Fact]
     public void SearchPill_Grows_GearCenterFallsThrough()
-        => Assert.True(MacAppWindow.IsTopBarButtonColumn(1300 / 2.0 + 560 / 2.0 + 7 + 17, 1300));
+        => Assert.True(MacAppWindow.IsTopBarButtonColumn(1200 / 2.0 + 560 / 2.0 + 7 + 17, 1200));
 }

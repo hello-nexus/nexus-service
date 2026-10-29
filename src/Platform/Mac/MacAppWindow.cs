@@ -37,7 +37,7 @@ internal static class MacAppWindow
     // Keep in lockstep with the CSS.
     private const double TopBarSearchPillMinWidth = 460;  // --search-w clamp floor
     private const double TopBarSearchPillMaxWidth = 660;  // --search-w clamp ceiling
-    private const double TopBarSearchPillGrowFrom = 1100; // width where --search-w starts growing
+    private const double TopBarSearchPillGrowFrom = 1000; // width where --search-w starts growing
     private const double TopBarSearchPillGrowSlope = 0.5; // --search-w growth factor per px of window width
     private const double TopBarLeftPad = 8;             // .topBar padding-left (0.5rem)
     private const double TopBarRightPad = 8;            // .topBar padding-right (0.5rem)
