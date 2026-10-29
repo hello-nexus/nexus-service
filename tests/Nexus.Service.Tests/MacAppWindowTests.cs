@@ -74,4 +74,10 @@ public class MacAppWindowTests
     public void SearchPill_PastGear_Drags(double w, double pill)
         // pill edge + gap + gear + margin + slack.
         => Assert.False(MacAppWindow.IsTopBarButtonColumn(w / 2 + pill / 2 + 7 + 34 + 4 + 2, w));
+
+    // Pins the grow-from width: at 1100 the pill is 536, so the gear center
+    // sits at 842; a floor-width pill would leave that point dragging.
+    [Fact]
+    public void SearchPill_GrowsFromGrowFromWidth_GearCenterFallsThrough()
+        => Assert.True(MacAppWindow.IsTopBarButtonColumn(1100 / 2.0 + 536 / 2.0 + 7 + 17, 1100));
 }
