@@ -38,7 +38,7 @@ public class DeviceListWriteHealthTests
 
     private static LightingWriteHealth Failing(string key, string handlerId)
     {
-        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var now = TimeSpan.Zero;
         var health = new LightingWriteHealth(() => now);
         for (var i = 0; i < 17; i++)
         {

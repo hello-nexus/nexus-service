@@ -64,6 +64,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // re-acquiring it once per channel write every tick against a silent hub.
     private const int RetryBaseMs = 1000;
     private const int RetryMaxMs = 30_000;
+    private const int BackoffReportMs = 1000;
 
     [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint period);
     [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint period);
@@ -86,6 +87,11 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     // Independent windows: a hub that rejects its attach commands must not gate
     // custom-mode streaming, which does not depend on them landing.
+    /// <summary>Where this writer reports hub rejections.</summary>
+    internal LightingWriteHealth Health { get; set; } = LightingWriteHealth.Shared;
+
+    private long _lastBackoffReportMs = long.MinValue / 2;
+
     private readonly RetryWindow _initRetry = new();
     private readonly RetryWindow _commitRetry = new();
     private readonly RetryWindow _argbSyncRetry = new();
@@ -210,6 +216,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _resumeEpochSeen = resumeEpoch;
             ForgetHubState();
         }
+        ReportStillRejecting();
         var settings = _store.Load();
         var ls = LianLiHubSet.LightingOf(settings.Devices, _hub.DeviceId);
         var fans = LianLiHubSet.FansOf(settings.Devices, _hub.DeviceId);
@@ -407,7 +414,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private void NoteFailure(RetryWindow window, string what)
     {
         window.Fail(NowMs());
-        Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(_hub.DeviceId, _hub.DeviceId);
+        Health.NoteFailure(_hub.DeviceId, _hub.DeviceId);
         if (window.Streak == 1)
         {
             Console.Error.WriteLine(
@@ -415,9 +422,25 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
+    /// <summary>The retry backoff outlasts the tracker's quiet limit, so a hub still rejecting writes is re-reported about once a second until a write lands.</summary>
+    private void ReportStillRejecting()
+    {
+        if (_argbSyncRetry.Streak == 0 && _initRetry.Streak == 0 && _commitRetry.Streak == 0)
+        {
+            return;
+        }
+        var now = NowMs();
+        if (now - _lastBackoffReportMs < BackoffReportMs)
+        {
+            return;
+        }
+        _lastBackoffReportMs = now;
+        Health.NoteFailure(_hub.DeviceId, _hub.DeviceId);
+    }
+
     private void NoteSuccess(RetryWindow window, string what)
     {
-        Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(_hub.DeviceId, _hub.DeviceId);
+        Health.NoteSuccess(_hub.DeviceId, _hub.DeviceId);
         if (window.Streak > 0)
         {
             Console.WriteLine(

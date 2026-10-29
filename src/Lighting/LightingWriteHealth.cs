@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 
 namespace Nexus.Service.Lighting;
@@ -22,7 +23,7 @@ public sealed class LightingWriteHealth
     /// <summary>Distinct reports carrying a failure needed to flag a key; one bad poll alone never flags.</summary>
     public const int MinFailureReports = 2;
 
-    /// <summary>Failures must still be occurring this long after the streak's first one, so a hotplug or resume burst never flags.</summary>
+    /// <summary>A key flags only with at least <see cref="MinFailureReports"/> failure reports this long after the streak's first one, so a hotplug or resume burst, or a few stray failures, never flag.</summary>
     public static readonly TimeSpan SustainedFor = TimeSpan.FromSeconds(15);
 
     /// <summary>A failure after this much quiet starts a new streak.</summary>
@@ -38,13 +39,16 @@ public sealed class LightingWriteHealth
 
     private readonly object _lock = new();
     private readonly Dictionary<string, State> _states = new(StringComparer.Ordinal);
-    private readonly Func<DateTime> _now;
+    private readonly Func<TimeSpan> _now;
 
-    public LightingWriteHealth() : this(() => DateTime.UtcNow)
+    private static readonly long Origin = Stopwatch.GetTimestamp();
+
+    /// <summary>Monotonic, so a wall-clock step cannot stretch or collapse the windows.</summary>
+    public LightingWriteHealth() : this(() => Stopwatch.GetElapsedTime(Origin))
     {
     }
 
-    public LightingWriteHealth(Func<DateTime> now)
+    public LightingWriteHealth(Func<TimeSpan> now)
     {
         _now = now;
     }
@@ -57,13 +61,15 @@ public sealed class LightingWriteHealth
     private sealed class State
     {
         public readonly List<Sample> Samples = new();
-        public DateTime LastFailure;
-        public DateTime StreakStart;
+        public TimeSpan LastFailure = Never;
+        public TimeSpan StreakStart;
         public bool Failing;
         public string? HandlerId;
     }
 
-    private readonly record struct Sample(DateTime At, int Failures, int Successes);
+    private static readonly TimeSpan Never = TimeSpan.FromDays(-1);
+
+    private readonly record struct Sample(TimeSpan At, int Failures, int Successes);
 
     public void NoteFailure(string key, string? handlerId = null) => Report(key, 1, 0, handlerId);
 
@@ -209,13 +215,15 @@ public sealed class LightingWriteHealth
     }
 
     // Caller holds _lock. Returns true when the failing flag flipped.
-    private static bool Evaluate(State st, DateTime now)
+    private static bool Evaluate(State st, TimeSpan now)
     {
         var cutoff = now - Window;
         st.Samples.RemoveAll(s => s.At < cutoff);
         var failures = 0;
         var successes = 0;
         var failureReports = 0;
+        var lateReports = 0;
+        var lateFrom = st.StreakStart + SustainedFor;
         foreach (var s in st.Samples)
         {
             failures += s.Failures;
@@ -223,13 +231,17 @@ public sealed class LightingWriteHealth
             if (s.Failures > 0)
             {
                 failureReports++;
+                if (s.At >= lateFrom)
+                {
+                    lateReports++;
+                }
             }
         }
         var was = st.Failing;
         if (!was)
         {
             st.Failing = failures >= MinFailures && failureReports >= MinFailureReports && failures > successes
-                && st.LastFailure - st.StreakStart >= SustainedFor;
+                && lateReports >= MinFailureReports;
         }
         else if (now - st.LastFailure >= ClearAfter)
         {

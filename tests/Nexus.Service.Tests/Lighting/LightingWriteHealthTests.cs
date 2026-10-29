@@ -7,7 +7,7 @@ public class LightingWriteHealthTests
 {
     private sealed class Clock
     {
-        public DateTime Now = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        public TimeSpan Now;
         public void Advance(TimeSpan by) => Now += by;
     }
 
@@ -60,7 +60,7 @@ public class LightingWriteHealthTests
     public void Failures_still_occurring_after_the_sustain_time_flag()
     {
         var (health, clock, flips) = Make();
-        FailEvery(health, clock, "hub", 15, OneSecond);
+        FailEvery(health, clock, "hub", 16, OneSecond);
         Assert.False(health.IsFailing("hub"));
 
         health.NoteFailure("hub");
@@ -68,6 +68,33 @@ public class LightingWriteHealthTests
 
         Assert.True(health.IsFailing("hub"));
         Assert.Single(flips);
+    }
+
+    [Fact]
+    public void A_resume_burst_plus_a_few_stray_failures_never_flags()
+    {
+        var (health, clock, _) = Make();
+        FailEvery(health, clock, "hub", 5, TimeSpan.FromMilliseconds(100));
+        clock.Advance(TimeSpan.FromSeconds(8.5));
+        health.NoteFailure("hub");
+        clock.Advance(TimeSpan.FromSeconds(9));
+        health.NoteFailure("hub");
+        health.Sweep();
+
+        Assert.False(health.IsFailing("hub"));
+    }
+
+    [Fact]
+    public void The_tracker_runs_on_its_own_monotonic_clock_by_default()
+    {
+        var health = new LightingWriteHealth();
+        for (var i = 0; i < 50; i++)
+        {
+            health.NoteFailure("hub");
+        }
+        health.Sweep();
+
+        Assert.False(health.IsFailing("hub"));
     }
 
     [Fact]
@@ -116,7 +143,7 @@ public class LightingWriteHealthTests
 
     private static void Flag(LightingWriteHealth health, Clock clock, string key)
     {
-        FailEvery(health, clock, key, 16, OneSecond);
+        FailEvery(health, clock, key, 17, OneSecond);
         health.Sweep();
     }
 
@@ -176,7 +203,7 @@ public class LightingWriteHealthTests
         await Task.Run(() =>
         {
             reporterThread = Environment.CurrentManagedThreadId;
-            FailEvery(health, clock, "hub", 16, OneSecond);
+            FailEvery(health, clock, "hub", 17, OneSecond);
         });
         Assert.Empty(handlerThreads);
 
@@ -191,7 +218,7 @@ public class LightingWriteHealthTests
     public void Keys_are_independent()
     {
         var (health, clock, _) = Make();
-        for (var i = 0; i < 16; i++)
+        for (var i = 0; i < 17; i++)
         {
             health.NoteFailure("a");
             health.NoteSuccess("b");
@@ -208,8 +235,8 @@ public class LightingWriteHealthTests
         var (health, clock, _) = Make();
         foreach (var key in new[] { "card", "dev", "parent", "handler" })
         {
-            FailEvery(health, clock, key, 16, OneSecond);
-            clock.Advance(-16 * OneSecond);
+            FailEvery(health, clock, key, 17, OneSecond);
+            clock.Advance(-17 * OneSecond);
         }
         var devices = new List<LightingDevice>
         {
@@ -235,7 +262,7 @@ public class LightingWriteHealthTests
     public void Handler_match_is_exact_on_the_id_or_the_reported_handler()
     {
         var (health, clock, _) = Make();
-        for (var i = 0; i < 16; i++)
+        for (var i = 0; i < 17; i++)
         {
             health.NoteFailure("keeb:SN1", "keeb");
             clock.Advance(OneSecond);

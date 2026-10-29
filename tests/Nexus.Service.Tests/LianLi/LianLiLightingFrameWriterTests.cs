@@ -862,4 +862,35 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal("GRB", LianLiLightingFrameWriter.OrderForSegment(prefs, zones, 1));
         Assert.Equal("GRB", LianLiLightingFrameWriter.FirstOrder(prefs, zones));
     }
+
+    [Fact]
+    public void A_dead_hub_on_the_real_backoff_schedule_flags_once_and_stays_flagged_for_minutes()
+    {
+        var health = new LightingWriteHealth(() => TimeSpan.FromMilliseconds(_now));
+        var flips = 0;
+        health.Changed += () => flips++;
+        _writer.Health = health;
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+
+        var flaggedAtMs = -1L;
+        for (; _now <= 240_000; _now += 100)
+        {
+            _writer.Tick();
+            health.Sweep();
+            if (flaggedAtMs < 0 && health.IsFailing(_hub.DeviceId))
+            {
+                flaggedAtMs = _now;
+            }
+            if (flaggedAtMs >= 0)
+            {
+                Assert.True(health.IsFailing(_hub.DeviceId), $"cleared at {_now} ms");
+            }
+        }
+
+        Assert.InRange(flaggedAtMs, 15_000, 40_000);
+        Assert.Equal(1, flips);
+    }
 }

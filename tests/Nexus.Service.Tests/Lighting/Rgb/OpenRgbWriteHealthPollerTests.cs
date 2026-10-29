@@ -22,11 +22,11 @@ public class OpenRgbWriteHealthPollerTests
             Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Ok, new OpenRgbWriteHealth(failures, successes, 0)));
     }
 
-    private static DateTime _now;
+    private static TimeSpan _now;
 
     private static (OpenRgbWriteHealthPoller Poller, LightingWriteHealth Health, FakeTransport Transport) Make()
     {
-        _now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        _now = TimeSpan.Zero;
         var health = new LightingWriteHealth(() => _now);
         var transport = new FakeTransport();
         return (new OpenRgbWriteHealthPoller(health, transport), health, transport);
@@ -52,17 +52,17 @@ public class OpenRgbWriteHealthPollerTests
     }
 
     [Fact]
-    public async Task Failures_rising_across_four_polls_flag_the_frame()
+    public async Task Failures_rising_across_five_polls_flag_the_frame()
     {
         var (poller, health, transport) = Make();
         transport.Reply(0, 100);
-        for (var i = 1u; i <= 4; i++)
+        for (var i = 1u; i <= 5; i++)
         {
             transport.Reply(i * 3, 100);
         }
 
         await Poll(poller, OneFrame);
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < 4; i++)
         {
             await Poll(poller, OneFrame);
         }
@@ -105,18 +105,18 @@ public class OpenRgbWriteHealthPollerTests
     {
         var (poller, health, transport) = Make();
         transport.Reply(0, 0);
-        for (var i = 1u; i <= 4; i++)
+        for (var i = 1u; i <= 5; i++)
         {
             transport.Reply(i * 3, 0);
         }
         var frames = new[] { ("zone-a", 7), ("zone-b", 7) };
 
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 6; i++)
         {
             await Poll(poller, frames);
         }
 
-        Assert.Equal(new[] { 7, 7, 7, 7, 7 }, transport.Asked);
+        Assert.Equal(new[] { 7, 7, 7, 7, 7, 7 }, transport.Asked);
         Assert.True(health.IsFailing("zone-a"));
         Assert.True(health.IsFailing("zone-b"));
     }
@@ -152,8 +152,9 @@ public class OpenRgbWriteHealthPollerTests
         transport.Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.UnknownController, default)); transport.Reply(6, 0);
         transport.Reply(900, 0); transport.Reply(9, 0);
         transport.Reply(950, 0); transport.Reply(12, 0);
+        transport.Reply(960, 0); transport.Reply(15, 0);
 
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 6; i++)
         {
             await Poll(poller, frames);
         }
