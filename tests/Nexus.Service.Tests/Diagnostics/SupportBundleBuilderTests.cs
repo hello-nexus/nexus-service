@@ -112,7 +112,7 @@ public class SupportBundleBuilderTests : IDisposable
             UserLogDirectories = dirs,
         }));
 
-        Assert.Contains("logs/user-alice/nexus-overlay.log", entries.Keys);
+        Assert.Contains("logs/user-1/nexus-overlay.log", entries.Keys);
         Assert.DoesNotContain(entries.Keys, k => k.StartsWith("logs/user-bob/"));
     }
 
@@ -145,7 +145,7 @@ public class SupportBundleBuilderTests : IDisposable
             UserLogDirectories = SupportBundleBuilder.UserLogDirectoriesFor(new[] { carol, dave }),
         }));
 
-        Assert.Contains("logs/user-dave/ok.log", entries.Keys);
+        Assert.Contains("logs/user-1/ok.log", entries.Keys);
         Assert.DoesNotContain("logs/user-dave/linked.log", entries.Keys);
         Assert.DoesNotContain(entries.Keys, k => k.StartsWith("logs/user-carol/"));
     }

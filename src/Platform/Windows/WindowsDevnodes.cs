@@ -80,7 +80,6 @@ internal static partial class WindowsDevnodes
         return devices;
     }
 
-    /// <summary>The present USB devnode whose instance id ends in the adb serial, or null.</summary>
     /// <summary>Present USB devices <paramref name="isKnown"/> accepts, each with the USB hubs above it from a cfgmgr32 parent walk; instance ids are hashed.</summary>
     public static List<Nexus.Service.Diagnostics.UsbTopologyDevice> ReadUsbTopology(Func<int, int, bool> isKnown)
     {
@@ -154,6 +153,7 @@ internal static partial class WindowsDevnodes
         return chain;
     }
 
+    /// <summary>The present USB devnode whose instance id ends in the adb serial, or null.</summary>
     public static string? FindPresentUsbInstanceId(string serial)
         => WindowsSpecsParsers.PickUsbInstanceId(EnumeratePresent(enumerator: "USB", idsOnly: true).Select(d => d.InstanceId), serial);
 
