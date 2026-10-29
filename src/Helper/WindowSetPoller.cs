@@ -289,9 +289,9 @@ public sealed class WindowSetPoller : IDisposable
             // the original read-everything order for an A/B.
             var isForegroundWindow = hwnd == foregroundHwnd;
             var eager = _eager || _diagEnabled;
-            // The eager path times its four reads as one block (one Stopwatch pair,
-            // like the original single cheap bucket) so the A/B is not biased by
-            // per-call timing overhead; per-call buckets are lazy-path only.
+            // The eager path times its four reads as one block (one Stopwatch pair)
+            // so the A/B is not biased by per-call timing overhead. Per-call buckets
+            // are lazy-path only, so an eager pass logs vis/owner/style/rect as 0x.
             var reads = new Reads(_stats, hwnd, virtualLeft, virtualTop, virtualRight, virtualBottom, !eager);
             if (eager)
             {
@@ -412,8 +412,9 @@ public sealed class WindowSetPoller : IDisposable
         if (pid != 0) pids.Add((int)pid);
     }
 
-    // One window's cheap attribute reads, each timed into its own sub-bucket and
-    // cached so the eager order and the lazy order share one implementation.
+    // One window's cheap attribute reads, cached so the eager order and the lazy
+    // order share one implementation. Each read is timed into its own sub-bucket
+    // only when timed (the lazy path).
     private struct Reads : WindowClassification.IWindowReads
     {
         private readonly WindowSetPassStats _stats;
