@@ -71,7 +71,7 @@ public class WindowSetPassStatsTests
         Assert.Equal(5_000, s.CheapTicks);
         Assert.Equal(1, s.CallCount(WindowSetPassStats.Call.Rect));
         var line = s.Format(1_000_000, 0, 0, 0, 0, null);
-        Assert.Contains("calls=vis:1x1.0,owner:0x0.0,style:0x0.0,rect:1x4.0,pid:1x0.5", line);
+        Assert.Contains("calls=vis:1x1.0ms,owner:0x0.0ms,style:0x0.0ms,rect:1x4.0ms,pid:1x0.5ms", line);
         Assert.Contains("max=4.0ms rect hwnd=0x2", line);
         s.Reset();
         Assert.Equal(0, s.CallCount(WindowSetPassStats.Call.Vis));

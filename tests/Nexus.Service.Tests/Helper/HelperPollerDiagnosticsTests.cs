@@ -102,6 +102,18 @@ public class HelperPollerDiagnosticsTests
     }
 
     [Fact]
+    public void FormatStartupLine_ReportsEagerAsAnOptionNotADisable()
+    {
+        var line = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("windowset-eager"));
+        Assert.DoesNotContain("disabled:", line);
+        Assert.Contains("option on: windowset-eager", line);
+
+        var both = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("audio windowset-eager"));
+        Assert.Contains("disabled: audio", both);
+        Assert.Contains("option on: windowset-eager", both);
+    }
+
+    [Fact]
     public void FormatStartupLine_ListsSubSwitchesInTheTypoHint()
     {
         var line = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("windowset-dwn"));

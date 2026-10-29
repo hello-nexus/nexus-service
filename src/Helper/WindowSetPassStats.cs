@@ -56,7 +56,7 @@ public sealed class WindowSetPassStats
         for (var i = 0; i < CallNames.Length; i++)
         {
             if (i > 0) sb.Append(',');
-            sb.Append(inv, $"{CallNames[i]}:{_callCounts[i]}x{ToMs(_callTicks[i], frequency):F1}");
+            sb.Append(inv, $"{CallNames[i]}:{_callCounts[i]}x{ToMs(_callTicks[i], frequency):F1}ms");
         }
     }
 

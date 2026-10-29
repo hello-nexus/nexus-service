@@ -46,6 +46,13 @@ public class WindowClassificationPreClassifyTests
                 WindowClassification.PreResult.Accepted => true,
                 _ => WindowClassification.IsCountableWindow(vis, owner, tool, cloaked, title, onScreen, covers, uipi, fg),
             };
+            if (pre == WindowClassification.PreResult.NeedsCloakAndTitle)
+            {
+                // Pins the contract: only a window passing all four cheap terms
+                // reaches the cloak/title stage, so a future early return fails here.
+                Assert.True(owner == IntPtr.Zero && onScreen && !fg && vis && !tool,
+                    $"NeedsCloakAndTitle returned for vis={vis} owned={owned} tool={tool} onScreen={onScreen} fg={fg}");
+            }
             Assert.True(expected == actual,
                 $"vis={vis} owned={owned} tool={tool} onScreen={onScreen} fg={fg} cloaked={cloaked} covers={covers} title={title} uipi={uipi}");
         }

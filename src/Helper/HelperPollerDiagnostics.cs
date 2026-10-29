@@ -11,6 +11,8 @@ namespace Nexus.Service.Helper;
 /// build per hypothesis. Every poller runs by default; naming one in
 /// NEXUS_HELPER_DISABLE makes its tick a no-op (the object is still
 /// constructed, so the request handlers that depend on it keep working).
+/// The one exception is <see cref="WindowSetEager"/>, an option rather than a
+/// disable, listed in <see cref="Options"/>.
 ///
 /// Also raises the slow-pass log line: a tick that exceeds
 /// <see cref="SlowPassMs"/> reports its duration, which is the measurement
@@ -34,8 +36,9 @@ public static class HelperPollerDiagnostics
 
     public static readonly string[] Known = { WindowSet, ScreenTime, Audio, Watchdog, LockInput };
 
-    // Each sub-switch turns off exactly one piece of the window-set pass while
-    // the rest keeps running, so a field bisect can name the costly call.
+    // Each sub-switch except WindowSetEager turns off exactly one piece of the
+    // window-set pass while the rest keeps running, so a field bisect can name
+    // the costly call.
     public const string WindowSetHooks = "windowset-hooks";
     public const string WindowSetDwm = "windowset-dwm";
     public const string WindowSetFallback = "windowset-fallback";
@@ -47,6 +50,10 @@ public static class HelperPollerDiagnostics
     public const string WindowSetEager = "windowset-eager";
 
     public static readonly string[] SubSwitches = { WindowSetHooks, WindowSetDwm, WindowSetFallback, WindowSetTrickle, WindowSetEnum, WindowSetEager };
+
+    /// <summary>Recognized names that enable behavior instead of disabling a
+    /// piece; the startup line reports them apart from the disables.</summary>
+    public static readonly string[] Options = { WindowSetEager };
 
     /// <summary>
     /// A tick slower than this is worth a log line. Set at the rough floor of
@@ -202,9 +209,15 @@ public static class HelperPollerDiagnostics
         if (disabled.Count == 0) return "[helper-perf] all pollers enabled";
 
         var recognized = new List<string>();
+        var options = new List<string>();
         var unrecognized = new List<string>();
         foreach (var name in disabled)
         {
+            if (Array.Exists(Options, k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                options.Add(name);
+                continue;
+            }
             (Array.Exists(Known, k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase))
                 || Array.Exists(SubSwitches, k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase))
                 ? recognized
@@ -214,6 +227,10 @@ public static class HelperPollerDiagnostics
         var line = recognized.Count > 0
             ? $"[helper-perf] disabled: {string.Join(",", recognized)}"
             : "[helper-perf] all pollers enabled";
+        if (options.Count > 0)
+        {
+            line += $" (option on: {string.Join(",", options)})";
+        }
         if (unrecognized.Count > 0)
         {
             line += $" (unrecognized, ignored: {string.Join(",", unrecognized)}; known: {string.Join(",", Known)}; sub-switches: {string.Join(",", SubSwitches)})";

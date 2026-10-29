@@ -288,14 +288,21 @@ public sealed class WindowSetPoller : IDisposable
             // is outcome-identical to IsCountableWindow). windowset-eager restores
             // the original read-everything order for an A/B.
             var isForegroundWindow = hwnd == foregroundHwnd;
-            var reads = new Reads(_stats, hwnd, virtualLeft, virtualTop, virtualRight, virtualBottom);
             var eager = _eager || _diagEnabled;
+            // The eager path times its four reads as one block (one Stopwatch pair,
+            // like the original single cheap bucket) so the A/B is not biased by
+            // per-call timing overhead; per-call buckets are lazy-path only.
+            var reads = new Reads(_stats, hwnd, virtualLeft, virtualTop, virtualRight, virtualBottom, !eager);
             if (eager)
             {
+                var t0 = Stopwatch.GetTimestamp();
                 reads.Owner();
                 reads.IsToolWindow();
                 reads.IsVisible();
                 reads.HasOnScreenBounds();
+                var dt = Stopwatch.GetTimestamp() - t0;
+                _stats.CheapTicks += dt;
+                _stats.Note("cheap", hwnd.ToInt64(), dt);
             }
             else
             {
@@ -410,6 +417,7 @@ public sealed class WindowSetPoller : IDisposable
     private struct Reads : WindowClassification.IWindowReads
     {
         private readonly WindowSetPassStats _stats;
+        private readonly bool _timed;
         private readonly IntPtr _hwnd;
         private readonly int _vl, _vt, _vr, _vb;
         private IntPtr _owner;
@@ -417,8 +425,9 @@ public sealed class WindowSetPoller : IDisposable
         private bool _tool, _visible, _onScreen;
         private Rect _rect;
 
-        public Reads(WindowSetPassStats stats, IntPtr hwnd, int vl, int vt, int vr, int vb)
+        public Reads(WindowSetPassStats stats, IntPtr hwnd, int vl, int vt, int vr, int vb, bool timed)
         {
+            _timed = timed;
             _stats = stats; _hwnd = hwnd; _vl = vl; _vt = vt; _vr = vr; _vb = vb;
             _owner = IntPtr.Zero; _hasOwner = _hasStyle = _hasVis = _hasBounds = false;
             _tool = _visible = _onScreen = false;
@@ -430,9 +439,12 @@ public sealed class WindowSetPoller : IDisposable
         public IntPtr Owner()
         {
             if (_hasOwner) return _owner;
-            var t = Stopwatch.GetTimestamp();
+            var t = _timed ? Stopwatch.GetTimestamp() : 0;
             _owner = GetWindow(_hwnd, GwOwner);
-            _stats.AddCall(WindowSetPassStats.Call.Owner, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            if (_timed)
+            {
+                _stats.AddCall(WindowSetPassStats.Call.Owner, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            }
             _hasOwner = true;
             return _owner;
         }
@@ -440,9 +452,12 @@ public sealed class WindowSetPoller : IDisposable
         public bool IsToolWindow()
         {
             if (_hasStyle) return _tool;
-            var t = Stopwatch.GetTimestamp();
+            var t = _timed ? Stopwatch.GetTimestamp() : 0;
             _tool = (GetWindowLong(_hwnd, GwlExstyle) & WsExToolwindow) != 0;
-            _stats.AddCall(WindowSetPassStats.Call.Style, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            if (_timed)
+            {
+                _stats.AddCall(WindowSetPassStats.Call.Style, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            }
             _hasStyle = true;
             return _tool;
         }
@@ -450,9 +465,12 @@ public sealed class WindowSetPoller : IDisposable
         public bool IsVisible()
         {
             if (_hasVis) return _visible;
-            var t = Stopwatch.GetTimestamp();
+            var t = _timed ? Stopwatch.GetTimestamp() : 0;
             _visible = IsWindowVisible(_hwnd);
-            _stats.AddCall(WindowSetPassStats.Call.Vis, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            if (_timed)
+            {
+                _stats.AddCall(WindowSetPassStats.Call.Vis, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            }
             _hasVis = true;
             return _visible;
         }
@@ -460,11 +478,14 @@ public sealed class WindowSetPoller : IDisposable
         public bool HasOnScreenBounds()
         {
             if (_hasBounds) return _onScreen;
-            var t = Stopwatch.GetTimestamp();
+            var t = _timed ? Stopwatch.GetTimestamp() : 0;
             _onScreen = GetWindowRect(_hwnd, out _rect) &&
                 WindowClassification.HasOnScreenBounds(
                     _rect.Left, _rect.Top, _rect.Right, _rect.Bottom, _vl, _vt, _vr, _vb);
-            _stats.AddCall(WindowSetPassStats.Call.Rect, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            if (_timed)
+            {
+                _stats.AddCall(WindowSetPassStats.Call.Rect, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            }
             _hasBounds = true;
             return _onScreen;
         }
