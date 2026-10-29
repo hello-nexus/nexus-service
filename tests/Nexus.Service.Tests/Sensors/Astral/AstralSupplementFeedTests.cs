@@ -119,13 +119,13 @@ public class AstralSupplementFeedTests
         public AstralGpuSupplement Supplement { get; }
         public int Shutdowns { get; private set; }
 
-        public Rig()
+        public Rig(TimeSpan? probeInterval = null)
         {
             var store = new Store();
             store.Update(s => s.Astral.CriticalShutdown = true);
             Monitor = new AstralMonitor(store, new NoPower(), Time);
             Monitor.ShutdownSink = _ => { Shutdowns++; return true; };
-            Supplement = new AstralGpuSupplement(Client, Time, TimeSpan.FromSeconds(1), Monitor);
+            Supplement = new AstralGpuSupplement(Client, Time, probeInterval ?? TimeSpan.FromSeconds(1), Monitor);
         }
 
         // The GPU list asks for sensors once per second while something is watching.
@@ -245,6 +245,18 @@ public class AstralSupplementFeedTests
         // The list read at t0 and the clock now sits one interval later; the first fallback read lands idleSeconds after that.
         rig.Time.Now = rig.Time.Now.AddSeconds(idleSeconds);
         rig.Supplement.FallbackTick();
+        Assert.Equal("critical", rig.Monitor.GetState().Countdown!.Reason);
+    }
+
+    [Fact]
+    public void The_gap_limit_follows_the_suppliers_probe_interval()
+    {
+        var rig = new Rig(TimeSpan.FromSeconds(2));
+        rig.Client.Pin1Amps = 18f;
+        rig.ListTick();
+        // A 7 s gap is past the window of a 1 s interval and inside that of a 2 s one.
+        rig.Idle(6);
+        rig.ListTick();
         Assert.Equal("critical", rig.Monitor.GetState().Countdown!.Reason);
     }
 

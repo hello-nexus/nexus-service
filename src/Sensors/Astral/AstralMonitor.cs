@@ -125,7 +125,7 @@ public sealed class AstralMonitor : IDisposable
         DiagnosticsAlertNotice? countdown = null;
         lock (_lock)
         {
-            // Read under the lock so a Patch that already reapplied its limits cannot be undone by a stale snapshot.
+            // Read under the lock so a feed queued behind a Patch's reapply evaluates with the settings that Patch stored, not ones loaded before it.
             settings = _store.Load().Astral;
             if (!_cards.TryGetValue(id, out var card))
             {

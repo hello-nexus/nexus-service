@@ -253,9 +253,16 @@ internal sealed class AstralGpuSupplement : IDisposable
                 ServiceLog.Warn($"[astral] fallback read failed: {ex.Message}");
             }
             // A read that throws every tick counts as a card that stopped answering.
-            lock (_lock)
+            try
             {
-                SlowIfLapsed(now);
+                lock (_lock)
+                {
+                    SlowIfLapsed(now);
+                }
+            }
+            catch (Exception inner)
+            {
+                ServiceLog.Warn($"[astral] fallback backoff failed: {inner.Message}");
             }
         }
     }

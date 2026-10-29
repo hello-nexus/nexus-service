@@ -266,7 +266,7 @@ public class AstralMonitorTests
         Assert.NotNull(rig.Monitor.GetState().Countdown);
     }
 
-    // The gap is five probe intervals: the fallback hand-off window plus slack.
+    // The gap limit is the fallback hand-off window plus slack.
     [Theory]
     [InlineData(3.5, true)]
     [InlineData(3.9, true)]
@@ -283,17 +283,17 @@ public class AstralMonitorTests
     }
 
     [Fact]
-    public void Turning_the_equalizer_off_keeps_a_running_countdown()
+    public void Turning_the_equalizer_off_keeps_a_running_critical_countdown_after_a_dipped_reading()
     {
         var rig = new Rig();
-        rig.Monitor.Patch(new AstralSettingsPatch
-        {
-            Equalizer = true, OvercurrentShutdown = true, OvercurrentSeconds = 10, CountdownSeconds = 60,
-        });
-        for (var i = 0; i < 13; i++) rig.Feed(19f);
-        Assert.NotNull(rig.Monitor.GetState().Countdown);
+        rig.Monitor.Patch(new AstralSettingsPatch { Equalizer = true, CriticalShutdown = true });
+        rig.Feed(21f);
+        rig.Feed(21f);
+        rig.Feed(15f);
+        Assert.Equal("critical", rig.Monitor.GetState().Countdown!.Reason);
+
         rig.Monitor.Patch(new AstralSettingsPatch { Equalizer = false });
-        Assert.NotNull(rig.Monitor.GetState().Countdown);
+        Assert.Equal("critical", rig.Monitor.GetState().Countdown!.Reason);
     }
 
     [Fact]

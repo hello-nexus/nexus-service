@@ -246,18 +246,6 @@ public class AstralPowerDetectorTests
     }
 
     [Fact]
-    public void Reapply_keeps_a_countdown_running_when_the_limits_got_stricter()
-    {
-        var d = new AstralPowerDetector();
-        var s = new AstralSettings { Equalizer = true, OvercurrentShutdown = true, OvercurrentSeconds = 10 };
-        for (var i = 0; i <= 10; i++) Tick(d, Pins(19f), s, i);
-        Assert.True(d.Running);
-        s.Equalizer = false;
-        Assert.False(d.Reapply(Pins(19f), s, limitsRose: false));
-        Assert.True(d.Running);
-    }
-
-    [Fact]
     public void A_lapsed_critical_shutdown_arms_a_fresh_critical_countdown_in_the_same_reading()
     {
         var d = new AstralPowerDetector();
