@@ -154,8 +154,9 @@ internal static class ServiceControlRoutes
         }).LocalhostOnly();
 
         // Plain restart (no data wipe). Applies restart-to-apply settings such as
-        // the lighting render-GPU choice. Same detached-finalizer + StopApplication
-        // pattern as factory-reset, minus the wipe.
+        // the lighting render-GPU choice. Same detached finalizer as factory-reset
+        // minus the wipe: the shutdown and start match the OTA install (helper,
+        // tray and overlay included), and lighting restores on the next boot.
         app.MapPost("/service/restart", (IHostApplicationLifetime lifetime,
             Nexus.Service.Devices.Firmware.FirmwareFlasher flasher) =>
         {

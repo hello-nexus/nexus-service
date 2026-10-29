@@ -231,68 +231,32 @@ internal static class FactoryReset
 #endif
         Console.Error.WriteLine($"[factory-reset] finalize: waiting for pid {parentPid} to exit");
 #if MACOS
-        // On the wipe path the parent frequently survives StopApplication (the
-        // NSApplication shell stays resident) and the kill below handles it, so
-        // a long wait only stalls the reset. The restart-only path has no kill
-        // backstop; it keeps the full grace.
-        WaitForProcessExit(parentPid, wipe ? TimeSpan.FromSeconds(5) : TimeSpan.FromSeconds(30));
+        // The parent frequently survives StopApplication (the NSApplication shell stays resident) and the
+        // kill below handles it, so a long wait only stalls the relaunch.
+        WaitForProcessExit(parentPid, TimeSpan.FromSeconds(5));
 #else
         WaitForProcessExit(parentPid, TimeSpan.FromSeconds(30));
 #endif
 
         // macOS only: launchd would relaunch the service the instant it exits
         // (KeepAlive=true), and that new instance could flush its in-memory
-        // (old) settings back to disk after we delete. bootout tears the agent
-        // down AND waits for the process to exit, so nothing can resurrect the
-        // config mid-wipe. No-op when the service was started manually (dev).
+        // (old) settings back to disk after we delete, or steal the
+        // single-instance handshake from the relaunch below. bootout tears the
+        // agent down AND waits for the process to exit; the survivor kill is
+        // the backstop for an instance that outlived StopApplication. The OTA
+        // swap (UnixUpdateApplier.FinalizeMacSwap) runs the same two steps.
+        // No-op when the service was started manually (dev).
 #if MACOS
-        if (wipe)
-        {
-            BootoutMacAgent();
-            // The macOS counterpart of the Windows taskkill below: an instance
-            // that survived StopApplication would flush its in-memory settings
-            // over the wiped data dir and steal the single-instance handshake
-            // from the relaunch.
-            KillOtherInstancesOfThisBinary();
-        }
+        BootoutMacAgent();
+        KillOtherInstancesOfThisBinary();
 #endif
 
 #if WINDOWS
-        // A wipe deletes each user's %LocalAppData%\Nexus\DesktopWebView2 /
-        // \DashboardEdge (the dashboard's WebView2/Edge profiles, holding
-        // localStorage's cached auth token) out from under the overlay and
-        // helper if either is still running - they survive a plain service
-        // stop/start, so a cold reopen needs them gone first: kill them
-        // before the wipe so nothing holds the profile dirs open, and so the
-        // next boot's UserHelperBootstrapper.EnsureLaunched spawn is not
-        // blocked by the still-running helper's Local\NexusHelper mutex.
-        // Excludes this finalizer's own pid - it also runs as Nexus.exe - and
-        // another product's Nexus.exe, so the kill goes by pid, not image name.
-        if (wipe)
-        {
-            ShellExecutor.RunExit("taskkill.exe", ShellExecutor.DefaultTimeoutMs,
-                "/F", "/T", "/IM", "nexus-overlay.exe");
-            // Never let the sweep abort Finalize: a throw here would skip the
-            // wipe and the service restart below.
-            try
-            {
-                var taskkillArgs = new List<string> { "/F" };
-                foreach (var sibling in OwnNexusExe.Siblings(OwnNexusExe.Known()))
-                {
-                    taskkillArgs.Add("/PID");
-                    taskkillArgs.Add(sibling.Id.ToString());
-                    sibling.Dispose();
-                }
-                if (taskkillArgs.Count > 1)
-                {
-                    ShellExecutor.RunExit("taskkill.exe", ShellExecutor.DefaultTimeoutMs, taskkillArgs.ToArray());
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[factory-reset] Nexus.exe sweep failed: {ex.Message}");
-            }
-        }
+        // The user-session helper/tray and the overlay survive a plain service stop/start. The OTA install
+        // kills them before it swaps files, and the next boot's UserHelperBootstrapper.EnsureLaunched spawns
+        // fresh ones; a restart does the same so it is the same full shutdown and start. A wipe also needs
+        // them gone first, since they hold the %LocalAppData%\Nexus WebView2 profile dirs it deletes.
+        SweepUserSessionProcesses();
 #endif
 
         if (wipe)
@@ -302,30 +266,60 @@ internal static class FactoryReset
             catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] wipe aborted: {ex.Message}"); }
         }
 #if WINDOWS
-        // The reopen flag lives under %ProgramData%\Nexus, so it must be
-        // written after the wipe or DeleteRoots would remove it immediately.
-        // WindowsUserHelper.Run checks for it on every helper startup - the
-        // fresh helper EnsureLaunched spawns after RestartService below picks
-        // it up and reopens a cold dashboard once the overlay it also starts
-        // is ready.
-        if (wipe)
-        {
-            try { DashboardReopenFlag.Write(); }
-            catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] reopen flag failed: {ex.Message}"); }
-        }
+        // The reopen flag lives under %ProgramData%\Nexus, so it must be written after the wipe or
+        // DeleteRoots would remove it immediately. WindowsUserHelper.Run checks for it on every helper
+        // startup - the fresh helper EnsureLaunched spawns after RestartService below picks it up and
+        // reopens a cold dashboard once the overlay it also starts is ready. The OTA install uses the
+        // same flag.
+        try { DashboardReopenFlag.Write(); }
+        catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] reopen flag failed: {ex.Message}"); }
 #endif
         RestartService();
-#if WINDOWS
-        // A plain restart (e.g. applying the render-GPU choice) was triggered
-        // from the open dashboard, but the overlay idle-exits across the restart,
-        // so the window would not come back on its own. Re-show it; the web
-        // auto-reconnects to the service while it finishes booting.
-        if (!wipe)
-        {
-            try { UserHelperBootstrapper.LaunchOpenApp(); } catch { }
-        }
-#endif
         return 0;
+    }
+
+#if WINDOWS
+    /// <summary>Kills the overlay and every other own Nexus.exe (helper, tray), by pid so another product's Nexus.exe survives.</summary>
+    private static void SweepUserSessionProcesses()
+    {
+        ShellExecutor.RunExit("taskkill.exe", ShellExecutor.DefaultTimeoutMs,
+            "/F", "/T", "/IM", "nexus-overlay.exe");
+        // Never let the sweep abort Finalize: a throw here would skip the wipe and the service restart.
+        try
+        {
+            var pids = new List<int>();
+            foreach (var sibling in OwnNexusExe.Siblings(OwnNexusExe.Known()))
+            {
+                pids.Add(sibling.Id);
+                sibling.Dispose();
+            }
+            var args = SiblingKillArgs(pids);
+            if (args.Length > 1)
+            {
+                ShellExecutor.RunExit("taskkill.exe", ShellExecutor.DefaultTimeoutMs, args);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[factory-reset] Nexus.exe sweep failed: {ex.Message}");
+        }
+    }
+#endif
+
+    /// <summary>taskkill arguments forcing exactly <paramref name="pids"/>; excludes this finalizer's own pid, which also runs as Nexus.exe.</summary>
+    internal static string[] SiblingKillArgs(IEnumerable<int> pids)
+    {
+        var args = new List<string> { "/F" };
+        foreach (var pid in pids)
+        {
+            if (pid == Environment.ProcessId)
+            {
+                continue;
+            }
+            args.Add("/PID");
+            args.Add(pid.ToString());
+        }
+        return args.ToArray();
     }
 
     internal static void WaitForProcessExit(int pid, TimeSpan timeout)
