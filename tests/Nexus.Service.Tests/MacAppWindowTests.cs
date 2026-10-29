@@ -14,7 +14,7 @@ public class MacAppWindowTests
     // .topBar padding-left + --mac-traffic-light-inset.
     private const double ClusterLeft = 8 + 96;
     // Search pill right edge (bar center + half --search-w) + pill->gear gap (0.4rem).
-    private const double PageSettingsLeft = BarWidth / 2 + 460 / 2.0 + 7;
+    private const double PageSettingsLeft = BarWidth / 2 + 680 / 2.0 + 7;
     // .pageSettingsButton width - the gear is the whole cluster.
     private const double PageSettingsClusterWidth = 34;
 
@@ -31,7 +31,7 @@ public class MacAppWindowTests
 
     [Theory]
     [InlineData(ClusterLeft + 64 + 2.4 + 4 + 2)] // right of the cluster + margin
-    [InlineData(250)]                            // open bar left of the history arrows
+    [InlineData(195)]                            // open bar between the cluster and the history arrows
     [InlineData(PageSettingsLeft + PageSettingsClusterWidth + 4 + 2)] // right of the gear + margin
     // The page-mode control moved into the pages' own tab strip, so nothing
     // widens this cluster any more: the bar drags from just past the gear.
@@ -42,7 +42,7 @@ public class MacAppWindowTests
     // The gear column is a fixed width now, so a narrower window carves out
     // exactly the same cluster.
     private const double NarrowWidth = 1040;
-    private const double NarrowPageSettingsLeft = NarrowWidth / 2 + 460 / 2.0 + 7;
+    private const double NarrowPageSettingsLeft = NarrowWidth / 2 + 476 / 2.0 + 7;
 
     [Theory]
     [InlineData(NarrowPageSettingsLeft + 10)]  // gear button
@@ -56,10 +56,10 @@ public class MacAppWindowTests
 
     // --search-w: clamped, growing with window width past the floor width; centered.
     [Theory]
-    [InlineData(1280, 460)]
-    [InlineData(1400, 580)]
-    [InlineData(1580, 760)]
-    [InlineData(2000, 760)]
+    [InlineData(1024, 460)]
+    [InlineData(1100, 536)]
+    [InlineData(1244, 680)]
+    [InlineData(2000, 680)]
     public void SearchPill_FollowsClampedWidth(double w, double pill)
     {
         double left = w / 2 - pill / 2;
@@ -69,9 +69,15 @@ public class MacAppWindowTests
     }
 
     [Theory]
-    [InlineData(1400, 580)]
-    [InlineData(2000, 760)]
+    [InlineData(1100, 536)]
+    [InlineData(2000, 680)]
     public void SearchPill_PastGear_Drags(double w, double pill)
         // pill edge + gap + gear + margin + slack.
         => Assert.False(MacAppWindow.IsTopBarButtonColumn(w / 2 + pill / 2 + 7 + 34 + 4 + 2, w));
+
+    // Pins the grow-from width: at 1100 the pill is 536, so the gear center
+    // sits at 842; a floor-width pill would leave that point dragging.
+    [Fact]
+    public void SearchPill_GrowsFromGrowFromWidth_GearCenterFallsThrough()
+        => Assert.True(MacAppWindow.IsTopBarButtonColumn(1100 / 2.0 + 536 / 2.0 + 7 + 17, 1100));
 }

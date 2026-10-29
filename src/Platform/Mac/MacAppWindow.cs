@@ -36,8 +36,8 @@ internal static class MacAppWindow
     // IsTopBarButtonColumn to carve the control columns out of the drag strip.
     // Keep in lockstep with the CSS.
     private const double TopBarSearchPillMinWidth = 460;  // --search-w clamp floor
-    private const double TopBarSearchPillMaxWidth = 760;  // --search-w clamp ceiling
-    private const double TopBarSearchPillGrowFrom = 1280; // width where --search-w starts growing
+    private const double TopBarSearchPillMaxWidth = 680;  // --search-w clamp ceiling
+    private const double TopBarSearchPillGrowFrom = 1024; // width where --search-w starts growing
     private const double TopBarLeftPad = 8;             // .topBar padding-left (0.5rem)
     private const double TopBarRightPad = 8;            // .topBar padding-right (0.5rem)
     private const double TopBarIconButton = 32;         // .iconButton width
