@@ -267,6 +267,17 @@ public class AstralMonitorTests
     }
 
     [Fact]
+    public void Readings_a_skipped_list_tick_apart_still_count_as_in_a_row()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { CriticalShutdown = true });
+        rig.Feed(18f);
+        rig.Time.Now = rig.Time.Now.AddSeconds(1.5);
+        rig.Feed(18f);
+        Assert.NotNull(rig.Monitor.GetState().Countdown);
+    }
+
+    [Fact]
     public void A_gap_in_readings_restarts_the_time_a_pin_has_been_over_the_limit()
     {
         var rig = new Rig();

@@ -25,7 +25,7 @@ internal sealed class AstralGpuSupplement : IDisposable
     // The G-sensor retry delay doubles per miss up to this many doublings.
     private const int MaxGSensorBackoffShift = 6;
     // The GPU list counts as driving the read while it probed within this many intervals.
-    private const int ExternalSilenceIntervals = 3;
+    internal const int ExternalSilenceIntervals = 3;
     // A card that has not answered for this many intervals drops the fallback to the slow retry.
     private const int LapseIntervals = 60;
     private static readonly TimeSpan SlowRetry = TimeSpan.FromSeconds(10);

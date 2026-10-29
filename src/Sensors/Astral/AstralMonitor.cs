@@ -23,8 +23,8 @@ public sealed class AstralMonitor : IDisposable
 
     private static readonly TimeSpan FreshFor = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan CalibrationRecheck = TimeSpan.FromSeconds(5);
-    // Longer than a probe interval plus scheduling jitter: a gap this long means readings were missed.
-    private static readonly TimeSpan MaxFeedGap = TimeSpan.FromMilliseconds(1500);
+    // Spans the silence after which the fallback takes over, plus one interval: a longer gap means readings were missed.
+    private static readonly TimeSpan MaxFeedGap = TimeSpan.FromSeconds(AstralGpuSupplement.ExternalSilenceIntervals + 1);
     // Longer than the G-sensor retry backoff can hide a single miss; past it the posture is not published.
     private static readonly TimeSpan AnglesStaleAfter = TimeSpan.FromSeconds(30);
 
