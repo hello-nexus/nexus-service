@@ -8,17 +8,24 @@ uniform float u_head;   // hint_range(0.0, 1.0, 0.01) = 0.7  how white the leadi
 // through the body and low-frequency noise drifts slowly along y.
 void main() {
     vec2 uv = uv01();
-    float T = u_time * u_speed;
-    float f = uv.x * u_comets - T * 1.8 + 0.05 * sin(uv.y * 3.0 + T * 1.1 + uv.x * 2.0);
+    // u_time counts seconds of the day, so time * speed reaches 1e5 and float
+    // rounding at that size quantizes the comet phase in steps that grow with
+    // speed. Wrapping first keeps the product small; the pan repeats its
+    // phase once per wrap.
+    float tw = mod(u_time, 600.0);
+    float T = tw * u_speed;
+    // Texture drift and sheen evolve slower than the pan and grow only gently with speed.
+    float Tn = tw * (0.5 + 0.5 * abs(u_speed)) * sign(u_speed + 1e-4);
+    float f = uv.x * u_comets - T * 1.8 + 0.05 * sin(uv.y * 3.0 + Tn * 0.8 + uv.x * 2.0);
     float cell = floor(f);
     float d = f - cell;
     float behind = 1.0 - d;
     float tail = exp(-behind * (2.2 / clamp(u_tail, 0.1, 1.0)));
     float head = smoothstep(0.8, 1.0, d);
     float bloom = exp(-behind * behind * 40.0) * 0.55;
-    float core = exp(-behind * behind * 220.0);
-    float drift = vnoise(vec2(d * 2.5 + cell * 7.3, uv.y * 2.0 - T * 0.5));
-    float wave = 0.5 + 0.5 * sin(d * 4.0 + uv.y * 3.0 - T * 1.6 + cell * 1.7);
+    float core = exp(-behind * behind * 120.0);
+    float drift = vnoise(vec2(d * 2.5 + cell * 7.3, uv.y * 2.0 - Tn * 0.5));
+    float wave = 0.5 + 0.5 * sin(d * 4.0 + uv.y * 3.0 - Tn * 1.2 + cell * 1.7);
     float crest = wave * wave * (3.0 - 2.0 * wave);
     float grain = (0.9 + 0.2 * drift) * mix(0.7, 1.2, crest);
     float glow = (tail * 0.5 + bloom) * crest * 0.5;

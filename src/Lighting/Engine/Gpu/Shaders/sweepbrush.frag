@@ -8,7 +8,9 @@ uniform float u_step;     // hint_range(0.0, 0.4, 0.01) = 0.2  hue step between 
 // the hard-edged tiles - a smear wants to be seen travelling.
 void main() {
     vec2 uv = uv01();
-    float t = u_time * u_speed * 0.7;
+    // Wrapped first: seconds of the day times speed is large enough that float
+    // rounding quantizes the stroke phase, more so at high speed.
+    float t = mod(u_time, 600.0) * u_speed * 0.7;
     // Bristles run along the travel axis; fine across it, stretched along it.
     // Advanced at the strokes' own rate (t is in stroke widths), so the grain
     // travels WITH the paint instead of sliding through it.
@@ -16,7 +18,7 @@ void main() {
     // Broad, slow streaks stretched along the travel axis: a faint brightness
     // and hue ripple that drifts with the paint. Low frequency so neighbouring
     // LEDs see a continuous gradient.
-    float streak = vnoise(vec2(uv.x * 2.0 - t * 2.0 / max(1.0, u_strokes), uv.y * 4.0 + u_time * 0.05));
+    float streak = vnoise(vec2(uv.x * 2.0 - t * 2.0 / max(1.0, u_strokes), uv.y * 4.0 + mod(u_time, 600.0) * 0.05));
     grain *= 0.88 + 0.24 * streak;
     float f = uv.x * u_strokes - t;
     float cell = floor(f);
