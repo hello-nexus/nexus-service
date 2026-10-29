@@ -984,4 +984,51 @@ public class LianLiLightingFrameWriterTests
         _engine.UpdateDevices(Array.Empty<DeviceFrame>());
         Run(health, QuietMs, SettleMs);
     }
+
+    private void AssertFlagsOnceAndStaysFlagged(LightingWriteHealth health)
+    {
+        var flips = 0;
+        health.Changed += () => flips++;
+        var flaggedAtMs = -1L;
+        for (; _now <= 240_000; _now += 100)
+        {
+            _writer.Tick();
+            health.Sweep();
+            if (flaggedAtMs < 0 && health.IsFailing(_hub.DeviceId))
+            {
+                flaggedAtMs = _now;
+            }
+            if (flaggedAtMs >= 0)
+            {
+                Assert.True(health.IsFailing(_hub.DeviceId), $"cleared at {_now} ms");
+            }
+        }
+
+        Assert.InRange(flaggedAtMs, 15_000, 40_000);
+        Assert.Equal(1, flips);
+    }
+
+    [Fact]
+    public void Argb_sync_wanted_and_rejected_forever_flags_once_and_stays_flagged()
+    {
+        var health = UseHealth();
+        Attach(0xA102, port: 0, fans: 4);
+        SetMode("rainbowWave");
+        _store.Update(s => s.Devices.LianLiLighting.ArgbSync = true);
+        _spy.RejectWrites = true;
+
+        AssertFlagsOnceAndStaysFlagged(health);
+    }
+
+    [Fact]
+    public void Hub_init_rejected_forever_in_custom_mode_flags_once_and_stays_flagged()
+    {
+        var health = UseHealth();
+        // A family whose attach sequence sends commands, so init has something to reject.
+        Attach(0xA100, port: 2, fans: 3);
+        SetMode("custom");
+        _spy.RejectWrites = true;
+
+        AssertFlagsOnceAndStaysFlagged(health);
+    }
 }
