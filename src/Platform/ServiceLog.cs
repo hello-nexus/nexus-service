@@ -14,14 +14,18 @@ namespace Nexus.Service.Platform;
 ///
 /// Rotation: on every service start the previous run's nexus-service.log is
 /// archived to nexus-service-&lt;timestamp&gt;.log and a fresh nexus-service.log is
-/// begun, so each run has its own log instead of accumulating across restarts. The newest
-/// <see cref="MaxRotatedLogs"/> archives are kept; older ones are deleted. Best
-/// effort, not audit logging.
+/// begun, so each run has its own log instead of accumulating across restarts. Archives are
+/// kept by age and total size (see <see cref="PruneRotated"/>). Best effort, not audit logging.
 /// </summary>
 public static class ServiceLog
 {
-    /// <summary>Number of timestamped, rotated-out logs kept; older ones are deleted.</summary>
-    public const int MaxRotatedLogs = 5;
+    /// <summary>Rotated logs always kept regardless of age or size, so a crash loop of short runs cannot erase the run before it.</summary>
+    public const int MinRotatedLogs = 3;
+
+    public static readonly TimeSpan MaxRotatedAge = TimeSpan.FromDays(7);
+
+    /// <summary>Cap on the rotated logs plus the current one.</summary>
+    public const long MaxTotalLogBytes = 50L * 1024 * 1024;
 
     private static readonly object Lock = new();
     private static StreamWriter? _writer;
@@ -243,7 +247,7 @@ public static class ServiceLog
                 return;
 
             // Archive the previous run to nexus-service-<localtimestamp>.log so each
-            // run gets its own log; names sort chronologically. Keep newest MaxRotatedLogs.
+            // run gets its own log; names sort chronologically.
             var dir = Path.GetDirectoryName(path)!;
             var rotated = Path.Combine(dir, $"nexus-service-{DateTime.Now:yyyyMMdd-HHmmss}.log");
             if (File.Exists(rotated))
@@ -258,16 +262,39 @@ public static class ServiceLog
     {
         try
         {
-            // The yyyyMMdd-HHmmss stamp makes the names sort oldest-first by
-            // ordinal, so delete everything before the last MaxRotatedLogs.
-            var rotated = Directory.GetFiles(dir, "nexus-service-*.log");
-            if (rotated.Length <= MaxRotatedLogs)
-                return;
-            Array.Sort(rotated, StringComparer.Ordinal);
-            for (var i = 0; i < rotated.Length - MaxRotatedLogs; i++)
-                File.Delete(rotated[i]);
+            PruneRotated(dir, DateTime.Now, MaxRotatedAge, MaxTotalLogBytes, MinRotatedLogs);
         }
         catch { /* best effort */ }
+    }
+
+    /// <summary>Deletes rotated logs older than <paramref name="maxAge"/>, then the oldest until the total (current log included) fits <paramref name="maxTotalBytes"/>; the newest <paramref name="minKeep"/> always stay.</summary>
+    internal static void PruneRotated(string dir, DateTime now, TimeSpan maxAge, long maxTotalBytes, int minKeep)
+    {
+        // The yyyyMMdd-HHmmss stamp makes names sort oldest-first by ordinal.
+        var rotated = Directory.GetFiles(dir, "nexus-service-*.log");
+        Array.Sort(rotated, StringComparer.Ordinal);
+        var total = 0L;
+        var sizes = new long[rotated.Length];
+        for (var i = 0; i < rotated.Length; i++)
+        {
+            sizes[i] = new FileInfo(rotated[i]).Length;
+            total += sizes[i];
+        }
+        var current = Path.Combine(dir, "nexus-service.log");
+        if (File.Exists(current))
+        {
+            total += new FileInfo(current).Length;
+        }
+        for (var i = 0; i < rotated.Length - minKeep; i++)
+        {
+            var tooOld = now - File.GetLastWriteTime(rotated[i]) > maxAge;
+            if (!tooOld && total <= maxTotalBytes)
+            {
+                continue;
+            }
+            File.Delete(rotated[i]);
+            total -= sizes[i];
+        }
     }
 
     // Resolves the log writer through ServiceLog on each write rather than
