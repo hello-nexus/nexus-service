@@ -172,8 +172,16 @@ public sealed class NollieController : IDisposable
     private bool Write()
     {
         var ok = _device!.Write(_report);
-        if (ok) Volatile.Write(ref _consecutiveWriteFailures, 0);
-        else Interlocked.Increment(ref _consecutiveWriteFailures);
+        if (ok)
+        {
+            Volatile.Write(ref _consecutiveWriteFailures, 0);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId);
+        }
+        else
+        {
+            Interlocked.Increment(ref _consecutiveWriteFailures);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(DeviceId);
+        }
         return ok;
     }
 

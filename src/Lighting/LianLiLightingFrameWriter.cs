@@ -407,6 +407,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private void NoteFailure(RetryWindow window, string what)
     {
         window.Fail(NowMs());
+        Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(_hub.DeviceId);
         if (window.Streak == 1)
         {
             Console.Error.WriteLine(
@@ -416,6 +417,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     private void NoteSuccess(RetryWindow window, string what)
     {
+        Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(_hub.DeviceId);
         if (window.Streak > 0)
         {
             Console.WriteLine(

@@ -63,10 +63,12 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                             if (ok)
                             {
                                 failures = 0;
+                                Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess("lianli-wireless");
                             }
                             else
                             {
                                 failures++;
+                                Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure("lianli-wireless");
                                 if (failures >= MaxConsecutiveFailures)
                                 {
                                     break;

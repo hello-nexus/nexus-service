@@ -26,7 +26,7 @@ namespace Nexus.Service.Lighting.Rgb;
 ///
 /// AOT: pure System.Net.Sockets + ArrayPool, zero reflection.
 /// </summary>
-public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
+public sealed class OpenRgbController : IRgbController, INexusCoolingTransport, IOpenRgbWriteHealthTransport
 {
     private const string ClientName = "nexus";
     private const uint ClientFlags = OpenRgbProtocol.ClientFlagSupportsRgbController
@@ -440,6 +440,42 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport
         catch (IOException)
         {
             return new NexusCoolingStatusResult(NexusCoolingOutcome.Failed, null);
+        }
+    }
+
+    public async Task<OpenRgbWriteHealthResult> GetWriteHealthAsync(int address, CancellationToken ct = default)
+    {
+        var failed = new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Failed, default);
+        var session = Volatile.Read(ref _session);
+        if (session is null || session.Closed || !session.Ready)
+        {
+            return failed;
+        }
+        try
+        {
+            await WaitRequestLockAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var (body, status) = await RequestLockedAsync(session, OpenRgbProtocol.PacketId.NexusWriteHealth, (uint)address,
+                    null, OpenRgbProtocol.PacketId.NexusWriteHealth, replyOnly: false, ct).ConfigureAwait(false);
+                if (status is OpenRgbProtocol.StatusUnsupported or OpenRgbProtocol.StatusInvalidId)
+                {
+                    return new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Unsupported, default);
+                }
+                if (status != OpenRgbProtocol.StatusOk || body is null || !NexusWriteHealthProtocol.TryParse(body, out var health))
+                {
+                    return failed;
+                }
+                return new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Ok, health);
+            }
+            finally
+            {
+                _requestLock.Release();
+            }
+        }
+        catch (IOException)
+        {
+            return failed;
         }
     }
 

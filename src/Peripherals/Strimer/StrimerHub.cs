@@ -11,6 +11,7 @@ public sealed class StrimerHub : IDisposable
     private IHidDevice? _device;
     private bool _disposed;
     private int _consecutiveWriteFailures;
+    private const string HealthKey = "strimer";
 
     public StrimerState State { get; } = new();
 
@@ -100,10 +101,12 @@ public sealed class StrimerHub : IDisposable
         if (ok)
         {
             _consecutiveWriteFailures = 0;
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(HealthKey);
         }
         else
         {
             _consecutiveWriteFailures++;
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(HealthKey);
         }
     }
 

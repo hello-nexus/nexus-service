@@ -717,12 +717,20 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Integrations.HomeAssistant.HomeAssistantHub>());
 
+        services.AddSingleton(Nexus.Service.Lighting.LightingWriteHealth.Shared);
+        services.AddHostedService<Nexus.Service.Lighting.LightingWriteHealthBroadcaster>();
+
         if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
         {
             services.AddSingleton<Nexus.Service.Lighting.Rgb.OpenRgbProcessManager>();
             services.AddSingleton<Nexus.Service.Lighting.Rgb.IRgbController>(_ =>
                 new Nexus.Service.Lighting.Rgb.OpenRgbController());
             services.AddSingleton<Nexus.Service.Lighting.Rgb.RgbBridge>();
+            services.AddSingleton(sp => new Nexus.Service.Lighting.Rgb.OpenRgbWriteHealthPoller(
+                sp.GetRequiredService<Nexus.Service.Lighting.LightingWriteHealth>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Rgb.IRgbController>() as Nexus.Service.Lighting.Rgb.IOpenRgbWriteHealthTransport
+                    ?? new Nexus.Service.Lighting.Rgb.NoOpenRgbWriteHealthTransport()));
+            services.AddHostedService<Nexus.Service.Lighting.Rgb.OpenRgbWriteHealthWorker>();
             // The conflict catalog is Windows-only; elsewhere the poll would enumerate processes for nothing.
             if (OperatingSystem.IsWindows())
             {

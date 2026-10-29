@@ -29,6 +29,9 @@ public sealed class DeviceListItem
     public bool HasPage { get; set; } = true;
     /// <summary>Interface the device hangs off: "usb" for every handler holding a USB handle, "smbus" for the chipset bus. A USB device is exclusive to whoever opens it, a shared bus is not, which is why turning Nexus Control off for one also stops its monitoring. Absent on an older service, which the UI reads as "usb".</summary>
     public string Bus { get; set; } = "usb";
+    /// <summary>"failing" while this handler's controlled hardware writes fail in a sustained way (see LightingWriteHealth). Omitted from the wire when healthy.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? WriteHealth { get; set; }
 }
 
 /// <summary>Body for POST /devices/control.</summary>
@@ -276,6 +279,10 @@ public class LightingDevice
     /// <summary>Set when the card's lighting is set on its device page rather than by the Lighting page: <see cref="ReasonFirmware"/> (an effect the device plays itself) or <see cref="ReasonArgbInput"/> (follows a motherboard ARGB header). The engine has no structure or frame for such a card. Null when the Lighting page drives it; omitted from the wire then, because the HTTP options write nulls and the web reads a present null as a device-page card.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? DevicePageReason { get; set; }
+
+    /// <summary>"failing" while the card's hardware writes fail in a sustained way (see LightingWriteHealth). Omitted from the wire when healthy, so a build that predates it reads absent as healthy.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? WriteHealth { get; set; }
 
     public const string ReasonFirmware = "firmware";
     public const string ReasonArgbInput = "argbInput";

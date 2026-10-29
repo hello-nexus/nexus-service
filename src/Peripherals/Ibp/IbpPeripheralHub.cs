@@ -229,6 +229,7 @@ public sealed class IbpPeripheralHub : IDisposable
                 }
                 var writeEnd = _clock();
                 slot.Failures = 0;
+                Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(slot.Info.DeviceId);
                 if (model.MaxFrameRateHz > 0) slot.LastSentStamp = now;
                 RecordWriteTimingLocked(slot, writeEnd - writeStart, writeEnd);
                 return true;
@@ -360,6 +361,7 @@ public sealed class IbpPeripheralHub : IDisposable
     private bool RecordFailureLocked(Slot slot, string where)
     {
         var n = ++slot.Failures;
+        Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(slot.Info.DeviceId);
         if (n >= ConsecutiveWriteFailureThreshold)
         {
             ServiceLog.Error($"[ibp] {n} consecutive IO failures ({where}) on {slot.Info.Model.Id} - dropping interface");

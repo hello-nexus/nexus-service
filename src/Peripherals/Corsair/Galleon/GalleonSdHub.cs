@@ -222,6 +222,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
                 slot.Payload.CopyTo(slot.LastPayload, 0);
                 slot.HasLast = true;
                 slot.Failures = 0;
+                Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(slot.Info.DeviceId);
                 slot.LastSentStamp = now;
                 slot.FramesSent++;
                 slot.WindowFrames++;
@@ -475,6 +476,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     private bool RecordFailureLocked(Slot slot, string where)
     {
         var n = ++slot.Failures;
+        Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(slot.Info.DeviceId);
         if (n >= ConsecutiveWriteFailureThreshold)
         {
             ServiceLog.Error($"[galleon-sd] {n} consecutive IO failures ({where}) - dropping interface");
