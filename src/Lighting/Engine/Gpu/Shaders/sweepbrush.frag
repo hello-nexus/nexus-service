@@ -20,6 +20,14 @@ void main() {
     // LEDs see a continuous gradient.
     float streak = vnoise(vec2(uv.x * 2.0 - t * 2.0 / max(1.0, u_strokes), uv.y * 4.0 + mod(u_time, 600.0) * 0.05));
     grain *= 0.88 + 0.24 * streak;
+    // Silk-style folds: two sines crossing at different angles with drifting
+    // phases, so brightness undulates along y like cloth. Low frequency keeps
+    // neighbouring LEDs on a smooth slope; the x term tilts the folds and the
+    // time term keeps a 1D strip (fixed y) breathing.
+    float fold = 0.5 * sin(uv.y * 5.0 + uv.x * 1.5 + t * 0.35)
+               + 0.3 * sin(uv.y * 9.0 - uv.x * 0.8 - t * 0.25 + 0.9)
+               + 0.2 * sin(uv.y * 3.0 + uv.x * 0.5 + t * 0.15 + 2.1);
+    grain *= 1.0 + 0.1 * fold;
     float f = uv.x * u_strokes - t;
     float cell = floor(f);
     float d = f - cell;
@@ -29,6 +37,6 @@ void main() {
     float fill = clamp(u_fill, 0.2, 1.0);
     float body = smoothstep(0.0, feather, d) * smoothstep(fill, fill - feather, d);
     // One hue step per stroke.
-    vec3 col = hsv2rgb(vec3(cell * u_step + u_hue + 0.03 * (streak - 0.5), 1.0, 1.0)) * body * grain;
+    vec3 col = hsv2rgb(vec3(cell * u_step + u_hue + 0.03 * (streak - 0.5) + 0.008 * fold, 1.0, 1.0)) * body * grain;
     fragColor = vec4(finalize(col), 1.0);
 }
