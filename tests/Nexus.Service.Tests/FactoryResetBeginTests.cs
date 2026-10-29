@@ -8,6 +8,7 @@ namespace Nexus.Service.Tests;
 /// targets of the macOS survivor sweep). The spawn path itself is never
 /// exercised here - a real Begin would launch the testhost as a finalizer.
 /// </summary>
+[Collection("FactoryResetLatch")]
 public class FactoryResetBeginTests : IDisposable
 {
     public FactoryResetBeginTests() => FactoryReset.ResetFinalizerClaimForTests();

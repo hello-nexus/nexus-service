@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Lifecycle;
 
@@ -10,38 +11,11 @@ namespace Nexus.Service.Lifecycle;
 /// </summary>
 internal static class ReopenRoute
 {
-    public const int MaxLength = 200;
-
     /// <summary>A stored route older than this is ignored.</summary>
     public static readonly TimeSpan MaxAge = TimeSpan.FromMinutes(5);
 
-    /// <summary>The route when it is a bare in-app path with at most one query string, else null.</summary>
-    public static string? Validate(string? route)
-    {
-        if (string.IsNullOrEmpty(route) || route.Length > MaxLength || route[0] != '/')
-        {
-            return null;
-        }
-        if (route.Contains("//", StringComparison.Ordinal) || route.Contains("..", StringComparison.Ordinal))
-        {
-            return null;
-        }
-        var queries = 0;
-        foreach (var c in route)
-        {
-            if (c == '?')
-            {
-                queries++;
-                continue;
-            }
-            var ok = c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '/' or '-' or '_' or '.' or '~' or '=';
-            if (!ok)
-            {
-                return null;
-            }
-        }
-        return queries <= 1 ? route : null;
-    }
+    /// <summary>The route when it is a safe in-app path, else null; the rules are <see cref="OpenAppRoute.Normalize"/>'s.</summary>
+    public static string? Validate(string? route) => OpenAppRoute.Normalize(route);
 
     /// <summary>False when a route was requested but is not acceptable; an absent request is fine and yields no route.</summary>
     public static bool TryResolveRequest(string? requested, out string? route)

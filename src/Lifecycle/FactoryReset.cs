@@ -223,9 +223,7 @@ internal static class FactoryReset
     /// --restart-finalize). The restart variant skips the data wipe.
     public static int Finalize(string[] args)
     {
-        var wipe = args.Length > 0 && args[0] == FinalizeFlag;
-        var parentPid = args.Length > 1 && int.TryParse(args[1], out var p) ? p : 0;
-        var reopenRoute = args.Length > 2 ? ReopenRoute.Validate(args[2]) : null;
+        var (wipe, parentPid, reopenRoute) = ParseFinalizeArgs(args);
 #if !WINDOWS
         // Leave the service's session/process group before anything else, so
         // tearing the service down can't take this finalizer with it mid-wipe:
@@ -332,6 +330,12 @@ internal static class FactoryReset
         }
         return args.ToArray();
     }
+
+    /// <summary>Finalizer argv: flag, parent pid, optional reopen route (re-validated here).</summary>
+    internal static (bool Wipe, int ParentPid, string? ReopenRoute) ParseFinalizeArgs(string[] args) => (
+        args.Length > 0 && args[0] == FinalizeFlag,
+        args.Length > 1 && int.TryParse(args[1], out var p) ? p : 0,
+        args.Length > 2 ? ReopenRoute.Validate(args[2]) : null);
 
     internal static void WaitForProcessExit(int pid, TimeSpan timeout)
     {

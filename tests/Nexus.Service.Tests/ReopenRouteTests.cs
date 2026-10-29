@@ -9,7 +9,6 @@ public class ReopenRouteTests
 {
     [Theory]
     [InlineData("/system/lighting")]
-    [InlineData("/")]
     [InlineData("/system/lighting?tab=effects")]
     [InlineData("/system/devices/np-50_a.b~c")]
     public void Accepts_in_app_paths_with_at_most_one_query(string route)
@@ -24,6 +23,9 @@ public class ReopenRouteTests
     [InlineData("http://evil.example/system/lighting")]
     [InlineData("https://localhost/x")]
     [InlineData("//evil.example/x")]
+    [InlineData("/")]
+    [InlineData("/system/")]
+    [InlineData("/settings")]
     [InlineData("/system//lighting")]
     [InlineData("/system\\lighting")]
     [InlineData("/\\evil.example")]
@@ -43,8 +45,9 @@ public class ReopenRouteTests
     [Fact]
     public void Rejects_a_route_over_the_length_bound()
     {
-        Assert.NotNull(ReopenRoute.Validate("/" + new string('a', ReopenRoute.MaxLength - 1)));
-        Assert.Null(ReopenRoute.Validate("/" + new string('a', ReopenRoute.MaxLength)));
+        const string prefix = "/system/";
+        Assert.NotNull(ReopenRoute.Validate(prefix + new string('a', Nexus.Service.Platform.OpenAppRoute.MaxLength - prefix.Length)));
+        Assert.Null(ReopenRoute.Validate(prefix + new string('a', Nexus.Service.Platform.OpenAppRoute.MaxLength - prefix.Length + 1)));
     }
 
     [Fact]
@@ -119,6 +122,50 @@ public class ReopenRouteTests
 
             Assert.Null(ReopenRoute.ConsumeFile(path));
             Assert.False(File.Exists(path));
+        }
+        finally
+        {
+            try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void The_validator_is_the_open_app_one()
+    {
+        foreach (var route in new[] { "/system/lighting", "/system/lighting?x=1", "/system/a?b?c", "/x", "//x", null })
+        {
+            Assert.Equal(Nexus.Service.Platform.OpenAppRoute.Normalize(route), ReopenRoute.Validate(route));
+        }
+    }
+
+    [Fact]
+    public void Finalizer_args_carry_the_flag_pid_and_a_revalidated_route()
+    {
+        Assert.Equal((false, 42, "/system/lighting"), FactoryReset.ParseFinalizeArgs(new[] { FactoryReset.RestartFlag, "42", "/system/lighting" }));
+        Assert.Equal((false, 42, (string?)null), FactoryReset.ParseFinalizeArgs(new[] { FactoryReset.RestartFlag, "42" }));
+        Assert.Equal((true, 7, (string?)null), FactoryReset.ParseFinalizeArgs(new[] { FactoryReset.FinalizeFlag, "7", "https://evil.example" }));
+        Assert.Equal((false, 0, (string?)null), FactoryReset.ParseFinalizeArgs(new[] { FactoryReset.RestartFlag, "x" }));
+    }
+
+    [Fact]
+    public void The_dashboard_flag_carries_the_route_and_a_routeless_flag_reads_none()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "nexus-flag-" + Guid.NewGuid().ToString("N"), "flag");
+        try
+        {
+            DashboardReopenFlag.Write("/system/lighting", path);
+            Assert.Equal("/system/lighting", DashboardReopenFlag.ReadRoute(path));
+
+            DashboardReopenFlag.Write(null, path);
+            Assert.True(File.Exists(path));
+            Assert.Null(DashboardReopenFlag.ReadRoute(path));
+
+            DashboardReopenFlag.Write("https://evil.example", path);
+            Assert.Null(DashboardReopenFlag.ReadRoute(path));
+
+            DashboardReopenFlag.Write("/system/lighting", path);
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow - ReopenRoute.MaxAge - TimeSpan.FromMinutes(1));
+            Assert.Null(DashboardReopenFlag.ReadRoute(path));
         }
         finally
         {
