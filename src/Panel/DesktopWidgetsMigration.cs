@@ -137,6 +137,7 @@ public sealed class DesktopWidgetsMigration
             if (target is null) return null;
 
             string? recordId = null;
+            var y70RecordGone = false;
             _store.Update(s =>
             {
                 if (s.Overlay.MigratedToPanels) return;
@@ -153,9 +154,13 @@ public sealed class DesktopWidgetsMigration
                 // A Y70 is a known panel: its own record takes the widgets and keeps every setting it has.
                 var onY70 = target.IsY70;
                 var record = onY70
-                    ? FindY70Record(s)
+                    ? PanelDeviceRegistry.FindNewestY70(s)
                     : s.PanelDevices.Values.FirstOrDefault(r => string.Equals(r.DisplayId, target.Id, StringComparison.Ordinal));
-                if (onY70 && record is null) return;
+                if (onY70 && record is null)
+                {
+                    y70RecordGone = true;
+                    return;
+                }
                 var merge = record is not null;
                 if (record is null)
                 {
@@ -180,9 +185,23 @@ public sealed class DesktopWidgetsMigration
                 overlay.ClearLegacy();
                 recordId = record.Id;
             });
+            if (y70RecordGone)
+            {
+                // The record vanished after the pre-check; keep the recheck armed so a later pass retries.
+                ArmRecheck();
+                return null;
+            }
             Finish(recordId);
             return recordId;
         }
+    }
+
+    // Read under the store lock: the Y70 kiosk adds its record concurrently.
+    private bool HasY70Record()
+    {
+        var found = false;
+        _store.Read(s => found = PanelDeviceRegistry.FindNewestY70(s) is not null);
+        return found;
     }
 
     /// <summary>
@@ -197,8 +216,10 @@ public sealed class DesktopWidgetsMigration
         if (displays is null || displays.Count == 0) return true;
         var primary = displays.FirstOrDefault(d => d.IsPrimary) ?? (displays.Count == 1 ? displays[0] : null);
         // A Y70 takes the widgets on its own record, which may still register, so it stays a usable target.
-        static bool Usable(DisplayTopologyEntryDto? d) => d is not null && (d.IsY70 || d.HostingSupported);
         var overlay = s.Overlay;
+        // Once the grace has elapsed with no Y70 record, no pass can ever use it, so it is not worth a host.
+        var y70Waitable = HasY70Record() || (overlay.MonitorMissingForMs ?? 0) < MissingMonitorGraceMs;
+        bool Usable(DisplayTopologyEntryDto? d) => d is not null && (d.IsY70 ? y70Waitable : d.HostingSupported);
         if (Os == HostOs.MacOS || (overlay.Monitor ?? -1) < 0) return Usable(primary);
         var id = _monitors.DisplayIdForIndex(overlay.Monitor ?? -1);
         var target = id is null ? null : displays.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.Ordinal));
@@ -291,10 +312,12 @@ public sealed class DesktopWidgetsMigration
 
         if (target is { IsY70: true })
         {
-            if (FindY70Record(settings) is not null) return target;
+            if (HasY70Record()) return target;
             // The Y70 kiosk registers its record on first run; wait for it, then let the primary stand in.
             indexMissing = true;
             if (!MissingGraceElapsed(overlay)) return null;
+            // The primary stands in; a Y70 primary still has no record, so keep waiting on the recheck.
+            if (primary is { IsY70: true }) return null;
             indexMissing = false;
             target = primary;
         }
@@ -303,17 +326,6 @@ public sealed class DesktopWidgetsMigration
             target = primary;
         }
         return target is null || target.IsY70 || !target.HostingSupported ? null : target;
-    }
-
-    private static PanelDeviceRecord? FindY70Record(NexusSettings settings)
-    {
-        PanelDeviceRecord? newest = null;
-        foreach (var r in settings.PanelDevices.Values)
-        {
-            if (!string.Equals(r.Capabilities?.Surface, PanelSurfaces.Y70, StringComparison.Ordinal)) continue;
-            if (newest is null || r.LastSeenAt > newest.LastSeenAt) newest = r;
-        }
-        return newest;
     }
 
     // Missing time accumulates from monotonic deltas between checks and is persisted at each one. A restart

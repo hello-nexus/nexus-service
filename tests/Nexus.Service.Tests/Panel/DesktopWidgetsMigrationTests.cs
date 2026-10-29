@@ -301,6 +301,87 @@ public class DesktopWidgetsMigrationTests
         Assert.Equal(Primary, Only(store).DisplayId);
     }
 
+    // Counts store Reads and runs a hook after the first one, to land a change between the pre-check and the Update.
+    private sealed class ReadHookStore : IConfigStore
+    {
+        private readonly InMemoryConfigStore _inner = new();
+        public int Reads { get; private set; }
+        public System.Action? AfterFirstRead { get; set; }
+        public string SettingsPath => _inner.SettingsPath;
+        public NexusSettings Load() => _inner.Load();
+        public void Update(System.Action<NexusSettings> mutator) => _inner.Update(mutator);
+        public void Read(System.Action<NexusSettings> reader)
+        {
+            reader(_inner.Load());
+            if (++Reads == 1) AfterFirstRead?.Invoke();
+        }
+        public void Reload() => _inner.Reload();
+        public void FlushNow() => _inner.FlushNow();
+        public event System.Action? OnChanged { add { } remove { } }
+    }
+
+    private static (DesktopWidgetsMigration Migration, ReadHookStore Store) BuildHooked(int monitor)
+    {
+        var store = new ReadHookStore();
+        store.Update(s =>
+        {
+            s.Overlay.Enabled = true;
+            s.Overlay.Layout = new List<LegacyOverlayWidget> { Widget("a") };
+            s.Overlay.Monitor = monitor;
+            s.PanelDevices["y70rec"] = new PanelDeviceRecord
+            {
+                Id = "y70rec",
+                Capabilities = new PanelDeviceCapabilities { Surface = "y70" },
+            };
+        });
+        var map = new OverlayMonitorMap();
+        map.Set(Seeded());
+        return (new DesktopWidgetsMigration(store, map, null, null) { Os = HostOs.Windows }, store);
+    }
+
+    [Fact]
+    public void Y70_record_lookup_goes_through_the_store_read()
+    {
+        var (m, store) = BuildHooked(monitor: -1);
+
+        Assert.Equal("y70rec", m.Run(Topology(Display(Primary, true, y70: true))));
+
+        Assert.True(store.Reads > 0);
+    }
+
+    [Fact]
+    public void Y70_record_vanishing_before_the_update_keeps_the_recheck_armed()
+    {
+        var (m, store) = BuildHooked(monitor: -1);
+        store.AfterFirstRead = () => store.Update(s => s.PanelDevices.Clear());
+
+        Assert.Null(m.Run(Topology(Display(Primary, true, y70: true))));
+
+        Assert.True(m.RecheckArmed);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+    }
+
+    [Fact]
+    public void Y70_primary_without_a_record_after_the_grace_stalls_quietly_and_asks_for_no_host()
+    {
+        var (m, store, _) = Build(HostOs.Windows, Widget("a"));
+        long now = 0;
+        m.MonoMs = () => now;
+        var topology = Topology(Display(Primary, true, y70: true));
+        Assert.Null(m.Run(topology));
+        Assert.True(m.HostCanAdvance(store.Load(), topology));
+
+        now = MissingMonitorGraceMs + 1;
+        Assert.Null(m.Run(topology));
+
+        Assert.False(m.HostCanAdvance(store.Load(), topology));
+        Assert.True(m.RecheckArmed);
+        Assert.False(store.Load().Overlay.MigratedToPanels);
+
+        Y70Record(store);
+        Assert.Equal("y70rec", m.Run(topology));
+    }
+
     [Fact]
     public void Non_y70_target_still_gets_its_own_record_with_desktop_flags()
     {
