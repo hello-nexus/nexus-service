@@ -34,6 +34,14 @@ public sealed class BundleRedactor
                 _paths.Add(("/home/" + name, "/home/<user>"));
             }
         }
+        if (machineName.Length > 0)
+        {
+            // The startup snapshot's host line and JSON name fields carry the machine name explicitly, so these are safe for any name.
+            foreach (var label in new[] { "host: ", "\"pcName\":\"", "\"machineName\":\"" })
+            {
+                _paths.Add((label + machineName, label + "<pc>"));
+            }
+        }
         if (!IsGenericMachineName(machineName))
         {
             _machine.Add(machineName);
@@ -45,7 +53,7 @@ public sealed class BundleRedactor
         }
     }
 
-    /// <summary>Too short or too common to replace inside free text without corrupting it; such a name is redacted only in fields that carry it explicitly.</summary>
+    /// <summary>Too short or too common to replace inside free text without corrupting it; such a name is redacted only where it follows a host label.</summary>
     internal static bool IsGenericMachineName(string name) => name.Length < 4 || GenericMachineNames.Contains(name);
 
     public string Apply(string text)
@@ -86,7 +94,7 @@ public sealed class BundleRedactor
         return sb.Append(text, last, text.Length - last).ToString();
     }
 
-    private static bool IsSegmentEnd(char c) => c is '\\' or '/' or '"' or '\'' or ',' or ';' or ')' or ']' || char.IsWhiteSpace(c);
+    private static bool IsSegmentEnd(char c) => !char.IsLetterOrDigit(c) && c is not ('_' or '-');
 
     private static bool IsTokenChar(char c) => char.IsLetterOrDigit(c) || c is '-' or '_';
 }

@@ -36,7 +36,14 @@ public sealed class DeviceIncidentLog
     /// <summary>Steady per-frame successes fold into one entry per this span so they do not evict the failures.</summary>
     private const long OkMergeMs = 1000;
 
-    public static DeviceIncidentLog Shared { get; } = new(() => ServiceLog.LogsDirectory, () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    public static DeviceIncidentLog Shared { get; } = CreateShared();
+
+    private static DeviceIncidentLog CreateShared()
+    {
+        var log = new DeviceIncidentLog(() => ServiceLog.LogsDirectory, () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => log.WaitIdle(TimeSpan.FromSeconds(2));
+        return log;
+    }
 
     private struct Entry
     {
@@ -61,7 +68,7 @@ public sealed class DeviceIncidentLog
     private readonly Func<long> _nowMs;
     private readonly Dictionary<string, long> _lastSnapshotMs = new(StringComparer.Ordinal);
     private readonly System.Threading.Channels.Channel<string> _queue =
-        System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(64) { FullMode = System.Threading.Channels.BoundedChannelFullMode.DropWrite, SingleReader = true });
+        System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(64) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait, SingleReader = true });
     private readonly object _writerLock = new();
     private bool _writerStarted;
     private int _pending;
@@ -207,8 +214,9 @@ public sealed class DeviceIncidentLog
             catch (IOException)
             {
             }
-            catch (UnauthorizedAccessException)
+            catch (Exception)
             {
+                // A failed write drops that snapshot; the loop must outlive it.
             }
             Done();
         }
@@ -218,19 +226,27 @@ public sealed class DeviceIncidentLog
     {
         lock (_writerLock)
         {
-            _pending--;
+            Interlocked.Decrement(ref _pending);
             Monitor.PulseAll(_writerLock);
         }
     }
 
-    /// <summary>Blocks until queued snapshots are on disk; tests only.</summary>
-    internal void WaitIdle()
+    internal int Pending => Volatile.Read(ref _pending);
+
+    /// <summary>Blocks until queued snapshots are on disk or <paramref name="timeout"/> passes (default 5 s).</summary>
+    internal void WaitIdle(TimeSpan? timeout = null)
     {
+        var deadline = Environment.TickCount64 + (long)(timeout ?? TimeSpan.FromSeconds(5)).TotalMilliseconds;
         lock (_writerLock)
         {
             while (Volatile.Read(ref _pending) > 0)
             {
-                Monitor.Wait(_writerLock, 5000);
+                var left = deadline - Environment.TickCount64;
+                if (left <= 0)
+                {
+                    return;
+                }
+                Monitor.Wait(_writerLock, (int)left);
             }
         }
     }
