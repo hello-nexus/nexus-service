@@ -164,7 +164,7 @@ public sealed class AppTelemetryRoutesIntegrationTests : IClassFixture<AppTeleme
     }
 
     [Fact]
-    public async Task Recent_reports_a_known_posthog_status()
+    public async Task Recent_reports_a_known_sink_status()
     {
         var status = (await Recent()).GetProperty("posthog").GetString();
         Assert.Contains(status, new[] { "on", "off", "opted_out" });

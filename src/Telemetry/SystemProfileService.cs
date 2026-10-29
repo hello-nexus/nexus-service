@@ -16,8 +16,8 @@ using Nexus.Service.Sensors;
 namespace Nexus.Service.Telemetry;
 
 /// <summary>
-/// Attaches a system profile to the anonymous telemetry person (PostHog
-/// <c>$set</c>): the same hardware shown under System Specs (cpu / gpu / ram /
+/// Attaches a system profile to the anonymous telemetry person (sent as a
+/// profile event): the same hardware shown under System Specs (cpu / gpu / ram /
 /// motherboard / storage / …) plus the recognized devices currently connected
 /// - both the Nexus/HYTE devices we drive AND named USB peripherals we merely
 /// identify, in a single <c>devices</c> list. No PII (no serials, no machine
@@ -103,7 +103,7 @@ internal sealed class SystemProfileService : BackgroundService
             .Select(n => n.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             // Stable order so a reordered enumeration doesn't look like a change
-            // (otherwise the dedupe re-sends $identify every refresh).
+            // (otherwise the dedupe re-sends the profile event every refresh).
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
             .Take(MaxDevices)
             .ToArray();
@@ -166,7 +166,7 @@ internal sealed class SystemProfileService : BackgroundService
                 _telemetry.Identify(props.ToArray());
                 break;
             case ProfileSend.Refresh:
-                // nexus-api only: PostHog is filtered out of this event and gets $identify on change alone.
+                // Unchanged-profile refresh, so a lost send heals.
                 _telemetry.Capture(TelemetryEvents.ProfileRefresh, props.ToArray());
                 break;
         }

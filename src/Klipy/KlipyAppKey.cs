@@ -7,7 +7,7 @@ namespace Nexus.Service.Klipy;
 /// <summary>
 /// Resolves the api.klipy.com app key: NEXUS_KLIPY_KEY, then klipy-key.txt in
 /// the Nexus data directory, then the key CI baked into BuildInfo (the same
-/// generator as the PostHog key). Absent all three, only the GIF picker is
+/// generator as the client token). Absent all three, only the GIF picker is
 /// affected.
 /// </summary>
 internal static class KlipyAppKey

@@ -1,13 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Nexus.Service.Telemetry;
 
 /// <summary>
-/// Parallel sink next to PostHog: every event the flush service hands out is
+/// The telemetry sink: every event the flush service hands out is
 /// queued here for <see cref="UsageTelemetryWorker"/> to deliver to nexus-api.
 /// The <c>$identify</c> person update is not mirrored as such; its hardware and
 /// usage fields become one <c>profile</c> event instead. The queue is bounded:
@@ -19,7 +20,7 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
     internal const int MaxQueued = 2000;
     internal const string ProfileEvent = TelemetryEvents.ProfileRefresh;
 
-    // Profile fields that reach PostHog only through the $identify $set. The
+    // Profile fields that arrive only in the $identify person update. The
     // specs fleet event already carries cpu / gpu / ram / motherboard.
     private static readonly HashSet<string> ProfileFields = new(StringComparer.Ordinal)
     {
@@ -126,7 +127,7 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
             foreach (var p in props)
             {
                 w.WritePropertyName(p.Key);
-                PostHogSink.WriteValue(w, p.Value);
+                WriteValue(w, p.Value);
             }
             w.WriteEndObject();
         }
@@ -243,5 +244,29 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
     {
         if (_queue.Count > MaxQueued)
             _queue.RemoveRange(0, _queue.Count - MaxQueued);
+    }
+
+    // Reflection-free value writer - covers the property types Capture accepts.
+    internal static void WriteValue(Utf8JsonWriter w, object? v)
+    {
+        switch (v)
+        {
+            case null: w.WriteNullValue(); break;
+            case string s: w.WriteStringValue(s); break;
+            case bool b: w.WriteBooleanValue(b); break;
+            case int i: w.WriteNumberValue(i); break;
+            case long l: w.WriteNumberValue(l); break;
+            case double d: w.WriteNumberValue(d); break;
+            case float f: w.WriteNumberValue(f); break;
+            case decimal m: w.WriteNumberValue(m); break;
+            // string[] / List<string> etc. → JSON array (string handled above, so
+            // it never reaches here as IEnumerable<char>).
+            case System.Collections.IEnumerable seq:
+                w.WriteStartArray();
+                foreach (var item in seq) WriteValue(w, item);
+                w.WriteEndArray();
+                break;
+            default: w.WriteStringValue(v.ToString() ?? ""); break;
+        }
     }
 }
