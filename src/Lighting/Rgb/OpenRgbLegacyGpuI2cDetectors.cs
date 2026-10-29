@@ -26,6 +26,7 @@ internal static class OpenRgbLegacyGpuI2cDetectors
         "ASUS KO GeForce RTX 3070 V2 Gaming OC",
         "ASUS ROG ASTRAL GeForce RTX 5080",
         "ASUS ROG ASTRAL GeForce RTX 5080 OC",
+        "ASUS ROG ASTRAL GeForce RTX 5080 OC HATSUNE MIKU",
         "ASUS ROG ASTRAL GeForce RTX 5080 OC WHITE",
         "ASUS ROG ASTRAL GeForce RTX 5080 WHITE",
         "ASUS ROG ASTRAL GeForce RTX 5090",

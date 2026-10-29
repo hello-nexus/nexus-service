@@ -89,6 +89,86 @@ public sealed class AiRoutesIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Allow_remote_defaults_false_and_status_reports_it()
+    {
+        var client = AuthedClient();
+        var body = await (await client.GetAsync("/ai/status")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("allowRemote").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Allow_remote_patch_persists_and_rebinds_the_running_listener()
+    {
+        var client = AuthedClient();
+        await client.PostAsJsonAsync("/ai/config", new { enabled = true });
+        var host = _factory.Services.GetRequiredService<McpServerHost>();
+        Assert.False(host.BoundRemote);
+
+        var on = await (await client.PostAsJsonAsync("/ai/config", new { allowRemote = true })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(on.GetProperty("allowRemote").GetBoolean());
+        Assert.True(on.GetProperty("running").GetBoolean());
+        Assert.True(host.BoundRemote);
+        Assert.True(_factory.Services.GetRequiredService<IConfigStore>().Load().AiIntegration.AllowRemote);
+
+        var off = await (await client.PostAsJsonAsync("/ai/config", new { allowRemote = false })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(off.GetProperty("allowRemote").GetBoolean());
+        Assert.False(host.BoundRemote);
+        Assert.False(_factory.Services.GetRequiredService<IConfigStore>().Load().AiIntegration.AllowRemote);
+    }
+
+    [Fact]
+    public async Task Allow_remote_patch_while_disabled_persists_without_binding()
+    {
+        var client = AuthedClient();
+        var body = await (await client.PostAsJsonAsync("/ai/config", new { allowRemote = true })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("allowRemote").GetBoolean());
+        Assert.False(body.GetProperty("running").GetBoolean());
+    }
+
+    private List<Nexus.Service.Transfer.TransferAttentionNotice> CaptureNotices()
+    {
+        var notices = new List<Nexus.Service.Transfer.TransferAttentionNotice>();
+        _factory.Services.GetRequiredService<Nexus.Service.Transfer.TransferInbox>().TransferNeedsAttention += notices.Add;
+        return notices;
+    }
+
+    [Fact]
+    public async Task Notifies_the_user_only_on_false_to_true_transitions()
+    {
+        var client = AuthedClient();
+        var notices = CaptureNotices();
+
+        await client.PostAsJsonAsync("/ai/config", new { enabled = true });
+        Assert.Equal(new[] { "AI Integration turned on" }, notices.Select(n => n.Title));
+
+        await client.PostAsJsonAsync("/ai/config", new { enabled = true });
+        await client.PostAsJsonAsync("/ai/config", new { capabilities = new { cooling = false } });
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = false });
+        Assert.Single(notices);
+
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = true });
+        Assert.Equal("Remote AI connections turned on", notices[^1].Title);
+        Assert.Equal(2, notices.Count);
+
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = true });
+        await client.PostAsJsonAsync("/ai/config", new { enabled = false });
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = false });
+        Assert.Equal(2, notices.Count);
+        Assert.All(notices, n => Assert.Null(n.FolderPath));
+    }
+
+    [Fact]
+    public async Task Notifies_when_remote_is_turned_on_while_integration_is_disabled()
+    {
+        var client = AuthedClient();
+        var notices = CaptureNotices();
+
+        await client.PostAsJsonAsync("/ai/config", new { allowRemote = true });
+
+        Assert.Equal(new[] { "Remote AI connections turned on" }, notices.Select(n => n.Title));
+    }
+
+    [Fact]
     public async Task Enabling_twice_keeps_the_same_token()
     {
         var client = AuthedClient();

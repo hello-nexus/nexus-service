@@ -1,0 +1,585 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using Nexus.Service.Models.Displays;
+using Nexus.Service.Models.Panel;
+using Nexus.Service.Panel;
+using Nexus.Service.Persistence;
+using Nexus.Service.Platform.Displays;
+using Nexus.Service.Serialization;
+using Xunit;
+
+namespace Nexus.Service.Tests.Panel;
+
+public class DesktopPanelRecordTests
+{
+    private static PanelDeviceCapabilities Monitor() => new() { Surface = PanelSurfaces.Monitor };
+
+    private static (PanelDeviceRegistry Registry, InMemoryConfigStore Store) Build(bool seeThrough = true)
+    {
+        var store = new InMemoryConfigStore();
+        return (new PanelDeviceRegistry(store) { SeeThroughHost = seeThrough }, store);
+    }
+
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData(null, true, true)]
+    [InlineData(null, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, null, false)]
+    public void IsOn_prefers_hosted_over_enabled(bool? hosted, bool? enabled, bool expected)
+    {
+        Assert.Equal(expected, PanelHosting.IsOn(new PanelDeviceRecord { Hosted = hosted, Enabled = enabled }));
+    }
+
+    [Fact]
+    public void Clone_projects_enabled_from_hosting_and_keeps_hosted_off_the_response()
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord
+        {
+            Id = "r",
+            DisplayId = "D1",
+            Hosted = true,
+            Enabled = false,
+            ClickThrough = true,
+            GridSlots = 12,
+            DesktopImport = new DesktopImportDto { CellPx = 86, Widgets = { new LegacyOverlayWidget { Id = "w", Type = "clock" } } },
+        });
+
+        var clone = registry.FindByDisplayId("D1")!;
+
+        Assert.True(clone.Enabled);
+        Assert.Null(clone.Hosted);
+        Assert.True(clone.ClickThrough);
+        Assert.Equal(12, clone.GridSlots);
+        Assert.Equal("w", Assert.Single(clone.DesktopImport!.Widgets).Id);
+        Assert.False(store.Load().PanelDevices["r"].Enabled);
+    }
+
+    [Fact]
+    public void Turning_a_hosted_panel_off_and_on_goes_through_hosted()
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord { Id = "r", DisplayId = "D1", Hosted = true, Enabled = false });
+
+        registry.DisablePanelForDisplay("D1");
+        var stored = store.Load().PanelDevices["r"];
+        Assert.False(stored.Hosted);
+        Assert.False(stored.Enabled);
+        Assert.Empty(registry.ListAssignments());
+
+        var (_, activated) = registry.AllocateForDisplay("D1", null, Monitor());
+        Assert.True(activated);
+        Assert.True(store.Load().PanelDevices["r"].Hosted);
+        Assert.False(store.Load().PanelDevices["r"].Enabled);
+        Assert.Single(registry.ListAssignments());
+    }
+
+    [Fact]
+    public void Primary_display_forces_the_keep_off_guards_false_and_flags_the_assignment()
+    {
+        var (registry, store) = Build();
+        store.Update(s =>
+        {
+            s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "P", ReserveMonitor = true, KeepCursorOff = true, AlwaysOnTop = true, Backdrop = "desktop" };
+            s.PanelDevices["b"] = new PanelDeviceRecord { Id = "b", DisplayId = "S", ReserveMonitor = true, KeepCursorOff = true };
+        });
+
+        var list = registry.ListAssignments(id => id == "P");
+
+        var primary = list.Single(a => a.DisplayId == "P");
+        Assert.True(primary.IsPrimary);
+        Assert.False(primary.ReserveMonitor);
+        Assert.False(primary.KeepCursorOff);
+        Assert.True(primary.AlwaysOnTop);
+        var secondary = list.Single(a => a.DisplayId == "S");
+        Assert.False(secondary.IsPrimary);
+        Assert.True(secondary.ReserveMonitor);
+        Assert.True(secondary.KeepCursorOff);
+        Assert.True(registry.ListAssignments().Single(a => a.DisplayId == "P").ReserveMonitor);
+    }
+
+    [Theory]
+    [InlineData("desktop", "xeneon-edge", true, true)]
+    [InlineData("wallpaper", "xeneon-edge", true, false)]
+    [InlineData("", "xeneon-edge", true, false)]
+    [InlineData("desktop", "xeneon-edge", false, false)]
+    [InlineData("desktop", null, false, true)]
+    [InlineData("wallpaper", null, true, false)]
+    public void Click_through_reads_true_over_a_desktop_backdrop_and_always_on_a_generic_display(string backdrop, string? family, bool stored, bool expected)
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["a"] = new PanelDeviceRecord
+        {
+            Id = "a", DisplayId = "P", Backdrop = backdrop, ClickThrough = stored,
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Family = family },
+        });
+
+        Assert.Equal(expected, Assert.Single(registry.ListAssignments()).ClickThrough);
+    }
+
+    [Theory]
+    [InlineData("desktop", null, true, true)]
+    [InlineData("desktop", null, null, true)]
+    [InlineData("wallpaper", null, true, false)]
+    [InlineData("", null, true, false)]
+    [InlineData("desktop", null, false, false)]
+    [InlineData("", "xeneon-edge", true, true)]
+    [InlineData("wallpaper", "xeneon-edge", null, true)]
+    public void Generic_display_is_on_top_only_while_see_through(string backdrop, string? family, bool? stored, bool expected)
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["a"] = new PanelDeviceRecord
+        {
+            Id = "a", DisplayId = "P", Backdrop = backdrop, AlwaysOnTop = stored,
+            Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, Family = family },
+        });
+
+        Assert.Equal(expected, Assert.Single(registry.ListAssignments()).AlwaysOnTop);
+        Assert.Equal(stored, store.Load().PanelDevices["a"].AlwaysOnTop);
+    }
+
+    [Fact]
+    public void New_primary_panel_gets_desktop_defaults_and_a_secondary_keeps_null_defaults()
+    {
+        var (registry, store) = Build();
+
+        var (primary, _) = registry.AllocateForDisplay("P", null, Monitor(), primary: true);
+        var (secondary, _) = registry.AllocateForDisplay("S", null, Monitor());
+
+        Assert.Equal("desktop", primary.Backdrop);
+        Assert.True(primary.ClickThrough);
+        Assert.False(primary.AlwaysOnTop);
+        Assert.False(primary.ReserveMonitor);
+        Assert.False(primary.KeepCursorOff);
+        Assert.True(primary.Enabled);
+        Assert.True(store.Load().PanelDevices[primary.Id].Hosted);
+        Assert.False(store.Load().PanelDevices[primary.Id].Enabled);
+        Assert.Null(secondary.Backdrop);
+        Assert.Null(secondary.ClickThrough);
+        Assert.Null(secondary.AlwaysOnTop);
+        Assert.Null(store.Load().PanelDevices[secondary.Id].Hosted);
+    }
+
+    [Fact]
+    public void Re_enabling_a_disabled_record_on_the_primary_display_keeps_saved_options_and_fills_unset_ones()
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord
+        {
+            Id = "r",
+            DisplayId = "P",
+            Enabled = false,
+            Backdrop = "wallpaper",
+            AlwaysOnTop = true,
+            ReserveMonitor = true,
+        });
+
+        var (record, activated) = registry.AllocateForDisplay("P", null, Monitor(), primary: true);
+
+        Assert.True(activated);
+        var stored = store.Load().PanelDevices["r"];
+        Assert.True(stored.Hosted);
+        Assert.False(stored.Enabled);
+        Assert.Equal("wallpaper", stored.Backdrop);
+        Assert.True(stored.AlwaysOnTop);
+        Assert.True(stored.ReserveMonitor);
+        Assert.True(stored.ClickThrough);
+        Assert.False(stored.KeepCursorOff);
+        Assert.True(record.Enabled);
+    }
+
+    [Fact]
+    public void Primary_panel_off_and_on_keeps_always_on_top()
+    {
+        var (registry, store) = Build();
+        var (created, _) = registry.AllocateForDisplay("P", null, Monitor(), primary: true);
+        Assert.False(created.AlwaysOnTop);
+        store.Update(s => s.PanelDevices[created.Id].AlwaysOnTop = true);
+
+        registry.DisablePanelForDisplay("P");
+        var (record, activated) = registry.AllocateForDisplay("P", null, Monitor(), primary: true);
+
+        Assert.True(activated);
+        Assert.True(record.AlwaysOnTop);
+        Assert.True(store.Load().PanelDevices[created.Id].AlwaysOnTop);
+        Assert.True(Assert.Single(registry.ListAssignments()).AlwaysOnTop);
+    }
+
+    [Fact]
+    public void Re_enabling_off_the_primary_display_leaves_the_record_as_it_was()
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord { Id = "r", DisplayId = "S", Enabled = false, Backdrop = "wallpaper" });
+
+        registry.AllocateForDisplay("S", null, Monitor());
+
+        var stored = store.Load().PanelDevices["r"];
+        Assert.True(stored.Enabled);
+        Assert.Null(stored.Hosted);
+        Assert.Equal("wallpaper", stored.Backdrop);
+    }
+
+    [Fact]
+    public void Widget_opacity_defaults_to_full_in_the_settings_type_and_the_install_defaults()
+    {
+        Assert.Equal(1.0, new PanelSettings().WidgetOpacity);
+        Assert.Equal(1.0, Nexus.Service.Defaults.InstallDefaults.Panel.WidgetOpacity);
+    }
+
+    [Fact]
+    public void Primary_panel_on_an_opaque_host_skips_the_see_through_flags()
+    {
+        var (registry, _) = Build(seeThrough: false);
+
+        var (primary, _) = registry.AllocateForDisplay("P", null, Monitor(), primary: true);
+
+        Assert.Null(primary.Backdrop);
+        Assert.Null(primary.ClickThrough);
+    }
+
+    [Fact]
+    public void Patch_takes_click_through_grid_slots_and_clears_the_import()
+    {
+        var (registry, store) = Build();
+        var (r, _) = registry.AllocateForDisplay("D1", null, Monitor());
+        store.Update(s => s.PanelDevices[r.Id].DesktopImport = new DesktopImportDto());
+
+        registry.Patch(r.Id, new PanelDevicePatch { ClickThrough = true, GridSlots = 14, ClearDesktopImport = true });
+
+        var stored = store.Load().PanelDevices[r.Id];
+        Assert.True(stored.ClickThrough);
+        Assert.Equal(14, stored.GridSlots);
+        Assert.Null(stored.DesktopImport);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-4)]
+    public void Patch_with_zero_or_less_clears_the_grid_override(int slots)
+    {
+        var (registry, store) = Build();
+        var (r, _) = registry.AllocateForDisplay("D1", null, Monitor());
+        registry.Patch(r.Id, new PanelDevicePatch { GridSlots = 8 });
+
+        var clone = registry.Patch(r.Id, new PanelDevicePatch { GridSlots = slots })!;
+
+        Assert.Null(store.Load().PanelDevices[r.Id].GridSlots);
+        Assert.Null(clone.GridSlots);
+    }
+
+    [Fact]
+    public void A_stored_non_positive_grid_override_never_reaches_a_response()
+    {
+        var (registry, store) = Build();
+        store.Update(s => s.PanelDevices["r"] = new PanelDeviceRecord { Id = "r", DisplayId = "D1", GridSlots = 0 });
+
+        Assert.Null(registry.FindByDisplayId("D1")!.GridSlots);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(66)]
+    public void Patch_ignores_an_invalid_grid_slot_count(int slots)
+    {
+        var (registry, store) = Build();
+        var (r, _) = registry.AllocateForDisplay("D1", null, Monitor());
+        registry.Patch(r.Id, new PanelDevicePatch { GridSlots = 8 });
+
+        registry.Patch(r.Id, new PanelDevicePatch { GridSlots = slots });
+
+        Assert.Equal(8, store.Load().PanelDevices[r.Id].GridSlots);
+    }
+
+    [Fact]
+    public void Patch_click_through_needs_a_display_bound_record()
+    {
+        var (registry, store) = Build();
+        var q = registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Q60 });
+
+        registry.Patch(q.Id, new PanelDevicePatch { ClickThrough = true });
+
+        Assert.Null(store.Load().PanelDevices[q.Id].ClickThrough);
+    }
+
+    [Fact]
+    public void Grid_slots_travel_with_presets_and_clear_on_reset_but_click_through_does_not_travel()
+    {
+        var (registry, store) = Build();
+        var (r, _) = registry.AllocateForDisplay("D1", null, Monitor());
+        registry.Patch(r.Id, new PanelDevicePatch { GridSlots = 10, ClickThrough = true });
+        var preset = new PanelPreset();
+
+        PanelPresets.Copy(store.Load().PanelDevices[r.Id], preset);
+
+        Assert.Equal(10, preset.GridSlots);
+        var target = new PanelDeviceRecord();
+        PanelPresets.Copy(preset, target);
+        Assert.Equal(10, target.GridSlots);
+
+        registry.ResetToDefaults(r.Id);
+        Assert.Null(store.Load().PanelDevices[r.Id].GridSlots);
+        Assert.True(store.Load().PanelDevices[r.Id].ClickThrough);
+
+        registry.ResetHardwareSettings(r.Id);
+        Assert.Null(store.Load().PanelDevices[r.Id].ClickThrough);
+    }
+
+    [Fact]
+    public void See_through_host_covers_windows_and_macos()
+    {
+        var registry = new PanelDeviceRegistry(new InMemoryConfigStore());
+        Assert.Equal(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(), registry.SeeThroughHost);
+    }
+
+    [Fact]
+    public void Assignments_signature_covers_backdrop_click_through_and_hosting()
+    {
+        var s = new NexusSettings();
+        s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1", Backdrop = "desktop", Capabilities = new PanelDeviceCapabilities { Family = "xeneon" } };
+        var baseline = OverlayHostBootstrap.AssignmentsSignature(s);
+
+        s.PanelDevices["a"].ClickThrough = true;
+        var clickThrough = OverlayHostBootstrap.AssignmentsSignature(s);
+        s.PanelDevices["a"].Backdrop = "wallpaper";
+        var backdrop = OverlayHostBootstrap.AssignmentsSignature(s);
+        s.PanelDevices["a"].Hosted = false;
+        var hosting = OverlayHostBootstrap.AssignmentsSignature(s);
+
+        Assert.Equal(4, new[] { baseline, backdrop, clickThrough, hosting }.Distinct().Count());
+        Assert.Equal("", hosting);
+    }
+
+    [Fact]
+    public void Assignments_signature_changes_when_a_family_change_flips_the_effective_values()
+    {
+        var s = new NexusSettings();
+        s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1", Backdrop = "wallpaper", AlwaysOnTop = true };
+        var generic = OverlayHostBootstrap.AssignmentsSignature(s);
+        s.PanelDevices["a"].Capabilities = new PanelDeviceCapabilities { Family = "xeneon" };
+        var curated = OverlayHostBootstrap.AssignmentsSignature(s);
+
+        Assert.NotEqual(generic, curated);
+        s.PanelDevices["a"].Backdrop = "desktop";
+        s.PanelDevices["a"].ClickThrough = false;
+        var desktopCurated = OverlayHostBootstrap.AssignmentsSignature(s);
+        s.PanelDevices["a"].Capabilities = null;
+        Assert.NotEqual(desktopCurated, OverlayHostBootstrap.AssignmentsSignature(s));
+    }
+
+    [Fact]
+    public void Assignments_signature_changes_when_a_display_becomes_primary()
+    {
+        var s = new NexusSettings();
+        s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1" };
+
+        var cold = OverlayHostBootstrap.AssignmentsSignature(s, _ => false);
+        var warm = OverlayHostBootstrap.AssignmentsSignature(s, id => id == "D1");
+
+        Assert.NotEqual(cold, warm);
+        Assert.Equal(cold, OverlayHostBootstrap.AssignmentsSignature(s));
+    }
+
+    [Fact]
+    public void Topology_service_raises_primary_changed_when_the_cache_first_learns_it()
+    {
+        var store = new InMemoryConfigStore();
+        var service = new DisplayTopologyService(new FakeProvider(), new PanelDeviceRegistry(store), store);
+        var raised = 0;
+        service.PrimaryDisplayChanged += () => raised++;
+
+        service.GetTopology();
+        service.GetTopology();
+
+        Assert.Equal(1, raised);
+    }
+
+    [Fact]
+    public void Supervisor_wants_a_host_for_a_hosted_record_or_shown_widgets_still_to_migrate()
+    {
+        var s = new NexusSettings();
+        s.Panel.AutoLaunch = false;
+        s.Overlay.Enabled = true;
+        s.Overlay.Layout = new() { new LegacyOverlayWidget { Id = "w" } };
+        Assert.True(OverlaySupervisor.Desired(s, false, false));
+        s.Overlay.Enabled = false;
+        Assert.False(OverlaySupervisor.Desired(s, false, false));
+        s.Overlay.Enabled = true;
+        s.Overlay.MigratedToPanels = true;
+        Assert.False(OverlaySupervisor.Desired(s, false, false));
+
+        s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "D1", Hosted = true, Enabled = false };
+        Assert.True(OverlaySupervisor.Desired(s, false, false));
+        s.PanelDevices["a"].Hosted = false;
+        Assert.False(OverlaySupervisor.Desired(s, false, false));
+    }
+
+    [Fact]
+    public void Find_primary_panel_names_the_hosted_record_on_the_primary_display()
+    {
+        var (registry, store) = Build();
+        store.Update(s =>
+        {
+            s.PanelDevices["a"] = new PanelDeviceRecord { Id = "a", DisplayId = "P", AlwaysOnTop = false };
+            s.PanelDevices["b"] = new PanelDeviceRecord { Id = "b", DisplayId = "S" };
+        });
+
+        Assert.Equal("a", registry.FindPrimaryPanel(id => id == "P")!.Id);
+        Assert.Null(registry.FindPrimaryPanel(_ => false));
+        store.Update(s => s.PanelDevices["a"].Enabled = false);
+        Assert.Null(registry.FindPrimaryPanel(id => id == "P"));
+    }
+
+    [Fact]
+    public void New_fields_round_trip_in_both_json_contexts()
+    {
+        var record = new PanelDeviceRecord
+        {
+            Id = "r",
+            DisplayId = "D1",
+            ClickThrough = true,
+            GridSlots = 12,
+            Hosted = true,
+            Enabled = false,
+            Layout = new PanelLayoutDto
+            {
+                Pages = { new PanelPageDto { Id = "p", Widgets = { new PanelWidgetDto { Id = "w", Type = "clock", Locked = true } } } },
+            },
+            DesktopImport = new DesktopImportDto
+            {
+                CellPx = 117.82,
+                CellUnits = "css",
+                Merge = true,
+                Widgets = { new LegacyOverlayWidget { Id = "o", Type = "app:x", Locked = true, Col = 1.25 } },
+            },
+        };
+
+        foreach (var json in new[]
+        {
+            JsonSerializer.Serialize(record, AppJsonContext.Default.PanelDeviceRecord),
+            JsonSerializer.Serialize(record, PersistenceJsonContext.Default.PanelDeviceRecord),
+        })
+        {
+            var back = JsonSerializer.Deserialize(json, AppJsonContext.Default.PanelDeviceRecord)!;
+            Assert.True(back.ClickThrough);
+            Assert.Equal(12, back.GridSlots);
+            Assert.True(back.Hosted);
+            Assert.True(back.Layout!.Pages[0].Widgets[0].Locked);
+            Assert.Equal("css", back.DesktopImport!.CellUnits);
+            Assert.True(back.DesktopImport.Merge);
+            Assert.Equal(1.25, back.DesktopImport.Widgets[0].Col);
+            Assert.Contains("\"desktopImport\"", json);
+        }
+        Assert.DoesNotContain("locked", JsonSerializer.Serialize(new PanelWidgetDto { Id = "w" }, AppJsonContext.Default.PanelWidgetDto));
+
+        var patch = JsonSerializer.Deserialize("{\"clickThrough\":true,\"gridSlots\":8,\"clearDesktopImport\":true}", AppJsonContext.Default.PanelDevicePatch)!;
+        Assert.True(patch.ClickThrough);
+        Assert.Equal(8, patch.GridSlots);
+        Assert.True(patch.ClearDesktopImport);
+
+        var dto = JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(new DisplayAssignmentDto { ClickThrough = true, IsPrimary = true }, AppJsonContext.Default.DisplayAssignmentDto),
+            AppJsonContext.Default.DisplayAssignmentDto)!;
+        Assert.True(dto.ClickThrough);
+        Assert.True(dto.IsPrimary);
+
+        var settings = new NexusSettings();
+        settings.Overlay.MigratedToPanels = true;
+        settings.Overlay.MigratedRecordId = "r";
+        var back2 = JsonSerializer.Deserialize(
+            JsonSerializer.Serialize(settings, PersistenceJsonContext.Default.NexusSettings),
+            PersistenceJsonContext.Default.NexusSettings)!;
+        Assert.True(back2.Overlay.MigratedToPanels);
+        Assert.Equal("r", back2.Overlay.MigratedRecordId);
+    }
+
+    private sealed class FakeProvider : IDisplayTopologyProvider
+    {
+        public int Enumerations;
+        public bool PositionsAvailable => true;
+        public IReadOnlyList<RawDisplayInfo>? Enumerate()
+        {
+            Enumerations++;
+            return Displays();
+        }
+
+        private static List<RawDisplayInfo> Displays() => new List<RawDisplayInfo>
+        {
+            new() { Id = "A", IsPrimary = false },
+            new() { Id = "B", IsPrimary = true },
+        };
+    }
+
+    [Fact]
+    public void Topology_service_names_the_primary_display()
+    {
+        var store = new InMemoryConfigStore();
+        var provider = new FakeProvider();
+        var service = new DisplayTopologyService(provider, new PanelDeviceRegistry(store), store);
+
+        Assert.False(service.IsPrimaryDisplay("B"));
+        Assert.Equal(0, provider.Enumerations);
+
+        service.GetTopology();
+        Assert.True(service.IsPrimaryDisplay("B"));
+        Assert.False(service.IsPrimaryDisplay("A"));
+        Assert.False(service.IsPrimaryDisplay(""));
+        Assert.Equal(1, provider.Enumerations);
+    }
+
+    [Fact]
+    public void Kiosk_viewport_patches_on_display_bound_records_and_survives_a_capability_refresh()
+    {
+        var (registry, _) = Build();
+        var (record, _) = registry.AllocateForDisplay("D1", "Monitor", Monitor());
+
+        var patched = registry.Patch(record.Id, new PanelDevicePatch { KioskViewport = new KioskViewportDto { CssWidth = 1920, CssHeight = 1152, Dpr = 1 } });
+        registry.RefreshDisplayCapabilities("D1", new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 1200, Dpr = 1 });
+
+        Assert.Equal(1152, patched!.KioskViewport!.CssHeight);
+        var fetched = registry.Get(record.Id)!;
+        Assert.Equal(1152, fetched.KioskViewport!.CssHeight);
+        Assert.Equal(1200, fetched.Capabilities!.CssHeight);
+    }
+
+    [Theory]
+    [InlineData(0, 100, 1)]
+    [InlineData(100, 40000, 1)]
+    [InlineData(100, 100, 0)]
+    [InlineData(100, 100, double.NaN)]
+    public void Kiosk_viewport_rejects_out_of_range_values(int w, int h, double dpr)
+    {
+        var (registry, _) = Build();
+        var (record, _) = registry.AllocateForDisplay("D1", "Monitor", Monitor());
+
+        registry.Patch(record.Id, new PanelDevicePatch { KioskViewport = new KioskViewportDto { CssWidth = w, CssHeight = h, Dpr = dpr } });
+
+        Assert.Null(registry.Get(record.Id)!.KioskViewport);
+    }
+
+    [Fact]
+    public void Kiosk_viewport_is_ignored_on_records_without_a_display()
+    {
+        var (registry, _) = Build();
+        var record = registry.Allocate(null, new PanelDeviceCapabilities { Surface = PanelSurfaces.Phone });
+
+        registry.Patch(record.Id, new PanelDevicePatch { KioskViewport = new KioskViewportDto { CssWidth = 800, CssHeight = 600, Dpr = 1 } });
+
+        Assert.Null(registry.Get(record.Id)!.KioskViewport);
+    }
+
+    [Fact]
+    public void Kiosk_viewport_round_trips_through_the_source_generated_json_context()
+    {
+        var json = JsonSerializer.Serialize(new PanelDeviceRecord { Id = "r", KioskViewport = new KioskViewportDto { CssWidth = 1920, CssHeight = 1152, Dpr = 1.25 } }, AppJsonContext.Default.PanelDeviceRecord);
+        var back = JsonSerializer.Deserialize(json, AppJsonContext.Default.PanelDeviceRecord)!;
+
+        Assert.Contains("\"kioskViewport\"", json);
+        Assert.Equal(1152, back.KioskViewport!.CssHeight);
+        Assert.Equal(1.25, back.KioskViewport.Dpr);
+    }
+}

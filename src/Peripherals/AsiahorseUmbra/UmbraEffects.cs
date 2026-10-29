@@ -156,7 +156,7 @@ public static class UmbraEffects
         return (byte)Math.Min((int)BrightnessByte(level), quantized);
     }
 
-    internal static UmbraEffectBlock ToBlock(string group, UmbraEffectInfo effect, UmbraEffectValues values, float master)
+    internal static UmbraEffectBlock ToBlock(string group, UmbraEffectInfo effect, UmbraEffectValues values, float master, string? order = null)
     {
         var colors = new byte[ColorSlots * 3];
         for (var i = 0; i < ColorSlots; i++)
@@ -164,6 +164,7 @@ public static class UmbraEffects
             // Sync Static plays color 1 in every slot; the vendor app sends async Static colors as stored.
             var src = effect.Key == "static" && group == GroupSync ? values.Colors[0] : values.Colors[i];
             TryParseColor(src, out colors[i * 3], out colors[i * 3 + 1], out colors[i * 3 + 2]);
+            Nexus.Service.Lighting.DeviceColorAdjust.ReorderChannels(order, ref colors[i * 3], ref colors[i * 3 + 1], ref colors[i * 3 + 2]);
         }
         var id = group == GroupMerge ? effect.MergeId : effect.SyncId;
         return new UmbraEffectBlock(

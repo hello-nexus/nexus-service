@@ -259,18 +259,20 @@ internal static class UserHelperBootstrapper
 
     /// <summary>
     /// Mirror of <see cref="EnsureLaunched"/> for the "open the dashboard window"
-    /// hotline. The desktop widget context menu's "Open dashboard" entry hits
+    /// hotline. The panel widget context menu's "Open dashboard" entry hits
     /// <c>POST /service/open-app</c>; the service handler runs as LocalSystem
     /// in Session 0 and cannot spawn an interactive Edge --app on its own,
     /// so we delegate to a one-shot <c>Nexus.exe --open-app</c> in the active
     /// console session, which then runs the same Edge --app spawn path the
     /// helper uses.
     /// </summary>
-    public static void LaunchOpenApp()
+    public static void LaunchOpenApp(string? route = null)
     {
         try
         {
-            SpawnInUserSession("--open-app", "open-app", "NexusOpenApp");
+            // The route is already validated to characters that need no quoting on a command line.
+            var arg = Nexus.Service.Platform.OpenAppRoute.Normalize(route) is { } safe ? "--open-app " + safe : "--open-app";
+            SpawnInUserSession(arg, "open-app", "NexusOpenApp");
         }
         catch (Exception ex)
         {

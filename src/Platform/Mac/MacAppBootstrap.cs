@@ -126,6 +126,21 @@ internal static class MacAppBootstrap
             screenTime.AttachWorkspaceObserver();
         }
 
+        // Host light/dark is the only source of Theme.ResolvedThemeMode; seeds at
+        // startup and follows OS changes.
+        var themeHub = app.Services.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+        MacHostTheme.Start(dark =>
+        {
+            try
+            {
+                if (HostThemeSync.Apply(store, dark))
+                {
+                    Nexus.Service.Sockets.PanelTopics.BroadcastPrefs(themeHub);
+                }
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[mac-theme] apply failed: {ex.Message}"); }
+        });
+
         // Lock-screen wake-on-input, as TrayBootstrap wires the Windows helper's
         // poll: one watch runs while any consumer wants it, and every input
         // reaches all of them.

@@ -6,6 +6,7 @@ public sealed class AiStatusResponse
     public bool Enabled { get; set; }
     public bool Running { get; set; }
     public int Port { get; set; }
+    public bool AllowRemote { get; set; }
     public string Endpoint { get; set; } = "";
     /// <summary>Empty until the token has been minted (first enable or a rotate).</summary>
     public string Token { get; set; } = "";
@@ -27,6 +28,7 @@ public sealed class AiCapabilitiesDto
 public sealed class AiConfigPatch
 {
     public bool? Enabled { get; set; }
+    public bool? AllowRemote { get; set; }
     public AiCapabilitiesPatch? Capabilities { get; set; }
 }
 

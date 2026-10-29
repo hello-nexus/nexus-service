@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 using Nexus.Service.Peripherals.LianLiWireless;
@@ -104,26 +105,51 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
 
     public bool Write(ReadOnlySpan<byte> data) => Write(_writePipeId, data);
 
-    public bool Write(byte pipeId, ReadOnlySpan<byte> data)
+    public bool Write(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data) == data.Length;
+
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data, (int)TransferTimeoutMs, CancellationToken.None);
+
+    /// <summary>The opened write pipe keeps its WinUSB timeout policy, which ends a longer wait on it first.</summary>
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs, CancellationToken ct)
     {
         if (_disposed || data.Length == 0)
         {
-            return false;
+            return -1;
         }
         lock (_ioLock)
         {
             // Re-checked inside the lock: writing through a handle Dispose already freed is
             // an access violation, not an exception.
+            if (_disposed)
+            {
+                return -1;
+            }
+            if (ct.IsCancellationRequested)
+            {
+                return 0;
+            }
+            // Dispose waits on _ioLock, so the handle outlives the registration.
+            using var abort = ct.Register(() => Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId));
             fixed (byte* p = data)
             {
-                return !_disposed && TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, TransferTimeoutMs, write: true) == data.Length;
+                return TransferLocked(pipeId, _ioEvent, (IntPtr)p, data.Length, (uint)Math.Max(1, timeoutMs), write: true, ct);
             }
         }
     }
 
-    public int Read(Span<byte> buffer, int timeoutMs)
+    public bool ClearHalt(byte pipeId)
     {
-        if (_disposed || _readPipeId == 0 || buffer.Length == 0)
+        lock (_ioLock)
+        {
+            return !_disposed && Slv3WinUsbInterop.WinUsb_ResetPipe(_winUsbHandle, pipeId);
+        }
+    }
+
+    public int Read(Span<byte> buffer, int timeoutMs) => Read(_readPipeId, buffer, timeoutMs);
+
+    public int Read(byte pipeId, Span<byte> buffer, int timeoutMs)
+    {
+        if (_disposed || pipeId == 0 || buffer.Length == 0)
         {
             return -1;
         }
@@ -135,14 +161,16 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
             }
             fixed (byte* p = buffer)
             {
-                return TransferLocked(_readPipeId, _readEvent, (IntPtr)p, buffer.Length, (uint)Math.Max(1, timeoutMs), write: false);
+                return TransferLocked(pipeId, _readEvent, (IntPtr)p, buffer.Length, (uint)Math.Max(1, timeoutMs), write: false);
             }
         }
     }
 
-    /// <summary>Bytes transferred, 0 on timeout, or -1 on failure. <paramref name="buffer"/>
+    /// <summary>Bytes transferred, or -1 on failure. A timed-out read gives 0. A write that times out or fails once
+    /// under way gives the count the transfer reports, 0 when nothing went out, or -1 when an aborted write reports
+    /// no count it settled, so how much went out is unknown. <paramref name="buffer"/>
     /// must stay pinned until this returns; every path waits out the transfer first.</summary>
-    private int TransferLocked(byte pipeId, IntPtr ioEvent, IntPtr buffer, int length, uint timeoutMs, bool write)
+    private int TransferLocked(byte pipeId, IntPtr ioEvent, IntPtr buffer, int length, uint timeoutMs, bool write, CancellationToken ct = default)
     {
         var ovPtr = Marshal.AllocHGlobal(Marshal.SizeOf<NativeOverlapped>());
         try
@@ -157,14 +185,27 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
 
             if (!ok && Marshal.GetLastWin32Error() == (int)Slv3WinUsbInterop.ERROR_IO_PENDING)
             {
+                // A cancel that landed before the transfer was queued found nothing to abort.
+                if (ct.IsCancellationRequested)
+                {
+                    Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId);
+                }
                 if (Slv3WinUsbInterop.WaitForSingleObject(ioEvent, timeoutMs) != WaitObject0)
                 {
                     Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId);
-                    Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out _, wait: true);
+                    bool settled = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out var moved, wait: true);
                     // A timed-out read is a quiet panel, not a broken one.
-                    return write ? -1 : 0;
+                    if (!write)
+                    {
+                        return 0;
+                    }
+                    return settled || moved > 0 ? (int)moved : -1;
                 }
                 ok = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out transferred, wait: true);
+                if (!ok && write)
+                {
+                    return (int)transferred;
+                }
             }
             return ok ? (int)transferred : -1;
         }

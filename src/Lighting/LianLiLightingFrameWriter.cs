@@ -328,7 +328,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         // One merged animation cannot honour per-port control, so any excluded port keeps the per-port commit.
         var merged = ls.Merge && mode.MergesOn(profile) && !(ls.InnerRing is not null && ls.OuterRing is not null)
             && !AnyDeviceExcluded(composed, settings);
-        var sig = ComputeFirmwareSig(ls, merged, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice);
+        var sig = ComputeFirmwareSig(ls, merged, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice, settings.Devices.LightingDevicePrefs);
         if (_lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value)
         {
             return;
@@ -346,8 +346,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
 
         var committed = merged
-            ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, fans)
-            : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice);
+            ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, fans, settings.Devices.LightingDevicePrefs)
+            : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice, settings.Devices.LightingDevicePrefs);
         if (committed)
         {
             NoteSuccess(_commitRetry, "firmware commit");
@@ -530,7 +530,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
-        List<IReadOnlyList<ResolvedZone>> zonesByDevice)
+        List<IReadOnlyList<ResolvedZone>> zonesByDevice,
+        Dictionary<string, LightingDevicePreference> prefs)
     {
         // Per-channel commits do not exit a merged effect; only merge-off does (the identity merge order does not).
         if (profile.SupportsMerge)
@@ -561,7 +562,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                     var ledsPerFan = profile.LedsPerFanForChannel(ch);
                     var effectByte = effect.Mode.EffectByte;
                     var perFan = effectByte is LianLiProtocol.EffectStatic or LianLiProtocol.EffectBreathing;
-                    var byteCount = FillPaletteBuffer(_channelBuf, effect.Mode, effect.Colors, numFans, ledsPerFan, perFan, profile.PaletteSlotsPerFan);
+                    var byteCount = FillPaletteBuffer(_channelBuf, effect.Mode, effect.Colors, numFans, ledsPerFan, perFan, profile.PaletteSlotsPerFan, OrderForSegment(prefs, zonesByDevice[i], seg));
                     var speedByte = LianLiLightingModes.SpeedCodes[Math.Clamp(effect.Speed, 0, 4)];
                     var dirByte = LianLiLightingModes.DirectionByte(effect.Direction);
                     var brightnessByte = DeviceBrightnessByte(device, effect.Brightness, globalBrightness, disabled);
@@ -599,7 +600,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         List<ComposedDevice> composed,
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,
-        LianLiSettings fans)
+        LianLiSettings fans,
+        Dictionary<string, LightingDevicePreference> prefs)
     {
         if (composed.Count == 0) return true;
         var anchor = composed[0];
@@ -629,7 +631,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectMergeIdle, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
             Settle();
         }
-        var paletteBytes = FillPaletteBuffer(_channelBuf, mode, ls.Colors, profile.MaxFans, profile.LedsPerFanForChannel(0), perFan: false, profile.PaletteSlotsPerFan);
+        var paletteBytes = FillPaletteBuffer(_channelBuf, mode, ls.Colors, profile.MaxFans, profile.LedsPerFanForChannel(0), perFan: false, profile.PaletteSlotsPerFan, FirstOrderOfAll(prefs, _firmwareZonesByDevice));
         if (!_hub.SendColorData(0, _channelBuf.AsSpan(0, paletteBytes))) return false;
         Settle();
         if (!_hub.SendModeCommit(0, mode.MergedEffectByte, speedByte, dirByte, brightnessByte)) return false;
@@ -709,12 +711,61 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return false;
     }
 
+    // Cards and prefs are keyed by zone id, so the order of a segment is the
+    // first non-RGB order of the zones whose slices cover it (custom partitions and split rings
+    // both have zone ids that differ from the device id).
+    internal static string? OrderForSegment(Dictionary<string, LightingDevicePreference> prefs, IReadOnlyList<ResolvedZone> zones, int segment)
+    {
+        foreach (var zone in zones)
+        {
+            foreach (var slice in zone.Slices)
+            {
+                if (slice.Segment == segment)
+                {
+                    var order = DeviceColorAdjust.OrderOf(prefs, zone.Id);
+                    if (DeviceColorAdjust.NormalizeOrder(order) is not (null or "RGB"))
+                    {
+                        return order;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The first non-RGB order across every member device, for the one merged animation.</summary>
+    internal static string? FirstOrderOfAll(Dictionary<string, LightingDevicePreference> prefs, List<IReadOnlyList<ResolvedZone>> zonesByDevice)
+    {
+        foreach (var zones in zonesByDevice)
+        {
+            if (FirstOrder(prefs, zones) is { } order)
+            {
+                return order;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The first non-RGB order among a device's zones, for a look that cannot split per zone.</summary>
+    internal static string? FirstOrder(Dictionary<string, LightingDevicePreference> prefs, IReadOnlyList<ResolvedZone> zones)
+    {
+        foreach (var zone in zones)
+        {
+            var order = DeviceColorAdjust.OrderOf(prefs, zone.Id);
+            if (DeviceColorAdjust.NormalizeOrder(order) is not (null or "RGB"))
+            {
+                return order;
+            }
+        }
+        return null;
+    }
+
     // perFan: colour i fills fan i's whole ring (cycling when fewer colours than
     // fans). Otherwise each fan carries the palette in its own run of slots,
     // missing colours black. No user colours means the mode's defaults. Input
     // colours are RGB; SendColorData applies the R,B,G wire swap. Returns the
     // bytes filled.
-    private static int FillPaletteBuffer(byte[] buf, LianLiModeInfo mode, IReadOnlyList<string> colors, int numFans, int ledsPerFan, bool perFan, int slotsPerFan)
+    private static int FillPaletteBuffer(byte[] buf, LianLiModeInfo mode, IReadOnlyList<string> colors, int numFans, int ledsPerFan, bool perFan, int slotsPerFan, string? order)
     {
         Array.Clear(buf);
         var corners = mode.CornerPalette;
@@ -737,6 +788,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 for (var led = 0; led < ledsPerFan; led++)
                 {
                     var (r, g, b) = ParseHexColor(source[led * CornersPerFan / ledsPerFan % count]);
+                    DeviceColorAdjust.ReorderChannels(order, ref r, ref g, ref b);
                     Put(buf, fanIdx * ledsPerFan + led, r, g, b);
                 }
                 continue;
@@ -744,6 +796,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (perFan)
             {
                 var (r, g, b) = ParseHexColor(source[fanIdx % count]);
+                DeviceColorAdjust.ReorderChannels(order, ref r, ref g, ref b);
                 for (var led = 0; led < ledsPerFan; led++)
                 {
                     Put(buf, fanIdx * ledsPerFan + led, r, g, b);
@@ -753,6 +806,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             for (var j = 0; j < slotsPerFan && j < count; j++)
             {
                 var (r, g, b) = ParseHexColor(source[j]);
+                DeviceColorAdjust.ReorderChannels(order, ref r, ref g, ref b);
                 Put(buf, fanIdx * slotsPerFan + j, r, g, b);
             }
         }
@@ -833,7 +887,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
-        List<IReadOnlyList<ResolvedZone>> zonesByDevice)
+        List<IReadOnlyList<ResolvedZone>> zonesByDevice,
+        Dictionary<string, LightingDevicePreference> prefs)
     {
         var hc = new HashCode();
         hc.Add(ls.Mode);
@@ -863,6 +918,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             hc.Add(DeviceBrightnessByte(device, ls.Brightness, globalBrightness, disabled));
             for (var seg = 0; seg < device.SegmentChannels.Count; seg++)
             {
+                hc.Add(OrderForSegment(prefs, zonesByDevice[i], seg));
                 foreach (var ch in device.SegmentChannels[seg])
                 {
                     hc.Add(ch);

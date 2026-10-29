@@ -1012,6 +1012,8 @@
     <Compile Remove="src/Platform/Linux/Render/PanelRenderSession.cs" />
     <Compile Remove="src/Platform/Linux/Render/RawFrameIngestClient.cs" />
     <Compile Remove="src/Platform/Linux/LinuxX11Outputs.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxKeyInputGate.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxKeyPressWatcher.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSysfs.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSystemAccentProvider.cs" />
     <Compile Remove="src/Platform/Linux/LinuxTrayHost.cs" />

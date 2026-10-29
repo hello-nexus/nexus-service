@@ -1,6 +1,8 @@
 uniform float u_wind; // hint_range(0.3, 3.0, 0.05) = 1.2  wind speed
 uniform float u_density; // hint_range(0.3, 2.5, 0.05) = 1.0  particle density
 uniform float u_gusts; // hint_range(0.1, 2.0, 0.05) = 0.8  gust frequency
+uniform float u_mood; // hint_range(0.0, 7.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora, 6 desert, 7 dusk
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 mat2 rot2(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
 
@@ -42,8 +44,8 @@ void main() {
 
     // Warm desert sky backdrop using palA..palB so the gradient itself
     // shifts under hue rotation.
-    vec3 bgTop = palA * 0.20;
-    vec3 bgBot = palB * 0.38;
+    vec3 bgTop = palA * 0.38;
+    vec3 bgBot = palB * 0.58;
     vec3 col = mix(bgTop, bgBot, smoothstep(0.0, 1.0, uv.y));
     // perf: backdrop haze tint, smooth low-detail -> fbm3
     col += palC * fbm3(uv * 1.4 + t * 0.08) * 0.10;
@@ -54,7 +56,7 @@ void main() {
     p1 += vec2(fbm3(p1 * 0.9 + t * 0.15), fbm3(p1 * 1.1 - t * 0.13)) * 0.8;
     float haze = fbm3(p1);
     haze = smoothstep(0.32, 0.7, haze) * dens;
-    col += palA * haze * 0.55;
+    col += palA * haze * 1.15;
 
     // -------- Layer 2: mid streaks ----------------------------------
     vec2 p2 = vec2(w.x * 2.2 - t * 1.0, w.y * 18.0);
@@ -62,7 +64,7 @@ void main() {
     p2 += vec2(fbm3(p2 * 0.35 + t * 0.1), fbm3(p2 * 0.35 + 9.0 - t * 0.12)) * 0.35;
     float mid = fbm3(p2);
     mid = pow(smoothstep(0.42, 0.85, mid), 1.2) * dens;
-    col += palB * mid * 1.05;
+    col += palB * mid * 1.7;
 
     // -------- Layer 3: fine grains ----------------------------------
     vec2 p3 = vec2(w.x * 4.0 - t * 2.2, w.y * 55.0);
@@ -72,7 +74,7 @@ void main() {
     p3.y += (fbm3(vec2(w.x * 3.0, t * 0.8)) - 0.5) * 1.5;
     float fine = fbm3(p3);
     fine = pow(smoothstep(0.5, 0.92, fine), 1.5) * dens;
-    col += palC * fine * 1.25;
+    col += palC * fine * 1.6;
 
     // -------- Layer 4: hot specks -----------------------------------
     vec2 cellSpace = vec2(w.x * 140.0 - t * 70.0, w.y * 180.0);
@@ -101,7 +103,7 @@ void main() {
     gustAlong += sin(t * 1.3 + w.y * 7.0) * 0.04;
     float gustBand = exp(-gustAlong * gustAlong * 70.0);
     float gustEnv = smoothstep(0.0, 0.08, gustPhase) * smoothstep(1.0, 0.88, gustPhase);
-    col += palD * gustBand * gustEnv * dens * 1.8;
+    col += palD * gustBand * gustEnv * dens * 2.2;
 
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finalize(col * 3.0), 1.0);
 }

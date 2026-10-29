@@ -245,6 +245,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             hc.Add(pref.AdjustBlue);
             hc.Add(pref.AdjustTemperature);
             hc.Add(pref.AdjustSaturation);
+            hc.Add(pref.ColorOrder);
         }
         if (_engine.LedColorLocks?.TryGet(id, out var locks) == true)
         {
@@ -399,7 +400,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         // level, rounded up so a dim setting dims the ring rather than switching it off.
         var cap = Math.Min(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0, MasterBrightness.Effective(settings.Lighting));
         var level = Math.Min(ls.Brightness, (int)Math.Ceiling(cap * HydroShift2RingEffects.MaxLevel));
-        var signature = $"{mode}|{level}|{ls.Speed}|{ls.Direction}|{string.Join(',', ls.Colors)}";
+        var signature = $"{mode}|{level}|{ls.Speed}|{ls.Direction}|{string.Join(',', ls.Colors)}|{pref?.ColorOrder}";
         if (signature == _effectSignature)
         {
             return;
@@ -419,6 +420,15 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         for (int f = 0; f < frames.Count; f++)
         {
             frames[f].CopyTo(packed, f * _ring.Length);
+        }
+        // Permute the rendered output so generated colors (rainbow, twinkle, the
+        // default palette) follow the order too; the renderer is channel-symmetric.
+        if (DeviceColorAdjust.NormalizeOrder(pref?.ColorOrder) is not (null or "RGB"))
+        {
+            for (var i = 0; i + 2 < packed.Length; i += 3)
+            {
+                DeviceColorAdjust.ReorderChannels(pref!.ColorOrder, ref packed[i], ref packed[i + 1], ref packed[i + 2]);
+            }
         }
         _aio.SetRingAnimation(packed, frames.Count, interval);
     }

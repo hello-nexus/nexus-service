@@ -19,15 +19,16 @@ public sealed class NexusSettings
     /// a migration in <c>JsonConfigStore.Load()</c>. Lives as a constant so
     /// tests and tooling can reference "current" without bit-rotting.
     /// </summary>
-    public const int CurrentSchemaVersion = 25;
+    public const int CurrentSchemaVersion = 27;
 
-    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). v19 keeps Stream Deck and Tryx on for an upgrading install that never chose (their default turned off) and seeds the default conflict whitelist (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration"/>). v20 keeps the NZXT Kraken and ZMatrices LCD on for an upgrading install that never chose, since their defaults turned off (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn"/>). v21 marks any pre-existing settings.json as features-onboarded again, since Lighting and Cooling now read off until that flag is set. v22 opts an existing install's mice into OpenRGB (see <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn"/>), since new installs hold them off. v23 rewrites the removed Game Sync lighting mode to static and sets <see cref="GameSyncRemovedNotice"/> on an upgrade. v24 moves the stored lighting render backend "wgl" (the old default) to "angle", the new default. v25 moves a stored keeb firmware brightness equal to the old default to the new default (the old default was always persisted). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
+    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). v19 keeps Stream Deck and Tryx on for an upgrading install that never chose (their default turned off) and seeds the default conflict whitelist (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration"/>). v20 keeps the NZXT Kraken and ZMatrices LCD on for an upgrading install that never chose, since their defaults turned off (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn"/>). v21 marks any pre-existing settings.json as features-onboarded again, since Lighting and Cooling now read off until that flag is set. v22 opts an existing install's mice into OpenRGB (see <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn"/>), since new installs hold them off. v23 rewrites the removed Game Sync lighting mode to static and sets <see cref="GameSyncRemovedNotice"/> on an upgrade. v24 moves the stored lighting render backend "wgl" (the old default) to "angle", the new default. v25 moves a stored keeb firmware brightness equal to the old default to the new default (the old default was always persisted). v26 was stamped by a branch build with another meaning, so v27 also whitelists the DeepCool app for an install whose Mystique is not on (idempotent, see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.WhitelistDeepCool"/>) and clears the retired desktop overlay's settings from a block that holds no widgets (see <see cref="LegacyOverlaySettings"/>). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public ThemeSettings Theme { get; set; } = new();
     public MonitoringSettings Monitoring { get; set; } = new();
     public PanelSettings Panel { get; set; } = new();
-    public OverlaySettings Overlay { get; set; } = new();
+    /// <summary>The retired desktop overlay's block, read by the desktop widgets migration; see <see cref="LegacyOverlaySettings"/>.</summary>
+    public LegacyOverlaySettings Overlay { get; set; } = new();
     public AuthSettings? Auth { get; set; } = new();
     public LightingSettings Lighting { get; set; } = new();
     public KeebSettings Keeb { get; set; } = new();
@@ -227,8 +228,11 @@ public sealed class AiIntegrationSettings
     public bool Enabled { get; set; }
     /// <summary>Bearer token the MCP client presents on every request. Minted on first enable; empty until then.</summary>
     public string Token { get; set; } = "";
-    /// <summary>Loopback port the MCP listener binds. 0 means an ephemeral port (test use only).</summary>
-    public int Port { get; set; } = 9420;
+    /// <summary>Port the MCP listener binds. 0 means an ephemeral port (test use only).</summary>
+    public const int DefaultPort = 9420;
+    public int Port { get; set; } = DefaultPort;
+    /// <summary>Opt-in: bind all interfaces instead of loopback so an agent on another host (a tailnet or LAN peer) can reach the endpoint. The bearer token stays mandatory.</summary>
+    public bool AllowRemote { get; set; }
     public bool AllowTelemetry { get; set; } = true;
     public bool AllowCooling { get; set; } = true;
     public bool AllowLighting { get; set; } = true;
@@ -514,7 +518,7 @@ public sealed class WeatherSavedLocation
 /// UI-only residual state that has no install-defaults equivalent. Everything
 /// that mirrors install-defaults.json now lives on NexusSettings root in
 /// <see cref="ThemeSettings"/>, <see cref="MonitoringSettings"/>,
-/// <see cref="PanelSettings"/>, and <see cref="OverlaySettings"/>.
+/// <see cref="PanelSettings"/>, and <see cref="LegacyOverlaySettings"/>.
 /// </summary>
 public sealed class UiSettings
 {
@@ -559,8 +563,81 @@ public sealed class UiSettings
     public bool? ShowUncontrolledLightingDevices { get; set; }
     /// <inheritdoc cref="ShowUncontrolledLightingDevices"/>
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    /// <summary>True opens that page on its 3D view. Null until the user picks a view, so the client keeps its own default.</summary>
+    public bool? LightingView3d { get; set; }
+    /// <inheritdoc cref="LightingView3d"/>
+    public bool? CoolingView3d { get; set; }
+    /// <summary>What the cooling 3D scene draws, "both", "case" or "airflow". Null until chosen.</summary>
+    public string? CoolingFlowMode { get; set; }
+    /// <summary>True draws collision shapes in the cooling 3D scene. Null until chosen.</summary>
+    public bool? CoolingCollisionShapes { get; set; }
     /// <summary>Sidebar DEVICES row keys the user hid. A row is omitted only while its Nexus Control is also off. Workstation-level: no profile category carries it. Non-null so the client always receives a list.</summary>
     public List<string> HiddenSidebarDevices { get; set; } = new();
+    /// <summary>Static colors the user recently applied in the lighting widget, "#RRGGBB", newest first. Workstation-level. POST /preferences caps and validates through <see cref="UiRecents"/>.</summary>
+    public List<string> RecentStaticColors { get; set; } = new();
+    /// <summary>Animation effect keys the user recently applied in the lighting widget, newest first. Workstation-level. POST /preferences caps and validates through <see cref="UiRecents"/>.</summary>
+    public List<string> RecentAnimations { get; set; } = new();
+}
+
+/// <summary>Validation shared by every writer of the lighting widget's recently-used lists.</summary>
+public static class UiRecents
+{
+    public const int MaxEntries = 32;
+    public const int MaxKeyLength = 128;
+
+    /// <summary>Keeps valid "#RRGGBB" entries in order, without case-insensitive duplicates, up to <see cref="MaxEntries"/>.</summary>
+    public static List<string> SanitizeColors(IEnumerable<string?> source)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+        foreach (var c in source)
+        {
+            if (result.Count >= MaxEntries)
+            {
+                break;
+            }
+            if (IsHexColor(c) && seen.Add(c!))
+            {
+                result.Add(c!);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Keeps non-empty keys of bounded length in order, without duplicates, up to <see cref="MaxEntries"/>.</summary>
+    public static List<string> SanitizeKeys(IEnumerable<string?> source)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+        foreach (var k in source)
+        {
+            if (result.Count >= MaxEntries)
+            {
+                break;
+            }
+            if (!string.IsNullOrWhiteSpace(k) && k.Length <= MaxKeyLength && !k.Any(char.IsControl) && seen.Add(k))
+            {
+                result.Add(k);
+            }
+        }
+        return result;
+    }
+
+    private static bool IsHexColor(string? c)
+    {
+        if (c is not { Length: 7 } || c[0] != '#')
+        {
+            return false;
+        }
+        for (var i = 1; i < 7; i++)
+        {
+            if (!char.IsAsciiHexDigit(c[i]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 }
 
 /// <summary>
@@ -585,7 +662,13 @@ public sealed class UiSettingsPatch
     public bool? ShowUncontrolledDevices { get; set; }
     public bool? ShowUncontrolledLightingDevices { get; set; }
     public bool? ShowUncontrolledCoolingDevices { get; set; }
+    public bool? LightingView3d { get; set; }
+    public bool? CoolingView3d { get; set; }
+    public string? CoolingFlowMode { get; set; }
+    public bool? CoolingCollisionShapes { get; set; }
     public List<string>? HiddenSidebarDevices { get; set; }
+    public List<string>? RecentStaticColors { get; set; }
+    public List<string>? RecentAnimations { get; set; }
 }
 
 /// <summary>
@@ -1585,6 +1668,8 @@ public sealed class DevicesSettings
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
     /// <summary>What the ROG Crosshair X870E Glacial LCD shows. Service-side so it survives a restart; only what differs from the panel's own state is sent, and a monitor the user chose is resumed on connect.</summary>
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
+    /// <summary>What the DeepCool Mystique screen shows. Service-side so it survives a restart and is re-applied on connect.</summary>
+    public DeepCoolMystiqueSettings DeepCoolMystique { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
@@ -1772,6 +1857,8 @@ public sealed class LightingDevicePreference
     /// <summary>Negative is cooler, positive warmer.</summary>
     public float AdjustTemperature { get; set; }
     public float AdjustSaturation { get; set; } = 1f;
+    /// <summary>Channel order the device expects on the wire. Null is RGB; otherwise one of the names in DeviceColorAdjust.OrderNames.</summary>
+    public string? ColorOrder { get; set; }
 }
 
 public sealed class MotherboardLedChannel
@@ -2307,6 +2394,184 @@ public sealed class GlacialLcdSettings
                 ? defaults[i]
                 : new GlacialLcdSlot { Category = slot.Category ?? "", Sensor = slot.Sensor ?? "", Label = slot.Label ?? "" });
         }
+        return copy;
+    }
+}
+
+/// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>
+public sealed class DeepCoolMystiqueMediaItem
+{
+    public const string KindPicture = "picture";
+    public const string KindGif = "gif";
+
+    /// <summary><see cref="KindPicture"/> or <see cref="KindGif"/>.</summary>
+    public string Kind { get; set; } = KindPicture;
+
+    /// <summary>Names the item; a picture goes up on the screen under <see cref="DeepCoolMystiqueSettings.PictureSlot"/>, a GIF under an id of its own.</summary>
+    public string Id { get; set; } = "";
+
+    public string Name { get; set; } = "";
+
+    /// <summary>Extension of the kept source file, for re-cropping; empty when none was kept.</summary>
+    public string Ext { get; set; } = "";
+
+    /// <summary>The crop the item was last encoded with, in <see cref="Nexus.Service.Media.CropRect"/> text form; empty for the whole frame.</summary>
+    public string Crop { get; set; } = "";
+
+    public DeepCoolMystiqueMediaItem Copy() => new() { Kind = Kind ?? KindPicture, Id = Id ?? "", Name = Name ?? "", Ext = Ext ?? "", Crop = Crop ?? "" };
+}
+
+/// <summary>A motherboard or cooler sensor picked to feed one of the Mystique's RPM readouts.</summary>
+public sealed class DeepCoolMystiqueSensorPick
+{
+    /// <summary>Monitoring category; empty selects the automatic pick.</summary>
+    public string Category { get; set; } = "";
+
+    public string Sensor { get; set; } = "";
+
+    public DeepCoolMystiqueSensorPick Copy() => new() { Category = Category ?? "", Sensor = Sensor ?? "" };
+}
+
+/// <summary>
+/// The Mystique screen's settings. The device cannot be read back, so each command group is
+/// written only after the user has changed something in it; a group the user never touched
+/// keeps whatever the screen already holds.
+/// </summary>
+public sealed class DeepCoolMystiqueSettings
+{
+    public const string ModeMonitor = "monitor";
+    public const string ModeMedia = "media";
+    public const string ModeRecording = "recording";
+
+    public const string ReadoutTemperature = "temperature";
+    public const string ReadoutFrequency = "frequency";
+    public const string ReadoutTime = "time";
+    public const string ReadoutPump = "pump";
+    public const string ReadoutFan = "fan";
+    public const string ReadoutFanPump = "fanPump";
+
+    public const string StyleNormal = "normal";
+    public const string StyleRing = "ring";
+    public const string StyleStopwatch = "stopwatch";
+
+    public const string AuxVoltage = "voltage";
+    public const string AuxSystemMonitor = "systemMonitor";
+    public const string AuxCoreData = "coreData";
+
+    public const string AnimationSplit = "split";
+    public const string AnimationScroll = "scroll";
+    public const string AnimationFade = "fade";
+
+    public const string SourceImages = "images";
+    public const string SourceGif = "gif";
+
+    /// <summary>The user picked a screen mode, so it is written on connect.</summary>
+    public bool ModeEdited { get; set; }
+
+    /// <summary>The user changed the monitor readout, its style or the auxiliary area, which share one command.</summary>
+    public bool ReadoutEdited { get; set; }
+
+    /// <summary>The user changed the image switch time or animation, which share one command.</summary>
+    public bool MediaEdited { get; set; }
+
+    /// <summary>The user picked whether the pictures or the GIF plays.</summary>
+    public bool SourceEdited { get; set; }
+
+    /// <summary>The user changed a recording-tab readout.</summary>
+    public bool RecordingEdited { get; set; }
+
+    /// <summary>The user changed brightness, rotation, RGB sync or edge picking, which share one command.</summary>
+    public bool DeviceEdited { get; set; }
+
+    public string Mode { get; set; } = ModeMonitor;
+    public string Readout { get; set; } = ReadoutTemperature;
+    public string ReadoutStyle { get; set; } = StyleNormal;
+    public string AuxArea { get; set; } = AuxCoreData;
+    public int SwitchSeconds { get; set; } = 3;
+    public string Animation { get; set; } = AnimationSplit;
+    public string MediaSource { get; set; } = SourceImages;
+    public bool EdgePicking { get; set; }
+
+    /// <summary>Pictures and GIFs this PC keeps for the screen, which holds one picture and the GIFs in <see cref="GifOrder"/>, and cannot be read back.</summary>
+    public List<DeepCoolMystiqueMediaItem> Media { get; set; } = new();
+
+    /// <summary>Legacy only: screen ids earlier builds freed, which a slot is taken from before a recorded one exists; nothing adds to it.</summary>
+    public List<DeepCoolMystiqueMediaItem> Freed { get; set; } = new();
+
+    /// <summary>Legacy only: the one screen id earlier builds sent every GIF under.</summary>
+    public string GifSlot { get; set; } = "";
+
+    /// <summary>
+    /// The <see cref="Media"/> ids of the GIFs the screen holds, in the order it stored them, as the source command picks one
+    /// by its place; empty for one no longer listed. Cleared by a format.
+    /// </summary>
+    public List<string> GifOrder { get; set; } = new();
+
+    /// <summary>The place in <see cref="GifOrder"/> the last source command picked, which the screen plays while GIFs play.</summary>
+    public int GifPlace { get; set; }
+
+    /// <summary>The screen may hold GIFs <see cref="GifOrder"/> does not list, so the next new GIF goes up after a format, which clears it.</summary>
+    public bool GifOrderUnsure { get; set; } = true;
+
+    /// <summary>The screen may hold pictures or GIFs from before Nexus kept track of them, so what it shows is a guess; a format clears it. Named for GIFs, as saved settings use it.</summary>
+    public bool GifSlotUnsure { get; set; } = true;
+
+    /// <summary>The screen id every picture goes up under, so showing another picture replaces the one it holds. Empty until the first picture after a format.</summary>
+    public string PictureSlot { get; set; } = "";
+
+    /// <summary>The <see cref="Media"/> id of the picture <see cref="PictureSlot"/> holds, empty when unknown or when its stream failed.</summary>
+    public string ShownPicture { get; set; } = "";
+
+    /// <summary>The <see cref="Media"/> id of the GIF the screen plays when GIFs play, empty when unknown.</summary>
+    public string ShownGif { get; set; } = "";
+    public bool RecordFrequency { get; set; } = true;
+    public bool RecordTemperature { get; set; } = true;
+    public int Brightness { get; set; } = 70;
+    // Off as the screen ships (the recorded first start sends it off); no reply reports the current value.
+    public bool Gyroscope { get; set; }
+    public bool RgbSync { get; set; }
+
+    /// <summary>Sensor behind the CPU temperature readout; empty category picks the CPU package temperature.</summary>
+    public DeepCoolMystiqueSensorPick CpuTemperature { get; set; } = new();
+
+    /// <summary>Sensor behind the CPU frequency readout; empty category picks the highest core clock.</summary>
+    public DeepCoolMystiqueSensorPick CpuFrequency { get; set; } = new();
+
+    /// <summary>Sensor behind the CPU usage readout; empty category picks the total CPU load.</summary>
+    public DeepCoolMystiqueSensorPick CpuUsage { get; set; } = new();
+
+    /// <summary>Sensor behind the RAM usage readout; empty category picks the memory load.</summary>
+    public DeepCoolMystiqueSensorPick RamUsage { get; set; } = new();
+
+    /// <summary>Sensor behind the CPU fan readout; empty category picks the motherboard CPU fan header.</summary>
+    public DeepCoolMystiqueSensorPick CpuFan { get; set; } = new();
+
+    /// <summary>Sensor behind the pump readout; empty category picks the motherboard pump or CPU_OPT header.</summary>
+    public DeepCoolMystiqueSensorPick Pump { get; set; } = new();
+
+    /// <summary>A deep copy with nulls from an old or hand-edited file replaced.</summary>
+    public DeepCoolMystiqueSettings Copy()
+    {
+        var copy = (DeepCoolMystiqueSettings)MemberwiseClone();
+        copy.Mode = Mode ?? ModeMonitor;
+        copy.Readout = Readout ?? ReadoutTemperature;
+        copy.ReadoutStyle = ReadoutStyle ?? StyleNormal;
+        copy.AuxArea = AuxArea ?? AuxCoreData;
+        copy.Animation = Animation ?? AnimationSplit;
+        copy.MediaSource = MediaSource ?? SourceImages;
+        copy.Media = Media is null ? new List<DeepCoolMystiqueMediaItem>() : Media.ConvertAll(m => m.Copy());
+        copy.Freed = Freed is null ? new List<DeepCoolMystiqueMediaItem>() : Freed.ConvertAll(m => m.Copy());
+        copy.GifSlot = GifSlot ?? "";
+        copy.GifOrder = GifOrder is null ? new List<string>() : GifOrder.ConvertAll(id => id ?? "");
+        copy.ShownGif = ShownGif ?? "";
+        copy.PictureSlot = PictureSlot ?? "";
+        copy.ShownPicture = ShownPicture ?? "";
+        copy.CpuTemperature = CpuTemperature?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.CpuFrequency = CpuFrequency?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.CpuUsage = CpuUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.RamUsage = RamUsage?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.CpuFan = CpuFan?.Copy() ?? new DeepCoolMystiqueSensorPick();
+        copy.Pump = Pump?.Copy() ?? new DeepCoolMystiqueSensorPick();
         return copy;
     }
 }

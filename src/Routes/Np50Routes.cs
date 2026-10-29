@@ -55,10 +55,10 @@ public static partial class DevicesRoutes
         app.MapGet("/devices/np50/firmware-defaults", (Np50Hub hub) =>
         {
             if (!hub.IsConnected)
-                return Results.Conflict(new { error = "NP50 not connected" });
+                return DeviceFail(StatusCodes.Status409Conflict, "NP50 not connected");
             var d = hub.GetFirmwareDefaults();
             if (d is null)
-                return Results.Problem("Failed to read firmware defaults from NP50.");
+                return FirmwareReadBusy("Failed to read firmware defaults from NP50.");
             return Results.Ok(new Np50FirmwareDefaultsResponse
             {
                 DefaultMode = d.Value.DefaultMode,
@@ -74,11 +74,11 @@ public static partial class DevicesRoutes
         app.MapPut("/devices/np50/firmware-defaults", (Np50FirmwareDefaultsRequest body, Np50Hub hub) =>
         {
             if (!hub.IsConnected)
-                return Results.Conflict(new { error = "NP50 not connected" });
+                return DeviceFail(StatusCodes.Status409Conflict, "NP50 not connected");
             if (body.DefaultMode != Np50Protocol.DefaultModeStatic
                 && body.DefaultMode != Np50Protocol.DefaultModeMotherboard)
             {
-                return Results.BadRequest(new { error = "defaultMode must be 0 (Static) or 1 (Motherboard)" });
+                return DeviceFail(StatusCodes.Status400BadRequest, "defaultMode must be 0 (Static) or 1 (Motherboard)");
             }
             var ok = hub.SetFirmwareDefaults((byte)body.DefaultMode, (byte)Math.Clamp(body.StaticFanPercent, 0, 100));
             if (!ok)
@@ -93,10 +93,10 @@ public static partial class DevicesRoutes
         app.MapGet("/devices/np50/firmware-animation", (Np50Hub hub) =>
         {
             if (!hub.IsConnected)
-                return Results.Conflict(new { error = "NP50 not connected" });
+                return DeviceFail(StatusCodes.Status409Conflict, "NP50 not connected");
             var a = hub.GetFirmwareAnimation();
             if (a is null)
-                return Results.Problem("Failed to read firmware animation from NP50.");
+                return FirmwareReadBusy("Failed to read firmware animation from NP50.");
             return Results.Ok(new Np50FirmwareAnimationResponse
             {
                 Animation = a.Value.Animation,
@@ -113,11 +113,11 @@ public static partial class DevicesRoutes
         app.MapPut("/devices/np50/firmware-animation", (Np50FirmwareAnimationRequest body, Np50Hub hub) =>
         {
             if (!hub.IsConnected)
-                return Results.Conflict(new { error = "NP50 not connected" });
+                return DeviceFail(StatusCodes.Status409Conflict, "NP50 not connected");
             if (body.Animation < Np50Protocol.FwAnimationColor
                 || body.Animation > Np50Protocol.FwAnimationRainbowGradient)
             {
-                return Results.BadRequest(new { error = "animation must be 1 (Color), 2 (Rainbow), 3 (Breathe), or 4 (Rainbow Gradient)" });
+                return DeviceFail(StatusCodes.Status400BadRequest, "animation must be 1 (Color), 2 (Rainbow), 3 (Breathe), or 4 (Rainbow Gradient)");
             }
             var ok = hub.SetFirmwareAnimation(
                 (byte)body.Animation,
@@ -137,12 +137,12 @@ public static partial class DevicesRoutes
         app.MapPut("/devices/np50/cooling-mode", (Np50CoolingModeRequest body, Np50Hub hub) =>
         {
             if (!hub.IsConnected)
-                return Results.Conflict(new { error = "NP50 not connected" });
+                return DeviceFail(StatusCodes.Status409Conflict, "NP50 not connected");
             if (body.Mode != Np50Protocol.ModeSoftware
                 && body.Mode != Np50Protocol.ModeMotherboard
                 && body.Mode != Np50Protocol.ModeStatic)
             {
-                return Results.BadRequest(new { error = "mode must be 1 (Software), 2 (Motherboard), or 3 (Static/Firmware)" });
+                return DeviceFail(StatusCodes.Status400BadRequest, "mode must be 1 (Software), 2 (Motherboard), or 3 (Static/Firmware)");
             }
             hub.SetDesiredCoolingMode((byte)body.Mode);
             return Results.Ok(ApiResponse.Ok());
@@ -157,7 +157,7 @@ public static partial class DevicesRoutes
         app.MapPut("/devices/np50/firmware-control", (Np50Hub hub) =>
         {
             if (!hub.IsConnected)
-                return Results.Conflict(new { error = "NP50 not connected" });
+                return DeviceFail(StatusCodes.Status409Conflict, "NP50 not connected");
             if (!hub.ApplyFirmwareStandaloneMode())
                 return Results.Problem("Failed to apply firmware control mode to NP50.");
             return Results.Ok(ApiResponse.Ok());
@@ -165,6 +165,7 @@ public static partial class DevicesRoutes
 
         // Push an LED frame at one of the three ports. Body shape is a flat list
     }
+
 }
 
 public sealed class Np50LightingRequest

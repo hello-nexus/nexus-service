@@ -71,11 +71,20 @@ public class GalleonSdHubTests
 
     private long _clock;
 
-    private GalleonSdHub NewHub(ScriptedHid hid) => new(hid, () => _clock);
+    private GalleonSdHub NewHub(ScriptedHid hid) => new(hid, () => _clock, matchOnLinux: true);
 
     private static IEnumerable<byte[]> Commands(ScriptedDevice d, byte cmd) => d.Writes.Where(w => w[3] == cmd);
 
     private static readonly RgbColor[] Frame = Enumerable.Repeat(new RgbColor(10, 20, 30), GalleonSdProtocol.LedCount).ToArray();
+
+    [Fact]
+    public void Linux_attaches_nothing_by_default_until_the_report_length_is_validated_there()
+    {
+        using var hub = new GalleonSdHub(new ScriptedHid(), () => _clock);
+
+        Assert.Equal(!OperatingSystem.IsLinux(), hub.Reconcile(true));
+        Assert.Equal(!OperatingSystem.IsLinux(), hub.IsConnected);
+    }
 
     [Fact]
     public void Reconcile_opens_only_the_128_byte_command_interface_and_probes_identity_with_gets()

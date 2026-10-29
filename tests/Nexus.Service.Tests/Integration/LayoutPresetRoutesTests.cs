@@ -726,7 +726,7 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
     {
         var write = await _client.PostAsync(
             "/devices/lighting-devices/color-adjust",
-            Json("""{"ids":["dev-a"],"red":1.3,"green":0.9,"blue":0.75,"temperature":0.4,"saturation":1.25}"""));
+            Json("""{"ids":["dev-a"],"red":1.3,"green":0.9,"blue":0.75,"temperature":0.4,"saturation":1.25,"colorOrder":"GRB"}"""));
         Assert.Equal(HttpStatusCode.OK, write.StatusCode);
 
         var createRes = await _client.PostAsync(
@@ -752,6 +752,30 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
         Assert.Equal(0.75f, pref.AdjustBlue);
         Assert.Equal(0.4f, pref.AdjustTemperature);
         Assert.Equal(1.25f, pref.AdjustSaturation);
+        Assert.Equal("GRB", pref.ColorOrder);
+    }
+
+    [Fact]
+    public async Task Color_order_rejects_an_invalid_value_and_stores_rgb_as_null()
+    {
+        var bad = await _client.PostAsync(
+            "/devices/lighting-devices/color-adjust",
+            Json("""{"ids":["dev-a"],"colorOrder":"XYZ"}"""));
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+
+        var set = await _client.PostAsync(
+            "/devices/lighting-devices/color-adjust",
+            Json("""{"ids":["dev-a"],"colorOrder":"BGR"}"""));
+        Assert.Equal(HttpStatusCode.OK, set.StatusCode);
+        var get = await _client.GetStringAsync("/devices/lighting-devices/color-adjust");
+        using var doc = JsonDocument.Parse(get);
+        Assert.Equal("BGR", doc.RootElement.GetProperty("adjustments").GetProperty("dev-a").GetProperty("colorOrder").GetString());
+
+        var reset = await _client.PostAsync(
+            "/devices/lighting-devices/color-adjust",
+            Json("""{"ids":["dev-a"],"colorOrder":"RGB"}"""));
+        Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
+        Assert.Null(Store.Load().Devices.LightingDevicePrefs["dev-a"].ColorOrder);
     }
 
     // A partial body leaves the fields it omits alone. Without this a drag on

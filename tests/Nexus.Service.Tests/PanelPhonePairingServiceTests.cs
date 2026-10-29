@@ -1089,6 +1089,105 @@ public class PanelPhonePairingServiceTests
         Assert.False(string.IsNullOrEmpty(confirm.Token));
     }
 
+    private sealed class RecordingTelemetry : Nexus.Service.Telemetry.ITelemetry
+    {
+        public List<(string Event, (string Key, object? Value)[] Props)> Events { get; } = new();
+        public void Capture(string @event, params (string Key, object? Value)[] properties) => Events.Add((@event, properties));
+        public void Identify(params (string Key, object? Value)[] properties) { }
+    }
+
+    [Fact]
+    public void LanClaim_CapturesPairCompletedWithLanTransport()
+    {
+        var telemetry = new RecordingTelemetry();
+        var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
+
+        var result = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
+
+        Assert.True(result.Paired);
+        var e = Assert.Single(telemetry.Events);
+        Assert.Equal(Nexus.Service.Telemetry.TelemetryEvents.PairCompleted, e.Event);
+        Assert.Equal(("transport", (object?)"lan"), Assert.Single(e.Props));
+    }
+
+    [Fact]
+    public void RelayClaim_CapturesPairCompletedWithRelayTransport()
+    {
+        var telemetry = new RecordingTelemetry();
+        var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
+        var token = PairTokenFrom(service.CreatePairQr());
+
+        var result = service.ClaimCore(token, "Phone", "", "", "relay-device", overRelay: true, claimedOverHttps: false);
+
+        Assert.True(result.Ok);
+        Assert.Equal(("transport", (object?)"relay"), Assert.Single(Assert.Single(telemetry.Events).Props));
+    }
+
+    [Fact]
+    public void FailedClaim_CapturesNothing()
+    {
+        var telemetry = new RecordingTelemetry();
+        var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
+
+        var result = service.ClaimCore("not-a-token", "Phone", "", "", "d", overRelay: true, claimedOverHttps: false);
+
+        Assert.False(result.Ok);
+        Assert.Empty(telemetry.Events);
+    }
+
+    [Fact]
+    public void SasApprovalFlow_CapturesExactlyOneLanPairCompleted()
+    {
+        var telemetry = new RecordingTelemetry();
+        var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "", SpkiFingerprint = "fp-stub" };
+
+        var claim = service.ClaimCore(PairTokenFrom(service.CreatePairQr()), "Phone", UserAgent, "192.168.1.50", "dev-sas", overRelay: false, claimedOverHttps: true, supportsSasApproval: true);
+
+        Assert.True(claim.NeedsApproval);
+        Assert.Empty(telemetry.Events);
+
+        var phone = NewContext(UserAgent, "192.168.1.50", isHttps: true);
+        // Host has not decided: polling must not count.
+        Assert.Equal("waiting-host", service.ConfirmPairCode(claim.RequestId, true, phone).Status);
+        Assert.Equal("waiting-host", service.ConfirmPairCode(claim.RequestId, true, phone).Status);
+        Assert.Empty(telemetry.Events);
+
+        Assert.Equal("approved", service.HostDecisionPairCode(claim.RequestId, true).Status);
+        Assert.Empty(telemetry.Events);
+
+        Assert.Equal("approved", service.ConfirmPairCode(claim.RequestId, true, phone).Status);
+        Assert.Equal(("transport", (object?)"lan"), Assert.Single(Assert.Single(telemetry.Events).Props));
+
+        // The consumed request cannot mint (or count) a second session.
+        Assert.Equal("unknown", service.ConfirmPairCode(claim.RequestId, true, phone).Status);
+        Assert.Single(telemetry.Events);
+    }
+
+    [Fact]
+    public void DeniedSasRequest_CapturesNothing()
+    {
+        var telemetry = new RecordingTelemetry();
+        var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "", SpkiFingerprint = "fp-stub" };
+        var claim = service.ClaimCore(PairTokenFrom(service.CreatePairQr()), "Phone", UserAgent, "192.168.1.50", "dev-sas", overRelay: false, claimedOverHttps: true, supportsSasApproval: true);
+
+        service.HostDecisionPairCode(claim.RequestId, false);
+        service.ConfirmPairCode(claim.RequestId, true, NewContext(UserAgent, "192.168.1.50", isHttps: true));
+
+        Assert.Empty(telemetry.Events);
+    }
+
+    [Fact]
+    public void IsSessionLive_AppliesTheHttpsAndHttpIdleLimits()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long Ago(TimeSpan t) => now - (long)t.TotalMilliseconds;
+        Assert.True(PanelPhonePairingService.IsSessionLive(new PanelPhoneSessionToken { ClaimedOverHttps = true, LastSeenAt = Ago(TimeSpan.FromDays(29)) }, now));
+        Assert.False(PanelPhonePairingService.IsSessionLive(new PanelPhoneSessionToken { ClaimedOverHttps = true, LastSeenAt = Ago(TimeSpan.FromDays(31)) }, now));
+        Assert.True(PanelPhonePairingService.IsSessionLive(new PanelPhoneSessionToken { ClaimedOverHttps = false, LastSeenAt = Ago(TimeSpan.FromHours(23)) }, now));
+        Assert.False(PanelPhonePairingService.IsSessionLive(new PanelPhoneSessionToken { ClaimedOverHttps = false, LastSeenAt = Ago(TimeSpan.FromHours(25)) }, now));
+        Assert.False(PanelPhonePairingService.IsSessionLive(new PanelPhoneSessionToken(), now));
+    }
+
     private static PanelPhonePairingService NewServiceWithHub(Nexus.Service.Sockets.MultiplexHub hub)
     {
         return new PanelPhonePairingService(new InMemoryConfigStore(), hub)

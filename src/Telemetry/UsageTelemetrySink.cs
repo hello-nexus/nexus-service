@@ -25,6 +25,7 @@ internal sealed class UsageTelemetrySink : ITelemetrySink
     {
         "os_build", "storage", "storage_amount", "monitor", "network", "sound", "devices",
         "lighting_devices", "cooling_channels", "panel_devices", "panel_surfaces",
+        "paired_phones", "phones_active_7d", "relay_enabled",
         "widget_count", "widget_page_count", "widget_types", "lighting_mode", "cooling_mode",
         "features_off",
     };

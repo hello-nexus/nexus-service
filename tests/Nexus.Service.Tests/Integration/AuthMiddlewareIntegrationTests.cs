@@ -256,6 +256,19 @@ public sealed class AuthMiddlewareIntegrationTests : IClassFixture<NexusAppFacto
         Assert.DoesNotContain("frame-src *", csp);
     }
 
+    // The bundle self-hosts every font; the CSP must not re-admit a font CDN.
+    [Fact]
+    public async Task Csp_admits_no_third_party_font_hosts()
+    {
+        var client = _factory.CreateClient();
+
+        var res = await client.GetAsync("/panel/phone");
+
+        var csp = string.Join(" ", res.Headers.GetValues("Content-Security-Policy"));
+        Assert.DoesNotContain("fonts.googleapis.com", csp);
+        Assert.DoesNotContain("fonts.gstatic.com", csp);
+    }
+
     // ── Desktop token is loopback-only (a leaked token can't drive from LAN) ──
 
     [Fact]

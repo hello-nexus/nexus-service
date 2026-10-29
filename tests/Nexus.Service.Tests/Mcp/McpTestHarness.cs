@@ -40,7 +40,7 @@ internal static class McpTestHarness
             new ApplyCoolingPresetTool(fans, store, hub),
             new SetGlobalFanSpeedTool(curves, fans, store, hub),
             new SetFanCurveTool(curves, fans, store, hub),
-            new ApplyLightingScenarioTool(lighting, hub),
+            new ApplyLightingScenarioTool(lighting, store, hub),
             new SetStaticColorTool(lighting, hub),
             new SetBrightnessTool(store, hub),
             new StopLightingTool(lighting, hub),

@@ -46,6 +46,9 @@ public sealed partial class ProfileManager : IDisposable
     /// <summary>Fires after a library replace (cloud account switch), outside the lock; the surviving ids are in the manifest.</summary>
     public event Action? LibraryReplaced;
 
+    /// <summary>Fires after a profile file was applied over the live settings, still under the manager's lock: subscribers must not block.</summary>
+    public event Action? ProfileLoaded;
+
     public ProfileManager(IConfigStore store)
     {
         _store = store;
@@ -1012,8 +1015,8 @@ public sealed partial class ProfileManager : IDisposable
         { TryFlushActiveProfile(); }
     }
 
-    // Another process holding a profile file open without delete sharing fails
-    // File.Replace; _dirty stays set, so the next background tick retries.
+    // A profile file held open without delete sharing past AtomicJsonFile's
+    // short retry fails the write; _dirty stays set, so the next tick retries.
     private void TryFlushActiveProfile()
     {
         try
@@ -1056,6 +1059,8 @@ public sealed partial class ProfileManager : IDisposable
 
         _store.Update(s =>
         {
+            // The record id, not the marker: an empty-layout profile sets the marker without handing anything over.
+            var overlayWasMigrated = s.Overlay.MigratedRecordId is not null;
             Nexus.Service.Lighting.PinMigration.Apply(data);
             s.Lighting = data.Lighting ?? new LightingSettings { FreeRotationLayouts = true };
             // Pre-v10 profile files (local, imported, or cloud-synced) carry
@@ -1081,6 +1086,7 @@ public sealed partial class ProfileManager : IDisposable
             // residual flags. Always copy both categories.
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Theme);
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Dashboard);
+            Nexus.Service.Panel.DesktopWidgetsMigration.MarkLaterProfile(s, overlayWasMigrated);
             ProfileSharing.ApplyCategory(s, data, ProfileSharing.Device);
             // Panels copies looks onto the matching LIVE panel records only, never
             // adding or removing one, so the file's stripped entries cannot replace
@@ -1100,6 +1106,7 @@ public sealed partial class ProfileManager : IDisposable
             // config.deck. Idempotent - a no-op on an already-migrated profile.
             Nexus.Service.Deck.DeckModesMigration.Apply(s);
         });
+        ProfileLoaded?.Invoke();
     }
 
     /// <summary>
@@ -1291,16 +1298,7 @@ public sealed partial class ProfileManager : IDisposable
     {
         var dir = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
-        var tmp = path + ".tmp";
-        File.WriteAllText(tmp, content);
-        if (File.Exists(path))
-        {
-            File.Replace(tmp, path, null);
-        }
-        else
-        {
-            File.Move(tmp, path);
-        }
+        AtomicJsonFile.Write(path, content);
     }
 
     private string ManifestPath() => Path.Combine(_dataDir, "profiles.json");

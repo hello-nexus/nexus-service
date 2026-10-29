@@ -48,6 +48,8 @@ public sealed class RawDisplayInfo
     /// for Y70 controller-name matching. Never sent to clients.
     /// </summary>
     public string RawHardwareId { get; set; } = "";
+    /// <summary>GPU adapter DeviceString driving this monitor (Windows); "" elsewhere or when unknown.</summary>
+    public string AdapterName { get; set; } = "";
     /// <summary>EDID-derived hardware identity that survives a changed <see cref="Id"/>; null when unreadable.</summary>
     public DisplayFingerprint? Fingerprint { get; set; }
 }
@@ -159,6 +161,10 @@ public sealed class DisplayAssignmentDto
     public bool KeepCursorOff { get; set; }
     /// <summary>Per-panel "keep the panel above other windows" (record setting; default true).</summary>
     public bool AlwaysOnTop { get; set; } = true;
+    /// <summary>Per-panel click-through on empty space (record setting; default false). Only meaningful with Backdrop "desktop".</summary>
+    public bool ClickThrough { get; set; }
+    /// <summary>The bound display is the OS primary display. Hosts never apply the keep-off guards there.</summary>
+    public bool IsPrimary { get; set; }
 }
 
 /// <summary>Body for POST /displays/{id}/rotation.</summary>

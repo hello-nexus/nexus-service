@@ -33,13 +33,6 @@ public static class AppPrefixMigration
                 RewriteLayout(record?.Layout);
             }
         }
-        if (doc.Overlay?.Layout is { } overlay)
-        {
-            foreach (var widget in overlay)
-            {
-                widget?.Type = Rewrite(widget.Type);
-            }
-        }
     }
 
     private static void RewriteLayout(PanelLayoutDto? layout)
@@ -80,7 +73,7 @@ public static class AppPrefixMigration
         }
     }
 
-    private static string Rewrite(string? type)
+    internal static string Rewrite(string? type)
         => type is not null && type.StartsWith(LegacyPrefix, System.StringComparison.Ordinal)
             ? WidgetSettingsService.AppTypePrefix + type.Substring(LegacyPrefix.Length)
             : type ?? "";

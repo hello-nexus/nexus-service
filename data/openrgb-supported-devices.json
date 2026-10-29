@@ -1,5 +1,5 @@
 {
-  "count": 2011,
+  "count": 2012,
   "devices": [
     {
       "name": "Bloody B820R",
@@ -3827,6 +3827,14 @@
     },
     {
       "name": "ASUS ROG ASTRAL GeForce RTX 5080 OC",
+      "vid": null,
+      "pid": null,
+      "controller": "ENESMBusController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "ASUS ROG ASTRAL GeForce RTX 5080 OC HATSUNE MIKU",
       "vid": null,
       "pid": null,
       "controller": "ENESMBusController",

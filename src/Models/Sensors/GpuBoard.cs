@@ -7,7 +7,7 @@ namespace Nexus.Service.Models.Sensors;
 public readonly record struct GpuBoard(string Name, int SubsystemVendorId, int SubsystemDeviceId);
 
 /// <summary>One GPU as the specs surfaces describe it: the chip plus, where the board could be read, its maker.</summary>
-public sealed record GpuCard(string Chip, string? Maker = null, int SubsystemVendorId = 0, int SubsystemDeviceId = 0)
+public sealed record GpuCard(string Chip, string? Maker = null, int SubsystemVendorId = 0, int SubsystemDeviceId = 0, int VendorId = 0, int DeviceId = 0)
 {
     /// <summary>Partner boards read "Maker Chip"; a GeForce reference board reads "NVIDIA Founders Edition GeForce ..." (the form the catalog matcher resolves); any other reference or unclean name stays the chip.</summary>
     public string Display => SubsystemVendorId switch

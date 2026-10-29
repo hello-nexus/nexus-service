@@ -36,7 +36,7 @@ are in [`docs/network-transport.md`](docs/network-transport.md).
 | `9400` | HTTP, loopback | Dashboard and panel transport. The bind address is the first CLI argument. |
 | `9443` | HTTPS | Pairing and remote panel surfaces over a locally generated certificate whose SPKI the clients pin. Derived from the HTTP port. |
 | `9401` | HTTP, loopback, Windows | Q-series panel tunnel: the host side of the panel's `adb reverse`. Skipped silently if taken. |
-| `9420` | HTTP, loopback | MCP server, when AI Integration is enabled. Single endpoint `POST /mcp`, its own bearer token. |
+| `9420` | HTTP, loopback (all interfaces when remote connections are allowed) | MCP server, when AI Integration is enabled. Single endpoint `POST /mcp`, its own bearer token. |
 | `6742` | TCP, loopback | OpenRGB SDK server of the headless child process. |
 | `11434` | HTTP, loopback | Managed Ollama runtime behind the local assistant (dev-tools builds only). |
 

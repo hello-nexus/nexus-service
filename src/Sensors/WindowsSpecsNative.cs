@@ -127,6 +127,9 @@ internal static partial class WindowsSpecsNative
             .OfType<FleetEventDrive>()
             .ToList();
 
+    /// <summary>SMBIOS baseboard manufacturer and product from the raw firmware table; null when unreadable. No serial.</summary>
+    public static (string? Manufacturer, string? Product)? ReadBaseboard() => SmbiosParser.ParseBaseboard(MemoryInfoProvider.ReadRawTable());
+
     /// <summary>SMBIOS chassis type from the raw firmware table; null when unreadable.</summary>
     public static int? ReadChassisType() => SmbiosParser.ParseChassisType(MemoryInfoProvider.ReadRawTable());
 
@@ -247,6 +250,7 @@ internal static partial class WindowsSpecsNative
             {
                 ["Name"] = WindowsSpecsParsers.EdidMonitorName(edid),
                 ["Mfg"] = WindowsSpecsParsers.EdidManufacturer(edid),
+                ["ProductCode"] = WindowsSpecsParsers.EdidProductCode(edid),
             });
         }
         return rows;
