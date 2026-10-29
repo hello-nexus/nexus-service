@@ -23,8 +23,6 @@ public sealed class AstralMonitor : IDisposable
 
     private static readonly TimeSpan FreshFor = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan CalibrationRecheck = TimeSpan.FromSeconds(5);
-    // Spans the silence after which the fallback takes over, plus one interval: a longer gap means readings were missed.
-    private static readonly TimeSpan MaxFeedGap = TimeSpan.FromSeconds(AstralGpuSupplement.ExternalSilenceIntervals + 1);
     // Longer than the G-sensor retry backoff can hide a single miss; past it the posture is not published.
     private static readonly TimeSpan AnglesStaleAfter = TimeSpan.FromSeconds(30);
 
@@ -54,6 +52,12 @@ public sealed class AstralMonitor : IDisposable
     private ITimer? _timer;
     private bool _disposed;
     private long _countdownSeq;
+
+    /// <summary>The supplement's probe interval; set by the supplement that feeds this monitor.</summary>
+    internal TimeSpan ProbeInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    // The fallback takes over after the silence window, so its first read lands up to one interval later; one more interval is slack for timer lateness and read time.
+    private TimeSpan MaxFeedGap => ProbeInterval * (AstralGpuSupplement.ExternalSilenceIntervals + 2);
 
     /// <summary>Delivers a notice through the diagnostics alert path.</summary>
     internal Action<DiagnosticsAlertNotice>? AlertSink { get; set; }
@@ -116,11 +120,13 @@ public sealed class AstralMonitor : IDisposable
     {
         var now = Mono();
         AstralStep step;
-        var settings = _store.Load().Astral;
+        AstralSettings settings;
         AstralAlertKind kind;
         DiagnosticsAlertNotice? countdown = null;
         lock (_lock)
         {
+            // Read under the lock so a Patch that already reapplied its limits cannot be undone by a stale snapshot.
+            settings = _store.Load().Astral;
             if (!_cards.TryGetValue(id, out var card))
             {
                 card = _cards[id] = new Card { Id = id };
@@ -342,7 +348,7 @@ public sealed class AstralMonitor : IDisposable
             var any = false;
             foreach (var card in _cards.Values)
             {
-                any |= card.Detector.Reapply(card.Amps, settings, settings.Equalizer != wasEqualizer);
+                any |= card.Detector.Reapply(card.Amps, settings, settings.Equalizer && !wasEqualizer);
             }
             if (any)
             {

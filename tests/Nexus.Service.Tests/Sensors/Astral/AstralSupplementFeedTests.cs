@@ -40,6 +40,7 @@ public class AstralSupplementFeedTests
         }
         public int TimersCreated { get; private set; }
         public Timer? Last { get; private set; }
+        public void JumpWall(TimeSpan by) => _wall += by;
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
         public override long GetTimestamp() => _ticks;
         public override DateTimeOffset GetUtcNow() => _wall;
@@ -231,6 +232,51 @@ public class AstralSupplementFeedTests
         Assert.Equal(TimeSpan.FromSeconds(1), timer.Period);
         Assert.Equal(1, rig.Time.TimersCreated);
         Assert.NotNull(rig.Monitor.CardName());
+    }
+
+    [Theory]
+    [InlineData(2.99)]
+    [InlineData(3.05)]
+    public void The_hand_off_from_the_list_to_the_fallback_keeps_the_critical_streak(double idleSeconds)
+    {
+        var rig = new Rig();
+        rig.Client.Pin1Amps = 18f;
+        rig.ListTick();
+        // The list read at t0 and the clock now sits one interval later; the first fallback read lands idleSeconds after that.
+        rig.Time.Now = rig.Time.Now.AddSeconds(idleSeconds);
+        rig.Supplement.FallbackTick();
+        Assert.Equal("critical", rig.Monitor.GetState().Countdown!.Reason);
+    }
+
+    [Fact]
+    public void A_backward_wall_clock_step_does_not_stop_reads()
+    {
+        var rig = new Rig();
+        rig.ListTick();
+        rig.Time.JumpWall(TimeSpan.FromHours(-1));
+        var reads = rig.Client.Reads;
+        rig.ListTick();
+        Assert.Equal(reads + 1, rig.Client.Reads);
+
+        rig.Idle(5);
+        rig.Time.JumpWall(TimeSpan.FromHours(-1));
+        rig.Supplement.FallbackTick();
+        Assert.Equal(reads + 2, rig.Client.Reads);
+    }
+
+    [Fact]
+    public void A_read_that_throws_every_tick_still_slows_the_fallback()
+    {
+        var rig = new Rig();
+        rig.ListTick();
+        var timer = rig.Time.Last!;
+        rig.Client.ReadThrows = true;
+        for (var i = 0; i < 70; i++)
+        {
+            rig.Idle(1);
+            rig.Supplement.FallbackTick();
+        }
+        Assert.Equal(TimeSpan.FromSeconds(10), timer.Period);
     }
 
     [Fact]

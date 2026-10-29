@@ -232,17 +232,45 @@ public class AstralPowerDetectorTests
         for (var i = 0; i <= 10; i++) Tick(d, Pins(13f), s, i);
         Assert.True(d.Running);
 
-        Assert.False(d.Reapply(Pins(13f), s, limitsChanged: false));
+        Assert.False(d.Reapply(Pins(13f), s, limitsRose: false));
         s.Equalizer = true;
-        Assert.True(d.Reapply(Pins(13f), s, limitsChanged: true));
+        Assert.True(d.Reapply(Pins(13f), s, limitsRose: true));
         Assert.False(d.Running);
 
         var e = new AstralPowerDetector();
         s = new AstralSettings { OvercurrentShutdown = true, OvercurrentSeconds = 10 };
         for (var i = 0; i <= 10; i++) Tick(e, Pins(13f), s, i);
         s.OvercurrentShutdown = false;
-        Assert.True(e.Reapply(Pins(13f), s, limitsChanged: false));
+        Assert.True(e.Reapply(Pins(13f), s, limitsRose: false));
         Assert.False(e.Running);
+    }
+
+    [Fact]
+    public void Reapply_keeps_a_countdown_running_when_the_limits_got_stricter()
+    {
+        var d = new AstralPowerDetector();
+        var s = new AstralSettings { Equalizer = true, OvercurrentShutdown = true, OvercurrentSeconds = 10 };
+        for (var i = 0; i <= 10; i++) Tick(d, Pins(19f), s, i);
+        Assert.True(d.Running);
+        s.Equalizer = false;
+        Assert.False(d.Reapply(Pins(19f), s, limitsRose: false));
+        Assert.True(d.Running);
+    }
+
+    [Fact]
+    public void A_lapsed_critical_shutdown_arms_a_fresh_critical_countdown_in_the_same_reading()
+    {
+        var d = new AstralPowerDetector();
+        var s = new AstralSettings { CriticalShutdown = true };
+        Tick(d, Pins(18f), s, 0);
+        Assert.True(Tick(d, Pins(18f), s, 1).CountdownStarted);
+        Assert.True(d.ShutdownNow(T0.AddSeconds(2)));
+
+        var lapse = Tick(d, Pins(18f), s, 2 + (int)AstralPowerDetector.ShutdownGrace.TotalSeconds);
+        Assert.True(lapse.ShutdownLapsed);
+        Assert.True(lapse.CountdownStarted);
+        Assert.True(d.Running);
+        Assert.True(d.Critical);
     }
 
     [Fact]
@@ -253,7 +281,7 @@ public class AstralPowerDetectorTests
         Tick(d, Pins(18f), s, 0);
         Tick(d, Pins(18f), s, 1);
         Assert.True(d.Critical);
-        Assert.False(d.Reapply(Pins(8f), s, limitsChanged: false));
+        Assert.False(d.Reapply(Pins(8f), s, limitsRose: false));
         Assert.True(d.Running);
     }
 

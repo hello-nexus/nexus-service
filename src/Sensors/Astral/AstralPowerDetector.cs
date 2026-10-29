@@ -226,14 +226,14 @@ internal sealed class AstralPowerDetector
         return true;
     }
 
-    /// <summary>After a settings change, stops the running countdown if its shutdown is off or, when the limits moved, the last reading no longer reaches its limit.</summary>
-    public bool Reapply(ReadOnlySpan<float> amps, AstralSettings settings, bool limitsChanged)
+    /// <summary>After a settings change, stops the running countdown if its shutdown is off or, when the limits rose, the last reading no longer reaches its limit.</summary>
+    public bool Reapply(ReadOnlySpan<float> amps, AstralSettings settings, bool limitsRose)
     {
         if (CancelIfDisabled(settings))
         {
             return true;
         }
-        if (!Running || ShutdownIssued || !limitsChanged)
+        if (!Running || ShutdownIssued || !limitsRose)
         {
             return false;
         }

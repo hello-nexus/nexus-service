@@ -36,6 +36,8 @@ internal sealed class AstralGpuSupplement : IDisposable
     private readonly TimeSpan _probeInterval;
     private readonly AstralMonitor? _monitor;
     private readonly object _lock = new();
+    private readonly long _stamp0;
+    private readonly DateTimeOffset _wall0;
     private ITimer? _fallback;
     private bool _disposed;
     private bool _slow;
@@ -51,6 +53,9 @@ internal sealed class AstralGpuSupplement : IDisposable
     internal AstralGpuSupplement(IAstralNvApiClient client, TimeProvider timeProvider, TimeSpan probeInterval, AstralMonitor? monitor = null)
     {
         _monitor = monitor;
+        monitor?.ProbeInterval = probeInterval;
+        _stamp0 = timeProvider.GetTimestamp();
+        _wall0 = timeProvider.GetUtcNow();
         _client = client;
         _timeProvider = timeProvider;
         _probeInterval = probeInterval;
@@ -117,7 +122,7 @@ internal sealed class AstralGpuSupplement : IDisposable
             }
 
             (state.HwId, state.HwName) = (hwId, hwName);
-            var now = _timeProvider.GetUtcNow();
+            var now = Mono();
             if (now >= state.NextProbeUtc)
             {
                 state.NextProbeUtc = now + _probeInterval;
@@ -220,6 +225,9 @@ internal sealed class AstralGpuSupplement : IDisposable
         }
     }
 
+    // Scheduling runs on the monotonic clock so a wall-clock step never stalls reads.
+    private DateTimeOffset Mono() => _wall0 + _timeProvider.GetElapsedTime(_stamp0);
+
     public void Dispose()
     {
         lock (_lock)
@@ -238,11 +246,16 @@ internal sealed class AstralGpuSupplement : IDisposable
         }
         catch (Exception ex)
         {
-            var now = _timeProvider.GetUtcNow();
+            var now = Mono();
             if (now - _lastTickWarn >= TickWarnEvery)
             {
                 _lastTickWarn = now;
                 ServiceLog.Warn($"[astral] fallback read failed: {ex.Message}");
+            }
+            // A read that throws every tick counts as a card that stopped answering.
+            lock (_lock)
+            {
+                SlowIfLapsed(now);
             }
         }
     }
@@ -255,26 +268,32 @@ internal sealed class AstralGpuSupplement : IDisposable
             Delivery delivery;
             lock (_lock)
             {
-                var now = _timeProvider.GetUtcNow();
+                var now = Mono();
                 var state = NextFallbackState(now);
                 if (state is null)
                 {
-                    if (_fallback is not null && !_slow && !AnyAnswering(now))
-                    {
-                        _slow = true;
-                        _fallback.Change(SlowRetry, SlowRetry);
-                        if (_monitor?.ShutdownEnabled() == true)
-                        {
-                            _lapseLogged = true;
-                            ServiceLog.Warn("[astral] card stopped answering: power protection is paused until it answers again");
-                        }
-                    }
+                    SlowIfLapsed(now);
                     return;
                 }
                 state.NextProbeUtc = now + _probeInterval;
                 delivery = ReadAndPrepare(state, now, amps);
             }
             Deliver(delivery, amps);
+        }
+    }
+
+    private void SlowIfLapsed(DateTimeOffset now)
+    {
+        if (_fallback is null || _slow || AnyAnswering(now))
+        {
+            return;
+        }
+        _slow = true;
+        _fallback.Change(SlowRetry, SlowRetry);
+        if (_monitor?.ShutdownEnabled() == true)
+        {
+            _lapseLogged = true;
+            ServiceLog.Warn("[astral] card stopped answering: power protection is paused until it answers again");
         }
     }
 

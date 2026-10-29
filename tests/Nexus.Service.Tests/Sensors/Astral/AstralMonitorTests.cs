@@ -266,14 +266,33 @@ public class AstralMonitorTests
         Assert.NotNull(rig.Monitor.GetState().Countdown);
     }
 
-    [Fact]
-    public void Readings_a_skipped_list_tick_apart_still_count_as_in_a_row()
+    // The gap is five probe intervals: the fallback hand-off window plus slack.
+    [Theory]
+    [InlineData(3.5, true)]
+    [InlineData(3.9, true)]
+    [InlineData(4.1, false)]
+    [InlineData(29.0, false)]
+    public void Critical_readings_keep_their_streak_across_a_gap_only_up_to_the_hand_off_window(double extraSeconds, bool streakKept)
     {
         var rig = new Rig();
         rig.Monitor.Patch(new AstralSettingsPatch { CriticalShutdown = true });
         rig.Feed(18f);
-        rig.Time.Now = rig.Time.Now.AddSeconds(1.5);
+        rig.Time.Now = rig.Time.Now.AddSeconds(extraSeconds);
         rig.Feed(18f);
+        Assert.Equal(streakKept, rig.Monitor.GetState().Countdown is not null);
+    }
+
+    [Fact]
+    public void Turning_the_equalizer_off_keeps_a_running_countdown()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch
+        {
+            Equalizer = true, OvercurrentShutdown = true, OvercurrentSeconds = 10, CountdownSeconds = 60,
+        });
+        for (var i = 0; i < 13; i++) rig.Feed(19f);
+        Assert.NotNull(rig.Monitor.GetState().Countdown);
+        rig.Monitor.Patch(new AstralSettingsPatch { Equalizer = false });
         Assert.NotNull(rig.Monitor.GetState().Countdown);
     }
 

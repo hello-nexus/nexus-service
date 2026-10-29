@@ -167,10 +167,17 @@ public class AstralGpuSupplementTests
 internal sealed class ManualTimeProvider : TimeProvider
 {
     private DateTimeOffset _utcNow;
+    private long _ticks;
 
     public ManualTimeProvider(DateTimeOffset utcNow) => _utcNow = utcNow;
 
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+    public override long GetTimestamp() => _ticks;
     public override DateTimeOffset GetUtcNow() => _utcNow;
 
-    public void Advance(TimeSpan amount) => _utcNow += amount;
+    public void Advance(TimeSpan amount)
+    {
+        _utcNow += amount;
+        _ticks += amount.Ticks;
+    }
 }
