@@ -62,6 +62,22 @@ public class WindowSetPassStatsTests
     }
 
     [Fact]
+    public void AddCall_FillsSubBucketsAndTheCheapTotalButNotPidIntoCheap()
+    {
+        var s = new WindowSetPassStats();
+        s.AddCall(WindowSetPassStats.Call.Vis, 1, 1_000);
+        s.AddCall(WindowSetPassStats.Call.Rect, 2, 4_000);
+        s.AddCall(WindowSetPassStats.Call.Pid, 3, 500);
+        Assert.Equal(5_000, s.CheapTicks);
+        Assert.Equal(1, s.CallCount(WindowSetPassStats.Call.Rect));
+        var line = s.Format(1_000_000, 0, 0, 0, 0, null);
+        Assert.Contains("calls=vis:1x1.0,owner:0x0.0,style:0x0.0,rect:1x4.0,pid:1x0.5", line);
+        Assert.Contains("max=4.0ms rect hwnd=0x2", line);
+        s.Reset();
+        Assert.Equal(0, s.CallCount(WindowSetPassStats.Call.Vis));
+    }
+
+    [Fact]
     public void Format_OmitsTheMaxCallWhenNothingWasTimed()
     {
         var line = new WindowSetPassStats().Format(1_000_000, 0, 0, 0, 0, null);

@@ -28,6 +28,38 @@ public sealed class WindowSetPassStats
 
     public const int MaxFallbackTargets = 5;
 
+    /// <summary>The individual Win32 reads folded into the cheap bucket (plus
+    /// the pid read for countable windows), so a log names the expensive call.</summary>
+    public enum Call { Vis, Owner, Style, Rect, Pid }
+
+    private static readonly string[] CallNames = { "vis", "owner", "style", "rect", "pid" };
+    private readonly long[] _callTicks = new long[CallNames.Length];
+    private readonly int[] _callCounts = new int[CallNames.Length];
+
+    /// <summary>Books one timed read into its sub-bucket, the cheap total (pid
+    /// is outside the cheap phase) and the slowest-call tracker.</summary>
+    public void AddCall(Call call, long hwnd, long ticks)
+    {
+        _callTicks[(int)call] += ticks;
+        _callCounts[(int)call]++;
+        if (call != Call.Pid) CheapTicks += ticks;
+        Note(CallNames[(int)call], hwnd, ticks);
+    }
+
+    public int CallCount(Call call) => _callCounts[(int)call];
+    public long CallTicks(Call call) => _callTicks[(int)call];
+
+    private void AppendCalls(StringBuilder sb, long frequency)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        sb.Append(" calls=");
+        for (var i = 0; i < CallNames.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append(inv, $"{CallNames[i]}:{_callCounts[i]}x{ToMs(_callTicks[i], frequency):F1}");
+        }
+    }
+
     public readonly record struct FallbackTarget(long Hwnd, long Ticks, int Pid, string ClassName);
 
     private readonly FallbackTarget[] _fallbackTargets = new FallbackTarget[MaxFallbackTargets];
@@ -82,6 +114,8 @@ public sealed class WindowSetPassStats
     public void Reset()
     {
         _fallbackTargetCount = 0;
+        Array.Clear(_callTicks);
+        Array.Clear(_callCounts);
         EnumTicks = CheapTicks = TitleTicks = FallbackTicks = DwmTicks = 0;
         FallbackCount = DwmCount = 0;
         MaxTicks = 0;
@@ -117,6 +151,9 @@ public sealed class WindowSetPassStats
           .Append(inv, $"dwm={DwmCount}x{ToMs(DwmTicks, frequency):F1}ms ")
           .Append(inv, $"rest={ToMs(Math.Max(0, EnumTicks - phases), frequency):F1}ms trickle={trickles} ")
           .Append(inv, $"hooks=destroy:{hookDestroy},cloaked:{hookCloaked},uncloaked:{hookUncloaked}");
+        var anyCalls = false;
+        foreach (var c in _callCounts) anyCalls |= c > 0;
+        if (anyCalls) AppendCalls(sb, frequency);
         if (MaxTicks > 0)
         {
             sb.Append(inv, $" max={ToMs(MaxTicks, frequency):F1}ms {MaxCall} hwnd=0x{MaxHwnd:X} class={maxClass ?? "?"}");

@@ -79,6 +79,7 @@ public sealed class WindowSetPoller : IDisposable
     private (long Destroy, long Cloaked, long Uncloaked) _hooksAtLastRate;
     private bool _skipDwm;
     private bool _skipFallback;
+    private bool _eager;
 
     public WindowSetPoller(HelperOutbound outbound)
     {
@@ -245,6 +246,7 @@ public sealed class WindowSetPoller : IDisposable
         _stats.Reset();
         _skipDwm = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetDwm);
         _skipFallback = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetFallback);
+        _eager = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetEager);
         _cloakCache.TrickleEnabled = !HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetTrickle);
         _cloakCache.StoreReads = !_skipDwm;
         var skipEnum = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetEnum);
@@ -281,21 +283,37 @@ public sealed class WindowSetPoller : IDisposable
         _pinnedEnumProc = (hwnd, _) =>
         {
             enumerated++;
-            // Cheap, local win32k reads first. These alone decide the outcome
-            // for the large majority of windows, and IsCountableWindow's own
-            // short-circuit order is what makes that safe to rely on.
-            var tCheap = Stopwatch.GetTimestamp();
+            // Cheapest-rejecting reads first: an invisible non-foreground window
+            // is rejected on IsWindowVisible alone (WindowClassification.PreClassify
+            // is outcome-identical to IsCountableWindow). windowset-eager restores
+            // the original read-everything order for an A/B.
             var isForegroundWindow = hwnd == foregroundHwnd;
-            var owner = GetWindow(hwnd, GwOwner);
-            var isToolWindow = (GetWindowLong(hwnd, GwlExstyle) & WsExToolwindow) != 0;
-            var isVisible = IsWindowVisible(hwnd);
-            var hasOnScreenBounds = GetWindowRect(hwnd, out var rect) &&
-                WindowClassification.HasOnScreenBounds(
-                    rect.Left, rect.Top, rect.Right, rect.Bottom,
-                    virtualLeft, virtualTop, virtualRight, virtualBottom);
-            var cheapTicks = Stopwatch.GetTimestamp() - tCheap;
-            _stats.CheapTicks += cheapTicks;
-            _stats.Note("cheap", hwnd.ToInt64(), cheapTicks);
+            var reads = new Reads(_stats, hwnd, virtualLeft, virtualTop, virtualRight, virtualBottom);
+            var eager = _eager || _diagEnabled;
+            if (eager)
+            {
+                reads.Owner();
+                reads.IsToolWindow();
+                reads.IsVisible();
+                reads.HasOnScreenBounds();
+            }
+            else
+            {
+                var pre = WindowClassification.PreClassify(ref reads, isForegroundWindow);
+                if (pre != WindowClassification.PreResult.NeedsCloakAndTitle)
+                {
+                    if (pre == WindowClassification.PreResult.Accepted)
+                    {
+                        AddPid(hwnd, pids);
+                    }
+                    return true;
+                }
+            }
+            var owner = reads.Owner();
+            var isToolWindow = reads.IsToolWindow();
+            var isVisible = reads.IsVisible();
+            var hasOnScreenBounds = reads.HasOnScreenBounds();
+            var rect = reads.RectValue;
 
             // DwmGetWindowAttribute is an RPC into dwm.exe, so cloak state comes from
             // WindowCloakCache. The title is read from the kernel-stored caption
@@ -353,7 +371,9 @@ public sealed class WindowSetPoller : IDisposable
 
             if (isCountable || _diagEnabled)
             {
+                var tPid = Stopwatch.GetTimestamp();
                 GetWindowThreadProcessId(hwnd, out var pid);
+                _stats.AddCall(WindowSetPassStats.Call.Pid, hwnd.ToInt64(), Stopwatch.GetTimestamp() - tPid);
                 if (isCountable && pid != 0)
                 {
                     pids.Add((int)pid);
@@ -375,6 +395,79 @@ public sealed class WindowSetPoller : IDisposable
         _enumerated = enumerated;
         _lastSnapshot = pids;
         return pids;
+    }
+
+    private void AddPid(IntPtr hwnd, HashSet<int> pids)
+    {
+        var t = Stopwatch.GetTimestamp();
+        GetWindowThreadProcessId(hwnd, out var pid);
+        _stats.AddCall(WindowSetPassStats.Call.Pid, hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+        if (pid != 0) pids.Add((int)pid);
+    }
+
+    // One window's cheap attribute reads, each timed into its own sub-bucket and
+    // cached so the eager order and the lazy order share one implementation.
+    private struct Reads : WindowClassification.IWindowReads
+    {
+        private readonly WindowSetPassStats _stats;
+        private readonly IntPtr _hwnd;
+        private readonly int _vl, _vt, _vr, _vb;
+        private IntPtr _owner;
+        private bool _hasOwner, _hasStyle, _hasVis, _hasBounds;
+        private bool _tool, _visible, _onScreen;
+        private Rect _rect;
+
+        public Reads(WindowSetPassStats stats, IntPtr hwnd, int vl, int vt, int vr, int vb)
+        {
+            _stats = stats; _hwnd = hwnd; _vl = vl; _vt = vt; _vr = vr; _vb = vb;
+            _owner = IntPtr.Zero; _hasOwner = _hasStyle = _hasVis = _hasBounds = false;
+            _tool = _visible = _onScreen = false;
+            _rect = default;
+        }
+
+        public Rect RectValue => _rect;
+
+        public IntPtr Owner()
+        {
+            if (_hasOwner) return _owner;
+            var t = Stopwatch.GetTimestamp();
+            _owner = GetWindow(_hwnd, GwOwner);
+            _stats.AddCall(WindowSetPassStats.Call.Owner, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            _hasOwner = true;
+            return _owner;
+        }
+
+        public bool IsToolWindow()
+        {
+            if (_hasStyle) return _tool;
+            var t = Stopwatch.GetTimestamp();
+            _tool = (GetWindowLong(_hwnd, GwlExstyle) & WsExToolwindow) != 0;
+            _stats.AddCall(WindowSetPassStats.Call.Style, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            _hasStyle = true;
+            return _tool;
+        }
+
+        public bool IsVisible()
+        {
+            if (_hasVis) return _visible;
+            var t = Stopwatch.GetTimestamp();
+            _visible = IsWindowVisible(_hwnd);
+            _stats.AddCall(WindowSetPassStats.Call.Vis, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            _hasVis = true;
+            return _visible;
+        }
+
+        public bool HasOnScreenBounds()
+        {
+            if (_hasBounds) return _onScreen;
+            var t = Stopwatch.GetTimestamp();
+            _onScreen = GetWindowRect(_hwnd, out _rect) &&
+                WindowClassification.HasOnScreenBounds(
+                    _rect.Left, _rect.Top, _rect.Right, _rect.Bottom, _vl, _vt, _vr, _vb);
+            _stats.AddCall(WindowSetPassStats.Call.Rect, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            _hasBounds = true;
+            return _onScreen;
+        }
     }
 
     // DWMWA_CLOAKED reports non-zero for a window Explorer keeps alive but

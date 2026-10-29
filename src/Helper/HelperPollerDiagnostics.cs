@@ -42,7 +42,11 @@ public static class HelperPollerDiagnostics
     public const string WindowSetTrickle = "windowset-trickle";
     public const string WindowSetEnum = "windowset-enum";
 
-    public static readonly string[] SubSwitches = { WindowSetHooks, WindowSetDwm, WindowSetFallback, WindowSetTrickle, WindowSetEnum };
+    /// <summary>Not a disable: restores the original read order (every cheap
+    /// attribute read for every window) so the lazy order can be A/B tested.</summary>
+    public const string WindowSetEager = "windowset-eager";
+
+    public static readonly string[] SubSwitches = { WindowSetHooks, WindowSetDwm, WindowSetFallback, WindowSetTrickle, WindowSetEnum, WindowSetEager };
 
     /// <summary>
     /// A tick slower than this is worth a log line. Set at the rough floor of

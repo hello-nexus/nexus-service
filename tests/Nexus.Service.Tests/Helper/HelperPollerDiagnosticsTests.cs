@@ -106,7 +106,7 @@ public class HelperPollerDiagnosticsTests
     {
         var line = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("windowset-dwn"));
         Assert.Contains("unrecognized, ignored: windowset-dwn", line);
-        Assert.Contains("sub-switches: windowset-hooks,windowset-dwm,windowset-fallback,windowset-trickle,windowset-enum", line);
+        Assert.Contains("sub-switches: windowset-hooks,windowset-dwm,windowset-fallback,windowset-trickle,windowset-enum,windowset-eager", line);
     }
 
     [Fact]
