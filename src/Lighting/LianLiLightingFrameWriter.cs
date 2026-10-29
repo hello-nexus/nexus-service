@@ -85,13 +85,16 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // Signature currently being attempted, so a retry is told apart from a settings change.
     private int? _pendingFirmwareSig;
 
-    // Independent windows: a hub that rejects its attach commands must not gate
-    // custom-mode streaming, which does not depend on them landing.
     /// <summary>Where this writer reports hub rejections.</summary>
     internal LightingWriteHealth Health { get; set; } = LightingWriteHealth.Shared;
 
     private long _lastBackoffReportMs = long.MinValue / 2;
 
+    // Set by a tick that reaches a command still waiting on a retry it will make.
+    private bool _retryPending;
+
+    // Independent windows: a hub that rejects its attach commands must not gate
+    // custom-mode streaming, which does not depend on them landing.
     private readonly RetryWindow _initRetry = new();
     private readonly RetryWindow _commitRetry = new();
     private readonly RetryWindow _argbSyncRetry = new();
@@ -199,6 +202,13 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     internal void Tick()
     {
+        _retryPending = false;
+        TickCore();
+        ReportStillRejecting();
+    }
+
+    private void TickCore()
+    {
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected)
         {
@@ -216,7 +226,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _resumeEpochSeen = resumeEpoch;
             ForgetHubState();
         }
-        ReportStillRejecting();
         var settings = _store.Load();
         var ls = LianLiHubSet.LightingOf(settings.Devices, _hub.DeviceId);
         var fans = LianLiHubSet.FansOf(settings.Devices, _hub.DeviceId);
@@ -241,6 +250,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteFailure(_argbSyncRetry, "ARGB sync");
             }
+        }
+        if (_argbSyncSent != argbSync && _argbSyncRetry.Streak > 0)
+        {
+            _retryPending = true;
         }
         if (!argbSync && _argbRecommitsDone < ArgbReleaseRecommitMs.Length)
         {
@@ -281,6 +294,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteFailure(_initRetry, "hub init");
             }
+        }
+        if (!_hubInitialised && _initRetry.Streak > 0)
+        {
+            _retryPending = true;
         }
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, fans);
@@ -349,6 +366,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
         else if (_commitRetry.BackingOff(NowMs()))
         {
+            _retryPending = true;
             return;
         }
 
@@ -422,10 +440,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    /// <summary>The retry backoff outlasts the tracker's quiet limit, so a hub still rejecting writes is re-reported about once a second until a write lands.</summary>
+    /// <summary>The retry backoff outlasts the tracker's quiet limit, so a command still waiting on a retry is re-reported at a fixed interval until a write lands or the command is no longer wanted.</summary>
     private void ReportStillRejecting()
     {
-        if (_argbSyncRetry.Streak == 0 && _initRetry.Streak == 0 && _commitRetry.Streak == 0)
+        if (!_retryPending)
         {
             return;
         }

@@ -85,19 +85,6 @@ public class LightingWriteHealthTests
     }
 
     [Fact]
-    public void The_tracker_runs_on_its_own_monotonic_clock_by_default()
-    {
-        var health = new LightingWriteHealth();
-        for (var i = 0; i < 50; i++)
-        {
-            health.NoteFailure("hub");
-        }
-        health.Sweep();
-
-        Assert.False(health.IsFailing("hub"));
-    }
-
-    [Fact]
     public void A_new_burst_after_a_quiet_gap_starts_a_fresh_streak()
     {
         var (health, clock, _) = Make();

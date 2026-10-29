@@ -23,7 +23,7 @@ public sealed class LightingWriteHealth
     /// <summary>Distinct reports carrying a failure needed to flag a key; one bad poll alone never flags.</summary>
     public const int MinFailureReports = 2;
 
-    /// <summary>A key flags only with at least <see cref="MinFailureReports"/> failure reports this long after the streak's first one, so a hotplug or resume burst, or a few stray failures, never flag.</summary>
+    /// <summary>Failure reports must keep arriving past the sustain time, at least the minimum number of them, so a single instant burst never flags.</summary>
     public static readonly TimeSpan SustainedFor = TimeSpan.FromSeconds(15);
 
     /// <summary>A failure after this much quiet starts a new streak.</summary>
