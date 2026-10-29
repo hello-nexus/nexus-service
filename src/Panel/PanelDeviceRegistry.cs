@@ -639,7 +639,7 @@ public sealed class PanelDeviceRegistry
         => record.Layout is not null
            && record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal)));
 
-    private static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
+    internal static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
     {
         PanelDeviceRecord? newest = null;
         foreach (var record in settings.PanelDevices.Values)
