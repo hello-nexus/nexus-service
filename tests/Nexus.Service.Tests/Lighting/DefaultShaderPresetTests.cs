@@ -47,6 +47,7 @@ public class DefaultShaderPresetTests
         {
             Assert.InRange(looks[0].Colorize, 0.5f, 0.9f);
             Assert.Contains(looks, l => l.Colorize < 0.001f);
+            Assert.All(looks, l => Assert.InRange(l.Colorize, 0f, 0.9f));
         }
         else
         {

@@ -1432,7 +1432,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "ripple" => new(0.55f, 0.30f, 55f, 1.00f, 1.00f, 1f),
         "wave" => new(0.58f, 0.45f, 50f, 1.00f, 1.00f, 1f),
         "gradientwave" => new(0.00f, 0.00f, 40f, 1.00f, 1.00f, 1f),
-        "ball" => new(0.06f, 0.70f, 60f, 1.05f, 1.00f, 1f),
+        "ball" => new(0.06f, 0.70f, 60f, 1.40f, 1.05f, 1f),
         "radar" => new(0.33f, 0.60f, 55f, 1.05f, 1.05f, 1f),
         "pulse" => new(0.55f, 0.45f, 60f, 1.00f, 1.00f, 1f),
         "watercolor" => new(0.50f, 0.30f, 40f, 1.00f, 1.00f, 1f),

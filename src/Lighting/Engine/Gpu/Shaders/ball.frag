@@ -14,9 +14,13 @@ const float ARCS = 2.176;
 const float CYCLE = 3.1;
 const float FLOOR = 0.85;
 
-vec3 wheelColor(float k) {
+bool artActive() {
     vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
-    if (u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0) {
+    return u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0;
+}
+
+vec3 wheelColor(float k) {
+    if (artActive()) {
         return artPalette(k);
     }
     if (u_mood > 0.5) {
@@ -26,7 +30,7 @@ vec3 wheelColor(float k) {
     return hsv2rgb(vec3(u_hue + (k - 0.5) * span, 1.0, 1.0));
 }
 
-// finalize() without its colorize blend, so the wheel range alone decides hue.
+// finalize() without its colorize blend, used when the wheel range alone decides hue.
 vec3 finish(vec3 col) {
     float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
     col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
@@ -42,7 +46,7 @@ float ripple(float dx, float v, float age, float amp, float life) {
     float r = (0.05 + 0.62 * a) * (0.5 + amp * 0.8);
     float e = length(vec2(dx, v * 3.5));
     float w = 0.06 + 0.06 * a;
-    float ring = exp(-pow((e - r) / w, 2.0)) * (1.0 - a) * (1.0 - a);
+    float ring = exp(-((e - r) / w) * ((e - r) / w)) * (1.0 - a) * (1.0 - a);
     return ring * amp * smoothstep(-0.08, 0.0, v) * exp(-max(v, 0.0) * 3.0);
 }
 
@@ -62,6 +66,7 @@ void main() {
     vec3 fieldCol = vec3(0.0);
     vec3 halo = vec3(0.0);
     bool nearFloor = v > -0.1 && v < 0.35;
+    float rippleReach = nearFloor ? 0.95 : 0.0;
 
     for (int i = 0; i < 24; i++) {
         if (i >= count) break;
@@ -74,6 +79,11 @@ void main() {
         float hr = hash21(vec2(fi, n));
         float lane = ((fi + 0.5) / float(count) * 2.0 - 1.0) * ar * 0.92;
         float cx = lane + sin(t * 0.25 + fi * 1.7) * 0.3 + (hr - 0.5) * 0.3;
+        // Orb body, halo and ripples all stay within this horizontal reach of cx.
+        float dx = uv.x - cx;
+        if (abs(dx) > max(orbR * 4.8, rippleReach)) {
+            continue;
+        }
         float apex = max(0.2, (1.5 - orbR) * (0.7 + 0.3 * fract(hr * 7.0)));
 
         float sc = min(s, ARCS - 0.0001);
@@ -87,11 +97,10 @@ void main() {
         vec2 c = vec2(cx, FLOOR - orbR * axes.y - h);
         float env = smoothstep(0.0, 0.12, s) * (1.0 - smoothstep(ARCS, ARCS + 0.6, s));
 
-        float dx = uv.x - cx;
         vec2 q = (uv - c) / (orbR * axes);
         float dd = dot(q, q);
-        bool nearRipple = nearFloor && abs(dx) < 0.95 && s > 0.0;
-        bool nearOrb = dd < 16.0 && env > 0.001;
+        bool nearRipple = nearFloor && abs(dx) < 0.95 * (0.6 + 0.4 * ek) && s > 0.0;
+        bool nearOrb = dd < 9.0 && env > 0.001;
         if (!nearRipple && !nearOrb) {
             continue;
         }
@@ -120,5 +129,7 @@ void main() {
     float core = smoothstep(0.7, 1.6, field);
     col += halo;
     col = mix(col, base * 0.95 + vec3(core * 0.45), body);
-    fragColor = vec4(finish(col * 1.15), 1.0);
+    vec3 outCol = col * 1.15;
+    bool ranged = !artActive() && u_mood <= 0.5;
+    fragColor = vec4(ranged ? finish(outCol) : finalize(outCol), 1.0);
 }
