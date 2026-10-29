@@ -32,10 +32,23 @@ internal static class TrayBootstrap
     private const string ConflictNoticeButton = "Open Settings";
 
     private const string ConflictLaunchEndButton = "End task";
+    private const string ConflictSettingEndButton = "Turn off";
 
-    private static string ConflictLaunchTitle(Nexus.Service.Models.Conflicts.DetectedConflict app) => $"{app.DisplayName} opened";
+    private static string ConflictLaunchEndLabel(Nexus.Service.Models.Conflicts.DetectedConflict app) =>
+        app.IsSetting ? ConflictSettingEndButton : ConflictLaunchEndButton;
 
-    private static string ConflictSurvivorTitle(Nexus.Service.Models.Conflicts.DetectedConflict app) => $"Nexus couldn't close {app.DisplayName}";
+    // A setting is turned on and off, not opened and closed.
+    private static string ConflictLaunchTitle(Nexus.Service.Models.Conflicts.DetectedConflict app) =>
+        app.IsSetting ? $"{app.DisplayName} turned on" : $"{app.DisplayName} opened";
+
+    private static string ConflictSurvivorTitle(Nexus.Service.Models.Conflicts.DetectedConflict app) =>
+        app.IsSetting ? $"Nexus couldn't turn off {app.DisplayName}" : $"Nexus couldn't close {app.DisplayName}";
+
+    private static string? SettingDisplayName() =>
+        Nexus.Service.Conflicts.ConflictWatcher.FindById(Nexus.Service.Conflicts.WindowsDynamicLighting.ConflictId)?.DisplayName;
+
+    private static string ConflictNoticeTitleFor(IReadOnlyList<string> names) =>
+        names.Count == 1 && names[0] == SettingDisplayName() ? $"{names[0]} turned off" : ConflictNoticeTitle;
 
     private static string ConflictLaunchText(Nexus.Service.Models.Conflicts.DetectedConflict app) => app.Category switch
     {
@@ -45,9 +58,19 @@ internal static class TrayBootstrap
         _ => "It can fight Nexus for control of your hardware.",
     };
 
-    private static string FormatConflictNotice(IReadOnlyList<string> names) => names.Count == 1
-        ? $"Closed {names[0]} so Nexus can control your hardware."
-        : $"Closed {names.Count} conflicting apps so Nexus can control your hardware: {string.Join(", ", names)}.";
+    private static string FormatConflictNotice(IReadOnlyList<string> allNames)
+    {
+        var setting = SettingDisplayName();
+        var names = allNames.Where(n => n != setting).ToList();
+        var settingOff = names.Count < allNames.Count;
+        var apps = names.Count == 1
+            ? $"Closed {names[0]} so Nexus can control your hardware."
+            : $"Closed {names.Count} conflicting apps so Nexus can control your hardware: {string.Join(", ", names)}.";
+        if (!settingOff) return apps;
+        return names.Count == 0
+            ? $"Nexus turned off {setting} so it can control your lighting."
+            : $"{apps} Nexus also turned off {setting}.";
+    }
 
     // Interactive Windows session: hides console, shows tray with right-click menu.
     // Skipped under --service: Session 0 cannot show UI, so the tray must be a
@@ -85,7 +108,7 @@ internal static class TrayBootstrap
         var interactiveShutdown = app.Services.GetRequiredService<Nexus.Service.Conflicts.ConflictStartupShutdown>();
         interactiveShutdown.AppsTerminated += names =>
         {
-            try { TrayIcon.ShowNoticeBalloon(ConflictNoticeTitle, FormatConflictNotice(names), null, ConflictSettingsPath); }
+            try { TrayIcon.ShowNoticeBalloon(ConflictNoticeTitleFor(names), FormatConflictNotice(names), null, ConflictSettingsPath); }
             catch (Exception ex) { Console.Error.WriteLine($"[conflict-notify] interactive show failed: {ex.Message}"); }
         };
         // The in-process tray has no toast path, so the launch notice is a
@@ -281,16 +304,19 @@ internal static class TrayBootstrap
         void DrainConflictNotice()
         {
             string text;
+            string noticeTitle;
             lock (conflictNoticeGate)
             {
                 if (!helperRegistry.IsAnyConnected || pendingConflictNames.Count == 0) return;
-                text = FormatConflictNotice(pendingConflictNames.Distinct().ToArray());
+                var pending = pendingConflictNames.Distinct().ToArray();
+                noticeTitle = ConflictNoticeTitleFor(pending);
+                text = FormatConflictNotice(pending);
                 pendingConflictNames.Clear();
             }
             try
             {
                 TrayCommands.NoticeAsync(
-                    helperRegistry, ConflictNoticeTitle, text, null,
+                    helperRegistry, noticeTitle, text, null,
                     windowPath: ConflictSettingsPath, buttonLabel: ConflictNoticeButton).ObserveFaults();
             }
             catch (Exception ex) { Console.Error.WriteLine($"[conflict-notify] show failed: {ex.Message}"); }
@@ -349,7 +375,7 @@ internal static class TrayBootstrap
                             AppId = launched.Id,
                             Title = survived ? ConflictSurvivorTitle(launched) : ConflictLaunchTitle(launched),
                             Text = ConflictLaunchText(launched),
-                            EndLabel = ConflictLaunchEndButton,
+                            EndLabel = ConflictLaunchEndLabel(launched),
                             WindowPath = ConflictSettingsPath,
                         }).ObserveFaults();
                     }
@@ -372,7 +398,8 @@ internal static class TrayBootstrap
 
         // End task on a launch notice. Ended here, not in the helper: the
         // service runs as LocalSystem and can end an elevated vendor app.
-        helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env);
+        var noticeWatcher = app.Services.GetService<Nexus.Service.Conflicts.ConflictWatcher>();
+        helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env, noticeWatcher);
 
         // Theme.ResolvedThemeMode is the Windows light/dark theme and this is its
         // only writer. The helper reports it on every connect and on change.
@@ -391,7 +418,7 @@ internal static class TrayBootstrap
             catch (Exception ex) { Console.Error.WriteLine($"[theme-sync] apply failed: {ex.Message}"); }
         };
 
-        static void EndConflictFromNotice(HelperEnvelope env)
+        static void EndConflictFromNotice(HelperEnvelope env, Nexus.Service.Conflicts.ConflictWatcher? watcher)
         {
             if (env.Type != ConflictNoticeCommands.EndType || env.Payload is null) return;
             Nexus.Service.Conflicts.ConflictAppDefinition? def;
@@ -413,6 +440,8 @@ internal static class TrayBootstrap
                 {
                     var outcome = Nexus.Service.Conflicts.ConflictKiller.Kill(def);
                     ServiceLog.Info($"[conflicts] end task from notice: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
+                    // Rescans like the kill route, so the dashboard sees the setting go off at once.
+                    if (def.IsSetting) watcher?.PillarsChanged();
                 }
                 catch (Exception ex) { ServiceLog.Warn($"[conflicts] end task from notice failed: {ex.Message}"); }
             });
