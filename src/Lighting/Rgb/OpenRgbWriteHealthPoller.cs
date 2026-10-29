@@ -58,6 +58,11 @@ public sealed class OpenRgbWriteHealthPoller
                 _unsupported = true;
                 return;
             }
+            if (result.Outcome == OpenRgbWriteHealthOutcome.UnknownController)
+            {
+                _last.Remove(address);
+                continue;
+            }
             if (result.Outcome != OpenRgbWriteHealthOutcome.Ok)
             {
                 continue;

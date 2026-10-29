@@ -422,13 +422,11 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
             else if (hub.Poll())
             {
                 failures = 0;
-                Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(hub.DeviceId);
                 _cooling.ReassertControl(hub);
             }
             else
             {
                 failures++;
-                Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(hub.DeviceId);
                 if (failures >= MaxConsecutiveFailures) break;
             }
             ensureLcd();

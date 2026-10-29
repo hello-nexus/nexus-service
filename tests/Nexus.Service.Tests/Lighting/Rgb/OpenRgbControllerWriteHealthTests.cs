@@ -150,11 +150,11 @@ public class OpenRgbControllerWriteHealthTests
     }
 
     [Fact]
-    public async Task A_daemon_that_rejects_the_id_as_unknown_is_reported_unsupported()
+    public async Task A_daemon_that_does_not_know_the_controller_reports_it_unknown_not_unsupported()
     {
         var (result, _, _) = await RoundTrip((_, _) => Task.FromResult(OpenRgbProtocol.StatusInvalidId), address: 1);
 
-        Assert.Equal(OpenRgbWriteHealthOutcome.Unsupported, result.Outcome);
+        Assert.Equal(OpenRgbWriteHealthOutcome.UnknownController, result.Outcome);
     }
 
     [Fact]

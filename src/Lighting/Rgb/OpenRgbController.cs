@@ -458,7 +458,11 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport, 
             {
                 var (body, status) = await RequestLockedAsync(session, OpenRgbProtocol.PacketId.NexusWriteHealth, (uint)address,
                     null, OpenRgbProtocol.PacketId.NexusWriteHealth, replyOnly: false, ct).ConfigureAwait(false);
-                if (status is OpenRgbProtocol.StatusUnsupported or OpenRgbProtocol.StatusInvalidId)
+                if (status == OpenRgbProtocol.StatusInvalidId)
+                {
+                    return new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.UnknownController, default);
+                }
+                if (status == OpenRgbProtocol.StatusUnsupported)
                 {
                     return new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Unsupported, default);
                 }

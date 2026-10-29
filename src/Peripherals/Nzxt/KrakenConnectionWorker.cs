@@ -91,13 +91,11 @@ public sealed class KrakenConnectionWorker : BackgroundService
                             if (_hub.Poll())
                             {
                                 failures = 0;
-                                Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(KrakenHub.DeviceId);
                                 _cooling.ReassertControl();
                             }
                             else
                             {
                                 failures++;
-                                Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(KrakenHub.DeviceId);
                                 if (failures >= MaxConsecutiveFailures)
                                 {
                                     break;

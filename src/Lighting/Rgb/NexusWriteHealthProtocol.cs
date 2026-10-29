@@ -13,6 +13,8 @@ public enum OpenRgbWriteHealthOutcome
     Ok,
     /// <summary>The daemon ACKed the packet as unsupported: an upstream build.</summary>
     Unsupported,
+    /// <summary>The daemon does not know this controller id (it left in a rescan); other controllers are unaffected.</summary>
+    UnknownController,
     /// <summary>No answer, a refusal other than unsupported, or an unreadable reply.</summary>
     Failed,
 }

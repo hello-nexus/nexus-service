@@ -71,13 +71,11 @@ public sealed class Galahad2ConnectionWorker : BackgroundService
                                 if (_hub.PollRpm())
                                 {
                                     failures = 0;
-                                    Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess("lianli-aio");
                                     _cooling.ReassertControl();
                                 }
                                 else
                                 {
                                     failures++;
-                                    Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure("lianli-aio");
                                     if (failures >= MaxConsecutiveFailures)
                                     {
                                         break;

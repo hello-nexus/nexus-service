@@ -125,6 +125,28 @@ public class OpenRgbWriteHealthPollerTests
     }
 
     [Fact]
+    public async Task An_unknown_controller_is_skipped_alone_and_re_baselines_when_it_returns()
+    {
+        var (poller, health, transport) = Make();
+        var frames = new[] { ("stale", 1), ("live", 2) };
+        // Poll 1: both baseline. Poll 2: stale unknown, live rises. Poll 3: stale back at a high count (new baseline), live rises again.
+        transport.Reply(0, 0);
+        transport.Reply(0, 0);
+        transport.Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.UnknownController, default));
+        transport.Reply(3, 0);
+        transport.Reply(900, 0);
+        transport.Reply(6, 0);
+
+        await poller.PollOnceAsync(frames, default);
+        await poller.PollOnceAsync(frames, default);
+        await poller.PollOnceAsync(frames, default);
+
+        Assert.False(poller.Unsupported);
+        Assert.True(health.IsFailing("live"));
+        Assert.False(health.IsFailing("stale"));
+    }
+
+    [Fact]
     public async Task A_failed_request_reports_nothing_and_keeps_polling()
     {
         var (poller, _, transport) = Make();
