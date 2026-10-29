@@ -159,8 +159,7 @@ public sealed class AppEventRecorder : ITelemetry
         using (var w = new Utf8JsonWriter(stream))
         {
             w.WriteStartObject();
-            // Wire key kept for nexus-web (AppTelemetryCard); the value now reflects the nexus-api usage sink.
-            w.WriteString("posthog", Status);
+            w.WriteString("status", Status);
             w.WriteStartArray("events");
             foreach (var e in Recent())
             {
