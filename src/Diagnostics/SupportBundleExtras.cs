@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Nexus.Service.Diagnostics.EventLog;
 using Nexus.Service.Routes;
 
@@ -19,6 +20,7 @@ public sealed class BundleRedactor
 
     private readonly List<(string Needle, string Replacement)> _paths = new();
     private readonly List<string> _machine = new();
+    private readonly List<Regex> _jsonNames = new();
 
     public BundleRedactor(IEnumerable<string> userNames, string machineName)
     {
@@ -37,9 +39,10 @@ public sealed class BundleRedactor
         if (machineName.Length > 0)
         {
             // The startup snapshot's host line and JSON name fields carry the machine name explicitly, so these are safe for any name.
-            foreach (var label in new[] { "host: ", "\"pcName\":\"", "\"machineName\":\"" })
+            _paths.Add(("host: " + machineName, "host: <pc>"));
+            foreach (var name in new[] { machineName, JsonEncodedText.Encode(machineName).ToString() }.Distinct())
             {
-                _paths.Add((label + machineName, label + "<pc>"));
+                _jsonNames.Add(new Regex("(\"(?:pcName|machineName)\"\\s*:\\s*\")" + Regex.Escape(name) + "(\")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
             }
         }
         if (!IsGenericMachineName(machineName))
@@ -62,6 +65,10 @@ public sealed class BundleRedactor
         {
             text = ReplaceBounded(text, needle, replacement, pathSegment: true);
         }
+        foreach (var rule in _jsonNames)
+        {
+            text = rule.Replace(text, "$1<pc>$2");
+        }
         foreach (var name in _machine)
         {
             text = ReplaceBounded(text, name, "<pc>", pathSegment: false);
@@ -69,7 +76,7 @@ public sealed class BundleRedactor
         return text;
     }
 
-    // A path segment ends at a separator, quote, whitespace or the end; a machine name is a whole token, so letters, digits, '-' and '_' on either side keep it.
+    // A path segment ends at any character that cannot be part of a name or the end; a machine name is a whole token, so letters, digits, '-' and '_' on either side keep it.
     private static string ReplaceBounded(string text, string needle, string replacement, bool pathSegment)
     {
         var at = text.IndexOf(needle, StringComparison.OrdinalIgnoreCase);

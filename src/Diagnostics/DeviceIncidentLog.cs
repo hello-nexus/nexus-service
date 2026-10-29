@@ -67,6 +67,7 @@ public sealed class DeviceIncidentLog
     private readonly Func<string> _dir;
     private readonly Func<long> _nowMs;
     private readonly Dictionary<string, long> _lastSnapshotMs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long?> _priorSnapshotMs = new(StringComparer.Ordinal);
     private readonly System.Threading.Channels.Channel<string> _queue =
         System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(64) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait, SingleReader = true });
     private readonly object _writerLock = new();
@@ -151,7 +152,7 @@ public sealed class DeviceIncidentLog
             }
             text = TryFormat(ring, key, reason, now);
         }
-        Enqueue(text);
+        Enqueue(text, key);
     }
 
     /// <summary>Queues the device's ring for the file unless one was queued for it within <see cref="MinSnapshotGap"/>. Returns whether it queued.</summary>
@@ -166,7 +167,7 @@ public sealed class DeviceIncidentLog
             }
             text = TryFormat(ring, key, reason, _nowMs());
         }
-        return Enqueue(text);
+        return Enqueue(text, key);
     }
 
     // Caller holds _lock. The throttle timestamp outlives the ring so a re-created ring cannot bypass it.
@@ -176,11 +177,12 @@ public sealed class DeviceIncidentLog
         {
             return null;
         }
+        _priorSnapshotMs[key] = _lastSnapshotMs.TryGetValue(key, out var prior) ? prior : null;
         _lastSnapshotMs[key] = now;
         return Format(ring, key, reason, now);
     }
 
-    private bool Enqueue(string? text)
+    private bool Enqueue(string? text, string key)
     {
         if (text is null)
         {
@@ -200,6 +202,18 @@ public sealed class DeviceIncidentLog
             return true;
         }
         Done();
+        // The snapshot was never written, so it must not throttle the next one.
+        lock (_lock)
+        {
+            if (_priorSnapshotMs.GetValueOrDefault(key) is { } prior)
+            {
+                _lastSnapshotMs[key] = prior;
+            }
+            else
+            {
+                _lastSnapshotMs.Remove(key);
+            }
+        }
         return false;
     }
 
@@ -210,9 +224,6 @@ public sealed class DeviceIncidentLog
             try
             {
                 Append(text);
-            }
-            catch (IOException)
-            {
             }
             catch (Exception)
             {
@@ -233,7 +244,7 @@ public sealed class DeviceIncidentLog
 
     internal int Pending => Volatile.Read(ref _pending);
 
-    /// <summary>Blocks until queued snapshots are on disk or <paramref name="timeout"/> passes (default 5 s).</summary>
+    /// <summary>Blocks until queued snapshots are on disk or <paramref name="timeout"/> passes.</summary>
     internal void WaitIdle(TimeSpan? timeout = null)
     {
         var deadline = Environment.TickCount64 + (long)(timeout ?? TimeSpan.FromSeconds(5)).TotalMilliseconds;

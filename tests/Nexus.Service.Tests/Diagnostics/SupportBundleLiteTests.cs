@@ -403,6 +403,10 @@ public class SupportBundleLiteTests : IDisposable
         Assert.Equal("host: <pc> | Windows 11", redactor.Apply("host: NEXUS | Windows 11"));
         Assert.Equal("{\"pcName\":\"<pc>\"}", redactor.Apply("{\"pcName\":\"NEXUS\"}"));
         Assert.Equal("Nexus service", redactor.Apply("Nexus service"));
+        var indented = System.Text.Json.JsonSerializer.Serialize(new { pcName = "NEXUS", other = "NEXUS" }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        var result = redactor.Apply(indented);
+        Assert.Contains("\"pcName\": \"<pc>\"", result);
+        Assert.Contains("\"other\": \"NEXUS\"", result);
     }
 
     [Fact]
@@ -425,5 +429,21 @@ public class SupportBundleLiteTests : IDisposable
         Assert.Equal(0, log.Pending);
         var text = File.ReadAllText(Path.Combine(_root, DeviceIncidentLog.FileName));
         Assert.Equal(queued, System.Text.RegularExpressions.Regex.Matches(text, "^=== ", System.Text.RegularExpressions.RegexOptions.Multiline).Count);
+    }
+
+    [Fact]
+    public void A_dropped_snapshot_does_not_throttle_the_next_one()
+    {
+        using var gate = new ManualResetEventSlim(false);
+        var log = new DeviceIncidentLog(() => { gate.Wait(); return _root; }, () => 5000);
+        for (var i = 0; i < 200; i++)
+        {
+            log.Note("d" + i, "x", DeviceEventKind.Stall);
+            log.Snapshot("d" + i, "r");
+        }
+        Assert.False(log.Snapshot("d199", "dropped"));
+        gate.Set();
+        log.WaitIdle();
+        Assert.True(log.Snapshot("d199", "retry"));
     }
 }
