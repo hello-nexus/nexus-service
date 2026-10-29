@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using Nexus.Service.Diagnostics.EventLog;
 using Nexus.Service.Routes;
 
@@ -10,32 +11,84 @@ namespace Nexus.Service.Diagnostics;
 /// <summary>Plain string replacement and filtering for bundle contents: usernames in home paths, the machine name, other apps' crashes, NEXUS_* environment.</summary>
 public sealed class BundleRedactor
 {
-    private readonly List<(string Needle, string Replacement)> _rules = new();
+    private static readonly HashSet<string> GenericMachineNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NEXUS", "PC", "DESKTOP", "GAMING", "RYZEN", "INTEL", "AMD", "NVIDIA", "WINDOWS", "LAPTOP", "WORKSTATION", "SERVER",
+        "HOME", "USER", "ADMIN", "LOCALHOST", "MACBOOK", "MSI", "ASUS", "HYTE", "CORSAIR", "COMPUTER", "BUILD", "TEST",
+    };
+
+    private readonly List<(string Needle, string Replacement)> _paths = new();
+    private readonly List<string> _machine = new();
 
     public BundleRedactor(IEnumerable<string> userNames, string machineName)
     {
-        foreach (var user in userNames.Where(u => u.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
+        // Longest first, so a profile "alice" is never cut short by a profile "al".
+        foreach (var user in userNames.Where(u => u.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(u => u.Length))
         {
-            // The escaped-backslash form covers paths inside JSON text.
-            _rules.Add((@"\Users\" + user, @"\Users\<user>"));
-            _rules.Add((@"\\Users\\" + user, @"\\Users\\<user>"));
-            _rules.Add(("/Users/" + user, "/Users/<user>"));
-            _rules.Add(("/home/" + user, "/home/<user>"));
+            // The JSON-encoded name covers non-ASCII names, which the default encoder escapes.
+            foreach (var name in new[] { user, JsonEncodedText.Encode(user).ToString() }.Distinct())
+            {
+                _paths.Add((@"\\Users\\" + name, @"\\Users\\<user>"));
+                _paths.Add((@"\Users\" + name, @"\Users\<user>"));
+                _paths.Add(("/Users/" + name, "/Users/<user>"));
+                _paths.Add(("/home/" + name, "/home/<user>"));
+            }
         }
-        if (machineName.Length >= 3)
+        if (!IsGenericMachineName(machineName))
         {
-            _rules.Add((machineName, "<pc>"));
+            _machine.Add(machineName);
+            var encoded = JsonEncodedText.Encode(machineName).ToString();
+            if (encoded != machineName)
+            {
+                _machine.Add(encoded);
+            }
         }
     }
 
+    /// <summary>Too short or too common to replace inside free text without corrupting it; such a name is redacted only in fields that carry it explicitly.</summary>
+    internal static bool IsGenericMachineName(string name) => name.Length < 4 || GenericMachineNames.Contains(name);
+
     public string Apply(string text)
     {
-        foreach (var (needle, replacement) in _rules)
+        foreach (var (needle, replacement) in _paths)
         {
-            text = text.Replace(needle, replacement, StringComparison.OrdinalIgnoreCase);
+            text = ReplaceBounded(text, needle, replacement, pathSegment: true);
+        }
+        foreach (var name in _machine)
+        {
+            text = ReplaceBounded(text, name, "<pc>", pathSegment: false);
         }
         return text;
     }
+
+    // A path segment ends at a separator, quote, whitespace or the end; a machine name is a whole token, so letters, digits, '-' and '_' on either side keep it.
+    private static string ReplaceBounded(string text, string needle, string replacement, bool pathSegment)
+    {
+        var at = text.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+        if (at < 0)
+        {
+            return text;
+        }
+        var sb = new System.Text.StringBuilder(text.Length);
+        var last = 0;
+        while (at >= 0)
+        {
+            var end = at + needle.Length;
+            var okAfter = end >= text.Length || (pathSegment ? IsSegmentEnd(text[end]) : !IsTokenChar(text[end]));
+            var okBefore = pathSegment || at == 0 || !IsTokenChar(text[at - 1]);
+            if (okAfter && okBefore)
+            {
+                sb.Append(text, last, at - last).Append(replacement);
+                last = end;
+            }
+            at = text.IndexOf(needle, end, StringComparison.OrdinalIgnoreCase);
+        }
+        return sb.Append(text, last, text.Length - last).ToString();
+    }
+
+    private static bool IsSegmentEnd(char c) => c is '\\' or '/' or '"' or '\'' or ',' or ';' or ')' or ']' || char.IsWhiteSpace(c);
+
+    private static bool IsTokenChar(char c) => char.IsLetterOrDigit(c) || c is '-' or '_';
 }
 
 public static class SupportBundleExtras

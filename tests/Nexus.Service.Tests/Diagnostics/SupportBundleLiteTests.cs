@@ -29,6 +29,7 @@ public class SupportBundleLiteTests : IDisposable
             log.Note("dev-1", "keeb", DeviceEventKind.WriteFail, code: i);
         }
         Assert.True(log.Snapshot("dev-1", "test"));
+        log.WaitIdle();
         var lines = File.ReadAllLines(Path.Combine(_root, DeviceIncidentLog.FileName));
         Assert.Equal(DeviceIncidentLog.RingSize + 1, lines.Length);
         Assert.Contains($"({DeviceIncidentLog.RingSize} entries)", lines[0]);
@@ -42,6 +43,7 @@ public class SupportBundleLiteTests : IDisposable
         var log = NewLog(() => 5000);
         log.Note("serial-ABC123", "keeb", DeviceEventKind.Disconnect);
         log.Snapshot("serial-ABC123", "device left");
+        log.WaitIdle();
         var text = File.ReadAllText(Path.Combine(_root, DeviceIncidentLog.FileName));
         Assert.DoesNotContain("ABC123", text);
         Assert.Contains(DeviceIncidentLog.Label("keeb", "serial-ABC123"), text);
@@ -60,6 +62,7 @@ public class SupportBundleLiteTests : IDisposable
             log.Note("d", "np50", DeviceEventKind.WriteOk);
         }
         log.Snapshot("d", "test");
+        log.WaitIdle();
         var lines = File.ReadAllLines(Path.Combine(_root, DeviceIncidentLog.FileName));
         Assert.Equal(3, lines.Length);
         Assert.Contains("WriteOk n=500", lines[2]);
@@ -88,6 +91,7 @@ public class SupportBundleLiteTests : IDisposable
         var log = NewLog(() => 5000);
         log.Note("a", "x", DeviceEventKind.Stall);
         log.Snapshot("a", "r");
+        log.WaitIdle();
         Assert.True(File.Exists(Path.Combine(_root, "device-incidents.1.log")));
         Assert.True(new FileInfo(path).Length < 1000);
     }
@@ -178,6 +182,9 @@ public class SupportBundleLiteTests : IDisposable
     [InlineData("/home/alice/.local/state", "/home/<user>/.local/state")]
     [InlineData("host GAMING-PC crashed", "host <pc> crashed")]
     [InlineData(@"C:\Users\bob\x", @"C:\Users\bob\x")]
+    [InlineData(@"C:\Users\alice2\x", @"C:\Users\alice2\x")]
+    [InlineData(@"C:\Users\alice", @"C:\Users\<user>")]
+    [InlineData("GAMING-PC-2 and xGAMING-PC", "GAMING-PC-2 and xGAMING-PC")]
     public void Redactor_replaces_the_user_in_home_paths_and_the_machine_name(string input, string expected)
     {
         Assert.Equal(expected, new BundleRedactor(new[] { "alice" }, "gaming-pc").Apply(input));
@@ -294,9 +301,95 @@ public class SupportBundleLiteTests : IDisposable
         var health = new Nexus.Service.Lighting.LightingWriteHealth { Incidents = log };
         health.NoteFailure("dev-9", "keeb");
         health.Forget("dev-9");
+        log.WaitIdle();
         var text = File.ReadAllText(Path.Combine(_root, DeviceIncidentLog.FileName));
         Assert.Contains("WriteFail", text);
         Assert.Contains("Disconnect", text);
         Assert.Contains("device left", text);
+    }
+
+    [Fact]
+    public void Username_is_replaced_only_as_a_whole_home_path_segment_longest_name_first()
+    {
+        var redactor = new BundleRedactor(new[] { "a", "alice" }, "gaming-pc");
+        Assert.Equal(@"C:\Users\<user>\x and \Users\alicex", redactor.Apply(@"C:\Users\alice\x and \Users\alicex"));
+        Assert.Equal(@"C:\Users\<user>\x", redactor.Apply(@"C:\Users\a\x"));
+        Assert.Equal("alice said hi", redactor.Apply("alice said hi"));
+    }
+
+    [Fact]
+    public void Non_ascii_username_is_redacted_in_json_text_where_the_default_encoder_escapes_it()
+    {
+        var redactor = new BundleRedactor(new[] { "José" }, "gaming-pc");
+        var json = System.Text.Json.JsonSerializer.Serialize(@"C:\Users\José\x");
+        Assert.DoesNotContain("Jos", redactor.Apply(json));
+        Assert.Contains("<user>", redactor.Apply(json));
+    }
+
+    [Theory]
+    [InlineData("NEXUS")]
+    [InlineData("RYZEN")]
+    [InlineData("PC")]
+    [InlineData("abc")]
+    public void Generic_or_short_machine_names_are_not_replaced_in_free_text(string machine)
+    {
+        const string text = "Nexus service on a Ryzen pc: abc started";
+        Assert.Equal(text, new BundleRedactor(Array.Empty<string>(), machine).Apply(text));
+    }
+
+    [Fact]
+    public void Budget_always_ships_the_current_log_and_incident_logs_even_when_older_or_over_budget()
+    {
+        var t = new DateTime(2026, 10, 29, 0, 0, 0, DateTimeKind.Utc);
+        SupportBundleBuilder.LogCandidate C(string n, int days, long len) => new(n, n, t.AddDays(days), len, false, null);
+        var chosen = SupportBundleBuilder.SelectWithinBudget(
+            new[] { C("logs/other.log", 0, 90), C("logs/nexus-service.log", -9, 50), C("logs/device-incidents.log", -8, 20) }, 100);
+        Assert.Equal(new[] { "logs/device-incidents.log", "logs/nexus-service.log" }, chosen.Select(c => c.EntryName));
+    }
+
+    [Fact]
+    public void Zip_entries_for_other_user_profiles_are_indexed_not_named_after_the_user()
+    {
+        var logs = Path.Combine(_root, "u", "alice", "AppData", "Local", "Nexus", "logs");
+        Directory.CreateDirectory(logs);
+        File.WriteAllText(Path.Combine(logs, "nexus-helper.log"), "x");
+        var zip = SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
+        {
+            LogsDirectory = Path.Combine(_root, "none"),
+            OpenRgbConfigDirectory = Path.Combine(_root, "o"),
+            UpdatesDirectory = Path.Combine(_root, "up"),
+            UserLogDirectories = new[] { ("alice", logs) },
+        });
+        using var archive = new ZipArchive(new MemoryStream(zip));
+        Assert.DoesNotContain(archive.Entries, e => e.FullName.Contains("alice"));
+    }
+
+    [Fact]
+    public void Repeated_forget_of_an_unknown_device_writes_nothing()
+    {
+        var log = NewLog(() => 5000);
+        var health = new Nexus.Service.Lighting.LightingWriteHealth { Incidents = log };
+        for (var i = 0; i < 20; i++)
+        {
+            health.Forget("uncontrolled-frame");
+        }
+        log.WaitIdle();
+        Assert.False(File.Exists(Path.Combine(_root, DeviceIncidentLog.FileName)));
+    }
+
+    [Fact]
+    public void Disconnect_snapshots_once_and_the_throttle_outlives_the_removed_ring()
+    {
+        long t = 100_000;
+        var log = NewLog(() => t);
+        log.Note("d", "x", DeviceEventKind.WriteFail);
+        log.Disconnect("d", "left");
+        log.Disconnect("d", "left again");
+        t += 5_000;
+        log.Note("d", "x", DeviceEventKind.WriteFail);
+        log.Disconnect("d", "flap");
+        log.WaitIdle();
+        var text = File.ReadAllText(Path.Combine(_root, DeviceIncidentLog.FileName));
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(text, "^=== ", System.Text.RegularExpressions.RegexOptions.Multiline));
     }
 }

@@ -172,9 +172,7 @@ public sealed class LightingWriteHealth
     {
         if (Incidents is { } incidents)
         {
-            incidents.Note(key, null, Nexus.Service.Diagnostics.DeviceEventKind.Disconnect);
-            incidents.Snapshot(key, "device left");
-            incidents.Forget(key);
+            incidents.Disconnect(key, "device left");
         }
         lock (_lock)
         {

@@ -127,6 +127,7 @@ public sealed unsafe class MacUsbEnumerator : IUsbEnumerator
                         if (ownsCurrent)
                         {
                             IOObjectRelease(current);
+                            ownsCurrent = false;
                         }
                         if (rc != 0)
                         {
@@ -138,6 +139,10 @@ public sealed unsafe class MacUsbEnumerator : IUsbEnumerator
                         {
                             device.Parents.Add(hub);
                         }
+                    }
+                    if (ownsCurrent)
+                    {
+                        IOObjectRelease(current);
                     }
                     result.Add(device);
                 }

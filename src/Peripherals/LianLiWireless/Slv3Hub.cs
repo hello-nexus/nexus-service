@@ -2219,8 +2219,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
-                Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Note(dropId, "lianli-wireless", Nexus.Service.Diagnostics.DeviceEventKind.Disconnect);
-                Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Snapshot(dropId, "chain dropped");
+                Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _unboundHere.Remove(key);

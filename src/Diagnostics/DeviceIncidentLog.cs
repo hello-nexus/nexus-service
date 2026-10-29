@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Text;
 using Nexus.Service.Platform;
 
@@ -20,7 +22,7 @@ public enum DeviceEventKind : byte
 /// <summary>
 /// A fixed-size ring of recent events per device, kept in memory. When a device drops, stalls or starts failing
 /// writes, its ring is appended as text to logs/device-incidents.log (a file, so it survives restarts and ships in
-/// the support bundle). Devices are named by model plus a short hash of their id, never the raw id.
+/// the support bundle). Devices are named by handler id plus a short hash of their key, never the raw key. File writes run on one background task so device threads never block on I/O.
 /// </summary>
 public sealed class DeviceIncidentLog
 {
@@ -51,14 +53,18 @@ public sealed class DeviceIncidentLog
         public int Next;
         public int Count;
         public string Name = "device";
-        public long LastSnapshotMs = long.MinValue;
     }
 
     private readonly object _lock = new();
     private readonly Dictionary<string, Ring> _rings = new(StringComparer.Ordinal);
     private readonly Func<string> _dir;
     private readonly Func<long> _nowMs;
-    private readonly object _fileLock = new();
+    private readonly Dictionary<string, long> _lastSnapshotMs = new(StringComparer.Ordinal);
+    private readonly System.Threading.Channels.Channel<string> _queue =
+        System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(64) { FullMode = System.Threading.Channels.BoundedChannelFullMode.DropWrite, SingleReader = true });
+    private readonly object _writerLock = new();
+    private bool _writerStarted;
+    private int _pending;
 
     public DeviceIncidentLog(Func<string> logsDirectory, Func<long> nowMs)
     {
@@ -109,48 +115,127 @@ public sealed class DeviceIncidentLog
         }
     }
 
-    public void Forget(string key)
+    /// <summary>Drops a device's ring. When it held entries, records a disconnect and snapshots first; a key with no ring writes nothing.</summary>
+    public void Disconnect(string key, string reason)
     {
+        string? text;
         lock (_lock)
         {
+            if (!_rings.TryGetValue(key, out var ring))
+            {
+                return;
+            }
             _rings.Remove(key);
+            if (ring.Count == 0)
+            {
+                return;
+            }
+            var now = _nowMs();
+            ref var slot = ref ring.Entries[ring.Next];
+            slot.AtMs = now;
+            slot.Kind = DeviceEventKind.Disconnect;
+            slot.Count = 1;
+            slot.LatencyMs = 0;
+            slot.Code = 0;
+            ring.Next = (ring.Next + 1) % RingSize;
+            if (ring.Count < RingSize)
+            {
+                ring.Count++;
+            }
+            text = TryFormat(ring, key, reason, now);
         }
+        Enqueue(text);
     }
 
-    /// <summary>Appends the device's ring to the file unless one was written for it within <see cref="MinSnapshotGap"/>. Returns whether it wrote.</summary>
+    /// <summary>Queues the device's ring for the file unless one was queued for it within <see cref="MinSnapshotGap"/>. Returns whether it queued.</summary>
     public bool Snapshot(string key, string reason)
     {
-        string text;
+        string? text;
         lock (_lock)
         {
             if (!_rings.TryGetValue(key, out var ring) || ring.Count == 0)
             {
                 return false;
             }
-            var now = _nowMs();
-            if (ring.LastSnapshotMs != long.MinValue && now - ring.LastSnapshotMs < MinSnapshotGap.TotalMilliseconds)
-            {
-                return false;
-            }
-            ring.LastSnapshotMs = now;
-            text = Format(ring, key, reason, now);
+            text = TryFormat(ring, key, reason, _nowMs());
         }
-        try
+        return Enqueue(text);
+    }
+
+    // Caller holds _lock. The throttle timestamp outlives the ring so a re-created ring cannot bypass it.
+    private string? TryFormat(Ring ring, string key, string reason, long now)
+    {
+        if (_lastSnapshotMs.TryGetValue(key, out var last) && now - last < MinSnapshotGap.TotalMilliseconds)
         {
-            Append(text);
+            return null;
+        }
+        _lastSnapshotMs[key] = now;
+        return Format(ring, key, reason, now);
+    }
+
+    private bool Enqueue(string? text)
+    {
+        if (text is null)
+        {
+            return false;
+        }
+        lock (_writerLock)
+        {
+            if (!_writerStarted)
+            {
+                _writerStarted = true;
+                Task.Run(DrainAsync);
+            }
+        }
+        Interlocked.Increment(ref _pending);
+        if (_queue.Writer.TryWrite(text))
+        {
             return true;
         }
-        catch (IOException)
+        Done();
+        return false;
+    }
+
+    private async Task DrainAsync()
+    {
+        await foreach (var text in _queue.Reader.ReadAllAsync().ConfigureAwait(false))
         {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
+            try
+            {
+                Append(text);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+            Done();
         }
     }
 
-    /// <summary>Model name plus the first 8 hex of the id's SHA-256, so two units of one model stay distinguishable without exposing a serial.</summary>
+    private void Done()
+    {
+        lock (_writerLock)
+        {
+            _pending--;
+            Monitor.PulseAll(_writerLock);
+        }
+    }
+
+    /// <summary>Blocks until queued snapshots are on disk; tests only.</summary>
+    internal void WaitIdle()
+    {
+        lock (_writerLock)
+        {
+            while (Volatile.Read(ref _pending) > 0)
+            {
+                Monitor.Wait(_writerLock, 5000);
+            }
+        }
+    }
+
+    /// <summary>Name plus a short hash of the key, so two units of one model stay distinguishable without exposing a serial.</summary>
     public static string Label(string name, string key)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(key));
@@ -175,16 +260,13 @@ public sealed class DeviceIncidentLog
 
     private void Append(string text)
     {
-        lock (_fileLock)
+        var dir = _dir();
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, FileName);
+        if (File.Exists(path) && new FileInfo(path).Length > MaxFileBytes)
         {
-            var dir = _dir();
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, FileName);
-            if (File.Exists(path) && new FileInfo(path).Length > MaxFileBytes)
-            {
-                File.Move(path, Path.Combine(dir, "device-incidents.1.log"), overwrite: true);
-            }
-            File.AppendAllText(path, text, Encoding.UTF8);
+            File.Move(path, Path.Combine(dir, "device-incidents.1.log"), overwrite: true);
         }
+        File.AppendAllText(path, text, Encoding.UTF8);
     }
 }

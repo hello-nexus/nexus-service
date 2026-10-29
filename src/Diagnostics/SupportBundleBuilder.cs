@@ -61,13 +61,23 @@ public static class SupportBundleBuilder
         public long Cost => Math.Min(Length, MaxLogBytes);
     }
 
+    private static bool IsPinned(LogCandidate c) =>
+        c.EntryName is "logs/nexus-service.log" or "logs/" + DeviceIncidentLog.FileName or "logs/device-incidents.1.log";
+
     /// <summary>Newest first, taking each file that still fits in what is left of the budget.</summary>
     internal static List<LogCandidate> SelectWithinBudget(IEnumerable<LogCandidate> candidates, long budget)
     {
         var chosen = new List<LogCandidate>();
-        foreach (var c in candidates.OrderByDescending(c => c.LastWriteUtc).ThenBy(c => c.EntryName, StringComparer.Ordinal))
+        // The current service log and the device incident logs always ship, then the rest fill what is left, newest first.
+        var ordered = candidates.OrderByDescending(IsPinned).ThenByDescending(c => c.LastWriteUtc).ThenBy(c => c.EntryName, StringComparer.Ordinal);
+        foreach (var c in ordered)
         {
-            if (c.Cost <= budget)
+            if (IsPinned(c))
+            {
+                budget -= c.Cost;
+                chosen.Add(c);
+            }
+            else if (c.Cost <= budget)
             {
                 budget -= c.Cost;
                 chosen.Add(c);
@@ -90,7 +100,8 @@ public static class SupportBundleBuilder
             }
             WriteText(zip, r, "system-profile.txt", src.StartupSnapshot);
             AddLogs(logs, "logs/", src.LogsDirectory, "*.log");
-            foreach (var (label, dir) in src.UserLogDirectories)
+            var userIndex = 0;
+            foreach (var (_, dir) in src.UserLogDirectories)
             {
                 // SYSTEM reads user-controlled folders here: one user's folder must never break the export
                 // for everyone, so any failure skips that user. Junctioned dirs and linked files are
@@ -103,7 +114,7 @@ public static class SupportBundleBuilder
                     }
                     var profile = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(dir))));
                     var prefix = profile is null ? null : Lifecycle.UserDataSafety.ExpectedFinalPrefix(profile, Path.Combine("AppData", "Local", "Nexus", "logs"));
-                    AddLogs(logs, $"logs/user-{label}/", dir, "*.log", mustBeUnder: true, expectedPrefix: prefix);
+                    AddLogs(logs, $"logs/user-{++userIndex}/", dir, "*.log", mustBeUnder: true, expectedPrefix: prefix);
                 }
                 catch (Exception)
                 {
