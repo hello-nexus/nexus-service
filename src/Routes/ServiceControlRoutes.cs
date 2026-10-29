@@ -233,16 +233,17 @@ internal static class ServiceControlRoutes
         {
             using var reader = new System.IO.StreamReader(request.Body, System.Text.Encoding.UTF8, leaveOpen: true);
             var buffer = new char[MaxRestartBodyChars + 1];
-            var read = await reader.ReadBlockAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+            var read = await reader.ReadBlockAsync(buffer.AsMemory(), request.HttpContext.RequestAborted).ConfigureAwait(false);
             if (read > MaxRestartBodyChars)
             {
                 return new RestartRouteResult(false, null, "The request body is too large.");
             }
             text = new string(buffer, 0, read);
         }
-        catch (System.IO.IOException)
+        catch (Exception ex) when (ex is System.IO.IOException or OperationCanceledException)
         {
-            return new RestartRouteResult(true, null, null);
+            // A body that never arrived whole (bad chunking, over the server limit, a dropped connection) cannot be trusted to mean "no route".
+            return new RestartRouteResult(false, null, "The request body could not be read.");
         }
         if (string.IsNullOrWhiteSpace(text))
         {

@@ -124,4 +124,46 @@ public sealed class ServiceRestartRouteTests : IClassFixture<NexusAppFactory>, I
         Assert.Equal((true, (string?)null), (noType.Ok, noType.Route));
         Assert.False(huge.Ok);
     }
+
+    private sealed class FailingBody(Exception error) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw error;
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) => throw error;
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public async Task A_body_that_cannot_be_read_is_refused_rather_than_taken_as_no_route()
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.ContentType = "application/json";
+        ctx.Request.Body = new FailingBody(new IOException("connection reset"));
+
+        var result = await ServiceControlRoutes.ReadRestartRouteAsync(ctx.Request);
+
+        Assert.False(result.Ok);
+        Assert.Equal("The request body could not be read.", result.Error);
+    }
+
+    [Fact]
+    public async Task A_cancelled_request_is_refused()
+    {
+        using var cts = new CancellationTokenSource();
+        var ctx = new DefaultHttpContext { RequestAborted = cts.Token };
+        ctx.Request.ContentType = "application/json";
+        ctx.Request.Body = new FailingBody(new OperationCanceledException());
+        cts.Cancel();
+
+        var result = await ServiceControlRoutes.ReadRestartRouteAsync(ctx.Request);
+
+        Assert.False(result.Ok);
+    }
 }
