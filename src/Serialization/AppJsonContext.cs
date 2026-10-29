@@ -1381,6 +1381,7 @@ namespace Nexus.Service.Serialization;
 // Diagnostics app: aggregated health + per-domain detail + bundle export.
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.DiagnosticsHealthResponse))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.SupportInfo))]
+[JsonSerializable(typeof(Nexus.Service.Diagnostics.UsbTopologyReport))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.HealthComponent))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.HealthComponentReason))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.EventLog.DiagnosticIncident))]

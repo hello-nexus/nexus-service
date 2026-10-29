@@ -90,6 +90,99 @@ public sealed unsafe class MacUsbEnumerator : IUsbEnumerator
         return result;
     }
 
+    /// <summary>Known devices with the entries above them in the IOService plane that carry a USB identity (hubs); read-only IORegistry walk.</summary>
+    internal static List<Nexus.Service.Diagnostics.UsbTopologyDevice> ReadTopology(Func<int, int, bool> isKnown)
+    {
+        var result = new List<Nexus.Service.Diagnostics.UsbTopologyDevice>();
+        if (!OperatingSystem.IsMacOS())
+        {
+            return result;
+        }
+        var matching = IOServiceMatching("IOUSBHostDevice");
+        uint iterator;
+        if (matching == IntPtr.Zero || IOServiceGetMatchingServices(0, matching, &iterator) != 0)
+        {
+            return result;
+        }
+        try
+        {
+            for (var service = IOIteratorNext(iterator); service != 0; service = IOIteratorNext(iterator))
+            {
+                try
+                {
+                    var node = TopologyNode(service);
+                    var vid = IntProperty(service, "idVendor") ?? 0;
+                    var pid = IntProperty(service, "idProduct") ?? 0;
+                    if (node is null || !isKnown(vid, pid))
+                    {
+                        continue;
+                    }
+                    var device = new Nexus.Service.Diagnostics.UsbTopologyDevice { Device = node };
+                    var current = service;
+                    var ownsCurrent = false;
+                    for (var depth = 0; depth < 16; depth++)
+                    {
+                        uint parent;
+                        var rc = IORegistryEntryGetParentEntry(current, "IOService", &parent);
+                        if (ownsCurrent)
+                        {
+                            IOObjectRelease(current);
+                        }
+                        if (rc != 0)
+                        {
+                            break;
+                        }
+                        current = parent;
+                        ownsCurrent = true;
+                        if (TopologyNode(current) is { } hub)
+                        {
+                            device.Parents.Add(hub);
+                        }
+                    }
+                    result.Add(device);
+                }
+                finally
+                {
+                    IOObjectRelease(service);
+                }
+            }
+        }
+        finally
+        {
+            IOObjectRelease(iterator);
+        }
+        return result;
+    }
+
+    private static Nexus.Service.Diagnostics.UsbTopologyNode? TopologyNode(uint entry)
+    {
+        var vid = IntProperty(entry, "idVendor");
+        var pid = IntProperty(entry, "idProduct");
+        if (vid is null || pid is null)
+        {
+            return null;
+        }
+        var location = IntProperty(entry, "locationID");
+        var serial = StringProperty(entry, "USB Serial Number");
+        var speed = IntProperty(entry, "Device Speed") switch
+        {
+            0 => "1.5 Mb/s",
+            1 => "12 Mb/s",
+            2 => "480 Mb/s",
+            3 => "5000 Mb/s",
+            4 => "10000 Mb/s",
+            _ => "",
+        };
+        return new Nexus.Service.Diagnostics.UsbTopologyNode
+        {
+            Id = Nexus.Service.Diagnostics.UsbTopology.ShortHash(serial.Length > 0 ? $"{vid:x4}{pid:x4}{serial}" : $"{vid:x4}{pid:x4}{location:x8}"),
+            VidPid = $"{vid:X4}:{pid:X4}",
+            Name = StringProperty(entry, "USB Product Name"),
+            Speed = speed,
+            Port = location is null ? "" : $"0x{location.Value:x8}",
+        };
+    }
+
     private static int? IntProperty(uint service, string key)
     {
         var cfKey = CFStringCreateWithCString(IntPtr.Zero, key, KCfStringEncodingUtf8);
@@ -163,6 +256,7 @@ public sealed unsafe class MacUsbEnumerator : IUsbEnumerator
     [System.Runtime.InteropServices.DllImport(IOKit)] private static extern int IOServiceGetMatchingServices(uint mainPort, IntPtr matching, uint* iterator);
     [System.Runtime.InteropServices.DllImport(IOKit)] private static extern uint IOIteratorNext(uint iterator);
     [System.Runtime.InteropServices.DllImport(IOKit)] private static extern int IOObjectRelease(uint obj);
+    [System.Runtime.InteropServices.DllImport(IOKit)] private static extern int IORegistryEntryGetParentEntry(uint entry, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStr)] string plane, uint* parent);
     [System.Runtime.InteropServices.DllImport(IOKit)] private static extern IntPtr IORegistryEntryCreateCFProperty(uint entry, IntPtr key, IntPtr allocator, uint options);
     [System.Runtime.InteropServices.DllImport(CoreFoundation)] private static extern IntPtr CFStringCreateWithCString(IntPtr allocator, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStr)] string str, uint encoding);
     [System.Runtime.InteropServices.DllImport(CoreFoundation)] private static extern void CFRelease(IntPtr cf);

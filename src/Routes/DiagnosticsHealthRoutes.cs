@@ -148,6 +148,7 @@ public static class DiagnosticsHealthRoutes
             PnpProblemScanner pnp,
             Nexus.Service.Persistence.IConfigStore store,
             Nexus.Service.Conflicts.IConflictDetector conflicts,
+            IEnumerable<Nexus.Service.Devices.IDeviceHandler> handlers,
             IServiceProvider sp) =>
         {
             var bridge = sp.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>();
@@ -159,7 +160,7 @@ public static class DiagnosticsHealthRoutes
                 DevTools = true,
 #endif
                 Os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-                MachineName = Environment.MachineName,
+                MachineName = "<pc>",
                 ExportedAtUtc = DateTime.UtcNow.ToString("O"),
                 ServiceUptimeSeconds = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalSeconds,
                 ConflictsRunning = conflicts.GetConflicts().Select(c => $"{c.Id} (pid {c.Pid})").ToList(),
@@ -169,7 +170,19 @@ public static class DiagnosticsHealthRoutes
                 LightingDevices = bridge?.Devices.Select(d => $"[{d.Index}] {d.Name} leds={d.LedCount}").ToList() ?? new(),
                 OpenRgbDaemonRunning = daemon?.IsRunning ?? false,
                 OpenRgbDaemonUptimeSeconds = daemon?.Uptime.TotalSeconds ?? 0,
+                NexusEnvironment = SupportBundleExtras.NexusEnvironment(Environment.GetEnvironmentVariables()),
+                OverrideFiles = SupportBundleExtras.OverrideFiles(
+                    new[] { Path.Combine(ServiceLog.LogsDirectory, Nexus.Service.Helper.HelperPollerDiagnostics.DisableFileName) },
+                    Nexus.Service.Persistence.NexusDataPaths.NexusRoot()),
+                VendorSoftware = VendorSoftwareProbe.Collect(
+                    conflicts.GetConflicts().Select(c => c.Id).ToHashSet(),
+                    id => sp.GetService<Nexus.Service.Conflicts.IConflictAppInstallProbe>()?.IsInstalled(id) ?? false),
             };
+            var userNames = new List<string> { Environment.UserName };
+            if (OperatingSystem.IsWindows())
+            {
+                userNames.AddRange(Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles().Select(Path.GetFileName).Where(n => !string.IsNullOrEmpty(n))!);
+            }
             // A failing fan provider must not cost the user the rest of the bundle.
             List<Nexus.Service.Models.Cooling.FanChannel>? fanChannels = null;
             try
@@ -192,15 +205,24 @@ public static class DiagnosticsHealthRoutes
                 Info = info,
                 StartupSnapshot = SupportBundleBuilder.ReadStartupSnapshot(),
                 Health = healthModel.BuildRealHealth(),
-                Incidents = BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false, includeSimulated: false),
+                Incidents = SupportBundleExtras.FilterCrashes(
+                    BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false, includeSimulated: false),
+                    VendorSoftwareProbe.ProcessNames()),
                 Smart = smart.Snapshot(),
                 Memory = BuildMemoryResponse(memDiag),
                 Gpu = BuildGpuResponse(gpu, events),
                 Cooling = cooling.Snapshot(),
                 Fans = fanChannels,
                 System = BuildSystemResponse(pnp, events),
+                UsbTopology = UsbTopology.Collect((vid, pid) =>
+                {
+                    var probe = new[] { new Nexus.Service.Devices.UsbDeviceEntry { VendorId = vid, ProductId = pid } };
+                    return handlers.Any(h => h.IsConnected(probe));
+                }),
+                UserNames = userNames,
+                MachineName = Environment.MachineName,
             });
-            var fileName = $"nexus-support-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
+            var fileName = $"nexus-support-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
             return Results.File(zipBytes, "application/zip", fileName);
         }).LocalhostOnly();
 

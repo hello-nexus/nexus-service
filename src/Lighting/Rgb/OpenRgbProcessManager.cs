@@ -675,7 +675,7 @@ public sealed class OpenRgbProcessManager : IDisposable
             psi.ArgumentList.Add("--config");
             psi.ArgumentList.Add(configDir);
             psi.ArgumentList.Add("--loglevel");
-            psi.ArgumentList.Add("error");
+            psi.ArgumentList.Add("warning");
 
             var verbosity = ResolveVerbosityFlag(Environment.GetEnvironmentVariable(VerbosityEnvVar));
             if (verbosity is not null)

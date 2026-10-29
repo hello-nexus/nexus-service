@@ -81,6 +81,79 @@ internal static partial class WindowsDevnodes
     }
 
     /// <summary>The present USB devnode whose instance id ends in the adb serial, or null.</summary>
+    /// <summary>Present USB devices <paramref name="isKnown"/> accepts, each with the USB hubs above it from a cfgmgr32 parent walk; instance ids are hashed.</summary>
+    public static List<Nexus.Service.Diagnostics.UsbTopologyDevice> ReadUsbTopology(Func<int, int, bool> isKnown)
+    {
+        var result = new List<Nexus.Service.Diagnostics.UsbTopologyDevice>();
+        var all = EnumeratePresent(enumerator: "USB");
+        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in all)
+        {
+            names[d.InstanceId] = d.Name;
+        }
+        foreach (var d in all)
+        {
+            if (d.InstanceId.Contains("&MI_", StringComparison.OrdinalIgnoreCase) || !TryParseVidPid(d.InstanceId, out var vid, out var pid) || !isKnown(vid, pid))
+            {
+                continue;
+            }
+            var device = new Nexus.Service.Diagnostics.UsbTopologyDevice { Device = TopologyNode(d.InstanceId, d.Name, 0) };
+            var depth = 0;
+            foreach (var parentId in ParentInstanceIds(d.InstanceId))
+            {
+                depth++;
+                if (!parentId.StartsWith("USB\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+                device.Parents.Add(TopologyNode(parentId, names.GetValueOrDefault(parentId, ""), depth));
+            }
+            result.Add(device);
+        }
+        return result;
+    }
+
+    private static Nexus.Service.Diagnostics.UsbTopologyNode TopologyNode(string instanceId, string name, int depth) => new()
+    {
+        Id = Nexus.Service.Diagnostics.UsbTopology.ShortHash(instanceId),
+        VidPid = TryParseVidPid(instanceId, out var vid, out var pid) ? $"{vid:X4}:{pid:X4}" : (instanceId.Split('\\') is { Length: > 1 } parts ? parts[1] : ""),
+        Name = name,
+        Port = $"depth {depth}",
+    };
+
+    private static bool TryParseVidPid(string instanceId, out int vid, out int pid)
+    {
+        vid = pid = 0;
+        var v = instanceId.IndexOf("VID_", StringComparison.OrdinalIgnoreCase);
+        var p = instanceId.IndexOf("PID_", StringComparison.OrdinalIgnoreCase);
+        return v >= 0 && p >= 0 && instanceId.Length >= p + 8
+            && int.TryParse(instanceId.AsSpan(v + 4, 4), System.Globalization.NumberStyles.HexNumber, null, out vid)
+            && int.TryParse(instanceId.AsSpan(p + 4, 4), System.Globalization.NumberStyles.HexNumber, null, out pid);
+    }
+
+    private static List<string> ParentInstanceIds(string instanceId)
+    {
+        var chain = new List<string>();
+        if (CM_Locate_DevNode(out var current, instanceId, 0) != 0)
+        {
+            return chain;
+        }
+        unsafe
+        {
+            char* buffer = stackalloc char[260];
+            for (var i = 0; i < 16; i++)
+            {
+                if (CM_Get_Parent(out var parent, current, 0) != 0 || CM_Get_Device_ID(parent, buffer, 260, 0) != 0)
+                {
+                    break;
+                }
+                chain.Add(new string(buffer));
+                current = parent;
+            }
+        }
+        return chain;
+    }
+
     public static string? FindPresentUsbInstanceId(string serial)
         => WindowsSpecsParsers.PickUsbInstanceId(EnumeratePresent(enumerator: "USB", idsOnly: true).Select(d => d.InstanceId), serial);
 
@@ -181,4 +254,10 @@ internal static partial class WindowsDevnodes
 
     [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Locate_DevNodeW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint CM_Locate_DevNode(out uint devInst, string deviceId, uint flags);
+
+    [LibraryImport("cfgmgr32.dll")]
+    private static partial uint CM_Get_Parent(out uint parent, uint devInst, uint flags);
+
+    [LibraryImport("cfgmgr32.dll", EntryPoint = "CM_Get_Device_IDW")]
+    private static unsafe partial uint CM_Get_Device_ID(uint devInst, char* buffer, uint bufferLen, uint flags);
 }
