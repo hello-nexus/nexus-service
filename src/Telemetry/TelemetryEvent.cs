@@ -14,7 +14,7 @@ internal sealed class TelemetryEvent
     public IReadOnlyList<KeyValuePair<string, object?>> Properties { get; init; }
         = Array.Empty<KeyValuePair<string, object?>>();
 
-    /// <summary>Person properties to merge via PostHog <c>$set</c>, when this is
+    /// <summary>Person properties for the profile event, when this is
     /// an identify. Null for ordinary events.</summary>
     public IReadOnlyList<KeyValuePair<string, object?>>? Set { get; init; }
 }
