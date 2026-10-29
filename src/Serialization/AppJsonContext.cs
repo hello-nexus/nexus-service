@@ -251,6 +251,10 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.DiagnosticsSettingsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.DiagnosticsThresholdsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.DiagnosticsNotificationsPatch))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sensors.AstralStateDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sensors.AstralCalibrateRequest))]
+[JsonSerializable(typeof(Nexus.Service.Persistence.AstralSettings))]
+[JsonSerializable(typeof(Nexus.Service.Persistence.AstralSettingsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.DiagnosticsComponentsPatch))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.FeaturesSettings))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.FeaturesSettingsPatch))]
@@ -1017,6 +1021,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.TrayOpenDashboardPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.TrayShowUpdaterWindowPayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.TrayCloseUpdaterWindowPayload))]
+// Astral countdown notice + Cancel
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.AstralNoticePayload))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.AstralCancelPayload))]
 // Conflict launch notice + End task
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ConflictLaunchNoticePayload))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ConflictEndPayload))]
@@ -1374,6 +1381,8 @@ namespace Nexus.Service.Serialization;
 #if DEV_TOOLS
 [JsonSerializable(typeof(Nexus.Service.Routes.DevPanelVariantDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.DevSimEventsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Dev.AstralSimDto))]
+[JsonSerializable(typeof(Nexus.Service.Dev.AstralSimRequest))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppTelemetryRequest))]
 [JsonSerializable(typeof(Nexus.Service.Telemetry.AppPageClosedRequest))]
 #endif

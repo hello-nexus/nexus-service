@@ -23,18 +23,23 @@ namespace Nexus.Service.Sensors;
 /// On non-Windows platforms this class should never be instantiated - the
 /// factory in Program.cs gates on RuntimeInformation.IsOSPlatform.
 /// </summary>
-public sealed class LibreHardwareSensorProvider : ISensorProvider
+public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 {
     private readonly LhmComputer _lhm;
-    private readonly AstralGpuSupplement _astral = new(new AstralNvApiClient());
+    private readonly AstralGpuSupplement _astral;
+    private readonly AstralMonitor? _astralMonitor;
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
 
-    public LibreHardwareSensorProvider(LhmComputer lhm)
+    public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null)
     {
         _lhm = lhm;
+        _astralMonitor = astral;
+        _astral = new AstralGpuSupplement(new AstralNvApiClient(), astral);
     }
+
+    public void Dispose() => _astral.Dispose();
 
     public void BeforeSmartRead() => _lhm.BeforeSmartRead();
 
@@ -195,6 +200,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
             });
         }
         GpuAdapterLuids.Attach(result, rawNames);
+        _astralMonitor?.AppendSimulatedGpus(result);
         return result;
     }
 

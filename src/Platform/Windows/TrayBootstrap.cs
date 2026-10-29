@@ -244,10 +244,47 @@ internal static class TrayBootstrap
 
         // Diagnostics alerts - pushed down the pipe, same as pairing/transfer.
         var diagAlerts = app.Services.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
-        diagAlerts.AlertNeedsAttention += notice =>
+        void SendDiagnosticsNotice(Nexus.Service.Diagnostics.DiagnosticsAlertNotice notice, HelperConnection? target = null)
         {
-            try { TrayCommands.NoticeAsync(helperRegistry, notice.Title, notice.Text, null, Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind)).ObserveFaults(); }
+            try
+            {
+                var path = Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind);
+                if (notice.Kind == Nexus.Service.Sensors.Astral.AstralMonitor.CountdownKind)
+                {
+                    AstralNoticeCommands.NoticeAsync(helperRegistry, new AstralNoticePayload
+                    {
+                        Title = notice.Title,
+                        Text = notice.Text,
+                        CancelLabel = notice.ActionId is null ? "" : "Cancel shutdown",
+                        CancelId = notice.ActionId,
+                        WindowPath = path ?? "",
+                    }, target).ObserveFaults();
+                }
+                else
+                {
+                    TrayCommands.NoticeAsync(helperRegistry, notice.Title, notice.Text, null, path).ObserveFaults();
+                }
+            }
             catch (Exception ex) { Console.Error.WriteLine($"[diagnostics-notify] show failed: {ex.Message}"); }
+        }
+        diagAlerts.AlertNeedsAttention += notice => SendDiagnosticsNotice(notice);
+
+        // Cancel on an Astral countdown notice applies to the countdown it was made for; a helper that
+        // connects mid-countdown is shown the notice again.
+        var astral = app.Services.GetRequiredService<Nexus.Service.Sensors.Astral.AstralMonitor>();
+        helperRegistry.InboundEnvelope += (_, env) =>
+        {
+            if (env.Type != AstralNoticeCommands.CancelType || env.Payload is null) return;
+            try
+            {
+                var p = System.Text.Json.JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.AstralCancelPayload);
+                if (p is not null) astral.CancelCountdown(p.Id);
+            }
+            catch (Exception ex) { ServiceLog.Warn($"[astral] cancel from notice: bad payload: {ex.Message}"); }
+        };
+        helperRegistry.Connected += conn =>
+        {
+            if (astral.CurrentCountdownNotice() is { } running) SendDiagnosticsNotice(running, conn);
         };
 
         // Startup conflict shutdown - a native notification listing what it
