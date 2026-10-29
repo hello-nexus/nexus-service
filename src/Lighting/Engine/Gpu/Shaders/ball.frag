@@ -99,7 +99,8 @@ void main() {
 
         vec2 q = (uv - c) / (orbR * axes);
         float dd = dot(q, q);
-        bool nearRipple = nearFloor && abs(dx) < 0.95 * (0.6 + 0.4 * ek) && s > 0.0;
+        float ekReach = kf > 1.5 ? ek / E : ek;
+        bool nearRipple = nearFloor && abs(dx) < 0.95 * (0.6 + 0.4 * ekReach) && s > 0.0;
         bool nearOrb = dd < 9.0 && env > 0.001;
         if (!nearRipple && !nearOrb) {
             continue;
@@ -120,7 +121,7 @@ void main() {
             w = w * w * env;
             field += w;
             fieldCol += tint * w;
-            halo += tint * exp(-dd * 0.5) * 0.35 * env;
+            halo += tint * exp(-dd * 0.5) * 0.35 * env * smoothstep(9.0, 6.0, dd);
         }
     }
 
