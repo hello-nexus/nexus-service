@@ -60,6 +60,34 @@ public class AnimateStateDeltaTests : IDisposable
         Params = look.Params.Select(kv => new ShaderParam { Name = kv.Key, Value = kv.Value }).ToList(),
     };
 
+    [Theory]
+    [InlineData("synthwave", false)]
+    [InlineData("stripes", true)]
+    public async System.Threading.Tasks.Task Mcp_scenario_with_tuned_state_leaves_persisted_state_unchanged(string effect, bool isStatic)
+    {
+        var tuned = new AnimateEffectState
+        {
+            Speed = isStatic ? 0 : 72,
+            Hue = 0.88f,
+            Colorize = 0.3f,
+            Saturation = 1.25f,
+            Contrast = 2.53f,
+            Params = new() { ["u_tuned"] = 36f },
+        };
+        _store.Update(s => (isStatic ? s.Lighting.Static.States : s.Lighting.Animate.States)[effect] = tuned);
+        var tool = new Nexus.Service.Mcp.Tools.ApplyLightingScenarioTool(_provider, _store, new MultiplexHub());
+
+        var result = await tool.ExecuteAsync(JsonSerializer.SerializeToElement(new { scenario = effect }), System.Threading.CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var l = _store.Load().Lighting;
+        var kept = (isStatic ? l.Static.States : l.Animate.States)[effect];
+        Assert.Equal(0.88f, kept.Hue, 3);
+        Assert.Equal(1.25f, kept.Saturation, 3);
+        Assert.Equal(2.53f, kept.Contrast, 3);
+        Assert.Equal(36f, kept.Params["u_tuned"], 3);
+    }
+
     [Fact]
     public void Activating_the_default_look_stores_no_state_entry()
     {

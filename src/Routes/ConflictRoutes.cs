@@ -121,17 +121,44 @@ public static class ConflictRoutes
         // what Windows actually holds rather than what it asked for. Every path
         // answers 200: the client collapses a non-2xx to null, which would
         // reach the user as nothing happening.
-        app.MapPost("/conflicts/dynamic-lighting", (SetWindowsDynamicLightingBody? body) =>
+        // This is the one control for Dynamic Lighting: turning it on also
+        // whitelists the conflict entry (Nexus leaves it alone) and turning it
+        // off removes that, in service-side steps so no client can leave the
+        // setting and the policy split. On whitelists first so the watcher
+        // cannot revert the user's own switch; off writes first and then
+        // un-whitelists, and stays un-whitelisted when the write did not take,
+        // so the conflict settings apply to it again (alert, or turn it off)
+        // and the state returned shows it still on.
+        app.MapPost("/conflicts/dynamic-lighting", (SetWindowsDynamicLightingBody? body, ConflictWatcher watcher, IConfigStore store, MultiplexHub hub) =>
         {
             if (!WindowsDynamicLighting.IsSupported()) return Results.Ok(new WindowsDynamicLightingState());
             if (body?.Enabled is null) return Results.Ok(WindowsDynamicLighting.Read());
-            return Results.Ok(WindowsDynamicLighting.Write(body.Enabled.Value));
+            var want = body.Enabled.Value;
+            WindowsDynamicLightingState state;
+            if (want)
+            {
+                SetDynamicLightingWhitelisted(store, hub, true);
+                state = WindowsDynamicLighting.Write(true);
+                if (state.Available && !state.Enabled) SetDynamicLightingWhitelisted(store, hub, false);
+            }
+            else
+            {
+                state = WindowsDynamicLighting.Write(false);
+                SetDynamicLightingWhitelisted(store, hub, false);
+                if (state.Available && state.Enabled)
+                {
+                    ServiceLog.Warn("[conflicts] dynamic lighting: still on after a turn-off request; it is no longer whitelisted, so Nexus alerts or turns it off per the conflict settings");
+                }
+            }
+            // The running list carries this setting as a conflict, so it is rescanned now instead of at the next poll.
+            watcher.PillarsChanged();
+            return Results.Ok(state);
         }).LocalhostOnly();
 
         // Adds or removes one app on the conflict whitelist in a single store
         // mutation, so it cannot clobber a concurrent server-side sync the way a
         // client-computed whole-list write would.
-        app.MapPost("/conflicts/whitelist", (SetConflictWhitelistedBody body, IConfigStore store, MultiplexHub hub) =>
+        app.MapPost("/conflicts/whitelist", (SetConflictWhitelistedBody body, IConfigStore store, MultiplexHub hub, ConflictWatcher watcher) =>
         {
             var def = ConflictWatcher.FindById(body?.Id ?? "");
             if (def is null)
@@ -148,18 +175,24 @@ public static class ConflictRoutes
             });
             ServiceLog.Info($"[conflicts] whitelist: {def.DisplayName} {(body!.Whitelisted ? "added" : "removed")}");
             PanelTopics.BroadcastPrefs(hub);
+            // Rescans so the filtered list reflects the change at once, as a pillar change does.
+            watcher.PillarsChanged();
             return Results.Ok(new SetConflictWhitelistedResponse());
         });
 
+        // Also the "Turn off" action for a setting entry (Windows Dynamic
+        // Lighting): ConflictKiller writes it off and answers from the re-read.
         // Terminate every running process matching the catalog entry for
         // <c>body.Id</c>, then stop any Windows services it lists (for apps
         // whose background service re-grabs the hardware). We never trust a
         // caller-supplied process/service name - the SPA only sends a catalog
         // id, and we resolve it to the names we have already vetted in
         // ConflictAppCatalog.
-        app.MapPost("/conflicts/kill", (KillConflictBody body) =>
+        app.MapPost("/conflicts/kill", (KillConflictBody body, ConflictWatcher watcher, HttpContext http) =>
         {
             var def = ConflictWatcher.FindById(body?.Id ?? "");
+            // The setting entry writes the console user's registry, so it is loopback only like /conflicts/dynamic-lighting.
+            if (!KillAllowed(def, AuthRequestPolicy.IsLoopbackRemote(http))) return Results.NotFound();
             if (def is null)
             {
                 return Results.BadRequest(new KillConflictResponse
@@ -174,6 +207,8 @@ public static class ConflictRoutes
             // already-stopped service as success.
             var outcome = ConflictKiller.Kill(def);
             ServiceLog.Info($"[conflicts] end task: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
+            // The list is rescanned now so a surface refetching after the write sees the new state, not the last scan's.
+            if (def.IsSetting) watcher.PillarsChanged();
 
             return Results.Ok(new KillConflictResponse
             {
@@ -184,5 +219,25 @@ public static class ConflictRoutes
                 Killed = outcome.Killed,
             });
         });
+    }
+
+    /// <summary>App kills keep working from any authenticated caller; the setting entry writes the console user's registry and needs loopback.</summary>
+    internal static bool KillAllowed(ConflictAppDefinition? def, bool loopback) => def is not { IsSetting: true } || loopback;
+
+    /// <summary>Adds or removes <see cref="WindowsDynamicLighting.ConflictId"/> on the conflict whitelist in one store mutation, and republishes prefs when it changed.</summary>
+    internal static void SetDynamicLightingWhitelisted(IConfigStore store, MultiplexHub? hub, bool whitelisted)
+    {
+        var changed = false;
+        store.Update(s =>
+        {
+            var current = s.Ui.ConflictAutoKillExclusions;
+            var listed = current.Exists(id => string.Equals(id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase));
+            if (listed == whitelisted) return;
+            var others = current.Where(id => !string.Equals(id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (whitelisted) others.Add(WindowsDynamicLighting.ConflictId);
+            s.Ui.ConflictAutoKillExclusions = others;
+            changed = true;
+        });
+        if (changed && hub is not null) PanelTopics.BroadcastPrefs(hub);
     }
 }
