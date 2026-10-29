@@ -87,6 +87,9 @@ public sealed class ConflictAppDefinition
 
     /// <summary>Ended at every service start and launch window whatever the whitelist, the startup switch or onboarding say: Nexus 3 never runs alongside it.</summary>
     public bool AlwaysEnded { get; init; }
+
+    /// <summary>An OS setting rather than a process: detected by reading it, "ended" by turning it off, and it has no process or service names.</summary>
+    public bool IsSetting { get; init; }
 }
 
 public static class ConflictAppCatalog
@@ -120,6 +123,17 @@ public static class ConflictAppCatalog
             // through; it survives an uninstall, so it must be stopped
             // alongside the two processes for the conflict to fully clear.
             WindowsServiceNames = new[] { "HYTEIO" },
+        },
+
+        // ── Windows itself ─────────────────────────────────────────────────
+        // Detected from the setting plus a present LampArray, not from a
+        // process. Category lighting: it competes only while Lighting is on.
+        new()
+        {
+            Id = WindowsDynamicLighting.ConflictId,
+            IsSetting = true,
+            DisplayName = "Windows Dynamic Lighting",
+            Category = "lighting",
         },
 
         // ── NZXT ────────────────────────────────────────────────────────────

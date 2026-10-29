@@ -18,8 +18,11 @@ namespace Nexus.Service.Conflicts;
 /// <see cref="SweepAllowed"/>).
 ///
 /// Windows' own Dynamic Lighting rides along under the same switch: it is the
-/// one conflict that cannot be ended, only turned off, and only while the
-/// Lighting pillar is on.
+/// one conflict that cannot be ended, only turned off, only while the Lighting
+/// pillar is on, and never when it is on the whitelist. It is turned off at
+/// service start and again at each session logon, and while it is detected as a
+/// conflict (setting on with a LampArray present) it follows the same launch
+/// window and end-on-launch rules as an app.
 ///
 /// Driven off the watcher's detected set rather than walking the whole
 /// catalog: the watcher already filters out our own bundled OpenRGB child by
@@ -60,6 +63,7 @@ public sealed class ConflictStartupShutdown : IHostedService
     private readonly Func<ConflictAppDefinition, bool> _stillRunning;
     private readonly Func<long> _clockMs;
     private readonly Nexus.Service.Lifecycle.FeatureGates _gates;
+    private readonly Func<WindowsDynamicLightingState?> _dynamicLightingOff;
     private readonly CancellationTokenSource _stopping = new();
 
     // id:pid pairs already ended (or tried) and still detected, so a kill that
@@ -76,7 +80,7 @@ public sealed class ConflictStartupShutdown : IHostedService
 
     public ConflictStartupShutdown(
         IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log, Nexus.Service.Lifecycle.FeatureGates? gates = null)
-        : this(store, watcher, log, def => ConflictKiller.Kill(def), ConflictKiller.AnyProcessRunning, null, gates)
+        : this(store, watcher, log, def => ConflictKiller.Kill(def), ConflictKiller.AnyProcessRunning, null, gates, null)
     {
     }
 
@@ -87,8 +91,10 @@ public sealed class ConflictStartupShutdown : IHostedService
         Action<ConflictAppDefinition> kill,
         Func<ConflictAppDefinition, bool> stillRunning,
         Func<long>? clockMs = null,
-        Nexus.Service.Lifecycle.FeatureGates? gates = null)
+        Nexus.Service.Lifecycle.FeatureGates? gates = null,
+        Func<WindowsDynamicLightingState?>? dynamicLightingOff = null)
     {
+        _dynamicLightingOff = dynamicLightingOff ?? DefaultDynamicLightingOff;
         _gates = gates ?? Nexus.Service.Lifecycle.FeatureGates.AllEnabled;
         _store = store;
         _watcher = watcher;
@@ -141,7 +147,7 @@ public sealed class ConflictStartupShutdown : IHostedService
             try
             {
                 var sweep = _sweepWindow && SweepAllowed(_store.Load());
-                if (sweep && _gates.Lighting) TurnOffWindowsDynamicLighting();
+                if (sweep) TurnOffWindowsDynamicLighting("start");
                 EndRunningApps(sweep);
             }
             catch (Exception ex) { _log.LogWarning(ex, "Startup conflict shutdown swept nothing; enumeration failed."); }
@@ -171,9 +177,12 @@ public sealed class ConflictStartupShutdown : IHostedService
         if (EndOnLaunchAllowed(_store.Load())) EndRunningApps(throttleNotice: true);
     }
 
-    private void OnSessionLogon()
+    internal void OnSessionLogon()
     {
         OpenLaunchKillWindow();
+        // At boot there may have been no console user to write for, and a
+        // logon is also when Windows may re-enable the setting.
+        if (_sweepWindow) _ = Task.Run(() => TurnOffWindowsDynamicLighting("logon"));
         _ = WatchLaunchKillWindowAsync();
     }
 
@@ -312,18 +321,51 @@ public sealed class ConflictStartupShutdown : IHostedService
         return true;
     }
 
-    /// <summary>Unconditional: gating on a device being present would race HID enumeration at boot, and this sweep never runs twice.</summary>
-    private void TurnOffWindowsDynamicLighting()
+    private static WindowsDynamicLightingState? DefaultDynamicLightingOff() =>
+        WindowsDynamicLighting.IsSupported() ? WindowsDynamicLighting.Write(enabled: false) : null;
+
+    /// <summary>
+    /// What to log after the write, from the state re-read afterwards: a success
+    /// only when that read says off, otherwise the reason it did not take.
+    /// </summary>
+    internal static (bool SwitchedOff, string Message) DescribeDynamicLightingOff(WindowsDynamicLightingState after, string trigger)
     {
-        if (!WindowsDynamicLighting.IsSupported()) return;
+        if (!after.Available)
+        {
+            return (false, $"could not switch Windows Dynamic Lighting off ({trigger}): no console user, or the Lighting key is unreadable.");
+        }
+        if (after.Enabled)
+        {
+            return (false, $"could not switch Windows Dynamic Lighting off ({trigger}): the value is still on after the write (key not writable, or Windows set it back).");
+        }
+        return (true, $"switched Windows Dynamic Lighting off ({trigger}).");
+    }
+
+    /// <summary>
+    /// Runs at service start and at each session logon, behind the sweep gates
+    /// and the whitelist. Unconditional on a LampArray being present: gating on
+    /// a device would race HID enumeration at boot.
+    /// </summary>
+    internal void TurnOffWindowsDynamicLighting(string trigger)
+    {
         try
         {
-            WindowsDynamicLighting.Write(enabled: false);
-            _log.LogInformation("Startup conflict shutdown: switched Windows Dynamic Lighting off.");
+            var settings = _store.Load();
+            if (!SweepAllowed(settings) || !_gates.Lighting) return;
+            if (settings.Ui.ConflictAutoKillExclusions.Exists(
+                id => string.Equals(id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+            var after = _dynamicLightingOff();
+            if (after is null) return;
+            var (switchedOff, message) = DescribeDynamicLightingOff(after, trigger);
+            if (switchedOff) _log.LogInformation("Startup conflict shutdown: {Message}", message);
+            else _log.LogWarning("Startup conflict shutdown: {Message}", message);
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "Startup conflict shutdown could not switch Windows Dynamic Lighting off.");
+            _log.LogWarning(ex, "Startup conflict shutdown could not switch Windows Dynamic Lighting off ({Trigger}).", trigger);
         }
     }
 

@@ -16,6 +16,9 @@ namespace Nexus.Service.Conflicts;
 /// </summary>
 public static class WindowsDynamicLighting
 {
+    /// <summary>Catalog id of the conflict entry this setting surfaces as (<see cref="ConflictAppDefinition.IsSetting"/>).</summary>
+    public const string ConflictId = "windows-dynamic-lighting";
+
     private const string LightingPath = @"Software\Microsoft\Lighting";
     private const string AmbientEnabledValue = "AmbientLightingEnabled";
 
@@ -28,6 +31,28 @@ public static class WindowsDynamicLighting
 
     /// <summary>A missing value reads as ON: Windows writes it only once the page is touched, and it defaults to on.</summary>
     public static bool DwordIsOn(object? value) => value is not int number || number != 0;
+
+    /// <summary>
+    /// A conflict only while Windows can actually drive something: the setting
+    /// reads on AND at least one LampArray is present.
+    /// </summary>
+    public static bool IsActiveConflict(WindowsDynamicLightingState state) =>
+        state.Available && state.Enabled && state.DeviceCount > 0;
+
+    /// <summary>One-line state for the startup diagnostics and the support bundle; a fresh full read, since both are rare.</summary>
+    public static string Describe()
+    {
+        if (!IsSupported()) return "unsupported on this platform";
+        try
+        {
+            var s = Read();
+            return $"available={s.Available} enabled={s.Enabled} lampArrays={s.DeviceCount}";
+        }
+        catch (Exception ex)
+        {
+            return $"read failed: {ex.Message}";
+        }
+    }
 
     /// <summary>How many of a HID enumeration are LampArrays - the usage is all that separates one from a mouse.</summary>
     public static int CountLampArrays(IEnumerable<HidDeviceInfo> devices)
@@ -47,7 +72,36 @@ public static class WindowsDynamicLighting
     /// user, unloaded profile, or a Windows build without the feature).
     /// </summary>
     [SupportedOSPlatform("windows")]
-    public static WindowsDynamicLightingState Read()
+    public static WindowsDynamicLightingState Read() => ReadState(cachedCount: false);
+
+    /// <summary>
+    /// For the conflict watcher's poll: the registry value is read live, but the
+    /// HID walk behind the device count is reused for <see cref="DeviceCountTtl"/>
+    /// and skipped entirely while the setting is off (DeviceCount stays 0).
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    public static WindowsDynamicLightingState ReadCached() => ReadState(cachedCount: true);
+
+    internal static readonly TimeSpan DeviceCountTtl = TimeSpan.FromSeconds(30);
+    private static readonly object CountLock = new();
+    private static long _countAtMs = long.MinValue / 2;
+    private static int _countCached;
+
+    [SupportedOSPlatform("windows")]
+    private static int LampArrayCountCached()
+    {
+        lock (CountLock)
+        {
+            var now = Environment.TickCount64;
+            if (now - _countAtMs < (long)DeviceCountTtl.TotalMilliseconds) return _countCached;
+            _countCached = PresentLampArrayCount();
+            _countAtMs = now;
+            return _countCached;
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static WindowsDynamicLightingState ReadState(bool cachedCount)
     {
         var state = new WindowsDynamicLightingState();
         var sid = Nexus.Service.Lifecycle.ConsoleUserSid.Resolve(LightingPath);
@@ -62,7 +116,9 @@ public static class WindowsDynamicLighting
             state.Enabled = DwordIsOn(root.GetValue(AmbientEnabledValue));
             // Windows keeps a Devices entry for every LampArray it has ever
             // seen, so counting subkeys reports hardware that is not plugged in.
-            state.DeviceCount = PresentLampArrayCount();
+            state.DeviceCount = !cachedCount ? PresentLampArrayCount()
+                : state.Enabled ? LampArrayCountCached()
+                : 0;
         }
         catch (Exception ex)
         {
@@ -110,6 +166,8 @@ public static class WindowsDynamicLighting
     }
 #else
     public static WindowsDynamicLightingState Read() => new();
+
+    public static WindowsDynamicLightingState ReadCached() => new();
 
     public static WindowsDynamicLightingState Write(bool enabled) => new();
 #endif

@@ -24,6 +24,7 @@ public static class ConflictKiller
 
     internal static KillOutcome Kill(ConflictAppDefinition def, ConflictSignerGate gate)
     {
+        if (def.IsSetting) return TurnOffSetting(def);
         var runningBefore = AnyProcessRunning(def, gate);
 
         // Services first: these entries exist because the service restarts
@@ -74,11 +75,31 @@ public static class ConflictKiller
         return new KillOutcome(runningBefore, AnyProcessRunning(def, gate));
     }
 
-    /// <summary>Whether any process this catalog entry names is running; the oracle for whether a kill did anything.</summary>
+    /// <summary>Whether any process this catalog entry names is running (for a setting, whether it is still active); the oracle for whether a kill did anything.</summary>
     public static bool AnyProcessRunning(ConflictAppDefinition def) => AnyProcessRunning(def, ConflictSignerGate.Default);
+
+    /// <summary>The setting entries: "running" is the setting being active, "ending" is writing it off and trusting only the re-read.</summary>
+    private static KillOutcome TurnOffSetting(ConflictAppDefinition def)
+    {
+        if (!string.Equals(def.Id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)
+            || !WindowsDynamicLighting.IsSupported())
+        {
+            return new KillOutcome(false, false);
+        }
+        var before = WindowsDynamicLighting.IsActiveConflict(WindowsDynamicLighting.Read());
+        var after = WindowsDynamicLighting.Write(enabled: false);
+        // An unreadable key after the write proves nothing, so it counts as still on.
+        return new KillOutcome(before, after.Enabled || !after.Available);
+    }
 
     internal static bool AnyProcessRunning(ConflictAppDefinition def, ConflictSignerGate gate)
     {
+        if (def.IsSetting)
+        {
+            return string.Equals(def.Id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)
+                && WindowsDynamicLighting.IsSupported()
+                && WindowsDynamicLighting.IsActiveConflict(WindowsDynamicLighting.Read());
+        }
         foreach (var name in def.ProcessNames)
         {
             try

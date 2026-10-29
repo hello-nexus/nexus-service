@@ -121,11 +121,14 @@ public static class ConflictRoutes
         // what Windows actually holds rather than what it asked for. Every path
         // answers 200: the client collapses a non-2xx to null, which would
         // reach the user as nothing happening.
-        app.MapPost("/conflicts/dynamic-lighting", (SetWindowsDynamicLightingBody? body) =>
+        app.MapPost("/conflicts/dynamic-lighting", (SetWindowsDynamicLightingBody? body, ConflictWatcher watcher) =>
         {
             if (!WindowsDynamicLighting.IsSupported()) return Results.Ok(new WindowsDynamicLightingState());
             if (body?.Enabled is null) return Results.Ok(WindowsDynamicLighting.Read());
-            return Results.Ok(WindowsDynamicLighting.Write(body.Enabled.Value));
+            var state = WindowsDynamicLighting.Write(body.Enabled.Value);
+            // The running list carries this setting as a conflict, so it is rescanned now instead of at the next poll.
+            watcher.PillarsChanged();
+            return Results.Ok(state);
         }).LocalhostOnly();
 
         // Adds or removes one app on the conflict whitelist in a single store
@@ -151,13 +154,15 @@ public static class ConflictRoutes
             return Results.Ok(new SetConflictWhitelistedResponse());
         });
 
+        // Also the "Turn off" action for a setting entry (Windows Dynamic
+        // Lighting): ConflictKiller writes it off and answers from the re-read.
         // Terminate every running process matching the catalog entry for
         // <c>body.Id</c>, then stop any Windows services it lists (for apps
         // whose background service re-grabs the hardware). We never trust a
         // caller-supplied process/service name - the SPA only sends a catalog
         // id, and we resolve it to the names we have already vetted in
         // ConflictAppCatalog.
-        app.MapPost("/conflicts/kill", (KillConflictBody body) =>
+        app.MapPost("/conflicts/kill", (KillConflictBody body, ConflictWatcher watcher) =>
         {
             var def = ConflictWatcher.FindById(body?.Id ?? "");
             if (def is null)
@@ -174,6 +179,8 @@ public static class ConflictRoutes
             // already-stopped service as success.
             var outcome = ConflictKiller.Kill(def);
             ServiceLog.Info($"[conflicts] end task: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
+            // A setting has no process exit for the next poll to notice, so the list is rescanned here.
+            if (def.IsSetting) watcher.PillarsChanged();
 
             return Results.Ok(new KillConflictResponse
             {

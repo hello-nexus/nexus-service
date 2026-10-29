@@ -57,6 +57,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     private readonly Func<string, bool>? _handlerInUse;
     private readonly Func<Dictionary<string, List<(int Pid, string? Path)>>>? _processIndex;
     private readonly ConflictSignerGate _signerGate;
+    private readonly Func<WindowsDynamicLightingState> _dynamicLighting;
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
@@ -116,8 +117,12 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         Func<string, bool>? displayInUse,
         Func<Dictionary<string, List<(int Pid, string? Path)>>>? processIndex,
         Func<string, bool>? handlerInUse = null,
-        ConflictSignerGate? signerGate = null)
+        ConflictSignerGate? signerGate = null,
+        Func<WindowsDynamicLightingState>? dynamicLighting = null)
     {
+        // An injected process index means a test is driving the scan, which must not read the host's registry.
+        _dynamicLighting = dynamicLighting
+            ?? (processIndex is null && WindowsDynamicLighting.IsSupported() ? ReadDynamicLighting : () => new WindowsDynamicLightingState());
         _signerGate = signerGate ?? ConflictSignerGate.Default;
         _handlerInUse = handlerInUse;
         _hub = hub;
@@ -380,11 +385,39 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     }
 #endif
 
+    private static WindowsDynamicLightingState ReadDynamicLighting()
+    {
+#if WINDOWS
+        return WindowsDynamicLighting.ReadCached();
+#else
+        return new WindowsDynamicLightingState();
+#endif
+    }
+
+    /// <summary>Windows Dynamic Lighting is a conflict while it reads on and a LampArray is present; it has no process, so its pid is 0.</summary>
+    private void AddDynamicLighting(List<DetectedConflict> result)
+    {
+        if (FindById(WindowsDynamicLighting.ConflictId) is not { } def) return;
+        WindowsDynamicLightingState state;
+        try { state = _dynamicLighting(); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[conflicts] dynamic lighting probe failed: {ex.Message}");
+            return;
+        }
+        if (!WindowsDynamicLighting.IsActiveConflict(state)) return;
+        result.Add(new DetectedConflict
+        {
+            Id = def.Id,
+            DisplayName = def.DisplayName,
+            Category = def.Category,
+            IsSetting = true,
+        });
+    }
+
     private List<DetectedConflict> DetectRunningConflicts()
     {
         var byName = _processIndex?.Invoke() ?? BuildProcessNameIndex();
-        if (byName.Count == 0)
-            return new List<DetectedConflict>(0);
 
         var bundledOpenRgbPath = _openRgb?.ExePath;
         var result = new List<DetectedConflict>();
@@ -427,6 +460,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
             if (best is not null)
                 result.Add(best);
         }
+        AddDynamicLighting(result);
         return result;
     }
 

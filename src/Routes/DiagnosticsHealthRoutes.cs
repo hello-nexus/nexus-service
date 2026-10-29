@@ -164,6 +164,7 @@ public static class DiagnosticsHealthRoutes
                 ServiceUptimeSeconds = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalSeconds,
                 ConflictsRunning = conflicts.GetConflicts().Select(c => $"{c.Id} (pid {c.Pid})").ToList(),
                 ConflictScanReady = conflicts.DetectionReady,
+                DynamicLighting = Nexus.Service.Conflicts.WindowsDynamicLighting.Describe(),
                 LightingBridgeActive = bridge?.IsActive ?? false,
                 LightingRescanning = bridge?.IsRescanning ?? false,
                 LightingDevices = bridge?.Devices.Select(d => $"[{d.Index}] {d.Name} leds={d.LedCount}").ToList() ?? new(),
