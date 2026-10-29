@@ -1,6 +1,8 @@
 uniform float u_density; // hint_range(4.0, 16.0, 1.0) = 9.0  trace density
 uniform float u_pulse; // hint_range(0.3, 3.0, 0.05) = 1.0  pulse rate along traces
 uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  pulse glow
+uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
+#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Animated circuit-board traces with bright pulses traveling along
 // them. Each grid cell carries an L-shaped trace whose orientation is
@@ -48,15 +50,13 @@ void main() {
     // coherent background region) both glow exp() are ~0, so skip the heavy pair.
     float pulseGlow = 0.0;
     if (trace > 0.0) {
-        float pulsePhase = fract(t * pulseRate * 0.7 + cellHash);
         float invGlow = 20.0 / glow;
-        // Pulse along horizontal arm.
-        float pulseHX = pulsePhase - 0.5;  // -0.5..0.5
-        float pulseDistH = abs(p.x - pulseHX) + abs(p.y) * 4.0;
-        // Pulse along vertical arm.
-        float pulseVY = (1.0 - pulsePhase) - 0.5;
-        float pulseDistV = abs(p.y - pulseVY) + abs(p.x) * 4.0;
-        pulseGlow = exp(-pulseDistH * invGlow) + exp(-pulseDistV * invGlow);
+        for (int k = 0; k < 2; k++) {
+            float pulsePhase = fract(t * pulseRate * 1.3 + cellHash + float(k) * 0.5);
+            float pulseDistH = abs(p.x - (pulsePhase - 0.5)) + abs(p.y) * 4.0;
+            float pulseDistV = abs(p.y - ((1.0 - pulsePhase) - 0.5)) + abs(p.x) * 4.0;
+            pulseGlow += exp(-pulseDistH * invGlow) + exp(-pulseDistV * invGlow);
+        }
     }
 
     vec3 traceColor = tintedPalette(0.55 + cellHash * 0.2);
@@ -66,13 +66,16 @@ void main() {
     // colour instead of being a dim uniform slab.
     // perf: faint 0.18-scaled background tint, no fine detail needed -> fbm3
     float boardFbm = fbm3(uv * 1.4 + vec2(t * 0.2, 0.0));
-    vec3 boardTint = tintedPalette(0.35 + boardFbm * 0.3) * 0.18;
+    vec3 boardTint = tintedPalette(0.35 + boardFbm * 0.3) * 0.32;
 
     vec3 col = boardTint;
-    col += traceColor * trace * 1.1;
+    col += traceColor * trace * 1.4;
     col += pulseColor * pulseGlow * 2.2;
     // Solder-mask glow where traces are dense.
     col += traceColor * trace * trace * 0.6;
+    // Nodes at the cell centers light up in turn.
+    float node = exp(-dot(inCell, inCell) * 90.0) * (0.35 + 0.65 * pow(0.5 + 0.5 * sin(t * 2.4 + cellHash * 40.0), 4.0));
+    col += pulseColor * node * 1.6;
 
     fragColor = vec4(finalize(col), 1.0);
 }

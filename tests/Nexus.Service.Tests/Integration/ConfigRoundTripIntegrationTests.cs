@@ -170,6 +170,48 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
     }
 
     [Fact]
+    public async Task Recent_lighting_lists_round_trip_and_survive_unrelated_patches()
+    {
+        var client = AuthedClient();
+
+        var post = await client.PostAsync("/preferences",
+            Json("{\"ui\":{\"recentStaticColors\":[\"#FF8800\",\"#00aaff\"],\"recentAnimations\":[\"fire\",\"custom:abc\"]}}"));
+        Assert.Equal(HttpStatusCode.OK, post.StatusCode);
+        await client.PostAsync("/preferences", Json("{\"ui\":{\"sidebarAppOrder\":[\"weather\"]}}"));
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync("/preferences")).Content.ReadAsStringAsync());
+        var ui = doc.RootElement.GetProperty("ui");
+        Assert.Equal(new[] { "#FF8800", "#00aaff" }, ui.GetProperty("recentStaticColors").EnumerateArray().Select(e => e.GetString()).ToArray());
+        Assert.Equal(new[] { "fire", "custom:abc" }, ui.GetProperty("recentAnimations").EnumerateArray().Select(e => e.GetString()).ToArray());
+
+        await client.PostAsync("/preferences", Json("{\"ui\":{\"recentAnimations\":[]}}"));
+        using var after = JsonDocument.Parse(await (await client.GetAsync("/preferences")).Content.ReadAsStringAsync());
+        Assert.Empty(after.RootElement.GetProperty("ui").GetProperty("recentAnimations").EnumerateArray());
+        Assert.Equal(2, after.RootElement.GetProperty("ui").GetProperty("recentStaticColors").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Recent_lighting_lists_drop_invalid_entries_and_cap_at_32()
+    {
+        var client = AuthedClient();
+        var colors = string.Join(",", Enumerable.Range(0, 40).Select(i => $"\"#{i:X6}\""));
+        var keys = string.Join(",", Enumerable.Range(0, 40).Select(i => $"\"fx{i}\""));
+
+        await client.PostAsync("/preferences", Json(
+            "{\"ui\":{\"recentStaticColors\":[\"red\",\"#12345\",\"#GGGGGG\",\"#1234567\"," + colors + "],"
+            + "\"recentAnimations\":[\"\",\"   \",\"" + new string('x', 129) + "\"," + keys + "]}}"));
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync("/preferences")).Content.ReadAsStringAsync());
+        var ui = doc.RootElement.GetProperty("ui");
+        var gotColors = ui.GetProperty("recentStaticColors").EnumerateArray().Select(e => e.GetString()).ToArray();
+        var gotKeys = ui.GetProperty("recentAnimations").EnumerateArray().Select(e => e.GetString()).ToArray();
+        Assert.Equal(32, gotColors.Length);
+        Assert.Equal("#000000", gotColors[0]);
+        Assert.Equal(32, gotKeys.Length);
+        Assert.Equal("fx0", gotKeys[0]);
+    }
+
+    [Fact]
     public async Task Theme_partial_patch_does_not_clobber_sibling_fields()
     {
         var client = AuthedClient();

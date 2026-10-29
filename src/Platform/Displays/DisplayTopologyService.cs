@@ -4,6 +4,7 @@ using System.Linq;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
+using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
 
 namespace Nexus.Service.Platform.Displays;
@@ -42,6 +43,7 @@ public sealed class DisplayTopologyService : IDisposable
     private readonly IDisplayTopologyProvider _provider;
     private readonly PanelDeviceRegistry _panelRegistry;
     private readonly Nexus.Service.Persistence.IConfigStore? _store;
+    private readonly IVirtualMonitorHost? _virtualMonitors;
     private readonly object _cacheLock = new();
     private HashSet<string>? _attachedIds;
     // Display id of the attached Y70 panel monitor ("" when none); the
@@ -53,12 +55,25 @@ public sealed class DisplayTopologyService : IDisposable
     private long _attachedIdsAtMs;
     private bool _attachedIdsValid;
 
-    public DisplayTopologyService(IDisplayTopologyProvider provider, PanelDeviceRegistry panelRegistry, Nexus.Service.Persistence.IConfigStore? store = null)
+    public DisplayTopologyService(IDisplayTopologyProvider provider, PanelDeviceRegistry panelRegistry, Nexus.Service.Persistence.IConfigStore? store = null, IVirtualMonitorHost? virtualMonitors = null)
     {
         _provider = provider;
         _panelRegistry = panelRegistry;
         _store = store;
+        _virtualMonitors = virtualMonitors;
+        // The arrival scan can run before the claim exists; rescan so the record corrects itself.
+        _virtualMonitors?.OwnedDisplayClaimed += OnOwnedDisplayClaimed;
     }
+
+    private void OnOwnedDisplayClaimed() => System.Threading.Tasks.Task.Run(() =>
+    {
+        try { CacheAttachedIds(_provider.Enumerate()); }
+        catch (Exception ex) { Console.Error.WriteLine($"[displays] claim rescan failed: {ex.Message}"); }
+    });
+
+    // The service-created virtual display's EDID carries a placeholder density; its owning device's real density wins.
+    private double? EffectiveDpi(RawDisplayInfo info)
+        => _virtualMonitors?.OwnedDisplayDpi(info.AdapterName) ?? info.Dpi;
 
     /// <summary>Display ids with brightness control turned off. Read per
     /// topology build rather than cached: the list changes from a toggle, not
@@ -102,7 +117,7 @@ public sealed class DisplayTopologyService : IDisposable
                     : null,
                 Resolution = new DisplaySizeDto { Width = info.ResolutionWidth, Height = info.ResolutionHeight },
                 ScaleFactor = info.Scale,
-                Dpi = info.Dpi,
+                Dpi = EffectiveDpi(info),
                 IsPrimary = info.IsPrimary,
                 IsInternal = info.IsInternal,
                 IsTouch = info.IsTouch,
@@ -269,6 +284,7 @@ public sealed class DisplayTopologyService : IDisposable
 
     public void Dispose()
     {
+        _virtualMonitors?.OwnedDisplayClaimed -= OnOwnedDisplayClaimed;
         lock (_recheckLock)
         {
             _disposed = true;
@@ -364,7 +380,7 @@ public sealed class DisplayTopologyService : IDisposable
                     info.ResolutionWidth, info.ResolutionHeight,
                     info.Scale, info.IsTouch, info.Orientation,
                     // A failed EDID read must not drop the grid to the default density.
-                    info.Dpi ?? record.Capabilities?.Dpi);
+                    EffectiveDpi(info) ?? record.Capabilities?.Dpi);
                 // Grid is kiosk-reported on self-registered panels; carry any
                 // stored value so the rebuild never clears it.
                 caps.Grid = record.Capabilities?.Grid;

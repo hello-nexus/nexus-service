@@ -29,7 +29,7 @@ public sealed class LightingWriteToolsTests : IDisposable
     public async Task ApplyLightingScenario_valid_effect_starts_it_and_persists()
     {
         var lighting = new McpTestHarness.StubLightingProvider();
-        var tool = new ApplyLightingScenarioTool(lighting, new MultiplexHub());
+        var tool = new ApplyLightingScenarioTool(lighting, NewStore(), new MultiplexHub());
 
         var args = JsonSerializer.SerializeToElement(new { scenario = "rainbow" });
         var result = await tool.ExecuteAsync(args, CancellationToken.None);
@@ -41,10 +41,81 @@ public sealed class LightingWriteToolsTests : IDisposable
     }
 
     [Fact]
+    public async Task ApplyLightingScenario_with_saved_state_starts_with_tuned_values_and_keeps_state()
+    {
+        var lighting = new McpTestHarness.StubLightingProvider();
+        var store = NewStore();
+        store.Update(s => s.Lighting.Animate.States["synthwave"] = new AnimateEffectState
+        {
+            Speed = 72,
+            Hue = 0.88f,
+            Colorize = 0.3f,
+            Saturation = 1.25f,
+            Contrast = 2.53f,
+            Params = new() { ["u_lines"] = 36f, ["u_amplitude"] = 0.18f },
+        });
+        var tool = new ApplyLightingScenarioTool(lighting, store, new MultiplexHub());
+
+        var args = JsonSerializer.SerializeToElement(new { scenario = "synthwave" });
+        var result = await tool.ExecuteAsync(args, CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var call = Assert.Single(lighting.StartAnimateCalls);
+        Assert.Equal(72, call.Speed);
+        Assert.Equal(0.88f, call.Hue, 3);
+        Assert.Equal(0.3f, call.Colorize, 3);
+        Assert.Equal(1.25f, call.Saturation, 3);
+        Assert.Equal(2.53f, call.Contrast, 3);
+        Assert.Equal(36f, call.Params.Single(p => p.Name == "u_lines").Value, 3);
+        Assert.Equal(0.18f, call.Params.Single(p => p.Name == "u_amplitude").Value, 3);
+    }
+
+    [Fact]
+    public async Task ApplyLightingScenario_without_saved_state_starts_with_template_defaults()
+    {
+        var lighting = new McpTestHarness.StubLightingProvider();
+        var store = NewStore();
+        var tool = new ApplyLightingScenarioTool(lighting, store, new MultiplexHub());
+
+        var args = JsonSerializer.SerializeToElement(new { scenario = "fire" });
+        var result = await tool.ExecuteAsync(args, CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var call = Assert.Single(lighting.StartAnimateCalls);
+        var slot = Nexus.Service.Lighting.AnimateTemplateDefaults.Slot("fire", 0)!;
+        Assert.Equal(slot.Speed, call.Speed);
+        Assert.Equal(slot.Hue, call.Hue, 3);
+        Assert.Equal(slot.Params["u_turbulence"], call.Params.Single(p => p.Name == "u_turbulence").Value, 3);
+    }
+
+    [Fact]
+    public async Task ApplyLightingScenario_static_pattern_resolves_from_static_states()
+    {
+        var lighting = new McpTestHarness.StubLightingProvider();
+        var store = NewStore();
+        store.Update(s => s.Lighting.Static.States["stripes"] = new AnimateEffectState
+        {
+            Hue = 0.4f,
+            Contrast = 1.7f,
+            Params = new() { ["u_count"] = 9f },
+        });
+        var tool = new ApplyLightingScenarioTool(lighting, store, new MultiplexHub());
+
+        var args = JsonSerializer.SerializeToElement(new { scenario = "stripes" });
+        var result = await tool.ExecuteAsync(args, CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var call = Assert.Single(lighting.StartAnimateCalls);
+        Assert.Equal(0.4f, call.Hue, 3);
+        Assert.Equal(1.7f, call.Contrast, 3);
+        Assert.Equal(9f, call.Params.Single(p => p.Name == "u_count").Value, 3);
+    }
+
+    [Fact]
     public async Task ApplyLightingScenario_unknown_scenario_is_error_and_does_not_start_anything()
     {
         var lighting = new McpTestHarness.StubLightingProvider();
-        var tool = new ApplyLightingScenarioTool(lighting, new MultiplexHub());
+        var tool = new ApplyLightingScenarioTool(lighting, NewStore(), new MultiplexHub());
 
         var args = JsonSerializer.SerializeToElement(new { scenario = "not-a-real-effect" });
         var result = await tool.ExecuteAsync(args, CancellationToken.None);
