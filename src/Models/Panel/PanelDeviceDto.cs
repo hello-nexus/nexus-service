@@ -500,7 +500,7 @@ public sealed class PanelDevicePatch
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large", "small" or "xsmall"; anything else is ignored. Null = leave it.</summary>
+    /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; anything else is ignored. Null = leave it.</summary>
     public string? WidgetSize { get; set; }
     /// <summary>Kiosk-measured window size; applied to display-bound records only.</summary>
     public KioskViewportDto? KioskViewport { get; set; }
