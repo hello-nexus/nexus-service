@@ -1079,6 +1079,7 @@ public sealed partial class Slv3Hub : IDisposable
         var nowMs = _nowMs();
         if ((_tx is not { IsOpen: true } || _rx is not { IsOpen: true }) && !RecoverHandlesLocked(nowMs))
         {
+            Diag.EndPoll(nowMs, gotList: false);
             return false;
         }
         if (_rx is not { IsOpen: true })
@@ -3015,20 +3016,30 @@ public sealed partial class Slv3Hub : IDisposable
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, long windowId = -1)
     {
         var startedAt = Stopwatch.GetTimestamp();
+        var outcome = new UploadOutcome();
         var ok = false;
         try
         {
-            ok = await SendRgbWindowCoreAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent).ConfigureAwait(false);
+            ok = await SendRgbWindowCoreAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent, outcome).ConfigureAwait(false);
             return ok;
         }
         finally
         {
-            Diag.OnUpload(macHex, _nowMs(), Slv3UploadKind.Window, ok, ElapsedMs(startedAt), windowId, _tx?.LastWriteTimedOut ?? false);
+            Diag.OnUpload(macHex, _nowMs(), Slv3UploadKind.Window, ok, ElapsedMs(startedAt), windowId, ok ? Slv3UploadReason.Ok : outcome.Reason);
         }
     }
 
+    // Set under _lock at the failing send, so a parallel upload's timeout cannot be misattributed.
+    private sealed class UploadOutcome
+    {
+        public Slv3UploadReason Reason = Slv3UploadReason.NotPrepared;
+    }
+
+    private Slv3UploadReason SendFailReasonLocked() =>
+        _tx is { LastWriteTimedOut: true } ? Slv3UploadReason.TxTimeout : Slv3UploadReason.TxFail;
+
     private async Task<bool> SendRgbWindowCoreAsync(
-        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
+        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, UploadOutcome outcome)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
         if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _))
@@ -3039,12 +3050,14 @@ public sealed partial class Slv3Hub : IDisposable
         {
             if (_tx is null)
             {
+                outcome.Reason = Slv3UploadReason.TxFail;
                 return false;
             }
             for (var i = 0; i < WindowHeaderRepeats; i++)
             {
                 if (!SendRfPayloadLocked(channel, rxType, packets[0]))
                 {
+                    outcome.Reason = SendFailReasonLocked();
                     return false;
                 }
             }
@@ -3054,6 +3067,7 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     if (!SendRfPayloadLocked(channel, rxType, packets[p]))
                     {
+                        outcome.Reason = SendFailReasonLocked();
                         return false;
                     }
                 }
@@ -3086,6 +3100,7 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
                     {
+                        outcome.Reason = SendFailReasonLocked();
                         return false;
                     }
                 }
@@ -3168,13 +3183,14 @@ public sealed partial class Slv3Hub : IDisposable
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex, Slv3UploadKind kind)
     {
         var startedAt = Stopwatch.GetTimestamp();
-        var ok = SendRgbDataCore(macHex, raw, ledCount, frameCount, intervalMs, dataPasses, out effectIndexHex);
-        Diag.OnUpload(macHex, _nowMs(), kind, ok, ElapsedMs(startedAt), -1, _tx?.LastWriteTimedOut ?? false);
+        var outcome = new UploadOutcome();
+        var ok = SendRgbDataCore(macHex, raw, ledCount, frameCount, intervalMs, dataPasses, out effectIndexHex, outcome);
+        Diag.OnUpload(macHex, _nowMs(), kind, ok, ElapsedMs(startedAt), -1, ok ? Slv3UploadReason.Ok : outcome.Reason);
         return ok;
     }
 
     private bool SendRgbDataCore(
-        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
+        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex, UploadOutcome outcome)
     {
         effectIndexHex = "";
         if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, window: false, out var channel, out var rxType, out var packets, out var effectIndex))
@@ -3191,7 +3207,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 Thread.Sleep(RgbHeaderGapMs);
             }
-            if (!SendRfPayload(channel, rxType, packets[0]))
+            if (!SendRfPayload(channel, rxType, packets[0], outcome))
             {
                 return false;
             }
@@ -3203,6 +3219,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             if (_tx is null)
             {
+                outcome.Reason = Slv3UploadReason.TxFail;
                 return false;
             }
             for (var pass = 0; pass < dataPasses; pass++)
@@ -3211,6 +3228,7 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     if (!SendRfPayloadLocked(channel, rxType, packets[p]))
                     {
+                        outcome.Reason = SendFailReasonLocked();
                         return false;
                     }
                 }
@@ -3224,15 +3242,21 @@ public sealed partial class Slv3Hub : IDisposable
 
     // Same as SendRfPayloadLocked but takes _lock itself, for callers that pace
     // sends across released-lock gaps (SendRgbFrame's header repeats).
-    private bool SendRfPayload(byte channel, byte rxType, byte[] payload)
+    private bool SendRfPayload(byte channel, byte rxType, byte[] payload, UploadOutcome outcome)
     {
         lock (_lock)
         {
             if (_tx is null)
             {
+                outcome.Reason = Slv3UploadReason.TxFail;
                 return false;
             }
-            return SendRfPayloadLocked(channel, rxType, payload);
+            if (SendRfPayloadLocked(channel, rxType, payload))
+            {
+                return true;
+            }
+            outcome.Reason = SendFailReasonLocked();
+            return false;
         }
     }
 

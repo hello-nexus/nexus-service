@@ -81,4 +81,24 @@ public partial class Slv3HubTests
         Assert.Contains(lines, l => l.EndsWith("EVT unlock"));
         Assert.Contains(lines, l => l.EndsWith("EVT resume"));
     }
+
+    [Theory]
+    [InlineData(false, false, "reason=tx-fail")]
+    [InlineData(true, false, "reason=tx-timeout")]
+    [InlineData(false, true, "reason=not-prepared")]
+    public async System.Threading.Tasks.Task LinkDiag_failed_uploads_carry_their_reason(bool wedged, bool unbound, string expected)
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = unbound ? new byte[6] : net.MasterMac, RxType = 3 });
+        Assert.True(hub.DriveTick());
+        DrainDiag(hub);
+
+        net.TxWedged = wedged;
+        net.TxFailFast = !wedged;
+        var frames = new byte[30 * 40 * 3];
+        Assert.False(await hub.SendRgbWindowAsync(Convert.ToHexString(FanMac), frames, 40, 30, 53, 100, windowId: 5));
+        hub.Diag.OnDropped(Convert.ToHexString(FanMac), 1);
+
+        Assert.Contains(DrainDiag(hub), l => l.Contains(" UP ") && l.Contains("FAIL") && l.Contains(expected) && l.Contains("window=5"));
+    }
 }

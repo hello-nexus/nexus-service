@@ -100,6 +100,19 @@ public class Slv3LinkDiagTests
     }
 
     [Fact]
+    public void Dump_fires_when_polls_return_no_list_at_all()
+    {
+        var d = new Slv3LinkDiag();
+        Poll(d, 0, true);
+        for (long t = 500; t <= 6_000; t += 500)
+        {
+            d.EndPoll(t, gotList: false);
+        }
+
+        Assert.Single(Drain(d), l => l.Contains(" DUMP ") && l.Contains("reason=unseen5s"));
+    }
+
+    [Fact]
     public void Early_dump_repeats_only_after_the_rate_limit_window()
     {
         var d = new Slv3LinkDiag();
@@ -120,13 +133,13 @@ public class Slv3LinkDiagTests
         var d = new Slv3LinkDiag();
         Poll(d, 0, true);
         Poll(d, 5_500, false); // early dump uses the limiter
-        d.OnUpload(Key, 5_000, Slv3UploadKind.Window, false, 480, 17, true);
+        d.OnUpload(Key, 5_000, Slv3UploadKind.Window, false, 480, 17, Slv3UploadReason.TxTimeout);
         Drain(d);
 
         d.OnDropped(Key, 30_000);
         var dropLines = Drain(d);
         Assert.Contains(dropLines, l => l.Contains(" DUMP ") && l.Contains("reason=drop"));
-        Assert.Contains(dropLines, l => l.Contains(" UP ") && l.Contains("FAIL") && l.Contains("window=17") && l.Contains("txtimeout"));
+        Assert.Contains(dropLines, l => l.Contains(" UP ") && l.Contains("FAIL") && l.Contains("window=17") && l.Contains("reason=tx-timeout"));
         Assert.Contains(dropLines, l => l.Contains(" RXRAW "));
 
         Poll(d, 34_000, true);
@@ -158,7 +171,7 @@ public class Slv3LinkDiagTests
         var total = Slv3LinkDiag.UploadRingSize + 7;
         for (var i = 0; i < total; i++)
         {
-            d.OnUpload(Key, i, Slv3UploadKind.Frame, true, 1, -1, false);
+            d.OnUpload(Key, i, Slv3UploadKind.Frame, true, 1, -1, Slv3UploadReason.Ok);
         }
         for (var i = 0; i < Slv3LinkDiag.ReplyRingSize + 10; i++)
         {

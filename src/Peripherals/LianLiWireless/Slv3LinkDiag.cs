@@ -24,6 +24,15 @@ internal enum Slv3ReplyKind : byte
     SendFail,
 }
 
+/// <summary>Why an upload failed; NotPrepared covers an unknown or unbound chain and a compression refusal.</summary>
+internal enum Slv3UploadReason : byte
+{
+    Ok,
+    NotPrepared,
+    TxFail,
+    TxTimeout,
+}
+
 internal enum Slv3UploadKind : byte
 {
     Frame,
@@ -157,7 +166,8 @@ internal sealed class Slv3LinkDiag : IDisposable
                     }
                 }
                 var unseen = nowMs - c.LastSeenMs;
-                if (c.LastPollSeq != _pollSeq && unseen > EarlyDumpGapMs && nowMs >= c.NextDumpMs)
+                var seenNow = gotList && c.LastPollSeq == _pollSeq;
+                if (!seenNow && unseen > EarlyDumpGapMs && nowMs >= c.NextDumpMs)
                 {
                     DumpLocked(c, nowMs, "unseen5s", unseen);
                 }
@@ -190,13 +200,13 @@ internal sealed class Slv3LinkDiag : IDisposable
         }
     }
 
-    public void OnUpload(string key, long nowMs, Slv3UploadKind kind, bool ok, int latencyMs, long windowId, bool txTimedOut)
+    public void OnUpload(string key, long nowMs, Slv3UploadKind kind, bool ok, int latencyMs, long windowId, Slv3UploadReason reason)
     {
         lock (_gate)
         {
             if (_chains.TryGetValue(key, out var c))
             {
-                c.AddUpload(nowMs, kind, ok, latencyMs, windowId, txTimedOut);
+                c.AddUpload(nowMs, kind, ok, latencyMs, windowId, reason);
             }
         }
     }
@@ -222,7 +232,12 @@ internal sealed class Slv3LinkDiag : IDisposable
         }
     }
 
-    public void Event(string text) => Emit("EVT " + text);
+    // Poll-path dumps and summaries are picked up by the writer's 1 s cadence; only events wake it.
+    public void Event(string text)
+    {
+        Emit("EVT " + text);
+        _wake?.Set();
+    }
 
     private static string Describe(Slv3PortInfo? port) =>
         port is null ? "absent" : "present" + (port.Serial.Length > 0 ? " ser#" + HashPart(port.Serial) : "");
@@ -247,10 +262,7 @@ internal sealed class Slv3LinkDiag : IDisposable
     private void SummaryLocked(Chain c, long nowMs)
     {
         var max = c.MaxGapMs;
-        if (c.LastPollSeq != _pollSeq || c.LastSeenMs < nowMs)
-        {
-            max = Math.Max(max, nowMs - c.LastSeenMs);
-        }
+        max = Math.Max(max, nowMs - c.LastSeenMs);
         Emit(string.Create(CultureInfo.InvariantCulture,
             $"SUM {c.Key} polls={c.PolledSeen}/{c.PolledTotal} maxgap={max}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10} slot={c.LastSlot} ch={c.LastChannel}"));
         c.ResetWindow();
@@ -347,11 +359,18 @@ internal sealed class Slv3LinkDiag : IDisposable
         {
             var u = c.UploadIndex(i);
             Emit(p + "UP t=" + (c.UT[u] - nowMs).ToString(inv) + "ms " + c.UKind[u].ToString().ToLowerInvariant()
-                + (c.UOk[u] ? " ok" : " FAIL") + " lat=" + c.ULat[u].ToString(inv) + "ms"
-                + (c.UWindow[u] >= 0 ? " window=" + c.UWindow[u].ToString(inv) : "")
-                + (c.UTimedOut[u] ? " txtimeout" : ""));
+                + (c.UOk[u] ? " ok" : " FAIL reason=" + ReasonName(c.UReason[u])) + " lat=" + c.ULat[u].ToString(inv) + "ms"
+                + (c.UWindow[u] >= 0 ? " window=" + c.UWindow[u].ToString(inv) : ""));
         }
     }
+
+    private static string ReasonName(Slv3UploadReason r) => r switch
+    {
+        Slv3UploadReason.NotPrepared => "not-prepared",
+        Slv3UploadReason.TxFail => "tx-fail",
+        Slv3UploadReason.TxTimeout => "tx-timeout",
+        _ => "ok",
+    };
 
     private static string KindName(Slv3ReplyKind k) => k switch
     {
@@ -374,7 +393,6 @@ internal sealed class Slv3LinkDiag : IDisposable
             return;
         }
         _lines.Enqueue(DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) + " " + body);
-        _wake?.Set();
     }
 
     /// <summary>Resolves pending parent lookups, then hands every queued line to <paramref name="sink"/>. Returns the line count.</summary>
@@ -497,7 +515,7 @@ internal sealed class Slv3LinkDiag : IDisposable
         public readonly bool[] UOk = new bool[UploadRingSize];
         public readonly int[] ULat = new int[UploadRingSize];
         public readonly long[] UWindow = new long[UploadRingSize];
-        public readonly bool[] UTimedOut = new bool[UploadRingSize];
+        public readonly Slv3UploadReason[] UReason = new Slv3UploadReason[UploadRingSize];
         private int _uHead;
         public int UploadCount;
 
@@ -524,7 +542,7 @@ internal sealed class Slv3LinkDiag : IDisposable
             }
         }
 
-        public void AddUpload(long nowMs, Slv3UploadKind kind, bool ok, int latencyMs, long windowId, bool timedOut)
+        public void AddUpload(long nowMs, Slv3UploadKind kind, bool ok, int latencyMs, long windowId, Slv3UploadReason reason)
         {
             var h = _uHead;
             UT[h] = nowMs;
@@ -532,7 +550,7 @@ internal sealed class Slv3LinkDiag : IDisposable
             UOk[h] = ok;
             ULat[h] = latencyMs;
             UWindow[h] = windowId;
-            UTimedOut[h] = timedOut;
+            UReason[h] = reason;
             _uHead = (h + 1) % UploadRingSize;
             if (UploadCount < UploadRingSize)
             {
