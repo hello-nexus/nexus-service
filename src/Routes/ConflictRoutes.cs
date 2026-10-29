@@ -123,18 +123,31 @@ public static class ConflictRoutes
         // reach the user as nothing happening.
         // This is the one control for Dynamic Lighting: turning it on also
         // whitelists the conflict entry (Nexus leaves it alone) and turning it
-        // off removes that, in the same service-side step, so no client can
-        // leave the setting and the policy split.
+        // off removes that, in service-side steps so no client can leave the
+        // setting and the policy split. On whitelists first so the watcher
+        // cannot revert the user's own switch; off writes first and then
+        // un-whitelists, and stays un-whitelisted when the write did not take,
+        // so Nexus keeps trying and the state returned shows it still on.
         app.MapPost("/conflicts/dynamic-lighting", (SetWindowsDynamicLightingBody? body, ConflictWatcher watcher, IConfigStore store, MultiplexHub hub) =>
         {
             if (!WindowsDynamicLighting.IsSupported()) return Results.Ok(new WindowsDynamicLightingState());
             if (body?.Enabled is null) return Results.Ok(WindowsDynamicLighting.Read());
-            // The policy lands first, so the watcher cannot revert or announce the user's own switch.
-            SetDynamicLightingWhitelisted(store, hub, body.Enabled.Value);
-            var state = WindowsDynamicLighting.Write(body.Enabled.Value);
-            if (state.Available && state.Enabled != body.Enabled.Value)
+            var want = body.Enabled.Value;
+            WindowsDynamicLightingState state;
+            if (want)
             {
-                SetDynamicLightingWhitelisted(store, hub, state.Enabled);
+                SetDynamicLightingWhitelisted(store, hub, true);
+                state = WindowsDynamicLighting.Write(true);
+                if (state.Available && !state.Enabled) SetDynamicLightingWhitelisted(store, hub, false);
+            }
+            else
+            {
+                state = WindowsDynamicLighting.Write(false);
+                SetDynamicLightingWhitelisted(store, hub, false);
+                if (state.Available && state.Enabled)
+                {
+                    ServiceLog.Warn("[conflicts] dynamic lighting: still on after a turn-off request; Nexus will keep trying");
+                }
             }
             // The running list carries this setting as a conflict, so it is rescanned now instead of at the next poll.
             watcher.PillarsChanged();
@@ -144,7 +157,7 @@ public static class ConflictRoutes
         // Adds or removes one app on the conflict whitelist in a single store
         // mutation, so it cannot clobber a concurrent server-side sync the way a
         // client-computed whole-list write would.
-        app.MapPost("/conflicts/whitelist", (SetConflictWhitelistedBody body, IConfigStore store, MultiplexHub hub) =>
+        app.MapPost("/conflicts/whitelist", (SetConflictWhitelistedBody body, IConfigStore store, MultiplexHub hub, ConflictWatcher watcher) =>
         {
             var def = ConflictWatcher.FindById(body?.Id ?? "");
             if (def is null)
@@ -161,6 +174,8 @@ public static class ConflictRoutes
             });
             ServiceLog.Info($"[conflicts] whitelist: {def.DisplayName} {(body!.Whitelisted ? "added" : "removed")}");
             PanelTopics.BroadcastPrefs(hub);
+            // Rescans so the filtered list reflects the change at once, as a pillar change does.
+            watcher.PillarsChanged();
             return Results.Ok(new SetConflictWhitelistedResponse());
         });
 
@@ -191,7 +206,7 @@ public static class ConflictRoutes
             // already-stopped service as success.
             var outcome = ConflictKiller.Kill(def);
             ServiceLog.Info($"[conflicts] end task: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
-            // A setting has no process exit for the next poll to notice, so the list is rescanned here.
+            // The list is rescanned now so a surface refetching after the write sees the new state, not the last scan's.
             if (def.IsSetting) watcher.PillarsChanged();
 
             return Results.Ok(new KillConflictResponse

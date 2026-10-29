@@ -82,6 +82,10 @@ public static class WindowsDynamicLighting
     [SupportedOSPlatform("windows")]
     public static WindowsDynamicLightingState ReadCached() => ReadState(cachedCount: true);
 
+    /// <summary>Available and Enabled only, no LampArray count: for a caller that is checking whether a write took.</summary>
+    [SupportedOSPlatform("windows")]
+    public static WindowsDynamicLightingState ReadEnabled() => ReadState(cachedCount: false, countDevices: false);
+
     internal static readonly TimeSpan DeviceCountTtl = TimeSpan.FromSeconds(30);
     private static readonly object CountLock = new();
     private static long _countAtMs = long.MinValue / 2;
@@ -190,6 +194,8 @@ public static class WindowsDynamicLighting
     public static WindowsDynamicLightingState Read() => new();
 
     public static WindowsDynamicLightingState ReadCached() => new();
+
+    public static WindowsDynamicLightingState ReadEnabled() => new();
 
     public static WindowsDynamicLightingState Write(bool enabled, bool countDevices = true) => new();
 #endif

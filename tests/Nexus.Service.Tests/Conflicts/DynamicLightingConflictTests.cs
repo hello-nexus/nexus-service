@@ -25,7 +25,7 @@ public class DynamicLightingConflictTests
     private static ConflictWatcher Watcher(WindowsDynamicLightingState state, InMemoryConfigStore? store = null, Action? onProbe = null)
     {
         store ??= new InMemoryConfigStore();
-        return new(new MultiplexHub(), null, new FeatureGates(store), null, () => new(), null, null, () => { onProbe?.Invoke(); return state; }, store)
+        return new(new MultiplexHub(), null, new FeatureGates(store), null, () => new(), null, null, () => { onProbe?.Invoke(); return state; })
         {
             HandlerCacheMs = 0,
         };
@@ -266,45 +266,93 @@ public class DynamicLightingConflictTests
     }
 
     [Fact]
-    public void TheProbeIsSkippedWhileLightingIsOff()
+    public void ItStaysInTheUnfilteredSetWhileLightingIsOff()
     {
         var store = new InMemoryConfigStore();
         store.Update(s => s.Features.Lighting = false);
-        var probes = 0;
-        var watcher = Watcher(State(), store, () => probes++);
+        var watcher = Watcher(State(), store);
 
-        watcher.GetConflicts();
-
-        Assert.Equal(0, probes);
+        Assert.DoesNotContain(watcher.GetConflicts(), c => c.Id == Id);
+        Assert.Contains(Id, watcher.RunningIds);
     }
 
     [Fact]
-    public void TheProbeIsSkippedWhileWhitelisted_AndRunsAgainOnceItIsNot()
+    public void LightingComingOnWithItAlreadyOnIsARevealNotALaunch()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Features.Lighting = false);
+        var watcher = Watcher(State(), store);
+        var notifier = new ConflictLaunchNotifier(watcher, store);
+        var launched = new List<string>();
+        notifier.AppLaunched += a => launched.Add(a.Id);
+
+        notifier.Tick(0);
+        store.Update(s => s.Features.Lighting = true);
+        watcher.PillarsChanged();
+        notifier.Tick(6_000);
+
+        Assert.Contains(watcher.GetConflicts(), c => c.Id == Id);
+        Assert.Empty(launched);
+    }
+
+    [Fact]
+    public void EndOnLaunchLeavesItAloneWhileLightingIsOff()
+    {
+        var store = OnboardedStore();
+        store.Update(s =>
+        {
+            s.Features.Lighting = false;
+            s.Ui.EndConflictsOnLaunch = true;
+        });
+        var watcher = Watcher(State(), store);
+        var killed = new List<string>();
+        var shutdown = new ConflictStartupShutdown(store, watcher, NullLogger<ConflictStartupShutdown>.Instance,
+            def => killed.Add(def.Id), _ => false);
+
+        shutdown.EndOnLaunchTick();
+
+        Assert.Empty(killed);
+    }
+
+    [Fact]
+    public void UnWhitelistingItWithItAlreadyOnIsARevealNotALaunch()
     {
         var store = new InMemoryConfigStore();
         store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string> { Id });
-        var probes = 0;
-        var watcher = Watcher(State(), store, () => probes++);
+        var watcher = Watcher(State(), store);
+        var notifier = new ConflictLaunchNotifier(watcher, store);
+        var launched = new List<string>();
+        notifier.AppLaunched += a => launched.Add(a.Id);
 
-        Assert.DoesNotContain(watcher.GetConflicts(), c => c.Id == Id);
-        Assert.Equal(0, probes);
-
+        notifier.Tick(0);
         store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string>());
         watcher.PillarsChanged();
+        notifier.Tick(6_000);
 
-        Assert.Contains(watcher.GetConflicts(), c => c.Id == Id);
-        Assert.True(probes > 0);
+        Assert.Empty(launched);
+    }
+
+    [Fact]
+    public void ItsTransitionsReadAsTurnedOnAndOffWithoutAPid()
+    {
+        var on = new DetectedConflict { Id = Id, DisplayName = "Windows Dynamic Lighting", IsSetting = true };
+
+        var opened = ConflictWatcher.TransitionLines(Array.Empty<string>(), new[] { on });
+        var closed = ConflictWatcher.TransitionLines(new[] { Id }, Array.Empty<DetectedConflict>());
+
+        Assert.Contains("turned on", opened.Single().Message);
+        Assert.DoesNotContain("pid", opened.Single().Message);
+        Assert.Contains("turned off", closed.Single().Message);
     }
 
     [Theory]
-    [InlineData(true, false, false)]
-    [InlineData(true, true, true)]
-    [InlineData(false, false, true)]
-    public void OnlyTheSettingEntryNeedsALoopbackKill(bool isSetting, bool loopback, bool allowed)
+    [InlineData(Id, false, false)]
+    [InlineData(Id, true, true)]
+    [InlineData("signalrgb", false, true)]
+    [InlineData("signalrgb", true, true)]
+    public void OnlyTheSettingEntryNeedsALoopbackKill(string id, bool loopback, bool allowed)
     {
-        var def = isSetting ? ConflictWatcher.FindById(Id) : ConflictWatcher.FindById("signalrgb");
-        // The non-setting row's loopback flag is irrelevant: an app kill is allowed either way.
-        Assert.Equal(allowed || !isSetting, ConflictRoutes.KillAllowed(def, loopback));
+        Assert.Equal(allowed, ConflictRoutes.KillAllowed(ConflictWatcher.FindById(id), loopback));
     }
 
     [Fact]

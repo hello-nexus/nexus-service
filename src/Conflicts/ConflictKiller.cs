@@ -86,7 +86,9 @@ public static class ConflictKiller
         {
             return new KillOutcome(false, false);
         }
-        var before = WindowsDynamicLighting.IsActiveConflict(WindowsDynamicLighting.Read());
+        // Registry only: the caller already established a LampArray is present, and no HID walk is needed to turn it off.
+        var beforeState = WindowsDynamicLighting.ReadEnabled();
+        var before = beforeState.Available && beforeState.Enabled;
         // Only Available and Enabled matter after the write, so it skips the second HID walk.
         var after = WindowsDynamicLighting.Write(enabled: false, countDevices: false);
         // An unreadable key after the write proves nothing, so it counts as still on.
@@ -99,7 +101,7 @@ public static class ConflictKiller
         {
             return string.Equals(def.Id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)
                 && WindowsDynamicLighting.IsSupported()
-                && WindowsDynamicLighting.IsActiveConflict(WindowsDynamicLighting.Read());
+                && WindowsDynamicLighting.ReadEnabled() is { Available: true, Enabled: true };
         }
         foreach (var name in def.ProcessNames)
         {

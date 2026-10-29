@@ -361,7 +361,8 @@ internal static class TrayBootstrap
 
         // End task on a launch notice. Ended here, not in the helper: the
         // service runs as LocalSystem and can end an elevated vendor app.
-        helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env);
+        var noticeWatcher = app.Services.GetService<Nexus.Service.Conflicts.ConflictWatcher>();
+        helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env, noticeWatcher);
 
         // Theme.ResolvedThemeMode is the Windows light/dark theme and this is its
         // only writer. The helper reports it on every connect and on change.
@@ -380,7 +381,7 @@ internal static class TrayBootstrap
             catch (Exception ex) { Console.Error.WriteLine($"[theme-sync] apply failed: {ex.Message}"); }
         };
 
-        static void EndConflictFromNotice(HelperEnvelope env)
+        static void EndConflictFromNotice(HelperEnvelope env, Nexus.Service.Conflicts.ConflictWatcher? watcher)
         {
             if (env.Type != ConflictNoticeCommands.EndType || env.Payload is null) return;
             Nexus.Service.Conflicts.ConflictAppDefinition? def;
@@ -402,6 +403,8 @@ internal static class TrayBootstrap
                 {
                     var outcome = Nexus.Service.Conflicts.ConflictKiller.Kill(def);
                     ServiceLog.Info($"[conflicts] end task from notice: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
+                    // Rescans like the kill route, so the dashboard sees the setting go off at once.
+                    if (def.IsSetting) watcher?.PillarsChanged();
                 }
                 catch (Exception ex) { ServiceLog.Warn($"[conflicts] end task from notice failed: {ex.Message}"); }
             });
