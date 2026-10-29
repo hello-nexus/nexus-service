@@ -87,7 +87,8 @@ public static class ConflictKiller
             return new KillOutcome(false, false);
         }
         var before = WindowsDynamicLighting.IsActiveConflict(WindowsDynamicLighting.Read());
-        var after = WindowsDynamicLighting.Write(enabled: false);
+        // Only Available and Enabled matter after the write, so it skips the second HID walk.
+        var after = WindowsDynamicLighting.Write(enabled: false, countDevices: false);
         // An unreadable key after the write proves nothing, so it counts as still on.
         return new KillOutcome(before, after.Enabled || !after.Available);
     }

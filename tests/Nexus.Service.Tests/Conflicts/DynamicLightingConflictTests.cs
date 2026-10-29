@@ -8,6 +8,7 @@ using Nexus.Service.Conflicts;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Conflicts;
 using Nexus.Service.Persistence;
+using Nexus.Service.Routes;
 using Nexus.Service.Sockets;
 using Xunit;
 
@@ -21,11 +22,14 @@ public class DynamicLightingConflictTests
     private static WindowsDynamicLightingState State(bool available = true, bool enabled = true, int devices = 1) =>
         new() { Available = available, Enabled = enabled, DeviceCount = devices };
 
-    private static ConflictWatcher Watcher(WindowsDynamicLightingState state, InMemoryConfigStore? store = null) =>
-        new(new MultiplexHub(), null, new FeatureGates(store ?? new InMemoryConfigStore()), null, () => new(), null, null, () => state)
+    private static ConflictWatcher Watcher(WindowsDynamicLightingState state, InMemoryConfigStore? store = null, Action? onProbe = null)
+    {
+        store ??= new InMemoryConfigStore();
+        return new(new MultiplexHub(), null, new FeatureGates(store), null, () => new(), null, null, () => { onProbe?.Invoke(); return state; }, store)
         {
             HandlerCacheMs = 0,
         };
+    }
 
     private static InMemoryConfigStore OnboardedStore()
     {
@@ -78,6 +82,8 @@ public class DynamicLightingConflictTests
         Assert.DoesNotContain(watcher.GetConflicts(), c => c.Id == Id);
 
         store.Update(s => s.Features.Lighting = true);
+        // The probe is skipped while Lighting is off, so the pillar change rescans, as in production.
+        watcher.PillarsChanged();
 
         Assert.Contains(watcher.GetConflicts(), c => c.Id == Id);
     }
@@ -177,14 +183,17 @@ public class DynamicLightingConflictTests
     }
 
     [Theory]
-    [InlineData(true, false, true, "switched")]
-    [InlineData(false, false, false, "no console user")]
-    [InlineData(true, true, false, "still on")]
-    public void TheLogSaysSwitchedOffOnlyWhenTheReReadSaysOff(bool available, bool enabled, bool switchedOff, string fragment)
+    [InlineData(true, false, true, false, "switched")]
+    [InlineData(false, false, false, false, "nothing to turn off")]
+    [InlineData(false, true, false, false, "nothing to turn off")]
+    [InlineData(true, true, false, true, "still on")]
+    public void TheLogSaysSwitchedOffOnlyWhenTheReReadSaysOff_AndWarnsOnlyForAWriteThatDidNotTake(
+        bool available, bool enabled, bool switchedOff, bool warn, string fragment)
     {
-        var (ok, message) = ConflictStartupShutdown.DescribeDynamicLightingOff(State(available, enabled), "start");
+        var (ok, shouldWarn, message) = ConflictStartupShutdown.DescribeDynamicLightingOff(State(available, enabled), "start");
 
         Assert.Equal(switchedOff, ok);
+        Assert.Equal(warn, shouldWarn);
         Assert.Contains(fragment, message);
         Assert.Contains("(start)", message);
     }
@@ -245,11 +254,71 @@ public class DynamicLightingConflictTests
     }
 
     [Fact]
-    public void AnUnsupportedPlatformWritesNothing()
+    public void AnUnsupportedPlatformReportsNothingAndDoesNotThrow()
     {
-        var shutdown = Shutdown(OnboardedStore(), () => null);
+        var calls = 0;
+        var shutdown = Shutdown(OnboardedStore(), () => { calls++; return null; });
 
-        shutdown.TurnOffWindowsDynamicLighting("start");
+        var ex = Record.Exception(() => shutdown.TurnOffWindowsDynamicLighting("start"));
+
+        Assert.Null(ex);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void TheProbeIsSkippedWhileLightingIsOff()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Features.Lighting = false);
+        var probes = 0;
+        var watcher = Watcher(State(), store, () => probes++);
+
+        watcher.GetConflicts();
+
+        Assert.Equal(0, probes);
+    }
+
+    [Fact]
+    public void TheProbeIsSkippedWhileWhitelisted_AndRunsAgainOnceItIsNot()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string> { Id });
+        var probes = 0;
+        var watcher = Watcher(State(), store, () => probes++);
+
+        Assert.DoesNotContain(watcher.GetConflicts(), c => c.Id == Id);
+        Assert.Equal(0, probes);
+
+        store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string>());
+        watcher.PillarsChanged();
+
+        Assert.Contains(watcher.GetConflicts(), c => c.Id == Id);
+        Assert.True(probes > 0);
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    [InlineData(false, false, true)]
+    public void OnlyTheSettingEntryNeedsALoopbackKill(bool isSetting, bool loopback, bool allowed)
+    {
+        var def = isSetting ? ConflictWatcher.FindById(Id) : ConflictWatcher.FindById("signalrgb");
+        // The non-setting row's loopback flag is irrelevant: an app kill is allowed either way.
+        Assert.Equal(allowed || !isSetting, ConflictRoutes.KillAllowed(def, loopback));
+    }
+
+    [Fact]
+    public void TurningItOnWhitelistsTheEntryAndTurningItOffRemovesIt()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string> { "icue" });
+
+        ConflictRoutes.SetDynamicLightingWhitelisted(store, null, whitelisted: true);
+        ConflictRoutes.SetDynamicLightingWhitelisted(store, null, whitelisted: true);
+        Assert.Equal(new[] { "icue", Id }, store.Load().Ui.ConflictAutoKillExclusions);
+
+        ConflictRoutes.SetDynamicLightingWhitelisted(store, null, whitelisted: false);
+        Assert.Equal(new[] { "icue" }, store.Load().Ui.ConflictAutoKillExclusions);
     }
 
     [Fact]

@@ -322,23 +322,25 @@ public sealed class ConflictStartupShutdown : IHostedService
     }
 
     private static WindowsDynamicLightingState? DefaultDynamicLightingOff() =>
-        WindowsDynamicLighting.IsSupported() ? WindowsDynamicLighting.Write(enabled: false) : null;
+        WindowsDynamicLighting.IsSupported() ? WindowsDynamicLighting.Write(enabled: false, countDevices: false) : null;
 
     /// <summary>
     /// What to log after the write, from the state re-read afterwards: a success
-    /// only when that read says off, otherwise the reason it did not take.
+    /// only when that read says off. An unavailable key (no console user, or a
+    /// PC without the Lighting key) is nothing to turn off and not a warning;
+    /// only a value still on after the write is.
     /// </summary>
-    internal static (bool SwitchedOff, string Message) DescribeDynamicLightingOff(WindowsDynamicLightingState after, string trigger)
+    internal static (bool SwitchedOff, bool Warn, string Message) DescribeDynamicLightingOff(WindowsDynamicLightingState after, string trigger)
     {
         if (!after.Available)
         {
-            return (false, $"could not switch Windows Dynamic Lighting off ({trigger}): no console user, or the Lighting key is unreadable.");
+            return (false, false, $"Windows Dynamic Lighting has nothing to turn off ({trigger}): no console user, or no Lighting key.");
         }
         if (after.Enabled)
         {
-            return (false, $"could not switch Windows Dynamic Lighting off ({trigger}): the value is still on after the write (key not writable, or Windows set it back).");
+            return (false, true, $"could not switch Windows Dynamic Lighting off ({trigger}): the value is still on after the write (key not writable, or Windows set it back).");
         }
-        return (true, $"switched Windows Dynamic Lighting off ({trigger}).");
+        return (true, false, $"switched Windows Dynamic Lighting off ({trigger}).");
     }
 
     /// <summary>
@@ -359,9 +361,9 @@ public sealed class ConflictStartupShutdown : IHostedService
             }
             var after = _dynamicLightingOff();
             if (after is null) return;
-            var (switchedOff, message) = DescribeDynamicLightingOff(after, trigger);
-            if (switchedOff) _log.LogInformation("Startup conflict shutdown: {Message}", message);
-            else _log.LogWarning("Startup conflict shutdown: {Message}", message);
+            var (_, warn, message) = DescribeDynamicLightingOff(after, trigger);
+            if (warn) _log.LogWarning("Startup conflict shutdown: {Message}", message);
+            else _log.LogInformation("Startup conflict shutdown: {Message}", message);
         }
         catch (Exception ex)
         {

@@ -101,24 +101,33 @@ public static class WindowsDynamicLighting
     }
 
     [SupportedOSPlatform("windows")]
-    private static WindowsDynamicLightingState ReadState(bool cachedCount)
+    private static WindowsDynamicLightingState ReadState(bool cachedCount, bool countDevices = true)
     {
         var state = new WindowsDynamicLightingState();
-        var sid = Nexus.Service.Lifecycle.ConsoleUserSid.Resolve(LightingPath);
-        if (sid is null) return state;
-
         try
         {
+            // A PC without the Lighting key reads as unavailable, quietly: the
+            // poll would otherwise log the same warning every scan.
+            var sid = Nexus.Service.Lifecycle.ConsoleUserSid.Resolve(LightingPath, quietIfHiveMissing: true);
+            if (sid is null) return state;
+
             using var root = Registry.Users.OpenSubKey($@"{sid}\{LightingPath}");
             if (root is null) return state;
 
             state.Available = true;
             state.Enabled = DwordIsOn(root.GetValue(AmbientEnabledValue));
+            if (!countDevices) return state;
             // Windows keeps a Devices entry for every LampArray it has ever
             // seen, so counting subkeys reports hardware that is not plugged in.
-            state.DeviceCount = !cachedCount ? PresentLampArrayCount()
-                : state.Enabled ? LampArrayCountCached()
-                : 0;
+            if (!cachedCount)
+            {
+                state.DeviceCount = PresentLampArrayCount();
+                return state;
+            }
+            // Off to on is when a count matters again, and the one cached while off is stale.
+            if (state.Enabled && !_wasEnabled) InvalidateDeviceCount();
+            _wasEnabled = state.Enabled;
+            state.DeviceCount = state.Enabled ? LampArrayCountCached() : 0;
         }
         catch (Exception ex)
         {
@@ -127,15 +136,27 @@ public static class WindowsDynamicLighting
         return state;
     }
 
-    /// <summary>Turns Windows' own lighting on or off, and returns the state re-read afterwards.</summary>
-    [SupportedOSPlatform("windows")]
-    public static WindowsDynamicLightingState Write(bool enabled)
-    {
-        var sid = Nexus.Service.Lifecycle.ConsoleUserSid.Resolve(LightingPath);
-        if (sid is null) return new WindowsDynamicLightingState();
+    private static volatile bool _wasEnabled;
 
+    private static void InvalidateDeviceCount()
+    {
+        lock (CountLock) _countAtMs = long.MinValue / 2;
+    }
+
+    /// <summary>
+    /// Turns Windows' own lighting on or off, and returns the state re-read
+    /// afterwards. <paramref name="countDevices"/> false skips the HID walk
+    /// behind <see cref="WindowsDynamicLightingState.DeviceCount"/>, for a
+    /// caller that only needs Available and Enabled.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    public static WindowsDynamicLightingState Write(bool enabled, bool countDevices = true)
+    {
         try
         {
+            var sid = Nexus.Service.Lifecycle.ConsoleUserSid.Resolve(LightingPath, quietIfHiveMissing: true);
+            if (sid is null) return new WindowsDynamicLightingState();
+
             using var root = Registry.Users.OpenSubKey($@"{sid}\{LightingPath}", writable: true);
             // A null open here is the access-denied case, which otherwise
             // reaches the user as a toggle that simply does not move.
@@ -147,7 +168,8 @@ public static class WindowsDynamicLighting
             Console.Error.WriteLine($"[conflicts] dynamic lighting write failed: {ex.Message}");
         }
 
-        return Read();
+        InvalidateDeviceCount();
+        return ReadState(cachedCount: false, countDevices);
     }
 
     /// <summary>Connected LampArrays. Walks every HID interface, opening each one query-only.</summary>
@@ -169,6 +191,6 @@ public static class WindowsDynamicLighting
 
     public static WindowsDynamicLightingState ReadCached() => new();
 
-    public static WindowsDynamicLightingState Write(bool enabled) => new();
+    public static WindowsDynamicLightingState Write(bool enabled, bool countDevices = true) => new();
 #endif
 }

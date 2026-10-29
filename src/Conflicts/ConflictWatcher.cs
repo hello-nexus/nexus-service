@@ -58,6 +58,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     private readonly Func<Dictionary<string, List<(int Pid, string? Path)>>>? _processIndex;
     private readonly ConflictSignerGate _signerGate;
     private readonly Func<WindowsDynamicLightingState> _dynamicLighting;
+    private readonly Persistence.IConfigStore? _store;
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
@@ -105,8 +106,8 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     private readonly object _scanLock = new();
     private long _lastScanTicks = long.MinValue / 2;
 
-    public ConflictWatcher(MultiplexHub hub, OpenRgbProcessManager? openRgb = null, FeatureGates? gates = null, Func<string, bool>? displayInUse = null, Func<string, bool>? handlerInUse = null)
-        : this(hub, openRgb, gates, displayInUse, null, handlerInUse)
+    public ConflictWatcher(MultiplexHub hub, OpenRgbProcessManager? openRgb = null, FeatureGates? gates = null, Func<string, bool>? displayInUse = null, Func<string, bool>? handlerInUse = null, Persistence.IConfigStore? store = null)
+        : this(hub, openRgb, gates, displayInUse, null, handlerInUse, null, null, store)
     {
     }
 
@@ -118,8 +119,10 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         Func<Dictionary<string, List<(int Pid, string? Path)>>>? processIndex,
         Func<string, bool>? handlerInUse = null,
         ConflictSignerGate? signerGate = null,
-        Func<WindowsDynamicLightingState>? dynamicLighting = null)
+        Func<WindowsDynamicLightingState>? dynamicLighting = null,
+        Persistence.IConfigStore? store = null)
     {
+        _store = store;
         // An injected process index means a test is driving the scan, which must not read the host's registry.
         _dynamicLighting = dynamicLighting
             ?? (processIndex is null && WindowsDynamicLighting.IsSupported() ? ReadDynamicLighting : () => new WindowsDynamicLightingState());
@@ -398,6 +401,13 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
     private void AddDynamicLighting(List<DetectedConflict> result)
     {
         if (FindById(WindowsDynamicLighting.ConflictId) is not { } def) return;
+        // Not probed at all (no registry read, no HID walk) when the entry could not count anyway.
+        if (!_gates.Lighting) return;
+        if (_store?.Load().Ui.ConflictAutoKillExclusions.Exists(
+            id => string.Equals(id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)) == true)
+        {
+            return;
+        }
         WindowsDynamicLightingState state;
         try { state = _dynamicLighting(); }
         catch (Exception ex)

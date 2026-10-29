@@ -162,7 +162,7 @@ public static class DiagnosticsHealthRoutes
                 MachineName = Environment.MachineName,
                 ExportedAtUtc = DateTime.UtcNow.ToString("O"),
                 ServiceUptimeSeconds = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalSeconds,
-                ConflictsRunning = conflicts.GetConflicts().Select(c => $"{c.Id} (pid {c.Pid})").ToList(),
+                ConflictsRunning = conflicts.GetConflicts().Select(c => c.IsSetting ? $"{c.Id} (Windows setting)" : $"{c.Id} (pid {c.Pid})").ToList(),
                 ConflictScanReady = conflicts.DetectionReady,
                 DynamicLighting = Nexus.Service.Conflicts.WindowsDynamicLighting.Describe(),
                 LightingBridgeActive = bridge?.IsActive ?? false,

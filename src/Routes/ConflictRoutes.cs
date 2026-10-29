@@ -121,11 +121,21 @@ public static class ConflictRoutes
         // what Windows actually holds rather than what it asked for. Every path
         // answers 200: the client collapses a non-2xx to null, which would
         // reach the user as nothing happening.
-        app.MapPost("/conflicts/dynamic-lighting", (SetWindowsDynamicLightingBody? body, ConflictWatcher watcher) =>
+        // This is the one control for Dynamic Lighting: turning it on also
+        // whitelists the conflict entry (Nexus leaves it alone) and turning it
+        // off removes that, in the same service-side step, so no client can
+        // leave the setting and the policy split.
+        app.MapPost("/conflicts/dynamic-lighting", (SetWindowsDynamicLightingBody? body, ConflictWatcher watcher, IConfigStore store, MultiplexHub hub) =>
         {
             if (!WindowsDynamicLighting.IsSupported()) return Results.Ok(new WindowsDynamicLightingState());
             if (body?.Enabled is null) return Results.Ok(WindowsDynamicLighting.Read());
+            // The policy lands first, so the watcher cannot revert or announce the user's own switch.
+            SetDynamicLightingWhitelisted(store, hub, body.Enabled.Value);
             var state = WindowsDynamicLighting.Write(body.Enabled.Value);
+            if (state.Available && state.Enabled != body.Enabled.Value)
+            {
+                SetDynamicLightingWhitelisted(store, hub, state.Enabled);
+            }
             // The running list carries this setting as a conflict, so it is rescanned now instead of at the next poll.
             watcher.PillarsChanged();
             return Results.Ok(state);
@@ -162,9 +172,11 @@ public static class ConflictRoutes
         // caller-supplied process/service name - the SPA only sends a catalog
         // id, and we resolve it to the names we have already vetted in
         // ConflictAppCatalog.
-        app.MapPost("/conflicts/kill", (KillConflictBody body, ConflictWatcher watcher) =>
+        app.MapPost("/conflicts/kill", (KillConflictBody body, ConflictWatcher watcher, HttpContext http) =>
         {
             var def = ConflictWatcher.FindById(body?.Id ?? "");
+            // The setting entry writes the console user's registry, so it is loopback only like /conflicts/dynamic-lighting.
+            if (!KillAllowed(def, AuthRequestPolicy.IsLoopbackRemote(http))) return Results.NotFound();
             if (def is null)
             {
                 return Results.BadRequest(new KillConflictResponse
@@ -191,5 +203,25 @@ public static class ConflictRoutes
                 Killed = outcome.Killed,
             });
         });
+    }
+
+    /// <summary>App kills keep working from any authenticated caller; the setting entry writes the console user's registry and needs loopback.</summary>
+    internal static bool KillAllowed(ConflictAppDefinition? def, bool loopback) => def is not { IsSetting: true } || loopback;
+
+    /// <summary>Adds or removes <see cref="WindowsDynamicLighting.ConflictId"/> on the conflict whitelist in one store mutation, and republishes prefs when it changed.</summary>
+    internal static void SetDynamicLightingWhitelisted(IConfigStore store, MultiplexHub? hub, bool whitelisted)
+    {
+        var changed = false;
+        store.Update(s =>
+        {
+            var current = s.Ui.ConflictAutoKillExclusions;
+            var listed = current.Exists(id => string.Equals(id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase));
+            if (listed == whitelisted) return;
+            var others = current.Where(id => !string.Equals(id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (whitelisted) others.Add(WindowsDynamicLighting.ConflictId);
+            s.Ui.ConflictAutoKillExclusions = others;
+            changed = true;
+        });
+        if (changed && hub is not null) PanelTopics.BroadcastPrefs(hub);
     }
 }
