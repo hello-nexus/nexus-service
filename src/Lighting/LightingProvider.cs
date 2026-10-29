@@ -363,7 +363,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var effectSpeed = name == "pulse" ? speed * 0.5f : speed;
         // A sweep is meant to read end to end on every device at once, so the
         // engine stops treating the canvas as a shared scene for these.
-        _engine.FullFrameSampling = ShaderLibrary.IsSweepEffect(name);
+        _engine.FullFrameSampling = ShaderLibrary.IsFullFrame(name, extras);
 
         // Fast path: if the currently running effect is the same shader, just
         // update its uniforms in place. Creating a new ShaderEffect every

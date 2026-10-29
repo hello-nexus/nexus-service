@@ -642,13 +642,9 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
                 {
                     return;
                 }
-                _lighting.StartAnimate(new Nexus.Service.Models.Lighting.AnimateHeadlessStart
-                {
-                    Effect = Nexus.Service.Lighting.SimplePatternMigration.Normalize(na.Effect),
-                    Speed = 50,
-                    Intensity = 1f,
-                    Filter = "none",
-                });
+                _lighting.StartAnimate(Nexus.Service.Lighting.AnimateTemplateDefaults.SavedStart(
+                    _store.Load().Lighting,
+                    Nexus.Service.Lighting.SimplePatternMigration.Normalize(na.Effect)?.ToLowerInvariant() ?? ""));
                 break;
         }
         PanelTopics.BroadcastLighting(_hub);

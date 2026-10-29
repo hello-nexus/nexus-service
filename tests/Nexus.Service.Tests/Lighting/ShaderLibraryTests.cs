@@ -126,5 +126,6 @@ public class ShaderLibraryTests
             {
                 Assert.All(slot!.Params.Keys, name => Assert.True(specs.ContainsKey(name), $"{key} slot param {name}"));
             }
-        }    }
+        }
+    }
 }

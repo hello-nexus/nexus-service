@@ -268,6 +268,14 @@ internal static class ShaderLibrary
 
     public static bool IsSweepEffect(string key) => SweepEffectKeys.Contains(key);
 
+    /// <summary>Whether a running effect samples the whole canvas on every device. Rainbow and sharplines
+    /// travel along a rotated axis once rotated, which a full-frame read would flatten to one color per strip,
+    /// so they use canvas sampling then.</summary>
+    public static bool IsFullFrame(string key, IReadOnlyDictionary<string, float>? extras) =>
+        SweepEffectKeys.Contains(key)
+        && !(key is "rainbow" or "sharplines"
+            && extras is not null && extras.TryGetValue("u_rotation", out var rotation) && System.Math.Abs(rotation) > 0.0001f);
+
     /// <summary>Key prefix of a built-in sensor effect: a self-contained baked Studio fragment, shipped as
     /// Shaders/sensor&lt;name&gt;.frag and registered by that file alone.</summary>
     public const string SensorPrefix = "sensor";

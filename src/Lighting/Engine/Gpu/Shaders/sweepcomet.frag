@@ -3,7 +3,7 @@ uniform float u_tail;   // hint_range(0.1, 1.0, 0.01) = 0.7  tail length
 uniform float u_color;  // hint_range(0.0, 1.0, 0.01) = 0.09  streak colour on the hue wheel, the default is gold
 uniform float u_head;   // hint_range(0.0, 1.0, 0.01) = 0.7  how white the leading edge burns
 
-// Shine: coloured streaks with white-hot heads, gold by default.
+// Shine: coloured streaks with white-hot heads.
 void main() {
     float f = uv01().x * u_comets - u_time * u_speed * 1.8;
     float d = f - floor(f);

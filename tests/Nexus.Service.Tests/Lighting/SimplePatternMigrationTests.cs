@@ -37,8 +37,8 @@ public sealed class SimplePatternMigrationTests : IDisposable
     [InlineData("sweepcomet", "sweepcomet")]
     [InlineData("plasma", "plasma")]
     [InlineData("", "")]
-    [InlineData(null, "")]
-    public void Normalize_maps_only_the_retired_tiles(string? input, string expected)
+    [InlineData(null, null)]
+    public void Normalize_maps_only_the_retired_tiles(string? input, string? expected)
     {
         Assert.Equal(expected, SimplePatternMigration.Normalize(input));
     }
@@ -324,6 +324,90 @@ public sealed class SimplePatternMigrationTests : IDisposable
         var current = Doc(NexusSettings.CurrentSchemaVersion);
         SimplePatternMigration.ApplyProfile(current);
         Assert.Equal(0, current.Lighting.Animate.Templates["rainbow"].Selected);
+    }
+
+    [Fact]
+    public void A_profile_already_carrying_the_merged_shader_params_is_not_shifted_again_whatever_its_stamp()
+    {
+        var shifted = new NexusSettings { SchemaVersion = 27 };
+        shifted.Lighting.Animate.Templates["rainbow"] = new AnimateEffectTemplates
+        {
+            Selected = 2,
+            Slots = [null, null, new AnimateEffectState { Speed = 61, Params = new() { ["u_aspect"] = 1f, ["u_tempo"] = 0.15f } }],
+        };
+
+        SimplePatternMigration.ApplyProfile(shifted);
+
+        var bundle = shifted.Lighting.Animate.Templates["rainbow"];
+        Assert.Equal(2, bundle.Selected);
+        Assert.Equal(61, bundle.Slots[2]!.Speed);
+    }
+
+    [Fact]
+    public void A_rainbow_panel_with_no_stored_preset_moves_to_the_old_first_look()
+    {
+        var doc = new NexusSettings { SchemaVersion = 27 };
+        doc.PanelDevices["p"] = new PanelDeviceRecord { Id = "p", BackgroundEffect = "rainbow" };
+
+        SimplePatternMigration.Apply(doc, shiftSlots: true);
+
+        Assert.Equal(1, doc.PanelDevices["p"].BackgroundTemplate);
+        Assert.Equal(1, doc.PanelDevices["p"].BackgroundTemplates!["rainbow"]);
+    }
+
+    [Fact]
+    public void A_selection_on_the_dropped_fourth_rainbow_slot_keeps_its_look_as_the_live_state()
+    {
+        var stock = new NexusSettings { SchemaVersion = 27 };
+        stock.Lighting.Animate.Templates["rainbow"] = new AnimateEffectTemplates { Selected = 3 };
+        var edited = new NexusSettings { SchemaVersion = 27 };
+        edited.Lighting.Animate.Templates["rainbow"] = new AnimateEffectTemplates
+        {
+            Selected = 3,
+            Slots = [null, null, null, new AnimateEffectState { Speed = 11, Params = new() { ["u_density"] = 3f } }],
+        };
+
+        SimplePatternMigration.Apply(stock, shiftSlots: true);
+        SimplePatternMigration.Apply(edited, shiftSlots: true);
+
+        var fromStock = stock.Lighting.Animate.States["rainbow"];
+        Assert.Equal(65, fromStock.Speed);
+        Assert.Equal(1.6f, fromStock.Params["u_density"]);
+        Assert.Equal(0.15f, fromStock.Params["u_tempo"]);
+        var fromEdit = edited.Lighting.Animate.States["rainbow"];
+        Assert.Equal(11, fromEdit.Speed);
+        Assert.Equal(3f, fromEdit.Params["u_density"]);
+        Assert.Equal(1f, fromEdit.Params["u_aspect"]);
+    }
+
+    [Theory]
+    [InlineData("rainbow", 0f, true)]
+    [InlineData("rainbow", 90f, false)]
+    [InlineData("sharplines", 45f, false)]
+    [InlineData("sharplines", 0f, true)]
+    [InlineData("sweepbrush", 90f, true)]
+    [InlineData("plasma", 0f, false)]
+    public void Full_frame_sampling_yields_to_a_rotated_rainbow_or_sharplines(string key, float rotation, bool expected)
+    {
+        var extras = new Dictionary<string, float> { ["u_rotation"] = rotation };
+        Assert.Equal(expected, Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsFullFrame(key, extras));
+    }
+
+    [Fact]
+    public void A_named_effect_start_replays_the_selected_preset_not_the_shader_defaults()
+    {
+        var lighting = new LightingSettings();
+        lighting.Animate.Templates["rainbow"] = new AnimateEffectTemplates { Selected = 2 };
+
+        var start = AnimateTemplateDefaults.SavedStart(lighting, "rainbow");
+
+        var slot = AnimateTemplateDefaults.Slot("rainbow", 2)!;
+        Assert.Equal(slot.Speed, start.Speed);
+        Assert.Equal(slot.Hue, start.Hue);
+        Assert.Contains(start.Params, p => p.Name == "u_tempo" && p.Value == 0.15f);
+
+        lighting.Animate.States["rainbow"] = new AnimateEffectState { Speed = -50 };
+        Assert.Equal(-50, AnimateTemplateDefaults.SavedStart(lighting, "rainbow").Speed);
     }
 
     [Fact]

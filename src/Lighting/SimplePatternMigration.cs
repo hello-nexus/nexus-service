@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Nexus.Service.Deck;
 using Nexus.Service.Models.Panel;
@@ -13,13 +14,14 @@ namespace Nexus.Service.Lighting;
 /// settings file, a profile, a layout preset, a deck button or a caller, lands on
 /// the effect that replaced it. The rename is idempotent and runs on every load;
 /// the slot shift for the advanced rainbow runs once, behind
-/// <see cref="NexusSettings.CurrentSchemaVersion"/> 28 (profile files by their stamp).
+/// the schema bump (profile files by their stamp) and never on data that already carries the merged shader's params.
 /// </summary>
 public static class SimplePatternMigration
 {
     public const int SchemaVersion = 28;
 
     private const string Rainbow = "rainbow";
+    private const string MergedMarker = "u_aspect";
     private const float OldRainbowAspect = 1f;
     private const float OldRainbowTempo = 0.15f;
     private const int LastSlot = AnimateTemplateDefaults.SlotCount - 1;
@@ -31,11 +33,12 @@ public static class SimplePatternMigration
         ("sweepbreathing", "breathing"),
     ];
 
-    public static string Normalize(string? key)
+    [return: NotNullIfNotNull(nameof(key))]
+    public static string? Normalize(string? key)
     {
         if (key is null)
         {
-            return "";
+            return null;
         }
         foreach (var (old, replacement) in Aliases)
         {
@@ -73,6 +76,7 @@ public static class SimplePatternMigration
         {
             return false;
         }
+        shiftSlots &= !AlreadyShifted(doc.Lighting);
         var changed = Apply(doc.Lighting, shiftSlots);
         if (doc.Ui?.RecentAnimations is { } recents)
         {
@@ -90,6 +94,13 @@ public static class SimplePatternMigration
                 {
                     continue;
                 }
+                // Unset reads as the first preset, which is a different look after the shift.
+                if (shiftSlots && record.BackgroundTemplate is null && string.Equals(record.BackgroundEffect, Rainbow, StringComparison.Ordinal)
+                    && record.BackgroundTemplates?.ContainsKey(Rainbow) != true)
+                {
+                    record.BackgroundTemplate = 0;
+                    (record.BackgroundTemplates ??= new())[Rainbow] = 0;
+                }
                 changed |= ApplyPanel(record.BackgroundEffect, e => record.BackgroundEffect = e, record.BackgroundTemplate, t => record.BackgroundTemplate = t, record.BackgroundTemplates, shiftSlots);
             }
         }
@@ -106,6 +117,7 @@ public static class SimplePatternMigration
         {
             return false;
         }
+        shiftSlots &= !AlreadyShifted(lighting);
         var changed = false;
         lighting.Animate ??= new AnimateSettings();
         var animate = lighting.Animate;
@@ -171,6 +183,26 @@ public static class SimplePatternMigration
         return changed;
     }
 
+    /// <summary>True when stored rainbow content already carries the merged shader's params: only shifted data does, and a document stamped with an older version can still arrive after a round trip through a build that predates the shift.</summary>
+    private static bool AlreadyShifted(LightingSettings? lighting)
+    {
+        if (lighting?.Animate is not { } animate)
+        {
+            return false;
+        }
+        static bool Marked(AnimateEffectState? s) => s?.Params is { } p && p.ContainsKey(MergedMarker);
+        if (animate.Templates?.TryGetValue(Rainbow, out var bundle) == true && bundle?.Slots?.Any(Marked) == true)
+        {
+            return true;
+        }
+        if (animate.States?.TryGetValue(Rainbow, out var state) == true && Marked(state))
+        {
+            return true;
+        }
+        return lighting.LayoutPresets?.Any(p => p?.Look is { } look
+            && string.Equals(look.AnimateEffect, Rainbow, StringComparison.Ordinal) && Marked(look.AnimateState)) == true;
+    }
+
     /// <summary>Old advanced rainbow slot i is new slot i + 1: the new first slot is the former simple tile, and the old fourth slot has no place left.</summary>
     private static bool ShiftRainbow(LightingSettings lighting)
     {
@@ -178,6 +210,12 @@ public static class SimplePatternMigration
         var touched = false;
         if (animate.Templates.TryGetValue(Rainbow, out var bundle) && bundle is not null)
         {
+            // The fourth slot has no place after the shift, so a selection on it is kept as the live look.
+            if (bundle.Selected == LastSlot && !animate.States.ContainsKey(Rainbow))
+            {
+                var fourth = bundle.Slots?.ElementAtOrDefault(LastSlot) ?? OldStockFourth();
+                animate.States[Rainbow] = fourth;
+            }
             var shifted = new List<AnimateEffectState?> { null };
             foreach (var slot in (bundle.Slots ?? new()).Take(LastSlot))
             {
@@ -194,6 +232,16 @@ public static class SimplePatternMigration
         }
         return touched;
     }
+
+    private static AnimateEffectState OldStockFourth() => new()
+    {
+        Speed = 65,
+        Hue = 0.35f,
+        Colorize = 0.75f,
+        Saturation = 1.1f,
+        Contrast = 1.05f,
+        Params = new() { ["u_density"] = 1.6f, ["u_rotation"] = 0f },
+    };
 
     /// <summary>The same look on the merged shader, whose defaults are the former simple tile.</summary>
     private static AnimateEffectState OldRainbow(AnimateEffectState state)
@@ -293,7 +341,7 @@ public static class SimplePatternMigration
         {
             return false;
         }
-        var kept = recents.Select(Normalize).Distinct(StringComparer.Ordinal).ToList();
+        var kept = recents.Select(r => Normalize(r)).Distinct(StringComparer.Ordinal).ToList();
         recents.Clear();
         recents.AddRange(kept);
         return true;
@@ -355,7 +403,7 @@ public static class SimplePatternMigration
         return changed;
     }
 
-    /// <summary>Rewrites every rgbEffect button and dial action of a deck config; also used on configs that arrive over the deck routes.</summary>
+    /// <summary>Rewrites every rgbEffect button and dial action of a deck config.</summary>
     public static bool ApplyDeckConfig(DeckConfig? config)
     {
         if (config?.Pages is null)

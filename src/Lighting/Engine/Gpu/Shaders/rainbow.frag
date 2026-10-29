@@ -6,8 +6,6 @@ uniform float u_tempo; // hint_range(0.05, 1.0, 0.01) = 0.55  how fast the bands
 // Painted-strip spectrum: parallel hue bands sliding across the frame.
 // The rotation slider rotates the band direction; 0 = vertical bands
 // scrolling horizontally, 90 = horizontal bands scrolling vertically.
-// Defaults are the one-cycle-end-to-end sweep; aspect on with a slow tempo
-// is the older Brushstrokes look.
 void main() {
     vec2 uv = uv01() * 2.0 - 1.0;
     uv.x *= mix(1.0, u_resolution.x / u_resolution.y, step(0.5, u_aspect));
