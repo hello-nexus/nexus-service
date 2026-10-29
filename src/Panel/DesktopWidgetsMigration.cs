@@ -215,9 +215,8 @@ public sealed class DesktopWidgetsMigration
         var displays = (topology ?? _topology?.GetTopology())?.Displays;
         if (displays is null || displays.Count == 0) return true;
         var primary = displays.FirstOrDefault(d => d.IsPrimary) ?? (displays.Count == 1 ? displays[0] : null);
-        // A Y70 takes the widgets on its own record, which may still register, so it stays a usable target.
         var overlay = s.Overlay;
-        // Once the grace has elapsed with no Y70 record, no pass can ever use it, so it is not worth a host.
+        // A Y70 takes the widgets on its own record; with no record after the grace it is not worth a host until one registers.
         var y70Waitable = HasY70Record() || (overlay.MonitorMissingForMs ?? 0) < MissingMonitorGraceMs;
         bool Usable(DisplayTopologyEntryDto? d) => d is not null && (d.IsY70 ? y70Waitable : d.HostingSupported);
         if (Os == HostOs.MacOS || (overlay.Monitor ?? -1) < 0) return Usable(primary);
