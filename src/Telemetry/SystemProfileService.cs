@@ -103,7 +103,7 @@ internal sealed class SystemProfileService : BackgroundService
             .Select(n => n.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             // Stable order so a reordered enumeration doesn't look like a change
-            // (otherwise the dedupe re-sends $identify every refresh).
+            // (otherwise the dedupe re-sends the profile event every refresh).
             .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
             .Take(MaxDevices)
             .ToArray();
