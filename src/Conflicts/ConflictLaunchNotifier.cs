@@ -74,7 +74,7 @@ public sealed class ConflictLaunchNotifier : BackgroundService
 
         foreach (var app in _tracker.Observe(running, nowMs, Silent))
         {
-            ServiceLog.Info($"[conflicts] {app.DisplayName} opened while Nexus is running; notifying");
+            ServiceLog.Info($"[conflicts] {app.DisplayName} {(app.IsSetting ? "turned on" : "opened")} while Nexus is running; notifying");
             try { AppLaunched?.Invoke(app); }
             catch (Exception ex) { ServiceLog.Warn($"[conflicts] launch notice failed for {app.DisplayName}: {ex.Message}"); }
         }
