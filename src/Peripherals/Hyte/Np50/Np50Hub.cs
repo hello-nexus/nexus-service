@@ -528,6 +528,7 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
         {
             transport.Write(request);
             _consecutiveWriteFailures = 0;
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId, "np50");
             return true;
         }
         catch (ObjectDisposedException)
@@ -545,6 +546,7 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
             // surfacing as a visible RGB stutter. Matches HYTE's
             // SmartHubCommandBase.Write.
             var n = Interlocked.Increment(ref _consecutiveWriteFailures);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(DeviceId, "np50");
             Console.Error.WriteLine($"[np50] write failed (#{n}): {ex.GetType().Name}: {ex.Message}");
             if (n >= ConsecutiveWriteFailureThreshold)
             {

@@ -172,8 +172,16 @@ public sealed class NollieController : IDisposable
     private bool Write()
     {
         var ok = _device!.Write(_report);
-        if (ok) Volatile.Write(ref _consecutiveWriteFailures, 0);
-        else Interlocked.Increment(ref _consecutiveWriteFailures);
+        if (ok)
+        {
+            Volatile.Write(ref _consecutiveWriteFailures, 0);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId, NollieConnectionWorker.HandlerId);
+        }
+        else
+        {
+            Interlocked.Increment(ref _consecutiveWriteFailures);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(DeviceId, NollieConnectionWorker.HandlerId);
+        }
         return ok;
     }
 
@@ -253,6 +261,7 @@ public sealed class NollieHub : IDisposable
         {
             if (_controllers.Remove(deviceId, out var controller))
             {
+                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(deviceId);
                 controller.Dispose();
                 Resnapshot();
             }
@@ -263,7 +272,11 @@ public sealed class NollieHub : IDisposable
     {
         lock (_lock)
         {
-            foreach (var c in _controllers.Values) c.Dispose();
+            foreach (var c in _controllers.Values)
+            {
+                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(c.DeviceId);
+                c.Dispose();
+            }
             _controllers.Clear();
             Resnapshot();
         }
@@ -292,7 +305,11 @@ public sealed class NollieHub : IDisposable
         {
             if (_disposed) return;
             _disposed = true;
-            foreach (var c in _controllers.Values) c.Dispose();
+            foreach (var c in _controllers.Values)
+            {
+                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(c.DeviceId);
+                c.Dispose();
+            }
             _controllers.Clear();
             Volatile.Write(ref _snapshot, Array.Empty<NollieController>());
         }

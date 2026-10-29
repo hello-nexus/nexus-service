@@ -31,7 +31,7 @@ internal static class MacAppBootstrap
         // is built from AppKit + WebKit, no Chrome / Edge dependency.
         app.Lifetime.ApplicationStarted.Register(() =>
         {
-            try { MacAppWindow.OpenOrFocus(ServiceLaunchIntent.LocalDashboardUrl(servicePort)); }
+            try { MacAppWindow.OpenOrFocus(OpenAppRoute.LocalUrl(servicePort, Nexus.Service.Lifecycle.ReopenRoute.ConsumeFile())); }
             catch (Exception ex) { Console.Error.WriteLine($"[nexus-service] mac auto-open failed: {ex.Message}"); }
         });
 
