@@ -7526,7 +7526,7 @@
      "u_strokes": 9,
      "u_feather": 0.08,
      "u_fill": 0.6,
-     "u_step": 0.2
+     "u_step": 0.25
     }
    },
    {
@@ -7540,7 +7540,7 @@
      "u_strokes": 2,
      "u_feather": 0.35,
      "u_fill": 0.8,
-     "u_step": 0.12
+     "u_step": 0.3
     }
    },
    {
@@ -7553,8 +7553,8 @@
     "params": {
      "u_strokes": 5,
      "u_feather": 0.15,
-     "u_fill": 0.5,
-     "u_step": 0.04
+     "u_fill": 0.3,
+     "u_step": 0.1
     }
    }
   ]
