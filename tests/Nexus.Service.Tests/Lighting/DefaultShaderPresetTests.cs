@@ -42,7 +42,16 @@ public class DefaultShaderPresetTests
         var looks = Enumerable.Range(0, AnimateTemplateDefaults.SlotCount)
             .Select(s => AnimateTemplateDefaults.Slot(effect, s)!).ToList();
         // Colorize collapses the palette to one tint, so a vivid default keeps it off.
-        Assert.All(looks, l => Assert.Equal(0f, l.Colorize, 3));
+        // Ball reads colorize as the color wheel width, so its presets narrow it on purpose.
+        if (effect == "ball")
+        {
+            Assert.InRange(looks[0].Colorize, 0.5f, 0.9f);
+            Assert.Contains(looks, l => l.Colorize < 0.001f);
+        }
+        else
+        {
+            Assert.All(looks, l => Assert.Equal(0f, l.Colorize, 3));
+        }
         Assert.All(looks, l => Assert.InRange(l.Saturation, 1f, 1.5f));
         // Every preset is its own look: no two share palette, speed and parameters.
         var signatures = looks.Select(l => string.Join("|", new object[] { System.Math.Round(l.Hue, 2), l.Speed }

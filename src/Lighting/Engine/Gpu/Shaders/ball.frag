@@ -2,16 +2,37 @@ uniform float u_size; // hint_range(0.03, 0.25, 0.005) = 0.08  ball radius
 uniform float u_count; // hint_range(1.0, 24.0, 1.0) = 8.0  ball count
 uniform float u_trail; // hint_range(0.0, 1.0, 0.02) = 0.6  shockwave length
 uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
-#define tintedPalette(t) moodPalette((t), u_mood)
 
 // Glowing orbs bounce on a floor along decaying parabolic arcs, squash on
 // impact and fire a flash plus an expanding ripple along the floor. Orbs that
-// drift together merge like liquid light inside one soft bloom.
+// drift together merge like liquid light inside one soft bloom. Colors spread
+// evenly across the color wheel range (hue is its middle, 1 - colorize its
+// width); a nonzero mood swaps in a restricted palette instead.
 const float E = 0.6;
 const float LOGE = -0.5108256;
 const float ARCS = 2.176;
 const float CYCLE = 3.1;
 const float FLOOR = 0.85;
+
+vec3 wheelColor(float k) {
+    vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
+    if (u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0) {
+        return artPalette(k);
+    }
+    if (u_mood > 0.5) {
+        return moodPalette(k, u_mood);
+    }
+    float span = 1.0 - clamp(u_colorize, 0.0, 1.0);
+    return hsv2rgb(vec3(u_hue + (k - 0.5) * span, 1.0, 1.0));
+}
+
+// finalize() without its colorize blend, so the wheel range alone decides hue.
+vec3 finish(vec3 col) {
+    float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
+    col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
+    col = (col - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
+    return tonemap(max(col, 0.0));
+}
 
 float ripple(float dx, float v, float age, float amp, float life) {
     float a = age / life;
@@ -34,9 +55,8 @@ void main() {
     float life = 0.5 + clamp(u_trail, 0.0, 1.0) * 0.9;
     float v = FLOOR - uv.y;
 
-    vec3 col = tintedPalette(0.1 + uv.y * 0.2 + sin(t * 0.2 + uv.x) * 0.1) * 0.10;
-    col += tintedPalette(0.55 + uv.x * 0.12 - t * 0.02) * 0.05;
-    col += tintedPalette(0.3 + t * 0.02) * 0.10 * exp(-abs(v) * 40.0);
+    vec3 col = wheelColor(clamp(0.5 + uv.x / (2.0 * ar) * 0.8 + sin(t * 0.2 + uv.y) * 0.1, 0.0, 1.0)) * 0.10;
+    col += wheelColor(0.5 + sin(t * 0.1) * 0.3) * 0.10 * exp(-abs(v) * 40.0);
 
     float field = 0.0;
     vec3 fieldCol = vec3(0.0);
@@ -75,7 +95,7 @@ void main() {
         if (!nearRipple && !nearOrb) {
             continue;
         }
-        vec3 tint = tintedPalette(fi * 0.137 + t * 0.03);
+        vec3 tint = wheelColor((fi + 0.5) / float(count));
 
         if (nearRipple && kf > 0.5) {
             float rp = ripple(dx, v, s - sk, ek, life);
@@ -100,5 +120,5 @@ void main() {
     float core = smoothstep(0.7, 1.6, field);
     col += halo;
     col = mix(col, base * 0.95 + vec3(core * 0.45), body);
-    fragColor = vec4(finalize(col * 1.15), 1.0);
+    fragColor = vec4(finish(col * 1.15), 1.0);
 }
