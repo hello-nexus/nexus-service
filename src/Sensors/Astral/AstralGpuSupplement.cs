@@ -26,8 +26,10 @@ internal sealed class AstralGpuSupplement : IDisposable
     private const int MaxGSensorBackoffShift = 6;
     // The GPU list counts as driving the read while it probed within this many intervals.
     private const int ExternalSilenceIntervals = 3;
-    // A card that has not answered for this many intervals no longer keeps the fallback alive.
-    private const int GiveUpIntervals = 60;
+    // A card that has not answered for this many intervals drops the fallback to the slow retry.
+    private const int LapseIntervals = 60;
+    private static readonly TimeSpan SlowRetry = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan TickWarnEvery = TimeSpan.FromMinutes(1);
 
     private readonly IAstralNvApiClient _client;
     private readonly TimeProvider _timeProvider;
@@ -36,6 +38,9 @@ internal sealed class AstralGpuSupplement : IDisposable
     private readonly object _lock = new();
     private ITimer? _fallback;
     private bool _disposed;
+    private bool _slow;
+    private bool _lapseLogged;
+    private DateTimeOffset _lastTickWarn = DateTimeOffset.MinValue;
     private readonly Dictionary<int, GpuState> _states = new();
 
     public AstralGpuSupplement(IAstralNvApiClient client, AstralMonitor? monitor = null)
@@ -191,15 +196,28 @@ internal sealed class AstralGpuSupplement : IDisposable
 
     // A card is protected only while its pins are read. The GPU list drives the read when
     // something asks for it; this timer covers the rest. It exists only once a card has
-    // answered, reads nothing while the list is driving, and goes away once the card stops
-    // answering.
+    // answered, reads nothing while the list is driving, and slows to a retry once the card
+    // stops answering so protection resumes on its own.
     private void EnsureFallback()
     {
         if (_disposed)
         {
             return;
         }
-        _fallback ??= _timeProvider.CreateTimer(_ => FallbackTick(), null, _probeInterval, _probeInterval);
+        if (_fallback is null)
+        {
+            _fallback = _timeProvider.CreateTimer(_ => FallbackTick(), null, _probeInterval, _probeInterval);
+        }
+        else if (_slow)
+        {
+            _slow = false;
+            _fallback.Change(_probeInterval, _probeInterval);
+            if (_lapseLogged)
+            {
+                _lapseLogged = false;
+                ServiceLog.Info("[astral] card answers again, power protection resumed");
+            }
+        }
     }
 
     public void Dispose()
@@ -214,6 +232,23 @@ internal sealed class AstralGpuSupplement : IDisposable
 
     internal void FallbackTick()
     {
+        try
+        {
+            TickCore();
+        }
+        catch (Exception ex)
+        {
+            var now = _timeProvider.GetUtcNow();
+            if (now - _lastTickWarn >= TickWarnEvery)
+            {
+                _lastTickWarn = now;
+                ServiceLog.Warn($"[astral] fallback read failed: {ex.Message}");
+            }
+        }
+    }
+
+    private void TickCore()
+    {
         Span<float> amps = stackalloc float[AstralTelemetryParser.PinCount];
         while (true)
         {
@@ -224,10 +259,15 @@ internal sealed class AstralGpuSupplement : IDisposable
                 var state = NextFallbackState(now);
                 if (state is null)
                 {
-                    if (_fallback is not null && !AnyAnswering(now))
+                    if (_fallback is not null && !_slow && !AnyAnswering(now))
                     {
-                        _fallback.Dispose();
-                        _fallback = null;
+                        _slow = true;
+                        _fallback.Change(SlowRetry, SlowRetry);
+                        if (_monitor?.ShutdownEnabled() == true)
+                        {
+                            _lapseLogged = true;
+                            ServiceLog.Warn("[astral] card stopped answering: power protection is paused until it answers again");
+                        }
                     }
                     return;
                 }
@@ -255,7 +295,7 @@ internal sealed class AstralGpuSupplement : IDisposable
     {
         foreach (var state in _states.Values)
         {
-            if (state.LastReadout is not null && now - state.LastGoodUtc < _probeInterval * GiveUpIntervals)
+            if (state.LastReadout is not null && now - state.LastGoodUtc < _probeInterval * LapseIntervals)
             {
                 return true;
             }

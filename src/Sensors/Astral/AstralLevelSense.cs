@@ -42,8 +42,8 @@ internal static class AstralGSensorParser
 /// <summary>
 /// Level Sense for one card. Readings are smoothed (half old, half new); a calibration
 /// keeps the most frequent smoothed value per axis over <see cref="CalibrationSamples"/>
-/// readings (smallest on a tie). X and Y deviations keep the vendor's rule of comparing
-/// magnitudes across zero; Sag and Lean carry direction (+ sag: free end lower, + lean: top
+/// readings (smallest on a tie). An X or Y deviation compares magnitudes when the axis
+/// crosses zero, so a flipped sign adds the two angles; Sag and Lean carry direction (+ sag: free end lower, + lean: top
 /// edge toward the fans), with +X running from the PCIe fingers to the top edge and +Z out
 /// through the fans. Not thread-safe; the owner locks.
 /// </summary>
@@ -86,7 +86,7 @@ internal sealed class AstralLevelSense
         return Calibration;
     }
 
-    /// <summary>X and Y in the vendor's convention: how far each moved from the calibration.</summary>
+    /// <summary>How far X and Y moved from the calibration, comparing magnitudes when an axis crosses zero.</summary>
     public (float X, float Y)? Deviation => _smoothed is { } n && Calibration is { } c
         ? (Delta(n.X, c.X), Delta(n.Y, c.Y))
         : null;

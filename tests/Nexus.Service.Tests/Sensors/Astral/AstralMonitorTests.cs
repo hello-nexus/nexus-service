@@ -31,17 +31,29 @@ public class AstralMonitorTests
         public bool ForceShutdown(string reason) { ForcedFor.Add(reason); return true; }
     }
 
+    // Setting Now moves the wall and monotonic clocks together; JumpWall moves the wall clock alone.
     private sealed class FakeTime : TimeProvider
     {
-        public DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        public override DateTimeOffset GetUtcNow() => Now;
-        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) => new NoTimer();
-
-        private sealed class NoTimer : ITimer
+        private DateTimeOffset _wall = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        private long _ticks;
+        public DateTimeOffset Now
         {
+            get => _wall;
+            set { _ticks += (value - _wall).Ticks; _wall = value; }
+        }
+        public Timer? Last { get; private set; }
+        public void JumpWall(TimeSpan by) => _wall += by;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _ticks;
+        public override DateTimeOffset GetUtcNow() => _wall;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) => Last = new Timer();
+
+        public sealed class Timer : ITimer
+        {
+            public bool Disposed { get; private set; }
             public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public void Dispose() => Disposed = true;
+            public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
         }
     }
 
@@ -59,6 +71,8 @@ public class AstralMonitorTests
             Monitor = new AstralMonitor(Settings, Power, Time) { AlertSink = Notices.Add };
             Monitor.ShutdownSink = _ => { Shutdowns++; return true; };
         }
+
+        public void Advance(int seconds) => Time.Now = Time.Now.AddSeconds(seconds);
 
         public void Feed(float pin1, bool simulated = false)
         {
@@ -223,6 +237,193 @@ public class AstralMonitorTests
         Assert.Equal(0, rig.Shutdowns);
         Assert.Empty(rig.Power.ForcedFor);
         Assert.Null(rig.Monitor.GetState().Countdown);
+    }
+
+    private static Rig OvercurrentRig(int overSeconds = 10, int countdownSeconds = 60)
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch
+        {
+            OvercurrentShutdown = true, OvercurrentSeconds = overSeconds, CountdownSeconds = countdownSeconds,
+        });
+        for (var i = 0; i <= overSeconds + 1; i++) rig.Feed(13f);
+        Assert.NotNull(rig.Monitor.GetState().Countdown);
+        return rig;
+    }
+
+    [Fact]
+    public void Two_critical_spikes_across_a_gap_in_readings_never_arm_a_shutdown()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { CriticalShutdown = true });
+        rig.Feed(18f);
+        rig.Advance(30);
+        rig.Feed(18f);
+        Assert.Null(rig.Monitor.GetState().Countdown);
+        Assert.DoesNotContain(rig.Notices, n => n.Kind == AstralMonitor.CountdownKind);
+
+        rig.Feed(18f);
+        Assert.NotNull(rig.Monitor.GetState().Countdown);
+    }
+
+    [Fact]
+    public void A_gap_in_readings_restarts_the_time_a_pin_has_been_over_the_limit()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { OvercurrentShutdown = true, OvercurrentSeconds = 10, CountdownSeconds = 60 });
+        for (var i = 0; i < 8; i++) rig.Feed(13f);
+        rig.Advance(30);
+        for (var i = 0; i < 8; i++) rig.Feed(13f);
+        Assert.Null(rig.Monitor.GetState().Countdown);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Turning_the_shutdown_off_or_the_equalizer_on_ends_a_running_countdown(bool viaEqualizer)
+    {
+        var rig = OvercurrentRig();
+        rig.Monitor.Patch(viaEqualizer
+            ? new AstralSettingsPatch { Equalizer = true }
+            : new AstralSettingsPatch { OvercurrentShutdown = false });
+        Assert.Null(rig.Monitor.GetState().Countdown);
+
+        rig.Advance(120);
+        rig.Monitor.ExpireIfDue();
+        Assert.Equal(0, rig.Shutdowns);
+    }
+
+    [Fact]
+    public void An_unrelated_settings_patch_leaves_a_critical_countdown_running()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { CriticalShutdown = true });
+        rig.Feed(18f);
+        rig.Feed(18f);
+        rig.Feed(8f);
+        rig.Monitor.Patch(new AstralSettingsPatch { Alerts = false });
+        Assert.Equal("critical", rig.Monitor.GetState().Countdown!.Reason);
+    }
+
+    [Fact]
+    public void A_countdown_whose_shutdown_was_switched_off_does_not_fire_when_it_runs_out()
+    {
+        var rig = OvercurrentRig(countdownSeconds: 30);
+        rig.Settings.Update(s => s.Astral.OvercurrentShutdown = false);
+        rig.Advance(31);
+        rig.Monitor.ExpireIfDue();
+        Assert.Equal(0, rig.Shutdowns);
+    }
+
+    [Fact]
+    public void A_stale_cards_running_countdown_is_still_reported_and_still_fires()
+    {
+        var rig = OvercurrentRig(countdownSeconds: 60);
+        rig.Advance(20);
+        var state = rig.Monitor.GetState();
+        Assert.Empty(state.Cards);
+        Assert.Equal("overcurrent", state.Countdown!.Reason);
+        Assert.Equal(Card, state.Countdown.GpuId);
+
+        rig.Advance(60);
+        rig.Monitor.ExpireIfDue();
+        Assert.Equal(1, rig.Shutdowns);
+    }
+
+    [Fact]
+    public void The_countdown_reports_the_card_and_the_time_left_and_never_a_negative_time()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { CriticalShutdown = true });
+        rig.Feed(18f);
+        rig.Feed(18f);
+        var wall = rig.Time.Now;
+        var c = rig.Monitor.GetState().Countdown!;
+        Assert.Equal(Card, c.GpuId);
+        Assert.Equal(9000, c.RemainingMs);
+        Assert.Equal(wall.ToUnixTimeMilliseconds() + c.RemainingMs, c.EndsAtMs);
+
+        rig.Advance(60);
+        Assert.Equal(0, rig.Monitor.GetState().Countdown!.RemainingMs);
+    }
+
+    [Fact]
+    public void A_wall_clock_jump_neither_ends_a_countdown_early_nor_stretches_it()
+    {
+        var rig = OvercurrentRig(countdownSeconds: 60);
+        rig.Time.JumpWall(TimeSpan.FromHours(1));
+        rig.Monitor.ExpireIfDue();
+        Assert.Equal(0, rig.Shutdowns);
+        var c = rig.Monitor.GetState().Countdown!;
+        Assert.InRange(c.RemainingMs, 1, 60_000);
+        Assert.Equal(rig.Time.Now.ToUnixTimeMilliseconds() + c.RemainingMs, c.EndsAtMs);
+
+        rig.Time.JumpWall(TimeSpan.FromHours(-2));
+        Assert.Equal(c.RemainingMs, rig.Monitor.GetState().Countdown!.RemainingMs);
+
+        rig.Advance(61);
+        rig.Monitor.ExpireIfDue();
+        Assert.Equal(1, rig.Shutdowns);
+    }
+
+    [Fact]
+    public void A_wall_clock_jump_does_not_shorten_the_time_a_pin_must_stay_over_the_limit()
+    {
+        var rig = new Rig();
+        rig.Monitor.Patch(new AstralSettingsPatch { OvercurrentShutdown = true, OvercurrentSeconds = 30, CountdownSeconds = 60 });
+        for (var i = 0; i < 5; i++) rig.Feed(13f);
+        rig.Time.JumpWall(TimeSpan.FromHours(1));
+        rig.Feed(13f);
+        Assert.Null(rig.Monitor.GetState().Countdown);
+    }
+
+    [Fact]
+    public void A_shutdown_that_never_takes_effect_is_reported_and_detection_resumes()
+    {
+        var rig = OvercurrentRig(countdownSeconds: 30);
+        rig.Advance(31);
+        rig.Monitor.ExpireIfDue();
+        Assert.Equal(1, rig.Shutdowns);
+        Assert.Null(rig.Monitor.GetState().Countdown);
+
+        rig.Advance(70);
+        rig.Feed(13f);
+        Assert.Contains(rig.Notices, n => n.Title == "ROG Astral shutdown failed");
+        Assert.True(rig.Monitor.GetState().HeldOff);
+    }
+
+    [Fact]
+    public void Smoothed_posture_stops_publishing_when_the_g_sensor_stops_answering()
+    {
+        var rig = new Rig();
+        rig.Feed(8f);
+        var rest = new AstralAngles(90f, 1.2f, 90f);
+        for (var i = 0; i < AstralLevelSense.CalibrationSamples; i++) rig.Monitor.FeedAngles(Card, rest);
+        var sensors = new List<Nexus.Service.Models.Sensors.HardwareSensor>();
+        rig.Monitor.AppendLevelSensors(Card, "GPU", sensors);
+        Assert.NotEmpty(sensors);
+
+        rig.Advance(60);
+        sensors.Clear();
+        rig.Monitor.AppendLevelSensors(Card, "GPU", sensors);
+        Assert.Empty(sensors);
+
+        rig.Monitor.FeedAngles(Card, rest);
+        rig.Monitor.AppendLevelSensors(Card, "GPU", sensors);
+        Assert.NotEmpty(sensors);
+    }
+
+    [Fact]
+    public void Disposing_the_monitor_disposes_its_countdown_timer_for_good()
+    {
+        var rig = OvercurrentRig();
+        var timer = rig.Time.Last!;
+        rig.Monitor.Dispose();
+        Assert.True(timer.Disposed);
+
+        var created = rig.Time.Last;
+        rig.Monitor.Cancel();
+        Assert.Same(created, rig.Time.Last);
     }
 
     [Fact]

@@ -14,8 +14,8 @@ public sealed class AstralNoticePayload
     public string Title { get; set; } = "";
     public string Text { get; set; } = "";
     public string CancelLabel { get; set; } = "";
-    /// <summary>The countdown the Cancel button applies to.</summary>
-    public long CancelId { get; set; }
+    /// <summary>The countdown the Cancel button applies to; null for a countdown that cannot be cancelled, which shows no button.</summary>
+    public long? CancelId { get; set; }
     /// <summary>SPA path the toast body, and the balloon fallback, opens.</summary>
     public string WindowPath { get; set; } = "";
 }

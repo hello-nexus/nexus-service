@@ -204,6 +204,7 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
         // Reused: the owner reads one block at a time and finishes with it before the next read.
         var buffer = register == AstralRegisterAddress ? _telemetryBuffer : _gSensorBuffer;
         var regAddress = register == AstralRegisterAddress ? _telemetryRegister : _gSensorRegister;
+        Array.Clear(buffer);
         NvStatus status;
 
         unsafe

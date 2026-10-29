@@ -31,20 +31,29 @@ public class AstralSupplementFeedTests
 
     private sealed class FakeTime : TimeProvider
     {
-        public DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        private DateTimeOffset _wall = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        private long _ticks;
+        public DateTimeOffset Now
+        {
+            get => _wall;
+            set { _ticks += (value - _wall).Ticks; _wall = value; }
+        }
         public int TimersCreated { get; private set; }
         public Timer? Last { get; private set; }
-        public override DateTimeOffset GetUtcNow() => Now;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _ticks;
+        public override DateTimeOffset GetUtcNow() => _wall;
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             TimersCreated++;
-            return Last = new Timer();
+            return Last = new Timer { Period = period };
         }
 
         public sealed class Timer : ITimer
         {
             public bool Disposed { get; private set; }
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public TimeSpan Period { get; set; }
+            public bool Change(TimeSpan dueTime, TimeSpan period) { Period = period; return true; }
             public void Dispose() => Disposed = true;
             public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
         }
@@ -54,6 +63,7 @@ public class AstralSupplementFeedTests
     {
         public uint SubSystemId = AstralAibVendors.AsusVendorId;
         public bool ReadSucceeds = true;
+        public bool ReadThrows;
         public float Pin1Amps = 8f;
         public int Reads;
 
@@ -66,6 +76,10 @@ public class AstralSupplementFeedTests
         public bool TryReadAstralBlock(int adapterIndex, out byte[] block)
         {
             Reads++;
+            if (ReadThrows)
+            {
+                throw new InvalidOperationException("driver fault");
+            }
             block = ReadSucceeds ? Build() : Array.Empty<byte>();
             return ReadSucceeds;
         }
@@ -196,18 +210,38 @@ public class AstralSupplementFeedTests
     }
 
     [Fact]
-    public void The_fallback_goes_away_once_the_card_stops_answering()
+    public void The_fallback_slows_to_a_retry_when_the_card_stops_answering_and_speeds_up_when_it_returns()
     {
         var rig = new Rig();
         rig.ListTick();
         var timer = rig.Time.Last!;
+        Assert.Equal(TimeSpan.FromSeconds(1), timer.Period);
         rig.Client.ReadSucceeds = false;
-        for (var i = 0; i < 70 && !timer.Disposed; i++)
+        for (var i = 0; i < 70; i++)
         {
             rig.Idle(1);
             rig.Supplement.FallbackTick();
         }
-        Assert.True(timer.Disposed);
+        Assert.False(timer.Disposed);
+        Assert.Equal(TimeSpan.FromSeconds(10), timer.Period);
+
+        rig.Client.ReadSucceeds = true;
+        rig.Idle(10);
+        rig.Supplement.FallbackTick();
+        Assert.Equal(TimeSpan.FromSeconds(1), timer.Period);
+        Assert.Equal(1, rig.Time.TimersCreated);
+        Assert.NotNull(rig.Monitor.CardName());
+    }
+
+    [Fact]
+    public void A_fallback_tick_that_throws_does_not_escape_the_timer_thread()
+    {
+        var rig = new Rig();
+        rig.ListTick();
+        rig.Idle(5);
+        rig.Client.ReadThrows = true;
+        rig.Supplement.FallbackTick();
+        Assert.Equal(1, rig.Time.TimersCreated);
     }
 
     [Fact]

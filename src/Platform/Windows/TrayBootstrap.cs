@@ -249,14 +249,14 @@ internal static class TrayBootstrap
             try
             {
                 var path = Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind);
-                if (notice.ActionId is { } cancelId)
+                if (notice.Kind == Nexus.Service.Sensors.Astral.AstralMonitor.CountdownKind)
                 {
                     AstralNoticeCommands.NoticeAsync(helperRegistry, new AstralNoticePayload
                     {
                         Title = notice.Title,
                         Text = notice.Text,
-                        CancelLabel = "Cancel shutdown",
-                        CancelId = cancelId,
+                        CancelLabel = notice.ActionId is null ? "" : "Cancel shutdown",
+                        CancelId = notice.ActionId,
                         WindowPath = path ?? "",
                     }, target).ObserveFaults();
                 }

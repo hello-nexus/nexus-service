@@ -44,6 +44,10 @@ public sealed class AstralCountdownDto
     /// <summary>"overcurrent" or "critical".</summary>
     public string Reason { get; set; } = "";
     public long EndsAtMs { get; set; }
+    /// <summary>Milliseconds left when the state was built, never negative.</summary>
+    public long RemainingMs { get; set; }
+    /// <summary>The card whose countdown this is; the soonest when several run.</summary>
+    public string GpuId { get; set; } = "";
 }
 
 public sealed class AstralCalibrateRequest

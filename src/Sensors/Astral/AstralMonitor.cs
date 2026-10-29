@@ -14,14 +14,19 @@ namespace Nexus.Service.Sensors.Astral;
 /// detector and Level Sense, the contract state, alerts and the shutdown countdown.
 /// It is fed by the existing GPU read (<see cref="AstralGpuSupplement"/>, or the
 /// dev-tools simulation) and never polls; its only timer exists while a countdown runs.
+/// Durations and countdown ends run on the monotonic clock; wall time only labels what the UI shows.
 /// </summary>
-public sealed class AstralMonitor
+public sealed class AstralMonitor : IDisposable
 {
     public const string AlertKind = "astral";
     public const string CountdownKind = "astralCountdown";
 
     private static readonly TimeSpan FreshFor = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan CalibrationRecheck = TimeSpan.FromSeconds(5);
+    // Longer than a probe interval plus scheduling jitter: a gap this long means readings were missed.
+    private static readonly TimeSpan MaxFeedGap = TimeSpan.FromMilliseconds(1500);
+    // Longer than the G-sensor retry backoff can hide a single miss; past it the posture is not published.
+    private static readonly TimeSpan AnglesStaleAfter = TimeSpan.FromSeconds(30);
 
     private sealed class Card
     {
@@ -35,6 +40,7 @@ public sealed class AstralMonitor
         public long CalibratedAtMs;
         public long CountdownId;
         public DateTimeOffset LastFeed;
+        public DateTimeOffset LastAngles;
         public DateTimeOffset NextCalibrationCheck;
     }
 
@@ -43,7 +49,10 @@ public sealed class AstralMonitor
     private readonly TimeProvider _time;
     private readonly object _lock = new();
     private readonly Dictionary<string, Card> _cards = new(StringComparer.Ordinal);
+    private readonly long _stamp0;
+    private readonly DateTimeOffset _wall0;
     private ITimer? _timer;
+    private bool _disposed;
     private long _countdownSeq;
 
     /// <summary>Delivers a notice through the diagnostics alert path.</summary>
@@ -61,7 +70,29 @@ public sealed class AstralMonitor
         _store = store;
         _power = power;
         _time = time;
+        _stamp0 = time.GetTimestamp();
+        _wall0 = time.GetUtcNow();
         ShutdownSink = reason => OperatingSystem.IsWindows() && _power.ForceShutdown(reason);
+    }
+
+    // The monotonic axis the detectors run on, anchored to the wall clock at construction.
+    private DateTimeOffset Mono() => _wall0 + _time.GetElapsedTime(_stamp0);
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            _disposed = true;
+            _timer?.Dispose();
+            _timer = null;
+        }
+    }
+
+    /// <summary>True while either shutdown is on; the supplement warns when it loses the card in that state.</summary>
+    internal bool ShutdownEnabled()
+    {
+        var a = _store.Load().Astral;
+        return a.OvercurrentShutdown || a.CriticalShutdown;
     }
 
     /// <summary>Name of the first card read recently, or null; the Devices entry exists while this is set.</summary>
@@ -69,7 +100,7 @@ public sealed class AstralMonitor
     {
         lock (_lock)
         {
-            var now = _time.GetUtcNow();
+            var now = Mono();
             foreach (var c in _cards.Values)
             {
                 if (now - c.LastFeed < FreshFor)
@@ -83,7 +114,7 @@ public sealed class AstralMonitor
 
     public void Feed(string id, string name, string? calibrationKey, ReadOnlySpan<float> amps, bool simulated = false)
     {
-        var now = _time.GetUtcNow();
+        var now = Mono();
         AstralStep step;
         var settings = _store.Load().Astral;
         AstralAlertKind kind;
@@ -94,6 +125,10 @@ public sealed class AstralMonitor
             {
                 card = _cards[id] = new Card { Id = id };
             }
+            else if (now - card.LastFeed > MaxFeedGap)
+            {
+                card.Detector.Clear();
+            }
             (card.Name, card.CalibrationKey, card.Simulated, card.LastFeed) = (name, calibrationKey, simulated, now);
             amps[..card.Amps.Length].CopyTo(card.Amps);
             step = card.Detector.Update(card.Amps, settings, now);
@@ -103,12 +138,16 @@ public sealed class AstralMonitor
                 card.CountdownId = ++_countdownSeq;
                 countdown = CountdownNotice(card, now);
             }
-            if (step.CountdownStarted || step.CountdownCancelled)
+            if (step.CountdownStarted || step.CountdownCancelled || step.ShutdownLapsed)
             {
                 Rearm(now);
             }
         }
 
+        if (step.ShutdownLapsed)
+        {
+            Send(ShutdownFailedNotice(name));
+        }
         if (countdown is not null)
         {
             Send(countdown);
@@ -121,7 +160,8 @@ public sealed class AstralMonitor
 
     public void FeedAngles(string id, AstralAngles angles, AstralAngles? seed = null)
     {
-        var now = _time.GetUtcNow();
+        var now = Mono();
+        var wallMs = _time.GetUtcNow().ToUnixTimeMilliseconds();
         string? saveKey = null;
         AstralCalibration? save = null;
         lock (_lock)
@@ -130,13 +170,14 @@ public sealed class AstralMonitor
             {
                 return;
             }
+            card.LastAngles = now;
             if (card.Level is null)
             {
                 card.Level = new AstralLevelSense();
                 if (seed is { } s)
                 {
                     card.Level.Load(s);
-                    card.CalibratedAtMs = now.ToUnixTimeMilliseconds();
+                    card.CalibratedAtMs = wallMs;
                 }
                 else
                 {
@@ -151,7 +192,7 @@ public sealed class AstralMonitor
 
             if (card.Level.Add(angles) is { } done)
             {
-                card.CalibratedAtMs = now.ToUnixTimeMilliseconds();
+                card.CalibratedAtMs = wallMs;
                 if (card.CalibrationKey is not null)
                 {
                     saveKey = card.CalibrationKey;
@@ -195,7 +236,8 @@ public sealed class AstralMonitor
     {
         lock (_lock)
         {
-            if (_cards.TryGetValue(id, out var card) && card.Level is { Deviation: { } d, Posture: { } p })
+            if (_cards.TryGetValue(id, out var card) && Mono() - card.LastAngles < AnglesStaleAfter
+                && card.Level is { Deviation: { } d, Posture: { } p })
             {
                 AstralSensorBuilder.AppendLevel(id, name, d.X, d.Y, p.Sag, p.Lean, result);
             }
@@ -206,7 +248,7 @@ public sealed class AstralMonitor
     private static DiagnosticsAlertNotice CountdownNotice(Card card, DateTimeOffset now)
     {
         var d = card.Detector;
-        var seconds = Math.Max(0, (int)Math.Round((d.EndsUtc - now).TotalSeconds));
+        var seconds = Math.Max(0, (int)Math.Round((d.EndsAt - now).TotalSeconds));
         return d.Critical
             ? new DiagnosticsAlertNotice(
                 "ROG Astral shutdown", $"{card.Name}: shutting down in {seconds} s because a pin reached its critical current.", CountdownKind)
@@ -224,12 +266,12 @@ public sealed class AstralMonitor
             foreach (var card in _cards.Values)
             {
                 var d = card.Detector;
-                if (d.Running && !d.ShutdownIssued && (soonest is null || d.EndsUtc < soonest.Detector.EndsUtc))
+                if (d.Running && !d.ShutdownIssued && (soonest is null || d.EndsAt < soonest.Detector.EndsAt))
                 {
                     soonest = card;
                 }
             }
-            return soonest is null ? null : CountdownNotice(soonest, _time.GetUtcNow());
+            return soonest is null ? null : CountdownNotice(soonest, Mono());
         }
     }
 
@@ -245,7 +287,7 @@ public sealed class AstralMonitor
             }
             if (any)
             {
-                Rearm(_time.GetUtcNow());
+                Rearm(Mono());
             }
         }
     }
@@ -261,7 +303,7 @@ public sealed class AstralMonitor
         {
             if (_cards.Remove(id))
             {
-                Rearm(_time.GetUtcNow());
+                Rearm(Mono());
             }
         }
     }
@@ -283,6 +325,7 @@ public sealed class AstralMonitor
 
     public AstralStateDto Patch(AstralSettingsPatch patch)
     {
+        var wasEqualizer = _store.Load().Astral.Equalizer;
         _store.Update(s =>
         {
             var a = s.Astral;
@@ -293,12 +336,25 @@ public sealed class AstralMonitor
             a.OvercurrentSeconds = AstralPowerDetector.ClampOvercurrentSeconds(patch.OvercurrentSeconds ?? a.OvercurrentSeconds);
             a.CountdownSeconds = AstralPowerDetector.ClampCountdownSeconds(patch.CountdownSeconds ?? a.CountdownSeconds);
         });
+        var settings = _store.Load().Astral;
+        lock (_lock)
+        {
+            var any = false;
+            foreach (var card in _cards.Values)
+            {
+                any |= card.Detector.Reapply(card.Amps, settings, settings.Equalizer != wasEqualizer);
+            }
+            if (any)
+            {
+                Rearm(Mono());
+            }
+        }
         return GetState();
     }
 
     public AstralStateDto Cancel()
     {
-        var now = _time.GetUtcNow();
+        var now = Mono();
         lock (_lock)
         {
             var any = false;
@@ -319,9 +375,10 @@ public sealed class AstralMonitor
         List<Card>? due = null;
         lock (_lock)
         {
+            var now = Mono();
             foreach (var card in _cards.Values)
             {
-                if (card.Detector.ShutdownNow())
+                if (card.Detector.ShutdownNow(now))
                 {
                     (due ??= new()).Add(card);
                 }
@@ -334,12 +391,17 @@ public sealed class AstralMonitor
     /// <summary>Runs the shutdown for every countdown that has run out; the countdown timer calls this.</summary>
     internal void ExpireIfDue()
     {
-        var now = _time.GetUtcNow();
+        var now = Mono();
+        var settings = _store.Load().Astral;
         List<Card>? due = null;
         lock (_lock)
         {
             foreach (var card in _cards.Values)
             {
+                if (card.Detector.CancelIfDisabled(settings))
+                {
+                    continue;
+                }
                 if (card.Detector.TakeExpired(now))
                 {
                     (due ??= new()).Add(card);
@@ -375,10 +437,13 @@ public sealed class AstralMonitor
             }
             if (!ok)
             {
-                Send(new DiagnosticsAlertNotice("ROG Astral shutdown failed", $"{card.Name}: the PC could not be shut down. Check the connector.", AlertKind));
+                Send(ShutdownFailedNotice(card.Name));
             }
         }
     }
+
+    private static DiagnosticsAlertNotice ShutdownFailedNotice(string name) =>
+        new("ROG Astral shutdown failed", $"{name}: the PC could not be shut down. Check the connector.", AlertKind);
 
     // Caller holds _lock. One timer for the soonest running countdown; none when nothing counts down.
     private void Rearm(DateTimeOffset now)
@@ -387,13 +452,13 @@ public sealed class AstralMonitor
         foreach (var card in _cards.Values)
         {
             var d = card.Detector;
-            if (d.Running && !d.ShutdownIssued && (soonest is null || d.EndsUtc < soonest))
+            if (d.Running && !d.ShutdownIssued && (soonest is null || d.EndsAt < soonest))
             {
-                soonest = d.EndsUtc;
+                soonest = d.EndsAt;
             }
         }
         _timer?.Dispose();
-        _timer = soonest is { } ends
+        _timer = soonest is { } ends && !_disposed
             ? _time.CreateTimer(_ => ExpireIfDue(), null, ends > now ? ends - now : TimeSpan.Zero, Timeout.InfiniteTimeSpan)
             : null;
     }
@@ -413,27 +478,33 @@ public sealed class AstralMonitor
                 CriticalShutdown = settings.CriticalShutdown,
             },
         };
-        var now = _time.GetUtcNow();
+        var wall = _time.GetUtcNow();
+        var now = Mono();
+        DateTimeOffset? soonest = null;
         lock (_lock)
         {
             foreach (var card in _cards.Values)
             {
+                var d = card.Detector;
+                state.HeldOff |= d.HeldOff;
+                // A stale card's countdown still ends in a shutdown, so it is reported before the freshness check.
+                if (d.Running && !d.ShutdownIssued && (soonest is null || d.EndsAt < soonest))
+                {
+                    soonest = d.EndsAt;
+                    var remaining = Math.Max(0, (long)(d.EndsAt - now).TotalMilliseconds);
+                    state.Countdown = new AstralCountdownDto
+                    {
+                        Reason = d.Critical ? "critical" : "overcurrent",
+                        GpuId = card.Id,
+                        RemainingMs = remaining,
+                        EndsAtMs = wall.ToUnixTimeMilliseconds() + remaining,
+                    };
+                }
                 if (now - card.LastFeed >= FreshFor)
                 {
-                    card.Detector.Clear();
                     continue;
                 }
                 state.Simulated |= card.Simulated;
-                state.HeldOff |= card.Detector.HeldOff;
-                if (card.Detector.Running && !card.Detector.ShutdownIssued
-                    && (state.Countdown is null || card.Detector.EndsUtc.ToUnixTimeMilliseconds() < state.Countdown.EndsAtMs))
-                {
-                    state.Countdown = new AstralCountdownDto
-                    {
-                        Reason = card.Detector.Critical ? "critical" : "overcurrent",
-                        EndsAtMs = card.Detector.EndsUtc.ToUnixTimeMilliseconds(),
-                    };
-                }
                 state.Cards.Add(ToDto(card, settings.Equalizer));
             }
         }
