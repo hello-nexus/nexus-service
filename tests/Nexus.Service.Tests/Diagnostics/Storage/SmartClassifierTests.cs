@@ -269,4 +269,68 @@ public class SmartClassifierTests
         Assert.Contains((byte)9, result.FlaggedAttributeIds);
         Assert.DoesNotContain((byte)194, result.FlaggedAttributeIds);
     }
+
+    private static SmartClassification ClassifyCommandTimeout(ulong raw) =>
+        SmartClassifier.Classify(new SmartClassifierInput(
+            StorageBusKind.Sata,
+            new List<SmartAttributeSample> { new(188, "Command Timeout", 100, 99, 0, Raw: raw) },
+            Nvme: null,
+            VendorHealth: null,
+            PredictsFailure: null));
+
+    [Fact]
+    public void Command_timeout_packed_seagate_raw_decodes_to_largest_word()
+    {
+        var result = ClassifyCommandTimeout(4295032833);
+
+        var reason = Assert.Single(result.Reasons);
+        Assert.Equal("smart.commandTimeout", reason.Code);
+        Assert.Equal("1 command timeout", reason.Summary);
+        Assert.DoesNotContain("4295032833 command", reason.Summary);
+    }
+
+    [Fact]
+    public void Command_timeout_plain_raw_is_unchanged()
+    {
+        var reason = Assert.Single(ClassifyCommandTimeout(3).Reasons);
+
+        Assert.Equal("3 command timeouts", reason.Summary);
+    }
+
+    [Fact]
+    public void Command_timeout_zero_raw_does_not_flag()
+    {
+        var result = ClassifyCommandTimeout(0);
+
+        Assert.Empty(result.Reasons);
+        Assert.Empty(result.FlaggedAttributeIds);
+    }
+
+    [Fact]
+    public void Command_timeout_only_high_word_set_decodes_to_1_and_flags()
+    {
+        var result = ClassifyCommandTimeout(0x0000_0000_0001_0000);
+
+        var reason = Assert.Single(result.Reasons);
+        Assert.Equal("1 command timeout", reason.Summary);
+        Assert.Contains((byte)188, result.FlaggedAttributeIds);
+    }
+
+    [Fact]
+    public void Command_timeout_uses_largest_word_not_the_low_word()
+    {
+        var reason = Assert.Single(ClassifyCommandTimeout(0x0002_0007_0001).Reasons);
+
+        Assert.Equal("7 command timeouts", reason.Summary);
+    }
+
+    [Fact]
+    public void Command_timeout_detail_mentions_decoded_count_only_when_it_differs()
+    {
+        var decoded = Assert.Single(ClassifyCommandTimeout(4295032833).Reasons);
+        var plain = Assert.Single(ClassifyCommandTimeout(3).Reasons);
+
+        Assert.Equal("SMART attribute 188 (Command Timeout) raw value is 4295032833, counted as 1.", decoded.Detail);
+        Assert.Equal("SMART attribute 188 (Command Timeout) raw value is 3.", plain.Detail);
+    }
 }

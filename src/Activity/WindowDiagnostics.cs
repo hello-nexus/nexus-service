@@ -25,9 +25,11 @@ public static class WindowDiagnostics
     /// One [window-diag] line: process identity, the IsCountableWindow
     /// inputs, the raw title-read outcome, and the classification result.
     /// titleLength/titleReadError distinguish a legitimately empty title
-    /// (GetWindowTextLength returns 0, Win32 error 0) from a blocked read
-    /// (e.g. UIPI denying a lower-integrity caller access to an elevated
-    /// window's title, which also returns 0 but with a nonzero Win32 error).
+    /// (no stored caption, and the GetWindowTextLength fallback returned 0 with
+    /// error 0) from a blocked read (e.g. UIPI denying a lower-integrity
+    /// caller access to an elevated window, which fails the fallback with a
+    /// nonzero Win32 error). A window with a stored caption never reaches the
+    /// fallback, so its titleReadError is 0.
     /// </summary>
     public static string FormatLine(
         int pid,

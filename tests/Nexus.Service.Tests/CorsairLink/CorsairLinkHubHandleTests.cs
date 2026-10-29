@@ -67,6 +67,7 @@ public class CorsairLinkHubHandleTests
 
         /// <summary>Reads that time out while their reply stays queued, as a late reply does.</summary>
         public int TimedOutReads;
+        public byte RpmLo = 0xe0;
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
@@ -132,7 +133,7 @@ public class CorsairLinkHubHandleTests
                     return new byte[] { 0x21, 0x00, 1, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, (byte)serial.Length }
                         .Concat(serial).ToArray();
                 case 0x17:
-                    return new byte[] { 0x25, 0x00, 2, 1, 0, 0, (byte)(Ch1Unmapped ? 1 : 0), 0xe0, 0x01 };
+                    return new byte[] { 0x25, 0x00, 2, 1, 0, 0, (byte)(Ch1Unmapped ? 1 : 0), RpmLo, 0x01 };
                 case 0x21:
                     return new byte[] { 0x10, 0x00, 2, 1, 0, 0, 0, 0x0c, 0x01 };
                 default:
@@ -335,15 +336,182 @@ public class CorsairLinkHubHandleTests
     }
 
     [Fact]
-    public void HearsAnotherHost_is_true_only_when_a_report_arrives_unprompted()
+    public void Initialize_records_each_step_and_its_traffic()
     {
-        var quiet = new FakeLinkHub();
+        var hub = new CorsairLinkHub();
+        hub.Attach(new FakeLinkHub());
+
+        Assert.True(hub.Initialize());
+
+        Assert.Contains("step=firmware", hub.LastInitTrace);
+        Assert.Contains("step=refresh", hub.LastInitTrace);
+        Assert.Contains("0x36 devices=", hub.LastInitTrace);
+        Assert.Contains("out 02 13", hub.LastInitTrace);
+        Assert.EndsWith("init ok", hub.LastInitTrace);
+    }
+
+    [Fact]
+    public void A_foreign_reply_during_initialize_is_recorded_with_its_bytes()
+    {
+        var device = new FakeLinkHub();
+        device.InjectReply(0x09);
+        var hub = new CorsairLinkHub();
+        hub.Attach(device);
+
+        Assert.False(hub.Initialize());
+
+        Assert.True(hub.ForeignHostSeen);
+        Assert.Contains("echo=09", hub.ForeignReplyHex);
+        Assert.Contains("foreign", hub.LastInitTrace);
+    }
+
+    [Fact]
+    public void HearsOtherHost_is_true_only_when_a_report_arrives_unprompted()
+    {
+        var hub = new CorsairLinkHub();
         var busy = new FakeLinkHub();
         busy.InjectReply(0x08);
 
-        Assert.False(CorsairLinkHub.HearsAnotherHost(quiet, 10));
-        Assert.True(CorsairLinkHub.HearsAnotherHost(busy, 10));
+        Assert.False(hub.HearsOtherHost(new FakeLinkHub(), 10, out var none, out _));
+        Assert.Equal("", none);
+        Assert.True(hub.HearsOtherHost(busy, 10, out var heard, out var ownHeard));
+        Assert.StartsWith("n=", heard);
+        Assert.Equal("", ownHeard);
         Assert.Empty(busy.Commands);
+    }
+
+    // A command whose read timed out leaves its reply owed to this hub object.
+    private static CorsairLinkHub HubOwedFirmwareReply(Func<long>? now = null)
+    {
+        var hub = new CorsairLinkHub();
+        if (now != null) hub.NowMs = now;
+        hub.Attach(new FakeLinkHub { TimedOutReads = 1000 });
+        Assert.False(hub.Initialize());
+        hub.Detach(handBack: false);
+        return hub;
+    }
+
+    [Fact]
+    public void A_matching_command_byte_with_no_timed_out_read_is_another_program()
+    {
+        var hub = new CorsairLinkHub();
+        hub.Attach(new FakeLinkHub());
+        Assert.True(hub.Initialize());
+        hub.Detach();
+
+        var other = new FakeLinkHub();
+        other.InjectReply(0x05);
+        Assert.True(hub.HearsOtherHost(other, 10, out _, out var ownHeard));
+        Assert.Equal("", ownHeard);
+    }
+
+    [Fact]
+    public void One_owed_reply_is_discounted_once_and_a_second_matching_report_counts()
+    {
+        var hub = HubOwedFirmwareReply();
+
+        var late = new FakeLinkHub();
+        late.InjectReply(0x02);
+        Assert.False(hub.HearsOtherHost(late, 10, out _, out var ownHeard));
+        Assert.NotEqual("", ownHeard);
+
+        var again = new FakeLinkHub();
+        again.InjectReply(0x02);
+        Assert.True(hub.HearsOtherHost(again, 10, out _, out ownHeard));
+        Assert.Equal("", ownHeard);
+    }
+
+    [Fact]
+    public void The_listen_continues_after_a_discounted_report()
+    {
+        var hub = HubOwedFirmwareReply();
+
+        var device = new FakeLinkHub();
+        device.InjectReply(0x02);
+        device.InjectReply(0x09);
+
+        Assert.True(hub.HearsOtherHost(device, 10, out var heard, out var ownHeard));
+        Assert.Contains("00 00 00 09", heard);
+        Assert.NotEqual("", ownHeard);
+        Assert.DoesNotContain("00 00 00 09", ownHeard);
+    }
+
+    [Fact]
+    public void A_report_in_the_listen_after_a_discount_counts_as_another_program()
+    {
+        var hub = HubOwedFirmwareReply();
+
+        var first = new FakeLinkHub();
+        first.InjectReply(0x02);
+        Assert.False(hub.HearsOtherHost(first, 10, out _, out var ownHeard));
+        Assert.NotEqual("", ownHeard);
+
+        var second = new FakeLinkHub();
+        second.InjectReply(0x09);
+        Assert.True(hub.HearsOtherHost(second, 10, out var heard, out ownHeard));
+        Assert.NotEqual("", heard);
+        Assert.Equal("", ownHeard);
+    }
+
+    [Fact]
+    public void Repeated_timeouts_on_one_command_do_not_keep_it_owed_past_the_bound_from_the_first()
+    {
+        var now = 1_000_000L;
+        var hub = new CorsairLinkHub { NowMs = () => now };
+        hub.Attach(new FakeLinkHub { TimedOutReads = 1000 });
+        Assert.False(hub.Initialize());
+        hub.Detach(handBack: false);
+        now += 20_000;
+        hub.Attach(new FakeLinkHub { TimedOutReads = 1000 });
+        Assert.False(hub.Initialize());
+        hub.Detach(handBack: false);
+        now += 20_000;
+
+        var late = new FakeLinkHub();
+        late.InjectReply(0x02);
+        Assert.True(hub.HearsOtherHost(late, 10, out _, out var ownHeard));
+        Assert.Equal("", ownHeard);
+    }
+
+    [Fact]
+    public void An_owed_reply_older_than_the_upper_bound_counts_as_another_program()
+    {
+        var now = 1_000_000L;
+        var hub = HubOwedFirmwareReply(() => now);
+        now += 120_000;
+
+        var late = new FakeLinkHub();
+        late.InjectReply(0x02);
+        Assert.True(hub.HearsOtherHost(late, 10, out _, out var ownHeard));
+        Assert.Equal("", ownHeard);
+    }
+
+    [Fact]
+    public void Init_traces_differing_only_in_telemetry_bytes_are_identical()
+    {
+        string Trace(byte rpmLo)
+        {
+            var hub = new CorsairLinkHub();
+            hub.Attach(new FakeLinkHub { RpmLo = rpmLo });
+            Assert.True(hub.Initialize());
+            return hub.LastInitTrace;
+        }
+
+        var a = Trace(0xe0);
+        Assert.Equal(a, Trace(0x55));
+        Assert.Contains("step=color-handle", a);
+        Assert.EndsWith("init ok", a);
+    }
+
+    [Fact]
+    public void An_identical_repeat_failure_logs_no_trace()
+    {
+        string? last = null;
+
+        Assert.Equal(" trace: step=firmware | init failed", CorsairLinkConnectionWorker.TraceIfNew("step=firmware | init failed", ref last));
+        Assert.Equal("", CorsairLinkConnectionWorker.TraceIfNew("step=firmware | init failed", ref last));
+        Assert.Equal(" trace: step=refresh | init failed", CorsairLinkConnectionWorker.TraceIfNew("step=refresh | init failed", ref last));
+        Assert.Equal("", CorsairLinkConnectionWorker.TraceIfNew("", ref last));
     }
 
     [Fact]

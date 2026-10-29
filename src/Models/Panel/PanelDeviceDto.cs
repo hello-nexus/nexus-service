@@ -186,7 +186,7 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large" (fewer, bigger widgets), "small" or "xsmall" (a denser grid); null = the panel's
+    /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; null = the panel's
     /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
     public string? WidgetSize { get; set; }
     /// <summary>The window size the kiosk on a display-bound record measured, reported by the kiosk itself. Kept apart from <see cref="Capabilities"/>, which the topology sync rebuilds from OS facts.</summary>
@@ -504,7 +504,7 @@ public sealed class PanelDevicePatch
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large", "small" or "xsmall"; anything else is ignored. Null = leave it.</summary>
+    /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; anything else is ignored. Null = leave it.</summary>
     public string? WidgetSize { get; set; }
     /// <summary>Kiosk-measured window size; applied to display-bound records only.</summary>
     public KioskViewportDto? KioskViewport { get; set; }

@@ -217,6 +217,7 @@ internal static class WindowsUserHelper
             ShowUpdaterWindow,
             CloseUpdaterWindow).Register(handlerRegistry);
         new ConflictNoticeHandler(p => ShowConflictLaunchNotice(p, outbound)).Register(handlerRegistry);
+        new AstralNoticeHandler(p => ShowAstralNotice(p, outbound)).Register(handlerRegistry);
         // Runs in the user session, so this set lands on the clipboard the
         // user actually pastes from (the service's Session-0 one is invisible).
         new ClipboardHandler(new Platform.Clipboard.WindowsClipboardProvider().SetText).Register(handlerRegistry);
@@ -458,6 +459,24 @@ internal static class WindowsUserHelper
                 type: ConflictNoticeCommands.EndType,
                 payload: new ConflictEndPayload { AppId = appId },
                 payloadType: AppJsonContext.Default.ConflictEndPayload));
+        if (!shown) Platform.Windows.TrayIcon.ShowNoticeBalloon(p.Title, p.Text, null, p.WindowPath);
+    }
+
+    /// <summary>The countdown toast's button sends the cancel back to the service, which owns the countdown; the balloon fallback has no button and its click opens the Devices page.</summary>
+    [SupportedOSPlatform("windows10.0.19041.0")]
+    private static void ShowAstralNotice(AstralNoticePayload p, HelperOutbound outbound)
+    {
+        if (p.CancelId is not { } cancelId)
+        {
+            Platform.Windows.TrayIcon.ShowNoticeBalloon(p.Title, p.Text, null, p.WindowPath);
+            return;
+        }
+        var shown = Platform.Windows.ToastNotifications.TryShowConflictLaunchToast(
+            p.Title, p.Text, p.CancelLabel, p.WindowPath,
+            onEnd: () => _ = outbound.SendAsync(
+                type: AstralNoticeCommands.CancelType,
+                payload: new AstralCancelPayload { Id = cancelId },
+                payloadType: AppJsonContext.Default.AstralCancelPayload));
         if (!shown) Platform.Windows.TrayIcon.ShowNoticeBalloon(p.Title, p.Text, null, p.WindowPath);
     }
 

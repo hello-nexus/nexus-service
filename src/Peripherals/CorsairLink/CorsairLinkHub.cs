@@ -96,11 +96,80 @@ public sealed class CorsairLinkHub : IDisposable
 
     public bool IsConnected => State.IsConnected;
 
-    /// <summary>Listens without writing. The hub never reports unprompted, so any input report answers another program's command.</summary>
-    public static bool HearsAnotherHost(IHidDevice device, int listenMs)
+    private const int TraceReplyBytes = 20;
+    private const int TraceMaxChars = 1500;
+    // Upper bound on how long a timed-out command is still owed a late reply.
+    private const long OwedReplyMaxAgeMs = 30_000;
+    private const int OwedReplyMaxCount = 4;
+
+    // Commands whose reply timed out on Nexus's side, by command byte; survives Detach and Attach.
+    private readonly int[] _owedReplies = new int[256];
+    private readonly long[] _owedSinceMs = new long[256];
+    private bool _traceQuiet;
+
+    /// <summary>Listens without writing for the whole window. A report echoing a command whose reply Nexus is still owed is discounted once and its hex put in <paramref name="ownHeard"/>; any other report is another host and its hex goes in <paramref name="heard"/>.</summary>
+    public bool HearsOtherHost(IHidDevice device, int listenMs, out string heard, out string ownHeard)
     {
         var buffer = new byte[CorsairLinkProtocol.WriteBufferLength];
-        return device.Read(buffer, listenMs) > 0;
+        var deadline = Environment.TickCount64 + listenMs;
+        heard = "";
+        ownHeard = "";
+        while (true)
+        {
+            var remaining = (int)Math.Max(1, deadline - Environment.TickCount64);
+            var n = device.Read(buffer, remaining);
+            if (n <= 0) return false;
+            var hex = $"n={n} {Hex(buffer, Math.Min(n, TraceReplyBytes))}";
+            var echo = n > 1 + CorsairLinkProtocol.ResponseCommandOffset ? buffer[1 + CorsairLinkProtocol.ResponseCommandOffset] : (byte)0;
+            if (!TakeOwedReply(echo))
+            {
+                heard = hex;
+                return true;
+            }
+            if (ownHeard.Length == 0) ownHeard = hex;
+            if (Environment.TickCount64 >= deadline) return false;
+        }
+    }
+
+    private bool TakeOwedReply(byte echo)
+    {
+        if (echo == 0) return false;
+        lock (_lock)
+        {
+            if (_owedReplies[echo] <= 0) return false;
+            if (NowMs() - _owedSinceMs[echo] > OwedReplyMaxAgeMs)
+            {
+                _owedReplies[echo] = 0;
+                return false;
+            }
+            _owedReplies[echo]--;
+            return true;
+        }
+    }
+
+    private static string Hex(ReadOnlySpan<byte> bytes, int count)
+    {
+        count = Math.Min(count, bytes.Length);
+        var sb = new System.Text.StringBuilder(count * 3);
+        for (var i = 0; i < count; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            sb.Append(bytes[i].ToString("x2"));
+        }
+        return sb.ToString();
+    }
+
+    private System.Text.StringBuilder? _trace;
+
+    /// <summary>Request/reply hex of the last <see cref="Initialize"/>, with the step that ended it.</summary>
+    public string LastInitTrace { get; private set; } = "";
+
+    /// <summary>Hex of the reply that marked another program, empty when none.</summary>
+    public string ForeignReplyHex { get; private set; } = "";
+
+    private void TraceNote(string note)
+    {
+        if (_trace is { } t && (t.Length < TraceMaxChars || note.StartsWith("step=", StringComparison.Ordinal) || note.StartsWith("color open", StringComparison.Ordinal))) t.Append(" | ").Append(note);
     }
 
     /// <summary>Another program answered on the hub; every write is refused from then on, since the hub's handles are shared by all hosts.</summary>
@@ -112,6 +181,7 @@ public sealed class CorsairLinkHub : IDisposable
         {
             _device = device;
             ForeignHostSeen = false;
+            ForeignReplyHex = "";
             _softwareMode = false;
             _firmwareMajor = 0;
             _colorPrimed = false;
@@ -155,8 +225,27 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            _trace = new System.Text.StringBuilder();
+            try
+            {
+                var ok = InitializeLocked();
+                _trace.Append(" | ").Append(ok ? "init ok" : "init failed");
+                return ok;
+            }
+            finally
+            {
+                LastInitTrace = _trace.ToString();
+                _trace = null;
+            }
+        }
+    }
+
+    private bool InitializeLocked()
+    {
+        {
             if (_device == null) return false;
 
+            TraceNote("step=firmware");
             var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
             if (fw >= 8)
             {
@@ -164,14 +253,18 @@ public sealed class CorsairLinkHub : IDisposable
                 _firmwareMajor = _read[4];
             }
 
+            TraceNote($"fw={State.Firmware}");
+            TraceNote("step=software-mode");
             Transfer(CorsairLinkProtocol.CmdSoftwareMode);
             // Firmware needs ~500 ms after entering software mode before it accepts
             // further commands (OpenLinkHub transferTimeout, lsh.go:4886).
             Thread.Sleep(CorsairLinkProtocol.SoftwareModeSettleMs);
             _softwareMode = true;
 
+            TraceNote("step=refresh");
             if (!RefreshLocked()) return false;
 
+            TraceNote("step=color-handle");
             // Another host (iCUE, a crashed session) can leave handle 0 holding a
             // different resource, and an open on a busy handle is refused, so free
             // it first. It then stays open for the whole session.
@@ -335,7 +428,9 @@ public sealed class CorsairLinkHub : IDisposable
         Span<byte> mode = stackalloc byte[] { CorsairLinkProtocol.ModeSetColor };
         Transfer(CorsairLinkProtocol.CmdCloseColorEndpoint);
         var n = Transfer(CorsairLinkProtocol.CmdOpenColorEndpoint, mode);
-        return n > CorsairLinkProtocol.ResponseStatusOffset && !Refused(CorsairLinkProtocol.CmdOpenColorEndpoint);
+        var ok = n > CorsairLinkProtocol.ResponseStatusOffset && !Refused(CorsairLinkProtocol.CmdOpenColorEndpoint);
+        TraceNote($"color open ok={ok} status={_read[CorsairLinkProtocol.ResponseStatusOffset]:x2}");
+        return ok;
     }
 
     // The last response answers this command with a non-zero status. A response
@@ -349,8 +444,13 @@ public sealed class CorsairLinkHub : IDisposable
     private bool RefreshLocked()
     {
         var devResp = ReadEndpointLocked(CorsairLinkProtocol.ModeGetDevices, CorsairLinkProtocol.DataGetDevices);
-        if (devResp == null) return false;
+        if (devResp == null)
+        {
+            TraceNote("0x36 read returned no device list");
+            return false;
+        }
         var discovered = CorsairLinkProtocol.ParseDevices(devResp);
+        TraceNote($"0x36 devices={discovered.Count}");
 
         // Resolve dynamic LED counts for variable-LED devices (adapters, Commander Duo).
         var ledCounts = new int[CorsairLinkProtocol.SensorArrayLength];
@@ -443,12 +543,14 @@ public sealed class CorsairLinkHub : IDisposable
     private byte[]? ReadEndpointRawLocked(byte mode)
     {
         Span<byte> m = stackalloc byte[] { mode };
+        _traceQuiet = true;
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
         Transfer(CorsairLinkProtocol.CmdOpenEndpoint, m);
         var n = Transfer(CorsairLinkProtocol.CmdRead, m);
         byte[]? copy = null;
         if (n > 0) copy = _read.AsSpan(0, CorsairLinkProtocol.ReportLength).ToArray();
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
+        _traceQuiet = false;
         return copy;
     }
 
@@ -457,6 +559,7 @@ public sealed class CorsairLinkHub : IDisposable
     private byte[]? ReadEndpointLocked(byte mode, ReadOnlySpan<byte> dataType)
     {
         Span<byte> m = stackalloc byte[] { mode };
+        _traceQuiet = mode != CorsairLinkProtocol.ModeGetDevices;
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
         Transfer(CorsairLinkProtocol.CmdOpenEndpoint, m);
         var n = Transfer(CorsairLinkProtocol.CmdRead, m);
@@ -466,7 +569,12 @@ public sealed class CorsairLinkHub : IDisposable
         {
             copy = _read.AsSpan(0, CorsairLinkProtocol.ReportLength).ToArray();
         }
+        else
+        {
+            if (_trace != null) TraceNote($"mode={mode:x2} want={Hex(dataType, 2)} got n={n} busy={_read[CorsairLinkProtocol.ResponseBusyOffset]:x2} status={_read[CorsairLinkProtocol.ResponseStatusOffset]:x2}");
+        }
         Transfer(CorsairLinkProtocol.CmdCloseEndpoint, m);
+        _traceQuiet = false;
         return copy;
     }
 
@@ -491,6 +599,7 @@ public sealed class CorsairLinkHub : IDisposable
         if (_device == null) return -1;
         var n = _device.Read(_readRaw, ResyncReadTimeoutMs);
         if (n <= 0) return n;
+        if (_trace != null) TraceNote(_traceQuiet ? $"drain n={n}" : $"drain n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
         NoteEcho(0);
         return n - 1;
@@ -508,7 +617,13 @@ public sealed class CorsairLinkHub : IDisposable
     private void NoteEcho(byte sent)
     {
         var echo = _read[CorsairLinkProtocol.ResponseCommandOffset];
-        if (echo != 0 && echo != sent && !IsOwnCommand(echo)) ForeignHostSeen = true;
+        if (echo != 0 && echo != sent && _owedReplies[echo] > 0) _owedReplies[echo]--;
+        if (echo != 0 && echo != sent && !IsOwnCommand(echo))
+        {
+            ForeignHostSeen = true;
+            ForeignReplyHex = $"sent={sent:x2} echo={echo:x2} reply={Hex(_read, TraceReplyBytes)}";
+            if (_trace != null) TraceNote($"foreign {ForeignReplyHex}");
+        }
     }
 
     // close -> open -> write(inner) -> close. Inner = [len_lo, len_hi, 0, 0,
@@ -552,9 +667,26 @@ public sealed class CorsairLinkHub : IDisposable
         command.CopyTo(_write.AsSpan(off));
         off += command.Length;
         if (!payload.IsEmpty) payload.CopyTo(_write.AsSpan(off));
-        if (!_device.Write(_write)) return -1;
+        if (_trace != null) TraceNote($"out {Hex(_write.AsSpan(CorsairLinkProtocol.HeaderSize), command.Length + payload.Length > 8 ? 8 : command.Length + payload.Length)}");
+        if (!_device.Write(_write))
+        {
+            if (_trace != null) TraceNote("write failed");
+            return -1;
+        }
         var n = _device.Read(_readRaw, ReadTimeoutMs);
-        if (n <= 0) return n;
+        if (n <= 0)
+        {
+            if (_trace != null) TraceNote($"read n={n}");
+            var now = NowMs();
+            if (_owedReplies[command[0]] > 0 && now - _owedSinceMs[command[0]] > OwedReplyMaxAgeMs) _owedReplies[command[0]] = 0;
+            if (_owedReplies[command[0]] == 0) _owedSinceMs[command[0]] = now;
+            if (_owedReplies[command[0]] < OwedReplyMaxCount) _owedReplies[command[0]]++;
+            return n;
+        }
+        if (_trace != null)
+        {
+            TraceNote(_traceQuiet ? $"in n={n} status={_readRaw[1 + CorsairLinkProtocol.ResponseStatusOffset]:x2}" : $"in n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
+        }
         // Windows ReadFile returns the report with the report-id byte at [0]; hidapi
         // (which the parsers mirror) drops it. Strip it and report the stripped length.
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);

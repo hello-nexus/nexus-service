@@ -73,6 +73,55 @@ public class HelperPollerDiagnosticsTests
     }
 
     [Fact]
+    public void Parse_KeepsEverySubSwitch_AndTheyAreDistinctFromWindowset()
+    {
+        var set = HelperPollerDiagnostics.Parse(string.Join(",", HelperPollerDiagnostics.SubSwitches));
+        Assert.Equal(HelperPollerDiagnostics.SubSwitches.Length, set.Count);
+        Assert.DoesNotContain(HelperPollerDiagnostics.WindowSet, set);
+        Assert.Contains(HelperPollerDiagnostics.WindowSetDwm, set);
+    }
+
+    [Fact]
+    public void Configure_BumpsTheChangeCount()
+    {
+        var before = HelperPollerDiagnostics.ChangeCount;
+        HelperPollerDiagnostics.Configure("audio", null);
+        Assert.True(HelperPollerDiagnostics.ChangeCount > before);
+        HelperPollerDiagnostics.Configure(null, null);
+    }
+
+    [Fact]
+    public void FormatStartupLine_NamesActiveSubSwitchesAsRecognized()
+    {
+        var line = HelperPollerDiagnostics.FormatStartupLine(
+            HelperPollerDiagnostics.Parse("windowset-hooks windowset-trickle"));
+        Assert.Contains("disabled:", line);
+        Assert.Contains("windowset-hooks", line);
+        Assert.Contains("windowset-trickle", line);
+        Assert.DoesNotContain("unrecognized", line);
+    }
+
+    [Fact]
+    public void FormatStartupLine_ReportsEagerAsAnOptionNotADisable()
+    {
+        var line = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("windowset-eager"));
+        Assert.DoesNotContain("disabled:", line);
+        Assert.Contains("option on: windowset-eager", line);
+
+        var both = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("audio windowset-eager"));
+        Assert.Contains("disabled: audio", both);
+        Assert.Contains("option on: windowset-eager", both);
+    }
+
+    [Fact]
+    public void FormatStartupLine_ListsSubSwitchesInTheTypoHint()
+    {
+        var line = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("windowset-dwn"));
+        Assert.Contains("unrecognized, ignored: windowset-dwn", line);
+        Assert.Contains("sub-switches: windowset-hooks,windowset-dwm,windowset-fallback,windowset-trickle,windowset-enum,windowset-eager", line);
+    }
+
+    [Fact]
     public void FormatStartupLine_SeparatesRecognizedFromTypos()
     {
         var line = HelperPollerDiagnostics.FormatStartupLine(HelperPollerDiagnostics.Parse("audio,windowsett"));
@@ -114,6 +163,16 @@ public class HelperPollerDiagnosticsTests
             Assert.False(HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out var line));
             Assert.Equal("", line);
         }
+    }
+
+    [Fact]
+    public void TryFormatSlowPass_PutsDetailBeforeTheSuppressedSuffix()
+    {
+        var poller = "detail-" + Guid.NewGuid();
+        Assert.True(HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 fallbacks=1"));
+        Assert.False(HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 fallbacks=1"));
+        HelperPollerDiagnostics.TryFormatSlowPass(poller, 250, 400, out _, "dwm=3 fallbacks=1");
+        Assert.Equal("[helper-perf] x pass=1.0ms items=2 dwm=3 fallbacks=1", HelperPollerDiagnostics.FormatSlowPass("x", 1.0, 2, "dwm=3 fallbacks=1"));
     }
 
     [Fact]
