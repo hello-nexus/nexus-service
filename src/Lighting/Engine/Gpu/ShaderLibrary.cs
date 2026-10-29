@@ -143,11 +143,7 @@ internal static class ShaderLibrary
         {
             // Every "simple*" colour key shares the one solid-fill shader; the
             // colour lives entirely in the per-key template tint, not the GLSL.
-            // Simple mode's breathing tile is its own key over breathing.frag,
-            // so running it never reads as the advanced effect's selection.
-            var file = key.StartsWith("simple", System.StringComparison.Ordinal) ? "simple"
-                : key == "sweepbreathing" ? "breathing"
-                : key;
+            var file = key.StartsWith("simple", System.StringComparison.Ordinal) ? "simple" : key;
             var body = LoadRaw(ResourcePrefix + file + ".frag");
             // A sensor effect is a baked Studio fragment that declares everything itself; the prelude would redeclare it.
             return IsSensorEffect(key) ? body : Prelude + "\n" + body;
@@ -255,19 +251,18 @@ internal static class ShaderLibrary
         "beatstrobe", "harmonicstar", "audiotunnel", "bassbloom",
         "beatbuilder", "spectrumaurora", "neonwaveform", "liquidbeat",
         "beatburst", "lavaribbons", "lavahaze",
-        // Simple mode's sweep set; mirrors SweepEffectKeys below, keep in sync.
-        "sweeprainbow", "sweepbreathing", "sweepbars", "sweepcycle",
-        "sweepbrush", "sweepliquid", "sweepcomet",
+        // Full-frame set members with their own key; the rest are listed above.
+        "sweepcycle", "sweepbrush", "sweepliquid", "sweepcomet",
     };
 
-    /// <summary>Simple mode's sweep set. Every one travels on +x only (breathing
-    /// and cycle do not travel; the whole frame is one colour): simple mode turns them
-    /// around with the speed sign, and a y-travelling shader added here would
-    /// collapse every linear strip to one colour under
-    /// <see cref="LightingEngine.FullFrameSampling"/>.</summary>
+    /// <summary>Effects that sample the whole canvas on every device, simple mode's
+    /// set. Each is also a regular animate effect with preset slots. Their stock
+    /// looks travel on +x only (breathing and cycle do not travel; the whole frame
+    /// is one colour): a y-travelling stock look added here would collapse every
+    /// linear strip to one colour under <see cref="LightingEngine.FullFrameSampling"/>.</summary>
     public static readonly HashSet<string> SweepEffectKeys = new(System.StringComparer.Ordinal)
     {
-        "sweeprainbow", "sweepbreathing", "sweepbars", "sweepcycle",
+        "rainbow", "breathing", "sharplines", "sweepcycle",
         "sweepbrush", "sweepliquid", "sweepcomet",
     };
 

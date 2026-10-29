@@ -644,7 +644,7 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
                 }
                 _lighting.StartAnimate(new Nexus.Service.Models.Lighting.AnimateHeadlessStart
                 {
-                    Effect = na.Effect,
+                    Effect = Nexus.Service.Lighting.SimplePatternMigration.Normalize(na.Effect),
                     Speed = 50,
                     Intensity = 1f,
                     Filter = "none",

@@ -193,7 +193,7 @@
   },
 
   "lighting": {
-    "sync": "sweeprainbow",
+    "sync": "rainbow",
     "brightnessEnabled": false,
     "speedEnabled": false,
     "frameRate": 60,
@@ -202,7 +202,7 @@
     "sleepBlackout": true,
     "staticColor": { "r": 255, "g": 0, "b": 0 },
     "animate": {
-      "effect": "sweeprainbow",
+      "effect": "rainbow",
       "state": {
         "speed": 50,
         "intensity": 1.0,

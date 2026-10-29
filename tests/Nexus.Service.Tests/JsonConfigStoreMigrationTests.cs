@@ -67,7 +67,7 @@ public class JsonConfigStoreMigrationTests : IDisposable
 
         var s = store.Load();
         Assert.Equal(["corsair-icue", "deepcool"], s.Ui.ConflictAutoKillExclusions);
-        Assert.Equal(27, s.SchemaVersion);
+        Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
     }
 
     [Fact]
@@ -79,7 +79,7 @@ public class JsonConfigStoreMigrationTests : IDisposable
 
         var s = store.Load();
         Assert.Equal(["deepcool", "corsair-icue"], s.Ui.ConflictAutoKillExclusions);
-        Assert.Equal(27, s.SchemaVersion);
+        Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
     }
 
     [Fact]

@@ -232,7 +232,7 @@ public class LightingEngineRenderAheadPinTests
     {
         using var rig = new Rig(new TickRedEffect());
         rig.Build = _ => new RampEffect();
-        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "sweeprainbow"));
+        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "rainbow"));
         rig.Pins.Set("d-1", Pin(DevicePinKinds.Animate, "plasma"));
         var frames = await rig.Window(new long[] { 5 }, "d-0", "d-1");
         var sweepSpread = Led(frames[0][0], 0)[0] - Led(frames[0][0], 3)[0];

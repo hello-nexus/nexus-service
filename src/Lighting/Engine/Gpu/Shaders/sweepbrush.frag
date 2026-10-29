@@ -1,6 +1,7 @@
 uniform float u_strokes;  // hint_range(2.0, 12.0, 1.0) = 4.0  strokes across the frame
 uniform float u_feather;  // hint_range(0.02, 0.4, 0.01) = 0.12  taper at each stroke end
 uniform float u_fill;     // hint_range(0.2, 1.0, 0.01) = 0.45  painted share of each pass
+uniform float u_step;     // hint_range(0.0, 0.4, 0.01) = 0.2  hue step between neighbouring strokes
 
 // Loaded rainbow brushstrokes: each pass tapers in and out and carries a
 // bristle grain, so the frame reads as paint dragged across it. Slower than
@@ -20,7 +21,7 @@ void main() {
     // separate passes instead of one continuous band.
     float fill = clamp(u_fill, 0.2, 1.0);
     float body = smoothstep(0.0, feather, d) * smoothstep(fill, fill - feather, d);
-    // One step round the wheel per stroke, the same step as the bars tile.
-    vec3 col = hsv2rgb(vec3(cell * 0.2 + u_hue, 1.0, 1.0)) * body * grain;
+    // One hue step per stroke.
+    vec3 col = hsv2rgb(vec3(cell * u_step + u_hue, 1.0, 1.0)) * body * grain;
     fragColor = vec4(finalize(col), 1.0);
 }

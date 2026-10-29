@@ -176,6 +176,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             {
                 recovered = true;
             }
+            // Same for a retired simple-mode tile key; the slot shift is schema-gated and never repeats.
+            if (Nexus.Service.Lighting.SimplePatternMigration.Apply(_cached, shiftSlots: false))
+            {
+                recovered = true;
+            }
             if (Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached))
             {
                 recovered = true;
@@ -410,6 +415,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 27 && !(doc.Overlay?.HasWidgets ?? false))
         {
             doc.Overlay?.ClearLegacy();
+        }
+        if (doc.SchemaVersion < 28)
+        {
+            Nexus.Service.Lighting.SimplePatternMigration.Apply(doc, shiftSlots: true);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

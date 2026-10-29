@@ -501,7 +501,7 @@ public static class ProfileRoutes
                     if (panel.BackgroundColor is not null)       s.Panel.BackgroundColor       = panel.BackgroundColor;
                     if (panel.BackgroundColorLight is not null)  s.Panel.BackgroundColorLight  = panel.BackgroundColorLight;
                     if (panel.BackgroundMode is not null)        s.Panel.BackgroundMode        = panel.BackgroundMode;
-                    if (panel.BackgroundEffect is not null)      s.Panel.BackgroundEffect      = panel.BackgroundEffect;
+                    if (panel.BackgroundEffect is not null)      s.Panel.BackgroundEffect      = Nexus.Service.Lighting.SimplePatternMigration.Normalize(panel.BackgroundEffect);
                     if (panel.BackgroundTemplate.HasValue)       s.Panel.BackgroundTemplate    = panel.BackgroundTemplate.Value;
                     if (panel.BackgroundOpacity.HasValue)        s.Panel.BackgroundOpacity     = panel.BackgroundOpacity.Value;
                     if (panel.PanelOpacity.HasValue)             s.Panel.PanelOpacity          = Math.Clamp(panel.PanelOpacity.Value, 0.0, 1.0);
@@ -569,7 +569,7 @@ public static class ProfileRoutes
                             .ToList();
                     }
                     if (ui.RecentStaticColors is not null) s.Ui.RecentStaticColors = UiRecents.SanitizeColors(ui.RecentStaticColors);
-                    if (ui.RecentAnimations is not null) s.Ui.RecentAnimations = UiRecents.SanitizeKeys(ui.RecentAnimations);
+                    if (ui.RecentAnimations is not null) s.Ui.RecentAnimations = UiRecents.SanitizeKeys(ui.RecentAnimations.Select(Nexus.Service.Lighting.SimplePatternMigration.Normalize));
                     if (ui.LightingDashboardMode is "simple" or "advanced")
                     {
                         if (!string.Equals(s.Ui.LightingDashboardMode, ui.LightingDashboardMode, StringComparison.Ordinal))

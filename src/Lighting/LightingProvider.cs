@@ -138,7 +138,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     /// </summary>
     private void EnsureRgbActive()
     {
-        // Only simple mode's sweep set samples every device across the whole
+        // Only the full-frame set samples every device across the whole
         // canvas; StartAnimate re-asserts it, so a mode start cannot inherit it.
         _engine.FullFrameSampling = false;
         _rgb?.Activate();
@@ -156,7 +156,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         return _engine.Frozen ? "static" : _engine.CurrentEffectName;
     }
 
-    public void SetSync(string sync) => _store.Update(s => s.Lighting.Sync = RemovedSyncModes.Normalize(sync));
+    public void SetSync(string sync) => _store.Update(s => s.Lighting.Sync = SimplePatternMigration.Normalize(RemovedSyncModes.Normalize(sync)));
 
     public bool IsPaused => _engine.Paused;
 
@@ -325,7 +325,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             return;
         }
         EnsureRgbActive();
-        var name = (body.Effect ?? "rainbow").ToLowerInvariant();
+        var name = SimplePatternMigration.Normalize((body.Effect ?? "rainbow").ToLowerInvariant());
         // The static catalog lives in Static mode now. Callers that predate it -
         // restored settings written before the split, Stream Deck rgbEffect
         // Deck rgbEffect buttons, MCP scenarios, set_static_color - still name one
@@ -738,7 +738,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     // through green. The windows follow the shaders' tempos and default colours.
     private static (double StartMs, double SpanMs)? TimeLapseWindowMs(string name) => name switch
     {
-        "breathing" or "sweepbreathing" => (14000.0, 4000.0),
+        "breathing" => (14000.0, 4000.0),
         "sweepcycle" => (3170.0, 2000.0),
         _ => null,
     };
@@ -1055,14 +1055,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                     continue;
                 }
                 var slot = AnimateTemplateDefaults.ResolveSelected(s.Lighting.Animate.Templates, key);
-                if (slot is null && ShaderLibrary.IsSweepEffect(key))
-                {
-                    // Simple mode's sweeps have no preset bundle: use what simple
-                    // mode last persisted for them, else the plain defaults.
-                    slot = s.Lighting.Animate.States.TryGetValue(key, out var persisted) && persisted is not null
-                        ? persisted
-                        : new Nexus.Service.Persistence.AnimateEffectState();
-                }
                 if (slot is null && (ShaderLibrary.IsCustomKey(key) || ShaderLibrary.IsSensorEffect(key)))
                 {
                     // A custom effect with no saved preset runs as a fresh start of it does: its last
@@ -1579,9 +1571,8 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
         }
-        // Simple mode's sweep set loads its own .frag by name, same as the
-        // static patterns below - the switch has no arm for them and its
-        // rainbow default would render them all identically.
+        // The full-frame set loads its own .frag by name; the switch below has
+        // no arm for the sweep* keys and its rainbow default would render them all identically.
         if (ShaderLibrary.IsSweepEffect(name))
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);

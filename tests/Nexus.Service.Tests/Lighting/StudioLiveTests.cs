@@ -260,7 +260,7 @@ public sealed class StudioLiveTests : IDisposable
     [Fact]
     public void A_session_sets_the_overlay_and_leaves_the_running_effect_and_settings_alone()
     {
-        _provider.StartAnimate(Animate("rainbow"));
+        _provider.StartAnimate(Animate("plasma"));
         var before = _engine.CurrentEffect;
         var json = SettingsJson();
 
@@ -269,7 +269,7 @@ public sealed class StudioLiveTests : IDisposable
         var during = SettingsJson();
         Assert.True(_engine.StudioOverlayActive);
         Assert.Same(before, _engine.CurrentEffect);
-        Assert.Equal("rainbow", _provider.GetSync());
+        Assert.Equal("plasma", _provider.GetSync());
         Assert.False(_engine.FullFrameSampling);
         _provider.StopStudioLive();
 
