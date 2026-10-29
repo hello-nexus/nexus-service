@@ -24,12 +24,17 @@ public readonly record struct OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome
 /// <summary>The Nexus write-health packet of the bundled daemon, addressed by controller address.</summary>
 public interface IOpenRgbWriteHealthTransport
 {
+    /// <summary>Changes whenever a new daemon connection comes up, so cached baselines and an unsupported verdict from the old daemon are void.</summary>
+    int ConnectionGeneration { get; }
+
     Task<OpenRgbWriteHealthResult> GetWriteHealthAsync(int address, CancellationToken ct = default);
 }
 
 /// <summary>Stands in when the RGB controller has no write-health packet, so the poller reports nothing.</summary>
 public sealed class NoOpenRgbWriteHealthTransport : IOpenRgbWriteHealthTransport
 {
+    public int ConnectionGeneration => 0;
+
     public Task<OpenRgbWriteHealthResult> GetWriteHealthAsync(int address, CancellationToken ct = default) =>
         Task.FromResult(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Unsupported, default));
 }

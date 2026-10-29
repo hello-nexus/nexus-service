@@ -482,7 +482,7 @@ public sealed class KeebHub : IDisposable
                 if (interPageDelayMs > 0) System.Threading.Thread.Sleep(interPageDelayMs);
             }
             _consecutiveWriteFailures = 0;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId, "keeb");
             return true;
         }
         catch (ObjectDisposedException) { return false; }
@@ -510,7 +510,7 @@ public sealed class KeebHub : IDisposable
                     return RecordWriteFailureLocked("page");
             }
             _consecutiveWriteFailures = 0;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId, "keeb");
             return true;
         }
         catch (ObjectDisposedException)
@@ -531,7 +531,7 @@ public sealed class KeebHub : IDisposable
     private bool RecordWriteFailureLocked(string where)
     {
         var n = ++_consecutiveWriteFailures;
-        Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(DeviceId);
+        Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(DeviceId, "keeb");
         if (n >= ConsecutiveWriteFailureThreshold)
         {
             ServiceLog.Error($"[keeb] {n} consecutive IO failures ({where}) - dropping interface");

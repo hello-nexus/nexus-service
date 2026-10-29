@@ -248,7 +248,7 @@ public sealed class MiniHubHub : IDisposable, IDfuFlashTarget
         {
             transport.Write(request);
             _consecutiveWriteFailures = 0;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId, "fan-hub");
             return true;
         }
         catch (ObjectDisposedException)
@@ -262,7 +262,7 @@ public sealed class MiniHubHub : IDisposable, IDfuFlashTarget
             // on one hiccup at 30 Hz also kills the other hub on the same USB
             // bus and surfaces as visible flicker.
             var n = Interlocked.Increment(ref _consecutiveWriteFailures);
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(DeviceId);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(DeviceId, "fan-hub");
             Console.Error.WriteLine($"[minihub] write failed (#{n}): {ex.GetType().Name}: {ex.Message}");
             if (n >= ConsecutiveWriteFailureThreshold)
             {

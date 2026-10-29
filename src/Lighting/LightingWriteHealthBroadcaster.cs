@@ -8,7 +8,7 @@ namespace Nexus.Service.Lighting;
 /// <summary>Clears quiet keys on a cadence and tells lighting subscribers to refetch when a key flips.</summary>
 public sealed class LightingWriteHealthBroadcaster : BackgroundService
 {
-    private static readonly TimeSpan SweepPeriod = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SweepPeriod = TimeSpan.FromSeconds(1);
 
     private readonly LightingWriteHealth _health;
     private readonly Nexus.Service.Sockets.MultiplexHub _hub;

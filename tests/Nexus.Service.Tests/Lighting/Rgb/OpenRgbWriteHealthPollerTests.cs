@@ -10,6 +10,7 @@ public class OpenRgbWriteHealthPollerTests
     {
         public Queue<OpenRgbWriteHealthResult> Replies { get; } = new();
         public List<int> Asked { get; } = new();
+        public int ConnectionGeneration { get; set; }
 
         public Task<OpenRgbWriteHealthResult> GetWriteHealthAsync(int address, CancellationToken ct = default)
         {
@@ -21,12 +22,20 @@ public class OpenRgbWriteHealthPollerTests
             Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Ok, new OpenRgbWriteHealth(failures, successes, 0)));
     }
 
+    private static DateTime _now;
+
     private static (OpenRgbWriteHealthPoller Poller, LightingWriteHealth Health, FakeTransport Transport) Make()
     {
-        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
-        var health = new LightingWriteHealth(() => now);
+        _now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var health = new LightingWriteHealth(() => _now);
         var transport = new FakeTransport();
         return (new OpenRgbWriteHealthPoller(health, transport), health, transport);
+    }
+
+    private static async Task Poll(OpenRgbWriteHealthPoller poller, IReadOnlyList<(string, int)> frames)
+    {
+        await poller.PollOnceAsync(frames, default);
+        _now += OpenRgbWriteHealthWorker.PollPeriod;
     }
 
     private static readonly IReadOnlyList<(string, int)> OneFrame = new[] { ("openrgb-s-a", 3) };
@@ -37,23 +46,28 @@ public class OpenRgbWriteHealthPollerTests
         var (poller, health, transport) = Make();
         transport.Reply(900, 10);
 
-        await poller.PollOnceAsync(OneFrame, default);
+        await Poll(poller, OneFrame);
 
         Assert.False(health.IsFailing("openrgb-s-a"));
     }
 
     [Fact]
-    public async Task Failures_in_two_consecutive_polls_flag_the_frame()
+    public async Task Failures_rising_across_four_polls_flag_the_frame()
     {
         var (poller, health, transport) = Make();
         transport.Reply(0, 100);
-        transport.Reply(3, 100);
-        transport.Reply(7, 100);
+        for (var i = 1u; i <= 4; i++)
+        {
+            transport.Reply(i * 3, 100);
+        }
 
-        await poller.PollOnceAsync(OneFrame, default);
-        await poller.PollOnceAsync(OneFrame, default);
+        await Poll(poller, OneFrame);
+        for (var i = 0; i < 3; i++)
+        {
+            await Poll(poller, OneFrame);
+        }
         Assert.False(health.IsFailing("openrgb-s-a"));
-        await poller.PollOnceAsync(OneFrame, default);
+        await Poll(poller, OneFrame);
 
         Assert.True(health.IsFailing("openrgb-s-a"));
     }
@@ -65,8 +79,8 @@ public class OpenRgbWriteHealthPollerTests
         transport.Reply(0, 0);
         transport.Reply(50, 0);
 
-        await poller.PollOnceAsync(OneFrame, default);
-        await poller.PollOnceAsync(OneFrame, default);
+        await Poll(poller, OneFrame);
+        await Poll(poller, OneFrame);
 
         Assert.False(health.IsFailing("openrgb-s-a"));
     }
@@ -79,46 +93,49 @@ public class OpenRgbWriteHealthPollerTests
         transport.Reply(5, 5);
         transport.Reply(9, 5);
 
-        await poller.PollOnceAsync(OneFrame, default);
-        await poller.PollOnceAsync(OneFrame, default);
-        await poller.PollOnceAsync(OneFrame, default);
+        await Poll(poller, OneFrame);
+        await Poll(poller, OneFrame);
+        await Poll(poller, OneFrame);
 
         Assert.False(health.IsFailing("openrgb-s-a"));
     }
 
     [Fact]
-    public async Task Zones_sharing_a_controller_are_asked_once_and_each_frame_is_reported()
+    public async Task Zones_sharing_a_controller_are_asked_once_per_poll_and_each_frame_is_reported()
     {
         var (poller, health, transport) = Make();
         transport.Reply(0, 0);
-        transport.Reply(3, 0);
-        transport.Reply(6, 0);
+        for (var i = 1u; i <= 4; i++)
+        {
+            transport.Reply(i * 3, 0);
+        }
         var frames = new[] { ("zone-a", 7), ("zone-b", 7) };
 
-        await poller.PollOnceAsync(frames, default);
-        await poller.PollOnceAsync(frames, default);
-        await poller.PollOnceAsync(frames, default);
+        for (var i = 0; i < 5; i++)
+        {
+            await Poll(poller, frames);
+        }
 
-        Assert.Equal(new[] { 7, 7, 7 }, transport.Asked);
+        Assert.Equal(new[] { 7, 7, 7, 7, 7 }, transport.Asked);
         Assert.True(health.IsFailing("zone-a"));
         Assert.True(health.IsFailing("zone-b"));
     }
 
     [Fact]
-    public async Task An_unsupported_daemon_is_asked_once_then_left_alone_until_reset()
+    public async Task An_unsupported_daemon_is_asked_once_then_left_alone_until_a_new_connection()
     {
         var (poller, _, transport) = Make();
         transport.Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Unsupported, default));
 
-        await poller.PollOnceAsync(OneFrame, default);
-        await poller.PollOnceAsync(OneFrame, default);
+        await Poll(poller, OneFrame);
+        await Poll(poller, OneFrame);
 
         Assert.True(poller.Unsupported);
         Assert.Single(transport.Asked);
 
-        poller.Reset();
+        transport.ConnectionGeneration++;
         transport.Reply(0, 0);
-        await poller.PollOnceAsync(OneFrame, default);
+        await Poll(poller, OneFrame);
 
         Assert.False(poller.Unsupported);
         Assert.Equal(2, transport.Asked.Count);
@@ -129,17 +146,17 @@ public class OpenRgbWriteHealthPollerTests
     {
         var (poller, health, transport) = Make();
         var frames = new[] { ("stale", 1), ("live", 2) };
-        // Poll 1: both baseline. Poll 2: stale unknown, live rises. Poll 3: stale back at a high count (new baseline), live rises again.
-        transport.Reply(0, 0);
-        transport.Reply(0, 0);
-        transport.Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.UnknownController, default));
-        transport.Reply(3, 0);
-        transport.Reply(900, 0);
-        transport.Reply(6, 0);
+        // Order per poll: stale, live.
+        transport.Reply(0, 0); transport.Reply(0, 0);
+        transport.Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.UnknownController, default)); transport.Reply(3, 0);
+        transport.Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.UnknownController, default)); transport.Reply(6, 0);
+        transport.Reply(900, 0); transport.Reply(9, 0);
+        transport.Reply(950, 0); transport.Reply(12, 0);
 
-        await poller.PollOnceAsync(frames, default);
-        await poller.PollOnceAsync(frames, default);
-        await poller.PollOnceAsync(frames, default);
+        for (var i = 0; i < 5; i++)
+        {
+            await Poll(poller, frames);
+        }
 
         Assert.False(poller.Unsupported);
         Assert.True(health.IsFailing("live"));
@@ -152,7 +169,7 @@ public class OpenRgbWriteHealthPollerTests
         var (poller, _, transport) = Make();
         transport.Replies.Enqueue(new OpenRgbWriteHealthResult(OpenRgbWriteHealthOutcome.Failed, default));
 
-        await poller.PollOnceAsync(OneFrame, default);
+        await Poll(poller, OneFrame);
 
         Assert.False(poller.Unsupported);
     }

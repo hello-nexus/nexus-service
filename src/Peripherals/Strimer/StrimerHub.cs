@@ -27,6 +27,7 @@ public sealed class StrimerHub : IDisposable
         {
             _device = device;
             State.IsConnected = true;
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(HealthKey);
         }
     }
 
@@ -38,6 +39,7 @@ public sealed class StrimerHub : IDisposable
             _device = null;
             State.IsConnected = false;
             _consecutiveWriteFailures = 0;
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(HealthKey);
         }
     }
 
@@ -101,12 +103,12 @@ public sealed class StrimerHub : IDisposable
         if (ok)
         {
             _consecutiveWriteFailures = 0;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(HealthKey);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(HealthKey, HealthKey);
         }
         else
         {
             _consecutiveWriteFailures++;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(HealthKey);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(HealthKey, HealthKey);
         }
     }
 

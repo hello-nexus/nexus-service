@@ -141,6 +141,7 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport, 
 
             var session = new Session { Tcp = tcp, Stream = stream };
             Volatile.Write(ref _session, session);
+            Interlocked.Increment(ref _connectionGeneration);
             _ = Task.Run(() => ReadLoopAsync(session));
 
             try
@@ -442,6 +443,10 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport, 
             return new NexusCoolingStatusResult(NexusCoolingOutcome.Failed, null);
         }
     }
+
+    private int _connectionGeneration;
+
+    public int ConnectionGeneration => Volatile.Read(ref _connectionGeneration);
 
     public async Task<OpenRgbWriteHealthResult> GetWriteHealthAsync(int address, CancellationToken ct = default)
     {

@@ -16,6 +16,7 @@ public sealed class OpenRgbWriteHealthPoller
     private readonly IOpenRgbWriteHealthTransport _transport;
     private readonly Dictionary<int, (uint Failures, uint Successes)> _last = new();
     private bool _unsupported;
+    private int _generation;
 
     public OpenRgbWriteHealthPoller(LightingWriteHealth health, IOpenRgbWriteHealthTransport transport)
     {
@@ -26,7 +27,7 @@ public sealed class OpenRgbWriteHealthPoller
     /// <summary>True once the daemon ACKed the packet as unsupported; polling stops until <see cref="Reset"/>.</summary>
     public bool Unsupported => _unsupported;
 
-    /// <summary>Forgets baselines and the unsupported verdict, for a new daemon connection.</summary>
+    /// <summary>Forgets baselines and the unsupported verdict.</summary>
     public void Reset()
     {
         _last.Clear();
@@ -36,6 +37,12 @@ public sealed class OpenRgbWriteHealthPoller
     /// <summary>One poll over the frames Nexus is driving: frame id and the controller address it writes to.</summary>
     public async Task PollOnceAsync(IReadOnlyList<(string FrameId, int Address)> controlled, CancellationToken ct)
     {
+        var generation = _transport.ConnectionGeneration;
+        if (generation != _generation)
+        {
+            _generation = generation;
+            Reset();
+        }
         if (_unsupported || controlled.Count == 0)
         {
             return;
@@ -129,19 +136,12 @@ public sealed class OpenRgbWriteHealthWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var wasConnected = false;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(PollPeriod, stoppingToken).ConfigureAwait(false);
-                var connected = _bridge.IsActive && _bridge.IsConnected;
-                if (connected && !wasConnected)
-                {
-                    _poller.Reset();
-                }
-                wasConnected = connected;
-                if (!connected)
+                if (!_bridge.IsActive || !_bridge.IsConnected)
                 {
                     continue;
                 }

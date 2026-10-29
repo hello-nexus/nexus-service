@@ -20,21 +20,65 @@ public class LightingWriteHealthTests
         return (health, clock, flips);
     }
 
+    private static void FailEvery(LightingWriteHealth health, Clock clock, string key, int count, TimeSpan step)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            health.NoteFailure(key);
+            clock.Advance(step);
+        }
+    }
+
+    private static readonly TimeSpan OneSecond = TimeSpan.FromSeconds(1);
+
     [Fact]
-    public void Four_failures_stay_healthy_and_the_fifth_flags()
+    public void A_hotplug_burst_of_five_failures_in_one_second_never_flags()
     {
         var (health, clock, flips) = Make();
-        for (var i = 0; i < LightingWriteHealth.MinFailures - 1; i++)
-        {
-            health.NoteFailure("hub");
-            clock.Advance(TimeSpan.FromSeconds(1));
-        }
+        FailEvery(health, clock, "hub", 5, TimeSpan.FromMilliseconds(200));
+        health.Sweep();
+        clock.Advance(TimeSpan.FromSeconds(60));
+        health.Sweep();
+
+        Assert.False(health.IsFailing("hub"));
+        Assert.Empty(flips);
+    }
+
+    [Fact]
+    public void A_resume_burst_followed_by_a_detach_never_flags()
+    {
+        var (health, clock, _) = Make();
+        FailEvery(health, clock, "hub", 5, TimeSpan.FromMilliseconds(100));
+        health.Forget("hub");
+        clock.Advance(OneSecond);
+        health.NoteSuccess("hub");
+
+        Assert.False(health.IsFailing("hub"));
+    }
+
+    [Fact]
+    public void Failures_still_occurring_after_the_sustain_time_flag()
+    {
+        var (health, clock, flips) = Make();
+        FailEvery(health, clock, "hub", 15, OneSecond);
         Assert.False(health.IsFailing("hub"));
 
         health.NoteFailure("hub");
+        health.Sweep();
 
         Assert.True(health.IsFailing("hub"));
         Assert.Single(flips);
+    }
+
+    [Fact]
+    public void A_new_burst_after_a_quiet_gap_starts_a_fresh_streak()
+    {
+        var (health, clock, _) = Make();
+        FailEvery(health, clock, "hub", 10, OneSecond);
+        clock.Advance(LightingWriteHealth.StreakGap + OneSecond);
+        FailEvery(health, clock, "hub", 6, TimeSpan.FromMilliseconds(100));
+
+        Assert.False(health.IsFailing("hub"));
     }
 
     [Fact]
@@ -48,21 +92,10 @@ public class LightingWriteHealthTests
     }
 
     [Fact]
-    public void Failures_in_two_reports_flag_when_they_dominate()
-    {
-        var (health, clock, _) = Make();
-        health.Report("hub", 3, 0);
-        clock.Advance(TimeSpan.FromSeconds(5));
-        health.Report("hub", 3, 1);
-
-        Assert.True(health.IsFailing("hub"));
-    }
-
-    [Fact]
     public void Failures_outnumbered_by_successes_do_not_flag()
     {
         var (health, clock, _) = Make();
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < 20; i++)
         {
             health.Report("hub", 1, 40);
             clock.Advance(TimeSpan.FromSeconds(2));
@@ -76,45 +109,29 @@ public class LightingWriteHealthTests
     {
         var (health, clock, _) = Make();
         health.Report("hub", 0, 1000);
-        for (var i = 0; i < 6; i++)
-        {
-            clock.Advance(TimeSpan.FromSeconds(1));
-            health.NoteFailure("hub");
-        }
+        FailEvery(health, clock, "hub", 17, OneSecond);
 
         Assert.False(health.IsFailing("hub"));
     }
 
-    [Fact]
-    public void Failures_older_than_the_window_do_not_add_up()
+    private static void Flag(LightingWriteHealth health, Clock clock, string key)
     {
-        var (health, clock, _) = Make();
-        for (var i = 0; i < LightingWriteHealth.MinFailures - 1; i++)
-        {
-            health.NoteFailure("hub");
-        }
-        clock.Advance(LightingWriteHealth.Window + TimeSpan.FromSeconds(1));
-
-        health.NoteFailure("hub");
-
-        Assert.False(health.IsFailing("hub"));
+        FailEvery(health, clock, key, 16, OneSecond);
+        health.Sweep();
     }
 
     [Fact]
     public void A_flagged_key_clears_after_a_quiet_spell_and_not_before()
     {
         var (health, clock, flips) = Make();
-        for (var i = 0; i < LightingWriteHealth.MinFailures; i++)
-        {
-            health.NoteFailure("hub");
-        }
+        Flag(health, clock, "hub");
         Assert.True(health.IsFailing("hub"));
-
-        clock.Advance(LightingWriteHealth.ClearAfter - TimeSpan.FromSeconds(1));
+        // FailEvery leaves the clock one step past the last failure.
+        clock.Advance(LightingWriteHealth.ClearAfter - TimeSpan.FromSeconds(3));
         health.Sweep();
         Assert.True(health.IsFailing("hub"));
 
-        clock.Advance(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromSeconds(3));
         health.Sweep();
 
         Assert.False(health.IsFailing("hub"));
@@ -125,10 +142,7 @@ public class LightingWriteHealthTests
     public void Clearing_does_not_reflag_from_the_burst_still_inside_the_window()
     {
         var (health, clock, flips) = Make();
-        for (var i = 0; i < LightingWriteHealth.MinFailures; i++)
-        {
-            health.NoteFailure("hub");
-        }
+        Flag(health, clock, "hub");
         clock.Advance(LightingWriteHealth.ClearAfter);
         health.Sweep();
         health.NoteSuccess("hub");
@@ -139,45 +153,49 @@ public class LightingWriteHealthTests
     }
 
     [Fact]
-    public void A_new_failure_keeps_a_flagged_key_flagged()
+    public void Forget_drops_a_flagged_key_and_announces_it_on_the_next_sweep()
     {
         var (health, clock, flips) = Make();
-        for (var i = 0; i < LightingWriteHealth.MinFailures; i++)
-        {
-            health.NoteFailure("hub");
-        }
-        clock.Advance(LightingWriteHealth.ClearAfter - TimeSpan.FromSeconds(1));
-        health.NoteFailure("hub");
-        clock.Advance(LightingWriteHealth.ClearAfter - TimeSpan.FromSeconds(1));
-        health.Sweep();
-
-        Assert.True(health.IsFailing("hub"));
-        Assert.Single(flips);
-    }
-
-    [Fact]
-    public void Forget_drops_a_flagged_key_and_announces_it()
-    {
-        var (health, _, flips) = Make();
-        for (var i = 0; i < LightingWriteHealth.MinFailures; i++)
-        {
-            health.NoteFailure("hub");
-        }
+        Flag(health, clock, "hub");
 
         health.Forget("hub");
+        health.Sweep();
 
         Assert.False(health.IsFailing("hub"));
         Assert.Equal(2, flips.Count);
     }
 
     [Fact]
+    public async Task Changed_handlers_never_run_on_the_reporting_thread()
+    {
+        var (health, clock, _) = Make();
+        var handlerThreads = new List<int>();
+        health.Changed += () => handlerThreads.Add(Environment.CurrentManagedThreadId);
+        var reporterThread = 0;
+
+        await Task.Run(() =>
+        {
+            reporterThread = Environment.CurrentManagedThreadId;
+            FailEvery(health, clock, "hub", 16, OneSecond);
+        });
+        Assert.Empty(handlerThreads);
+
+        health.Sweep();
+
+        Assert.Single(handlerThreads);
+        Assert.NotEqual(reporterThread, handlerThreads[0]);
+        Assert.Equal(Environment.CurrentManagedThreadId, handlerThreads[0]);
+    }
+
+    [Fact]
     public void Keys_are_independent()
     {
-        var (health, _, _) = Make();
-        for (var i = 0; i < LightingWriteHealth.MinFailures; i++)
+        var (health, clock, _) = Make();
+        for (var i = 0; i < 16; i++)
         {
             health.NoteFailure("a");
             health.NoteSuccess("b");
+            clock.Advance(OneSecond);
         }
 
         Assert.True(health.IsFailing("a"));
@@ -187,13 +205,11 @@ public class LightingWriteHealthTests
     [Fact]
     public void Apply_flags_controlled_cards_matched_by_any_owner_key()
     {
-        var (health, _, _) = Make();
+        var (health, clock, _) = Make();
         foreach (var key in new[] { "card", "dev", "parent", "handler" })
         {
-            for (var i = 0; i < LightingWriteHealth.MinFailures; i++)
-            {
-                health.NoteFailure(key);
-            }
+            FailEvery(health, clock, key, 16, OneSecond);
+            clock.Advance(-16 * OneSecond);
         }
         var devices = new List<LightingDevice>
         {
@@ -216,16 +232,18 @@ public class LightingWriteHealthTests
     }
 
     [Fact]
-    public void Handler_match_takes_the_id_or_a_serial_suffix_only()
+    public void Handler_match_is_exact_on_the_id_or_the_reported_handler()
     {
-        var (health, _, _) = Make();
-        for (var i = 0; i < LightingWriteHealth.MinFailures; i++)
+        var (health, clock, _) = Make();
+        for (var i = 0; i < 16; i++)
         {
-            health.NoteFailure("keeb:SN1");
+            health.NoteFailure("keeb:SN1", "keeb");
+            clock.Advance(OneSecond);
         }
 
         Assert.True(health.IsHandlerFailing("keeb"));
         Assert.False(health.IsHandlerFailing("kee"));
+        Assert.False(health.IsHandlerFailing("keeb:SN1x"));
         Assert.False(health.IsHandlerFailing("np50"));
     }
 
