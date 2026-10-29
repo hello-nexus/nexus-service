@@ -1100,9 +1100,22 @@
         "tags": [
           "Nexus"
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestartBody"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "400": {
+            "description": "reopenRoute is not an in-app path"
           }
         }
       }
@@ -27817,6 +27830,15 @@
             "items": {
               "$ref": "#/components/schemas/IdentifyDisplayEntry"
             },
+            "nullable": true
+          }
+        }
+      },
+      "RestartBody": {
+        "type": "object",
+        "properties": {
+          "reopenRoute": {
+            "type": "string",
             "nullable": true
           }
         }

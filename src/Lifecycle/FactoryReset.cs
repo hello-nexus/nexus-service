@@ -158,11 +158,11 @@ internal static class FactoryReset
     /// this process: two live finalizers are both same-path kill targets of
     /// each other's macOS survivor sweep, and a near-simultaneous mutual
     /// SIGKILL would leave nothing to run RestartService.
-    public static bool Begin(bool wipe = true)
+    public static bool Begin(bool wipe = true, string? reopenRoute = null)
     {
         if (Interlocked.Exchange(ref _finalizerClaimed, 1) != 0)
         {
-            Console.Error.WriteLine("[factory-reset] finalizer already claimed; ignoring repeat request");
+            Nexus.Service.Platform.ServiceLog.Warn("[factory-reset] finalizer already claimed; ignoring repeat request");
             return false;
         }
 #if WINDOWS
@@ -186,10 +186,14 @@ internal static class FactoryReset
         };
         psi.ArgumentList.Add(wipe ? FinalizeFlag : RestartFlag);
         psi.ArgumentList.Add(Environment.ProcessId.ToString());
+        if (ReopenRoute.Validate(reopenRoute) is { } route)
+        {
+            psi.ArgumentList.Add(route);
+        }
         try
         {
             Process.Start(psi);
-            Console.Error.WriteLine("[factory-reset] finalizer spawned");
+            Nexus.Service.Platform.ServiceLog.Info("[factory-reset] finalizer spawned");
             return true;
         }
         catch (Exception ex)
@@ -221,6 +225,7 @@ internal static class FactoryReset
     {
         var wipe = args.Length > 0 && args[0] == FinalizeFlag;
         var parentPid = args.Length > 1 && int.TryParse(args[1], out var p) ? p : 0;
+        var reopenRoute = args.Length > 2 ? ReopenRoute.Validate(args[2]) : null;
 #if !WINDOWS
         // Leave the service's session/process group before anything else, so
         // tearing the service down can't take this finalizer with it mid-wipe:
@@ -271,8 +276,14 @@ internal static class FactoryReset
         // startup - the fresh helper EnsureLaunched spawns after RestartService below picks it up and
         // reopens a cold dashboard once the overlay it also starts is ready. The OTA install uses the
         // same flag.
-        try { DashboardReopenFlag.Write(); }
+        try { DashboardReopenFlag.Write(reopenRoute); }
         catch (Exception ex) { Console.Error.WriteLine($"[factory-reset] reopen flag failed: {ex.Message}"); }
+#endif
+#if MACOS
+        if (reopenRoute is not null)
+        {
+            ReopenRoute.WriteFile(reopenRoute);
+        }
 #endif
         RestartService();
         return 0;

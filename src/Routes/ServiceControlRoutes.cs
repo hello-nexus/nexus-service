@@ -158,8 +158,15 @@ internal static class ServiceControlRoutes
         // minus the wipe: the shutdown and start match the OTA install (helper,
         // tray and overlay included), and lighting restores on the next boot.
         app.MapPost("/service/restart", (IHostApplicationLifetime lifetime,
-            Nexus.Service.Devices.Firmware.FirmwareFlasher flasher) =>
+            Nexus.Service.Devices.Firmware.FirmwareFlasher flasher, RestartBody? body) =>
         {
+            if (!Nexus.Service.Lifecycle.ReopenRoute.TryResolveRequest(body?.ReopenRoute, out var reopenRoute))
+            {
+                return Results.Json(
+                    new ApiResponse { Error = true, Msg = "reopenRoute must be an in-app path." },
+                    Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
+                    statusCode: 400);
+            }
             if (flasher.IsFlashing)
             {
                 return Results.Json(
@@ -167,7 +174,7 @@ internal static class ServiceControlRoutes
                     Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
                     statusCode: 409);
             }
-            if (!Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false))
+            if (!Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false, reopenRoute))
             {
                 return Results.Json(
                     new ApiResponse { Error = true, Msg = "A reset or restart is already in progress." },
@@ -271,6 +278,13 @@ internal static class ServiceControlRoutes
     }
 #endif
 
+}
+
+/// <summary>Body of POST /service/restart; the whole body is optional.</summary>
+public sealed class RestartBody
+{
+    /// <summary>In-app path (optional single query) the reopened dashboard opens on; Windows and macOS only.</summary>
+    public string? ReopenRoute { get; set; }
 }
 
 public sealed class StartupModeBody
