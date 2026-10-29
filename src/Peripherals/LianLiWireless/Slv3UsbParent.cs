@@ -16,7 +16,10 @@ internal static partial class Slv3UsbParent
             return null;
         }
         var bus = parts[0][(parts[0].LastIndexOf('\\') + 1)..];
-        return ParentOf($"{bus}\\{parts[1]}\\{parts[2]}");
+        var instanceId = $"{bus}\\{parts[1]}\\{parts[2]}";
+        var parent = ParentOf(instanceId);
+        // A composite interface node (&MI_xx) sits under the dongle's own composite device; report the hub above it.
+        return parent is not null && parts[1].Contains("&MI_", StringComparison.OrdinalIgnoreCase) ? ParentOf(parent) ?? parent : parent;
     }
 
     private static unsafe string? ParentOf(string instanceId)
