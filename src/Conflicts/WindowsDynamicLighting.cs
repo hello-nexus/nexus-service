@@ -82,7 +82,7 @@ public static class WindowsDynamicLighting
     [SupportedOSPlatform("windows")]
     public static WindowsDynamicLightingState ReadCached() => ReadState(cachedCount: true);
 
-    /// <summary>Available and Enabled only, no LampArray count: for a caller that is checking whether a write took.</summary>
+    /// <summary>Available and Enabled only, read live with no LampArray count and no HID walk: for callers that check or act on the registry value alone (turn-off, and the re-read after it).</summary>
     [SupportedOSPlatform("windows")]
     public static WindowsDynamicLightingState ReadEnabled() => ReadState(cachedCount: false, countDevices: false);
 

@@ -127,7 +127,8 @@ public static class ConflictRoutes
         // setting and the policy split. On whitelists first so the watcher
         // cannot revert the user's own switch; off writes first and then
         // un-whitelists, and stays un-whitelisted when the write did not take,
-        // so Nexus keeps trying and the state returned shows it still on.
+        // so the conflict settings apply to it again (alert, or turn it off)
+        // and the state returned shows it still on.
         app.MapPost("/conflicts/dynamic-lighting", (SetWindowsDynamicLightingBody? body, ConflictWatcher watcher, IConfigStore store, MultiplexHub hub) =>
         {
             if (!WindowsDynamicLighting.IsSupported()) return Results.Ok(new WindowsDynamicLightingState());
@@ -146,7 +147,7 @@ public static class ConflictRoutes
                 SetDynamicLightingWhitelisted(store, hub, false);
                 if (state.Available && state.Enabled)
                 {
-                    ServiceLog.Warn("[conflicts] dynamic lighting: still on after a turn-off request; Nexus will keep trying");
+                    ServiceLog.Warn("[conflicts] dynamic lighting: still on after a turn-off request; it is no longer whitelisted, so Nexus alerts or turns it off per the conflict settings");
                 }
             }
             // The running list carries this setting as a conflict, so it is rescanned now instead of at the next poll.

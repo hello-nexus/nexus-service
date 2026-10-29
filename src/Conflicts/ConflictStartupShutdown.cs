@@ -230,8 +230,6 @@ public sealed class ConflictStartupShutdown : IHostedService
 
     private void EndRunningAppsLocked(bool sweep, bool throttleNotice)
     {
-        var excluded = new HashSet<string>(_store.Load().Ui.ConflictAutoKillExclusions, StringComparer.OrdinalIgnoreCase);
-
         // The "before" set is captured up front, for every target, and the
         // outcome is read from it afterwards. Per-app Killed flags undercount:
         // ProcessKiller tree-kills, and a vendor launcher can own another
@@ -240,6 +238,8 @@ public sealed class ConflictStartupShutdown : IHostedService
         // turn comes, reports "not running before me", and drops out of the
         // notification the user sees.
         var detectedNow = _watcher.GetConflicts();
+        // Read after the scan, which can take a while: a whitelist change landing during it (the user switching Dynamic Lighting on) must be honored.
+        var excluded = new HashSet<string>(_store.Load().Ui.ConflictAutoKillExclusions, StringComparer.OrdinalIgnoreCase);
         var current = new HashSet<string>(detectedNow.Select(d => $"{d.Id}:{d.Pid}"), StringComparer.OrdinalIgnoreCase);
         // Forget pids that are gone, so a self-restarting app cannot grow the sets without bound.
         _attempted.IntersectWith(current);

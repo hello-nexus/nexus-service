@@ -51,8 +51,7 @@ public sealed class ConflictLaunchNotifier : BackgroundService
     {
         // Off: no scan at all, and the next enable re-seeds the baseline instead
         // of announcing every app that is already running.
-        var ui = _store.Load().Ui;
-        if (!ui.NotifyConflictLaunches)
+        if (!_store.Load().Ui.NotifyConflictLaunches)
         {
             _tracker.Reset();
             return;
@@ -61,6 +60,8 @@ public sealed class ConflictLaunchNotifier : BackgroundService
         // The unfiltered ids are read first: an app that starts between the two reads then shows up in the list as new, not as running all along.
         var runningIds = new HashSet<string>(_detector.RunningIds, StringComparer.OrdinalIgnoreCase);
         var running = _detector.GetConflicts();
+        // Loaded after the scan, which can take a while: a whitelist change landing during it must silence the notice.
+        var ui = _store.Load().Ui;
         _tracker.Seed(running.Where(a => _previousRunning.Contains(a.Id)).Select(a => a.Id));
         _previousRunning = runningIds;
 

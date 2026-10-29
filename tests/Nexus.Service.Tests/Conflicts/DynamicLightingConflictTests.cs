@@ -176,6 +176,63 @@ public class DynamicLightingConflictTests
         Assert.Empty(launched);
     }
 
+    /// <summary>A scan during which the user whitelists the setting, as POST /conflicts/dynamic-lighting does for an ON.</summary>
+    private sealed class WhitelistDuringScanDetector : IConflictDetector
+    {
+        private readonly InMemoryConfigStore _store;
+        public WhitelistDuringScanDetector(InMemoryConfigStore store) => _store = store;
+        public IReadOnlyList<DetectedConflict> Conflicts = Array.Empty<DetectedConflict>();
+        public bool Whitelist;
+        public bool IsAppRunning(string appId) => Conflicts.Any(c => c.Id == appId);
+        public IReadOnlyList<DetectedConflict> GetConflicts()
+        {
+            if (Whitelist) _store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string> { Id });
+            return Conflicts;
+        }
+        public bool DetectionReady => true;
+    }
+
+    [Fact]
+    public void AWhitelistLandingDuringTheScanStopsTheEndOnLaunchKill()
+    {
+        var store = OnboardedStore();
+        store.Update(s =>
+        {
+            s.Ui.EndConflictsOnLaunch = true;
+            s.Ui.ConflictAutoKillExclusions = new List<string>();
+        });
+        var detector = new WhitelistDuringScanDetector(store)
+        {
+            Conflicts = new[] { new DetectedConflict { Id = Id, DisplayName = "x", IsSetting = true } },
+            Whitelist = true,
+        };
+        var killed = new List<string>();
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            def => killed.Add(def.Id), _ => false);
+
+        shutdown.EndOnLaunchTick();
+
+        Assert.Empty(killed);
+    }
+
+    [Fact]
+    public void AWhitelistLandingDuringTheScanSilencesTheLaunchNotice()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string>());
+        var detector = new WhitelistDuringScanDetector(store);
+        var notifier = new ConflictLaunchNotifier(detector, store);
+        var launched = new List<string>();
+        notifier.AppLaunched += a => launched.Add(a.Id);
+
+        notifier.Tick(0);
+        detector.Conflicts = new[] { new DetectedConflict { Id = Id, DisplayName = "x", IsSetting = true } };
+        detector.Whitelist = true;
+        notifier.Tick(6_000);
+
+        Assert.Empty(launched);
+    }
+
     [Fact]
     public void ItDoesNotRestartTheOpenRgbDaemonWhenItGoesAway()
     {
