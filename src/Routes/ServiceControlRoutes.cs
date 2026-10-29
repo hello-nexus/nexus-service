@@ -154,11 +154,20 @@ internal static class ServiceControlRoutes
         }).LocalhostOnly();
 
         // Plain restart (no data wipe). Applies restart-to-apply settings such as
-        // the lighting render-GPU choice. Same detached-finalizer + StopApplication
-        // pattern as factory-reset, minus the wipe.
-        app.MapPost("/service/restart", (IHostApplicationLifetime lifetime,
+        // the lighting render-GPU choice. Same detached finalizer as factory-reset
+        // minus the wipe: the shutdown and start match the OTA install (helper,
+        // tray and overlay included), and lighting restores on the next boot.
+        app.MapPost("/service/restart", async (HttpRequest request, IHostApplicationLifetime lifetime,
             Nexus.Service.Devices.Firmware.FirmwareFlasher flasher) =>
         {
+            var parsed = await ReadRestartRouteAsync(request).ConfigureAwait(false);
+            if (!parsed.Ok)
+            {
+                return Results.Json(
+                    new ApiResponse { Error = true, Msg = parsed.Error! },
+                    Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
+                    statusCode: 400);
+            }
             if (flasher.IsFlashing)
             {
                 return Results.Json(
@@ -166,7 +175,7 @@ internal static class ServiceControlRoutes
                     Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
                     statusCode: 409);
             }
-            if (!Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false))
+            if (!Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false, parsed.Route))
             {
                 return Results.Json(
                     new ApiResponse { Error = true, Msg = "A reset or restart is already in progress." },
@@ -204,6 +213,57 @@ internal static class ServiceControlRoutes
 #if WINDOWS
     private const string ServiceName = "NexusService";
 #endif
+
+    private const int MaxRestartBodyChars = 4096;
+
+    internal readonly record struct RestartRouteResult(bool Ok, string? Route, string? Error);
+
+    /// <summary>
+    /// Reads the optional restart body by hand so a request that worked before (no body, an empty body, a
+    /// non-JSON content type) is untouched. A JSON body must be well formed and carry a valid reopenRoute.
+    /// </summary>
+    internal static async Task<RestartRouteResult> ReadRestartRouteAsync(HttpRequest request)
+    {
+        if (!request.HasJsonContentType() || request.ContentLength == 0)
+        {
+            return new RestartRouteResult(true, null, null);
+        }
+        string text;
+        try
+        {
+            using var reader = new System.IO.StreamReader(request.Body, System.Text.Encoding.UTF8, leaveOpen: true);
+            var buffer = new char[MaxRestartBodyChars + 1];
+            var read = await reader.ReadBlockAsync(buffer.AsMemory(), request.HttpContext.RequestAborted).ConfigureAwait(false);
+            if (read > MaxRestartBodyChars)
+            {
+                return new RestartRouteResult(false, null, "The request body is too large.");
+            }
+            text = new string(buffer, 0, read);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or OperationCanceledException)
+        {
+            // A body that never arrived whole (bad chunking, over the server limit, a dropped connection) cannot be trusted to mean "no route".
+            return new RestartRouteResult(false, null, "The request body could not be read.");
+        }
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new RestartRouteResult(true, null, null);
+        }
+        RestartBody? body;
+        try
+        {
+            body = System.Text.Json.JsonSerializer.Deserialize(text, Nexus.Service.Serialization.AppJsonContext.Default.RestartBody);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return new RestartRouteResult(false, null, "The request body is not valid JSON.");
+        }
+        if (!Nexus.Service.Lifecycle.ReopenRoute.TryResolveRequest(body?.ReopenRoute, out var route))
+        {
+            return new RestartRouteResult(false, null, "reopenRoute must be an in-app path.");
+        }
+        return new RestartRouteResult(true, route, null);
+    }
 
     internal static bool ReadAutoStart(IStartupProvider startupProvider)
     {
@@ -270,6 +330,13 @@ internal static class ServiceControlRoutes
     }
 #endif
 
+}
+
+/// <summary>Body of POST /service/restart; the whole body is optional.</summary>
+public sealed class RestartBody
+{
+    /// <summary>In-app path (optional single query) the reopened dashboard opens on; Windows and macOS only.</summary>
+    public string? ReopenRoute { get; set; }
 }
 
 public sealed class StartupModeBody

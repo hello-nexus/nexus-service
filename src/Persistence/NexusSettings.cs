@@ -320,7 +320,7 @@ public sealed class TelemetrySettings
     /// <summary>Hash of the specs summary last delivered to nexus-api; a changed hash triggers a re-send.</summary>
     public string FleetSpecsHash { get; set; } = "";
 
-    /// <summary>Hash of the profile signature last sent as the PostHog $identify and nexus-api profile event; persisted so a restart does not resend an unchanged profile.</summary>
+    /// <summary>Hash of the profile signature last sent as the nexus-api profile event; persisted so a restart does not resend an unchanged profile.</summary>
     public string ProfileSignature { get; set; } = "";
 
     /// <summary>Round-trip UTC timestamp of the last profile send; a changed signature waits out a minimum interval after it.</summary>

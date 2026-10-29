@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 
 namespace Nexus.Service.Telemetry;
 
-/// <summary>POSTs usage batches to nexus-api. Hand-written JSON (like <see cref="PostHogSink"/>) so nothing reflective enters the AOT build; a cross-language contract with /telemetry/usage.</summary>
+/// <summary>POSTs usage batches to nexus-api. Hand-written JSON so nothing reflective enters the AOT build; a cross-language contract with /telemetry/usage.</summary>
 internal sealed class UsageTransport : IUsageTransport
 {
     private const string Endpoint = "https://api.hellonexus.com/telemetry/usage";
@@ -75,7 +75,7 @@ internal sealed class UsageTransport : IUsageTransport
             foreach (var p in e.Props)
             {
                 w.WritePropertyName(p.Key);
-                PostHogSink.WriteValue(w, p.Value);
+                UsageTelemetrySink.WriteValue(w, p.Value);
             }
             w.WriteEndObject();
             w.WriteEndObject();

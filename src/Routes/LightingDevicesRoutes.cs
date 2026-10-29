@@ -297,12 +297,14 @@ public static partial class DevicesRoutes
         // hardware name. Same split the cooling page's fan renames use.
         app.MapGet("/devices/lighting-devices/all", (ILightingDeviceProvider ld, Nexus.Service.Persistence.IConfigStore store,
             [Microsoft.AspNetCore.Mvc.FromServices] Nexus.Service.Lighting.LedColorLockTracker locks,
-            Nexus.Service.Lighting.Engine.LightingEngine engine) =>
+            Nexus.Service.Lighting.Engine.LightingEngine engine,
+            Nexus.Service.Lighting.LightingWriteHealth writeHealth) =>
         {
             var all = ld.GetAll();
             var lighting = store.Load().Lighting;
             Nexus.Service.Lighting.LightingDeviceNames.Apply(all.Devices, lighting.DeviceNames);
             Nexus.Service.Lighting.Engine.DeviceFrameIndex.Apply(all.Devices, engine.Devices);
+            writeHealth.Apply(all.Devices);
             foreach (var device in all.Devices)
             {
                 device.LedColors = null;

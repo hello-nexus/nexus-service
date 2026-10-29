@@ -14,7 +14,7 @@ public sealed class OpenAppBody
 public static class OpenAppRoute
 {
     private const string Prefix = "/system/";
-    private const int MaxLength = 200;
+    public const int MaxLength = 200;
 
     /// <summary>The route when it is a safe in-app path, else null.</summary>
     public static string? Normalize(string? route)
@@ -22,8 +22,10 @@ public static class OpenAppRoute
         if (string.IsNullOrEmpty(route) || route.Length > MaxLength) return null;
         if (!route.StartsWith(Prefix, StringComparison.Ordinal) || route.Length == Prefix.Length) return null;
         if (route.Contains("//", StringComparison.Ordinal) || route.Contains("..", StringComparison.Ordinal)) return null;
+        var queries = 0;
         foreach (var c in route)
         {
+            if (c == '?' && ++queries > 1) return null;
             var ok = c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9'
                 or '/' or '-' or '_' or '.' or '~' or '?' or '=';
             if (!ok) return null;

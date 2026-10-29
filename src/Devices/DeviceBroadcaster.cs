@@ -105,7 +105,7 @@ public sealed class DeviceBroadcaster : BackgroundService
         sb.Append("c:");
         foreach (var d in curated.OrderBy(d => d.Id, StringComparer.Ordinal))
         {
-            sb.Append(d.Id).Append(d.Connected ? '1' : '0').Append(d.NexusControlEnabled ? '1' : '0').Append(d.FirmwareVersion ?? "").Append(';');
+            sb.Append(d.Id).Append(d.Connected ? '1' : '0').Append(d.NexusControlEnabled ? '1' : '0').Append(d.WriteHealth is null ? '0' : '1').Append(d.FirmwareVersion ?? "").Append(';');
         }
         sb.Append("|u:");
         foreach (var d in usb.OrderBy(d => d.HardwareId ?? "", StringComparer.Ordinal))

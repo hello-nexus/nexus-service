@@ -7,7 +7,7 @@ namespace Nexus.Service.Telemetry;
 ///     _telemetry.Capture(TelemetryEvents.DeviceConnected, ("kind", "np50"));
 ///
 /// Capture() never blocks and never throws; events are dropped when the user
-/// has opted out of anonymous data. The batched send (to PostHog) runs
+/// has opted out of anonymous data. The batched send (to nexus-api) runs
 /// off-thread in <see cref="TelemetryFlushService"/>. Swap the destination by
 /// adding an <see cref="ITelemetrySink"/> - call sites don't change.
 /// </summary>
@@ -19,7 +19,7 @@ public interface ITelemetry
     void Capture(string @event, params (string Key, object? Value)[] properties);
 
     /// <summary>
-    /// Attach persistent properties to the anonymous person (PostHog <c>$set</c>) -
+    /// Attach persistent properties to the anonymous person (sent as a profile event) -
     /// e.g. the hardware/system profile. Persisted on the install id, not on a
     /// single event. Same opt-out applies.
     /// </summary>
