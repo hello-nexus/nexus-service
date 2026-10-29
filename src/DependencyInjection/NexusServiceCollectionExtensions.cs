@@ -1194,6 +1194,11 @@ public static class NexusServiceCollectionExtensions
             wirelessHub.DisplayWatch = new Nexus.Service.Peripherals.LianLiWireless.WindowsDisplayStateWatch(wirelessHub.OnDisplayState);
 #endif
             wirelessHub.WiredOwned = mac => sp.GetService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>()?.Find(mac) is not null;
+#if WINDOWS
+            wirelessHub.Diag.StartWriter(Nexus.Service.Platform.ServiceLog.LogsDirectory, Nexus.Service.Peripherals.LianLiWireless.Slv3UsbParent.Resolve);
+#else
+            wirelessHub.Diag.StartWriter(Nexus.Service.Platform.ServiceLog.LogsDirectory);
+#endif
             return wirelessHub;
         });
         services.AddSingleton<Nexus.Service.Cooling.Slv3CoolingProvider>(sp =>

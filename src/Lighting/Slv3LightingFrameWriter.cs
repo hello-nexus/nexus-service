@@ -564,7 +564,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 st.UploadPayload = payload;
                 st.UploadLedCount = ledCount;
                 // Off the writer thread, so other chains keep streaming while the upload runs.
-                st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, WindowIntervalTicks, PassThroughBrightnessPercent));
+                var windowId = _windowId;
+                st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, WindowIntervalTicks, PassThroughBrightnessPercent, windowId));
                 return true;
             }
         }
