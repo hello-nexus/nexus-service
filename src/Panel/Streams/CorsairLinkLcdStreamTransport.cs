@@ -38,7 +38,11 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
     // and then resets itself off USB (the GIF drop: sends of 1.2 s, then 1.9 s, then the
     // device left the bus). Send time is the signal: a slow send lowers the JPEG quality for
     // the next frames, and a run of fast sends raises it back.
-    internal static readonly int[] StepDownQualities = { 70, 55, 40, 25 };
+    internal static readonly int[] StepDownQualities = { 65, 50, 40, 25 };
+    // The media worker that played GIFs without drops sent ffmpeg q5 frames (about 24 KB each
+    // for the customer's GIF); this encoder at the shared 85 sends about 33 KB. 75 lands near
+    // the old size, so the same byte budget buys more frames per second.
+    internal const int BaseQuality = 75;
     internal const long SlowSendMs = 250;
     internal const long FastSendMs = 100;
     internal const int StepUpAfterFrames = 60;
@@ -75,7 +79,7 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
     {
         _lcd = lcd;
         Serial = serial;
-        _encoder = new BgraJpegEncoder(CorsairLinkLcd.PanelWidth, CorsairLinkLcd.PanelHeight);
+        _encoder = new BgraJpegEncoder(CorsairLinkLcd.PanelWidth, CorsairLinkLcd.PanelHeight, BaseQuality);
         _frame = new byte[_encoder.FrameBytes];
     }
 
