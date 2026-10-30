@@ -469,6 +469,8 @@ public sealed partial class ProfileManager : IDisposable
                 var json = File.ReadAllText(filePath);
                 var settings = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
                 Nexus.Service.Lighting.PinMigration.Apply(settings);
+                Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(settings);
+                Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(settings, _store.Load().UsbMonitorPanelPairs);
                 return settings is null ? null : ProfileSharing.ExtractShareable(settings);
             }
             catch { return null; }
@@ -528,6 +530,8 @@ public sealed partial class ProfileManager : IDisposable
     internal ProfileEntry ImportProfileWithId(string id, string name, NexusSettings data, bool absorbPanelLooks = false)
     {
         Nexus.Service.Lighting.PinMigration.Apply(data);
+        Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
+        Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
         var trimmedName = string.IsNullOrWhiteSpace(name) ? "Imported" : name.Trim();
         bool reactivate;
         var panelsAdded = false;
@@ -681,6 +685,8 @@ public sealed partial class ProfileManager : IDisposable
                 foreach (var (id, _, data) in limited)
                 {
                     Nexus.Service.Lighting.PinMigration.Apply(data);
+                    Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
+                    Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
                     data.Auth = null;
                     data.PrimaryProfileId = null;
                     data.SharedCategories = new List<string>();
@@ -749,6 +755,8 @@ public sealed partial class ProfileManager : IDisposable
     public ProfileEntry ImportProfile(string name, NexusSettings data, bool replaceExisting = false)
     {
         Nexus.Service.Lighting.PinMigration.Apply(data);
+        Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
+        Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
         bool reactivate = false;
         var panelsAdded = false;
         NexusSettings? importedPanels = null;
@@ -1077,6 +1085,7 @@ public sealed partial class ProfileManager : IDisposable
             // layouts here, under the store lock (idempotent).
             Nexus.Service.Lighting.LayoutRotationMigration.Apply(s.Lighting);
             Nexus.Service.Lighting.RemovedSyncModes.Apply(s.Lighting);
+            Nexus.Service.Lighting.SimplePatternMigration.Apply(s.Lighting, shiftSlots: false);
             s.Cooling = data.Cooling ?? new CoolingSettings();
 
             // Theme + Dashboard categories now live in dedicated top-level
@@ -1209,6 +1218,8 @@ public sealed partial class ProfileManager : IDisposable
             // Profile files never pass through JsonConfigStore.Load, so a
             // pre-pin file is folded into pins here (a no-op once migrated).
             Nexus.Service.Lighting.PinMigration.Apply(data);
+            Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
+            Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
             return data;
         }
         catch
@@ -1250,14 +1261,18 @@ public sealed partial class ProfileManager : IDisposable
         {
             target = new NexusSettings();
         }
+        // The file is rewritten stamped current, so its untouched categories must be shifted first.
+        Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(target);
+        Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(target, _store.Load().UsbMonitorPanelPairs);
 
         foreach (var cat in categories)
         {
             ProfileSharing.WriteCategory(target, source, cat);
         }
 
-        // Per-profile JSONs do not carry top-level non-profile fields.
-        target.SchemaVersion = 0;
+        // Per-profile JSONs do not carry top-level non-profile fields. The stamp marks
+        // the content as already past the slot shift, which a re-read must not repeat.
+        target.SchemaVersion = NexusSettings.CurrentSchemaVersion;
         target.Auth = null;
         target.PrimaryProfileId = null;
         target.SharedCategories = new List<string>();
@@ -1387,6 +1402,7 @@ public sealed partial class ProfileManager : IDisposable
                         {
                             ProfileSharing.ApplyCategory(s, primaryData, normalized);
                             Nexus.Service.Lighting.RemovedSyncModes.Apply(s.Lighting);
+                            Nexus.Service.Lighting.SimplePatternMigration.Apply(s.Lighting, shiftSlots: false);
                             // ReadProfileFile bypasses JsonConfigStore.Migrate, so a
                             // pre-v11 primary can carry legacy marketplace: widget
                             // types into live settings; rewrite them (idempotent).

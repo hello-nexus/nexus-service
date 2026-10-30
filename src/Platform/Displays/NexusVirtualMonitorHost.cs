@@ -62,6 +62,9 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
     public double? OwnedDisplayDpi(string adapterName) =>
         string.Equals(adapterName, AdapterName, StringComparison.OrdinalIgnoreCase) ? _claim.Dpi : null;
 
+    public bool OwnsAdapter(string adapterName) =>
+        _claim.Active && string.Equals(adapterName, AdapterName, StringComparison.OrdinalIgnoreCase);
+
     public IVirtualMonitor? Create(int width, int height, double? dpi, CancellationToken ct, out string failureState)
     {
         lock (_gate)

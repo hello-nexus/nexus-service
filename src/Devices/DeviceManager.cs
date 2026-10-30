@@ -16,9 +16,12 @@ public sealed class DeviceManager
     private readonly IUsbEnumerator _enumerator;
     private readonly PluginProviderRegistry _registry;
     private readonly DeviceControlGate _gate;
+    private readonly Nexus.Service.Lighting.LightingWriteHealth? _writeHealth;
 
-    public DeviceManager(IEnumerable<IDeviceHandler> handlers, IUsbEnumerator enumerator, PluginProviderRegistry registry, DeviceControlGate gate)
+    public DeviceManager(IEnumerable<IDeviceHandler> handlers, IUsbEnumerator enumerator, PluginProviderRegistry registry, DeviceControlGate gate,
+        Nexus.Service.Lighting.LightingWriteHealth? writeHealth = null)
     {
+        _writeHealth = writeHealth;
         _handlers = handlers.ToList();
         _enumerator = enumerator;
         _registry = registry;
@@ -42,6 +45,7 @@ public sealed class DeviceManager
         return AllHandlers.Select(h =>
         {
             var supportsControl = firstParty.Contains(h) && h.SupportsNexusControl;
+            var chosenOn = _gate.IsChosenOn(h.Id);
             return new DeviceListItem
             {
                 Id = h.Id,
@@ -53,7 +57,8 @@ public sealed class DeviceManager
                 SupportsNexusControl = supportsControl,
                 Experimental = supportsControl && DeviceControlPolicy.IsExperimental(h.Id),
                 RequiresBeta = supportsControl && DeviceControlPolicy.RequiresBeta(h.Id),
-                NexusControlEnabled = _gate.IsChosenOn(h.Id),
+                NexusControlEnabled = chosenOn,
+                WriteHealth = chosenOn && _writeHealth?.IsHandlerFailing(h.Id) == true ? Nexus.Service.Lighting.LightingWriteHealth.Failing : null,
                 Warning = h.GetWarning(usbDevices),
                 ConflictAppId = DeviceControlPolicy.ConflictAppFor(h.Id),
                 HasPage = h.HasPage,

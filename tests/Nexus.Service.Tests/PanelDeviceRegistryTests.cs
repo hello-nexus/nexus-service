@@ -665,6 +665,62 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void RestrictedMode_DefaultsFalse_AndSerializesAsRestrictedMode()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        Assert.Null(record.RestrictedMode);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(record, Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord);
+        var persisted = System.Text.Json.JsonSerializer.Serialize(record, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
+
+        Assert.DoesNotContain("restrictedMode", json);
+        Assert.DoesNotContain("restrictedMode", persisted);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true });
+        Assert.Contains("\"restrictedMode\":true", System.Text.Json.JsonSerializer.Serialize(_registry.Get(record.Id), Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord));
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = false });
+        Assert.Null(_registry.Get(record.Id)!.RestrictedMode);
+    }
+
+    [Theory]
+    [InlineData(PanelSurfaces.Y70)]
+    [InlineData(PanelSurfaces.Q60)]
+    [InlineData(PanelSurfaces.Phone)]
+    public void RestrictedMode_PatchAppliesToAnyPanelKind_AndOtherPatchesKeepIt(string surface)
+    {
+        var record = _registry.Allocate(null, Caps(surface));
+
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true })!.RestrictedMode);
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.RestrictedMode);
+        Assert.Null(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = false })!.RestrictedMode);
+    }
+
+    [Fact]
+    public void RestrictedMode_AppliesToDisplayBoundRecords_AndSurvivesReload()
+    {
+        var (display, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
+        var y70 = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        _registry.Patch(display.Id, new PanelDevicePatch { RestrictedMode = true });
+        _registry.Patch(y70.Id, new PanelDevicePatch { RestrictedMode = true });
+        _store.FlushNow();
+
+        using var store2 = new JsonConfigStore(_path);
+        var reloaded = new PanelDeviceRegistry(store2) { SeeThroughHost = false };
+
+        Assert.True(reloaded.Get(display.Id)!.RestrictedMode);
+        Assert.True(reloaded.Get(y70.Id)!.RestrictedMode);
+    }
+
+    [Fact]
+    public void ResetToDefaults_KeepsRestrictedMode()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true });
+
+        Assert.True(_registry.ResetToDefaults(record.Id)!.RestrictedMode);
+    }
+
+    [Fact]
     public void ResetToDefaults_ClearsTheWidgetsLock()
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
@@ -748,6 +804,10 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
         Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "small" })!.WidgetSize);
         Assert.Equal("small", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "huge" })!.WidgetSize);
+        Assert.Equal("midlarge", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = PanelWidgetSizes.MidLarge })!.WidgetSize);
+        Assert.Equal("medium", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = PanelWidgetSizes.Medium })!.WidgetSize);
+        Assert.Equal("compact", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = PanelWidgetSizes.Compact })!.WidgetSize);
+        Assert.Equal("compact", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "huge" })!.WidgetSize);
         Assert.Equal("xsmall", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = PanelWidgetSizes.XSmall })!.WidgetSize);
         Assert.Equal("xsmall", _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.WidgetSize);
         Assert.Equal("large", _registry.Patch(record.Id, new PanelDevicePatch { WidgetSize = "large" })!.WidgetSize);

@@ -17,8 +17,9 @@ namespace Nexus.Service.Tests;
 public class KrakenStreamBucketTests
 {
     // No lighting channels, so Connect skips the accessory table and the fake only has to
-    // ack what it is asked. The 2023 Kraken streams through buckets; the 2023 Elite does not.
-    private static readonly KrakenModel BucketStreamNoRgb = KrakenModel.Find(0x300E)!;
+    // ack what it is asked. The bucket row is the 2023 Kraken panel with the direct stream
+    // switched off; the shipped 0x300E row streams direct, like the Plus V2.
+    private static readonly KrakenModel BucketStreamNoRgb = KrakenModel.Find(0x300E)! with { Rgb565DirectStream = false };
     private static readonly KrakenModel EliteNoRgb = KrakenModel.Find(0x300C)!;
     private static readonly KrakenModel PlusV2 = KrakenModel.Find(0x3014)!;
     private static readonly KrakenModel Z3 = KrakenModel.Find(0x3008)!;

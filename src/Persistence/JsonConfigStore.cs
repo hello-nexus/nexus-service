@@ -148,8 +148,25 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         }
         if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
         {
+            var preUsbMonitor = _cached.SchemaVersion < Nexus.Service.Panel.UsbMonitorPanelMigration.SchemaVersion;
             Migrate(_cached);
             Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
+            if (preUsbMonitor && _cached.UsbMonitorPanelPairs is not null)
+            {
+                // The v29 copy overwrites a USB device's look; keep the file it was read from, once.
+                try
+                {
+                    var backup = SettingsPath + ".pre-v29";
+                    if (!File.Exists(backup))
+                    {
+                        File.WriteAllText(backup, json);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[nexus-service] could not keep the pre-v29 settings: {ex.Message}");
+                }
+            }
             Persist(_cached);
         }
         else
@@ -173,6 +190,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             }
             // A downgrade to an older build can write the removed mode back at the current schema version.
             if (Nexus.Service.Lighting.RemovedSyncModes.Apply(_cached.Lighting))
+            {
+                recovered = true;
+            }
+            // Same for a retired simple-mode tile key; the slot shift is schema-gated and never repeats.
+            if (Nexus.Service.Lighting.SimplePatternMigration.Apply(_cached, shiftSlots: false))
             {
                 recovered = true;
             }
@@ -410,6 +432,14 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 27 && !(doc.Overlay?.HasWidgets ?? false))
         {
             doc.Overlay?.ClearLegacy();
+        }
+        if (doc.SchemaVersion < 28)
+        {
+            Nexus.Service.Lighting.SimplePatternMigration.Apply(doc, shiftSlots: true);
+        }
+        if (doc.SchemaVersion < 29)
+        {
+            Nexus.Service.Panel.UsbMonitorPanelMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

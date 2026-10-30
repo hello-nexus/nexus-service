@@ -122,7 +122,7 @@ public class AppEventTelemetryTests
         recorder.Capture(TelemetryEvents.AppEvent, ("app_id", "a.b.c"), ("p_n", 3d), ("dev_tools", true));
 
         using var doc = JsonDocument.Parse(recorder.RecentJson());
-        Assert.Equal(status, doc.RootElement.GetProperty("posthog").GetString());
+        Assert.Equal(status, doc.RootElement.GetProperty("status").GetString());
         var e = doc.RootElement.GetProperty("events")[0];
         Assert.Equal("app_event", e.GetProperty("event").GetString());
         Assert.Equal("2026-10-03T12:00:00.0000000Z", e.GetProperty("at").GetString());

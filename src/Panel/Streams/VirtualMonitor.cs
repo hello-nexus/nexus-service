@@ -25,6 +25,9 @@ public interface IVirtualMonitorHost
     /// <summary>The owning device's density when <paramref name="adapterName"/> is the live monitor this host created and its device has one; null otherwise.</summary>
     double? OwnedDisplayDpi(string adapterName);
 
+    /// <summary>True when <paramref name="adapterName"/> is the display adapter of the live monitor this host created.</summary>
+    bool OwnsAdapter(string adapterName) => false;
+
     /// <summary>Raised once a monitor's owned density is set.</summary>
     event Action? OwnedDisplayClaimed;
 }

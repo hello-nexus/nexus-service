@@ -102,7 +102,7 @@
           },
           {
             "type": "lighting",
-            "size": "4x2",
+            "size": "4x4",
             "col": 0,
             "row": 4
           },
@@ -110,7 +110,7 @@
             "type": "cooling",
             "size": "4x2",
             "col": 0,
-            "row": 6
+            "row": 8
           }
         ]
       },
@@ -193,7 +193,7 @@
   },
 
   "lighting": {
-    "sync": "sweeprainbow",
+    "sync": "rainbow",
     "brightnessEnabled": false,
     "speedEnabled": false,
     "frameRate": 60,
@@ -202,7 +202,7 @@
     "sleepBlackout": true,
     "staticColor": { "r": 255, "g": 0, "b": 0 },
     "animate": {
-      "effect": "sweeprainbow",
+      "effect": "rainbow",
       "state": {
         "speed": 50,
         "intensity": 1.0,

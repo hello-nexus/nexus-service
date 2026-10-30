@@ -29,9 +29,12 @@ public sealed class LinuxSensorProvider : ISensorProvider
 
     private readonly KrakenHub? _krakenHub;
 
-    public LinuxSensorProvider(KrakenHub? krakenHub = null)
+    private readonly Astral.AstralMonitor? _astral;
+
+    public LinuxSensorProvider(KrakenHub? krakenHub = null, Astral.AstralMonitor? astral = null)
     {
         _krakenHub = krakenHub;
+        _astral = astral;
     }
 
     // Linux hardware reads are shell / sysfs-driven and synchronous - Get*
@@ -458,6 +461,7 @@ public sealed class LinuxSensorProvider : ISensorProvider
             }
         }
 
+        _astral?.AppendSimulatedGpus(gpus);
         return gpus;
     }
 

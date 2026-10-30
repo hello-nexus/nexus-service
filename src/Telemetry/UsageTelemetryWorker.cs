@@ -7,7 +7,7 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Telemetry;
 
-/// <summary>Flushes <see cref="UsageTelemetrySink"/> to nexus-api on the heartbeat cadence; same consent gate as PostHog, except a pending opt_out is still delivered.</summary>
+/// <summary>Flushes <see cref="UsageTelemetrySink"/> to nexus-api on the heartbeat cadence; same consent gate as capture, except a pending opt_out is still delivered.</summary>
 internal sealed class UsageTelemetryWorker : BackgroundService
 {
     internal const int MaxBatch = 200;

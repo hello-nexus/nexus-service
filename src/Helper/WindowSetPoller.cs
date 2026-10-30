@@ -62,11 +62,32 @@ public sealed class WindowSetPoller : IDisposable
     /// <summary>Windows walked by the last EnumWindows pass - the size of the
     /// per-window Win32 work the slow-pass line is reporting on.</summary>
     private int _enumerated;
+    private readonly object _hookGate = new();
+    private bool _hooksOn;
+    private bool _pollerActive;
+
+    private readonly WindowCloakCache _cloakCache;
+    private readonly WindowCloakWatcher _cloakWatcher;
+
+    private readonly WindowSetPassStats _stats = new();
+    private readonly Stopwatch _everyPassWindow = Stopwatch.StartNew();
+    private int _switchChanges = HelperPollerDiagnostics.ChangeCount;
+    private bool _slowSinceRate;
+    private readonly Stopwatch _sinceHookRate = Stopwatch.StartNew();
+    private HashSet<int> _lastSnapshot = new();
+    private (long Destroy, long Cloaked, long Uncloaked) _hooksAtLastPass;
+    private (long Destroy, long Cloaked, long Uncloaked) _hooksAtLastRate;
+    private bool _skipDwm;
+    private bool _skipFallback;
+    private bool _eager;
 
     public WindowSetPoller(HelperOutbound outbound)
     {
         _outbound = outbound;
         _diagEnabled = WindowDiagnostics.IsEnabled(Environment.GetEnvironmentVariable(WindowDiagnostics.EnvVarName));
+        _cloakCache = new WindowCloakCache(ReadCloak);
+        _cloakWatcher = new WindowCloakWatcher(_cloakCache);
+        SyncHooks(active: _wanted && !HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSet));
         _timer = new JitteredPeriodicTimer(periodMs: PeriodMs, jitterMs: 500, Poll);
     }
 
@@ -79,12 +100,36 @@ public sealed class WindowSetPoller : IDisposable
     {
         if (wanted && !_wanted) _lastSent = new HashSet<int>();
         _wanted = wanted;
+        SyncHooks(active: wanted && !HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSet));
+    }
+
+    // The cloak hooks and the cache live only while this poller is doing work,
+    // so Monitoring off and the windowset kill switch remove all of its cost.
+    // Every (re)start drops the cache: its pass-counted trust cannot span a pause.
+    private void SyncHooks(bool active)
+    {
+        var hooksSwitchedOff = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetHooks);
+        var serve = active && hooksSwitchedOff;
+        var hooksWanted = active && !hooksSwitchedOff;
+        lock (_hookGate)
+        {
+            var resumed = active && !_pollerActive;
+            _pollerActive = active;
+            if (resumed || serve != _cloakCache.ServeWithoutEvents) _cloakCache.Clear();
+            _cloakCache.ServeWithoutEvents = serve;
+            if (hooksWanted == _hooksOn) return;
+            _hooksOn = hooksWanted;
+            _cloakCache.Clear();
+            if (hooksWanted) _cloakWatcher.Start();
+            else _cloakWatcher.Stop();
+        }
     }
 
     private void Poll()
     {
-        if (!_wanted) return;
-        if (HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSet)) return;
+        var active = _wanted && !HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSet);
+        SyncHooks(active);
+        if (!active) return;
         try
         {
             var connected = _outbound.IsConnected;
@@ -94,12 +139,7 @@ public sealed class WindowSetPoller : IDisposable
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var current = SnapshotWindowedPids();
             sw.Stop();
-            if (sw.ElapsedMilliseconds >= HelperPollerDiagnostics.SlowPassMs
-                && HelperPollerDiagnostics.TryFormatSlowPass(
-                    HelperPollerDiagnostics.WindowSet, sw.Elapsed.TotalMilliseconds, _enumerated, out var slow))
-            {
-                Nexus.Service.Platform.HelperLog.Write(slow);
-            }
+            LogPass(sw);
             if (!justReconnected && current.SetEquals(_lastSent)) return;
 
             _lastSent = current;
@@ -111,10 +151,115 @@ public sealed class WindowSetPoller : IDisposable
         catch { }
     }
 
+    private void LogPass(Stopwatch sw)
+    {
+        var hooks = _cloakWatcher.Counters.Totals;
+        var passDestroy = hooks.Destroy - _hooksAtLastPass.Destroy;
+        var passCloaked = hooks.Cloaked - _hooksAtLastPass.Cloaked;
+        var passUncloaked = hooks.Uncloaked - _hooksAtLastPass.Uncloaked;
+        _hooksAtLastPass = hooks;
+
+        var changes = HelperPollerDiagnostics.ChangeCount;
+        if (changes != _switchChanges)
+        {
+            _switchChanges = changes;
+            _everyPassWindow.Restart();
+        }
+
+        var everyPass = WindowSetPassStats.LogsEveryPass(_everyPassWindow.Elapsed);
+        var slow = sw.ElapsedMilliseconds >= HelperPollerDiagnostics.SlowPassMs;
+        _slowSinceRate |= slow;
+        if (everyPass || slow)
+        {
+            var maxClass = _stats.MaxTicks > 0 ? ClassNameOf(new IntPtr(_stats.MaxHwnd)) : null;
+            var detail = $"cached={_cloakCache.Count} "
+                + _stats.Format(Stopwatch.Frequency, _cloakCache.Trickles, passDestroy, passCloaked, passUncloaked, maxClass);
+            var targets = _stats.FormatFallbackTargets(Stopwatch.Frequency, ProcessNameOf);
+            if (targets.Length > 0) detail += " " + targets;
+            if (everyPass)
+            {
+                Nexus.Service.Platform.HelperLog.Write(
+                    HelperPollerDiagnostics.FormatSlowPass(HelperPollerDiagnostics.WindowSet, sw.Elapsed.TotalMilliseconds, _enumerated, detail));
+            }
+            else if (HelperPollerDiagnostics.TryFormatSlowPass(
+                HelperPollerDiagnostics.WindowSet, sw.Elapsed.TotalMilliseconds, _enumerated, out var line, detail))
+            {
+                Nexus.Service.Platform.HelperLog.Write(line);
+            }
+        }
+
+        if (_hooksOn && _sinceHookRate.Elapsed >= TimeSpan.FromSeconds(60))
+        {
+            if (everyPass || _slowSinceRate)
+            {
+                Nexus.Service.Platform.HelperLog.Write(WindowSetPassStats.FormatHookRate(
+                    _sinceHookRate.Elapsed.TotalSeconds,
+                    hooks.Destroy - _hooksAtLastRate.Destroy,
+                    hooks.Cloaked - _hooksAtLastRate.Cloaked,
+                    hooks.Uncloaked - _hooksAtLastRate.Uncloaked));
+            }
+            _hooksAtLastRate = hooks;
+            _slowSinceRate = false;
+            _sinceHookRate.Restart();
+        }
+    }
+
+    private static string ProcessNameOf(int pid)
+    {
+        if (pid <= 0) return "?";
+        var path = ScreenTimePoller.TryGetExePath((uint)pid);
+        var name = path is null ? "" : ScreenTimeProcessName.ProcessNameFromPath(path);
+        if (name.Length > 0) return name;
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return process.ProcessName;
+        }
+        catch
+        {
+            return "?";
+        }
+    }
+
+    private static string? ClassNameOf(IntPtr hwnd)
+    {
+        var sb = new StringBuilder(64);
+        return GetClassNameW(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : null;
+    }
+
+    // The cloak cache's injected DWM read, timed for the pass line. The
+    // windowset-dwm switch skips the RPC and reports not cloaked.
+    private bool ReadCloak(long hwnd)
+    {
+        if (_skipDwm) return false;
+        var t0 = Stopwatch.GetTimestamp();
+        var cloaked = IsCloaked(new IntPtr(hwnd));
+        var dt = Stopwatch.GetTimestamp() - t0;
+        _stats.DwmTicks += dt;
+        _stats.DwmCount++;
+        _stats.Note("dwm", hwnd, dt);
+        return cloaked;
+    }
+
     private HashSet<int> SnapshotWindowedPids()
     {
+        _stats.Reset();
+        _skipDwm = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetDwm);
+        _skipFallback = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetFallback);
+        _eager = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetEager);
+        _cloakCache.TrickleEnabled = !HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetTrickle);
+        _cloakCache.StoreReads = !_skipDwm;
+        var skipEnum = HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.WindowSetEnum);
+        _cloakCache.NoteSkippedPasses(skipEnum);
+        if (skipEnum)
+        {
+            _enumerated = 0;
+            return _lastSnapshot;
+        }
+
         var pids = new HashSet<int>();
         var enumerated = 0;
+        _cloakCache.BeginPass();
 
         // Computed once per poll, not per window: the bounding box of every
         // monitor, for the off-screen-window exclusion.
@@ -138,26 +283,51 @@ public sealed class WindowSetPoller : IDisposable
         _pinnedEnumProc = (hwnd, _) =>
         {
             enumerated++;
-            // Cheap, local win32k reads first. These alone decide the outcome
-            // for the large majority of windows, and IsCountableWindow's own
-            // short-circuit order is what makes that safe to rely on.
+            // Cheapest-rejecting reads first: an invisible non-foreground window
+            // is rejected on IsWindowVisible alone (WindowClassification.PreClassify
+            // is outcome-identical to IsCountableWindow). windowset-eager restores
+            // the original read-everything order for an A/B.
             var isForegroundWindow = hwnd == foregroundHwnd;
-            var owner = GetWindow(hwnd, GwOwner);
-            var isToolWindow = (GetWindowLong(hwnd, GwlExstyle) & WsExToolwindow) != 0;
-            var isVisible = IsWindowVisible(hwnd);
-            var hasOnScreenBounds = GetWindowRect(hwnd, out var rect) &&
-                WindowClassification.HasOnScreenBounds(
-                    rect.Left, rect.Top, rect.Right, rect.Bottom,
-                    virtualLeft, virtualTop, virtualRight, virtualBottom);
+            var eager = _eager || _diagEnabled;
+            // The eager path times its four reads as one block (one Stopwatch pair)
+            // so the A/B is not biased by per-call timing overhead. Per-call buckets
+            // are lazy-path only, so an eager pass logs vis/owner/style/rect as 0x.
+            var reads = new Reads(_stats, hwnd, virtualLeft, virtualTop, virtualRight, virtualBottom, !eager);
+            if (eager)
+            {
+                var t0 = Stopwatch.GetTimestamp();
+                reads.Owner();
+                reads.IsToolWindow();
+                reads.IsVisible();
+                reads.HasOnScreenBounds();
+                var dt = Stopwatch.GetTimestamp() - t0;
+                _stats.CheapTicks += dt;
+                _stats.Note("cheap", hwnd.ToInt64(), dt);
+            }
+            else
+            {
+                var pre = WindowClassification.PreClassify(ref reads, isForegroundWindow);
+                if (pre != WindowClassification.PreResult.NeedsCloakAndTitle)
+                {
+                    if (pre == WindowClassification.PreResult.Accepted)
+                    {
+                        AddPid(hwnd, pids);
+                    }
+                    return true;
+                }
+            }
+            var owner = reads.Owner();
+            var isToolWindow = reads.IsToolWindow();
+            var isVisible = reads.IsVisible();
+            var hasOnScreenBounds = reads.HasOnScreenBounds();
+            var rect = reads.RectValue;
 
-            // The two calls below leave this process: DwmGetWindowAttribute is an
-            // RPC into dwm.exe and GetWindowTextLength sends WM_GETTEXTLENGTH to
-            // the owning UI thread. Running them for every window cost ~240 ms per
-            // pass on a 467-window desktop and stalled composition system-wide
-            // (Discord report, 2026-08-27). IsCountableWindow only reaches the
-            // terms they feed when owner/bounds/foreground/visible/tool-window
-            // already allow it, so gating on exactly that condition is pure
-            // short-circuit evaluation - the classification is unchanged.
+            // DwmGetWindowAttribute is an RPC into dwm.exe, so cloak state comes from
+            // WindowCloakCache. The title is read from the kernel-stored caption
+            // (InternalGetWindowText, no message sent); only a window whose stored
+            // caption is empty repeats the original GetWindowTextLength call, so
+            // an empty-caption or UIPI-blocked window classifies exactly as before.
+            // Both run only when IsCountableWindow would reach the terms they feed.
             var isCloaked = false;
             var coversMonitor = false;
             var titleLength = 0;
@@ -168,7 +338,7 @@ public sealed class WindowSetPoller : IDisposable
                 || (owner == IntPtr.Zero && hasOnScreenBounds && !isForegroundWindow
                     && isVisible && !isToolWindow))
             {
-                isCloaked = IsCloaked(hwnd);
+                isCloaked = _cloakCache.IsCloaked(hwnd.ToInt64(), rect.Left, rect.Top, rect.Right, rect.Bottom);
                 // Only load-bearing through IsCountableWindow's (!isCloaked ||
                 // coversMonitor) check - skip the extra monitor lookup when
                 // isCloaked is false and the value cannot change the outcome.
@@ -177,12 +347,29 @@ public sealed class WindowSetPoller : IDisposable
                     WindowClassification.CoversMonitor(
                         rect.Left, rect.Top, rect.Right, rect.Bottom,
                         monitorRect.Left, monitorRect.Top, monitorRect.Right, monitorRect.Bottom);
-                titleLength = GetWindowTextLength(hwnd);
+                var tTitle = Stopwatch.GetTimestamp();
+                titleLength = InternalGetWindowText(hwnd, _titleBuffer, _titleBuffer.Length);
+                var titleTicks = Stopwatch.GetTimestamp() - tTitle;
+                _stats.TitleTicks += titleTicks;
+                _stats.Note("title", hwnd.ToInt64(), titleTicks);
+                if (titleLength == 0 && !_skipFallback)
+                {
+                    var tFallback = Stopwatch.GetTimestamp();
+                    titleLength = GetWindowTextLength(hwnd);
+                    // Must read immediately, before any other P/Invoke clobbers it.
+                    titleReadError = titleLength == 0 ? Marshal.GetLastWin32Error() : 0;
+                    titleBlockedByUipi = titleReadError == ErrorAccessDenied;
+                    var fallbackTicks = Stopwatch.GetTimestamp() - tFallback;
+                    _stats.FallbackTicks += fallbackTicks;
+                    _stats.FallbackCount++;
+                    _stats.Note("fallback", hwnd.ToInt64(), fallbackTicks);
+                    if (_stats.WouldKeepFallback(fallbackTicks))
+                    {
+                        GetWindowThreadProcessId(hwnd, out var fbPid);
+                        _stats.AddFallback(hwnd.ToInt64(), fallbackTicks, (int)fbPid, ClassNameOf(hwnd) ?? "?");
+                    }
+                }
                 hasTitle = titleLength > 0;
-                // Must read immediately after GetWindowTextLength, before any other
-                // P/Invoke call, or the Win32 last-error value is clobbered.
-                titleReadError = !hasTitle ? Marshal.GetLastWin32Error() : 0;
-                titleBlockedByUipi = titleReadError == ErrorAccessDenied;
             }
 
             var isCountable = WindowClassification.IsCountableWindow(
@@ -191,7 +378,9 @@ public sealed class WindowSetPoller : IDisposable
 
             if (isCountable || _diagEnabled)
             {
+                var tPid = Stopwatch.GetTimestamp();
                 GetWindowThreadProcessId(hwnd, out var pid);
+                _stats.AddCall(WindowSetPassStats.Call.Pid, hwnd.ToInt64(), Stopwatch.GetTimestamp() - tPid);
                 if (isCountable && pid != 0)
                 {
                     pids.Add((int)pid);
@@ -206,9 +395,101 @@ public sealed class WindowSetPoller : IDisposable
             }
             return true;
         };
+        var tEnum = Stopwatch.GetTimestamp();
         EnumWindows(_pinnedEnumProc, IntPtr.Zero);
+        _stats.EnumTicks = Stopwatch.GetTimestamp() - tEnum;
+        _cloakCache.EndPass();
         _enumerated = enumerated;
+        _lastSnapshot = pids;
         return pids;
+    }
+
+    private void AddPid(IntPtr hwnd, HashSet<int> pids)
+    {
+        var t = Stopwatch.GetTimestamp();
+        GetWindowThreadProcessId(hwnd, out var pid);
+        _stats.AddCall(WindowSetPassStats.Call.Pid, hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+        if (pid != 0) pids.Add((int)pid);
+    }
+
+    // One window's cheap attribute reads, cached so the eager order and the lazy
+    // order share one implementation. Each read is timed into its own sub-bucket
+    // only when timed (the lazy path).
+    private struct Reads : WindowClassification.IWindowReads
+    {
+        private readonly WindowSetPassStats _stats;
+        private readonly bool _timed;
+        private readonly IntPtr _hwnd;
+        private readonly int _vl, _vt, _vr, _vb;
+        private IntPtr _owner;
+        private bool _hasOwner, _hasStyle, _hasVis, _hasBounds;
+        private bool _tool, _visible, _onScreen;
+        private Rect _rect;
+
+        public Reads(WindowSetPassStats stats, IntPtr hwnd, int vl, int vt, int vr, int vb, bool timed)
+        {
+            _timed = timed;
+            _stats = stats; _hwnd = hwnd; _vl = vl; _vt = vt; _vr = vr; _vb = vb;
+            _owner = IntPtr.Zero; _hasOwner = _hasStyle = _hasVis = _hasBounds = false;
+            _tool = _visible = _onScreen = false;
+            _rect = default;
+        }
+
+        public Rect RectValue => _rect;
+
+        public IntPtr Owner()
+        {
+            if (_hasOwner) return _owner;
+            var t = _timed ? Stopwatch.GetTimestamp() : 0;
+            _owner = GetWindow(_hwnd, GwOwner);
+            if (_timed)
+            {
+                _stats.AddCall(WindowSetPassStats.Call.Owner, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            }
+            _hasOwner = true;
+            return _owner;
+        }
+
+        public bool IsToolWindow()
+        {
+            if (_hasStyle) return _tool;
+            var t = _timed ? Stopwatch.GetTimestamp() : 0;
+            _tool = (GetWindowLong(_hwnd, GwlExstyle) & WsExToolwindow) != 0;
+            if (_timed)
+            {
+                _stats.AddCall(WindowSetPassStats.Call.Style, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            }
+            _hasStyle = true;
+            return _tool;
+        }
+
+        public bool IsVisible()
+        {
+            if (_hasVis) return _visible;
+            var t = _timed ? Stopwatch.GetTimestamp() : 0;
+            _visible = IsWindowVisible(_hwnd);
+            if (_timed)
+            {
+                _stats.AddCall(WindowSetPassStats.Call.Vis, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            }
+            _hasVis = true;
+            return _visible;
+        }
+
+        public bool HasOnScreenBounds()
+        {
+            if (_hasBounds) return _onScreen;
+            var t = _timed ? Stopwatch.GetTimestamp() : 0;
+            _onScreen = GetWindowRect(_hwnd, out _rect) &&
+                WindowClassification.HasOnScreenBounds(
+                    _rect.Left, _rect.Top, _rect.Right, _rect.Bottom, _vl, _vt, _vr, _vb);
+            if (_timed)
+            {
+                _stats.AddCall(WindowSetPassStats.Call.Rect, _hwnd.ToInt64(), Stopwatch.GetTimestamp() - t);
+            }
+            _hasBounds = true;
+            return _onScreen;
+        }
     }
 
     // DWMWA_CLOAKED reports non-zero for a window Explorer keeps alive but
@@ -289,17 +570,21 @@ public sealed class WindowSetPoller : IDisposable
             hasTitle, titleLength, titleReadError, hasOnScreenBounds, coversMonitor, isForegroundWindow, isCountable));
     }
 
-    public void Dispose() => _timer.Dispose();
+    public void Dispose()
+    {
+        _timer.Dispose();
+        SyncHooks(active: false);
+    }
 
     private const uint GwOwner = 4;
     private const int GwlExstyle = -20;
     private const int WsExToolwindow = 0x00000080;
     private const int DwmwaCloaked = 14;
+    private const int ErrorAccessDenied = 5;
     private const int SmXvirtualscreen = 76;
     private const int SmYvirtualscreen = 77;
     private const int SmCxvirtualscreen = 78;
     private const int SmCyvirtualscreen = 79;
-    private const int ErrorAccessDenied = 5;
     private const uint MonitorDefaulttonearest = 2;
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
@@ -337,9 +622,13 @@ public sealed class WindowSetPoller : IDisposable
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
-    // SetLastError so a diagnostic read (Marshal.GetLastWin32Error right after
-    // this call, when the result is 0) reflects this call's outcome and not
-    // some unrelated prior native call.
+    // Only the poll thread calls this, one pass at a time, so one buffer is safe.
+    private readonly char[] _titleBuffer = new char[256];
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int InternalGetWindowText(IntPtr hWnd, [Out] char[] lpString, int nMaxCount);
+
+    // SetLastError so the error read right after a 0 result is this call's outcome.
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int GetWindowTextLength(IntPtr hWnd);
 

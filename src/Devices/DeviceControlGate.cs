@@ -45,6 +45,32 @@ public sealed class DeviceControlGate
     private Dictionary<string, string> _pausedByApp = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _pauseLock = new();
 
+    /// <summary>Handlers whose device must stay claimed although Nexus Control is off, because it carries a secondary monitor the user turned on. Set once by the stream coordinator.</summary>
+    public Func<string, bool>? KeepsDeviceClaimed
+    {
+        get => _keepsDeviceClaimed;
+        set
+        {
+            _keepsDeviceClaimed = value;
+            HoldSourceChanged?.Invoke();
+        }
+    }
+
+    private Func<string, bool>? _keepsDeviceClaimed;
+
+    /// <summary>Raised when <see cref="KeepsDeviceClaimed"/> is wired, so a competing-app check can run against it.</summary>
+    public event Action? HoldSourceChanged;
+
+    /// <summary>Whether a connection worker should hold the device: <see cref="IsEnabled"/>, or Nexus Control is off but the secondary monitor still needs the glass.</summary>
+    public bool IsClaimed(string handlerId) =>
+        IsEnabled(handlerId) || HeldForMonitor(handlerId);
+
+    /// <summary>Nexus Control is off but the secondary monitor still holds the device; a running competing app and experimental hardware on a stable build always win.</summary>
+    public bool HeldForMonitor(string handlerId) =>
+        !DeviceControlPolicy.RequiresBeta(handlerId)
+        && PausedByApp(handlerId) is null
+        && _keepsDeviceClaimed?.Invoke(handlerId) == true;
+
     /// <summary>The user's choice alone, ignoring a running competing app.</summary>
     public bool IsChosenOn(string handlerId) => IsEnabled(_store.Load().Devices, handlerId);
 
@@ -64,7 +90,7 @@ public sealed class DeviceControlGate
             {
                 var wasPaused = before.ContainsKey(handler);
                 var isPaused = after.ContainsKey(handler);
-                if (wasPaused == isPaused || !IsChosenOn(handler)) continue;
+                if (wasPaused == isPaused || (!IsChosenOn(handler) && _keepsDeviceClaimed?.Invoke(handler) != true)) continue;
                 flipped.Add((handler, !isPaused));
                 Console.WriteLine(isPaused
                     ? $"[device-control] '{handler}' waiting: {after[handler]} is running"

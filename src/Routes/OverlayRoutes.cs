@@ -37,20 +37,7 @@ public static class OverlayRoutes
                 Streams = streams.GetAssignments().Assignments,
                 Identify = identify.Current(),
             };
-            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
-            {
-                state.Assignments.Add(new DisplayAssignmentDto
-                {
-                    DisplayId = displayId,
-                    PanelDeviceId = panelDeviceId,
-                    ReserveMonitor = reserveMonitor,
-                    Backdrop = backdrop,
-                    KeepCursorOff = keepCursorOff,
-                    AlwaysOnTop = alwaysOnTop,
-                    ClickThrough = clickThrough,
-                    IsPrimary = isPrimary,
-                });
-            }
+            state.Assignments.AddRange(DisplayRoutes.ComposeAssignments(registry, topology, streams));
             return Results.Json(state, AppJsonContext.Default.OverlayStateResponse);
         });
 

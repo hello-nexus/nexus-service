@@ -20,6 +20,17 @@ internal sealed class VirtualDisplayClaim
         }
     }
 
+    public bool Active
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _owner is not null;
+            }
+        }
+    }
+
     /// <summary>Raised after a claim is set.</summary>
     public event Action? Claimed;
 

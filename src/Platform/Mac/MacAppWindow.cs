@@ -35,7 +35,10 @@ internal static class MacAppWindow
     // Layout constants mirrored from nexus-web's TopBar.module.scss, used by
     // IsTopBarButtonColumn to carve the control columns out of the drag strip.
     // Keep in lockstep with the CSS.
-    private const double TopBarSearchPillWidth = 460;   // --search-w
+    private const double TopBarSearchPillMinWidth = 460;  // --search-w clamp floor
+    private const double TopBarSearchPillMaxWidth = 660;  // --search-w clamp ceiling
+    private const double TopBarSearchPillGrowFrom = 1000; // width where --search-w starts growing
+    private const double TopBarSearchPillGrowSlope = 0.5; // --search-w growth factor per px of window width
     private const double TopBarLeftPad = 8;             // .topBar padding-left (0.5rem)
     private const double TopBarRightPad = 8;            // .topBar padding-right (0.5rem)
     private const double TopBarIconButton = 32;         // .iconButton width
@@ -584,6 +587,13 @@ internal static class MacAppWindow
     // without an NSWindow.
     internal static bool IsTopBarButtonColumn(double x, double w)
     {
+        // --search-w: the floor until the grow-from width, then at the slope
+        // factor per px of window width up to the ceiling. The formula must match
+        // TopBar.module.scss. The web view fills the bar, so 100vw is w.
+        double pillWidth = Math.Clamp(
+            TopBarSearchPillMinWidth + (w - TopBarSearchPillGrowFrom) * TopBarSearchPillGrowSlope,
+            TopBarSearchPillMinWidth,
+            TopBarSearchPillMaxWidth);
         const double m = 4; // safety margin around each column
         double center = w / 2.0;
 
@@ -596,19 +606,19 @@ internal static class MacAppWindow
         if (x >= clusterL - m && x <= clusterL + clusterW + m) return true;
 
         // History arrows: TopBarArrowsGroup wide, a gap left of the pill's left edge.
-        double pillLeft = center - TopBarSearchPillWidth / 2.0;
+        double pillLeft = center - pillWidth / 2.0;
         double arrowsR = pillLeft - TopBarPillGap;
         if (x >= arrowsR - TopBarArrowsGroup - m && x <= arrowsR + m) return true;
 
         // Search pill: centered, and now interactive (a click opens search). It
         // must fall through to the WKWebView rather than start a window drag, so
         // carve its full width out of the strip.
-        if (x >= pillLeft - m && x <= pillLeft + TopBarSearchPillWidth + m) return true;
+        if (x >= pillLeft - m && x <= pillLeft + pillWidth + m) return true;
 
         // Page-settings cluster (.pageSettings): the gear alone, mirror of the
         // history arrows, a gap right of the pill. Only Monitoring registers a
         // settings action, so the cluster is absent on every other page.
-        double pillRight = center + TopBarSearchPillWidth / 2.0;
+        double pillRight = center + pillWidth / 2.0;
         double gearL = pillRight + TopBarPillGap;
         if (x >= gearL - m && x <= gearL + TopBarGearButton + m) return true;
 

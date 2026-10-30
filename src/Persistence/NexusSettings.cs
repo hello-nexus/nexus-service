@@ -19,9 +19,9 @@ public sealed class NexusSettings
     /// a migration in <c>JsonConfigStore.Load()</c>. Lives as a constant so
     /// tests and tooling can reference "current" without bit-rotting.
     /// </summary>
-    public const int CurrentSchemaVersion = 27;
+    public const int CurrentSchemaVersion = 29;
 
-    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). v19 keeps Stream Deck and Tryx on for an upgrading install that never chose (their default turned off) and seeds the default conflict whitelist (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration"/>). v20 keeps the NZXT Kraken and ZMatrices LCD on for an upgrading install that never chose, since their defaults turned off (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn"/>). v21 marks any pre-existing settings.json as features-onboarded again, since Lighting and Cooling now read off until that flag is set. v22 opts an existing install's mice into OpenRGB (see <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn"/>), since new installs hold them off. v23 rewrites the removed Game Sync lighting mode to static and sets <see cref="GameSyncRemovedNotice"/> on an upgrade. v24 moves the stored lighting render backend "wgl" (the old default) to "angle", the new default. v25 moves a stored keeb firmware brightness equal to the old default to the new default (the old default was always persisted). v26 was stamped by a branch build with another meaning, so v27 also whitelists the DeepCool app for an install whose Mystique is not on (idempotent, see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.WhitelistDeepCool"/>) and clears the retired desktop overlay's settings from a block that holds no widgets (see <see cref="LegacyOverlaySettings"/>). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
+    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). v19 keeps Stream Deck and Tryx on for an upgrading install that never chose (their default turned off) and seeds the default conflict whitelist (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration"/>). v20 keeps the NZXT Kraken and ZMatrices LCD on for an upgrading install that never chose, since their defaults turned off (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn"/>). v21 marks any pre-existing settings.json as features-onboarded again, since Lighting and Cooling now read off until that flag is set. v22 opts an existing install's mice into OpenRGB (see <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn"/>), since new installs hold them off. v23 rewrites the removed Game Sync lighting mode to static and sets <see cref="GameSyncRemovedNotice"/> on an upgrade. v24 moves the stored lighting render backend "wgl" (the old default) to "angle", the new default. v25 moves a stored keeb firmware brightness equal to the old default to the new default (the old default was always persisted). v26 was stamped by a branch build with another meaning, so v27 also whitelists the DeepCool app for an install whose Mystique is not on (idempotent, see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.WhitelistDeepCool"/>) and clears the retired desktop overlay's settings from a block that holds no widgets (see <see cref="LegacyOverlaySettings"/>). v28 folds simple mode's rainbow, bars and breathing tiles into the advanced rainbow, sharplines and breathing effects and moves the advanced rainbow's stored presets one slot up (see <see cref="Nexus.Service.Lighting.SimplePatternMigration"/>). v29 gives a USB device in secondary-monitor mode the panel look built on its virtual display (see <see cref="Nexus.Service.Panel.UsbMonitorPanelMigration"/>). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public ThemeSettings Theme { get; set; } = new();
@@ -58,9 +58,12 @@ public sealed class NexusSettings
     public SentrySettings Sentry { get; set; } = new();
     /// <summary>Registered panel devices keyed by opaque deviceId. Each record carries the per-device layout + theme overrides + capabilities. NOT profile-scoped: device identity is hardware-level and survives profile switches.</summary>
     public Dictionary<string, Nexus.Service.Models.Panel.PanelDeviceRecord> PanelDevices { get; set; } = new();
-    /// <summary>Global frame-rate cap in Hz for every streamed panel (Kraken LCD, fan LCDs, JPEG panels, ...); null runs each panel at its own model rate. A stored null is "off" (written explicitly, since the context drops nulls by default), an absent key is the default. NOT profile-scoped: it is a property of this workstation.</summary>
-    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
-    public int? StreamedPanelFpsCap { get; set; } = 30;
+    /// <summary>Written by the v29 migration, read to migrate profile files; null when nothing was paired.</summary>
+    public List<Nexus.Service.Panel.UsbMonitorPanelPair>? UsbMonitorPanelPairs { get; set; }
+    /// <summary>ROG Astral Power Detector choices. NOT profile-scoped: they protect this PC's hardware.</summary>
+    public AstralSettings Astral { get; set; } = new();
+    /// <summary>ROG Astral Level Sense calibrations keyed by AstralGpuSupplement.CalibrationKey. NOT profile-scoped: it describes how the card sits in this case.</summary>
+    public Dictionary<string, AstralCalibration> AstralLevelSense { get; set; } = new();
 
     /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
     public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();
@@ -316,7 +319,7 @@ public sealed class TelemetrySettings
     /// <summary>Hash of the specs summary last delivered to nexus-api; a changed hash triggers a re-send.</summary>
     public string FleetSpecsHash { get; set; } = "";
 
-    /// <summary>Hash of the profile signature last sent as the PostHog $identify and nexus-api profile event; persisted so a restart does not resend an unchanged profile.</summary>
+    /// <summary>Hash of the profile signature last sent as the nexus-api profile event; persisted so a restart does not resend an unchanged profile.</summary>
     public string ProfileSignature { get; set; } = "";
 
     /// <summary>Round-trip UTC timestamp of the last profile send; a changed signature waits out a minimum interval after it.</summary>
@@ -2884,4 +2887,35 @@ public sealed class UpdateSettings
     /// </summary>
     [System.Text.Json.Serialization.JsonPropertyName("autoUpdateDisabled")]
     public bool? LegacyAutoUpdateDisabled { get; set; }
+}
+
+/// <summary>ROG Astral Power Detector settings; also the wire shape of the Astral state's settings. Limits are fixed, a ROG Equalizer cable raises them. Both shutdowns are off until the user turns them on.</summary>
+public sealed class AstralSettings
+{
+    public bool Alerts { get; set; } = true;
+    public bool Equalizer { get; set; }
+    public bool OvercurrentShutdown { get; set; }
+    public int OvercurrentSeconds { get; set; } = 60;
+    public int CountdownSeconds { get; set; } = 60;
+    public bool CriticalShutdown { get; set; }
+}
+
+/// <summary>Body of POST /astral/settings: only the fields present change.</summary>
+public sealed class AstralSettingsPatch
+{
+    public bool? Alerts { get; set; }
+    public bool? Equalizer { get; set; }
+    public bool? OvercurrentShutdown { get; set; }
+    public int? OvercurrentSeconds { get; set; }
+    public int? CountdownSeconds { get; set; }
+    public bool? CriticalShutdown { get; set; }
+}
+
+/// <summary>One card's Level Sense calibration: smoothed X, Y and Z angles in degrees and when it was taken (Unix ms).</summary>
+public sealed class AstralCalibration
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Z { get; set; }
+    public long CalibratedAtMs { get; set; }
 }

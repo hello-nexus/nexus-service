@@ -29,6 +29,26 @@ internal static class AstralSensorBuilder
         result.Add(PowerSensor($"{hwId}/astral/connector/power", "GPU 12VHPWR Connector Power", readout.ConnectorPowerWatts, parent));
     }
 
+    public static void AppendLevel(string hwId, string hwName, float x, float y, float sag, float lean, List<HardwareSensor> result)
+    {
+        var parent = new SensorParent { Id = hwId, Name = hwName };
+        result.Add(AngleSensor($"{hwId}/astral/level/x", "GPU Level X", x, parent));
+        result.Add(AngleSensor($"{hwId}/astral/level/y", "GPU Level Y", y, parent));
+        result.Add(AngleSensor($"{hwId}/astral/level/sag", "GPU Level Sag", sag, parent));
+        result.Add(AngleSensor($"{hwId}/astral/level/lean", "GPU Level Lean", lean, parent));
+    }
+
+    private static HardwareSensor AngleSensor(string id, string name, float value, SensorParent parent) => new()
+    {
+        Id = id,
+        Name = name,
+        Type = "Angle",
+        Units = "°",
+        Value = value,
+        Formatted = $"{value:F1} °",
+        Parent = parent,
+    };
+
     private static HardwareSensor VoltageSensor(string id, string name, float value, SensorParent parent) => new()
     {
         Id = id,

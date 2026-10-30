@@ -639,7 +639,7 @@ public sealed class PanelDeviceRegistry
         => record.Layout is not null
            && record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal)));
 
-    private static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
+    internal static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
     {
         PanelDeviceRecord? newest = null;
         foreach (var record in settings.PanelDevices.Values)
@@ -672,6 +672,9 @@ public sealed class PanelDeviceRegistry
     }
 
     private const long TouchIntervalMs = 30_000;
+
+    /// <summary>Highest frame cap a patch stores.</summary>
+    public const int MaxFpsCap = 240;
 
     // A single-instance surface is the record's identity, not a viewport sample:
     // a Y70 kiosk that first maps on the desktop monitor would rename itself
@@ -760,7 +763,7 @@ public sealed class PanelDeviceRegistry
             if (patch.BackgroundMode is not null)
                 record.BackgroundMode = NullIfEmpty(patch.BackgroundMode);
             if (patch.BackgroundEffect is not null)
-                record.BackgroundEffect = NullIfEmpty(patch.BackgroundEffect);
+                record.BackgroundEffect = NullIfEmpty(Nexus.Service.Lighting.SimplePatternMigration.Normalize(patch.BackgroundEffect));
             if (patch.BackgroundTemplate.HasValue)
                 record.BackgroundTemplate = patch.BackgroundTemplate.Value;
             if (patch.BackgroundTemplates is not null)
@@ -829,6 +832,8 @@ public sealed class PanelDeviceRegistry
                 record.ClickThrough = patch.ClickThrough.Value;
             if (patch.WidgetsLocked.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.WidgetsLocked = patch.WidgetsLocked.Value;
+            if (patch.RestrictedMode.HasValue)
+                record.RestrictedMode = patch.RestrictedMode.Value ? true : null;
             // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
             if (patch.GridSlots is <= 0)
                 record.GridSlots = null;
@@ -854,7 +859,9 @@ public sealed class PanelDeviceRegistry
                 record.Portrait = patch.Portrait.Value;
             if (patch.HighResolution.HasValue)
                 record.HighResolution = patch.HighResolution.Value;
-            if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.Small or PanelWidgetSizes.XSmall)
+            if (patch.FpsCap is { } fpsCap)
+                record.FpsCap = fpsCap <= 0 ? null : Math.Min(fpsCap, MaxFpsCap);
+            if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.MidLarge or PanelWidgetSizes.Small or PanelWidgetSizes.Medium or PanelWidgetSizes.XSmall or PanelWidgetSizes.Compact)
                 record.WidgetSize = patch.WidgetSize;
             if (patch.KioskViewport is { } viewport && !string.IsNullOrEmpty(record.DisplayId) && ValidViewport(viewport))
                 record.KioskViewport = new KioskViewportDto { CssWidth = viewport.CssWidth, CssHeight = viewport.CssHeight, Dpr = viewport.Dpr };
@@ -985,6 +992,7 @@ public sealed class PanelDeviceRegistry
             record.SecondaryMonitor = null;
             record.Portrait = null;
             record.HighResolution = null;
+            record.FpsCap = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -1310,6 +1318,7 @@ public sealed class PanelDeviceRegistry
             SecondaryMonitor = r.SecondaryMonitor,
             Portrait = r.Portrait,
             HighResolution = r.HighResolution,
+            FpsCap = r.FpsCap,
             WidgetSize = r.WidgetSize,
             KioskViewport = r.KioskViewport,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
@@ -1327,6 +1336,7 @@ public sealed class PanelDeviceRegistry
             Enabled = r.Hosted ?? r.Enabled,
             ClickThrough = r.ClickThrough,
             WidgetsLocked = r.WidgetsLocked,
+            RestrictedMode = r.RestrictedMode,
             GridSlots = r.GridSlots is > 0 ? r.GridSlots : null,
             DesktopImport = r.DesktopImport,
         };

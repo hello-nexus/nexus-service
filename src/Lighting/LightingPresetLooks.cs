@@ -60,7 +60,7 @@ public static class LightingPresetLooks
     /// <summary>Restore a captured selection. The caller engages the engine after.</summary>
     public static void Apply(LightingSettings lighting, LightingPresetLook look)
     {
-        lighting.Sync = RemovedSyncModes.Normalize(look.Sync);
+        lighting.Sync = SimplePatternMigration.Normalize(RemovedSyncModes.Normalize(look.Sync));
         // A non-finite level propagates through RgbBridge.OnFrame and zeroes
         // every LED, the same hazard POST /lighting/global-brightness guards.
         if (look.GlobalBrightness is { } brightness && float.IsFinite(brightness))
@@ -73,9 +73,10 @@ public static class LightingPresetLooks
         }
         if (!string.IsNullOrEmpty(look.AnimateEffect))
         {
-            lighting.Animate.Effect = look.AnimateEffect;
-            SetSlot(lighting.Animate.Templates, look.AnimateEffect, look.AnimateSlot);
-            WriteState(lighting, lighting.Animate.States, look.AnimateEffect, look.AnimateState);
+            var animateEffect = SimplePatternMigration.Normalize(look.AnimateEffect);
+            lighting.Animate.Effect = animateEffect;
+            SetSlot(lighting.Animate.Templates, animateEffect, look.AnimateSlot);
+            WriteState(lighting, lighting.Animate.States, animateEffect, look.AnimateState);
         }
         lighting.Static.Color = StaticColorHex.TryParse(look.StaticColor, out _, out _, out _) ? look.StaticColor : null;
         if (!string.IsNullOrEmpty(look.StaticEffect))

@@ -32,8 +32,11 @@ public sealed class MacSensorProvider : ISensorProvider, IDisposable
     private readonly Platform.Mac.MacSmc? _smc;
     private readonly Func<string, float?>? _smcRead;
 
-    public MacSensorProvider()
+    private readonly Astral.AstralMonitor? _astral;
+
+    public MacSensorProvider(Astral.AstralMonitor? astral = null)
     {
+        _astral = astral;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
             _smc = new Platform.Mac.MacSmc();
@@ -355,6 +358,7 @@ public sealed class MacSensorProvider : ISensorProvider, IDisposable
             });
         }
 
+        _astral?.AppendSimulatedGpus(gpus);
         return gpus;
     }
 

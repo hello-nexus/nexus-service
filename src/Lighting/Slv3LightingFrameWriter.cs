@@ -502,6 +502,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             Console.Error.WriteLine($"[lianli-wireless-lighting-writer] {macHex} window upload failed");
         }
         st.Failing = !ok;
+        var chainKey = Slv3LightingDeviceProvider.DeviceIdFor(macHex);
+        if (ok) Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(chainKey, "lianli-wireless");
+        else Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(chainKey, "lianli-wireless");
     }
 
     /// <summary>

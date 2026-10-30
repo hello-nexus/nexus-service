@@ -150,6 +150,8 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>The panel's widgets cannot be moved or resized while true. Display-bound records only; null = unlocked.
     /// Per-widget locks stay stored but the panel lock is what the page honors.</summary>
     public bool? WidgetsLocked { get; set; }
+    /// <summary>Manual Restricted mode for this panel, set from the dashboard. Applies to every panel kind; the page ORs it with the system/session state. Null = off; kept null rather than false so default records serialize without the key and profile payload hashes do not move.</summary>
+    public bool? RestrictedMode { get; set; }
     /// <summary>Short-axis cell count of the page grid, even and within <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MinGridSlots"/> to <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MaxGridSlots"/>. Overrides the count <see cref="WidgetSize"/>
     /// would derive; null = derive from <see cref="WidgetSize"/>.</summary>
     public int? GridSlots { get; set; }
@@ -184,7 +186,9 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large" (fewer, bigger widgets), "small" or "xsmall" (a denser grid); null = the panel's
+    /// <summary>Frame rate cap for this device: a streamed display's session rate and secondary-monitor pacing, or how often a display-bound panel page draws. Null = the device's own rate.</summary>
+    public int? FpsCap { get; set; }
+    /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; null = the panel's
     /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
     public string? WidgetSize { get; set; }
     /// <summary>The window size the kiosk on a display-bound record measured, reported by the kiosk itself. Kept apart from <see cref="Capabilities"/>, which the topology sync rebuilds from OS facts.</summary>
@@ -475,6 +479,8 @@ public sealed class PanelDevicePatch
     public bool? ClickThrough { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
     public bool? WidgetsLocked { get; set; }
+    /// <summary>Any panel kind. Desktop token only: PanelRoutes rejects it from panel sessions.</summary>
+    public bool? RestrictedMode { get; set; }
     /// <summary>Even and within the registry's grid slot bounds; anything else is ignored.</summary>
     public int? GridSlots { get; set; }
     /// <summary>True drops the record's pending <see cref="PanelDeviceRecord.DesktopImport"/>; sent with the planned Layout and GridSlots.</summary>
@@ -500,7 +506,9 @@ public sealed class PanelDevicePatch
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
-    /// <summary>"large", "small" or "xsmall"; anything else is ignored. Null = leave it.</summary>
+    /// <summary>Frame rate cap in fps, clamped to PanelDeviceRegistry.MaxFpsCap; 0 or less clears it (the device's own rate). Null = leave it.</summary>
+    public int? FpsCap { get; set; }
+    /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; anything else is ignored. Null = leave it.</summary>
     public string? WidgetSize { get; set; }
     /// <summary>Kiosk-measured window size; applied to display-bound records only.</summary>
     public KioskViewportDto? KioskViewport { get; set; }

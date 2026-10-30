@@ -64,6 +64,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // re-acquiring it once per channel write every tick against a silent hub.
     private const int RetryBaseMs = 1000;
     private const int RetryMaxMs = 30_000;
+    private const int BackoffReportMs = 1000;
 
     [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint period);
     [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint period);
@@ -83,6 +84,14 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     // Signature currently being attempted, so a retry is told apart from a settings change.
     private int? _pendingFirmwareSig;
+
+    /// <summary>Where this writer reports hub rejections.</summary>
+    internal LightingWriteHealth Health { get; set; } = LightingWriteHealth.Shared;
+
+    private long _lastBackoffReportMs = long.MinValue / 2;
+
+    // Set by a tick that reaches a command still waiting on a retry it will make.
+    private bool _retryPending;
 
     // Independent windows: a hub that rejects its attach commands must not gate
     // custom-mode streaming, which does not depend on them landing.
@@ -193,6 +202,13 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
 
     internal void Tick()
     {
+        _retryPending = false;
+        TickCore();
+        ReportStillRejecting();
+    }
+
+    private void TickCore()
+    {
         if (!_gates.Lighting) return;
         if (!_hub.IsConnected)
         {
@@ -235,6 +251,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 NoteFailure(_argbSyncRetry, "ARGB sync");
             }
         }
+        if (_argbSyncSent != argbSync && _argbSyncRetry.Streak > 0)
+        {
+            _retryPending = true;
+        }
         if (!argbSync && _argbRecommitsDone < ArgbReleaseRecommitMs.Length)
         {
             var sinceRelease = NowMs() - _argbReleasedAtMs;
@@ -274,6 +294,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteFailure(_initRetry, "hub init");
             }
+        }
+        if (!_hubInitialised && _initRetry.Streak > 0)
+        {
+            _retryPending = true;
         }
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, fans);
@@ -342,6 +366,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
         else if (_commitRetry.BackingOff(NowMs()))
         {
+            _retryPending = true;
             return;
         }
 
@@ -407,6 +432,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private void NoteFailure(RetryWindow window, string what)
     {
         window.Fail(NowMs());
+        Health.NoteFailure(_hub.DeviceId, _hub.DeviceId);
         if (window.Streak == 1)
         {
             Console.Error.WriteLine(
@@ -414,8 +440,25 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
+    /// <summary>The retry backoff outlasts the tracker's quiet limit, so a command still waiting on a retry is re-reported at a fixed interval until a write lands or the command is no longer wanted.</summary>
+    private void ReportStillRejecting()
+    {
+        if (!_retryPending)
+        {
+            return;
+        }
+        var now = NowMs();
+        if (now - _lastBackoffReportMs < BackoffReportMs)
+        {
+            return;
+        }
+        _lastBackoffReportMs = now;
+        Health.NoteFailure(_hub.DeviceId, _hub.DeviceId);
+    }
+
     private void NoteSuccess(RetryWindow window, string what)
     {
+        Health.NoteSuccess(_hub.DeviceId, _hub.DeviceId);
         if (window.Streak > 0)
         {
             Console.WriteLine(

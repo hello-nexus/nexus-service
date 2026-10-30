@@ -64,6 +64,9 @@ public static class PanelSurfaces
 public static class PanelWidgetSizes
 {
     public const string Large = "large";
+    public const string MidLarge = "midlarge";
     public const string Small = "small";
+    public const string Medium = "medium";
     public const string XSmall = "xsmall";
+    public const string Compact = "compact";
 }

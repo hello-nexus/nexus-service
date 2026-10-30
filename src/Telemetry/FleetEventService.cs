@@ -15,7 +15,7 @@ using Nexus.Service.Store;
 
 namespace Nexus.Service.Telemetry;
 
-/// <summary>Builds/delivers fleet events to nexus-api (system of record, persisted retry) and PostHog (best-effort); <see cref="_gate"/> serializes the route and <see cref="FleetTelemetryWorker"/> call sites.</summary>
+/// <summary>Builds/delivers fleet events to nexus-api (system of record, persisted retry) and the usage sink (best-effort); <see cref="_gate"/> serializes the route and <see cref="FleetTelemetryWorker"/> call sites.</summary>
 internal sealed class FleetEventService
 {
     // Opted-out box: an undelivered opt_out this old is abandoned rather than retried forever.
@@ -49,11 +49,11 @@ internal sealed class FleetEventService
     private readonly DateTimeOffset _startedAt;
     private readonly TimeSpan _usbSettle;
 
-    // Not persisted: caps the install event's PostHog leg to one attempt per process lifetime, independent of nexus-api retries.
-    private bool _postHogInstallAttempted;
+    // Not persisted: caps the install event's usage-sink leg to one attempt per process lifetime, independent of nexus-api retries.
+    private bool _usageInstallAttempted;
 
-    // Not persisted: last consent-transition type PostHog was attempted for; a retry of the same type skips it, a new type gets its own attempt.
-    private string? _postHogConsentAttemptedFor;
+    // Not persisted: last consent-transition type the usage sink was attempted for; a retry of the same type skips it, a new type gets its own attempt.
+    private string? _usageConsentAttemptedFor;
 
     public FleetEventService(
         IConfigStore store,
@@ -154,9 +154,9 @@ internal sealed class FleetEventService
         var payload = BuildEnvelope(type, installId);
         var delivered = await _transport.SendAsync(payload, ct).ConfigureAwait(false);
 
-        if (_postHogConsentAttemptedFor != type)
+        if (_usageConsentAttemptedFor != type)
         {
-            _postHogConsentAttemptedFor = type;
+            _usageConsentAttemptedFor = type;
             if (type == TelemetryEvents.OptOut)
             {
                 // Both consent gates are closed here (flag already false) - send directly to each sink, bypassing Capture.
@@ -215,9 +215,9 @@ internal sealed class FleetEventService
         var payload = BuildEnvelope(TelemetryEvents.Install, installId);
         var delivered = await _transport.SendAsync(payload, ct).ConfigureAwait(false);
 
-        if (!_postHogInstallAttempted)
+        if (!_usageInstallAttempted)
         {
-            _postHogInstallAttempted = true;
+            _usageInstallAttempted = true;
             _telemetry.Capture(TelemetryEvents.Install, ("version", payload.Version), ("os", payload.Os));
         }
 

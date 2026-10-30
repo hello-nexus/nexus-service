@@ -73,6 +73,11 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         _orientation.Bind(source);
     }
 
+    private Func<int?>? _fpsCapSource;
+
+    /// <summary>Supplies the panel record's frame cap, which paces the secondary-monitor feed.</summary>
+    public void BindFpsCap(Func<int?> source) => _fpsCapSource = source;
+
     public event Action? SecondaryMonitorStateChanged;
 
     public string? SecondaryMonitorState => Volatile.Read(ref _monitor)?.State;
@@ -116,7 +121,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             }
             else if (want && _monitor is null)
             {
-                var feed = new SecondaryMonitorFeed(monitors, _hub, PushFrame, () => _orientationSource(), () => SecondaryMonitorStateChanged?.Invoke());
+                var feed = new SecondaryMonitorFeed(monitors, _hub, PushFrame, () => _orientationSource(), () => SecondaryMonitorStateChanged?.Invoke(), () => _fpsCapSource?.Invoke());
                 Volatile.Write(ref _monitor, feed);
                 _monitorStartedMs = Environment.TickCount64;
                 feed.Start();

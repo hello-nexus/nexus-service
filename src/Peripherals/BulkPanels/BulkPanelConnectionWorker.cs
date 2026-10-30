@@ -51,7 +51,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
         {
             try
             {
-                if (!_gate.IsEnabled(driver.HandlerId))
+                if (!_gate.IsClaimed(driver.HandlerId))
                 {
                     _hub.SetOpenAccessDenied(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
@@ -85,7 +85,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                     // device re-enumerated, is what ends the session after an unplug.
                     int misses = 0;
                     while (!stoppingToken.IsCancellationRequested
-                        && _gate.IsEnabled(driver.HandlerId)
+                        && _gate.IsClaimed(driver.HandlerId)
                         && _hub.IsConnected)
                     {
                         misses = _presence.UsbPresent(driver.VendorId, driver.ProductIds) ? 0 : misses + 1;

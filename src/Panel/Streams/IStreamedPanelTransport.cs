@@ -79,6 +79,9 @@ public interface ISecondaryMonitorTransport
     /// <summary>Supplies whether the panel record wants the monitor; re-read on every keepalive tick.</summary>
     void BindSecondaryMonitor(Func<bool> source);
 
+    /// <summary>Supplies the panel record's frame cap (null = the driver's own rate), polled while the monitor runs.</summary>
+    void BindFpsCap(Func<int?> source);
+
     /// <summary>Starts or stops the monitor to match the bound value now.</summary>
     void ApplySecondaryMonitor();
 

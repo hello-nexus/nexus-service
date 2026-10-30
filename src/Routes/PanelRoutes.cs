@@ -13,6 +13,21 @@ namespace Nexus.Service.Routes;
 
 public static class PanelRoutes
 {
+    /// <summary>
+    /// Stamps displayAttached on display-bound records. The virtual monitor a USB device owns reads as
+    /// detached, so a leftover panel record on it never gets a sidebar entry next to the device's own.
+    /// </summary>
+    internal static void MarkDisplayAttached(IEnumerable<PanelDeviceRecord> devices, HashSet<string>? attached, string ownedDisplayId)
+    {
+        foreach (var device in devices)
+        {
+            if (string.IsNullOrEmpty(device.DisplayId)) continue;
+            device.DisplayAttached = ownedDisplayId.Length > 0 && device.DisplayId == ownedDisplayId
+                ? false
+                : attached?.Contains(device.DisplayId);
+        }
+    }
+
     public static void MapPanelEndpoints(this WebApplication app)
     {
         app.MapGet("/panel/status", (PanelKioskLauncher launcher, MultiplexHub hub) =>
@@ -298,12 +313,11 @@ public static class PanelRoutes
             // showing the panel rather than flickering it away.
             if (devices.Any(d => !string.IsNullOrEmpty(d.DisplayId)))
             {
-                var attached = topology.GetAttachedIds();
+                MarkDisplayAttached(devices, topology.GetAttachedIds(), topology.OwnedVirtualDisplayId());
                 foreach (var device in devices)
                 {
-                    if (string.IsNullOrEmpty(device.DisplayId)) continue;
-                    device.DisplayAttached = attached?.Contains(device.DisplayId);
-                    device.Warning = touchRouting.WarningFor(device.DisplayId);
+                    if (!string.IsNullOrEmpty(device.DisplayId))
+                        device.Warning = touchRouting.WarningFor(device.DisplayId);
                 }
             }
             return Results.Json(
@@ -352,6 +366,8 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
+            if (body.RestrictedMode.HasValue && !HasServiceToken(ctx, tokens))
+                return Results.Json(ApiResponse.Fail("restricted_mode_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             if (body.Font is not null && !Nexus.Service.Panel.PanelFontValue.TryNormalize(body.Font, out _))
             {
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
@@ -366,8 +382,11 @@ public static class PanelRoutes
             if (body.LcdBrightness.HasValue)
                 streams.ApplyBrightness(updated.Id);
             if (body.SecondaryMonitor.HasValue)
+            {
                 streams.ApplySecondaryMonitor(updated.Id);
-            if (body.HighResolution.HasValue)
+                streams.Wake();
+            }
+            if (body.HighResolution.HasValue || body.FpsCap.HasValue)
                 streams.Wake();
             BroadcastDeviceChanged(hub, id);
             if (body.Layout is not null)
@@ -535,6 +554,7 @@ public static class PanelRoutes
             {
                 ResetPersonalization(registry, bgLibrary, id);
                 registry.ResetHardwareSettings(id);
+                registry.Patch(id, new PanelDevicePatch { RestrictedMode = false });
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }

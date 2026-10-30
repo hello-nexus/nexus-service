@@ -119,12 +119,6 @@
     <DefineConstants>$(DefineConstants);OFFICIAL_BUILD</DefineConstants>
   </PropertyGroup>
 
-  <!-- Our PostHog project key, injected the same way. A fork shipping it would
-       file its installs under our analytics, so it is not committed. -->
-  <PropertyGroup>
-    <NexusPostHogKey Condition="'$(NexusPostHogKey)' == ''">$(NEXUS_POSTHOG_KEY)</NexusPostHogKey>
-  </PropertyGroup>
-
   <!-- The api.klipy.com app key for the GIF picker, injected the same way. The
        service calls Klipy directly, so a release without it has no GIFs. -->
   <PropertyGroup>
@@ -1178,7 +1172,7 @@
        the CI secret store and in obj/. Always written (empty when absent) so
        BuildInfo.ClientToken resolves in every configuration. -->
   <Target Name="SetClientCredential" BeforeTargets="CoreCompile">
-    <WriteLinesToFile File="$(IntermediateOutputPath)ClientCredential.g.cs" Lines="namespace Nexus.Service { internal static partial class BuildInfo { public const string ClientToken = &quot;$(NexusClientToken)&quot;%3B public const string PostHogKey = &quot;$(NexusPostHogKey)&quot;%3B public const string KlipyKey = &quot;$(NexusKlipyKey)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <WriteLinesToFile File="$(IntermediateOutputPath)ClientCredential.g.cs" Lines="namespace Nexus.Service { internal static partial class BuildInfo { public const string ClientToken = &quot;$(NexusClientToken)&quot;%3B public const string KlipyKey = &quot;$(NexusKlipyKey)&quot;%3B } }" Overwrite="true" WriteOnlyWhenDifferent="true" />
     <ItemGroup>
       <Compile Include="$(IntermediateOutputPath)ClientCredential.g.cs" />
     </ItemGroup>

@@ -60,6 +60,8 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.MonitoringBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Monitoring.MonitoringBroadcaster>());
         services.AddHostedService<Nexus.Service.Activity.MediaTopicPublisher>();
+        services.AddSingleton<Nexus.Service.Lifecycle.RestrictedModePublisher>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lifecycle.RestrictedModePublisher>());
         // ConflictWatcher polls the running process list against
         // ConflictAppCatalog and publishes to the "conflicts" multiplex
         // topic. OpenRgbProcessManager is only registered on Win/Mac, so
@@ -88,6 +90,19 @@ public static class NexusServiceCollectionExtensions
 
     public static IServiceCollection AddNexusSensors(this IServiceCollection services)
     {
+        services.AddSingleton(sp =>
+        {
+            var astral = new Nexus.Service.Sensors.Astral.AstralMonitor(
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                sp.GetRequiredService<Nexus.Service.Platform.Power.ISystemPowerProvider>());
+            // Resolved at raise time: the alert service sits behind the sensors in the graph.
+            astral.AlertSink = notice => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>()
+                .Raise(notice, ignoreMaster: notice.Kind == Nexus.Service.Sensors.Astral.AstralMonitor.CountdownKind);
+            return astral;
+        });
+#if DEV_TOOLS
+        services.AddSingleton<Nexus.Service.Dev.AstralSim>();
+#endif
 #if WINDOWS
         services.AddSingleton<ISensorProvider, LibreHardwareSensorProvider>();
 #elif MACOS
@@ -125,9 +140,9 @@ public static class NexusServiceCollectionExtensions
         // Anonymous fleet heartbeat - post-boot, off the critical path, gated by
         // the collect-anonymous-data setting (default on).
         services.AddHostedService<Nexus.Service.Telemetry.HeartbeatService>();
-        // Product telemetry - anonymous events to PostHog, same opt-out + install
+        // Product telemetry - anonymous events to nexus-api, same opt-out + install
         // id as the heartbeat. Inject ITelemetry and call Capture(...). The flush
-        // worker stays dormant until a PostHog key is configured (PostHogOptions).
+        // worker stays dormant until a sink is enabled (official builds only).
         services.AddSingleton<Nexus.Service.Telemetry.TelemetryClient>();
 #if DEV_TOOLS
         // Dev-tools simulated events: in-memory read-path overlays, never fan or settings writes.
@@ -156,7 +171,7 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>(),
             () => !sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Telemetry.CollectAnonymousData
                 ? "opted_out"
-                : sp.GetRequiredService<Nexus.Service.Telemetry.PostHogOptions>().ProjectApiKey.Length == 0 ? "off" : "on"));
+                : Nexus.Service.Common.ClientCredential.IsOfficial ? "on" : "off"));
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetry>(
             sp => sp.GetRequiredService<Nexus.Service.Telemetry.AppEventRecorder>());
         services.AddSingleton(new Nexus.Service.Telemetry.AppTelemetryRateLimiter(60));
@@ -164,12 +179,9 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetry>(
             sp => sp.GetRequiredService<Nexus.Service.Telemetry.TelemetryClient>());
 #endif
-        services.AddSingleton<Nexus.Service.Telemetry.PostHogOptions>();
-        // Usage sink first: it only enqueues, so a slow or cancelled PostHog send after it cannot lose the drained batch.
         services.AddSingleton(new Nexus.Service.Telemetry.UsageTelemetrySink(Nexus.Service.Common.ClientCredential.IsOfficial));
         services.AddSingleton<Nexus.Service.Telemetry.ITelemetrySink>(
             sp => sp.GetRequiredService<Nexus.Service.Telemetry.UsageTelemetrySink>());
-        services.AddSingleton<Nexus.Service.Telemetry.ITelemetrySink, Nexus.Service.Telemetry.PostHogSink>();
         if (Nexus.Service.Common.ClientCredential.IsOfficial)
         {
             services.AddSingleton<Nexus.Service.Telemetry.IUsageTransport, Nexus.Service.Telemetry.UsageTransport>();
@@ -177,7 +189,7 @@ public static class NexusServiceCollectionExtensions
         }
         services.AddHostedService<Nexus.Service.Telemetry.TelemetryFlushService>();
         // Attaches the hardware/system profile (specs + recognized connected
-        // devices) to the anonymous person via $set. Post-boot, refreshed.
+        // devices) to the anonymous person via Identify. Post-boot, refreshed.
         services.AddHostedService<Nexus.Service.Telemetry.SystemProfileService>();
         // Fleet events (install / specs / opt_out / opt_in) to nexus-api, with
         // persisted per-event delivered state retried at boot and hourly. The
@@ -704,12 +716,20 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Integrations.HomeAssistant.HomeAssistantHub>());
 
+        services.AddSingleton(Nexus.Service.Lighting.LightingWriteHealth.Shared);
+        services.AddHostedService<Nexus.Service.Lighting.LightingWriteHealthBroadcaster>();
+
         if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
         {
             services.AddSingleton<Nexus.Service.Lighting.Rgb.OpenRgbProcessManager>();
             services.AddSingleton<Nexus.Service.Lighting.Rgb.IRgbController>(_ =>
                 new Nexus.Service.Lighting.Rgb.OpenRgbController());
             services.AddSingleton<Nexus.Service.Lighting.Rgb.RgbBridge>();
+            services.AddSingleton(sp => new Nexus.Service.Lighting.Rgb.OpenRgbWriteHealthPoller(
+                sp.GetRequiredService<Nexus.Service.Lighting.LightingWriteHealth>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Rgb.IRgbController>() as Nexus.Service.Lighting.Rgb.IOpenRgbWriteHealthTransport
+                    ?? new Nexus.Service.Lighting.Rgb.NoOpenRgbWriteHealthTransport()));
+            services.AddHostedService<Nexus.Service.Lighting.Rgb.OpenRgbWriteHealthWorker>();
             // The conflict catalog is Windows-only; elsewhere the poll would enumerate processes for nothing.
             if (OperatingSystem.IsWindows())
             {
@@ -1759,6 +1779,7 @@ public static class NexusServiceCollectionExtensions
         }
 
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.CnvsHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.AstralHandler>();
         // The chipset SMBus as a device (present on Windows only): its Nexus
         // Control toggle is what lets a user hand the DIMMs to iCUE or another
         // vendor app. LhmComputer and OpenRgbProcessManager consult the gate.
@@ -2659,7 +2680,11 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
-            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0,
+            () =>
+            {
+                var streams = sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>();
+                return streams.GetAssignments().Assignments.Count > 0 || streams.MonitorProjectedPanelId() is not null;
+            },
             () => sp.GetRequiredService<Nexus.Service.Panel.DisplayIdentifyService>().IsActive,
             settings => sp.GetRequiredService<Nexus.Service.Panel.DesktopWidgetsMigration>().HostCanAdvance(settings)));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
@@ -2757,8 +2782,7 @@ public static class NexusServiceCollectionExtensions
                 notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id),
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
-                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized,
-                fpsCap: () => configStore.Load().StreamedPanelFpsCap);
+                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());
