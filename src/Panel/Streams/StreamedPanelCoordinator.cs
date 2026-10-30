@@ -446,27 +446,24 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     /// <summary>
     /// One-shot upgrade from the retired global cap: copies its value to every known streamed
     /// device record, then clears it so the copy never repeats. A device that was never attached
-    /// has no record and starts at Off. The old Hz list's 1 maps to 5, the lowest rate now offered.
+    /// has no record and starts at Off.
     /// </summary>
     internal void MigrateLegacyFpsCap()
     {
         if (_legacyFpsCap?.Invoke() is not { } legacy) return;
         if (legacy > 0)
         {
-            var value = Math.Max(legacy, LowestFpsCap);
             foreach (var rec in _store.Load().Values)
             {
                 if (string.IsNullOrEmpty(rec.PanelDeviceId)) continue;
                 var record = _registry.Get(rec.PanelDeviceId);
                 if (record is null || record.FpsCap is not null) continue;
-                _registry.Patch(rec.PanelDeviceId, new PanelDevicePatch { FpsCap = value });
+                _registry.Patch(rec.PanelDeviceId, new PanelDevicePatch { FpsCap = legacy });
                 _notifyPanelChanged?.Invoke(rec.PanelDeviceId);
             }
         }
         _clearLegacyFpsCap?.Invoke();
     }
-
-    internal const int LowestFpsCap = 5;
 
     internal void TickOnce()
     {

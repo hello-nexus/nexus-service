@@ -816,7 +816,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     // and the streamed store is written by the real store, so the upgrade reads genuine prior state.
     [Theory]
     [InlineData(null, 10)]
-    [InlineData(1, 5)]
+    [InlineData(1, 1)]
     public void Legacy_global_cap_copies_to_every_known_streamed_record_once(int? legacyOverride, int expected)
     {
         var settingsPath = Path.Combine(Path.GetTempPath(), "nexus-fpsmig-" + Guid.NewGuid().ToString("N") + ".json");
