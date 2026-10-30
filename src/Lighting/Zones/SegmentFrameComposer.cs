@@ -32,7 +32,7 @@ public static class SegmentFrameComposer
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         double masterMul,
         long nowTicks,
         Np50IdentifyTracker? identify,
@@ -156,7 +156,7 @@ public static class SegmentFrameComposer
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -189,6 +189,6 @@ public static class SegmentFrameComposer
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 }

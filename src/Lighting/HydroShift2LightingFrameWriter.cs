@@ -257,24 +257,25 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         return hc.ToHashCode().ToString(CultureInfo.InvariantCulture);
     }
 
-    private static double LoopMasterBrightness(NexusSettings settings)
+    private static MasterLevel LoopMasterBrightness(NexusSettings settings)
     {
-        double master = MasterBrightness.Effective(settings.Lighting);
+        var resolved = MasterBrightness.Resolve(settings.Lighting);
+        var master = resolved.Level;
         if (master <= 0)
         {
-            return 0;
+            return resolved with { Level = 0 };
         }
         var steps = master < 0.1 ? LoopDimBrightnessSteps : LoopBrightnessSteps;
-        return Math.Max(1, Math.Round(master * steps)) / steps;
+        return resolved with { Level = (float)(Math.Max(1, Math.Round(master * steps)) / steps) };
     }
 
     private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring) =>
-        ToRing(settings, id, src, ring, MasterBrightness.Effective(settings.Lighting));
+        ToRing(settings, id, src, ring, MasterBrightness.Resolve(settings.Lighting));
 
-    private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring, double master)
+    private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring, MasterLevel master)
     {
         settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
-        var brightness = Math.Min(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0, master);
+        var brightness = master.Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
         var adjust = DeviceColorAdjust.For(pref);
         for (int i = 0; i + 2 < ring.Length && i + 2 < src.Length; i += 3)
         {
@@ -398,7 +399,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
         // The card and master brightness (and the blackouts that zero it) cap the effect's own
         // level, rounded up so a dim setting dims the ring rather than switching it off.
-        var cap = Math.Min(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0, MasterBrightness.Effective(settings.Lighting));
+        var cap = MasterBrightness.Resolve(settings.Lighting).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
         var level = Math.Min(ls.Brightness, (int)Math.Ceiling(cap * HydroShift2RingEffects.MaxLevel));
         var signature = $"{mode}|{level}|{ls.Speed}|{ls.Direction}|{string.Join(',', ls.Colors)}|{pref?.ColorOrder}";
         if (signature == _effectSignature)

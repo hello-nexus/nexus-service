@@ -140,7 +140,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
 
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         if (panelFrame is null)
@@ -193,7 +193,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
     private void PushLinkChannel(int channel, List<DeviceFrame> chainDevices, ref QColor[]? buffer,
         IReadOnlyList<QSeriesLinkDevice> channelState,
         IReadOnlyList<string> disabled, IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks)
+        MasterLevel globalBrightness, long nowTicks)
     {
         var total = 0;
         foreach (var d in chainDevices) total += FirmwareLedCountOf(channelState, d.Id, d.LedCount);
@@ -236,10 +236,10 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
         if (buffer is null || buffer.Length < n) buffer = new QColor[Math.Max(n, MinLinkBufferCapacity)];
     }
 
-    private static double ComputeBrightnessMul(string id,
+    internal static double ComputeBrightnessMul(string id,
         IReadOnlyList<string> disabled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -262,7 +262,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
     private static void FillBufferSlice(QColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,

@@ -69,7 +69,11 @@ public class BrightnessScale
 /// response and POST body share this shape.</summary>
 public class GlobalBrightnessBody
 {
-    public float Value { get; set; } = 1.0f;
+    /// <summary>Master level. On POST, null leaves the slider unchanged.</summary>
+    public float? Value { get; set; }
+    /// <summary>True when master multiplies per-device brightness instead of capping it.
+    /// On POST, null leaves the setting unchanged.</summary>
+    public bool? MasterScalesDevices { get; set; }
 }
 
 /// <summary>GET response / POST body for /lighting/brightness-schedule: the

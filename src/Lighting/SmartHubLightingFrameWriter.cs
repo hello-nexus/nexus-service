@@ -85,7 +85,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var hubId = _hub.DeviceId;
@@ -185,7 +185,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         System.Collections.Generic.IReadOnlyList<string> disabled,
         System.Collections.Generic.IReadOnlyList<string> uncontrolled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks)
+        MasterLevel globalBrightness, long nowTicks)
     {
         var total = 0;
         for (var i = 0; i < zones.Count; i++) total += Math.Max(0, zones[i].LedCount);
@@ -230,11 +230,11 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         _hub.WriteLighting(channel, new ReadOnlySpan<SmartHubColor>(dst, 0, total));
     }
 
-    private static double ComputeBrightnessMul(string id,
+    internal static double ComputeBrightnessMul(string id,
         System.Collections.Generic.IReadOnlyList<string> disabled,
         System.Collections.Generic.IReadOnlyList<string> uncontrolled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -261,7 +261,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
     private static void FillBufferSlice(SmartHubColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,

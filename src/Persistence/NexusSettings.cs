@@ -799,6 +799,11 @@ public sealed class LightingSettings
     /// a zone can never render brighter than the master level.
     /// Range 0..1; default 1.0 (no cap).</summary>
     public float GlobalBrightness { get; set; } = 1.0f;
+    /// <summary>When on, master brightness multiplies each device's brightness
+    /// (<c>device / 100 * master</c>) so the per-device level acts as a calibration
+    /// offset; when off, master caps it. See <see cref="Nexus.Service.Lighting.MasterBrightness.Combine"/>.
+    /// A whole-PC preference, so it is not captured into presets.</summary>
+    public bool MasterScalesDevices { get; set; }
     /// <summary>Time-of-day cap on <see cref="GlobalBrightness"/>: while enabled
     /// the effective master level is <c>min(GlobalBrightness, schedule(now))</c>,
     /// see <see cref="Nexus.Service.Lighting.MasterBrightness"/>. A whole-day

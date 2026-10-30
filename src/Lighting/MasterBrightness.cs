@@ -22,6 +22,18 @@ public static class MasterBrightness
     public static float Effective(LightingSettings lighting) =>
         Effective(lighting, DateTime.Now, IdleRamp.Cap());
 
+    /// <summary>The master level plus the combine mode, snapshotted once per operation
+    /// so a writer reads the settings a single time. Writers pass this down to the
+    /// place they apply the per-device level and call <see cref="MasterLevel.Combine"/>.</summary>
+    public static MasterLevel Resolve(LightingSettings lighting) =>
+        new(Effective(lighting), lighting.MasterScalesDevices);
+
+    /// <summary>The one rule joining a device's own level and the master level, both
+    /// 0..1. Off: master caps the device (<c>min</c>). On: master multiplies the
+    /// device, so the device level is a calibration offset.</summary>
+    public static double Combine(double device01, double master, bool scales) =>
+        scales ? device01 * master : Math.Min(device01, master);
+
     /// <summary>Effective master level at <paramref name="localNow"/>. With the
     /// schedule's sun shift on and today's sun times known, the generated daylight
     /// curve replaces the user's points; otherwise the user's curve applies.
@@ -137,4 +149,16 @@ public static class MasterBrightness
 
     private const int MinutesPerDay = 24 * 60;
     private const double HoursPerDay = 24;
+}
+
+/// <summary>A resolved master level with the mode that joins it to a device's own
+/// level. See <see cref="MasterBrightness.Combine"/>.</summary>
+public readonly record struct MasterLevel(float Level, bool Scales)
+{
+    /// <summary>Joins a device level (0..1) to this master level.</summary>
+    public double Combine(double device01) => MasterBrightness.Combine(device01, Level, Scales);
+
+    /// <summary>Joins a device level on an integer scale (<paramref name="max"/> steps, e.g. 0..4)
+    /// to this master level, returning a level on the same scale, unrounded.</summary>
+    public double CombineSteps(double deviceSteps, double max) => Combine(deviceSteps / max) * max;
 }

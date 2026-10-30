@@ -117,7 +117,7 @@ public sealed class IbpPeripheralLightingFrameWriter : IHostedService, IDisposab
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         foreach (var unit in attached)

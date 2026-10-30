@@ -51,6 +51,37 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
     }
 
     [Fact]
+    public async Task Master_scales_devices_round_trips_and_each_field_is_independent()
+    {
+        var client = AuthedClient();
+        await client.PostAsync("/lighting/global-brightness", Json("{\"value\":0.42}"));
+
+        var get = await client.GetAsync("/lighting/global-brightness");
+        using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
+        {
+            Assert.False(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
+        }
+
+        // Flag only: the slider must not move.
+        await client.PostAsync("/lighting/global-brightness", Json("{\"masterScalesDevices\":true}"));
+        get = await client.GetAsync("/lighting/global-brightness");
+        using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
+        {
+            Assert.True(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
+            Assert.Equal(0.42, doc.RootElement.GetProperty("value").GetDouble(), 2);
+        }
+
+        // Value only: the flag must not move.
+        await client.PostAsync("/lighting/global-brightness", Json("{\"value\":0.7}"));
+        get = await client.GetAsync("/lighting/global-brightness");
+        using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
+        {
+            Assert.True(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
+            Assert.Equal(0.7, doc.RootElement.GetProperty("value").GetDouble(), 2);
+        }
+    }
+
+    [Fact]
     public async Task Out_of_range_setting_is_clamped_on_write()
     {
         var client = AuthedClient();

@@ -22,6 +22,9 @@ public static class LightingRoutes
 
     private const int MaxSunLabelLength = 80;
 
+    private static Models.Lighting.GlobalBrightnessBody ToGlobalBrightnessBody(Nexus.Service.Persistence.LightingSettings lighting) =>
+        new() { Value = lighting.GlobalBrightness, MasterScalesDevices = lighting.MasterScalesDevices };
+
     private static Models.Lighting.BrightnessScheduleBody BuildBrightnessScheduleBody(
         Nexus.Service.Persistence.BrightnessSchedule schedule, Nexus.Service.Lighting.Sun.SunLocationResolver resolver, bool forceResolve = false)
     {
@@ -283,19 +286,26 @@ public static class LightingRoutes
         // RgbBridge.OnFrame, so a POST takes effect on the next frame push
         // without restarting any effect.
         app.MapGet("/lighting/global-brightness", (Nexus.Service.Persistence.IConfigStore store) =>
-            new Models.Lighting.GlobalBrightnessBody { Value = store.Load().Lighting.GlobalBrightness }).AllowPanel();
+            ToGlobalBrightnessBody(store.Load().Lighting)).AllowPanel();
         app.MapPost("/lighting/global-brightness", (Models.Lighting.GlobalBrightnessBody body,
             Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
         {
             // Math.Clamp(NaN, ...) returns NaN, which would propagate through
             // RgbBridge.OnFrame and zero every LED. Treat a non-finite payload
             // as "no change requested" - fall back to the documented default.
-            var safe = float.IsFinite(body.Value) ? body.Value : 1.0f;
-            var clamped = Math.Clamp(safe, 0f, 1f);
+            float? clamped = body.Value is { } v ? Math.Clamp(float.IsFinite(v) ? v : 1.0f, 0f, 1f) : null;
+            var scales = body.MasterScalesDevices;
             store.Update(s =>
             {
-                s.Lighting.GlobalBrightness = clamped;
-                Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
+                if (scales is { } on)
+                {
+                    s.Lighting.MasterScalesDevices = on;
+                }
+                if (clamped is { } level)
+                {
+                    s.Lighting.GlobalBrightness = level;
+                    Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
+                }
             });
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();

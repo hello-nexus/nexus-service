@@ -279,7 +279,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
 
         // A rejected init is retried on its own window but never aborts the tick:
         // pre-retry this was fire-and-forget, and custom mode streams without it.
@@ -487,7 +487,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private void TickCustom(
         NexusSettings settings,
         DeviceFrame[] devices,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile)
     {
@@ -568,7 +568,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private bool CommitFirmwareMode(
         LianLiLightingSettings ls,
         LianLiModeInfo mode,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,
@@ -639,7 +639,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private bool CommitMergedMode(
         LianLiLightingSettings ls,
         LianLiModeInfo mode,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,
@@ -724,10 +724,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private static byte DeviceBrightnessByte(
         ComposedDevice device,
         int brightness,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         IReadOnlyList<string> disabled)
     {
-        if (globalBrightness <= 0f)
+        if (globalBrightness.Level <= 0f)
         {
             return LianLiLightingModes.BrightnessCodes[0];
         }
@@ -735,7 +735,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             return LianLiLightingModes.BrightnessCodes[0];
         }
-        var idx = (int)Math.Round(Math.Min((double)brightness, globalBrightness * 4.0));
+        var idx = (int)Math.Round(globalBrightness.CombineSteps(brightness, 4.0));
         return LianLiLightingModes.BrightnessCodes[Math.Clamp(idx, 0, 4)];
     }
 
@@ -925,7 +925,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private static int ComputeFirmwareSig(
         LianLiLightingSettings ls,
         bool merged,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,

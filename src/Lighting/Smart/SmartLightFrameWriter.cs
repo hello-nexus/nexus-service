@@ -101,7 +101,7 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var global = MasterBrightness.Effective(settings.Lighting);
+        var global = MasterBrightness.Resolve(settings.Lighting);
         var streamed = false;
 
         for (var i = 0; i < devices.Length; i++)
@@ -113,7 +113,7 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
             if (uncontrolled.Contains(frame.Id)) continue;
 
             var devBrightness = prefs.TryGetValue(frame.Id, out var pref) ? pref.Brightness : 100;
-            var b01 = Math.Min(Math.Clamp(devBrightness, 0, 100) / 100f, global);
+            var b01 = (float)global.Combine(Math.Clamp(devBrightness, 0, 100) / 100f);
             // A bulb is exactly the device that will not match a strip, so the
             // colour trim has to reach here too. Brightness stays out of the
             // trimmed bytes: the provider applies b01 itself.

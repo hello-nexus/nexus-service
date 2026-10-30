@@ -118,12 +118,13 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
 
         var hubDevices = WireOrder(hub.State.Devices, _wireOrder);
         var hubHasLcd = hub.State.HasLcd;
         var portCap = ComputePortCapFactor(hubDevices);
-        var effectiveBrightness = Math.Min(globalBrightness, portCap);
+        // The port power limit stays a hard cap on the master factor in both modes.
+        var effectiveBrightness = globalBrightness with { Level = Math.Min(globalBrightness.Level, portCap) };
 
         var totalLeds = 0;
         var anyChannel = false;
