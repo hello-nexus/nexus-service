@@ -19,7 +19,7 @@ internal static class UmbraLightingPlan
     public static string SourceOf(AsiahorseUmbraSettings s) => IsSource(s.Source) ? s.Source : SourceNexus;
 
     // prefs carries the per-card color order: async effects use the port's own card, merge and sync use the first non-RGB port order.
-    public static byte[][] Build(AsiahorseUmbraSettings s, UmbraPort[] ports, float master, Dictionary<string, LightingDevicePreference>? prefs = null)
+    public static byte[][] Build(AsiahorseUmbraSettings s, UmbraPort[] ports, float master, Dictionary<string, LightingDevicePreference>? prefs = null, bool scales = false)
     {
         string? PortOrder(int p) => prefs is null
             ? null
@@ -58,7 +58,7 @@ internal static class UmbraLightingPlan
             case UmbraEffects.GroupMerge:
             {
                 var (info, values) = Current(UmbraEffects.GroupMerge, s.Merge);
-                frames.Add(UmbraProtocol.EncodeMergeEffect(UmbraEffects.ToBlock(UmbraEffects.GroupMerge, info, values, master, SharedOrder())));
+                frames.Add(UmbraProtocol.EncodeMergeEffect(UmbraEffects.ToBlock(UmbraEffects.GroupMerge, info, values, master, SharedOrder(), scales)));
                 break;
             }
             case UmbraEffects.GroupAsync:
@@ -72,14 +72,14 @@ internal static class UmbraLightingPlan
                     UmbraEffectGroupSettings? state = null;
                     s.Async?.TryGetValue(p.ToString(CultureInfo.InvariantCulture), out state);
                     var (info, values) = Current(UmbraEffects.GroupAsync, state ?? new UmbraEffectGroupSettings());
-                    frames.Add(UmbraProtocol.EncodeAsyncEffect(p, UmbraEffects.ToBlock(UmbraEffects.GroupAsync, info, values, master, PortOrder(p))));
+                    frames.Add(UmbraProtocol.EncodeAsyncEffect(p, UmbraEffects.ToBlock(UmbraEffects.GroupAsync, info, values, master, PortOrder(p), scales)));
                 }
                 break;
             }
             default:
             {
                 var (info, values) = Current(UmbraEffects.GroupSync, s.Sync);
-                frames.Add(UmbraProtocol.EncodeSyncEffect(UmbraEffects.ToBlock(UmbraEffects.GroupSync, info, values, master, SharedOrder())));
+                frames.Add(UmbraProtocol.EncodeSyncEffect(UmbraEffects.ToBlock(UmbraEffects.GroupSync, info, values, master, SharedOrder(), scales)));
                 break;
             }
         }

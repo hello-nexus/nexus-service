@@ -117,7 +117,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var channels = _hub.Snapshot.Channels;
@@ -166,7 +166,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks)
+        MasterLevel globalBrightness, long nowTicks)
     {
         var total = 0;
         for (var i = 0; i < zones.Count; i++) total += Math.Max(0, zones[i].LedCount);
@@ -286,12 +286,12 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private static double ComputeBrightnessMul(
+    internal static double ComputeBrightnessMul(
         string id,
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -318,6 +318,6 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 }

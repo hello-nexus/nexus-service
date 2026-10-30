@@ -2596,7 +2596,7 @@ public sealed class RgbBridge : IDisposable
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var uncontrolledCount = uncontrolled.Count;
         var devicePrefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         _touchedPhysicals.Clear();
@@ -2677,7 +2677,7 @@ public sealed class RgbBridge : IDisposable
                 }
             }
             catch (InvalidOperationException) { devBrightness = 100; }
-            var brightnessMul = Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+            var brightnessMul = globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
 
             if (isOff)
             {

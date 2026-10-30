@@ -118,7 +118,7 @@ public sealed class Np50LightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var devicePrefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         // Classify each NP50 device frame this tick. We expect the engine's
@@ -194,7 +194,7 @@ public sealed class Np50LightingFrameWriter : IHostedService, IDisposable
     private void CopyIntoBuffer(RgbColor[] dst, int dstStart, DeviceFrame frame, int writeLen,
         NexusSettings settings, IReadOnlyList<string> disabled, IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks)
+        MasterLevel globalBrightness, long nowTicks)
     {
         var brightnessMul = ComputeBrightnessMul(frame.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
         var hasIdentify = TryGetActiveIdentify(frame.Id, nowTicks, out var startTicks);
@@ -218,8 +218,8 @@ public sealed class Np50LightingFrameWriter : IHostedService, IDisposable
         return int.TryParse(after.Slice(0, colon), out var port) ? (port, false) : (0, false);
     }
 
-    private double ComputeBrightnessMul(string id, IReadOnlyList<string> disabled, IReadOnlyList<string> uncontrolled,
-        IReadOnlyDictionary<string, LightingDevicePreference> prefs, float globalBrightness,
+    internal static double ComputeBrightnessMul(string id, IReadOnlyList<string> disabled, IReadOnlyList<string> uncontrolled,
+        IReadOnlyDictionary<string, LightingDevicePreference> prefs, MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -246,7 +246,7 @@ public sealed class Np50LightingFrameWriter : IHostedService, IDisposable
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
     private bool TryGetActiveIdentify(string id, long nowTicks, out long startTicks)

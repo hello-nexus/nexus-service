@@ -31,6 +31,12 @@ public sealed class NexusSettings
     public LegacyOverlaySettings Overlay { get; set; } = new();
     public AuthSettings? Auth { get; set; } = new();
     public LightingSettings Lighting { get; set; } = new();
+    /// <summary>When on, master brightness multiplies each device's brightness
+    /// (<c>device / 100 * master</c>) so the per-device level acts as a calibration
+    /// offset; when off, master caps it. See <see cref="Nexus.Service.Lighting.MasterBrightness.Combine"/>.
+    /// Lives beside <see cref="Lighting"/> rather than in it: profile switches, share-apply and
+    /// category reset swap <see cref="Lighting"/> whole, and this is a whole-PC choice they must not touch.</summary>
+    public bool MasterScalesDevices { get; set; }
     public KeebSettings Keeb { get; set; } = new();
     public CoolingSettings Cooling { get; set; } = new();
     public Y70Settings Y70 { get; set; } = new();
@@ -793,10 +799,10 @@ public sealed class LightingSettings
     public string Sync { get; set; } = InstallDefaults.Lighting.Sync;
     public Dictionary<string, float> BrightnessScale { get; set; } = new();
     public bool BrightnessEnabled { get; set; } = InstallDefaults.Lighting.BrightnessEnabled;
-    /// <summary>Master brightness cap applied to every LED channel before it
-    /// leaves the RGB bridge. Caps per-device <see cref="LightingDevicePreference.Brightness"/>
-    /// so the effective brightness for a given LED is <c>min(global, device / 100)</c>:
-    /// a zone can never render brighter than the master level.
+    /// <summary>Master brightness applied to every LED channel before it
+    /// leaves the RGB bridge. By default it caps per-device <see cref="LightingDevicePreference.Brightness"/>
+    /// (<c>min(global, device / 100)</c>); with <see cref="NexusSettings.MasterScalesDevices"/> on it
+    /// multiplies it (<c>global * device / 100</c>).
     /// Range 0..1; default 1.0 (no cap).</summary>
     public float GlobalBrightness { get; set; } = 1.0f;
     /// <summary>Time-of-day cap on <see cref="GlobalBrightness"/>: while enabled

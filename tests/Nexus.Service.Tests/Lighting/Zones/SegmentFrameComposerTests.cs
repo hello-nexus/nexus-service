@@ -66,7 +66,7 @@ public class SegmentFrameComposerTests
             disabled: new List<string>(),
             uncontrolled: new List<string>(),
             prefs: new Dictionary<string, LightingDevicePreference>(),
-            globalBrightness: 1f, masterMul: 1.0, nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
+            globalBrightness: new MasterLevel(1f, false), masterMul: 1.0, nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
 
         Assert.True(touched[0]);
         Assert.True(touched[1]);
@@ -88,7 +88,7 @@ public class SegmentFrameComposerTests
         var buffers = Buffers(structure);
 
         SegmentFrameComposer.Compose(structure, zones, new[] { keys, underglow },
-            new List<string>(), new List<string>(), prefs, globalBrightness: 0.8f, masterMul: 1.0,
+            new List<string>(), new List<string>(), prefs, globalBrightness: new MasterLevel(0.8f, false), masterMul: 1.0,
             nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
 
         // Master caps rather than scales: keys (37%) stay below the 80% master,
@@ -115,7 +115,7 @@ public class SegmentFrameComposerTests
         // master 0.5 over per-zone keys 50% / underglow default 100%, global 1.0:
         // effective = global * master * zone.
         SegmentFrameComposer.Compose(structure, zones, new[] { keys, underglow },
-            new List<string>(), new List<string>(), prefs, globalBrightness: 1f, masterMul: 0.5,
+            new List<string>(), new List<string>(), prefs, globalBrightness: new MasterLevel(1f, false), masterMul: 0.5,
             nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
 
         Assert.Equal(LegacyFillZone(keys, KeebKeyMap.Ansi.LedCount, (1f * 50 / 100.0) * 0.5), buffers[0]);
@@ -136,7 +136,7 @@ public class SegmentFrameComposerTests
         var buffers = Buffers(structure);
 
         SegmentFrameComposer.Compose(structure, zones, new[] { keys, underglow },
-            new List<string>(), new List<string>(), prefs, globalBrightness: 1f, masterMul: 1.0,
+            new List<string>(), new List<string>(), prefs, globalBrightness: new MasterLevel(1f, false), masterMul: 1.0,
             nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers);
 
         // The trimmed zone loses half its red and keeps green/blue; the
@@ -164,7 +164,7 @@ public class SegmentFrameComposerTests
             new List<string> { HubId + ":keys" },
             new List<string>(),
             new Dictionary<string, LightingDevicePreference>(),
-            1f, 1.0, DateTime.UtcNow.Ticks, null, buffers);
+            new MasterLevel(1f, false), 1.0, DateTime.UtcNow.Ticks, null, buffers);
 
         Assert.True(touched[0]);
         // Underglow frame absent: segment untouched, writer skips it.
@@ -184,7 +184,7 @@ public class SegmentFrameComposerTests
             new List<string>(),
             new List<string> { HubId + ":keys" },
             new Dictionary<string, LightingDevicePreference>(),
-            1f, 1.0, DateTime.UtcNow.Ticks, null, buffers);
+            new MasterLevel(1f, false), 1.0, DateTime.UtcNow.Ticks, null, buffers);
 
         Assert.True(touched[0]);
         Assert.All(buffers[0], c => Assert.Equal(default, c));
@@ -202,7 +202,7 @@ public class SegmentFrameComposerTests
 
         SegmentFrameComposer.Compose(structure, zones, new[] { keys },
             new List<string>(), new List<string>(), new Dictionary<string, LightingDevicePreference>(),
-            1f, 1.0, DateTime.UtcNow.Ticks, identify, buffers);
+            new MasterLevel(1f, false), 1.0, DateTime.UtcNow.Ticks, identify, buffers);
 
         // Scheduled just now: the flash starts in its on half-period.
         Assert.All(buffers[0], c => Assert.Equal(new RgbColor(255, 255, 255), c));
@@ -240,7 +240,7 @@ public class SegmentFrameComposerTests
 
         var touched = SegmentFrameComposer.Compose(structure, zones, new[] { span },
             new List<string>(), new List<string>(), new Dictionary<string, LightingDevicePreference>(),
-            1f, 1.0, DateTime.UtcNow.Ticks, null, buffers);
+            new MasterLevel(1f, false), 1.0, DateTime.UtcNow.Ticks, null, buffers);
 
         // The span zone touches both hardware segments.
         Assert.True(touched[0]);

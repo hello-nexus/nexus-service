@@ -207,7 +207,8 @@ public sealed class UmbraConnectionWorker : BackgroundService
         var frames = new List<byte[]>();
         if (lighting)
         {
-            frames.AddRange(UmbraLightingPlan.Build(plan, _hub.Snapshot.Ports, MasterBrightness.Effective(settings.Lighting), settings.Devices.LightingDevicePrefs));
+            var master = MasterBrightness.Resolve(settings);
+            frames.AddRange(UmbraLightingPlan.Build(plan, _hub.Snapshot.Ports, master.Level, settings.Devices.LightingDevicePrefs, master.Scales));
         }
         // Fans stop following the software duty and go back to the PWM input header.
         if (cooling && !ls.FanSyncMb)
