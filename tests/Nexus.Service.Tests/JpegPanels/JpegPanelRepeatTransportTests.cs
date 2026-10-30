@@ -103,7 +103,7 @@ public sealed class JpegPanelRepeatTransportTests
             {
                 var other = new Thread(() => f.Transport.RepeatLast(RepeatMs));
                 other.Start();
-                other.Join();
+                Assert.True(other.Join(TimeSpan.FromSeconds(5)), "repeat blocked on the hub lock");
             };
         }
 
