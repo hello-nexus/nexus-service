@@ -339,6 +339,11 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         {
             if (_hub.Width != _width || _hub.Height != _height)
             {
+                if (!_dropLogged)
+                {
+                    _dropLogged = true;
+                    ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frame rejected: panel runs {_hub.Width}x{_hub.Height}, stream is {_width}x{_height}");
+                }
                 return false;
             }
             if (_hub.SendFrame(_orientation.Apply(frame, _width, _height), _width, _height))
@@ -354,7 +359,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             if (!_dropLogged)
             {
                 _dropLogged = true;
-                ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frame rejected; retrying on the next frame");
+                ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frame rejected: the panel did not take the write; retrying");
             }
             return false;
         }

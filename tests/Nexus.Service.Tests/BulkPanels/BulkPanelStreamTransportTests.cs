@@ -114,6 +114,21 @@ public class BulkPanelStreamTransportTests
     }
 
     [Fact]
+    public void A_rejected_first_frame_is_resent_while_the_desktop_stays_still()
+    {
+        using var hub = new BulkPanelHub(new UndimmableDriver { SecondaryMonitor = true });
+        var pipe = new RecordingPipe { RejectWrites = 1 };
+        Assert.True(hub.Attach(pipe, null));
+        var host = new FakeMonitorHost();
+        using var transport = new BulkPanelStreamTransport(hub, "serial", host);
+        transport.BindSecondaryMonitor(() => true);
+
+        transport.ApplySecondaryMonitor();
+
+        Assert.True(SpinWait.SpinUntil(() => transport.SecondaryMonitorState == SecondaryMonitorStates.Active, 8000));
+    }
+
+    [Fact]
     public void Secondary_monitor_reports_a_missing_driver()
     {
         using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
@@ -214,8 +229,14 @@ public class BulkPanelStreamTransportTests
         public ConcurrentBag<byte[]> FrameWrites { get; } = new();
         public ConcurrentQueue<byte[]> Input { get; } = new();
 
+        public int RejectWrites;
+
         public bool Write(ReadOnlySpan<byte> data)
         {
+            if (Interlocked.Decrement(ref RejectWrites) >= 0)
+            {
+                return false;
+            }
             FrameWrites.Add(data.ToArray());
             return true;
         }
