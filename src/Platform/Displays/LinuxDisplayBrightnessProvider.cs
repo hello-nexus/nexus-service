@@ -45,6 +45,9 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     // Without DRM connector status files (NVIDIA without modeset) a hotplug leaves no sysfs trace, so the scan ages out instead.
     internal const long NoConnectorRescanMs = 300_000;
 
+    // A connected display can ignore its first probes while it wakes, with no sysfs change after; retry such a scan a few times per signature.
+    internal const int MaxRejectRetries = 5;
+
     private readonly Func<(string Signature, bool HasConnectors)> _signature;
     private readonly Func<IEnumerable<Target>> _scan;
     private readonly Func<long> _clock;
@@ -52,19 +55,33 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     private string? _ddcSignature;
     private long _lastScanAt;
     private readonly HashSet<string> _missedIds = new();
+    private readonly ScanStats _stats;
+    private int _rejectRetries;
+
+    /// <summary>Filled by the scan: connected connectors none of whose candidate buses answered.</summary>
+    internal sealed class ScanStats
+    {
+        public int Unanswered;
+    }
 
     internal sealed record Target(bool Internal, string? BacklightDir, int I2cBus, DisplayDto Dto, string PnpId = "");
 
     public LinuxDisplayBrightnessProvider()
-        : this(() => ComputeDisplaySignature(DrmRoot, DevRoot), () => EnumerateDdc(DrmRoot), () => Environment.TickCount64)
+        : this(new ScanStats())
     {
     }
 
-    internal LinuxDisplayBrightnessProvider(Func<(string Signature, bool HasConnectors)> signature, Func<IEnumerable<Target>> scan, Func<long> clock)
+    private LinuxDisplayBrightnessProvider(ScanStats stats)
+        : this(() => ComputeDisplaySignature(DrmRoot, DevRoot), () => EnumerateDdc(DrmRoot, stats), () => Environment.TickCount64, stats)
+    {
+    }
+
+    internal LinuxDisplayBrightnessProvider(Func<(string Signature, bool HasConnectors)> signature, Func<IEnumerable<Target>> scan, Func<long> clock, ScanStats? stats = null)
     {
         _signature = signature;
         _scan = scan;
         _clock = clock;
+        _stats = stats ?? new ScanStats();
     }
 
     public string Hint { get; private set; } = "";
@@ -283,7 +300,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 
     // ── External monitors (DDC/CI over i2c-dev) ──
 
-    // Caller holds _gate. A scan does i2c traffic that stalls GPU frames, so it reruns only when sysfs changed.
+    // Caller holds _gate. A scan does i2c traffic that stalls GPU frames, so it reruns only when sysfs changed, on age-out, or on a bounded retry of an unanswered connector.
     private List<Target> DdcTargets()
     {
         if (Environment.GetEnvironmentVariable(DisableDdcEnv) == "1")
@@ -292,13 +309,22 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         var (signature, hasConnectors) = _signature();
         var now = _clock();
         var aged = !hasConnectors && now - _lastScanAt >= NoConnectorRescanMs;
-        if (_ddcScan is null || signature != _ddcSignature || aged)
+        var changed = _ddcScan is null || signature != _ddcSignature;
+        var retry = !changed && _stats.Unanswered > 0 && _rejectRetries < MaxRejectRetries && now - _lastScanAt >= ForcedRescanMinMs;
+        if (changed || aged || retry)
+        {
+            if (changed)
+                _rejectRetries = 0;
+            else if (retry)
+                _rejectRetries++;
             ScanLocked(signature, now);
+        }
         return _ddcScan!;
     }
 
     private void ScanLocked(string signature, long now)
     {
+        _stats.Unanswered = 0;
         _ddcScan = _scan().ToList();
         _ddcSignature = signature;
         _lastScanAt = now;
@@ -379,13 +405,16 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         return (sb.ToString(), connectors > 0);
     }
 
-    private static IEnumerable<Target> EnumerateDdc(string drmRoot)
+    private static IEnumerable<Target> EnumerateDdc(string drmRoot, ScanStats stats)
     {
         if (Environment.GetEnvironmentVariable(DisableDdcEnv) == "1")
             yield break;
 
         // A bus is a DDC/CI monitor only if it answers a VCP 0x10 read.
-        foreach (var bus in ProbeCandidates(SelectDdcCandidates(drmRoot, log: ScanLog), b => ReadDdcVcp(b, VcpBrightness) is not null, ScanLog))
+        var groups = SelectDdcCandidates(drmRoot, log: ScanLog);
+        var accepted = ProbeCandidates(groups, b => ReadDdcVcp(b, VcpBrightness) is not null, ScanLog);
+        stats.Unanswered = groups.Count(g => !g.Primary.Concat(g.Fallback).Any(accepted.Contains));
+        foreach (var bus in accepted)
         {
             var (mfg, model, pnpId) = ReadEdidIdentity(bus);
             ScanLog($"i2c-{bus} accepted: mfg='{mfg}' model='{model}' pnp='{pnpId}'");
@@ -413,7 +442,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 
     private const string I2cDevicesRoot = "/sys/bus/i2c/devices";
 
-    // One line per scan decision, so a bundle shows why a monitor was or was not reached. Scans are rate limited (sysfs change, forced rescan, age-out).
+    // One line per scan decision, so a bundle shows why a monitor was or was not reached. Scans are rate limited (sysfs change, forced rescan, age-out, unanswered-connector retry).
     private static void ScanLog(string message) => ServiceLog.Info($"[ddc-scan] {message}");
 
     internal sealed record DdcCandidates(List<int> Primary, List<int> Fallback);

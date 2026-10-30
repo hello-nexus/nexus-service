@@ -399,6 +399,113 @@ public class LinuxDisplayBrightnessTests
     }
 
     [Fact]
+    public void Enumerate_RetriesAScanThatRejectedABusUntilTheRetryCap()
+    {
+        var stats = new LinuxDisplayBrightnessProvider.ScanStats();
+        var scans = 0;
+        long now = 0;
+        var p = new LinuxDisplayBrightnessProvider(
+            () => ("a", true),
+            () =>
+            {
+                scans++;
+                stats.Unanswered = 1;
+                return Array.Empty<LinuxDisplayBrightnessProvider.Target>();
+            },
+            () => now,
+            stats);
+
+        p.Enumerate();
+        p.Enumerate();
+        Assert.Equal(1, scans);
+
+        for (var i = 1; i <= LinuxDisplayBrightnessProvider.MaxRejectRetries + 2; i++)
+        {
+            now = i * LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+            p.Enumerate();
+        }
+        Assert.Equal(1 + LinuxDisplayBrightnessProvider.MaxRejectRetries, scans);
+    }
+
+    [Fact]
+    public void RequestRescan_DoesNotRearmTheRetryCap()
+    {
+        var stats = new LinuxDisplayBrightnessProvider.ScanStats();
+        var scans = 0;
+        long now = 0;
+        var p = new LinuxDisplayBrightnessProvider(
+            () => ("a", true),
+            () =>
+            {
+                scans++;
+                stats.Unanswered = 1;
+                return Array.Empty<LinuxDisplayBrightnessProvider.Target>();
+            },
+            () => now,
+            stats);
+
+        for (var i = 0; i <= LinuxDisplayBrightnessProvider.MaxRejectRetries; i++)
+        {
+            now = i * LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+            p.Enumerate();
+        }
+        var before = scans;
+        now += LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+        p.RequestRescan();
+        now += LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+        p.Enumerate();
+        Assert.Equal(before + 1, scans);
+    }
+
+    [Fact]
+    public void Enumerate_RetryWaitsOutTheRescanGap()
+    {
+        var stats = new LinuxDisplayBrightnessProvider.ScanStats();
+        var scans = 0;
+        long now = 0;
+        var p = new LinuxDisplayBrightnessProvider(
+            () => ("a", true),
+            () =>
+            {
+                scans++;
+                stats.Unanswered = 1;
+                return Array.Empty<LinuxDisplayBrightnessProvider.Target>();
+            },
+            () => now,
+            stats);
+
+        p.Enumerate();
+        now = LinuxDisplayBrightnessProvider.ForcedRescanMinMs - 1;
+        p.Enumerate();
+        Assert.Equal(1, scans);
+    }
+
+    [Fact]
+    public void Enumerate_StopsRetryingOnceEveryBusAnswers()
+    {
+        var stats = new LinuxDisplayBrightnessProvider.ScanStats();
+        var scans = 0;
+        long now = 0;
+        var p = new LinuxDisplayBrightnessProvider(
+            () => ("a", true),
+            () =>
+            {
+                scans++;
+                stats.Unanswered = scans == 1 ? 1 : 0;
+                return Array.Empty<LinuxDisplayBrightnessProvider.Target>();
+            },
+            () => now,
+            stats);
+
+        p.Enumerate();
+        now = LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+        p.Enumerate();
+        now *= 3;
+        p.Enumerate();
+        Assert.Equal(2, scans);
+    }
+
+    [Fact]
     public void RequestRescan_ScansImmediatelyOrIsDropped()
     {
         var f = new ScanFixture();
