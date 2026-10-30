@@ -132,10 +132,10 @@ internal static class ShaderLibrary
         return h.ToString("x8");
     }
 
-    /// <summary>Resolve an effect name ("plasma") to its concatenated GLSL source.</summary>
     private static readonly System.Text.RegularExpressions.Regex OutGainDefinition =
         new(@"float\s+outGain\s*\(\s*\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+    /// <summary>Resolve an effect name ("plasma") to its concatenated GLSL source.</summary>
     public static string Get(string effectName)
     {
         if (IsCustomKey(effectName))
