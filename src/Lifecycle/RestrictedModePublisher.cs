@@ -101,9 +101,17 @@ internal static partial class OobeDetector
     /// <summary>
     /// Windows: kernel32 OOBEComplete. If the export is missing on this build
     /// or the call fails, falls back to the SystemSetupInProgress registry flag. Other platforms: false.
+    /// Dev-tools builds also report true while the <c>dev-simulate-oobe</c> marker file exists in the data dir.
     /// </summary>
     internal static bool IsInOobe()
     {
+#if DEV_TOOLS
+        // Read on every call so creating or deleting the file flips setup on or off live.
+        if (File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Nexus", "dev-simulate-oobe")))
+        {
+            return true;
+        }
+#endif
 #if WINDOWS
         try
         {
