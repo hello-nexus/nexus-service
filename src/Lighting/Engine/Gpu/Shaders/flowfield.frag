@@ -58,3 +58,5 @@ void main() {
     col += tintedPalette(0.1 + ang0 / 12.0) * 0.1;
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.33; }

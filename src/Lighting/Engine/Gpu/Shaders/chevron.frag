@@ -19,3 +19,5 @@ void main() {
     col *= 0.3 + 0.7 * groove;
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.90; }

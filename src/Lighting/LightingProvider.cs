@@ -1416,7 +1416,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "sharplines" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
         "breathing" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
         "clockfill" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
-        "fire" => new(0.03f, 0.80f, 70f, 1.10f, 1.05f, 1f),
+        "fire" => new(0.00f, 0.15f, 70f, 1.10f, 1.05f, 1f),
         "plasma" => new(0.85f, 0.30f, 60f, 1.00f, 1.00f, 1f),
         "spiral" => new(0.00f, 0.00f, 55f, 1.00f, 1.00f, 1f),
         "matrix" => new(0.33f, 0.75f, 80f, 1.10f, 1.10f, 1f),

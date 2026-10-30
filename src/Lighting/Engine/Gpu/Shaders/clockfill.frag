@@ -51,5 +51,7 @@ void main() {
     float e = fract(ph) * (1.0 + w);
     float s = 1.0 - smoothstep(e - w, e, x);
     // tonemap, not finalize: the slots own the color, so the global tint is off.
-    fragColor = vec4(tonemap(mix(passColor(n - 1.0), passColor(n), s)), 1.0);
+    fragColor = vec4(gainOut(tonemap(mix(passColor(n - 1.0), passColor(n), s))), 1.0);
 }
+
+float outGain() { return 1.90; }

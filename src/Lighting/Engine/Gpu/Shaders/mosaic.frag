@@ -23,3 +23,5 @@ void main() {
     col *= 1.0 + pop * (0.5 + 0.5 * sin(ph * 6.28318530));
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.48; }

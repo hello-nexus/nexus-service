@@ -1430,17 +1430,6 @@
   "selected": 0,
   "slots": [
    {
-    "speed": 50,
-    "intensity": 1,
-    "hue": 0,
-    "colorize": 0,
-    "saturation": 1,
-    "contrast": 1,
-    "params": {
-     "u_freq": 6
-    }
-   },
-   {
     "speed": 85,
     "intensity": 1,
     "hue": 0.08,
@@ -1449,6 +1438,17 @@
     "contrast": 1.05,
     "params": {
      "u_freq": 12
+    }
+   },
+   {
+    "speed": 50,
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_freq": 6
     }
    },
    {
@@ -7445,6 +7445,18 @@
   "selected": 0,
   "slots": [
    {
+    "speed": 60,
+    "intensity": 1,
+    "hue": 0.0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_span": 0.15,
+     "u_dip": 0
+    }
+   },
+   {
     "speed": 50,
     "intensity": 1,
     "hue": 0,
@@ -7453,18 +7465,6 @@
     "contrast": 1,
     "params": {
      "u_span": 1,
-     "u_dip": 0
-    }
-   },
-   {
-    "speed": 40,
-    "intensity": 1,
-    "hue": 0.0,
-    "colorize": 0,
-    "saturation": 1,
-    "contrast": 1,
-    "params": {
-     "u_span": 0.15,
      "u_dip": 0
     }
    },
@@ -7497,6 +7497,21 @@
  "sweepbrush": {
   "selected": 0,
   "slots": [
+   {
+    "speed": 45,
+    "intensity": 1,
+    "hue": 0.8,
+    "colorize": 0.5,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_strokes": 6,
+     "u_feather": 0.18,
+     "u_fill": 0.35,
+     "u_rotation": 270,
+     "u_wash": 0.65
+    }
+   },
    {
     "speed": 50,
     "intensity": 1,
@@ -7540,21 +7555,6 @@
      "u_fill": 0.8,
      "u_rotation": 0,
      "u_wash": 0.9
-    }
-   },
-   {
-    "speed": 45,
-    "intensity": 1,
-    "hue": 0.8,
-    "colorize": 0.5,
-    "saturation": 1,
-    "contrast": 1,
-    "params": {
-     "u_strokes": 6,
-     "u_feather": 0.18,
-     "u_fill": 0.35,
-     "u_rotation": 270,
-     "u_wash": 0.65
     }
    }
   ]

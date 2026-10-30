@@ -154,3 +154,5 @@ void main() {
     }
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.18; }

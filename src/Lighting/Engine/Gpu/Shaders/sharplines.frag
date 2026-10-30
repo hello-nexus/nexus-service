@@ -21,3 +21,5 @@ void main() {
     vec3 col = hsv2rgb(vec3(cell * 0.2 + u_hue, 1.0, 1.0)) * lit;
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.90; }

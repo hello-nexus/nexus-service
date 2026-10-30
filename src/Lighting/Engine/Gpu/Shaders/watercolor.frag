@@ -37,3 +37,5 @@ void main() {
     col = col + paper * (1.0 - min(totalAlpha, 1.0));
     fragColor = vec4(finalize(col * 1.6), 1.0);
 }
+
+float outGain() { return 1.62; }

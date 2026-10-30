@@ -153,9 +153,23 @@ float sweep01() {
     return fract(atan(p.y, p.x) / 6.28318 + 1.0);
 }
 
-// Soft-knee tonemap to keep HDR highlights from clipping.
+// Soft-knee tonemap to keep HDR highlights from clipping. It compresses by the
+// brightest channel and scales all three by the same factor, so hue and
+// saturation survive; a per-channel curve would desaturate bright colors.
 vec3 tonemap(vec3 c) {
-    return c / (1.0 + c);
+    vec3 p = max(c, 0.0);
+    return p / (1.0 + max(max(p.r, p.g), p.b));
+}
+
+// Each effect that tonemaps defines outGain(): a constant multiplier applied
+// after the tonemap, sized so its brightest pixel peaks near the top of the
+// range without clipping. Hue, saturation and structure are untouched; the
+// clamp is a safety net. ShaderLibrary.Get appends a unity outGain() to any
+// composed source whose body defines none, since a defined gainOut() may not
+// call an undefined function on every GLSL ES compiler.
+float outGain();
+vec3 gainOut(vec3 c) {
+    return clamp(c * outGain(), 0.0, 1.0);
 }
 
 // Post-process every effect's output: blend from palette-shifted colour
@@ -171,7 +185,7 @@ vec3 finalize(vec3 col) {
     float bl = dot(max(blended, 0.0), vec3(0.2126, 0.7152, 0.0722));
     blended = mix(vec3(bl), blended, clamp(u_saturation, 0.0, 4.0));
     blended = (blended - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
-    return tonemap(max(blended, 0.0));
+    return gainOut(tonemap(max(blended, 0.0)));
 }
 
 // Hash + value noise - fast, cheap, good enough for lighting.

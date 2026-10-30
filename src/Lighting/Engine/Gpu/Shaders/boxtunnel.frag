@@ -25,3 +25,5 @@ void main() {
     col += vec3(1.0, 0.95, 0.85) * (0.5 / (1.0 + d * d * 30.0));
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.65; }

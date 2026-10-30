@@ -18,6 +18,19 @@ float flame(vec2 uv, float t, float turb) {
     return n / 1.40;
 }
 
+// A flame color stop: the authored saturated color rotated by the Hue slider
+// around the grey axis, or the album-art palette sample when art colors are on.
+vec3 flameStop(vec3 c, float artT) {
+    vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
+    if (u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0) {
+        return artPalette(artT) * 1.4;
+    }
+    float ca = cos(u_hue * 6.28318);
+    float sa = sin(u_hue * 6.28318);
+    vec3 k = vec3(0.57735);
+    return c * ca + cross(k, c) * sa + k * dot(k, c) * (1.0 - ca);
+}
+
 void main() {
     // uv01() returns top-left origin: y=0 at the TOP, y=1 at the BOTTOM
     // of the rendered frame. The fire's base sits at uv.y=1 and tongues
@@ -36,23 +49,21 @@ void main() {
     float density = n * 1.8 - (1.0 - uv.y) * 1.6 + 0.55;
     density = clamp(density, 0.0, 1.2);
 
-    // Heat ramp: black -> dim red -> orange -> yellow -> white core.
-    // Sampling tintedPalette across 0.97..0.13 walks the warm half of the
-    // rainbow without ever crossing into green/blue, so under any user
-    // hue offset the fire still reads fire-shaped.
+    // Heat ramp: black -> deep red -> orange -> yellow -> pale-yellow tip.
+    // Three saturated layers keep red, orange and yellow distinct; only the
+    // very hottest pixels reach the near-white tip. Stops stay within a
+    // modest range so the tonemap barely has to compress them.
     vec3 col = vec3(0.0);
-    col = mix(col, tintedPalette(0.97) * 0.7,  smoothstep(0.04, 0.22, density));
-    col = mix(col, tintedPalette(0.04) * 1.3,  smoothstep(0.22, 0.50, density));
-    col = mix(col, tintedPalette(0.12) * 1.8,  smoothstep(0.50, 0.78, density));
-    // White-hot core: deliberately overrange so the soft-knee tonemap in
-    // finalize() rolls it off into a believable bloom rather than clipping.
-    col = mix(col, vec3(1.5, 1.4, 1.05),       smoothstep(0.78, 1.05, density));
+    col = mix(col, flameStop(vec3(0.62, 0.03, 0.0), 0.97), smoothstep(0.04, 0.30, density));
+    col = mix(col, flameStop(vec3(1.00, 0.36, 0.02), 0.04), smoothstep(0.30, 0.62, density));
+    col = mix(col, flameStop(vec3(1.10, 0.74, 0.05), 0.12), smoothstep(0.62, 0.95, density));
+    col = mix(col, vec3(1.25, 1.05, 0.40),                  smoothstep(1.08, 1.20, density));
 
     // Always-on coal bed at the very base so the fire feels grounded
     // even where the noise dips. The uv.y^5 falloff keeps the glow from
     // bleeding more than ~25% up the frame.
     float coal = pow(uv.y, 5.0);
-    col += tintedPalette(0.07) * coal * (0.7 + n * 0.6);
+    col += flameStop(vec3(1.00, 0.30, 0.02), 0.07) * coal * (0.3 + n * 0.3);
 
     // Subtle low-frequency horizontal heat shimmer in the bottom strip.
     // Reads as the haze of hot air directly above the fuel bed.
@@ -61,3 +72,5 @@ void main() {
 
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.41; }

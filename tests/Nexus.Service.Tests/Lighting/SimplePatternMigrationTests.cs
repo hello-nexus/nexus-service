@@ -56,7 +56,8 @@ public sealed class SimplePatternMigrationTests : IDisposable
         Assert.True(AnimateTemplateDefaults.All.TryGetValue(key, out var bundle));
         Assert.Equal(4, bundle.Slots.Count);
         Assert.All(bundle.Slots, slot => Assert.NotNull(slot));
-        Assert.Equal(50, bundle.Slots[0]!.Speed);
+        // Brush leads with its violet preset, which runs a little slower; Color Cycle with its fast orange fade.
+        Assert.Equal(key == "sweepbrush" ? 45 : key == "sweepcycle" ? 60 : 50, bundle.Slots[0]!.Speed);
     }
 
     [Fact]
@@ -413,8 +414,8 @@ public sealed class SimplePatternMigrationTests : IDisposable
         var specs = Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Params("sweepbrush");
         Assert.False(specs.ContainsKey("u_step"));
         var stock = AnimateTemplateDefaults.Slot("sweepbrush", 0)!;
-        Assert.Equal(0.5f, stock.Params["u_wash"]);
-        Assert.Equal(0f, stock.Params["u_rotation"]);
+        Assert.Equal(0.65f, stock.Params["u_wash"]);
+        Assert.Equal(270f, stock.Params["u_rotation"]);
         for (var slot = 0; slot < AnimateTemplateDefaults.SlotCount; slot++)
         {
             var look = AnimateTemplateDefaults.Slot("sweepbrush", slot)!;

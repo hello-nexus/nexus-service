@@ -108,3 +108,5 @@ void main() {
     col += bg / max(bgw, 1e-4) * 0.34;
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.03; }

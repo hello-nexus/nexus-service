@@ -46,7 +46,8 @@ public sealed class PostProcessState
 /// _prelude.frag. Applies hue rotation, colorize (blend toward luma-tinted
 /// accent), saturation, and contrast to an RGB888 byte buffer in-place.
 ///
-/// NOTE: deliberately omits the `x / (1+x)` soft-knee tonemap that the shader
+/// NOTE: deliberately omits the soft-knee tonemap (each channel divided by one
+/// plus the brightest channel) and the per-effect output gain that the shader
 /// uses. Animate shaders emit HDR-ish values (e.g. `finalize(col * 2.2)` in
 /// starfield) where the tonemap is the mapping step back into display range.
 /// Screen Mirror and Media frames arrive already in sRGB [0, 1]; running them

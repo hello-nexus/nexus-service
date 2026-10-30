@@ -112,5 +112,7 @@ void main() {
         col += vec3(bright * exp(-(d * d) / (core * core)) * twinkle * 0.4) * (1.0 - uv.y * 0.6);
     }
     // tonemap, not finalize: the wheel range owns the color, so the global tint is off.
-    fragColor = vec4(tonemap(col), 1.0);
+    fragColor = vec4(gainOut(tonemap(col)), 1.0);
 }
+
+float outGain() { return 1.29; }
