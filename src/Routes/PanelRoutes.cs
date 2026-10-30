@@ -304,7 +304,7 @@ public static class PanelRoutes
                     if (streamed.Contains(device.Id))
                         device.Streamed = true;
                     if (monitors.TryGetValue(device.Id, out var monitorState))
-                        device.SecondaryMonitorState = monitorState;
+                        ApplyMonitorState(device, monitorState, streams);
                 }
             }
             // displayAttached is response-only state for display-bound records
@@ -332,7 +332,7 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapGet("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRegistry registry, IServiceProvider sp) =>
+        app.MapGet("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRegistry registry, IServiceProvider sp, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
             var record = registry.Get(id);
             if (record is null)
@@ -352,6 +352,8 @@ public static class PanelRoutes
                     record.Id);
             }
             registry.Touch(id);
+            if (streams.SecondaryMonitorStates().TryGetValue(id, out var monitorState))
+                ApplyMonitorState(record, monitorState, streams);
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
@@ -660,6 +662,13 @@ public static class PanelRoutes
                 return Results.NotFound(ApiResponse.Fail("device not found"));
             return Results.Ok(ApiResponse.Ok("removed"));
         });
+    }
+
+    private static void ApplyMonitorState(PanelDeviceRecord device, string state, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams)
+    {
+        device.SecondaryMonitorState = state;
+        if (state == Nexus.Service.Panel.Streams.SecondaryMonitorStates.InUse)
+            device.SecondaryMonitorHolder = streams.MonitorOwner()?.Name;
     }
 
     private static void BroadcastDeviceChanged(MultiplexHub hub, string deviceId)

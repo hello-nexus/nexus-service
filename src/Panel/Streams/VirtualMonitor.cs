@@ -10,6 +10,8 @@ public static class SecondaryMonitorStates
     public const string Starting = "starting";
     public const string Active = "active";
     public const string DriverMissing = "driver-missing";
+    /// <summary>The one virtual monitor Nexus can create is already held by another device.</summary>
+    public const string InUse = "in-use";
     public const string Failed = "failed";
 }
 

@@ -668,12 +668,18 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         string? id = null;
         lock (_lock)
         {
+            // A device refused the monitor passes through starting and failed, so a live one wins.
             foreach (var ds in _bySerial.Values)
             {
-                if (!ds.Session.Closed && ds.Transport is ISecondaryMonitorTransport { SecondaryMonitorState: not null })
+                if (!ds.Session.Closed && ds.Transport is ISecondaryMonitorTransport { SecondaryMonitorState: { } state }
+                    && state != Nexus.Service.Panel.Streams.SecondaryMonitorStates.InUse)
                 {
-                    id = ds.Session.PanelDeviceId;
-                    break;
+                    if (state == Nexus.Service.Panel.Streams.SecondaryMonitorStates.Active)
+                    {
+                        id = ds.Session.PanelDeviceId;
+                        break;
+                    }
+                    id ??= ds.Session.PanelDeviceId;
                 }
             }
         }
@@ -692,7 +698,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             {
                 if (!ds.Session.Closed
                     && !_renderingPaused
-                    && ds.Transport is ISecondaryMonitorTransport { SecondaryMonitorState: not null }
+                    && ds.Transport is ISecondaryMonitorTransport { SecondaryMonitorState: { } monitorState }
+                    && monitorState != Nexus.Service.Panel.Streams.SecondaryMonitorStates.InUse
                     && _gate.IsEnabled(ds.Discovery.HandlerId)
                     && !IsLockDark(ds.Session.PanelDeviceId))
                 {
