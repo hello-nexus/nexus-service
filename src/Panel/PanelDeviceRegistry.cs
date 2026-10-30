@@ -673,6 +673,9 @@ public sealed class PanelDeviceRegistry
 
     private const long TouchIntervalMs = 30_000;
 
+    /// <summary>Highest frame cap a patch stores.</summary>
+    public const int MaxFpsCap = 240;
+
     // A single-instance surface is the record's identity, not a viewport sample:
     // a Y70 kiosk that first maps on the desktop monitor would rename itself
     // "phone". Every other field a patch omits keeps its stored value.
@@ -856,6 +859,8 @@ public sealed class PanelDeviceRegistry
                 record.Portrait = patch.Portrait.Value;
             if (patch.HighResolution.HasValue)
                 record.HighResolution = patch.HighResolution.Value;
+            if (patch.FpsCap is { } fpsCap)
+                record.FpsCap = fpsCap <= 0 ? null : Math.Min(fpsCap, MaxFpsCap);
             if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.MidLarge or PanelWidgetSizes.Small or PanelWidgetSizes.Medium or PanelWidgetSizes.XSmall or PanelWidgetSizes.Compact)
                 record.WidgetSize = patch.WidgetSize;
             if (patch.KioskViewport is { } viewport && !string.IsNullOrEmpty(record.DisplayId) && ValidViewport(viewport))
@@ -987,6 +992,7 @@ public sealed class PanelDeviceRegistry
             record.SecondaryMonitor = null;
             record.Portrait = null;
             record.HighResolution = null;
+            record.FpsCap = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -1312,6 +1318,7 @@ public sealed class PanelDeviceRegistry
             SecondaryMonitor = r.SecondaryMonitor,
             Portrait = r.Portrait,
             HighResolution = r.HighResolution,
+            FpsCap = r.FpsCap,
             WidgetSize = r.WidgetSize,
             KioskViewport = r.KioskViewport,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null

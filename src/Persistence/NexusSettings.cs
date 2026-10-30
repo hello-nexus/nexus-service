@@ -62,9 +62,8 @@ public sealed class NexusSettings
     public AstralSettings Astral { get; set; } = new();
     /// <summary>ROG Astral Level Sense calibrations keyed by AstralGpuSupplement.CalibrationKey. NOT profile-scoped: it describes how the card sits in this case.</summary>
     public Dictionary<string, AstralCalibration> AstralLevelSense { get; set; } = new();
-    /// <summary>Global frame-rate cap in Hz for every streamed panel (Kraken LCD, fan LCDs, JPEG panels, ...); null runs each panel at its own model rate. A stored null is "off" (written explicitly, since the context drops nulls by default), an absent key is the default. NOT profile-scoped: it is a property of this workstation.</summary>
-    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
-    public int? StreamedPanelFpsCap { get; set; } = 30;
+    /// <summary>Read-only legacy key of the retired global streamed-panel frame cap. The coordinator copies it to every known streamed device record once (PanelDevices[].FpsCap), then clears it; nothing writes it any more.</summary>
+    public int? StreamedPanelFpsCap { get; set; }
 
     /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
     public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();

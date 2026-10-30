@@ -2769,7 +2769,8 @@ public static class NexusServiceCollectionExtensions
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
                 isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized,
-                fpsCap: () => configStore.Load().StreamedPanelFpsCap);
+                legacyFpsCap: () => configStore.Load().StreamedPanelFpsCap,
+                clearLegacyFpsCap: () => configStore.Update(s => s.StreamedPanelFpsCap = null));
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());

@@ -38,6 +38,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         public required StreamedPanelDeviceInfo Info { get; init; }
         public IStreamedPanelTransport? Transport { get; set; }
         public long LastPresentAtMs { get; set; }
+        /// <summary>The device's own rate, before the record's cap.</summary>
+        public int ModelFps { get; init; }
         public HttpContext? IngestContext { get; set; }
     }
 
@@ -51,7 +53,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly PanelDeviceRegistry _registry;
     private readonly Func<string, bool> _removePanel;
     private readonly Func<string, bool> _isCustomized;
-    private readonly Func<int?>? _fpsCap;
+    private readonly Func<int?>? _legacyFpsCap;
+    private readonly Action? _clearLegacyFpsCap;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
@@ -79,9 +82,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         LcdLockState? lockState = null,
         Func<string, bool>? removePanel = null,
         Func<string, bool>? isCustomized = null,
-        Func<int?>? fpsCap = null)
+        Func<int?>? legacyFpsCap = null,
+        Action? clearLegacyFpsCap = null)
     {
-        _fpsCap = fpsCap;
+        _legacyFpsCap = legacyFpsCap;
+        _clearLegacyFpsCap = clearLegacyFpsCap;
         _removePanel = removePanel ?? registry.Remove;
         _isCustomized = isCustomized ?? registry.IsCustomized;
         _discoveries = discoveries.ToList();
@@ -438,8 +443,34 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         catch (SemaphoreFullException) { }
     }
 
+    /// <summary>
+    /// One-shot upgrade from the retired global cap: copies its value to every known streamed
+    /// device record, then clears it so the copy never repeats. A device that was never attached
+    /// has no record and starts at Off. The old Hz list's 1 maps to 5, the lowest rate now offered.
+    /// </summary>
+    internal void MigrateLegacyFpsCap()
+    {
+        if (_legacyFpsCap?.Invoke() is not { } legacy) return;
+        if (legacy > 0)
+        {
+            var value = Math.Max(legacy, LowestFpsCap);
+            foreach (var rec in _store.Load().Values)
+            {
+                if (string.IsNullOrEmpty(rec.PanelDeviceId)) continue;
+                var record = _registry.Get(rec.PanelDeviceId);
+                if (record is null || record.FpsCap is not null) continue;
+                _registry.Patch(rec.PanelDeviceId, new PanelDevicePatch { FpsCap = value });
+                _notifyPanelChanged?.Invoke(rec.PanelDeviceId);
+            }
+        }
+        _clearLegacyFpsCap?.Invoke();
+    }
+
+    internal const int LowestFpsCap = 5;
+
     internal void TickOnce()
     {
+        MigrateLegacyFpsCap();
         var changed = false;
         foreach (var discovery in _discoveries)
         {
@@ -472,7 +503,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             {
                 DeviceSession? existing;
                 lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
-                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId));
+                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId), existing.Session.PanelDeviceId);
                 string? remintedPanelId = null;
                 if (existing is not null && !ProfilesEqual(existing.Info.Profile, info.Profile))
                 {
@@ -602,6 +633,20 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
     }
 
+    /// <summary>The device's own frame rate per panel record id, before the record's cap, for live sessions.</summary>
+    public Dictionary<string, int> ModelFpsByPanel()
+    {
+        var rates = new Dictionary<string, int>(StringComparer.Ordinal);
+        lock (_lock)
+        {
+            foreach (var ds in _bySerial.Values)
+            {
+                if (!ds.Session.Closed) rates[ds.Session.PanelDeviceId] = ds.ModelFps;
+            }
+        }
+        return rates;
+    }
+
     /// <summary>Monitor state per panel record id, for the records whose monitor is on.</summary>
     public Dictionary<string, string> SecondaryMonitorStates()
     {
@@ -721,7 +766,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ServiceLog.Error($"[streamed-panel] record allocation failed serial={info.Serial}: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
-        info = WithFpsCap(WithRenderScale(info, panelDeviceId));
+        var modelFps = info.Profile.Fps;
+        info = WithFpsCap(WithRenderScale(info, panelDeviceId), panelDeviceId);
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
         var ds = new DeviceSession
@@ -730,6 +776,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             Writer = new PacedStreamWriter(session, (faulted, ex) => HandleTransportFault(info.Serial, faulted, ex)),
             Discovery = discovery,
             Info = info,
+            ModelFps = modelFps,
             LastPresentAtMs = now,
         };
         lock (_lock)
@@ -954,6 +1001,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             if (transport is ISecondaryMonitorTransport monitorable)
             {
                 monitorable.BindSecondaryMonitor(() => _registry.Get(panelId)?.SecondaryMonitor == true);
+                monitorable.BindFpsCap(() => _registry.Get(panelId)?.FpsCap);
                 monitorable.SecondaryMonitorStateChanged += () => _notifyPanelChanged?.Invoke(panelId);
             }
             transport.Open();
@@ -1080,10 +1128,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
     }
 
-    // The cap is part of the profile, so changing it re-mints live sessions through the "profile changed" path in TickOnce.
-    private StreamedPanelDeviceInfo WithFpsCap(StreamedPanelDeviceInfo info)
+    // The record's cap is part of the profile, so changing it re-mints live sessions through the "profile changed" path in TickOnce.
+    private StreamedPanelDeviceInfo WithFpsCap(StreamedPanelDeviceInfo info, string panelDeviceId)
     {
-        var fps = StreamFpsCap.Effective(info.Profile.Fps, _fpsCap?.Invoke());
+        var fps = StreamFpsCap.Effective(info.Profile.Fps, _registry.Get(panelDeviceId)?.FpsCap);
         return fps == info.Profile.Fps
             ? info
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = info.Profile with { Fps = fps }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };

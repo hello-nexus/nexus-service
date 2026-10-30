@@ -29,7 +29,6 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     private readonly List<string> _panelChanges = new();
     private StreamedPanelCoordinator? _coordinator;
     private readonly LcdLockState _lock = new();
-    private int? _fpsCap;
 
     public StreamedPanelCoordinatorTests()
     {
@@ -63,8 +62,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
             notifyOverlay: null,
             nowMs: () => _nowMs,
             notifyPanelChanged: _panelChanges.Add,
-            lockState: _lock,
-            fpsCap: () => _fpsCap);
+            lockState: _lock);
         _coordinator.FadeRunner.AutoRun = false;
         return _coordinator;
     }
@@ -762,37 +760,120 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     [InlineData(20, 60, 20)]
     [InlineData(30, 20, 20)]
     [InlineData(null, 60, 60)]
-    public void Fps_cap_limits_the_assignment_to_the_model_rate(int? cap, int modelFps, int expected)
+    public void Record_fps_cap_limits_the_assignment_to_the_model_rate(int? cap, int modelFps, int expected)
     {
-        _fpsCap = cap;
         _discovery.Devices.Add(Device(fps: modelFps));
         var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var first = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.Equal(modelFps, first.Fps);
 
+        if (cap is not null) _registry.Patch(first.PanelDeviceId, new PanelDevicePatch { FpsCap = cap });
         coordinator.TickOnce();
 
         Assert.Equal(expected, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
+        Assert.Equal(modelFps, coordinator.ModelFpsByPanel()[first.PanelDeviceId]);
     }
 
     [Fact]
-    public void Fps_cap_change_remints_live_session_at_the_new_rate()
+    public void Record_fps_cap_change_remints_live_session_at_the_new_rate()
     {
-        _fpsCap = 30;
         _discovery.Devices.Add(Device(fps: 60));
         var coordinator = Coordinator();
         coordinator.TickOnce();
         var first = Assert.Single(coordinator.GetAssignments().Assignments);
 
-        _fpsCap = 10;
+        _registry.Patch(first.PanelDeviceId, new PanelDevicePatch { FpsCap = 10 });
         coordinator.TickOnce();
         var second = Assert.Single(coordinator.GetAssignments().Assignments);
 
-        Assert.Equal(30, first.Fps);
+        Assert.Equal(60, first.Fps);
         Assert.Equal(10, second.Fps);
         Assert.NotEqual(first.SessionId, second.SessionId);
 
-        _fpsCap = null;
+        _registry.Patch(first.PanelDeviceId, new PanelDevicePatch { FpsCap = 0 });
         coordinator.TickOnce();
         Assert.Equal(60, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
+        Assert.Null(_registry.Get(first.PanelDeviceId)!.FpsCap);
+    }
+
+    [Fact]
+    public void Fps_cap_is_per_record()
+    {
+        _discovery.Devices.Add(Device("a", fps: 60));
+        _discovery.Devices.Add(Device("b", fps: 40));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var a = coordinator.GetAssignments().Assignments.Single(x => x.Fps == 60);
+
+        _registry.Patch(a.PanelDeviceId, new PanelDevicePatch { FpsCap = 15 });
+        coordinator.TickOnce();
+
+        Assert.Equal(new[] { 15, 40 }, coordinator.GetAssignments().Assignments.Select(x => x.Fps).OrderBy(x => x).ToArray());
+    }
+
+    // The settings file is the one the code that carried the global cap wrote with the cap at 10,
+    // and the streamed store is written by the real store, so the upgrade reads genuine prior state.
+    [Theory]
+    [InlineData(null, 10)]
+    [InlineData(1, 5)]
+    public void Legacy_global_cap_copies_to_every_known_streamed_record_once(int? legacyOverride, int expected)
+    {
+        var settingsPath = Path.Combine(Path.GetTempPath(), "nexus-fpsmig-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.Copy(Path.Combine(AppContext.BaseDirectory, "Fixtures", "settings", "pre-per-device-fps-cap10.json"), settingsPath);
+            using var config = new JsonConfigStore(settingsPath);
+            if (legacyOverride is { } v) config.Update(x => x.StreamedPanelFpsCap = v);
+            Assert.Equal(legacyOverride ?? 10, config.Load().StreamedPanelFpsCap);
+            var registry = new PanelDeviceRegistry(config);
+            var one = registry.Allocate("One", null);
+            var two = registry.Allocate("Two", null);
+            var kiosk = registry.Allocate("Kiosk", null);
+            var tuned = registry.Allocate("Tuned", null);
+            registry.Patch(tuned.Id, new PanelDevicePatch { FpsCap = 20 });
+            _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal)
+            {
+                ["one"] = new() { PanelDeviceId = one.Id },
+                ["two"] = new() { PanelDeviceId = two.Id },
+                ["tuned"] = new() { PanelDeviceId = tuned.Id },
+                ["gone"] = new() { PanelDeviceId = "no-such-record" },
+            });
+            using var coordinator = new StreamedPanelCoordinator(
+                new[] { _discovery }, _store, registry, new DeviceControlGate(config),
+                legacyFpsCap: () => config.Load().StreamedPanelFpsCap,
+                clearLegacyFpsCap: () => config.Update(x => x.StreamedPanelFpsCap = null));
+
+            coordinator.MigrateLegacyFpsCap();
+
+            Assert.Equal(expected, registry.Get(one.Id)!.FpsCap);
+            Assert.Equal(expected, registry.Get(two.Id)!.FpsCap);
+            Assert.Equal(20, registry.Get(tuned.Id)!.FpsCap);
+            Assert.Null(registry.Get(kiosk.Id)!.FpsCap);
+            Assert.Null(config.Load().StreamedPanelFpsCap);
+
+            // Idempotent: a later user choice is never overwritten by a second run.
+            registry.Patch(one.Id, new PanelDevicePatch { FpsCap = 0 });
+            coordinator.MigrateLegacyFpsCap();
+            Assert.Null(registry.Get(one.Id)!.FpsCap);
+        }
+        finally
+        {
+            try { File.Delete(settingsPath); } catch { }
+            try { File.Delete(settingsPath + ".bak"); } catch { }
+        }
+    }
+
+    [Fact]
+    public void A_settings_file_with_no_legacy_cap_migrates_nothing()
+    {
+        var record = _registry.Allocate("One", null);
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["one"] = new() { PanelDeviceId = record.Id } });
+        var coordinator = Coordinator();
+
+        coordinator.MigrateLegacyFpsCap();
+
+        Assert.Null(_registry.Get(record.Id)!.FpsCap);
     }
 
     private static StreamedPanelDeviceInfo Sized(int width, int height, StreamCodec codec = StreamCodec.RawBgra) => new()
