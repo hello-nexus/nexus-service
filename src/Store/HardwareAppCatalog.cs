@@ -71,6 +71,20 @@ public sealed class HardwareAppCatalog
         _ => false,
     };
 
+    /// <summary>Product page for an app that only installs with its hardware attached; null for an app anyone may install.</summary>
+    public static HardwareProduct? ProductFor(string appId) => appId switch
+    {
+        InaAppId => InaProduct,
+        _ => null,
+    };
+
+    private static readonly HardwareProduct InaProduct = new(
+        "HYTE Y70 Touch Infinite (Ina edition)",
+        "https://hyte.com/store/ninomae-ina-nis-y70ti-product-page/cs-hyte-y70tti-ina");
+
+    /// <summary>True unless the app is bound to hardware that is not attached.</summary>
+    public bool MayInstall(string appId) => ProductFor(appId) is null || IsMatched(appId);
+
     /// <summary>Attached DDC-only Y70 variant; empty until the user-session helper connects, which is why callers re-read rather than caching.</summary>
     private static string ResolvePanelVariant(DisplayTopologyService displays)
     {
@@ -83,3 +97,6 @@ public sealed class HardwareAppCatalog
         return variant;
     }
 }
+
+/// <summary>Display name and product link for hardware-bound apps.</summary>
+public sealed record HardwareProduct(string Name, string Url);

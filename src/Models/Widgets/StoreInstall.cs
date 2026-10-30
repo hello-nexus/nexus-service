@@ -35,7 +35,8 @@ public sealed class StoreInstallResponse
     /// <summary>
     /// Machine-readable failure: invalid_app_id, invalid_version, missing_hash,
     /// artifact_unavailable, hash_mismatch, bad_archive, manifest_mismatch,
-    /// signature_invalid, no_user_apps_dir, or install_failed.
+    /// signature_invalid, no_user_apps_dir, hardware_required (the app needs hardware
+    /// that is not attached), or install_failed.
     /// </summary>
     [JsonPropertyName("reason")] public string? Reason { get; set; }
 }

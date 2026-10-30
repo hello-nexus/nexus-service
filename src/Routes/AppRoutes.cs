@@ -134,10 +134,11 @@ public static class AppRoutes
         // so it cannot reach the cloud API itself; these hand back its JSON
         // verbatim rather than widening the CSP.
         app.MapGet("/apps-api/store/apps",
-            async (Nexus.Service.Store.StoreCatalogProxy proxy, HttpContext http, CancellationToken ct) =>
+            async (Nexus.Service.Store.StoreCatalogProxy proxy, Nexus.Service.Store.HardwareAppCatalog hardware, HttpContext http, CancellationToken ct) =>
         {
             var body = await proxy.ListAsync(
                 http.Request.Query["nexusVersion"], ParseTouch(http), http.Request.Query["locale"], ct);
+            body = Nexus.Service.Store.HardwareAnnotation.Apply(body, null, hardware);
 #if DEV_TOOLS
             if (body is not null)
             {
@@ -151,9 +152,10 @@ public static class AppRoutes
         }).AllowPanel();
 
         app.MapGet("/apps-api/store/apps/{appId}",
-            async (string appId, Nexus.Service.Store.StoreCatalogProxy proxy, HttpContext http, CancellationToken ct) =>
+            async (string appId, Nexus.Service.Store.StoreCatalogProxy proxy, Nexus.Service.Store.HardwareAppCatalog hardware, HttpContext http, CancellationToken ct) =>
         {
             var body = await proxy.DetailAsync(appId, http.Request.Query["nexusVersion"], ParseTouch(http), http.Request.Query["locale"], ct);
+            body = Nexus.Service.Store.HardwareAnnotation.Apply(body, appId, hardware);
 #if DEV_TOOLS
             if (body is null
                 && AppIds.IsValid(appId)
@@ -226,6 +228,17 @@ public static class AppRoutes
                    IConfigStore store, MultiplexHub hub, HttpContext http, CancellationToken ct) =>
         {
             var appId = body.AppId ?? "";
+            // Hardware-bound apps install only where the hardware is attached, account or not.
+            if (!hardware.MayInstall(appId))
+            {
+                return Results.Json(new StoreInstallResponse
+                {
+                    AppId = appId,
+                    Version = body.Version ?? "",
+                    Ok = false,
+                    Reason = "hardware_required",
+                }, AppJsonContext.Default.StoreInstallResponse);
+            }
             var auth = await entitlements.AuthorizeAsync(
                 appId, body.Version ?? "", http.Request.Query["nexusVersion"], ct);
             if (!auth.Ok || auth.Grant is null)
