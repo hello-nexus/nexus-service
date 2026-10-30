@@ -56,8 +56,8 @@ public sealed class SimplePatternMigrationTests : IDisposable
         Assert.True(AnimateTemplateDefaults.All.TryGetValue(key, out var bundle));
         Assert.Equal(4, bundle.Slots.Count);
         Assert.All(bundle.Slots, slot => Assert.NotNull(slot));
-        // Brush leads with its violet preset, which runs a little slower.
-        Assert.Equal(key == "sweepbrush" ? 45 : 50, bundle.Slots[0]!.Speed);
+        // Brush leads with its violet preset, which runs a little slower; Color Cycle with its fast orange fade.
+        Assert.Equal(key == "sweepbrush" ? 45 : key == "sweepcycle" ? 60 : 50, bundle.Slots[0]!.Speed);
     }
 
     [Fact]

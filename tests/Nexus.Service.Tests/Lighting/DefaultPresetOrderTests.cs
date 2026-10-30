@@ -19,4 +19,24 @@ public class DefaultPresetOrderTests
         Assert.Equal(hue, look.Hue, 3);
         Assert.Equal(colorize, look.Colorize, 3);
     }
+
+    // Color Cycle: the orange fade (a narrow red-to-orange swing) leads and is among the fastest.
+    [Theory]
+    [InlineData(0, 0.15f, 60)]
+    [InlineData(1, 1.00f, 50)]
+    [InlineData(2, 0.20f, 35)]
+    [InlineData(3, 0.25f, 60)]
+    public void Color_cycle_slots_match_their_position(int slot, float span, int speed)
+    {
+        var look = AnimateTemplateDefaults.Slot("sweepcycle", slot)!;
+        Assert.Equal(span, look.Params["u_span"], 3);
+        Assert.Equal(speed, look.Speed);
+        Assert.True(AnimateTemplateDefaults.Slot("sweepcycle", 0)!.Speed >= look.Speed);
+    }
+
+    [Fact]
+    public void Color_cycle_runs_at_double_its_old_time_rate()
+    {
+        Assert.Contains("u_time * u_speed * 0.16", Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Get("sweepcycle"));
+    }
 }
