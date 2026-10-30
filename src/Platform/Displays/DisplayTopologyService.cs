@@ -53,7 +53,6 @@ public sealed class DisplayTopologyService : IDisposable
     // Id of the OS primary display ("" when unknown), refreshed with the attached-id cache.
     private string _primaryDisplayId = "";
     private long _attachedIdsAtMs;
-    private Dictionary<string, int> _refreshHz = new(StringComparer.Ordinal);
     private bool _attachedIdsValid;
 
     public DisplayTopologyService(IDisplayTopologyProvider provider, PanelDeviceRegistry panelRegistry, Nexus.Service.Persistence.IConfigStore? store = null, IVirtualMonitorHost? virtualMonitors = null)
@@ -196,13 +195,6 @@ public sealed class DisplayTopologyService : IDisposable
         lock (_cacheLock) return _y70DisplayId;
     }
 
-    /// <summary>Refresh rate in Hz of <paramref name="displayId"/> from the last enumeration, whatever its age; null when unknown. Never enumerates.</summary>
-    public int? GetRefreshHz(string displayId)
-    {
-        if (string.IsNullOrEmpty(displayId)) return null;
-        lock (_cacheLock) return _refreshHz.TryGetValue(displayId, out var hz) ? hz : null;
-    }
-
     /// <summary>
     /// Whether <paramref name="displayId"/> is the OS primary display, from the last enumeration whatever its
     /// age. Never enumerates: a helper round trip does not belong in a request handler.
@@ -251,14 +243,12 @@ public sealed class DisplayTopologyService : IDisposable
         var y70DisplayId = "";
         var ddcOnlyVariant = "";
         var primaryId = "";
-        var refreshHz = new Dictionary<string, int>(StringComparer.Ordinal);
         if (raw is not null)
         {
             ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var info in raw)
             {
                 ids.Add(info.Id);
-                if (info.RefreshHz > 0) refreshHz[info.Id] = info.RefreshHz;
                 if (primaryId.Length == 0 && info.IsPrimary) primaryId = info.Id;
                 if (y70DisplayId.Length == 0 && IsY70Display(info.RawHardwareId)) y70DisplayId = info.Id;
                 if (ddcOnlyVariant.Length == 0)
@@ -273,7 +263,6 @@ public sealed class DisplayTopologyService : IDisposable
             _y70DisplayId = y70DisplayId;
             _ddcOnlyY70Variant = ddcOnlyVariant;
             _primaryDisplayId = primaryId;
-            _refreshHz = refreshHz;
             _attachedIdsAtMs = Environment.TickCount64;
             _attachedIdsValid = true;
         }

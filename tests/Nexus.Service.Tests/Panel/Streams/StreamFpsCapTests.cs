@@ -18,26 +18,36 @@ public sealed class StreamFpsCapTests
     public void Effective_never_raises_the_model_rate(int model, int? cap, int expected) =>
         Assert.Equal(expected, StreamFpsCap.Effective(model, cap));
 
-    // The fixture is the settings file the code that carried the global cap wrote (cap 10); 30 was its default.
+    // A prior file carries the retired global cap key (the captured fixture value, and the old default) next
+    // to records that already exist: the key is ignored and every record stays uncapped.
     [Theory]
     [InlineData(10)]
     [InlineData(30)]
-    public void A_prior_file_with_the_global_cap_loads_and_every_device_starts_uncapped(int legacyCap)
+    public void A_prior_file_with_the_global_cap_loads_and_existing_devices_stay_uncapped(int legacyCap)
     {
         var path = Path.Combine(Path.GetTempPath(), "nexus-fpscap-" + Guid.NewGuid().ToString("N") + ".json");
         try
         {
-            var json = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "settings", "pre-per-device-fps-cap10.json"))
-                .Replace("\"streamedPanelFpsCap\": 10", $"\"streamedPanelFpsCap\": {legacyCap}");
-            Assert.Contains($"\"streamedPanelFpsCap\": {legacyCap}", json);
-            File.WriteAllText(path, json);
+            string streamedId;
+            string kioskId;
+            File.Copy(Path.Combine(AppContext.BaseDirectory, "Fixtures", "settings", "pre-per-device-fps-cap10.json"), path);
             using (var store = new JsonConfigStore(path))
             {
                 var registry = new PanelDeviceRegistry(store);
-                var first = registry.Allocate("Streamed", null);
-                var second = registry.Allocate("Kiosk", null);
-                Assert.Null(registry.Get(first.Id)!.FpsCap);
-                Assert.Null(registry.Get(second.Id)!.FpsCap);
+                streamedId = registry.Allocate("Streamed", null).Id;
+                kioskId = registry.AllocateForDisplay("display-1", "Kiosk", new Nexus.Service.Models.Panel.PanelDeviceCapabilities(), null).Record.Id;
+                store.FlushNow();
+            }
+            // The current build no longer writes the key, so put it back the way the old build wrote it.
+            var json = File.ReadAllText(path);
+            File.WriteAllText(path, json.Insert(json.IndexOf('{') + 1, $"\n  \"streamedPanelFpsCap\": {legacyCap},"));
+            Assert.Contains("streamedPanelFpsCap", File.ReadAllText(path));
+
+            using (var store = new JsonConfigStore(path))
+            {
+                var registry = new PanelDeviceRegistry(store);
+                Assert.NotNull(registry.Get(streamedId));
+                Assert.NotNull(registry.Get(kioskId));
                 Assert.All(store.Load().PanelDevices.Values, d => Assert.Null(d.FpsCap));
                 store.Update(_ => { });
                 store.FlushNow();

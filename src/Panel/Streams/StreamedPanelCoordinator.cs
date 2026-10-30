@@ -38,8 +38,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         public required StreamedPanelDeviceInfo Info { get; init; }
         public IStreamedPanelTransport? Transport { get; set; }
         public long LastPresentAtMs { get; set; }
-        /// <summary>The device's own rate, before the record's cap.</summary>
-        public int ModelFps { get; init; }
         public HttpContext? IngestContext { get; set; }
     }
 
@@ -471,7 +469,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             {
                 DeviceSession? existing;
                 lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
-                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId), existing.Session.PanelDeviceId);
+                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId), existing.Session.PanelDeviceId, existing);
                 string? remintedPanelId = null;
                 if (existing is not null && !ProfilesEqual(existing.Info.Profile, info.Profile))
                 {
@@ -601,20 +599,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
     }
 
-    /// <summary>The device's own frame rate per panel record id, before the record's cap, for live sessions.</summary>
-    public Dictionary<string, int> ModelFpsByPanel()
-    {
-        var rates = new Dictionary<string, int>(StringComparer.Ordinal);
-        lock (_lock)
-        {
-            foreach (var ds in _bySerial.Values)
-            {
-                if (!ds.Session.Closed) rates[ds.Session.PanelDeviceId] = ds.ModelFps;
-            }
-        }
-        return rates;
-    }
-
     /// <summary>Monitor state per panel record id, for the records whose monitor is on.</summary>
     public Dictionary<string, string> SecondaryMonitorStates()
     {
@@ -734,7 +718,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ServiceLog.Error($"[streamed-panel] record allocation failed serial={info.Serial}: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
-        var modelFps = info.Profile.Fps;
         info = WithFpsCap(WithRenderScale(info, panelDeviceId), panelDeviceId);
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
@@ -744,7 +727,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             Writer = new PacedStreamWriter(session, (faulted, ex) => HandleTransportFault(info.Serial, faulted, ex)),
             Discovery = discovery,
             Info = info,
-            ModelFps = modelFps,
             LastPresentAtMs = now,
         };
         lock (_lock)
@@ -1097,9 +1079,14 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     }
 
     // The record's cap is part of the profile, so changing it re-mints live sessions through the "profile changed" path in TickOnce.
-    private StreamedPanelDeviceInfo WithFpsCap(StreamedPanelDeviceInfo info, string panelDeviceId)
+    // A session whose record drives the glass as a secondary monitor keeps its rate: re-minting would
+    // dispose the transport and recreate the virtual monitor, and the monitor feed re-reads the cap live.
+    private StreamedPanelDeviceInfo WithFpsCap(StreamedPanelDeviceInfo info, string panelDeviceId, DeviceSession? existing = null)
     {
-        var fps = StreamFpsCap.Effective(info.Profile.Fps, _registry.Get(panelDeviceId)?.FpsCap);
+        var record = _registry.Get(panelDeviceId);
+        var fps = existing is not null && record?.SecondaryMonitor == true
+            ? existing.Info.Profile.Fps
+            : StreamFpsCap.Effective(info.Profile.Fps, record?.FpsCap);
         return fps == info.Profile.Fps
             ? info
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = info.Profile with { Fps = fps }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };

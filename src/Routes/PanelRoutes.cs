@@ -284,13 +284,10 @@ public static class PanelRoutes
             if (streamed.Count > 0)
             {
                 var monitors = streams.SecondaryMonitorStates();
-                var modelRates = streams.ModelFpsByPanel();
                 foreach (var device in devices)
                 {
                     if (streamed.Contains(device.Id))
                         device.Streamed = true;
-                    if (modelRates.TryGetValue(device.Id, out var modelFps))
-                        device.MaxFps = modelFps;
                     if (monitors.TryGetValue(device.Id, out var monitorState))
                         device.SecondaryMonitorState = monitorState;
                 }
@@ -306,8 +303,6 @@ public static class PanelRoutes
                 {
                     if (string.IsNullOrEmpty(device.DisplayId)) continue;
                     device.DisplayAttached = attached?.Contains(device.DisplayId);
-                    if (topology.GetRefreshHz(device.DisplayId) is { } refreshHz)
-                        device.MaxFps = refreshHz;
                     device.Warning = touchRouting.WarningFor(device.DisplayId);
                 }
             }

@@ -772,7 +772,6 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         coordinator.TickOnce();
 
         Assert.Equal(expected, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
-        Assert.Equal(modelFps, coordinator.ModelFpsByPanel()[first.PanelDeviceId]);
     }
 
     [Fact]
@@ -1418,5 +1417,57 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         _registry.Patch(panelId, new PanelDevicePatch { SecondaryMonitor = true });
 
         Assert.Single(coordinator.GetAssignments().Assignments);
+    }
+
+    [Fact]
+    public void A_cap_change_in_monitor_mode_keeps_the_session_and_its_transport()
+    {
+        _discovery.Devices.Add(Device(fps: 60, monitor: true));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        _registry.Patch(panelId, new PanelDevicePatch { SecondaryMonitor = true });
+        var transports = _discovery.Transports.Count;
+
+        _registry.Patch(panelId, new PanelDevicePatch { FpsCap = 10 });
+        coordinator.TickOnce();
+        _registry.Patch(panelId, new PanelDevicePatch { FpsCap = 5 });
+        coordinator.TickOnce();
+
+        Assert.Equal(transports, _discovery.Transports.Count);
+        Assert.Contains(panelId, coordinator.LivePanelDeviceIds());
+        Assert.Equal(5, _registry.Get(panelId)!.FpsCap);
+    }
+
+    [Fact]
+    public void Turning_the_monitor_on_with_a_cap_set_does_not_recreate_the_session()
+    {
+        _discovery.Devices.Add(Device(fps: 60, monitor: true));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        _registry.Patch(panelId, new PanelDevicePatch { FpsCap = 10 });
+        coordinator.TickOnce();
+        var transports = _discovery.Transports.Count;
+
+        _registry.Patch(panelId, new PanelDevicePatch { SecondaryMonitor = true });
+        coordinator.TickOnce();
+
+        Assert.Equal(transports, _discovery.Transports.Count);
+    }
+
+    [Fact]
+    public void A_cap_change_outside_monitor_mode_still_remints_the_session()
+    {
+        _discovery.Devices.Add(Device(fps: 60, monitor: true));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        var transports = _discovery.Transports.Count;
+
+        _registry.Patch(panelId, new PanelDevicePatch { FpsCap = 10 });
+        coordinator.TickOnce();
+
+        Assert.Equal(transports + 1, _discovery.Transports.Count);
     }
 }
