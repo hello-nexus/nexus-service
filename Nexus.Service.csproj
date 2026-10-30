@@ -997,6 +997,11 @@
     <Compile Remove="src/Platform/Linux/LinuxOverlayHost.cs" />
     <Compile Remove="src/Platform/Linux/LinuxScreenInhibit.cs" />
     <Compile Remove="src/Platform/Linux/LinuxPanelKioskHost.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxY70DisplayWatcher.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxInputDevices.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxHyprlandTouchMap.cs" />
+    <Compile Remove="src/Platform/Linux/LinuxHyprlandPanelPlacement.cs" />
+    <Compile Remove="src/Platform/Linux/HyprlandIpc.cs" />
     <Compile Remove="src/Platform/Linux/LinuxPerformanceProvider.cs" />
     <Compile Remove="src/Platform/Linux/LinuxResumeListener.cs" />
     <Compile Remove="src/Platform/Linux/LinuxSession.cs" />
