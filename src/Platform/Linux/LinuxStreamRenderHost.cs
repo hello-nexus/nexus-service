@@ -49,7 +49,7 @@ public sealed class LinuxStreamRenderHost : BackgroundService
     private long _browserStartedAt;
     private long _browserRetryAfter;
 
-    private sealed record Running(PanelRenderSession Render, RawFrameIngestClient Ingest, long StartedAt);
+    private sealed record Running(PanelRenderSession Render, StreamSession Session, long StartedAt);
 
     public LinuxStreamRenderHost(StreamedPanelCoordinator coordinator, TokenService tokens)
     {
@@ -116,7 +116,7 @@ public sealed class LinuxStreamRenderHost : BackgroundService
                 }
             }
             var gone = !wanted.ContainsKey(id);
-            if (gone || running.Render.Faulted || running.Ingest.IsFaulted)
+            if (gone || running.Render.Faulted)
             {
                 ServiceLog.Info($"{Tag} session {id} {(gone ? "ended" : "faulted; restarting")} after {running.Render.FramesDelivered} frame(s)");
                 StopSession(id);
@@ -373,8 +373,16 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         var url = $"{origin}/panel/{Uri.EscapeDataString(a.PanelDeviceId)}?token={Uri.EscapeDataString(_tokens.Token)}"
             + $"&streamFps={Math.Clamp(a.Fps, 1, PanelRenderSession.MaxFps)}";
         var render = new PanelRenderSession(_browser!.Cdp, a.SessionId, url, a.CssWidth, a.CssHeight, a.Dpr, a.Fps);
-        var ingest = new RawFrameIngestClient(origin, a.SessionId, _tokens.Token);
-        render.FrameSink = ingest.SendFrame;
+        var session = _coordinator.TryBindInProcessIngest(a.SessionId);
+        if (session is null)
+        {
+            render.Dispose();
+            ScheduleRetry(a.SessionId);
+            return;
+        }
+        // The renderer shares this process, so the decoded frame goes straight to the session
+        // instead of through a loopback POST that would copy and reframe megabytes per frame.
+        render.FrameSink = frame => session.AcceptFrame(new StreamFrame { Flags = StreamFraming.FlagIdr, Payload = frame });
         try
         {
             using var startTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -385,11 +393,11 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         {
             ServiceLog.Warn($"{Tag} session {a.SessionId} for {a.PanelDeviceId} failed to start: {ex.GetType().Name}: {ex.Message}");
             render.Dispose();
-            ingest.Dispose();
+            _coordinator.OnInProcessIngestClosed(a.SessionId, session);
             ScheduleRetry(a.SessionId);
             return;
         }
-        _sessions[a.SessionId] = new Running(render, ingest, Environment.TickCount64);
+        _sessions[a.SessionId] = new Running(render, session, Environment.TickCount64);
         _retryAfter.Remove(a.SessionId);
         ServiceLog.Info($"{Tag} rendering {a.PanelDeviceId} session={a.SessionId} "
             + $"{render.PixelWidth}x{render.PixelHeight}@{render.Fps}");
@@ -407,7 +415,7 @@ public sealed class LinuxStreamRenderHost : BackgroundService
         if (_sessions.Remove(id, out var running))
         {
             running.Render.Dispose();
-            running.Ingest.Dispose();
+            _coordinator.OnInProcessIngestClosed(id, running.Session);
         }
     }
 

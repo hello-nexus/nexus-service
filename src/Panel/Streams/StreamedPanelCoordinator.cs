@@ -693,6 +693,43 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         return session;
     }
 
+    /// <summary>
+    /// Binds a renderer living in this process, which hands frames to the session directly
+    /// instead of POSTing them over loopback. Supersedes any HTTP ingest of the same session.
+    /// </summary>
+    public StreamSession? TryBindInProcessIngest(string sessionId)
+    {
+        HttpContext? superseded = null;
+        StreamSession? session = null;
+        lock (_lock)
+        {
+            if (_bySessionId.TryGetValue(sessionId, out var ds) && !ds.Session.Closed)
+            {
+                superseded = ds.IngestContext;
+                ds.IngestContext = null;
+                ds.Session.ResetForNewIngest();
+                session = ds.Session;
+            }
+        }
+        if (superseded is not null)
+        {
+            try { superseded.Abort(); } catch { }
+        }
+        if (session is not null)
+            ServiceLog.Info($"[streamed-panel] in-process ingest bound session={sessionId}");
+        return session;
+    }
+
+    public void OnInProcessIngestClosed(string sessionId, StreamSession session)
+    {
+        lock (_lock)
+        {
+            if (!_bySessionId.TryGetValue(sessionId, out var ds) || !ReferenceEquals(ds.Session, session)) return;
+            if (ds.IngestContext is not null) return;
+            ds.Session.SetIngestBound(false);
+        }
+    }
+
     public void OnIngestClosed(string sessionId, HttpContext ctx)
     {
         lock (_lock)

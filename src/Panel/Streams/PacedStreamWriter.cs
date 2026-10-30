@@ -78,6 +78,14 @@ public sealed class PacedStreamWriter : IDisposable
             TimeBeginPeriod(1);
             Nexus.Service.Platform.Windows.PerformanceCoreHint.ApplyToCurrentThread();
         }
+        else if (OperatingSystem.IsMacOS())
+        {
+            Nexus.Service.Platform.Mac.MacThreadQos.ApplyToCurrentThread();
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            Nexus.Service.Platform.Linux.LinuxPerformanceCoreHint.ApplyToCurrentThread();
+        }
         try
         {
             // One tick per batch: fps stays the frame rate on the wire while

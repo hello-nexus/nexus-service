@@ -211,6 +211,21 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void An_in_process_renderer_binds_the_session_and_unknown_ids_do_not_bind()
+    {
+        _discovery.Devices.Add(KrakenScreen("k"));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var sessionId = Assert.Single(coordinator.GetAssignments().Assignments).SessionId;
+
+        var session = coordinator.TryBindInProcessIngest(sessionId);
+
+        Assert.NotNull(session);
+        Assert.Null(coordinator.TryBindInProcessIngest("missing"));
+        coordinator.OnInProcessIngestClosed(sessionId, session!);
+    }
+
+    [Fact]
     public void A_known_strip_panel_with_no_stored_layout_gets_the_strip_seed_at_session_start()
     {
         var caps = new PanelDeviceCapabilities { Surface = "monitor", CssWidth = 1920, CssHeight = 480 };
