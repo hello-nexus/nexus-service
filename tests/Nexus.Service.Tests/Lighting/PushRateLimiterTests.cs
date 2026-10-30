@@ -93,6 +93,16 @@ public class PushRateLimiterTests : IDisposable
     }
 
     [Fact]
+    public void Cap_of_25_hz_paces_at_exactly_40_ms()
+    {
+        Assert.Equal(40, PushRateLimiter<int>.PeriodMs(25));
+        var limiter = new PushRateLimiter<int>();
+        Assert.True(limiter.TryPass(0, 25, 0));
+        Assert.False(limiter.TryPass(0, 25, 30));
+        Assert.True(limiter.TryPass(0, 25, 40));
+    }
+
+    [Fact]
     public void A_long_stall_re_anchors_instead_of_bursting()
     {
         var limiter = new PushRateLimiter<int>();
@@ -176,7 +186,8 @@ public class PushRateLimiterTests : IDisposable
     [InlineData(null, true)]
     [InlineData(30, true)]
     [InlineData(1, true)]
-    [InlineData(25, false)]
+    [InlineData(25, true)]
+    [InlineData(24, false)]
     [InlineData(0, false)]
     [InlineData(60, false)]
     [InlineData(-5, false)]
