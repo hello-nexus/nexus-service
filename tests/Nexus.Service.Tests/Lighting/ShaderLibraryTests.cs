@@ -118,9 +118,7 @@ public class ShaderLibraryTests
         // The noise terms crossfade two offset copies instead.
         var src = ShaderLibrary.Get("jellyfish");
         Assert.DoesNotContain("mod(u_time", src);
-        Assert.Contains("float t = u_time * u_speed * 0.55;", src);
-        Assert.Contains("wA", src);
-        // Jellies fade to nothing at the path seam instead of teleporting.
-        Assert.Contains("* depth * seam;", src);
+        Assert.DoesNotMatch(@"mod\(\s*t\s*,\s*\d", src);
+        Assert.Contains("haloCol = tintedPalette(fi * 0.14 + 0.35) * halo * seam;", src);
     }
 }
