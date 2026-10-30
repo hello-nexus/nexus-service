@@ -50,8 +50,13 @@ public sealed class DeviceControlGate
 
     /// <summary>Whether a connection worker should hold the device: <see cref="IsEnabled"/>, or Nexus Control is off but the secondary monitor still needs the glass.</summary>
     public bool IsClaimed(string handlerId) =>
-        IsEnabled(handlerId)
-        || (PausedByApp(handlerId) is null && KeepsDeviceClaimed?.Invoke(handlerId) == true);
+        IsEnabled(handlerId) || HeldForMonitor(handlerId);
+
+    /// <summary>Nexus Control is off but the secondary monitor still holds the device; a running competing app and experimental hardware on a stable build always win.</summary>
+    public bool HeldForMonitor(string handlerId) =>
+        !DeviceControlPolicy.RequiresBeta(handlerId)
+        && PausedByApp(handlerId) is null
+        && KeepsDeviceClaimed?.Invoke(handlerId) == true;
 
     /// <summary>The user's choice alone, ignoring a running competing app.</summary>
     public bool IsChosenOn(string handlerId) => IsEnabled(_store.Load().Devices, handlerId);

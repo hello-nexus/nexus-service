@@ -608,19 +608,33 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
     }
 
-    /// <summary>True while a panel of this handler has its secondary monitor on, so the device stays claimed with Nexus Control off.</summary>
+    /// <summary>
+    /// True while the unit this handler is serving has its secondary monitor on, so it stays claimed with
+    /// Nexus Control off. Keyed on the live session's own record; with no session yet, the family's records.
+    /// </summary>
     private bool KeepsMonitorForHandler(string handlerId)
     {
-        foreach (var record in _registry.List())
+        var liveIds = new List<string>();
+        lock (_lock)
         {
-            if (record.SecondaryMonitor == true
-                && record.Capabilities?.SupportsSecondaryMonitor == true
-                && string.Equals(record.Capabilities.Family, handlerId, StringComparison.OrdinalIgnoreCase))
+            foreach (var ds in _bySerial.Values)
             {
-                return true;
+                if (!ds.Session.Closed && string.Equals(ds.Discovery.HandlerId, handlerId, StringComparison.OrdinalIgnoreCase))
+                {
+                    liveIds.Add(ds.Session.PanelDeviceId);
+                }
             }
         }
-        return false;
+        if (liveIds.Count > 0)
+        {
+            return liveIds.Any(id => _registry.Get(id)?.SecondaryMonitor == true);
+        }
+        // No session yet (a restart with Nexus Control off): only when every record of the family has the monitor on, so a stale record cannot claim a unit that does not use it.
+        var family = _registry.List()
+            .Where(r => r.Capabilities?.SupportsSecondaryMonitor == true
+                && string.Equals(r.Capabilities.Family, handlerId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return family.Count > 0 && family.All(r => r.SecondaryMonitor == true);
     }
 
     /// <summary>
@@ -655,8 +669,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             foreach (var ds in _bySerial.Values)
             {
                 if (!ds.Session.Closed
+                    && !_renderingPaused
                     && ds.Transport is ISecondaryMonitorTransport { SecondaryMonitorState: not null }
-                    && _gate.IsEnabled(ds.Discovery.HandlerId))
+                    && _gate.IsEnabled(ds.Discovery.HandlerId)
+                    && !IsLockDark(ds.Session.PanelDeviceId))
                 {
                     return ds.Session.PanelDeviceId;
                 }

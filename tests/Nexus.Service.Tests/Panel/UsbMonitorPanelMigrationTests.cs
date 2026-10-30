@@ -131,6 +131,65 @@ public sealed class UsbMonitorPanelMigrationTests : IDisposable
     }
 
     [Fact]
+    public void A_turned_off_virtual_panel_does_not_overwrite_the_device_look()
+    {
+        var prior = Prior(monitor: true);
+        prior.PanelDevices["virtual-record"].Hosted = false;
+        using var store = new JsonConfigStore(WriteSettings(prior));
+
+        var s = store.Load();
+
+        Assert.Equal(new[] { "clock" }, s.PanelDevices[UsbId].Layout!.Pages.Single().Widgets.Select(w => w.Type));
+    }
+
+    [Fact]
+    public void Only_the_device_last_seen_with_the_monitor_on_receives_the_look()
+    {
+        var prior = Prior(monitor: true);
+        prior.PanelDevices[UsbId].LastSeenAt = 100;
+        var stale = Usb(monitor: true);
+        stale.Id = "stale-usb";
+        stale.LastSeenAt = 1;
+        prior.PanelDevices["stale-usb"] = stale;
+        using var store = new JsonConfigStore(WriteSettings(prior));
+
+        var s = store.Load();
+
+        Assert.Equal(3, s.PanelDevices[UsbId].Layout!.Pages.Single().Widgets.Count);
+        Assert.Single(s.PanelDevices["stale-usb"].Layout!.Pages.Single().Widgets);
+        Assert.Equal(UsbId, Assert.Single(s.UsbMonitorPanelPairs!).UsbId);
+    }
+
+    [Fact]
+    public void Copied_presets_lose_the_desktop_backdrop_and_take_the_device_surface()
+    {
+        var prior = Prior(monitor: true);
+        prior.PanelDevices[UsbId].Capabilities!.Surface = PanelSurfaces.LcdSquare;
+        prior.PanelDevices["virtual-record"].Presets = new List<PanelPreset>
+        {
+            new() { Id = "p", Name = "Night", Backdrop = "desktop", Layout = Layout("monitor", "clock") },
+        };
+        using var store = new JsonConfigStore(WriteSettings(prior));
+
+        var preset = Assert.Single(store.Load().PanelDevices[UsbId].Presets!);
+
+        Assert.Null(preset.Backdrop);
+        Assert.Equal(PanelSurfaces.LcdSquare, preset.Layout!.Surface);
+    }
+
+    [Fact]
+    public void The_file_the_device_look_was_replaced_from_is_kept()
+    {
+        var path = WriteSettings(Prior(monitor: true));
+        var original = File.ReadAllText(path);
+        using var store = new JsonConfigStore(path);
+
+        store.Load();
+
+        Assert.Equal(original, File.ReadAllText(path + ".pre-v29"));
+    }
+
+    [Fact]
     public void A_later_edit_survives_a_reload()
     {
         var path = WriteSettings(Prior(monitor: true));

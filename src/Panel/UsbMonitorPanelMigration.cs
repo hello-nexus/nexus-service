@@ -32,27 +32,24 @@ public static class UsbMonitorPanelMigration
         string.Equals(r.DisplayFingerprint?.Manufacturer, VirtualManufacturer, StringComparison.OrdinalIgnoreCase)
         || (r.DisplayId?.Contains(VirtualHardwareId, StringComparison.OrdinalIgnoreCase) ?? false);
 
-    /// <summary>Live settings below v29: records the pairs and copies the looks.</summary>
+    /// <summary>Live settings below v29: records the pair and copies the look.</summary>
     public static bool Apply(NexusSettings doc)
     {
+        // Only one virtual monitor exists system-wide, so the device that last had it on is the target.
         var usb = doc.PanelDevices.Values
             .Where(r => r.SecondaryMonitor == true && r.Capabilities?.SupportsSecondaryMonitor == true)
-            .OrderBy(r => r.Id, StringComparer.Ordinal)
-            .ToList();
-        // One virtual monitor exists system-wide; the record to carry over is the most recently used one with a layout.
-        var virtualRecord = doc.PanelDevices.Values
-            .Where(r => IsVirtualMonitorRecord(r) && r.Layout is not null)
             .OrderByDescending(r => r.LastSeenAt)
             .FirstOrDefault();
-        if (usb.Count == 0 || virtualRecord is null)
+        var virtualRecord = doc.PanelDevices.Values
+            .Where(r => IsVirtualMonitorRecord(r) && r.Layout is not null && PanelHosting.IsOn(r))
+            .OrderByDescending(r => r.LastSeenAt)
+            .FirstOrDefault();
+        if (usb is null || virtualRecord is null)
         {
             return false;
         }
-        doc.UsbMonitorPanelPairs = usb.Select(u => new UsbMonitorPanelPair { UsbId = u.Id, VirtualId = virtualRecord.Id }).ToList();
-        foreach (var record in usb)
-        {
-            CopyLook(virtualRecord, record);
-        }
+        doc.UsbMonitorPanelPairs = new List<UsbMonitorPanelPair> { new() { UsbId = usb.Id, VirtualId = virtualRecord.Id } };
+        CopyLook(virtualRecord, usb);
         return true;
     }
 
@@ -83,10 +80,19 @@ public static class UsbMonitorPanelMigration
     {
         PanelProfileData.CopyLook(from, to);
         // A see-through backdrop means nothing on a USB display.
-        to.Backdrop = null;
-        if (to.Layout is not null && to.Capabilities?.Surface is { Length: > 0 } surface)
+        Normalize(to, to.Capabilities?.Surface);
+        foreach (var preset in to.Presets ?? new List<PanelPreset>())
         {
-            to.Layout.Surface = surface;
+            Normalize(preset, to.Capabilities?.Surface);
+        }
+    }
+
+    private static void Normalize(IPanelPersonalization look, string? surface)
+    {
+        look.Backdrop = null;
+        if (look.Layout is not null && surface is { Length: > 0 })
+        {
+            look.Layout.Surface = surface;
         }
     }
 }

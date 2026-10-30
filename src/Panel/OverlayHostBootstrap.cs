@@ -57,7 +57,14 @@ internal static class OverlayHostBootstrap
             // The owned display's appearance is not a settings edit, so the host is told directly.
             topology.OwnedDisplayChanged += () =>
             {
-                try { overlayHost.NotifyDisplayAssignmentsChanged(); }
+                try
+                {
+#if WINDOWS
+                    if (helperRegistry is not null)
+                        LifecycleCommands.NotifyOverlayPrefsChangedAsync(helperRegistry).ObserveFaults();
+#endif
+                    overlayHost.NotifyDisplayAssignmentsChanged();
+                }
                 catch { }
             };
         }

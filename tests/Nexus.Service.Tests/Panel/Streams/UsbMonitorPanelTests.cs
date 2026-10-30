@@ -166,13 +166,60 @@ public sealed class UsbMonitorPanelTests : IDisposable
     }
 
     [Fact]
-    public void A_competing_app_holding_the_device_off_is_not_overridden_by_the_monitor()
+    public void A_stale_monitor_record_of_another_unit_does_not_keep_this_unit_claimed()
+    {
+        var live = PanelId;
+        _config.Update(s => s.PanelDevices["stale"] = new PanelDeviceRecord
+        {
+            Id = "stale",
+            SecondaryMonitor = true,
+            Capabilities = new PanelDeviceCapabilities { Family = Handler, SupportsSecondaryMonitor = true },
+        });
+
+        SetControl(false);
+
+        Assert.False(_gate.IsClaimed(Handler));
+        Assert.DoesNotContain(live, _coordinator.LivePanelDeviceIds());
+    }
+
+    [Fact]
+    public void Experimental_hardware_on_a_stable_build_is_never_held_by_a_monitor_record()
+    {
+        _gate.KeepsDeviceClaimed = _ => true;
+        var experimental = "lianli-screen88";
+        if (!DeviceControlPolicy.RequiresBeta(experimental))
+        {
+            return;
+        }
+
+        Assert.False(_gate.IsClaimed(experimental));
+    }
+
+    [Fact]
+    public void Paused_rendering_and_a_dark_lock_remove_the_projected_panel()
     {
         SetMonitor(true);
 
-        _gate.SetPausedByApp(new Dictionary<string, string> { [Handler] = "vendor-app" });
+        _coordinator.SetRenderingPaused(true);
 
-        Assert.False(_gate.IsClaimed(Handler));
+        Assert.Null(_coordinator.MonitorProjectedPanelId());
+        Assert.NotNull(_coordinator.MonitorOwner());
+        _coordinator.SetRenderingPaused(false);
+        Assert.Equal(PanelId, _coordinator.MonitorProjectedPanelId());
+    }
+
+    [Fact]
+    public void A_separate_record_on_the_virtual_display_is_excluded_by_identity_before_the_display_cache_fills()
+    {
+        var topology = Topology(out _);
+        var old = _registry.AllocateForDisplay(VirtualDisplayId, "NXS 0001", new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor },
+            new DisplayFingerprint { Manufacturer = "NXS", Product = "0001" }).Record;
+        SetMonitor(true);
+
+        var assignments = DisplayRoutes.ComposeAssignments(_registry, topology, _coordinator);
+
+        Assert.DoesNotContain(assignments, a => a.PanelDeviceId == old.Id);
+        Assert.Equal(PanelId, assignments.Single(a => a.DisplayId == VirtualDisplayId).PanelDeviceId);
     }
 
     [Fact]

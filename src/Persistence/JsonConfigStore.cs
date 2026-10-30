@@ -150,6 +150,12 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         {
             Migrate(_cached);
             Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
+            if (_cached.UsbMonitorPanelPairs is not null)
+            {
+                // The USB device's previous look is overwritten by the v29 copy; keep the file it was read from.
+                try { File.WriteAllText(SettingsPath + ".pre-v29", json); }
+                catch { /* best-effort; never block startup */ }
+            }
             Persist(_cached);
         }
         else

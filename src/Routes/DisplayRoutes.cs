@@ -31,10 +31,17 @@ public static class DisplayRoutes
         PanelDeviceRegistry registry, DisplayTopologyService topology, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams)
     {
         var list = new List<DisplayAssignmentDto>();
+        // While a device's monitor is up, its virtual display belongs to the device: a separate record on it is excluded by identity, so a stale display-id cache cannot host it.
+        var monitorUp = streams.MonitorOwner() is not null;
         var ownedId = topology.OwnedVirtualDisplayId();
         foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
         {
             if (ownedId.Length > 0 && string.Equals(displayId, ownedId, StringComparison.Ordinal)) continue;
+            if (monitorUp && registry.Get(panelDeviceId) is { } bound && UsbMonitorPanelMigration.IsVirtualMonitorRecord(bound))
+            {
+                if (ownedId.Length == 0) ownedId = displayId;
+                continue;
+            }
             list.Add(new DisplayAssignmentDto
             {
                 DisplayId = displayId,
