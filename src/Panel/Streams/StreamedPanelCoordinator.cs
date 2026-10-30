@@ -28,7 +28,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
     // Absorbs the D213's known bus drops on host power events without
     // tearing down the render host; past this the assignment is unpublished.
-    private static readonly TimeSpan DetachLinger = TimeSpan.FromSeconds(60);
+    internal const long DetachLingerMs = 60_000;
 
     private sealed class DeviceSession
     {
@@ -530,7 +530,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     CloseSession(ds, "screen handed to the device");
                     changed = true;
                 }
-                else if (now - ds.LastPresentAtMs > DetachLinger.TotalMilliseconds)
+                else if (now - ds.LastPresentAtMs > DetachLingerMs)
                 {
                     CloseSession(ds, "detached past linger");
                     changed = true;

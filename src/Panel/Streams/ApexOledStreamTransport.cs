@@ -228,7 +228,7 @@ public sealed class ApexOledStreamTransport : IStreamedPanelTransport, IOrientab
     }
 
     // Timer: carries the lock, the unlock repaint and the keepalive when no frame is arriving.
-    private void Tick()
+    internal void Tick()
     {
         if (_disposed || !Monitor.TryEnter(_sync))
         {

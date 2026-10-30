@@ -33,7 +33,7 @@ public sealed class ApexOledPanelDiscovery : IStreamedPanelDiscovery
     private readonly bool? _enforceLength;
 
     /// <summary>A keyboard missing from passes for this long starts over when it returns; the coordinator's own detach linger.</summary>
-    internal const long AbsentResetMs = 60_000;
+    internal const long AbsentResetMs = StreamedPanelCoordinator.DetachLingerMs;
 
     // One backoff per serial for the life of the discovery, shared with its transport; it is only ever reset in place.
     private sealed class Tracked

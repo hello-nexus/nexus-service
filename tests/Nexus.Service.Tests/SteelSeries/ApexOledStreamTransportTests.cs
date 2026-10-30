@@ -329,19 +329,19 @@ public class ApexOledStreamTransportTests
         var state = new LcdLockState();
         using var transport = Create(hid, 0x1628, state);
         transport.Open();
-        transport.StartPlayer();
         transport.Write(Frame(255));
 
         state.Set(true);
-        Assert.True(WaitFor(() => screen.Outputs.Count >= 2));
+        transport.Tick();
+        transport.Tick();
+        Assert.Equal(2, screen.Outputs.Count);
 
         screen.AcceptOutputs = true;
-        var seen = screen.Outputs.Count;
-        Assert.True(WaitFor(() => screen.Outputs.Count > seen));
-        Thread.Sleep(100);
-        var settled = screen.Outputs.Count;
-        Thread.Sleep(100);
-        Assert.Equal(settled, screen.Outputs.Count);
+        transport.Tick();
+        Assert.Equal(3, screen.Outputs.Count);
+        transport.Tick();
+        transport.Tick();
+        Assert.Equal(3, screen.Outputs.Count);
     }
 
     [Fact]

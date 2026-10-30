@@ -16,8 +16,8 @@ public enum ApexOledLayout
 public sealed record ApexOledModel(int ProductId, string Name, ApexOledLayout Layout);
 
 /// <summary>
-/// Wire format of the Apex Pro TKL keyboards' OLED. Protocol details from a patch by spudge;
-/// only the row packing has been seen working on hardware.
+/// Wire format of the Apex Pro TKL keyboards' OLED. Only the row packing has been seen working
+/// on hardware.
 /// </summary>
 public static class ApexOledProtocol
 {
