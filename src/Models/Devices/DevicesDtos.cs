@@ -458,6 +458,8 @@ public sealed class LayoutPresetsResponse
 public sealed class CreateLayoutPresetBody
 {
     public string Name { get; set; } = "";
+    /// <summary>Reset the looks to clean-install defaults and apply them, keeping layouts, scene view and device slices; false snapshots the live state.</summary>
+    public bool Fresh { get; set; }
 }
 
 public sealed class CreateLayoutPresetResponse

@@ -980,6 +980,54 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void CreatePreset_Fresh_EmptiesWidgetsButKeepsTheRestOfThePersonalization()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock"), ThemeMode = "light", AccentColor = "#123456" });
+
+        var created = _registry.CreatePreset(record.Id, "Blank", out var capped, fresh: true)!;
+
+        Assert.False(capped);
+        var live = _registry.Get(record.Id)!;
+        Assert.Empty(live.Layout!.Pages.SelectMany(p => p.Widgets));
+        Assert.Equal("light", live.ThemeMode);
+        Assert.Equal("#123456", live.AccentColor);
+        Assert.Equal(created.ActiveId, _store.Load().PanelDevices[record.Id].ActivePresetId);
+        var stored = _store.Load().PanelDevices[record.Id].Presets!.Single();
+        Assert.Empty(stored.Layout!.Pages.SelectMany(p => p.Widgets));
+        Assert.Equal("light", stored.ThemeMode);
+        Assert.Equal(record.DisplayName, live.DisplayName);
+        Assert.Equal(PanelSurfaces.Q60, live.Capabilities!.Surface);
+    }
+
+    [Fact]
+    public void CreatePreset_Fresh_DoesNotLetTheOldLayoutBackIntoTheNewPresetOnSwitchAway()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock") });
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+        var blank = _registry.CreatePreset(record.Id, "Blank", out _, fresh: true)!.ActiveId!;
+
+        _registry.ActivatePreset(record.Id, desk);
+        Assert.Equal("clock", _registry.Get(record.Id)!.Layout!.Pages[0].Widgets[0].Type);
+        _registry.ActivatePreset(record.Id, blank);
+
+        Assert.Empty(_registry.Get(record.Id)!.Layout!.Pages.SelectMany(p => p.Widgets));
+    }
+
+    [Fact]
+    public void CreatePreset_WithoutFresh_SnapshotsTheLiveLayout()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock") });
+
+        _registry.CreatePreset(record.Id, "Snap", out _);
+
+        Assert.Equal("clock", _store.Load().PanelDevices[record.Id].Presets!.Single().Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal("clock", _registry.Get(record.Id)!.Layout!.Pages[0].Widgets[0].Type);
+    }
+
+    [Fact]
     public void Preset_DoesNotShareTheLiveLayout()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));

@@ -331,4 +331,69 @@ public sealed class CoolingRoutesIntegrationTests
             Assert.False(fans.StoreLockedDuringFanRead);
         }
     }
+
+    [Fact]
+    public async Task CreatePreset_Fresh_BuildsCleanInstallDefaultsAndActivatesThem()
+    {
+        var (factory, client) = Boot(new FakeFanProvider());
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                s.Cooling.ActivePreset = "custom";
+                s.Cooling.ManualSpeeds["fan1"] = 60;
+                s.Cooling.FanOffsets["fan1"] = 9;
+                s.Cooling.GlobalSpeedModifier = 1.4;
+            });
+
+            var res = await client.PostAsJsonAsync("/cooling/presets", new { name = "Clean", fresh = true });
+
+            Assert.True(res.IsSuccessStatusCode);
+            var cooling = store.Load().Cooling;
+            var preset = Assert.Single(cooling.Presets);
+            Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.ActivePreset, preset.Mode);
+            Assert.Empty(preset.FanCurveAssignments);
+            Assert.Empty(preset.ManualSpeeds);
+            Assert.Empty(preset.FanOffsets);
+            Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.GlobalSpeedModifier, preset.GlobalSpeedModifier);
+            Assert.Equal(preset.Id, cooling.ActivePresetId);
+            // Activation replayed the defaults onto the live state.
+            Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.ActivePreset, cooling.ActivePreset);
+            Assert.Empty(cooling.FanOffsets);
+            Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.GlobalSpeedModifier, cooling.GlobalSpeedModifier);
+        }
+    }
+
+    [Theory]
+    [InlineData("""{"name":"Snap"}""")]
+    [InlineData("""{"name":"Snap","fresh":false}""")]
+    public async Task CreatePreset_FreshAbsentOrFalse_SnapshotsTheLiveState(string json)
+    {
+        var (factory, client) = Boot(new FakeFanProvider());
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                s.Cooling.ActivePreset = "custom";
+                s.Cooling.ManualSpeeds["fan1"] = 60;
+                s.Cooling.FanOffsets["fan1"] = 9;
+                s.Cooling.GlobalSpeedModifier = 1.4;
+            });
+
+            var res = await client.PostAsync("/cooling/presets", new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
+
+            Assert.True(res.IsSuccessStatusCode);
+            var cooling = store.Load().Cooling;
+            var preset = Assert.Single(cooling.Presets);
+            Assert.Equal("custom", preset.Mode);
+            Assert.Equal(60, preset.ManualSpeeds["fan1"]);
+            Assert.Equal(9, preset.FanOffsets["fan1"]);
+            Assert.Equal(1.4, preset.GlobalSpeedModifier);
+            // Snapshot create does not replay anything onto the live state.
+            Assert.Equal("custom", cooling.ActivePreset);
+            Assert.Equal(9, cooling.FanOffsets["fan1"]);
+        }
+    }
 }

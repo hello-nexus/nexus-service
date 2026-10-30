@@ -368,6 +368,8 @@ public sealed class PanelPresetsResponse
 public sealed class PanelPresetNameBody
 {
     public string Name { get; set; } = "";
+    /// <summary>Create the preset with an empty layout (no widgets) instead of snapshotting the live one. Only the create routes read it.</summary>
+    public bool Fresh { get; set; }
 }
 
 /// <summary>

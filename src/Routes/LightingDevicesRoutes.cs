@@ -485,7 +485,14 @@ public static partial class DevicesRoutes
 
         app.MapPost("/devices/lighting-devices/layout-presets", (
             CreateLayoutPresetBody body,
-            Nexus.Service.Persistence.IConfigStore store) =>
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Sockets.MultiplexHub hub,
+            ILightingDeviceProvider lightingProvider,
+            Nexus.Service.Lighting.ILightingProvider lighting,
+            Nexus.Service.Lighting.Rgb.RgbBridge? bridge,
+            Nexus.Service.Lighting.Smart.SmartLightProvider smart,
+            Nexus.Service.Lighting.Engine.LightingEngine engine,
+            FeatureGates gates) =>
         {
             bool capped = false;
             Nexus.Service.Persistence.LayoutPreset? created = null;
@@ -502,10 +509,17 @@ public static partial class DevicesRoutes
                     Id = id,
                     Name = body.Name,
                     Layouts = DeepCopyLayouts(s.Lighting.DeviceLayouts),
-                    Look = Nexus.Service.Lighting.LightingPresetLooks.Capture(s.Lighting),
+                    // Fresh: the clean-install look, no pins, no per-device color prefs. Layouts, scene view and power lists stay as they are.
+                    Look = Nexus.Service.Lighting.LightingPresetLooks.Capture(
+                        body.Fresh ? new Nexus.Service.Persistence.LightingSettings() : s.Lighting),
                     SceneView = CopySceneView(s.Lighting.SceneView),
                 };
                 CaptureDeviceSlices(s, created);
+                if (body.Fresh)
+                {
+                    created.DevicePins = new();
+                    created.DevicePrefs = new();
+                }
                 s.Lighting.LayoutPresets.Add(created);
                 s.Lighting.ActiveLayoutPresetId = id;
             });
@@ -515,6 +529,11 @@ public static partial class DevicesRoutes
                     ApiResponse.Fail("Layout preset cap of 10 reached"),
                     Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
                     statusCode: 400);
+            }
+            if (body.Fresh && gates.Lighting)
+            {
+                // The live look, pins and prefs still belong to the old state, and the live mirror would write them back into the new preset.
+                ActivateLayoutPreset(created!.Id, store, hub, lightingProvider, lighting, bridge, smart, engine);
             }
             return Results.Json(
                 new CreateLayoutPresetResponse { Preset = ToDto(created!), ActiveId = created!.Id },

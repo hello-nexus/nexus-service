@@ -78,6 +78,68 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
         Assert.True(stored.Lighting.LayoutPresets[0].Layouts.ContainsKey("dev-1"));
     }
 
+    private void SeedCustomLook()
+    {
+        Store.Update(s =>
+        {
+            s.Lighting.DeviceLayouts["dev-1"] = new DeviceLayout { X = 5, Y = 10, W = 80, H = 40 };
+            s.Lighting.SceneView.Enabled = true;
+            s.Lighting.Sync = "static";
+            s.Lighting.Animate.Effect = "wave";
+            s.Lighting.DevicePins["dev-1"] = new DevicePin();
+            s.Devices.LightingDevicePrefs["dev-1"] = new LightingDevicePreference { Brightness = 30 };
+            s.Devices.DisabledLightingDevices = new List<string> { "dev-2" };
+        });
+    }
+
+    [Fact]
+    public async Task Create_fresh_resets_looks_to_install_defaults_and_keeps_placement()
+    {
+        SeedCustomLook();
+        var defaults = Nexus.Service.Defaults.InstallDefaults.Lighting;
+
+        var res = await _client.PostAsync(
+            "/devices/lighting-devices/layout-presets",
+            Json("""{"name":"Clean","fresh":true}"""));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var stored = Store.Load();
+        var preset = Assert.Single(stored.Lighting.LayoutPresets);
+        Assert.Equal(defaults.Sync, preset.Look!.Sync);
+        Assert.Equal(defaults.Animate.Effect, preset.Look.AnimateEffect);
+        Assert.Empty(preset.DevicePins!);
+        Assert.Empty(preset.DevicePrefs!);
+        // Placement and power lists are carried over.
+        Assert.Equal(5, preset.Layouts["dev-1"].X);
+        Assert.True(preset.SceneView!.Enabled);
+        Assert.Equal(new[] { "dev-2" }, preset.DisabledDevices);
+        // The preset was applied to the live state.
+        Assert.Equal(preset.Id, stored.Lighting.ActiveLayoutPresetId);
+        Assert.Equal(defaults.Sync, stored.Lighting.Sync);
+        Assert.Empty(stored.Lighting.DevicePins);
+        Assert.Empty(stored.Devices.LightingDevicePrefs);
+        Assert.Equal(5, stored.Lighting.DeviceLayouts["dev-1"].X);
+    }
+
+    [Theory]
+    [InlineData("""{"name":"Snap"}""")]
+    [InlineData("""{"name":"Snap","fresh":false}""")]
+    public async Task Create_without_fresh_snapshots_the_live_looks(string json)
+    {
+        SeedCustomLook();
+
+        var res = await _client.PostAsync("/devices/lighting-devices/layout-presets", Json(json));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var stored = Store.Load();
+        var preset = Assert.Single(stored.Lighting.LayoutPresets);
+        Assert.Equal("static", preset.Look!.Sync);
+        Assert.Equal("wave", preset.Look.AnimateEffect);
+        Assert.Contains("dev-1", preset.DevicePins!.Keys);
+        Assert.Equal(30, preset.DevicePrefs!["dev-1"].Brightness);
+        Assert.Equal("static", stored.Lighting.Sync);
+    }
+
     [Fact]
     public async Task Create_cap_returns_400_when_at_10_presets()
     {

@@ -121,6 +121,45 @@ public sealed class DashboardPresetRoutesTests : IClassFixture<StubDeviceHostFac
     }
 
     [Fact]
+    public async Task Create_fresh_stores_an_empty_layout_and_clears_the_live_one()
+    {
+        Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
+
+        var root = await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"Blank","fresh":true}""")));
+
+        var stored = Store.Load().Panel;
+        var layout = stored.DashboardPresets!.Single().Layout!;
+        Assert.Equal(root.GetProperty("presets")[0].GetProperty("id").GetString(), stored.DashboardActivePresetId);
+        Assert.Equal("desktop", layout.Surface);
+        Assert.Equal(2, layout.LayoutSchemaVersion);
+        Assert.Empty(layout.Pages.SelectMany(p => p.Widgets));
+        Assert.Empty(stored.DashboardLayout!.Pages.SelectMany(p => p.Widgets));
+    }
+
+    [Fact]
+    public async Task Create_fresh_leaves_the_previously_active_preset_holding_its_layout()
+    {
+        await ReadJson(await SeedAsync(("Default", "clock")));
+        Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
+
+        await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"Blank","fresh":true}""")));
+
+        var presets = Store.Load().Panel.DashboardPresets!;
+        Assert.Equal("calendar", WidgetType(presets.Single(p => p.Name == "Default").Layout));
+    }
+
+    [Fact]
+    public async Task Create_fresh_false_still_snapshots_the_live_layout()
+    {
+        Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
+
+        await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"Snap","fresh":false}""")));
+
+        Assert.Equal("calendar", WidgetType(Store.Load().Panel.DashboardPresets!.Single().Layout));
+        Assert.Equal("calendar", WidgetType(Store.Load().Panel.DashboardLayout));
+    }
+
+    [Fact]
     public async Task Create_refuses_past_the_cap()
     {
         for (var i = 0; i < Nexus.Service.Panel.DashboardPresets.Cap; i++)

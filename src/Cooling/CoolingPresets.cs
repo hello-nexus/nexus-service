@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Nexus.Service.Defaults;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Cooling;
@@ -23,6 +24,15 @@ public static class CoolingPresets
     /// <summary>Snapshot the live cooling configuration into a preset. Mirrors what the Custom mode's exit snapshot captures, plus offsets and the modifier.</summary>
     public static CoolingPreset Capture(string id, string name, IConfigStore store, IFanControlProvider fans)
         => Capture(id, name, store.Load().Cooling, FanIds(fans));
+
+    /// <summary>A preset at clean-install cooling defaults: the install's built-in mode, no curve assignments, manual duties or offsets, and the install's speed modifier.</summary>
+    public static CoolingPreset CreateFresh(string id, string name) => new()
+    {
+        Id = id,
+        Name = name,
+        Mode = InstallDefaults.Cooling.ActivePreset,
+        GlobalSpeedModifier = InstallDefaults.Cooling.GlobalSpeedModifier,
+    };
 
     /// <summary>Read outside IConfigStore.Update: a fan read inside a mutator deadlocks against LhmComputer.Update.</summary>
     public static HashSet<string> FanIds(IFanControlProvider fans) => fans.GetFanChannels().Select(c => c.Id).ToHashSet();

@@ -1013,7 +1013,7 @@ public sealed class PanelDeviceRegistry
     /// the id is unknown, or when the panel already holds
     /// <see cref="PanelPresets.Cap"/> presets (<paramref name="capped"/>).
     /// </summary>
-    public PanelPresetsResponse? CreatePreset(string id, string name, out bool capped)
+    public PanelPresetsResponse? CreatePreset(string id, string name, out bool capped, bool fresh = false)
     {
         PanelPresetsResponse? result = null;
         var hitCap = false;
@@ -1028,6 +1028,9 @@ public sealed class PanelDeviceRegistry
                 return;
             }
             PanelPresets.CaptureActive(record);
+            // A fresh preset empties the widgets and keeps the rest of the personalization; the live record follows so the next switch-away capture does not write the old layout back.
+            if (fresh)
+                record.Layout = PanelPresets.EmptyLayout(record.Layout, record.Capabilities?.Surface ?? PanelSurfaces.Y70);
             var preset = new PanelPreset { Id = Guid.NewGuid().ToString("n"), Name = name };
             PanelPresets.Copy(record, preset);
             record.Presets.Add(preset);

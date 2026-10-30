@@ -451,7 +451,7 @@ public static class CoolingRoutes
             };
         }).AllowPanel();
 
-        app.MapPost("/cooling/presets", (CreateCoolingPresetBody body, IFanControlProvider f, IConfigStore store) =>
+        app.MapPost("/cooling/presets", (CreateCoolingPresetBody body, IFanControlProvider f, IConfigStore store, MultiplexHub hub, FeatureGates gates) =>
         {
             var name = (body.Name ?? "").Trim();
             if (name.Length == 0)
@@ -462,12 +462,19 @@ public static class CoolingRoutes
             {
                 return Results.BadRequest(new CreateCoolingPresetResponse { Error = true, Msg = $"Preset cap of {CoolingPresets.Cap} reached" });
             }
-            var created = CoolingPresets.Capture(Guid.NewGuid().ToString("n"), name, store, f);
+            var id = Guid.NewGuid().ToString("n");
+            var created = body.Fresh ? CoolingPresets.CreateFresh(id, name) : CoolingPresets.Capture(id, name, store, f);
             store.Update(s =>
             {
                 s.Cooling.Presets.Add(created);
                 s.Cooling.ActivePresetId = created.Id;
             });
+            if (body.Fresh && gates.Cooling)
+            {
+                // The live fans still follow the old configuration; replay the defaults so the active preset matches them.
+                CoolingPresets.Activate(created.Id, store, f);
+                PanelTopics.BroadcastCooling(hub);
+            }
             return Results.Ok(new CreateCoolingPresetResponse { Preset = ToPresetDto(created), ActiveId = created.Id });
         }).AllowPanel();
 

@@ -411,7 +411,7 @@ public static class PanelRoutes
             var name = (body.Name ?? "").Trim();
             if (name.Length == 0)
                 return Results.BadRequest(ApiResponse.Fail("preset name required"));
-            var presets = registry.CreatePreset(id, name, out var capped);
+            var presets = registry.CreatePreset(id, name, out var capped, body.Fresh);
             if (capped)
                 return Results.BadRequest(ApiResponse.Fail($"Preset cap of {PanelPresets.Cap} reached"));
             if (presets is null)

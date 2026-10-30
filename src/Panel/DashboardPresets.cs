@@ -40,13 +40,15 @@ public static class DashboardPresets
         return true;
     }
 
-    /// <summary>Saves the live layout as a new active preset; false at <see cref="Cap"/>.</summary>
-    public static bool Create(PanelSettings panel, string name)
+    /// <summary>Saves the live layout as a new active preset, or with <paramref name="fresh"/> an empty one that replaces the live layout; false at <see cref="Cap"/>.</summary>
+    public static bool Create(PanelSettings panel, string name, bool fresh = false)
     {
         panel.DashboardPresets ??= new List<DashboardPreset>();
         if (panel.DashboardPresets.Count >= Cap)
             return false;
         CaptureActive(panel);
+        if (fresh)
+            panel.DashboardLayout = PanelPresets.EmptyLayout(panel.DashboardLayout);
         var preset = new DashboardPreset { Id = NewId(), Name = name, Layout = PanelPresets.CloneLayout(panel.DashboardLayout) };
         panel.DashboardPresets.Add(preset);
         panel.DashboardActivePresetId = preset.Id;

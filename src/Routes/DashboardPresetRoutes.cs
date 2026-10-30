@@ -38,7 +38,7 @@ public static class DashboardPresetRoutes
             DashboardPresetsResponse result = new();
             store.Update(s =>
             {
-                created = DashboardPresets.Create(s.Panel, name);
+                created = DashboardPresets.Create(s.Panel, name, body.Fresh);
                 result = DashboardPresets.ToResponse(s.Panel);
             });
             if (!created)
