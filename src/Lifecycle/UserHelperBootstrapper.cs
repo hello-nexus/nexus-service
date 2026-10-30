@@ -79,7 +79,7 @@ internal static class UserHelperBootstrapper
         // leave the session helper-less until the next service start. The SCM
         // delivers the logon on its control-handler thread, so hop off it
         // before touching WTS or schtasks.
-        registry.Connected += _ => OobeSessionLaunch.ClearReaped();
+        registry.Connected += conn => OobeSessionLaunch.ClearReaped(conn.SessionId);
         WindowsServiceHost.SessionLogon += () => _ = Task.Run(() => LaunchAndVerifyAsync("logon"));
 
         // Cold boot: the service starts seconds after power-on, before the

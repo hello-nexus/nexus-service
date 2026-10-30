@@ -27,7 +27,7 @@ internal static class OobeSessionLaunch
 {
     private static readonly object s_lock = new();
     // Start time as the raw FILETIME value of GetProcessTimes, the same source on both sides.
-    private static readonly List<(int Pid, long StartFileTime, bool Helper)> s_tracked = new();
+    private static readonly List<(int Pid, long StartFileTime, bool Helper, int Session)> s_tracked = new();
     private static Timer? s_reaper;
 #if WINDOWS
     private static bool s_logonHooked;
@@ -73,7 +73,7 @@ internal static class OobeSessionLaunch
     {
 #if WINDOWS
         if (!OperatingSystem.IsWindows()) return false;
-        var handle = OpenProcess(ProcessQueryLimited | ProcessTerminate, false, (uint)pid);
+        var handle = OpenProcess(ProcessQueryLimited | ProcessTerminate | Synchronize, false, (uint)pid);
         if (handle == IntPtr.Zero) return false;
         try
         {
@@ -93,12 +93,15 @@ internal static class OobeSessionLaunch
             {
                 using var p = Process.GetProcessById(pid);
                 p.Kill(entireProcessTree: true);
+                // The next launch may need what this process held (the helper's session mutex).
+                WaitForSingleObject(handle, ExitWaitMs);
                 return true;
             }
             catch
             {
                 // The root may already be gone when ending a child threw.
-                return WaitForSingleObject(handle, 0) == WaitObject0 || TerminateProcess(handle, 1);
+                return WaitForSingleObject(handle, 0) == WaitObject0
+                    || (TerminateProcess(handle, 1) && WaitForSingleObject(handle, ExitWaitMs) == WaitObject0);
             }
         }
         finally
@@ -136,52 +139,26 @@ internal static class OobeSessionLaunch
 #endif
     }
 
-    // Setup helpers this service ended on purpose, by pid and start time. The drop handler skips
-    // them, and the launch decision ignores a still-registered connection that belongs to one.
-    private static readonly List<(int Pid, long StartFileTime, DateTime At)> s_reaped = new();
-    private static readonly TimeSpan ReapedTtl = TimeSpan.FromMinutes(2);
-
-    private static void ExpireReapedLocked()
-    {
-        var now = DateTime.UtcNow;
-        s_reaped.RemoveAll(r => now - r.At > ReapedTtl);
-    }
+    private static readonly ReapedHelperSet s_reaped = new(
+        () => DateTime.UtcNow, StartMatchesOrGone, TimeSpan.FromMinutes(2));
 
     /// <summary>True once for a helper pid the reap ended; also forgets it.</summary>
-    internal static bool TakeReaped(int pid)
-    {
-        lock (s_lock)
-        {
-            if (s_reaped.Count == 0) return false;
-            ExpireReapedLocked();
-            return s_reaped.RemoveAll(r => r.Pid == pid && StartMatchesOrGone(r.Pid, r.StartFileTime)) > 0;
-        }
-    }
+    internal static bool TakeReaped(int pid) => s_reaped.Take(pid);
 
     /// <summary>Whether a registered helper connection is a setup helper that has been ended.</summary>
-    internal static bool IsReapedHelper(int pid)
-    {
-        lock (s_lock)
-        {
-            if (s_reaped.Count == 0) return false;
-            ExpireReapedLocked();
-            return s_reaped.Exists(r => r.Pid == pid && StartMatchesOrGone(r.Pid, r.StartFileTime));
-        }
-    }
+    internal static bool IsReapedHelper(int pid) => s_reaped.IsReaped(pid);
 
-    /// <summary>A new helper connected: nothing recorded about an earlier one applies to it.</summary>
-    internal static void ClearReaped()
-    {
-        lock (s_lock) { s_reaped.Clear(); }
-    }
+    /// <summary>A new helper connected in <paramref name="session"/>: nothing recorded about an earlier one there applies.</summary>
+    internal static void ClearReaped(int session) => s_reaped.Clear(session);
 
-    // A pid that now runs a different process (reused) is not the one that was ended.
+    // A pid that now runs a different process (reused) is not the one that was ended. Only "no such
+    // process" means gone; any other open failure is not a match.
     private static bool StartMatchesOrGone(int pid, long startFileTime)
     {
 #if WINDOWS
         if (!OperatingSystem.IsWindows()) return true;
         var handle = OpenProcess(ProcessQueryLimited, false, (uint)pid);
-        if (handle == IntPtr.Zero) return true;
+        if (handle == IntPtr.Zero) return Marshal.GetLastWin32Error() == ErrorInvalidParameter;
         try { return !GetProcessTimes(handle, out var created, out _, out _, out _) || FileTimeValue(created) == startFileTime; }
         finally { CloseHandle(handle); }
 #else
@@ -204,11 +181,11 @@ internal static class OobeSessionLaunch
         catch { /* best-effort */ }
     }
 
-    private static void Track(int pid, long startFileTime, string tag)
+    private static void Track(int pid, long startFileTime, string tag, int session)
     {
         lock (s_lock)
         {
-            s_tracked.Add((pid, startFileTime, tag == "helper"));
+            s_tracked.Add((pid, startFileTime, tag == "helper", session));
             PersistLocked();
             s_reaper ??= new Timer(_ => { ReapIfOobeOver(); }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
 #if WINDOWS
@@ -268,26 +245,23 @@ internal static class OobeSessionLaunch
     {
         try
         {
-            List<(int Pid, long StartFileTime, bool Helper)> victims;
+            List<(int Pid, long StartFileTime, bool Helper, int Session)> victims;
             lock (s_lock)
             {
                 PruneExitedLocked();
                 if (!OobePanelPolicy.ShouldReap(s_tracked.Count, OobeDetector.IsInOobe, () => OobePanelPolicy.IsRealUser(ConsoleUser()))) return 0;
-                victims = new List<(int, long, bool)>(s_tracked);
+                victims = new List<(int, long, bool, int)>(s_tracked);
                 s_tracked.Clear();
                 s_reaper?.Dispose();
                 s_reaper = null;
                 PersistLocked();
             }
             var ended = 0;
-            foreach (var (pid, fileTime, helper) in victims)
+            foreach (var (pid, fileTime, helper, session) in victims)
             {
                 if (!Kill(pid, fileTime)) continue;
                 ended++;
-                if (helper)
-                {
-                    lock (s_lock) { s_reaped.Add((pid, fileTime, DateTime.UtcNow)); }
-                }
+                if (helper) s_reaped.Add(pid, fileTime, session);
             }
             Console.WriteLine($"[oobe-session] OOBE over or a real user is on the console; ended {ended} of {victims.Count} setup-session process(es)");
             return ended;
@@ -346,6 +320,7 @@ internal static class OobeSessionLaunch
     private const uint ProcessQueryLimited = 0x1000;
     private const uint Synchronize = 0x00100000;
     private const uint WaitObject0 = 0;
+    private const uint ExitWaitMs = 5000;
     private const int ErrorInvalidParameter = 87;
 
     private static long FileTimeValue(FILETIME t) => ((long)t.dwHighDateTime << 32) | t.dwLowDateTime;
@@ -405,7 +380,7 @@ internal static class OobeSessionLaunch
                     return null;
                 }
                 var pid = (int)pi.dwProcessId;
-                Track(pid, FileTimeValue(created), tag);
+                Track(pid, FileTimeValue(created), tag, (int)session);
                 Console.WriteLine($"[oobe-session] {tag} launched in the console session as {source}");
                 try { return Process.GetProcessById(pid); }
                 catch

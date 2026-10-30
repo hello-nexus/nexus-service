@@ -113,4 +113,52 @@ public sealed class OobePanelPolicyTests
         if (!OperatingSystem.IsWindows()) return;
         Assert.Equal(expected, OobePanelPolicy.IsOwnImage(path, @"C:\Program Files\Nexus\"));
     }
+
+    private sealed class Clock { public DateTime Now = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc); }
+
+    private static ReapedHelperSet Set(Clock clock, Func<int, long, bool>? matches = null)
+        => new(() => clock.Now, matches ?? ((_, _) => true), TimeSpan.FromMinutes(2));
+
+    [Fact]
+    public void ReapedSet_IsReapedUntilTaken_AndTakeIsOnce()
+    {
+        var set = Set(new Clock());
+        set.Add(10, 1, session: 1);
+        Assert.True(set.IsReaped(10));
+        Assert.False(set.IsReaped(11));
+        Assert.True(set.Take(10));
+        Assert.False(set.Take(10));
+        Assert.False(set.IsReaped(10));
+    }
+
+    [Fact]
+    public void ReapedSet_ExpiresAfterTheTtl()
+    {
+        var clock = new Clock();
+        var set = Set(clock);
+        set.Add(10, 1, session: 1);
+        clock.Now += TimeSpan.FromMinutes(3);
+        Assert.False(set.IsReaped(10));
+        Assert.False(set.Take(10));
+    }
+
+    [Fact]
+    public void ReapedSet_ReusedPid_DoesNotMatch()
+    {
+        var set = Set(new Clock(), (_, _) => false);
+        set.Add(10, 1, session: 1);
+        Assert.False(set.IsReaped(10));
+        Assert.False(set.Take(10));
+    }
+
+    [Fact]
+    public void ReapedSet_ClearOnlyForgetsThatSession()
+    {
+        var set = Set(new Clock());
+        set.Add(10, 1, session: 1);
+        set.Add(20, 1, session: 2);
+        set.Clear(1);
+        Assert.False(set.IsReaped(10));
+        Assert.True(set.IsReaped(20));
+    }
 }

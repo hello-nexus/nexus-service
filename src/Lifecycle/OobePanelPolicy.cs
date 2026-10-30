@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Nexus.Service.Lifecycle;
 
@@ -80,5 +81,65 @@ internal static class OobePanelPolicy
         var full = System.IO.Path.GetFullPath(imagePath);
         return string.Equals(full, System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDirectory, "overlay", "nexus-overlay.exe")), StringComparison.OrdinalIgnoreCase)
             || string.Equals(full, System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDirectory, "Nexus.exe")), StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+/// <summary>
+/// Setup helpers this service ended on purpose, by pid and start time. The drop handler skips
+/// them and the launch decision ignores a still-registered connection that belongs to one.
+/// Entries expire, so a stale pid cannot swallow a later crash.
+/// </summary>
+internal sealed class ReapedHelperSet
+{
+    private readonly object _lock = new();
+    private readonly List<(int Pid, long StartFileTime, int Session, DateTime At)> _entries = new();
+    private readonly Func<DateTime> _now;
+    private readonly Func<int, long, bool> _startMatchesOrGone;
+    private readonly TimeSpan _ttl;
+
+    /// <param name="startMatchesOrGone">True when the pid is gone or still has the recorded start time; false when it was reused.</param>
+    internal ReapedHelperSet(Func<DateTime> now, Func<int, long, bool> startMatchesOrGone, TimeSpan ttl)
+    {
+        _now = now;
+        _startMatchesOrGone = startMatchesOrGone;
+        _ttl = ttl;
+    }
+
+    internal void Add(int pid, long startFileTime, int session)
+    {
+        lock (_lock) { _entries.Add((pid, startFileTime, session, _now())); }
+    }
+
+    internal bool IsReaped(int pid)
+    {
+        lock (_lock)
+        {
+            if (_entries.Count == 0) return false;
+            Expire();
+            return _entries.Exists(e => e.Pid == pid && _startMatchesOrGone(e.Pid, e.StartFileTime));
+        }
+    }
+
+    /// <summary>True once for an ended helper pid; also forgets it.</summary>
+    internal bool Take(int pid)
+    {
+        lock (_lock)
+        {
+            if (_entries.Count == 0) return false;
+            Expire();
+            return _entries.RemoveAll(e => e.Pid == pid && _startMatchesOrGone(e.Pid, e.StartFileTime)) > 0;
+        }
+    }
+
+    /// <summary>A new helper connected in <paramref name="session"/>: earlier ones there no longer apply.</summary>
+    internal void Clear(int session)
+    {
+        lock (_lock) { _entries.RemoveAll(e => e.Session == session); }
+    }
+
+    private void Expire()
+    {
+        var now = _now();
+        _entries.RemoveAll(e => now - e.At > _ttl);
     }
 }
