@@ -286,6 +286,7 @@ internal static class WindowsUserHelper
         new ProcessIconHandler(new Nexus.Service.Activity.WindowsIconExtractor()).Register(handlerRegistry);
         new ProcessActionsHandler().Register(handlerRegistry);
         new FileDialogHandler().Register(handlerRegistry);
+        new GalleryImportHandler().Register(handlerRegistry);
         new MonitorsHandler().Register(handlerRegistry);
         new DisplaysHandler().Register(handlerRegistry);
         // WM_DISPLAYCHANGE lands on the tray's hidden top-level window; push

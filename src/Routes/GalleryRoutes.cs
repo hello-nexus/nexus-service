@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Net.Http.Headers;
 using Nexus.Service.Auth;
@@ -27,9 +28,14 @@ public static class GalleryRoutes
         app.MapGet("/gallery/sources", (GalleryLibrary lib) =>
             new GallerySourcesResponse { Sources = lib.ListSources() });
 
-        app.MapPost("/gallery/sources", (AddGallerySourceBody body, GalleryLibrary lib, MultiplexHub hub) =>
+        app.MapPost("/gallery/sources", async (AddGallerySourceBody body, GalleryLibrary lib, IGalleryImporter importer, MultiplexHub hub, HttpContext ctx) =>
         {
             var result = lib.AddReference(body.Path, body.Kind);
+            if (result.Error && result.Code == GalleryErrorCodes.Unreachable)
+            {
+                result = await ImportCopyAsync(body, lib, importer, ctx.RequestAborted);
+            }
+
             if (result.Error)
             {
                 return Results.BadRequest(result);
@@ -246,6 +252,38 @@ public static class GalleryRoutes
                 Msg = result.Msg,
             };
         });
+    }
+
+    /// <summary>
+    /// The service cannot read the path (a mapped network drive on Windows),
+    /// so the user-session importer copies it into gallery storage and the
+    /// copy becomes the source.
+    /// </summary>
+    private static async Task<GallerySourceMutationResponse> ImportCopyAsync(
+        AddGallerySourceBody body, GalleryLibrary lib, IGalleryImporter importer, CancellationToken ct)
+    {
+        var importDir = lib.CreateImportDir();
+        var added = false;
+        try
+        {
+            var copy = await importer.ImportAsync(
+                new GalleryImportRequest { Path = body.Path, Kind = body.Kind, DestDir = importDir }, ct);
+            if (copy.Error is not null)
+            {
+                return new GallerySourceMutationResponse { Error = true, Msg = copy.Error, Code = copy.Code };
+            }
+
+            var result = lib.AddImported(importDir, copy, body.Path);
+            added = !result.Error;
+            return result;
+        }
+        finally
+        {
+            if (!added)
+            {
+                lib.DiscardImport(importDir);
+            }
+        }
     }
 
     /// <summary>

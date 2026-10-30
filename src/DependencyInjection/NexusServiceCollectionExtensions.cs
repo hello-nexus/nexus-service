@@ -2507,6 +2507,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Rendering.DeckKeyRenderer>();
         services.AddSingleton<Nexus.Service.Gallery.GalleryLibrary>();
         services.AddSingleton<Nexus.Service.Gallery.GalleryResizeCache>();
+#if WINDOWS
+        services.AddSingleton<Nexus.Service.Gallery.IGalleryImporter>(sp =>
+            new Nexus.Service.Helper.Domains.HelperGalleryImporter(sp.GetRequiredService<Nexus.Service.Helper.HelperRegistry>()));
+#else
+        services.AddSingleton<Nexus.Service.Gallery.IGalleryImporter, Nexus.Service.Gallery.UnsupportedGalleryImporter>();
+#endif
         // Also consumed by /system/pick-path (SystemRoutes.cs), not just gallery.
         services.AddSingleton<Nexus.Service.Platform.IFileDialogPicker, Nexus.Service.Platform.FileDialogPicker>();
         return services;
