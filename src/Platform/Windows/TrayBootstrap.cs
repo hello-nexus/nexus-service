@@ -343,6 +343,30 @@ internal static class TrayBootstrap
             DrainConflictNotice();
         };
 
+        // First-boot setup: the Y70 rotation the heartbeat tried before any helper existed
+        // failed, and nothing else retries it, so replay it when a helper connects. Does
+        // nothing once OOBE is over.
+        var oobeY70 = app.Services.GetService<Nexus.Service.Peripherals.Y70.IY70Provider>();
+        var oobeGate = app.Services.GetService<Nexus.Service.Devices.DeviceControlGate>();
+        helperRegistry.Connected += _ =>
+        {
+            if (oobeY70 is null || !Nexus.Service.Lifecycle.OobeDetector.IsInOobe()) return;
+            _ = Task.Run(async () =>
+            {
+                // The helper's read loop starts just after Connected fires.
+                foreach (var delayMs in new[] { 500, 3000 })
+                {
+                    await Task.Delay(delayMs).ConfigureAwait(false);
+                    try
+                    {
+                        if (oobeGate?.IsEnabled(Nexus.Service.Devices.Handlers.Y70Handler.HandlerId) == false) return;
+                        oobeY70.ApplyEffectiveOrientation();
+                    }
+                    catch (Exception ex) { Console.Error.WriteLine($"[oobe-session] orientation replay failed: {ex.Message}"); }
+                }
+            });
+        };
+
         // Conflict app launched mid-session. A vendor app autostarting at
         // logon can beat the helper's connect, so launches are held and
         // flushed on connect, same as the startup notice; one that has

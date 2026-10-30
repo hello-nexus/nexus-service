@@ -29,6 +29,8 @@ namespace Nexus.Service.Lifecycle;
 internal static class UserHelperBootstrapper
 {
     private const int LaunchAttempts = 3;
+    /// <summary>Marks a helper started during OOBE with no user; it skips the per-user autostart sync.</summary>
+    internal const string OobeHelperArg = "--oobe";
     // Not shorter than the helper's pipe reconnect backoff cap
     // (HelperClientLoop): a helper that is alive but backing off would
     // otherwise read as a failed spawn.
@@ -84,6 +86,13 @@ internal static class UserHelperBootstrapper
                 if (!string.IsNullOrEmpty(ResolveActiveConsoleUsername()))
                 {
                     await LaunchAndVerifyAsync("startup");
+                    return;
+                }
+                // No user yet: during OOBE the helper starts without one.
+                if (OobePanelPolicy.Decide(string.Empty, OobeSessionLaunch.ConsoleSessionExists(), OobeDetector.IsInOobe)
+                    == ConsoleLaunchPlan.OobeNoUser)
+                {
+                    await LaunchAndVerifyAsync("oobe");
                     return;
                 }
                 if (DateTime.UtcNow >= deadline)
@@ -172,6 +181,18 @@ internal static class UserHelperBootstrapper
             var tag = $"({trigger}, attempt {attempt}/{LaunchAttempts})";
 
             var username = ResolveActiveConsoleUsername();
+            if (string.IsNullOrEmpty(username)
+                && OobePanelPolicy.Decide(username, OobeSessionLaunch.ConsoleSessionExists(), OobeDetector.IsInOobe)
+                    == ConsoleLaunchPlan.OobeNoUser)
+            {
+                var oobeExe = Path.Combine(AppContext.BaseDirectory, "Nexus.exe");
+                using var started = File.Exists(oobeExe)
+                    ? OobeSessionLaunch.Start(oobeExe, HelperSpawnArg() + " " + OobeHelperArg, AppContext.BaseDirectory, "helper")
+                    : null;
+                if (started is not null && await WaitForHelperAsync(ConnectWait)) return;
+                await Task.Delay(5000);
+                continue;
+            }
             if (string.IsNullOrEmpty(username))
             {
                 Console.WriteLine($"[helper-bootstrap] no active console user; skipping {tag}");

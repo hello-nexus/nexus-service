@@ -110,7 +110,10 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             return false;
         }
         if (System.Security.Principal.WindowsIdentity.GetCurrent().IsSystem
-            && string.IsNullOrEmpty(ResolveActiveConsoleUsername()))
+            && string.IsNullOrEmpty(ResolveActiveConsoleUsername())
+            && Nexus.Service.Lifecycle.OobePanelPolicy.Decide(
+                string.Empty, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleSessionExists(),
+                Nexus.Service.Lifecycle.OobeDetector.IsInOobe) != Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser)
         {
             if (!_waitingForLogon) Console.WriteLine("[overlay-host] no active console user; waiting for logon");
             _waitingForLogon = true;
@@ -225,6 +228,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     {
         KillTrackedHost();
         try { DeletePidFile(); } catch { }
+        if (OperatingSystem.IsWindows()) Nexus.Service.Lifecycle.OobeSessionLaunch.ReapLeftovers();
     }
 
     /// <summary>
@@ -271,6 +275,13 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
         var username = ResolveActiveConsoleUsername();
         if (string.IsNullOrEmpty(username))
         {
+            // Only while Windows is in OOBE with nobody signed in; Start() has already gated on it.
+            if (Nexus.Service.Lifecycle.OobePanelPolicy.Decide(
+                    username, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleSessionExists(),
+                    Nexus.Service.Lifecycle.OobeDetector.IsInOobe) == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser)
+            {
+                return Nexus.Service.Lifecycle.OobeSessionLaunch.Start(exePath, string.Empty, workingDir, "overlay");
+            }
             Console.Error.WriteLine("[overlay-host] no active console user; deferring");
             return null;
         }
