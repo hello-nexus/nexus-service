@@ -9,6 +9,29 @@ using Nexus.Service.Peripherals.StreamDeck;
 namespace Nexus.Service.Tests.StreamDeck;
 
 /// <summary>
+/// Write log appended by the surface's ping and settle threads while the test
+/// thread reads it. Enumeration walks a snapshot so a concurrent append cannot
+/// invalidate it.
+/// </summary>
+internal sealed class LockedWrites : IReadOnlyList<byte[]>
+{
+    private readonly List<byte[]> _items = new();
+    private readonly object _gate = new();
+
+    public int Count { get { lock (_gate) { return _items.Count; } } }
+    public byte[] this[int index] { get { lock (_gate) { return _items[index]; } } }
+    public void Add(byte[] item) { lock (_gate) { _items.Add(item); } }
+    public void Clear() { lock (_gate) { _items.Clear(); } }
+    public IEnumerator<byte[]> GetEnumerator()
+    {
+        byte[][] snapshot;
+        lock (_gate) { snapshot = _items.ToArray(); }
+        return ((IEnumerable<byte[]>)snapshot).GetEnumerator();
+    }
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+/// <summary>
 /// Records HID exchanges so tests can assert the exact bytes HidStreamDeckSurface
 /// sends/reads. PendingReads is a ConcurrentQueue (not a plain Queue) because
 /// StreamDeckConnectionWorkerTests now drives this device from a live
@@ -21,8 +44,8 @@ internal sealed class MockStreamDeckHidDevice : IHidDevice
 {
     private const int PollIntervalMs = 5;
 
-    public List<byte[]> FeatureWrites { get; } = new();
-    public List<byte[]> OutputWrites { get; } = new();
+    public LockedWrites FeatureWrites { get; } = new();
+    public LockedWrites OutputWrites { get; } = new();
     public ConcurrentQueue<byte[]> PendingReads { get; } = new();
     public Func<byte[], byte[]>? FeatureReplyBuilder { get; set; }
     public bool FailNextFeatureWrite { get; set; }
