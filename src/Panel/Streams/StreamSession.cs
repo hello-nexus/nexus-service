@@ -31,6 +31,8 @@ public sealed class StreamSession
     private bool _ingestBound;
     private bool _transportUp;
     private bool _closed;
+    private long _lastIngestTicks;
+    private IDisposable? _section;
 
     public StreamSession(string sessionId, StreamedPanelDeviceInfo info, string panelDeviceId)
     {
@@ -71,6 +73,39 @@ public sealed class StreamSession
     public bool Closed
     {
         get { lock (_lock) return _closed; }
+    }
+
+    /// <summary>Name of the shared-memory section the overlay may write frames into, or null when the session only takes HTTP ingest.</summary>
+    public string? FrameSectionName { get; private set; }
+
+    /// <summary>Capacity of one frame in the section.</summary>
+    public int FrameSectionBytes { get; private set; }
+
+    /// <summary>Hands the session a section whose lifetime ends with <see cref="Close"/>.</summary>
+    public void AttachSection(IDisposable section, string name, int frameBytes)
+    {
+        lock (_lock)
+        {
+            if (_closed) { section.Dispose(); return; }
+            _section = section;
+            FrameSectionName = name;
+            FrameSectionBytes = frameBytes;
+        }
+    }
+
+    /// <summary>
+    /// One raw frame from either ingest path (HTTP body or shared section): records the arrival
+    /// gap, scales it to native when the overlay renders below native, and queues it.
+    /// </summary>
+    public void AcceptFrame(StreamFrame frame)
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var last = System.Threading.Interlocked.Exchange(ref _lastIngestTicks, now);
+        if (last != 0)
+            RecordIngestGap((now - last) * 1000 / System.Diagnostics.Stopwatch.Frequency);
+        var native = Upscaler is { } upscaler ? upscaler.Apply(frame) : frame;
+        if (native is not null)
+            Enqueue(native);
     }
 
     public void Enqueue(StreamFrame frame)
@@ -126,6 +161,7 @@ public sealed class StreamSession
             ClearLocked();
             _waitingForIdr = true;
             _ingestBound = true;
+            _lastIngestTicks = 0;
         }
     }
 
@@ -141,11 +177,16 @@ public sealed class StreamSession
 
     public void Close()
     {
+        IDisposable? section;
         lock (_lock)
         {
             _closed = true;
             ClearLocked();
+            section = _section;
+            _section = null;
         }
+        // Outside the lock: disposing joins the reader thread, which may be inside Enqueue.
+        section?.Dispose();
     }
 
     /// <summary>Empties the queue, returning every pooled payload as it goes.</summary>

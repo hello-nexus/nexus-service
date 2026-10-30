@@ -656,6 +656,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     Fps = p.Fps,
                     BitrateKbps = p.BitrateKbps,
                     Codec = p.Codec == StreamCodec.RawBgra ? "rawBgra" : "h264",
+                    FrameSection = ds.Session.FrameSectionName,
+                    FrameSectionBytes = ds.Session.FrameSectionBytes,
                 });
             }
         }
@@ -724,6 +726,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         info = WithFpsCap(WithRenderScale(info, panelDeviceId));
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
+        TryAttachFrameSection(session);
         var ds = new DeviceSession
         {
             Session = session,
@@ -1099,6 +1102,30 @@ public sealed class StreamedPanelCoordinator : BackgroundService
            && a.Fps == b.Fps
            && a.BitrateKbps == b.BitrateKbps
            && a.WriteBatchFrames == b.WriteBatchFrames;
+
+    // Raw BGRA frames are megabytes each, and the loopback HTTP hop costs more than the copy it
+    // replaces, so the overlay may hand them over through a shared section instead. Any failure
+    // here leaves the session on HTTP ingest, which stays the control and fallback path.
+    private static void TryAttachFrameSection(StreamSession session)
+    {
+        if (!OperatingSystem.IsWindows() || session.Info.Profile.Codec != StreamCodec.RawBgra)
+            return;
+        try
+        {
+            var profile = session.Info.Profile;
+            var scale = profile.Dpr * profile.RenderScale;
+            // The overlay rounds the render size to even; one pixel of slack per axis covers it.
+            var bytes = (StreamedPanelProfile.FramePixels(profile.CssWidth, scale) + 2)
+                * (StreamedPanelProfile.FramePixels(profile.CssHeight, scale) + 2) * 4;
+            var section = WindowsStreamFrameSection.Create(session.SessionId, bytes, (buffer, length) =>
+                session.AcceptFrame(new StreamFrame { Flags = StreamFraming.FlagIdr, Payload = buffer, Length = length, Pooled = true }));
+            session.AttachSection(section, section.Name, bytes);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[streamed-panel] shared frame section unavailable session={session.SessionId}: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     private static string NewSessionId()
     {

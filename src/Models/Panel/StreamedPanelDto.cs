@@ -21,6 +21,12 @@ public sealed class StreamAssignmentDto
 
     /// <summary>"h264" (default) or "rawBgra"; picks the overlay's frame sink.</summary>
     public string Codec { get; set; } = "h264";
+
+    /// <summary>Global shared-memory section the overlay may write raw frames into (event name is this plus "-Ready"); null keeps HTTP ingest only.</summary>
+    public string? FrameSection { get; set; }
+
+    /// <summary>Bytes one frame may occupy in <see cref="FrameSection"/>.</summary>
+    public int FrameSectionBytes { get; set; }
 }
 
 public sealed class StreamAssignmentsResponse

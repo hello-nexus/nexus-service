@@ -76,9 +76,6 @@ public static class StreamedPanelRoutes
             ctx.Features.Get<IHttpMinRequestBodyDataRateFeature>()?.MinDataRate = null;
 
             var reader = ctx.Request.BodyReader;
-            // Arrival gaps are routine (capture is change-driven), so the
-            // session keeps only the window maximum for its stats line.
-            long lastFrameTicks = 0;
             try
             {
                 while (true)
@@ -88,15 +85,7 @@ public static class StreamedPanelRoutes
                     while (StreamFrameReader.TryReadFrame(ref buffer, out var frame))
                     {
                         if (!frame!.IsControl)
-                        {
-                            var now = System.Diagnostics.Stopwatch.GetTimestamp();
-                            if (lastFrameTicks != 0)
-                                session.RecordIngestGap((now - lastFrameTicks) * 1000 / System.Diagnostics.Stopwatch.Frequency);
-                            lastFrameTicks = now;
-                            var native = session.Upscaler is { } upscaler ? upscaler.Apply(frame) : frame;
-                            if (native is not null)
-                                session.Enqueue(native);
-                        }
+                            session.AcceptFrame(frame);
                     }
                     reader.AdvanceTo(buffer.Start, buffer.End);
                     if (result.IsCompleted) break;
