@@ -14,7 +14,7 @@ namespace Nexus.Service.Panel.Streams;
 /// concatenate writes, so this buffers to exactly one frame before encoding. Frames are
 /// fixed-size, which makes the boundary unambiguous.
 /// </summary>
-public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport, IBrightnessPanelTransport
+public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport, IBrightnessPanelTransport, IRepeatGatedPanelTransport
 {
     private readonly JpegPanelHub _hub;
     private readonly BgraJpegEncoder _encoder;
@@ -45,6 +45,9 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private int _lastJpegLength;
     private long _lastSentMs;
     private Timer? _repeat;
+    private volatile Func<bool>? _repeatAllowed;
+
+    public void BindRepeatGate(Func<bool> allowed) => _repeatAllowed = allowed;
 
     private const long FailureStatsIntervalMs = 30_000;
     private long _statsWindowStartMs;
@@ -146,7 +149,9 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         var repeatMs = _hub.Model.RepeatLastFrameMs;
         if (repeatMs > 0 && _repeat is null)
         {
-            _repeat = new Timer(_ => RepeatLast(repeatMs), null, repeatMs, repeatMs);
+            // Ticking at half the period keeps the real gap near the period rather than up to twice it.
+            var tick = Math.Max(1, repeatMs / 2);
+            _repeat = new Timer(_ => RepeatLast(repeatMs), null, tick, tick);
         }
     }
 
@@ -155,18 +160,35 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private void RepeatLast(int repeatMs)
     {
-        if (_disposed || !_hub.IsConnected)
+        try
         {
-            return;
-        }
-        lock (_repeatLock)
-        {
-            if (!RepeatDue(repeatMs, Environment.TickCount64, _lastSentMs, _lastJpegLength > 0))
+            // The gate takes the coordinator's lock, so it is read before this transport's own.
+            if (_disposed || !_hub.IsConnected || _repeatAllowed?.Invoke() == false)
             {
                 return;
             }
-            _lastSentMs = Environment.TickCount64;
-            _hub.SendFrame(_lastJpeg.AsSpan(0, _lastJpegLength));
+            // A busy lock means a frame or an earlier repeat is still being written.
+            if (!Monitor.TryEnter(_repeatLock))
+            {
+                return;
+            }
+            try
+            {
+                if (_disposed || !RepeatDue(repeatMs, Environment.TickCount64, _lastSentMs, _lastJpegLength > 0))
+                {
+                    return;
+                }
+                _lastSentMs = Environment.TickCount64;
+                _hub.SendFrame(_lastJpeg.AsSpan(0, _lastJpegLength));
+            }
+            finally
+            {
+                Monitor.Exit(_repeatLock);
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[{_hub.Model.HandlerId}] frame repeat failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -225,22 +247,10 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             return;
         }
 
-        if (_hub.Model.RepeatLastFrameMs > 0)
-        {
-            lock (_repeatLock)
-            {
-                if (_lastJpeg.Length < jpeg.Length)
-                {
-                    _lastJpeg = new byte[jpeg.Length];
-                }
-                jpeg.CopyTo(_lastJpeg);
-                _lastJpegLength = jpeg.Length;
-                _lastSentMs = Environment.TickCount64;
-            }
-        }
         if (_hub.SendFrame(jpeg))
         {
             _dropLogged = false;
+            RememberFrame(jpeg);
         }
         else if (!_dropLogged)
         {
@@ -248,6 +258,24 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             ServiceLog.Warn($"[{_hub.Model.HandlerId}] frame rejected; retrying on the next frame");
         }
         LogFailureStats();
+    }
+
+    private void RememberFrame(ReadOnlySpan<byte> jpeg)
+    {
+        if (_hub.Model.RepeatLastFrameMs <= 0)
+        {
+            return;
+        }
+        lock (_repeatLock)
+        {
+            if (_lastJpeg.Length < jpeg.Length)
+            {
+                _lastJpeg = new byte[jpeg.Length];
+            }
+            jpeg.CopyTo(_lastJpeg);
+            _lastJpegLength = jpeg.Length;
+            _lastSentMs = Environment.TickCount64;
+        }
     }
 
     /// <summary>One line per interval, and only when frames failed in it, so a healthy stream stays silent.</summary>
@@ -332,7 +360,10 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         {
             return;
         }
-        _disposed = true;
+        lock (_repeatLock)
+        {
+            _disposed = true;
+        }
         _repeat?.Dispose();
         _repeat = null;
         _encoder.Dispose();

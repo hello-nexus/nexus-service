@@ -114,3 +114,10 @@ public interface IStreamedPanelTransport : IDisposable
     /// </summary>
     void Write(ReadOnlySpan<byte> annexBPayload);
 }
+
+/// <summary>Transport that re-sends its last frame while idle and must stop when the coordinator takes the panel off the render.</summary>
+public interface IRepeatGatedPanelTransport
+{
+    /// <summary>Supplies whether the session is currently rendering for this panel; read before each repeat.</summary>
+    void BindRepeatGate(Func<bool> allowed);
+}

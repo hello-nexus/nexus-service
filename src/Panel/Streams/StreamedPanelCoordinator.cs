@@ -634,6 +634,15 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
     private bool _renderingPaused;
 
+    /// <summary>True while the overlay is assigned to render this session, so an idle repeat must not hold a frame a pause or unassignment gave back to the firmware.</summary>
+    private bool RenderingFor(DeviceSession ds)
+    {
+        lock (_lock)
+        {
+            return !_renderingPaused && !ds.Session.Closed && !ShowsSecondaryMonitor(ds) && !IsLockDark(ds.Session.PanelDeviceId);
+        }
+    }
+
     public StreamAssignmentsResponse GetAssignments()
     {
         var response = new StreamAssignmentsResponse();
@@ -936,6 +945,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             // Mount orientation is applied to the bytes, not the render, so the editor and
             // the preview stay upright. Pushed-frame cooler LCDs only.
             var panelId = ds.Session.PanelDeviceId;
+            if (transport is IRepeatGatedPanelTransport gated)
+            {
+                gated.BindRepeatGate(() => RenderingFor(ds));
+            }
             if (transport is IOrientablePanelTransport orientable)
             {
                 orientable.BindOrientation(() =>
