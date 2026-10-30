@@ -45,6 +45,9 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     // Without DRM connector status files (NVIDIA without modeset) a hotplug leaves no sysfs trace, so the scan ages out instead.
     internal const long NoConnectorRescanMs = 300_000;
 
+    // A connected display can ignore its first probes while it wakes, with no sysfs change after; retry such a scan per signature with a doubling gap, so callers that poll every few seconds cannot spend the budget.
+    internal const int MaxRejectRetries = 6;
+
     private readonly Func<(string Signature, bool HasConnectors)> _signature;
     private readonly Func<IEnumerable<Target>> _scan;
     private readonly Func<long> _clock;
@@ -52,19 +55,33 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     private string? _ddcSignature;
     private long _lastScanAt;
     private readonly HashSet<string> _missedIds = new();
+    private readonly ScanStats _stats;
+    private int _rejectRetries;
+
+    /// <summary>Filled by the scan: DRM connectors that are connected but none of whose candidate buses answered; adapter-scoped groups never count.</summary>
+    internal sealed class ScanStats
+    {
+        public int Unanswered;
+    }
 
     internal sealed record Target(bool Internal, string? BacklightDir, int I2cBus, DisplayDto Dto, string PnpId = "");
 
     public LinuxDisplayBrightnessProvider()
-        : this(() => ComputeDisplaySignature(DrmRoot, DevRoot), () => EnumerateDdc(DrmRoot), () => Environment.TickCount64)
+        : this(new ScanStats())
     {
     }
 
-    internal LinuxDisplayBrightnessProvider(Func<(string Signature, bool HasConnectors)> signature, Func<IEnumerable<Target>> scan, Func<long> clock)
+    private LinuxDisplayBrightnessProvider(ScanStats stats)
+        : this(() => ComputeDisplaySignature(DrmRoot, DevRoot), () => EnumerateDdc(DrmRoot, stats), () => Environment.TickCount64, stats)
+    {
+    }
+
+    internal LinuxDisplayBrightnessProvider(Func<(string Signature, bool HasConnectors)> signature, Func<IEnumerable<Target>> scan, Func<long> clock, ScanStats? stats = null)
     {
         _signature = signature;
         _scan = scan;
         _clock = clock;
+        _stats = stats ?? new ScanStats();
     }
 
     public string Hint { get; private set; } = "";
@@ -283,7 +300,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 
     // ── External monitors (DDC/CI over i2c-dev) ──
 
-    // Caller holds _gate. A scan does i2c traffic that stalls GPU frames, so it reruns only when sysfs changed.
+    // Caller holds _gate. A scan does i2c traffic that stalls GPU frames, so it reruns only when sysfs changed, on age-out, or on a bounded retry of an unanswered connector.
     private List<Target> DdcTargets()
     {
         if (Environment.GetEnvironmentVariable(DisableDdcEnv) == "1")
@@ -292,13 +309,22 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         var (signature, hasConnectors) = _signature();
         var now = _clock();
         var aged = !hasConnectors && now - _lastScanAt >= NoConnectorRescanMs;
-        if (_ddcScan is null || signature != _ddcSignature || aged)
+        var changed = _ddcScan is null || signature != _ddcSignature;
+        var retry = !changed && _stats.Unanswered > 0 && _rejectRetries < MaxRejectRetries && now - _lastScanAt >= ForcedRescanMinMs << _rejectRetries;
+        if (changed || aged || retry)
+        {
+            if (changed)
+                _rejectRetries = 0;
+            else if (retry)
+                _rejectRetries++;
             ScanLocked(signature, now);
+        }
         return _ddcScan!;
     }
 
     private void ScanLocked(string signature, long now)
     {
+        _stats.Unanswered = 0;
         _ddcScan = _scan().ToList();
         _ddcSignature = signature;
         _lastScanAt = now;
@@ -379,18 +405,19 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         return (sb.ToString(), connectors > 0);
     }
 
-    private static IEnumerable<Target> EnumerateDdc(string drmRoot)
+    private static IEnumerable<Target> EnumerateDdc(string drmRoot, ScanStats stats)
     {
         if (Environment.GetEnvironmentVariable(DisableDdcEnv) == "1")
             yield break;
 
-        foreach (var bus in SelectDdcBuses(drmRoot))
+        // A bus is a DDC/CI monitor only if it answers a VCP 0x10 read.
+        var groups = SelectDdcCandidates(drmRoot, log: ScanLog);
+        var accepted = ProbeCandidates(groups, b => ReadDdcVcp(b, VcpBrightness) is not null, ScanLog);
+        stats.Unanswered = groups.Count(g => g.OnConnector && !g.Primary.Concat(g.Fallback).Any(accepted.Contains));
+        foreach (var bus in accepted)
         {
-            // A bus is a DDC/CI monitor only if it answers a VCP 0x10 read.
-            if (ReadDdcVcp(bus, VcpBrightness) is null)
-                continue;
-
             var (mfg, model, pnpId) = ReadEdidIdentity(bus);
+            ScanLog($"i2c-{bus} accepted: mfg='{mfg}' model='{model}' pnp='{pnpId}'");
             var dto = new DisplayDto
             {
                 Id = $"linux-ddc-i2c-{bus}",
@@ -415,55 +442,126 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
 
     private const string I2cDevicesRoot = "/sys/bus/i2c/devices";
 
-    /// <summary>
-    /// I2c bus numbers to probe for DDC: buses linked from connected DRM connectors, plus every NVIDIA
-    /// adapter (the proprietary driver exposes no connector link). Probing any other /dev/i2c-* (GPU internal, SMBus) can hang the GPU.
-    /// </summary>
-    internal static List<int> SelectDdcBuses(string drmRoot, string i2cRoot = I2cDevicesRoot)
+    // One line per scan decision, so a bundle shows why a monitor was or was not reached. Scans are rate limited (sysfs change, forced rescan, age-out, unanswered-connector retry).
+    private static void ScanLog(string message) => ServiceLog.Info($"[ddc-scan] {message}");
+
+    /// <summary><paramref name="OnConnector"/> is false for adapter-scoped groups (NVIDIA) that have no connector status to wait on.</summary>
+    internal sealed record DdcCandidates(List<int> Primary, List<int> Fallback, bool OnConnector = true);
+
+    /// <summary>Probes each group's primary buses, then its fallbacks only when no primary answered; a bus is probed at most once.</summary>
+    internal static List<int> ProbeCandidates(IEnumerable<DdcCandidates> groups, Func<int, bool> answers, Action<string>? log = null)
     {
-        var buses = new SortedSet<int>();
+        var probed = new Dictionary<int, bool>();
+        bool Answers(int bus)
+        {
+            if (probed.TryGetValue(bus, out var ok))
+                return ok;
+            ok = answers(bus);
+            probed[bus] = ok;
+            if (!ok)
+                log?.Invoke($"i2c-{bus} rejected: no VCP 0x10 reply");
+            return ok;
+        }
+
+        var found = new SortedSet<int>();
+        foreach (var g in groups)
+        {
+            var any = false;
+            foreach (var bus in g.Primary)
+            {
+                if (Answers(bus))
+                {
+                    found.Add(bus);
+                    any = true;
+                }
+            }
+            if (any)
+                continue;
+            foreach (var bus in g.Fallback)
+            {
+                if (Answers(bus))
+                    found.Add(bus);
+            }
+        }
+        return found.ToList();
+    }
+
+    /// <summary>
+    /// Per connector, AUX children are the primary candidates and the ddc link a fallback used only when no primary answers
+    /// (a DP++ port with a passive HDMI dongle answers on the link). On amdgpu the link targets the DM i2c engine, which native DP sinks do not answer. Every candidate passes the SMU name guard in AddBus,
+    /// so a connector whose only child is an SMU adapter falls back to its link only if that link is itself not an SMU adapter.
+    /// </summary>
+    internal static List<DdcCandidates> SelectDdcCandidates(string drmRoot, string i2cRoot = I2cDevicesRoot, Action<string>? log = null)
+    {
+        var groups = new List<DdcCandidates>();
         string[] connectors;
         try { connectors = Directory.GetDirectories(drmRoot, "card*-*"); }
         catch { connectors = Array.Empty<string>(); }
 
-        foreach (var dir in connectors)
+        foreach (var dir in connectors.Order(StringComparer.Ordinal))
         {
-            if (LinuxSysfs.ReadText(Path.Combine(dir, "status")) != "connected")
+            var name = Path.GetFileName(dir);
+            var status = LinuxSysfs.ReadText(Path.Combine(dir, "status"));
+            if (status != "connected")
+            {
+                log?.Invoke($"{name} skipped: status='{status}'");
                 continue;
-            // The kernel links the connector's DDC adapter as "ddc"; DP AUX adapters nest an i2c-N child instead.
+            }
+            var children = ChildI2cLeaves(dir);
+            var primary = new SortedSet<int>();
+            foreach (var child in children)
+                AddBus(primary, child, Path.Combine(dir, child), $"{name} aux child", log);
+
+            var fallback = new SortedSet<int>();
             var ddcLink = Path.Combine(dir, "ddc");
             var leaf = LinuxSysfs.ReadLinkLeaf(ddcLink);
             if (leaf is not null)
             {
-                AddBus(buses, leaf, ddcLink);
-                continue;
+                // Without an AUX child the link is the only candidate.
+                var target = children.Length == 0 ? primary : fallback;
+                AddBus(target, leaf, ddcLink, $"{name} ddc link", log);
+                fallback.ExceptWith(primary);
             }
-            foreach (var child in ChildI2cLeaves(dir))
-                AddBus(buses, child, Path.Combine(dir, child));
+            else if (primary.Count == 0)
+            {
+                log?.Invoke($"{name} connected but has no i2c child and no ddc link");
+            }
+            if (primary.Count > 0 || fallback.Count > 0)
+                groups.Add(new DdcCandidates(primary.ToList(), fallback.ToList()));
         }
 
+        var nvidia = new SortedSet<int>();
         try
         {
             foreach (var adapter in Directory.GetDirectories(i2cRoot, "i2c-*"))
             {
                 if (LinuxSysfs.ReadText(Path.Combine(adapter, "name"))?.StartsWith("NVIDIA i2c adapter", StringComparison.Ordinal) == true)
-                    AddBus(buses, Path.GetFileName(adapter), adapter);
+                    AddBus(nvidia, Path.GetFileName(adapter), adapter, "NVIDIA adapter", log);
             }
         }
         catch { }
-        return buses.ToList();
+        foreach (var bus in nvidia)
+            groups.Add(new DdcCandidates(new List<int> { bus }, new List<int>(), false));
+        return groups;
     }
 
-    private static void AddBus(SortedSet<int> buses, string leaf, string adapterDir)
+    private static void AddBus(SortedSet<int> buses, string leaf, string adapterDir, string source, Action<string>? log)
     {
+        var name = LinuxSysfs.ReadText(Path.Combine(adapterDir, "name"));
         // The amdgpu SMU adapter carries power-management table transfers; a DDC probe there wedges the SMU.
-        if (LinuxSysfs.ReadText(Path.Combine(adapterDir, "name"))?.StartsWith("AMDGPU SMU", StringComparison.Ordinal) == true)
+        if (name?.StartsWith("AMDGPU SMU", StringComparison.Ordinal) == true)
+        {
+            log?.Invoke($"{source} -> {leaf} skipped: adapter '{name}' is an SMU adapter");
             return;
+        }
         if (leaf.StartsWith("i2c-", StringComparison.Ordinal)
             && int.TryParse(leaf.AsSpan("i2c-".Length), NumberStyles.None, CultureInfo.InvariantCulture, out var bus))
         {
             buses.Add(bus);
+            log?.Invoke($"{source} -> {leaf} selected: adapter '{name}'");
+            return;
         }
+        log?.Invoke($"{source} -> '{leaf}' skipped: not an i2c-N adapter (name '{name}')");
     }
 
     private static string[] ChildI2cLeaves(string connectorDir)

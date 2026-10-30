@@ -25,6 +25,21 @@ public class OpenRgbControllerTimeoutTests
 
         public int Port { get; }
         public int Accepted;
+        /// <summary>Packet ids read after the handshake, in arrival order.</summary>
+        public readonly System.Collections.Concurrent.ConcurrentQueue<OpenRgbProtocol.PacketId> Received = new();
+        /// <summary>While true, frame ACKs are withheld, like a daemon whose controller thread has not taken them yet.</summary>
+        public volatile bool HoldFrameAcks;
+        private readonly System.Collections.Concurrent.ConcurrentQueue<OpenRgbProtocol.PacketId> _heldAcks = new();
+        private NetworkStream? _stream;
+
+        public async Task ReleaseHeldAcksAsync()
+        {
+            HoldFrameAcks = false;
+            while (_heldAcks.TryDequeue(out var id))
+            {
+                await AckAsync(_stream!, id);
+            }
+        }
 
         public FakeDaemon(bool answerHandshake, bool answerRequests, bool drainWrites = true)
         {
@@ -57,6 +72,7 @@ public class OpenRgbControllerTimeoutTests
             try
             {
                 var stream = client.GetStream();
+                _stream = stream;
                 // Protocol 6 handshake: version, client name, client flags; every packet ACKed.
                 var (first, _) = await ReadPacketAsync(stream);
                 if (!_answerHandshake)
@@ -82,6 +98,7 @@ public class OpenRgbControllerTimeoutTests
                         return;
                     }
                     var (id, _) = await ReadPacketAsync(stream);
+                    Received.Enqueue(id);
                     if (!_answerRequests)
                     {
                         await Task.Delay(Timeout.Infinite, _cts.Token);
@@ -90,6 +107,11 @@ public class OpenRgbControllerTimeoutTests
                     if (id == OpenRgbProtocol.PacketId.RequestControllerCount)
                     {
                         await WriteReplyAsync(stream, id, Body(0));
+                    }
+                    if (HoldFrameAcks && id == OpenRgbProtocol.PacketId.RgbControllerUpdateLeds)
+                    {
+                        _heldAcks.Enqueue(id);
+                        continue;
                     }
                     await AckAsync(stream, id);
                 }
@@ -232,5 +254,63 @@ public class OpenRgbControllerTimeoutTests
 
         Assert.False(controller.IsConnected);
         Assert.True(sw.Elapsed < OpenRgbController.IoTimeout + TimeSpan.FromSeconds(10), $"pushes ran for {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task Quiesce_waits_for_the_ACK_of_every_frame_already_written()
+    {
+        await using var daemon = new FakeDaemon(answerHandshake: true, answerRequests: true) { HoldFrameAcks = true };
+        await using var controller = new OpenRgbController(port: daemon.Port);
+        Assert.True(await controller.TryConnectAsync());
+        var frame = new RgbColor[16];
+        await controller.PushFrameAsync(0, frame);
+        await controller.PushFrameAsync(0, frame);
+
+        var quiesce = controller.QuiesceAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(300);
+        Assert.False(quiesce.IsCompleted, "quiesce returned with frames still unacknowledged");
+
+        await daemon.ReleaseHeldAcksAsync();
+        await quiesce.WaitAsync(TimeSpan.FromSeconds(3));
+    }
+
+    [Fact]
+    public async Task Quiesce_drops_frames_dispatched_after_it_started()
+    {
+        await using var daemon = new FakeDaemon(answerHandshake: true, answerRequests: true);
+        await using var controller = new OpenRgbController(port: daemon.Port);
+        Assert.True(await controller.TryConnectAsync());
+        var frame = new RgbColor[16];
+        await controller.PushFrameAsync(0, frame);
+        await controller.QuiesceAsync(TimeSpan.FromSeconds(2));
+
+        await controller.PushFrameAsync(0, frame);
+        await controller.PushFrameAsync(0, frame);
+        await Task.Delay(200);
+
+        Assert.Equal(1, daemon.Received.Count(id => id == OpenRgbProtocol.PacketId.RgbControllerUpdateLeds));
+    }
+
+    [Fact]
+    public async Task Quiesce_against_a_silent_daemon_stays_within_its_budget()
+    {
+        await using var daemon = new FakeDaemon(answerHandshake: true, answerRequests: false);
+        await using var controller = new OpenRgbController(port: daemon.Port);
+        Assert.True(await controller.TryConnectAsync());
+
+        var budget = TimeSpan.FromMilliseconds(400);
+        var elapsed = await TimeAsync(() => controller.QuiesceAsync(budget));
+
+        Assert.True(elapsed < budget + Slack, $"quiesce took {elapsed}");
+    }
+
+    [Fact]
+    public async Task Quiesce_without_a_session_returns_at_once()
+    {
+        await using var controller = new OpenRgbController(port: 1);
+
+        var elapsed = await TimeAsync(() => controller.QuiesceAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.True(elapsed < TimeSpan.FromMilliseconds(500), $"quiesce took {elapsed}");
     }
 }

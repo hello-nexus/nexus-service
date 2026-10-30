@@ -124,7 +124,8 @@ if (OperatingSystem.IsWindows() && !testHost)
 // for a --user install. Returns without waiting when nobody is logged in yet;
 // our own stores never ride on HOME here, so the rest of the boot is unaffected.
 // Still done first, so a session that already exists is adopted before any
-// desktop-derived path resolves.
+// desktop-derived path resolves (a wayland session still waiting for its
+// compositor socket is adopted by the watch a few seconds later).
 // Skipped under the test host: an integration fixture running as root would
 // adopt the machine data root and leave a polling thread behind per fixture.
 #if LINUX
@@ -347,6 +348,11 @@ var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
     WebRootPath = ResolveWebRoot(exeDir),
 });
 Nexus.Service.Lifecycle.BootTimer.Mark("after WebApplication.CreateSlimBuilder");
+#if LINUX
+// The host default can outlast a distro's stop timeout, so a wedged hosted-service stop would
+// end in SIGKILL. Stay under the unit's TimeoutStopSec with room for disposal.
+builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(20));
+#endif
 // Logging policy: the service's own diagnostics go through Console/ServiceLog, so
 // the only ILogger output is framework noise. Drop it to Warning - in particular
 // Microsoft.AspNetCore.Hosting.Diagnostics' per-request "Request starting/finished"
