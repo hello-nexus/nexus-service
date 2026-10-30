@@ -77,10 +77,22 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     // Runs on the re-open worker, outside the walk lock.
     private void OnMotherboardReopened()
     {
-        // Old board Controls must not be written again, so a running calibration aborts like it does on ReleaseAll.
-        EndCalibrationLease(restorePriorState: false);
+        // Old board Controls must not be written again: dropping their leases aborts those ramps. GPU leases stay,
+        // and the aborted run's finally restores them.
+        DropBoardLeases();
         try { EnsureDiscovered(); }
         catch (Exception ex) { ServiceLog.Warn($"[fan-control] re-discovery after motherboard re-open failed: {ex.Message}"); }
+    }
+
+    private void DropBoardLeases()
+    {
+        lock (_calibrationLock)
+        {
+            foreach (var id in _calibrationLease.Where(kv => kv.Value.Mapping.Generation >= 0).Select(kv => kv.Key).ToList())
+            {
+                _calibrationLease.Remove(id);
+            }
+        }
     }
 
     private bool IsLeasedForCalibration(string channelId)
@@ -194,7 +206,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mapping = mappings.FirstOrDefault(m => m.Id == channelId);
         if (mapping is null) return clamped;
 
-        WriteDuty(mapping, clamped);
+        if (!WriteDuty(mapping, clamped)) return (int)(mapping.ControlSensor.Value ?? 0f);
         _softwareControlled.Add(channelId);
         _config.Update(s => s.Cooling.ManualSpeeds[channelId] = clamped);
         return clamped;
@@ -220,7 +232,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mapping = mappings.FirstOrDefault(m => m.Id == channelId);
         if (mapping is null) return;
 
-        WriteDefault(mapping);
+        if (!WriteDefault(mapping)) return;
         _softwareControlled.Remove(channelId);
         _config.Update(s => s.Cooling.ManualSpeeds.Remove(channelId));
     }
@@ -364,16 +376,16 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     private void WriteCalibrationDuty(ChannelMapping mapping, int duty)
     {
-        lock (_calibrationLock)
-        {
-            // Revoked mid-ramp by ReleaseAll (shutdown or profile switch).
-            // Aborting rather than skipping the write is what keeps the run from
-            // completing: the remaining steps would sample whatever now drives
-            // the fan and persist that over a valid calibration.
-            if (!_calibrationLease.ContainsKey(mapping.Id))
-                throw new OperationCanceledException($"calibration lease revoked for {mapping.Id}");
-            if (!WriteDuty(mapping, Math.Clamp(duty, 0, 100), rebind: false)) throw new CalibrationWriteRefusedException();
-        }
+        // Revoked mid-ramp by ReleaseAll (shutdown or profile switch) or a motherboard re-open.
+        // Aborting rather than skipping the write is what keeps the run from
+        // completing: the remaining steps would sample whatever now drives
+        // the fan and persist that over a valid calibration.
+        // The write itself runs outside _calibrationLock: it can wait on a wedged LHM walk, and ReleaseAll needs the lock to revoke.
+        if (!IsLeasedForCalibration(mapping.Id))
+            throw new OperationCanceledException($"calibration lease revoked for {mapping.Id}");
+        if (!WriteDuty(mapping, Math.Clamp(duty, 0, 100), rebind: false)) throw new CalibrationWriteRefusedException();
+        if (!IsLeasedForCalibration(mapping.Id))
+            throw new OperationCanceledException($"calibration lease revoked for {mapping.Id}");
     }
 
     private sealed class CalibrationWriteRefusedException : Exception;
@@ -384,10 +396,14 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         return WithControl(mapping, rebind, c => c.SetSoftware(duty));
     }
 
-    private void WriteDefault(ChannelMapping mapping)
+    private bool WriteDefault(ChannelMapping mapping)
     {
-        if (mapping.AmdFan is { } amd) amd.Release();
-        else WithControl(mapping, rebind: true, c => c.SetDefault());
+        if (mapping.AmdFan is { } amd)
+        {
+            amd.Release();
+            return true;
+        }
+        return WithControl(mapping, rebind: true, c => c.SetDefault());
     }
 
     // A mapping taken before a motherboard re-open is refused under the walk lock; one re-discovery finds the live one.
@@ -397,8 +413,10 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         for (var attempt = 0; attempt < 2 && current is not null; attempt++)
         {
             var target = current;
-            if (_lhm.WithHardware(target.Generation, target.ChipId, () => write(target.ControlSensor.Control!))) return true;
-            if (!rebind) return false;
+            var result = _lhm.WithHardware(target.Generation, target.ChipId, () => write(target.ControlSensor.Control!));
+            if (result == HardwareWriteResult.Done) return true;
+            // Only a generation mismatch has a live mapping to find; a suspect or disposed chip stays refused.
+            if (result != HardwareWriteResult.Stale || !rebind) return false;
             current = EnsureDiscovered().FirstOrDefault(m => m.Id == target.Id);
         }
         return false;

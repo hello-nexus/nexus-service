@@ -403,14 +403,18 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
             {
                 var fans = new List<float?>();
                 var controls = new List<float?>();
+                var temps = new List<float?>();
+                var volts = new List<float?>();
                 foreach (var sensor in chip.Sensors)
                 {
                     if (sensor.SensorType == SensorType.Fan) fans.Add(sensor.Value);
                     else if (sensor.SensorType == SensorType.Control) controls.Add(sensor.Value);
+                    else if (sensor.SensorType == SensorType.Temperature) temps.Add(sensor.Value);
+                    else if (sensor.SensorType == SensorType.Voltage) volts.Add(sensor.Value);
                 }
                 var id = chip.Identifier.ToString();
                 var state = SuperIoRecoveryPolicy.Classify(fans, controls);
-                var decision = _recovery.Observe(id, state, now, out var suspect);
+                var decision = _recovery.Observe(id, state, SuperIoRecoveryPolicy.HasAllOnesSignature(temps, volts), now, out var suspect);
                 if (suspect) _suspectChips.Add(id);
                 else if (state == SuperIoChipState.Sane) _suspectChips.Remove(id);
                 if (decision == SuperIoDecision.GaveUp)
@@ -425,7 +429,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
             if (reopenChip is not null && ScheduleReopen($"{reopenChip} stalled"))
             {
                 ServiceLog.Warn($"[lhm] {reopenChip}: every fan reads 0 RPM while every control reads 100%, re-opening the motherboard group");
-                _recovery.CommitAttempt(now);
+                _recovery.CommitAttempt(reopenChip, now);
             }
         }
         catch (Exception ex)
@@ -556,16 +560,22 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
     public int Generation => Volatile.Read(ref _generation);
 
     /// <summary>
-    /// Runs a hardware write under the walk lock. Returns false without running it when the sensor objects come from an
-    /// older generation (negative means not tied to the motherboard) or the chip is believed to be in the dead state.
+    /// Runs a hardware write under the walk lock and reports why it did not run: Stale when the sensor objects come
+    /// from an older generation (negative means not tied to the motherboard), Suspect when the chip is believed to be
+    /// in the dead state, Disposed after shutdown began.
     /// </summary>
-    public bool WithHardware(int generation, string? chipId, Action action)
+    public HardwareWriteResult WithHardware(int generation, string? chipId, Action action)
     {
         lock (_updateLock)
         {
-            if (!SuperIoRecoveryPolicy.MayWrite(generation, _generation, chipId is not null && _suspectChips.Contains(chipId))) return false;
+            if (_disposed) return HardwareWriteResult.Disposed;
+            switch (SuperIoRecoveryPolicy.CheckWrite(generation, _generation, chipId is not null && _suspectChips.Contains(chipId)))
+            {
+                case SuperIoWriteGate.Stale: return HardwareWriteResult.Stale;
+                case SuperIoWriteGate.Suspect: return HardwareWriteResult.Suspect;
+            }
             action();
-            return true;
+            return HardwareWriteResult.Done;
         }
     }
 
@@ -667,12 +677,18 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
         // Open(), and Dispose() is only called at service shutdown so the
         // wait is rare and not on any user-visible path.
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
-        lock (_updateLock)
-        {
-            _disposed = true;
-        }
+        _disposed = true;
         ResetSpdPages(SpdDisposeBudget);
-        _computer.Close();
+        // Bounded: a wedged walk must not hang shutdown, and Close then runs unlocked as it always has.
+        var locked = Monitor.TryEnter(_updateLock, TimeSpan.FromSeconds(2));
+        try
+        {
+            _computer.Close();
+        }
+        finally
+        {
+            if (locked) Monitor.Exit(_updateLock);
+        }
     }
 }
 
@@ -703,3 +719,5 @@ internal static partial class WindowsTimerResolution
         }
     }
 }
+
+public enum HardwareWriteResult { Done, Stale, Suspect, Disposed }

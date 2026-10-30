@@ -22,9 +22,12 @@ public enum SuperIoChipState { Unknown, Sane, Stalled }
 
 public enum SuperIoDecision { None, Reopen, GaveUp }
 
+public enum SuperIoWriteGate { Allowed, Stale, Suspect }
+
 /// <summary>
-/// Decides when a Super I/O chip needs a re-open. A chip whose registers all read 0xFF shows every tach at 0 and every
-/// PWM output at full duty. After a resume the stall alone triggers retries; otherwise a fan must have spun earlier.
+/// Decides when a Super I/O chip needs a re-open. A chip whose registers all read all-ones shows every tach at 0, every
+/// PWM output at full duty, temperatures at -1 and voltages at the raw maximum. After a resume the stall plus that
+/// signature triggers retries; otherwise a fan must have spun earlier. Budgets are per chip.
 /// </summary>
 public sealed class SuperIoRecoveryPolicy
 {
@@ -33,13 +36,19 @@ public sealed class SuperIoRecoveryPolicy
     public const long IdleSpacingMs = 5 * 60_000;
     public const int MaxAttempts = 3;
     private const float FullDuty = 99.5f;
+    private const float VoltageTolerance = 0.02f;
+
+    private sealed class ChipBudget
+    {
+        public int Attempts;
+        public long? LastAttemptMs;
+        public bool GaveUpReported;
+    }
 
     private readonly object _lock = new();
     private readonly HashSet<string> _spun = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ChipBudget> _budgets = new(StringComparer.Ordinal);
     private long _windowEndMs = long.MinValue;
-    private long? _lastAttemptMs;
-    private int _attempts;
-    private bool _gaveUpReported;
 
     public static SuperIoChipState Classify(IReadOnlyList<float?> fanRpm, IReadOnlyList<float?> controlPercent)
     {
@@ -68,30 +77,71 @@ public sealed class SuperIoRecoveryPolicy
         return SuperIoChipState.Stalled;
     }
 
-    /// <summary>A negative generation is not tied to the motherboard group and is always current.</summary>
-    public static bool MayWrite(int mappingGeneration, int currentGeneration, bool chipSuspect) =>
-        (mappingGeneration < 0 || mappingGeneration == currentGeneration) && !chipSuspect;
+    /// <summary>
+    /// The all-ones register signature: every temperature reads -1 and every voltage sits at the raw maximum
+    /// (2.04 or 4.08). Null when the chip exposes neither, so nothing can be said.
+    /// </summary>
+    public static bool? HasAllOnesSignature(IReadOnlyList<float?> temperatures, IReadOnlyList<float?> voltages)
+    {
+        if (temperatures.Count == 0 && voltages.Count == 0)
+        {
+            return null;
+        }
+        foreach (var t in temperatures)
+        {
+            if (t is not { } v)
+            {
+                return null;
+            }
+            if (v > -1f + 0.01f)
+            {
+                return false;
+            }
+        }
+        foreach (var volt in voltages)
+        {
+            if (volt is not { } v)
+            {
+                return null;
+            }
+            if (Math.Abs(v - 2.04f) > VoltageTolerance && Math.Abs(v - 4.08f) > VoltageTolerance)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     public static bool IsStalled(IReadOnlyList<float?> fanRpm, IReadOnlyList<float?> controlPercent) =>
         Classify(fanRpm, controlPercent) == SuperIoChipState.Stalled;
 
-    /// <summary>A resume opens the recovery window and clears the retry budget.</summary>
+    /// <summary>A negative generation is not tied to the motherboard group and is always current.</summary>
+    public static SuperIoWriteGate CheckWrite(int mappingGeneration, int currentGeneration, bool chipSuspect)
+    {
+        if (mappingGeneration >= 0 && mappingGeneration != currentGeneration)
+        {
+            return SuperIoWriteGate.Stale;
+        }
+        return chipSuspect ? SuperIoWriteGate.Suspect : SuperIoWriteGate.Allowed;
+    }
+
+    /// <summary>A resume opens the recovery window and clears every chip's retry budget.</summary>
     public void NoteResume(long nowMs)
     {
         lock (_lock)
         {
             _windowEndMs = nowMs + RecoveryWindowMs;
-            _attempts = 0;
-            _lastAttemptMs = null;
-            _gaveUpReported = false;
+            _budgets.Clear();
         }
     }
 
     /// <summary>
     /// Suspect is true while a stalled chip is believed to be in the dead state: software writes to it would
-    /// save that state as the BIOS default. Observing has no side effect on the retry budget until CommitAttempt.
+    /// save that state as the BIOS default. A signature of false means the registers read normally, so the chip is
+    /// never suspect; a null signature falls back to requiring that a fan spun earlier.
+    /// Observing leaves the retry budget alone until CommitAttempt.
     /// </summary>
-    public SuperIoDecision Observe(string chipId, SuperIoChipState state, long nowMs, out bool suspect)
+    public SuperIoDecision Observe(string chipId, SuperIoChipState state, bool? signature, long nowMs, out bool suspect)
     {
         lock (_lock)
         {
@@ -99,31 +149,32 @@ public sealed class SuperIoRecoveryPolicy
             if (state == SuperIoChipState.Sane)
             {
                 _spun.Add(chipId);
-                _attempts = 0;
-                _gaveUpReported = false;
+                _budgets.Remove(chipId);
                 return SuperIoDecision.None;
             }
-            if (state != SuperIoChipState.Stalled)
+            if (state != SuperIoChipState.Stalled || signature == false)
             {
                 return SuperIoDecision.None;
             }
             var inWindow = nowMs < _windowEndMs;
-            if (!inWindow && !_spun.Contains(chipId))
+            var eligible = _spun.Contains(chipId) || (inWindow && signature == true);
+            if (!eligible)
             {
                 return SuperIoDecision.None;
             }
             suspect = true;
-            if (_attempts >= MaxAttempts)
+            var budget = _budgets.GetValueOrDefault(chipId);
+            if (budget is not null && budget.Attempts >= MaxAttempts)
             {
-                if (_gaveUpReported)
+                if (budget.GaveUpReported)
                 {
                     return SuperIoDecision.None;
                 }
-                _gaveUpReported = true;
+                budget.GaveUpReported = true;
                 return SuperIoDecision.GaveUp;
             }
             var spacing = inWindow ? WindowSpacingMs : IdleSpacingMs;
-            if (_lastAttemptMs is { } last && nowMs - last < spacing)
+            if (budget?.LastAttemptMs is { } last && nowMs - last < spacing)
             {
                 return SuperIoDecision.None;
             }
@@ -132,12 +183,16 @@ public sealed class SuperIoRecoveryPolicy
     }
 
     /// <summary>Called only when the re-open actually started; a busy single-flight is not an attempt.</summary>
-    public void CommitAttempt(long nowMs)
+    public void CommitAttempt(string chipId, long nowMs)
     {
         lock (_lock)
         {
-            _attempts++;
-            _lastAttemptMs = nowMs;
+            if (!_budgets.TryGetValue(chipId, out var budget))
+            {
+                _budgets[chipId] = budget = new ChipBudget();
+            }
+            budget.Attempts++;
+            budget.LastAttemptMs = nowMs;
         }
     }
 
