@@ -17,12 +17,14 @@ internal sealed class SecondaryMonitorFeed : IDisposable
     private const int FrameWaitMs = 1000;
     private const int InputReadMs = 250;
     private const int JoinMs = 3000;
+    private const int CapReadMs = 500;
 
     private readonly IVirtualMonitorHost _host;
     private readonly BulkPanelHub _hub;
     private readonly Func<byte[], bool> _push;
     private readonly Func<(bool Flip180, bool Mirror)> _orientation;
     private readonly Action _stateChanged;
+    private readonly Func<int?>? _fpsCap;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _monitorLock = new();
     private readonly Thread _frames;
@@ -36,8 +38,10 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         BulkPanelHub hub,
         Func<byte[], bool> push,
         Func<(bool Flip180, bool Mirror)> orientation,
-        Action stateChanged)
+        Action stateChanged,
+        Func<int?>? fpsCap = null)
     {
+        _fpsCap = fpsCap;
         _host = host;
         _hub = hub;
         _push = push;
@@ -108,7 +112,8 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         }
 
         var frame = new byte[width * height * 4];
-        long interval = Stopwatch.Frequency / Math.Max(1, _hub.Driver.Fps);
+        long interval = FrameInterval();
+        long nextCapReadMs = Environment.TickCount64 + CapReadMs;
         long lastSent = 0;
         while (!_cts.IsCancellationRequested)
         {
@@ -123,6 +128,12 @@ internal sealed class SecondaryMonitorFeed : IDisposable
                         break;
                     }
                     continue;
+                }
+                // The record's cap is polled, not read per frame: reading it clones the panel record.
+                if (Environment.TickCount64 >= nextCapReadMs)
+                {
+                    interval = FrameInterval();
+                    nextCapReadMs = Environment.TickCount64 + CapReadMs;
                 }
                 long wait = lastSent + interval - Stopwatch.GetTimestamp();
                 if (wait > 0 && _cts.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds((double)wait / Stopwatch.Frequency)))
@@ -146,6 +157,14 @@ internal sealed class SecondaryMonitorFeed : IDisposable
                 break;
             }
         }
+    }
+
+    private long FrameInterval()
+    {
+        int? cap = null;
+        try { cap = _fpsCap?.Invoke(); }
+        catch (Exception ex) { ServiceLog.Warn($"[{_hub.Driver.HandlerId}] fps cap read failed: {ex.GetType().Name}: {ex.Message}"); }
+        return Stopwatch.Frequency / Math.Max(1, StreamFpsCap.Effective(_hub.Driver.Fps, cap));
     }
 
     private void RunTouchGuarded(IVirtualMonitor monitor, int width, int height)

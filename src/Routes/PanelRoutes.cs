@@ -386,7 +386,7 @@ public static class PanelRoutes
                 streams.ApplySecondaryMonitor(updated.Id);
                 streams.Wake();
             }
-            if (body.HighResolution.HasValue)
+            if (body.HighResolution.HasValue || body.FpsCap.HasValue)
                 streams.Wake();
             BroadcastDeviceChanged(hub, id);
             if (body.Layout is not null)

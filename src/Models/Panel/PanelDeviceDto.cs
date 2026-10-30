@@ -186,6 +186,8 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
+    /// <summary>Frame rate cap for this device: a streamed display's session rate and secondary-monitor pacing, or how often a display-bound panel page draws. Null = the device's own rate.</summary>
+    public int? FpsCap { get; set; }
     /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; null = the panel's
     /// default. Which panels offer it, and what each value lays out, is decided by the web.</summary>
     public string? WidgetSize { get; set; }
@@ -504,6 +506,8 @@ public sealed class PanelDevicePatch
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
     /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
     public bool? HighResolution { get; set; }
+    /// <summary>Frame rate cap in fps, clamped to PanelDeviceRegistry.MaxFpsCap; 0 or less clears it (the device's own rate). Null = leave it.</summary>
+    public int? FpsCap { get; set; }
     /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; anything else is ignored. Null = leave it.</summary>
     public string? WidgetSize { get; set; }
     /// <summary>Kiosk-measured window size; applied to display-bound records only.</summary>

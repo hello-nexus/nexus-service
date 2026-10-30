@@ -51,7 +51,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly PanelDeviceRegistry _registry;
     private readonly Func<string, bool> _removePanel;
     private readonly Func<string, bool> _isCustomized;
-    private readonly Func<int?>? _fpsCap;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
@@ -78,10 +77,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Action<string>? notifyPanelChanged = null,
         LcdLockState? lockState = null,
         Func<string, bool>? removePanel = null,
-        Func<string, bool>? isCustomized = null,
-        Func<int?>? fpsCap = null)
+        Func<string, bool>? isCustomized = null)
     {
-        _fpsCap = fpsCap;
         _removePanel = removePanel ?? registry.Remove;
         _isCustomized = isCustomized ?? registry.IsCustomized;
         _discoveries = discoveries.ToList();
@@ -478,7 +475,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             {
                 DeviceSession? existing;
                 lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
-                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId));
+                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId), existing.Session.PanelDeviceId, existing);
                 string? remintedPanelId = null;
                 if (existing is not null && !ProfilesEqual(existing.Info.Profile, info.Profile))
                 {
@@ -760,6 +757,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     Fps = p.Fps,
                     BitrateKbps = p.BitrateKbps,
                     Codec = p.Codec == StreamCodec.RawBgra ? "rawBgra" : "h264",
+                    FrameSection = ds.Session.FrameSectionName,
+                    FrameSectionBytes = ds.Session.FrameSectionBytes,
                 });
             }
         }
@@ -772,17 +771,18 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     /// socket the new connection must displace). Returns null for unknown or
     /// closed sessions; the overlay treats 404 as "close host and re-reconcile".
     /// </summary>
-    public StreamSession? TryBindIngest(string sessionId, HttpContext ctx)
+    public StreamSession? TryBindIngest(string sessionId, HttpContext ctx, string? writerNonce = null)
     {
         HttpContext? superseded = null;
         StreamSession? session = null;
+        long generation = 0;
         lock (_lock)
         {
             if (_bySessionId.TryGetValue(sessionId, out var ds) && !ds.Session.Closed)
             {
                 superseded = ds.IngestContext;
                 ds.IngestContext = ctx;
-                ds.Session.ResetForNewIngest();
+                generation = ds.Session.ResetForNewIngest();
                 session = ds.Session;
             }
         }
@@ -791,7 +791,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             try { superseded.Abort(); } catch { }
         }
         if (session is not null)
+        {
+            BindFrameSection(session, writerNonce, generation);
             ServiceLog.Info($"[streamed-panel] ingest bound session={sessionId}{(superseded is not null ? " (superseded previous)" : "")}");
+        }
         return session;
     }
 
@@ -825,9 +828,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ServiceLog.Error($"[streamed-panel] record allocation failed serial={info.Serial}: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
-        info = WithFpsCap(WithRenderScale(info, panelDeviceId));
+        info = WithFpsCap(WithRenderScale(info, panelDeviceId), panelDeviceId);
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
+        OfferSharedFrames(session);
         var ds = new DeviceSession
         {
             Session = session,
@@ -1058,6 +1062,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             if (transport is ISecondaryMonitorTransport monitorable)
             {
                 monitorable.BindSecondaryMonitor(() => _registry.Get(panelId)?.SecondaryMonitor == true);
+                monitorable.BindFpsCap(() => _registry.Get(panelId)?.FpsCap);
                 monitorable.SecondaryMonitorStateChanged += () =>
                 {
                     _notifyPanelChanged?.Invoke(panelId);
@@ -1188,10 +1193,15 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
     }
 
-    // The cap is part of the profile, so changing it re-mints live sessions through the "profile changed" path in TickOnce.
-    private StreamedPanelDeviceInfo WithFpsCap(StreamedPanelDeviceInfo info)
+    // The record's cap is part of the profile, so changing it re-mints live sessions through the "profile changed" path in TickOnce.
+    // A session whose record drives the glass as a secondary monitor keeps its rate: re-minting would
+    // dispose the transport and recreate the virtual monitor, and the monitor feed re-reads the cap live.
+    private StreamedPanelDeviceInfo WithFpsCap(StreamedPanelDeviceInfo info, string panelDeviceId, DeviceSession? existing = null)
     {
-        var fps = StreamFpsCap.Effective(info.Profile.Fps, _fpsCap?.Invoke());
+        var record = _registry.Get(panelDeviceId);
+        var fps = existing is not null && ShowsSecondaryMonitor(existing)
+            ? existing.Info.Profile.Fps
+            : StreamFpsCap.Effective(info.Profile.Fps, record?.FpsCap);
         return fps == info.Profile.Fps
             ? info
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = info.Profile with { Fps = fps }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
@@ -1207,6 +1217,53 @@ public sealed class StreamedPanelCoordinator : BackgroundService
            && a.Fps == b.Fps
            && a.BitrateKbps == b.BitrateKbps
            && a.WriteBatchFrames == b.WriteBatchFrames;
+
+    // Raw BGRA frames are megabytes each, and the loopback HTTP hop costs more than the copy it
+    // replaces, so the overlay may hand them over through a shared section instead. The section
+    // itself is created per ingest bind (BindFrameSection); until then the session only offers it.
+    private static void OfferSharedFrames(StreamSession session)
+    {
+        if (!OperatingSystem.IsWindows() || session.Info.Profile.Codec != StreamCodec.RawBgra)
+            return;
+        var profile = session.Info.Profile;
+        var scale = profile.Dpr * profile.RenderScale;
+        // FramePixels matches the overlay's even-rounded render size exactly.
+        var bytes = StreamedPanelProfile.FramePixels(profile.CssWidth, scale)
+            * StreamedPanelProfile.FramePixels(profile.CssHeight, scale) * 4;
+        session.OfferSharedFrames(@"Global\NexusPanelStream-" + session.SessionId, bytes);
+    }
+
+    // A rebind replaces the section under the new writer's nonce, so a superseded overlay (another
+    // session, or one still shutting down) keeps writing into a section nobody reads. Any failure
+    // leaves the session on HTTP ingest.
+    private static void BindFrameSection(StreamSession session, string? writerNonce, long generation)
+    {
+        if (!OperatingSystem.IsWindows() || session.FrameSectionName is not { } baseName)
+            return;
+        if (!StreamFrameSection.IsValidNonce(writerNonce))
+        {
+            session.ReplaceSection(null, generation);
+            return;
+        }
+        try
+        {
+            var sddl = StreamFrameSection.Sddl(WindowsStreamFrameSection.ResolveOverlayUserSid());
+            if (sddl is null)
+            {
+                session.ReplaceSection(null, generation);
+                ServiceLog.Warn($"[streamed-panel] no overlay user to scope the shared frame section; HTTP ingest only session={session.SessionId}");
+                return;
+            }
+            var section = WindowsStreamFrameSection.Create(StreamFrameSection.SectionName(baseName, writerNonce!), sddl, session.FrameSectionBytes, (buffer, length) =>
+                session.AcceptFrame(new StreamFrame { Flags = StreamFraming.FlagIdr, Payload = buffer, Length = length, Pooled = true }));
+            session.ReplaceSection(section, generation);
+        }
+        catch (Exception ex)
+        {
+            session.ReplaceSection(null, generation);
+            ServiceLog.Warn($"[streamed-panel] shared frame section unavailable session={session.SessionId}: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     private static string NewSessionId()
     {
