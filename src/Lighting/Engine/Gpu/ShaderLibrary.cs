@@ -143,11 +143,7 @@ internal static class ShaderLibrary
         {
             // Every "simple*" colour key shares the one solid-fill shader; the
             // colour lives entirely in the per-key template tint, not the GLSL.
-            // Simple mode's breathing tile is its own key over breathing.frag,
-            // so running it never reads as the advanced effect's selection.
-            var file = key.StartsWith("simple", System.StringComparison.Ordinal) ? "simple"
-                : key == "sweepbreathing" ? "breathing"
-                : key;
+            var file = key.StartsWith("simple", System.StringComparison.Ordinal) ? "simple" : key;
             var body = LoadRaw(ResourcePrefix + file + ".frag");
             // A sensor effect is a baked Studio fragment that declares everything itself; the prelude would redeclare it.
             return IsSensorEffect(key) ? body : Prelude + "\n" + body;
@@ -255,23 +251,45 @@ internal static class ShaderLibrary
         "beatstrobe", "harmonicstar", "audiotunnel", "bassbloom",
         "beatbuilder", "spectrumaurora", "neonwaveform", "liquidbeat",
         "beatburst", "lavaribbons", "lavahaze",
-        // Simple mode's sweep set; mirrors SweepEffectKeys below, keep in sync.
-        "sweeprainbow", "sweepbreathing", "sweepbars", "sweepcycle",
-        "sweepbrush", "sweepliquid", "sweepcomet",
+        // Full-frame set members with their own key; the rest are listed above.
+        "sweepcycle", "sweepbrush", "sweepliquid", "sweepcomet",
     };
 
-    /// <summary>Simple mode's sweep set. Every one travels on +x only (breathing
-    /// and cycle do not travel; the whole frame is one colour): simple mode turns them
-    /// around with the speed sign, and a y-travelling shader added here would
-    /// collapse every linear strip to one colour under
-    /// <see cref="LightingEngine.FullFrameSampling"/>.</summary>
+    /// <summary>Effects that sample the whole canvas on every device, simple mode's
+    /// set. Each is also a regular animate effect with preset slots. Their stock
+    /// looks travel on +x only (breathing and cycle do not travel; the whole frame
+    /// is one colour): a y-travelling stock look added here would collapse every
+    /// linear strip to one colour under <see cref="LightingEngine.FullFrameSampling"/>.</summary>
     public static readonly HashSet<string> SweepEffectKeys = new(System.StringComparer.Ordinal)
     {
-        "sweeprainbow", "sweepbreathing", "sweepbars", "sweepcycle",
+        "rainbow", "breathing", "sharplines", "sweepcycle",
         "sweepbrush", "sweepliquid", "sweepcomet",
     };
 
     public static bool IsSweepEffect(string key) => SweepEffectKeys.Contains(key);
+
+    /// <summary>Whether a running effect samples the whole canvas on every device. Rainbow and sharplines
+    /// travel along a rotated axis once rotated, and brush once it leaves the horizontal, which a full-frame
+    /// read would flatten to one color per strip (or to blocks that change at once), so they use canvas
+    /// sampling then.</summary>
+    public static bool IsFullFrame(string key, IReadOnlyDictionary<string, float>? extras)
+    {
+        if (!SweepEffectKeys.Contains(key))
+        {
+            return false;
+        }
+        if (key is not ("rainbow" or "sharplines" or "sweepbrush")
+            || extras is null || !extras.TryGetValue("u_rotation", out var rotation))
+        {
+            return true;
+        }
+        if (key == "sweepbrush")
+        {
+            var half = System.Math.Abs(rotation) % 180f;
+            return half < 0.0001f || half > 180f - 0.0001f;
+        }
+        return System.Math.Abs(rotation) <= 0.0001f;
+    }
 
     /// <summary>Key prefix of a built-in sensor effect: a self-contained baked Studio fragment, shipped as
     /// Shaders/sensor&lt;name&gt;.frag and registered by that file alone.</summary>

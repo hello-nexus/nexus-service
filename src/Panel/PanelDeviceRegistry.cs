@@ -760,7 +760,7 @@ public sealed class PanelDeviceRegistry
             if (patch.BackgroundMode is not null)
                 record.BackgroundMode = NullIfEmpty(patch.BackgroundMode);
             if (patch.BackgroundEffect is not null)
-                record.BackgroundEffect = NullIfEmpty(patch.BackgroundEffect);
+                record.BackgroundEffect = NullIfEmpty(Nexus.Service.Lighting.SimplePatternMigration.Normalize(patch.BackgroundEffect));
             if (patch.BackgroundTemplate.HasValue)
                 record.BackgroundTemplate = patch.BackgroundTemplate.Value;
             if (patch.BackgroundTemplates is not null)
@@ -829,6 +829,8 @@ public sealed class PanelDeviceRegistry
                 record.ClickThrough = patch.ClickThrough.Value;
             if (patch.WidgetsLocked.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.WidgetsLocked = patch.WidgetsLocked.Value;
+            if (patch.RestrictedMode.HasValue)
+                record.RestrictedMode = patch.RestrictedMode.Value ? true : null;
             // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
             if (patch.GridSlots is <= 0)
                 record.GridSlots = null;
@@ -1327,6 +1329,7 @@ public sealed class PanelDeviceRegistry
             Enabled = r.Hosted ?? r.Enabled,
             ClickThrough = r.ClickThrough,
             WidgetsLocked = r.WidgetsLocked,
+            RestrictedMode = r.RestrictedMode,
             GridSlots = r.GridSlots is > 0 ? r.GridSlots : null,
             DesktopImport = r.DesktopImport,
         };

@@ -352,6 +352,8 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
+            if (body.RestrictedMode.HasValue && !HasServiceToken(ctx, tokens))
+                return Results.Json(ApiResponse.Fail("restricted_mode_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             if (body.Font is not null && !Nexus.Service.Panel.PanelFontValue.TryNormalize(body.Font, out _))
             {
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
@@ -535,6 +537,7 @@ public static class PanelRoutes
             {
                 ResetPersonalization(registry, bgLibrary, id);
                 registry.ResetHardwareSettings(id);
+                registry.Patch(id, new PanelDevicePatch { RestrictedMode = false });
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }

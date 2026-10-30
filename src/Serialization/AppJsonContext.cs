@@ -946,6 +946,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(WillStartResponse))]
 [JsonSerializable(typeof(PawnIoStatus))]
 [JsonSerializable(typeof(Nexus.Service.Lifecycle.PawnIoUpgradeMarker))]
+[JsonSerializable(typeof(Nexus.Service.Lifecycle.RestrictedModeState))]
 
 // Processes
 [JsonSerializable(typeof(ProcessInfo))]

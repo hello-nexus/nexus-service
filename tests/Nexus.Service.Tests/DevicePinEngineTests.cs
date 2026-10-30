@@ -755,7 +755,7 @@ public class DevicePinEngineTests : IDisposable
 
     private sealed class HalfAndHalf : IEffect
     {
-        public string Name => "sweeprainbow";
+        public string Name => "rainbow";
         public void RenderFrame(CanvasBuffer canvas, double tickMs)
         {
             for (int y = 0; y < canvas.Height; y++)
@@ -768,9 +768,9 @@ public class DevicePinEngineTests : IDisposable
     [Fact]
     public async Task A_device_pinned_to_a_sweep_reads_the_whole_canvas()
     {
-        Assert.True(DevicePinTracker.IsAnimateEffect("sweeprainbow"));
+        Assert.True(DevicePinTracker.IsAnimateEffect("rainbow"));
         var pins = new DevicePinTracker();
-        pins.Set("dev-a", new DevicePin { Kind = DevicePinKinds.Animate, Effect = "sweeprainbow" });
+        pins.Set("dev-a", new DevicePin { Kind = DevicePinKinds.Animate, Effect = "rainbow" });
         // A small strip parked in the red half of the canvas.
         var dev = new DeviceFrame(0, "dev-a", 10, x: 20, y: 20, w: 100, h: 20);
         using var engine = Engine(pins, dev, (_, _) => new HalfAndHalf());
@@ -803,7 +803,7 @@ public class DevicePinEngineTests : IDisposable
         var dev = new DeviceFrame(0, "dev-a", 10, x: 20, y: 20, w: 100, h: 20);
         using var engine = Engine(pins, dev, (_, _) => new Halves("red"));
         engine.FullFrameSampling = true;
-        engine.SetEffect(new Fill("sweeprainbow", 0, 255, 0));
+        engine.SetEffect(new Fill("rainbow", 0, 255, 0));
 
         var leds = await WaitFor(dev, l => l[0] == 255);
         Assert.Equal(255, leds[0]);
