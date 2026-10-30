@@ -90,12 +90,18 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         else if (e.Mode == PowerModes.Resume)
         {
             ServiceLog.Info("[power-events] system resumed - bouncing OpenRGB subprocess");
-            _blackout.OnResumed();
-            _bridge.OnSystemResume();
-            _lianLi?.OnSystemResumed();
-            _slv3?.OnSystemResumed();
-            _curve?.OnSystemResumed();
-            _superIo?.OnSystemResumed();
+            try
+            {
+                _blackout.OnResumed();
+                _bridge.OnSystemResume();
+                _lianLi?.OnSystemResumed();
+                _slv3?.OnSystemResumed();
+                _curve?.OnSystemResumed();
+            }
+            finally
+            {
+                _superIo?.OnSystemResumed();
+            }
         }
     }
 #endif

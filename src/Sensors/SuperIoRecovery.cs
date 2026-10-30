@@ -18,74 +18,126 @@ public interface ISuperIoRecovery
 /// <summary>One sensor reading of a Super I/O chip. Kind is T, V, F or C (temperature, voltage, fan, control).</summary>
 public readonly record struct SuperIoSample(char Kind, int Index, float? Value);
 
+public enum SuperIoChipState { Unknown, Sane, Stalled }
+
+public enum SuperIoDecision { None, Reopen, GaveUp }
+
 /// <summary>
-/// Decides when a Super I/O chip has gone dark: every tach reads zero while every PWM output reads full duty.
-/// A chip whose registers all read 0xFF looks exactly like this, and only a re-open recovers it.
+/// Decides when a Super I/O chip needs a re-open. A chip whose registers all read 0xFF shows every tach at 0 and every
+/// PWM output at full duty. After a resume the stall alone triggers retries; otherwise a fan must have spun earlier.
 /// </summary>
-public sealed class SuperIoStallWatch
+public sealed class SuperIoRecoveryPolicy
 {
-    public const long MinIntervalMs = 5 * 60_000;
+    public const long RecoveryWindowMs = 10 * 60_000;
+    public const long WindowSpacingMs = 30_000;
+    public const long IdleSpacingMs = 5 * 60_000;
+    public const int MaxAttempts = 3;
     private const float FullDuty = 99.5f;
 
     private readonly object _lock = new();
     private readonly HashSet<string> _spun = new(StringComparer.Ordinal);
-    private long? _lastReopenMs;
+    private long _windowEndMs = long.MinValue;
+    private long? _lastAttemptMs;
+    private int _attempts;
+    private bool _gaveUpReported;
 
-    public static bool IsStalled(IReadOnlyList<float?> fanRpm, IReadOnlyList<float?> controlPercent)
+    public static SuperIoChipState Classify(IReadOnlyList<float?> fanRpm, IReadOnlyList<float?> controlPercent)
     {
         if (fanRpm.Count == 0 || controlPercent.Count == 0)
         {
-            return false;
+            return SuperIoChipState.Unknown;
         }
         foreach (var rpm in fanRpm)
         {
             if (rpm is > 0f)
             {
-                return false;
+                return SuperIoChipState.Sane;
             }
         }
         foreach (var duty in controlPercent)
         {
-            if (duty is not { } d || d < FullDuty)
+            if (duty is not { } d)
             {
-                return false;
+                return SuperIoChipState.Unknown;
+            }
+            if (d < FullDuty)
+            {
+                return SuperIoChipState.Sane;
             }
         }
-        return true;
+        return SuperIoChipState.Stalled;
     }
 
-    /// <summary>True when the chip is stalled, one of its fans spun earlier, and the rate limit allows an attempt; a true result counts as the attempt.</summary>
-    public bool ShouldReopen(string chipId, IReadOnlyList<float?> fanRpm, IReadOnlyList<float?> controlPercent, long nowMs)
+    /// <summary>A negative generation is not tied to the motherboard group and is always current.</summary>
+    public static bool MayWrite(int mappingGeneration, int currentGeneration, bool chipSuspect) =>
+        (mappingGeneration < 0 || mappingGeneration == currentGeneration) && !chipSuspect;
+
+    public static bool IsStalled(IReadOnlyList<float?> fanRpm, IReadOnlyList<float?> controlPercent) =>
+        Classify(fanRpm, controlPercent) == SuperIoChipState.Stalled;
+
+    /// <summary>A resume opens the recovery window and clears the retry budget.</summary>
+    public void NoteResume(long nowMs)
     {
         lock (_lock)
         {
-            foreach (var rpm in fanRpm)
+            _windowEndMs = nowMs + RecoveryWindowMs;
+            _attempts = 0;
+            _lastAttemptMs = null;
+            _gaveUpReported = false;
+        }
+    }
+
+    /// <summary>
+    /// Suspect is true while a stalled chip is believed to be in the dead state: software writes to it would
+    /// save that state as the BIOS default. Observing has no side effect on the retry budget until CommitAttempt.
+    /// </summary>
+    public SuperIoDecision Observe(string chipId, SuperIoChipState state, long nowMs, out bool suspect)
+    {
+        lock (_lock)
+        {
+            suspect = false;
+            if (state == SuperIoChipState.Sane)
             {
-                if (rpm is > 0f)
+                _spun.Add(chipId);
+                _attempts = 0;
+                _gaveUpReported = false;
+                return SuperIoDecision.None;
+            }
+            if (state != SuperIoChipState.Stalled)
+            {
+                return SuperIoDecision.None;
+            }
+            var inWindow = nowMs < _windowEndMs;
+            if (!inWindow && !_spun.Contains(chipId))
+            {
+                return SuperIoDecision.None;
+            }
+            suspect = true;
+            if (_attempts >= MaxAttempts)
+            {
+                if (_gaveUpReported)
                 {
-                    _spun.Add(chipId);
-                    return false;
+                    return SuperIoDecision.None;
                 }
+                _gaveUpReported = true;
+                return SuperIoDecision.GaveUp;
             }
-            if (!IsStalled(fanRpm, controlPercent) || !_spun.Contains(chipId))
+            var spacing = inWindow ? WindowSpacingMs : IdleSpacingMs;
+            if (_lastAttemptMs is { } last && nowMs - last < spacing)
             {
-                return false;
+                return SuperIoDecision.None;
             }
-            if (_lastReopenMs is { } last && nowMs - last < MinIntervalMs)
-            {
-                return false;
-            }
-            _lastReopenMs = nowMs;
-            return true;
+            return SuperIoDecision.Reopen;
         }
     }
 
-    /// <summary>A re-open that did not come from the stall check still starts the rate-limit window.</summary>
-    public void NoteReopen(long nowMs)
+    /// <summary>Called only when the re-open actually started; a busy single-flight is not an attempt.</summary>
+    public void CommitAttempt(long nowMs)
     {
         lock (_lock)
         {
-            _lastReopenMs = nowMs;
+            _attempts++;
+            _lastAttemptMs = nowMs;
         }
     }
 

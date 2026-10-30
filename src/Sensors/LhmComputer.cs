@@ -60,11 +60,12 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
     private volatile bool _disposed;
     private readonly bool _testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1";
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
-    private readonly SuperIoStallWatch _stallWatch = new();
+    private readonly SuperIoRecoveryPolicy _recovery = new();
+    // Chips believed to be in the dead state; guarded by _updateLock. A new instance's first software write would save that state as the BIOS default.
+    private readonly HashSet<string> _suspectChips = new(StringComparer.Ordinal);
+    private int _generation;
     private int _reopening;
-    // Firmware reinitializes the Super I/O after resume; a re-open before it finishes reads the same dead registers.
-    private static readonly TimeSpan ResumeReopenDelay = TimeSpan.FromSeconds(5);
-    // Lets the first tach readings settle before the after-re-open log line.
+    // Diagnostic only: gives the new chip instance time to report tachs before the after-re-open log line. Nothing waits on it for correctness.
     private static readonly TimeSpan PostReopenReadDelay = TimeSpan.FromSeconds(5);
 
     /// <inheritdoc />
@@ -396,6 +397,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
         }
         try
         {
+            var now = Environment.TickCount64;
+            string? reopenChip = null;
             foreach (var chip in SuperIoChips())
             {
                 var fans = new List<float?>();
@@ -405,12 +408,24 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
                     if (sensor.SensorType == SensorType.Fan) fans.Add(sensor.Value);
                     else if (sensor.SensorType == SensorType.Control) controls.Add(sensor.Value);
                 }
-                if (_stallWatch.ShouldReopen(chip.Identifier.ToString(), fans, controls, Environment.TickCount64))
+                var id = chip.Identifier.ToString();
+                var state = SuperIoRecoveryPolicy.Classify(fans, controls);
+                var decision = _recovery.Observe(id, state, now, out var suspect);
+                if (suspect) _suspectChips.Add(id);
+                else if (state == SuperIoChipState.Sane) _suspectChips.Remove(id);
+                if (decision == SuperIoDecision.GaveUp)
                 {
-                    ServiceLog.Warn($"[lhm] {chip.Identifier}: every fan reads 0 RPM while every control reads 100%, re-opening the motherboard group");
-                    ScheduleReopen("stalled super io", TimeSpan.Zero);
-                    return;
+                    ServiceLog.Warn($"[lhm] {id}: still stalled after {SuperIoRecoveryPolicy.MaxAttempts} re-opens, giving up until the next resume");
                 }
+                else if (decision == SuperIoDecision.Reopen)
+                {
+                    reopenChip ??= id;
+                }
+            }
+            if (reopenChip is not null && ScheduleReopen($"{reopenChip} stalled"))
+            {
+                ServiceLog.Warn($"[lhm] {reopenChip}: every fan reads 0 RPM while every control reads 100%, re-opening the motherboard group");
+                _recovery.CommitAttempt(now);
             }
         }
         catch (Exception ex)
@@ -435,21 +450,36 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
     public void OnSystemResumed()
     {
         if (_testHost) return;
-        ScheduleReopen("system resume", ResumeReopenDelay);
+        _recovery.NoteResume(Environment.TickCount64);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _openTask.ConfigureAwait(false);
+                lock (_updateLock)
+                {
+                    if (!_disposed) LogSuperIo("on resume");
+                }
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[lhm] resume snapshot failed: {ex.Message}");
+            }
+        });
     }
 
-    // Single-flight: a resume and a stall check landing together run one re-open.
-    private void ScheduleReopen(string reason, TimeSpan delay)
+    // Single-flight; false when a re-open is already running, which does not count as an attempt.
+    private bool ScheduleReopen(string reason)
     {
         if (Interlocked.Exchange(ref _reopening, 1) == 1)
         {
-            return;
+            return false;
         }
         _ = Task.Run(async () =>
         {
             try
             {
-                await ReopenMotherboardAsync(reason, delay).ConfigureAwait(false);
+                await ReopenMotherboardAsync(reason).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -460,23 +490,20 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
                 Volatile.Write(ref _reopening, 0);
             }
         });
+        return true;
     }
 
-    private async Task ReopenMotherboardAsync(string reason, TimeSpan delay)
+    private async Task ReopenMotherboardAsync(string reason)
     {
         await _openTask.ConfigureAwait(false);
-        if (delay > TimeSpan.Zero)
-        {
-            await Task.Delay(delay).ConfigureAwait(false);
-        }
         lock (_updateLock)
         {
             if (_disposed) return;
             LogSuperIo($"before re-open ({reason})");
-            _stallWatch.NoteReopen(Environment.TickCount64);
             // Same group swap ApplySpdGate does for memory: remove, then add, which re-runs the Super I/O probe.
             _computer.IsMotherboardEnabled = false;
             _computer.IsMotherboardEnabled = true;
+            _generation++;
             Interlocked.Exchange(ref _lastUpdateTicks, 0);
         }
         ServiceLog.Info($"[lhm] motherboard group re-opened ({reason})");
@@ -521,16 +548,24 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
                 };
                 if (kind != '\0') samples.Add(new SuperIoSample(kind, sensor.Index, sensor.Value));
             }
-            ServiceLog.Info($"[lhm] superio {when}: {SuperIoStallWatch.Format(chip.Identifier.ToString(), samples)}");
+            ServiceLog.Info($"[lhm] superio {when}: {SuperIoRecoveryPolicy.Format(chip.Identifier.ToString(), samples)}");
         }
     }
 
-    /// <summary>Runs a hardware write under the walk lock so it never meets a half-rebuilt motherboard group.</summary>
-    public void WithHardware(Action action)
+    /// <summary>Incremented under the walk lock each time the motherboard group is rebuilt.</summary>
+    public int Generation => Volatile.Read(ref _generation);
+
+    /// <summary>
+    /// Runs a hardware write under the walk lock. Returns false without running it when the sensor objects come from an
+    /// older generation (negative means not tied to the motherboard) or the chip is believed to be in the dead state.
+    /// </summary>
+    public bool WithHardware(int generation, string? chipId, Action action)
     {
         lock (_updateLock)
         {
+            if (!SuperIoRecoveryPolicy.MayWrite(generation, _generation, chipId is not null && _suspectChips.Contains(chipId))) return false;
             action();
+            return true;
         }
     }
 
@@ -632,7 +667,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
         // Open(), and Dispose() is only called at service shutdown so the
         // wait is rare and not on any user-visible path.
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
-        _disposed = true;
+        lock (_updateLock)
+        {
+            _disposed = true;
+        }
         ResetSpdPages(SpdDisposeBudget);
         _computer.Close();
     }

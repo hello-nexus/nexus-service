@@ -71,8 +71,16 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         _hub = hub;
         _lhm = lhm;
         _config = config;
-        // Sensor objects from before a motherboard re-open are dead; ReleaseAll would otherwise reuse them.
-        _lhm.Reopened += () => Volatile.Write(ref _channels, null);
+        _lhm.Reopened += OnMotherboardReopened;
+    }
+
+    // Runs on the re-open worker, outside the walk lock.
+    private void OnMotherboardReopened()
+    {
+        // Old board Controls must not be written again, so a running calibration aborts like it does on ReleaseAll.
+        EndCalibrationLease(restorePriorState: false);
+        try { EnsureDiscovered(); }
+        catch (Exception ex) { ServiceLog.Warn($"[fan-control] re-discovery after motherboard re-open failed: {ex.Message}"); }
     }
 
     private bool IsLeasedForCalibration(string channelId)
@@ -200,7 +208,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mapping = mappings.FirstOrDefault(m => m.Id == channelId);
         if (mapping is null) return;
         // CurveEngine retries only a write that throws.
-        if (!WriteDuty(mapping, clamped)) throw new InvalidOperationException($"ADLX refused the fan write for {channelId}");
+        if (!WriteDuty(mapping, clamped)) throw new InvalidOperationException($"the fan write for {channelId} was refused");
         _softwareControlled.Add(channelId);
         // No ManualSpeeds write - see interface doc.
     }
@@ -225,14 +233,22 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         EndCalibrationLease(restorePriorState: false);
         // The last discovery, not a new one: discovery waits on the LHM update lock, and the
         // watchdog calls this while that update may be the thing that is stuck.
-        var mappings = Volatile.Read(ref _channels) ?? EnsureDiscovered();
+        var mappings = Volatile.Read(ref _channels) ?? new List<ChannelMapping>();
+        var generation = _lhm.Generation;
         // Board and NVIDIA fans first, and a bounded wait for ADLX: the watchdog must not hang behind a stuck driver call.
         foreach (var m in mappings.OrderBy(m => m.AmdFan is not null))
         {
             try
             {
-                if (m.AmdFan is not { } amd) m.ControlSensor.Control.SetDefault();
-                else if (!amd.TryRelease(AmdReleaseWait)) ServiceLog.Warn($"[fan-control] {m.Id}: ADLX busy, release skipped");
+                if (m.AmdFan is { } amd)
+                {
+                    if (!amd.TryRelease(AmdReleaseWait)) ServiceLog.Warn($"[fan-control] {m.Id}: ADLX busy, release skipped");
+                }
+                // A board mapping from before a re-open points at closed chip objects; the new instance holds the saved defaults.
+                else if (m.Generation < 0 || m.Generation == generation)
+                {
+                    m.ControlSensor.Control.SetDefault();
+                }
             }
             catch { /* swallow */ }
         }
@@ -356,23 +372,36 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             // the fan and persist that over a valid calibration.
             if (!_calibrationLease.ContainsKey(mapping.Id))
                 throw new OperationCanceledException($"calibration lease revoked for {mapping.Id}");
-            if (!WriteDuty(mapping, Math.Clamp(duty, 0, 100))) throw new CalibrationWriteRefusedException();
+            if (!WriteDuty(mapping, Math.Clamp(duty, 0, 100), rebind: false)) throw new CalibrationWriteRefusedException();
         }
     }
 
     private sealed class CalibrationWriteRefusedException : Exception;
 
-    private bool WriteDuty(ChannelMapping mapping, float duty)
+    private bool WriteDuty(ChannelMapping mapping, float duty, bool rebind = true)
     {
         if (mapping.AmdFan is { } amd) return amd.SetDuty((int)MathF.Round(duty));
-        _lhm.WithHardware(() => mapping.ControlSensor.Control.SetSoftware(duty));
-        return true;
+        return WithControl(mapping, rebind, c => c.SetSoftware(duty));
     }
 
     private void WriteDefault(ChannelMapping mapping)
     {
         if (mapping.AmdFan is { } amd) amd.Release();
-        else _lhm.WithHardware(() => mapping.ControlSensor.Control.SetDefault());
+        else WithControl(mapping, rebind: true, c => c.SetDefault());
+    }
+
+    // A mapping taken before a motherboard re-open is refused under the walk lock; one re-discovery finds the live one.
+    private bool WithControl(ChannelMapping mapping, bool rebind, Action<IControl> write)
+    {
+        ChannelMapping? current = mapping;
+        for (var attempt = 0; attempt < 2 && current is not null; attempt++)
+        {
+            var target = current;
+            if (_lhm.WithHardware(target.Generation, target.ChipId, () => write(target.ControlSensor.Control!))) return true;
+            if (!rebind) return false;
+            current = EnsureDiscovered().FirstOrDefault(m => m.Id == target.Id);
+        }
+        return false;
     }
 
     private static (ControlMode Mode, float Value) ReadControlState(ChannelMapping mapping)
@@ -448,6 +477,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         // critically, do NOT mark warmup "done" if we time out. A later call
         // picks up where this one left off (drawing from a shared budget),
         // so slow-starting LHM environments self-heal as the user interacts.
+        var generation = _lhm.Generation;
         if (!_lhmWarmedUp && _warmupBudgetRemainingMs > 0)
         {
             var perCallCap = Math.Min(1500, _warmupBudgetRemainingMs);
@@ -479,12 +509,12 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             if (hw.HardwareType == HardwareType.Motherboard)
             {
                 foreach (var sub in hw.SubHardware)
-                    DiscoverFromHardware(result, sub, "Motherboard", layouts, isGpu: false, amdFan: null);
+                    DiscoverFromHardware(result, sub, "Motherboard", layouts, isGpu: false, amdFan: null, generation);
             }
 
             // GPU fans
             if (hw.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
-                DiscoverFromHardware(result, hw, "GPU", layouts, isGpu: true, ResolveAmdFan(hw));
+                DiscoverFromHardware(result, hw, "GPU", layouts, isGpu: true, ResolveAmdFan(hw), generation);
         }
 
         var currentIds = new HashSet<string>(result.Select(c => $"{c.Id}|{c.Name}"), StringComparer.Ordinal);
@@ -550,7 +580,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     // Engine writes fire no route mutation, so the change is pushed here for open pages to refetch.
     private void OnControlBlockChanged() => PanelTopics.BroadcastCooling(_hub);
 
-    private static void DiscoverFromHardware(List<ChannelMapping> result, IHardware hw, string prefix, List<string> layouts, bool isGpu, AdlxGpuFan? amdFan)
+    private static void DiscoverFromHardware(List<ChannelMapping> result, IHardware hw, string prefix, List<string> layouts, bool isGpu, AdlxGpuFan? amdFan, int generation)
     {
         var fans = hw.Sensors
             .Where(s => s.SensorType == SensorType.Fan)
@@ -595,6 +625,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                 DeviceId = isGpu ? hw.Identifier.ToString() : null,
                 DeviceName = isGpu ? hw.Name : null,
                 AmdFan = amdFan,
+                Generation = isGpu ? -1 : generation,
+                ChipId = isGpu ? null : hw.Identifier.ToString(),
             });
         }
     }
@@ -651,6 +683,12 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         public required string Name { get; init; }
         public required ISensor FanSensor { get; init; }
         public required ISensor ControlSensor { get; init; }
+
+        /// <summary>The LHM generation the board sensors were read in; negative for a GPU, which a motherboard re-open does not touch.</summary>
+        public int Generation { get; init; } = -1;
+
+        /// <summary>The Super I/O chip a board channel sits on.</summary>
+        public string? ChipId { get; init; }
 
         /// <summary>Enumerated from a GPU hardware node, not matched on the name.</summary>
         public required bool IsGpu { get; init; }
