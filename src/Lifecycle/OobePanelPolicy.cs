@@ -32,6 +32,28 @@ internal static class OobePanelPolicy
         return consoleSessionExists && inOobe() ? ConsoleLaunchPlan.OobeNoUser : ConsoleLaunchPlan.WaitForLogon;
     }
 
-    /// <summary>OOBE-launched processes are reaped only once OOBE is over; nothing tracked means nothing to evaluate.</summary>
-    internal static bool ShouldReap(int trackedCount, Func<bool> inOobe) => trackedCount > 0 && !inOobe();
+    /// <summary>
+    /// OOBE-launched processes are reaped once OOBE is over, or as soon as a user is
+    /// on the console (OOBEComplete can lag a real logon). Nothing tracked means
+    /// nothing is evaluated.
+    /// </summary>
+    internal static bool ShouldReap(int trackedCount, Func<bool> inOobe, Func<bool> consoleUserPresent)
+        => trackedCount > 0 && (consoleUserPresent() || !inOobe());
+
+    /// <summary>
+    /// Whether <paramref name="imagePath"/> is one of the two binaries this service
+    /// launches in an OOBE session: the overlay host or Nexus.exe, both under
+    /// <paramref name="baseDirectory"/>. A pid file is writable by others, so no
+    /// process is ended on its word alone.
+    /// </summary>
+    internal static bool IsOwnImage(string? imagePath, string baseDirectory)
+    {
+        if (string.IsNullOrEmpty(imagePath) || string.IsNullOrEmpty(baseDirectory))
+        {
+            return false;
+        }
+        var full = System.IO.Path.GetFullPath(imagePath);
+        return string.Equals(full, System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDirectory, "overlay", "nexus-overlay.exe")), StringComparison.OrdinalIgnoreCase)
+            || string.Equals(full, System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDirectory, "Nexus.exe")), StringComparison.OrdinalIgnoreCase);
+    }
 }

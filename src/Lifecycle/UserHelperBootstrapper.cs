@@ -119,8 +119,14 @@ internal static class UserHelperBootstrapper
             return;
         }
         if (s_serviceStopping || serviceStopping.IsCancellationRequested || HelperConnected()) return;
-        // A logoff also drops the helper; the logon hook launches the next one.
-        if (string.IsNullOrEmpty(ResolveActiveConsoleUsername())) return;
+        // A logoff also drops the helper; the logon hook launches the next one. During
+        // OOBE with nobody signed in, the helper started there is replaced.
+        if (string.IsNullOrEmpty(ResolveActiveConsoleUsername())
+            && OobePanelPolicy.Decide(string.Empty, OobeSessionLaunch.ConsoleSessionExists(), OobeDetector.IsInOobe)
+                != ConsoleLaunchPlan.OobeNoUser)
+        {
+            return;
+        }
         lock (s_relaunches)
         {
             var now = DateTime.UtcNow;
@@ -189,9 +195,15 @@ internal static class UserHelperBootstrapper
                 using var started = File.Exists(oobeExe)
                     ? OobeSessionLaunch.Start(oobeExe, HelperSpawnArg() + " " + OobeHelperArg, AppContext.BaseDirectory, "helper")
                     : null;
-                if (started is not null && await WaitForHelperAsync(ConnectWait)) return;
-                await Task.Delay(5000);
-                continue;
+                if (started is null)
+                {
+                    await Task.Delay(5000);
+                    continue;
+                }
+                if (await WaitForHelperAsync(ConnectWait)) return;
+                // One OOBE helper only; a drop is relaunched by RelaunchAfterDropAsync.
+                Console.Error.WriteLine($"[helper-bootstrap] no OOBE helper connected within {ConnectWait.TotalSeconds:0}s {tag}");
+                return;
             }
             if (string.IsNullOrEmpty(username))
             {

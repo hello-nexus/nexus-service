@@ -40,20 +40,35 @@ public sealed class OobePanelPolicyTests
     }
 
     [Theory]
-    [InlineData(0, false, false)]
-    [InlineData(0, true, false)]
-    [InlineData(2, true, false)]
-    [InlineData(2, false, true)]
-    public void Reap_OnlyWhenSomethingIsTrackedAndOobeIsOver(int tracked, bool inOobe, bool expected)
+    [InlineData(0, true, false, false)]
+    [InlineData(0, false, true, false)]
+    [InlineData(2, true, false, false)]
+    [InlineData(2, false, false, true)]
+    [InlineData(2, true, true, true)]
+    public void Reap_WhenTrackedAndOobeOverOrAUserIsOnTheConsole(int tracked, bool inOobe, bool userPresent, bool expected)
     {
-        Assert.Equal(expected, OobePanelPolicy.ShouldReap(tracked, () => inOobe));
+        Assert.Equal(expected, OobePanelPolicy.ShouldReap(tracked, () => inOobe, () => userPresent));
     }
 
     [Fact]
-    public void Reap_WithNothingTracked_NeverAsksOobe()
+    public void Reap_WithNothingTracked_NeverAsksAnything()
     {
         var asked = false;
-        Assert.False(OobePanelPolicy.ShouldReap(0, () => { asked = true; return false; }));
+        Assert.False(OobePanelPolicy.ShouldReap(0, () => { asked = true; return false; }, () => { asked = true; return true; }));
         Assert.False(asked);
+    }
+
+    [Theory]
+    [InlineData(@"C:\Program Files\Nexus\Nexus.exe", true)]
+    [InlineData(@"c:\program files\nexus\overlay\NEXUS-OVERLAY.EXE", true)]
+    [InlineData(@"C:\Program Files\Nexus\overlay\other.exe", false)]
+    [InlineData(@"C:\Windows\System32\cmd.exe", false)]
+    [InlineData(@"C:\Users\x\Nexus.exe", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsOwnImage_AcceptsOnlyTheServiceBinaries(string? path, bool expected)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        Assert.Equal(expected, OobePanelPolicy.IsOwnImage(path, @"C:\Program Files\Nexus\"));
     }
 }
