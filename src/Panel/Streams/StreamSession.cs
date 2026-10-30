@@ -31,6 +31,9 @@ public sealed class StreamSession
     private bool _ingestBound;
     private bool _transportUp;
     private bool _closed;
+    private long _lastIngestTicks;
+    private long _bindGeneration;
+    private IDisposable? _section;
 
     public StreamSession(string sessionId, StreamedPanelDeviceInfo info, string panelDeviceId)
     {
@@ -71,6 +74,61 @@ public sealed class StreamSession
     public bool Closed
     {
         get { lock (_lock) return _closed; }
+    }
+
+    /// <summary>Base name of the shared-memory sections the overlay may write frames into (the writer nonce is appended), or null when the session only takes HTTP ingest.</summary>
+    public string? FrameSectionName { get; private set; }
+
+    /// <summary>Capacity of one frame in a section.</summary>
+    public int FrameSectionBytes { get; private set; }
+
+    public void OfferSharedFrames(string baseName, int frameBytes)
+    {
+        lock (_lock)
+        {
+            FrameSectionName = baseName;
+            FrameSectionBytes = frameBytes;
+        }
+    }
+
+    /// <summary>
+    /// Makes <paramref name="section"/> the only section read for this session and disposes the
+    /// previous one, which cuts a superseded writer off. Null drops shared frames for the session.
+    /// A section built for a bind that a later bind has since replaced (<paramref name="generation"/>
+    /// from <see cref="ResetForNewIngest"/>) is disposed instead of installed.
+    /// </summary>
+    public void ReplaceSection(IDisposable? section, long generation)
+    {
+        IDisposable? previous;
+        lock (_lock)
+        {
+            if (_closed || generation != _bindGeneration)
+            {
+                previous = section;
+            }
+            else
+            {
+                previous = _section;
+                _section = section;
+            }
+        }
+        // Outside the lock: disposing joins a reader thread that may be inside Enqueue.
+        previous?.Dispose();
+    }
+
+    /// <summary>
+    /// One raw frame from either ingest path (HTTP body or shared section): records the arrival
+    /// gap, scales it to native when the overlay renders below native, and queues it.
+    /// </summary>
+    public void AcceptFrame(StreamFrame frame)
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var last = System.Threading.Interlocked.Exchange(ref _lastIngestTicks, now);
+        if (last != 0)
+            RecordIngestGap((now - last) * 1000 / System.Diagnostics.Stopwatch.Frequency);
+        var native = Upscaler is { } upscaler ? upscaler.Apply(frame) : frame;
+        if (native is not null)
+            Enqueue(native);
     }
 
     public void Enqueue(StreamFrame frame)
@@ -118,14 +176,17 @@ public sealed class StreamSession
     /// New ingest connection: the previous encoder's tail is a dead stream,
     /// and a fresh encoder always opens with SPS/PPS+IDR.
     /// </summary>
-    public void ResetForNewIngest()
+    public long ResetForNewIngest()
     {
         lock (_lock)
         {
+            _bindGeneration++;
             _dropped += _queue.Count;
             ClearLocked();
             _waitingForIdr = true;
             _ingestBound = true;
+            _lastIngestTicks = 0;
+            return _bindGeneration;
         }
     }
 
@@ -141,11 +202,16 @@ public sealed class StreamSession
 
     public void Close()
     {
+        IDisposable? section;
         lock (_lock)
         {
             _closed = true;
             ClearLocked();
+            section = _section;
+            _section = null;
         }
+        // Outside the lock: disposing joins the reader thread, which may be inside Enqueue.
+        section?.Dispose();
     }
 
     /// <summary>Empties the queue, returning every pooled payload as it goes.</summary>

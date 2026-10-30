@@ -653,6 +653,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     Fps = p.Fps,
                     BitrateKbps = p.BitrateKbps,
                     Codec = p.Codec == StreamCodec.RawBgra ? "rawBgra" : "h264",
+                    FrameSection = ds.Session.FrameSectionName,
+                    FrameSectionBytes = ds.Session.FrameSectionBytes,
                 });
             }
         }
@@ -665,17 +667,18 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     /// socket the new connection must displace). Returns null for unknown or
     /// closed sessions; the overlay treats 404 as "close host and re-reconcile".
     /// </summary>
-    public StreamSession? TryBindIngest(string sessionId, HttpContext ctx)
+    public StreamSession? TryBindIngest(string sessionId, HttpContext ctx, string? writerNonce = null)
     {
         HttpContext? superseded = null;
         StreamSession? session = null;
+        long generation = 0;
         lock (_lock)
         {
             if (_bySessionId.TryGetValue(sessionId, out var ds) && !ds.Session.Closed)
             {
                 superseded = ds.IngestContext;
                 ds.IngestContext = ctx;
-                ds.Session.ResetForNewIngest();
+                generation = ds.Session.ResetForNewIngest();
                 session = ds.Session;
             }
         }
@@ -684,7 +687,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             try { superseded.Abort(); } catch { }
         }
         if (session is not null)
+        {
+            BindFrameSection(session, writerNonce, generation);
             ServiceLog.Info($"[streamed-panel] ingest bound session={sessionId}{(superseded is not null ? " (superseded previous)" : "")}");
+        }
         return session;
     }
 
@@ -721,6 +727,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         info = WithFpsCap(WithRenderScale(info, panelDeviceId), panelDeviceId);
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
+        OfferSharedFrames(session);
         var ds = new DeviceSession
         {
             Session = session,
@@ -1102,6 +1109,53 @@ public sealed class StreamedPanelCoordinator : BackgroundService
            && a.Fps == b.Fps
            && a.BitrateKbps == b.BitrateKbps
            && a.WriteBatchFrames == b.WriteBatchFrames;
+
+    // Raw BGRA frames are megabytes each, and the loopback HTTP hop costs more than the copy it
+    // replaces, so the overlay may hand them over through a shared section instead. The section
+    // itself is created per ingest bind (BindFrameSection); until then the session only offers it.
+    private static void OfferSharedFrames(StreamSession session)
+    {
+        if (!OperatingSystem.IsWindows() || session.Info.Profile.Codec != StreamCodec.RawBgra)
+            return;
+        var profile = session.Info.Profile;
+        var scale = profile.Dpr * profile.RenderScale;
+        // FramePixels matches the overlay's even-rounded render size exactly.
+        var bytes = StreamedPanelProfile.FramePixels(profile.CssWidth, scale)
+            * StreamedPanelProfile.FramePixels(profile.CssHeight, scale) * 4;
+        session.OfferSharedFrames(@"Global\NexusPanelStream-" + session.SessionId, bytes);
+    }
+
+    // A rebind replaces the section under the new writer's nonce, so a superseded overlay (another
+    // session, or one still shutting down) keeps writing into a section nobody reads. Any failure
+    // leaves the session on HTTP ingest.
+    private static void BindFrameSection(StreamSession session, string? writerNonce, long generation)
+    {
+        if (!OperatingSystem.IsWindows() || session.FrameSectionName is not { } baseName)
+            return;
+        if (!StreamFrameSection.IsValidNonce(writerNonce))
+        {
+            session.ReplaceSection(null, generation);
+            return;
+        }
+        try
+        {
+            var sddl = StreamFrameSection.Sddl(WindowsStreamFrameSection.ResolveOverlayUserSid());
+            if (sddl is null)
+            {
+                session.ReplaceSection(null, generation);
+                ServiceLog.Warn($"[streamed-panel] no overlay user to scope the shared frame section; HTTP ingest only session={session.SessionId}");
+                return;
+            }
+            var section = WindowsStreamFrameSection.Create(StreamFrameSection.SectionName(baseName, writerNonce!), sddl, session.FrameSectionBytes, (buffer, length) =>
+                session.AcceptFrame(new StreamFrame { Flags = StreamFraming.FlagIdr, Payload = buffer, Length = length, Pooled = true }));
+            session.ReplaceSection(section, generation);
+        }
+        catch (Exception ex)
+        {
+            session.ReplaceSection(null, generation);
+            ServiceLog.Warn($"[streamed-panel] shared frame section unavailable session={session.SessionId}: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     private static string NewSessionId()
     {
