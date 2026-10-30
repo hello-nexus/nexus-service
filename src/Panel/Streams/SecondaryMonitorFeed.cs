@@ -115,6 +115,8 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         long interval = FrameInterval();
         long nextCapReadMs = Environment.TickCount64 + CapReadMs;
         long lastSent = 0;
+        bool rejected = false;
+        var retry = new byte[frame.Length];
         while (!_cts.IsCancellationRequested)
         {
             try
@@ -126,6 +128,13 @@ internal sealed class SecondaryMonitorFeed : IDisposable
                         ServiceLog.Warn($"[{_hub.Driver.HandlerId}] secondary monitor went away");
                         SetState(SecondaryMonitorStates.Failed);
                         break;
+                    }
+                    // A rejected frame is not offered again by a still desktop, so the last one is resent.
+                    if (rejected && _push(retry))
+                    {
+                        rejected = false;
+                        lastSent = Stopwatch.GetTimestamp();
+                        SetState(SecondaryMonitorStates.Active);
                     }
                     continue;
                 }
@@ -141,9 +150,15 @@ internal sealed class SecondaryMonitorFeed : IDisposable
                     break;
                 }
                 lastSent = Stopwatch.GetTimestamp();
-                if (_push(frame))
+                rejected = !_push(frame);
+                if (!rejected)
                 {
                     SetState(SecondaryMonitorStates.Active);
+                }
+                else
+                {
+                    // The capture buffer can be partly overwritten by a read that fails, so the resend keeps its own copy.
+                    Buffer.BlockCopy(frame, 0, retry, 0, frame.Length);
                 }
             }
             catch (OperationCanceledException)

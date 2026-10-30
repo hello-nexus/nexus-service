@@ -85,6 +85,9 @@ public interface IBulkPanelDriver
     /// </summary>
     int KeepaliveMs => 0;
 
+    /// <summary>The handshake can be rerun on the open pipe to recover a panel that keeps refusing frames.</summary>
+    bool RenegotiateOnRejectedFrames => false;
+
     /// <summary>Re-sends the last frame <see cref="SendFrame"/> pushed. False means the link is gone.</summary>
     bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => true;
 

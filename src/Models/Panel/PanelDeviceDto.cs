@@ -233,10 +233,15 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public bool? Streamed { get; set; }
     /// <summary>
     /// Route-computed on GET /panel/devices while <see cref="SecondaryMonitor"/> is on and a
-    /// stream session owns the record: starting, active, driver-missing or failed. Never
+    /// stream session owns the record: starting, active, driver-missing, in-use or failed. Never
     /// persisted (null on stored records).
     /// </summary>
     public string? SecondaryMonitorState { get; set; }
+    /// <summary>
+    /// Route-computed alongside <see cref="SecondaryMonitorState"/> "in-use": the display name of
+    /// the device that holds the one virtual monitor. Never persisted.
+    /// </summary>
+    public string? SecondaryMonitorHolder { get; set; }
     /// <summary>
     /// Saved personalization snapshots for this panel, at most
     /// <see cref="Nexus.Service.Panel.PanelPresets.Cap"/>. Persisted only:
