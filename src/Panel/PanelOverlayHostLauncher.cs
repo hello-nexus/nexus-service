@@ -41,6 +41,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     private volatile bool _starting;
     private bool _waitingForLogon;
     private bool _missingHostLogged;
+    private static bool _oobeStartFailureLogged;
     /// <summary>Bumped by every Stop so an in-flight spawn abandons the process it started instead of adopting it.</summary>
     private int _spawnGeneration;
     private static readonly string PidFilePath = Path.Combine(
@@ -285,7 +286,15 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
                 allowServiceToken: plan == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser);
             // Without the setup account's token nothing is started: a schtasks launch would be untracked
             // and outlive OOBE. The supervisor retries.
-            if (direct is null) Console.Error.WriteLine("[overlay-host] OOBE overlay not started");
+            if (direct is null)
+            {
+                if (!_oobeStartFailureLogged) Console.Error.WriteLine("[overlay-host] OOBE overlay not started");
+                _oobeStartFailureLogged = true;
+            }
+            else
+            {
+                _oobeStartFailureLogged = false;
+            }
             return direct;
         }
         if (string.IsNullOrEmpty(username))

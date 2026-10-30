@@ -59,7 +59,15 @@ internal static class UserHelperBootstrapper
         registry.Disconnected += conn =>
         {
             // A setup-session helper ended on purpose when a real user signed in is not a crash.
-            if (OobeSessionLaunch.TakeReaped(conn.Pid)) return;
+            if (OobeSessionLaunch.TakeReaped(conn.Pid))
+            {
+                // The real user has no helper until one starts; this is not a relaunch after a crash.
+                if (OobePanelPolicy.IsRealUser(ResolveActiveConsoleUsername()) && !HelperConnected())
+                {
+                    _ = Task.Run(() => LaunchAndVerifyAsync("setup-helper-ended"));
+                }
+                return;
+            }
             if (conn.SessionId == (int)WTSGetActiveConsoleSessionId())
             {
                 _ = Task.Run(() => RelaunchAfterDropAsync(serviceStopping));
@@ -71,6 +79,7 @@ internal static class UserHelperBootstrapper
         // leave the session helper-less until the next service start. The SCM
         // delivers the logon on its control-handler thread, so hop off it
         // before touching WTS or schtasks.
+        registry.Connected += _ => OobeSessionLaunch.ClearReaped();
         WindowsServiceHost.SessionLogon += () => _ = Task.Run(() => LaunchAndVerifyAsync("logon"));
 
         // Cold boot: the service starts seconds after power-on, before the
@@ -185,8 +194,9 @@ internal static class UserHelperBootstrapper
     {
         for (var attempt = 1; attempt <= LaunchAttempts; attempt++)
         {
-            // A setup-session helper must be gone before "already connected" is believed.
-            if (OobeSessionLaunch.ReapIfOobeOver() > 0) await WaitForHelperGoneAsync(TimeSpan.FromSeconds(5));
+            // Setup-session processes end before "already connected" is believed; HelperConnected
+            // ignores a connection whose process was ended, whichever caller ended it.
+            OobeSessionLaunch.ReapIfOobeOver();
             if (HelperConnected()) return;
             var tag = $"({trigger}, attempt {attempt}/{LaunchAttempts})";
 
@@ -260,12 +270,6 @@ internal static class UserHelperBootstrapper
         Console.Error.WriteLine($"[helper-bootstrap] giving up after {LaunchAttempts} attempts ({trigger}); Nexus.exe processes in the console session: {CountNexusProcessesInConsoleSession()}");
     }
 
-    private static async Task WaitForHelperGoneAsync(TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (HelperConnected() && DateTime.UtcNow < deadline) await Task.Delay(100);
-    }
-
     private static async Task<bool> WaitForHelperAsync(TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
@@ -283,7 +287,7 @@ internal static class UserHelperBootstrapper
     {
         var sessionId = WTSGetActiveConsoleSessionId();
         if (sessionId == 0xFFFFFFFF) return false;
-        return s_registry?.GetForSession((int)sessionId) is not null;
+        return s_registry?.GetForSession((int)sessionId) is { } conn && !OobeSessionLaunch.IsReapedHelper(conn.Pid);
     }
 
     private static int CountNexusProcessesInConsoleSession()
