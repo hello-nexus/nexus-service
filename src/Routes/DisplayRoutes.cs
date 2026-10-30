@@ -39,7 +39,7 @@ public static class DisplayRoutes
             if (ownedId.Length > 0 && string.Equals(displayId, ownedId, StringComparison.Ordinal)) continue;
             if (monitorUp && registry.Get(panelDeviceId) is { } bound && UsbMonitorPanelMigration.IsVirtualMonitorRecord(bound))
             {
-                if (ownedId.Length == 0) ownedId = displayId;
+                if (ownedId.Length == 0 && topology.GetAttachedIds()?.Contains(displayId) == true) ownedId = displayId;
                 continue;
             }
             list.Add(new DisplayAssignmentDto

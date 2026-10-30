@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Nexus.Service.Conflicts;
 using Nexus.Service.Devices;
+using Nexus.Service.Models.Conflicts;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
@@ -16,7 +18,7 @@ namespace Nexus.Service.Tests.Panel.Streams;
 
 public sealed class UsbMonitorPanelTests : IDisposable
 {
-    private const string Handler = "usb-panel";
+    private const string Handler = "lianli";
     private const string VirtualDisplayId = "NXS0001-9";
 
     private readonly string _configPath = Path.Combine(Path.GetTempPath(), "nexus-usbmon-" + Guid.NewGuid().ToString("N") + ".json");
@@ -183,16 +185,52 @@ public sealed class UsbMonitorPanelTests : IDisposable
     }
 
     [Fact]
-    public void Experimental_hardware_on_a_stable_build_is_never_held_by_a_monitor_record()
+    public void A_unit_held_by_its_monitor_is_reclaimed_after_its_vendor_app_comes_and_goes()
     {
-        _gate.KeepsDeviceClaimed = _ => true;
-        var experimental = "lianli-screen88";
-        if (!DeviceControlPolicy.RequiresBeta(experimental))
-        {
-            return;
-        }
+        var detector = new FakeDetector();
+        var pause = new VendorAppControlPause(_gate, detector, _config);
+        SetMonitor(true);
+        SetControl(false);
+        Assert.True(HasSession);
 
-        Assert.False(_gate.IsClaimed(experimental));
+        detector.Running.Add("lian-li-l-connect");
+        pause.Refresh();
+        _coordinator.TickOnce();
+
+        Assert.False(_gate.IsClaimed(Handler));
+        Assert.False(HasSession);
+        Assert.Null(_coordinator.MonitorOwner());
+
+        detector.Running.Clear();
+        pause.Refresh();
+        _coordinator.TickOnce();
+        _discovery.Transport!.Apply();
+
+        Assert.True(_gate.IsClaimed(Handler));
+        Assert.True(HasSession);
+        Assert.NotNull(_coordinator.MonitorOwner());
+        Assert.Null(_coordinator.MonitorProjectedPanelId());
+    }
+
+    [Fact]
+    public void With_two_units_only_the_one_with_the_monitor_on_decides_the_hold()
+    {
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo
+        {
+            Serial = "usb2",
+            Profile = _discovery.Devices[0].Profile,
+        });
+        _coordinator.TickOnce();
+        var ids = _registry.List().Where(r => r.Capabilities?.Family == Handler).Select(r => r.Id).ToList();
+        Assert.Equal(2, ids.Count);
+
+        _registry.Patch(ids[0], new PanelDevicePatch { SecondaryMonitor = true });
+        SetControl(false);
+        Assert.True(_gate.IsClaimed(Handler));
+
+        _registry.Patch(ids[0], new PanelDevicePatch { SecondaryMonitor = false });
+        _coordinator.TickOnce();
+        Assert.False(_gate.IsClaimed(Handler));
     }
 
     [Fact]
@@ -329,6 +367,15 @@ public sealed class UsbMonitorPanelTests : IDisposable
         var service = new DisplayTopologyService(provider, _registry, null, host);
         service.DevicePanelOwner = () => _coordinator.MonitorOwner();
         return service;
+    }
+
+    private sealed class FakeDetector : IConflictDetector
+    {
+        public HashSet<string> Running { get; } = new();
+        public bool IsAppRunning(string appId) => Running.Contains(appId);
+        public IReadOnlyList<DetectedConflict> GetConflicts() =>
+            Running.Select(id => new DetectedConflict { Id = id, DisplayName = id }).ToList();
+        public bool DetectionReady => true;
     }
 
     private sealed class FakeProvider : IDisplayTopologyProvider

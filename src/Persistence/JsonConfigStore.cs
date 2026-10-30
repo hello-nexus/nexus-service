@@ -148,13 +148,24 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         }
         if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
         {
+            var preUsbMonitor = _cached.SchemaVersion < Nexus.Service.Panel.UsbMonitorPanelMigration.SchemaVersion;
             Migrate(_cached);
             Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
-            if (_cached.UsbMonitorPanelPairs is not null)
+            if (preUsbMonitor && _cached.UsbMonitorPanelPairs is not null)
             {
-                // The USB device's previous look is overwritten by the v29 copy; keep the file it was read from.
-                try { File.WriteAllText(SettingsPath + ".pre-v29", json); }
-                catch { /* best-effort; never block startup */ }
+                // The v29 copy overwrites a USB device's look; keep the file it was read from, once.
+                try
+                {
+                    var backup = SettingsPath + ".pre-v29";
+                    if (!File.Exists(backup))
+                    {
+                        File.WriteAllText(backup, json);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[nexus-service] could not keep the pre-v29 settings: {ex.Message}");
+                }
             }
             Persist(_cached);
         }

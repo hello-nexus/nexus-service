@@ -190,6 +190,29 @@ public sealed class UsbMonitorPanelMigrationTests : IDisposable
     }
 
     [Fact]
+    public void An_existing_backup_is_not_overwritten_by_a_later_migration_pass()
+    {
+        var path = WriteSettings(Prior(monitor: true));
+        File.WriteAllText(path + ".pre-v29", "original");
+        using var store = new JsonConfigStore(path);
+
+        store.Load();
+
+        Assert.Equal("original", File.ReadAllText(path + ".pre-v29"));
+    }
+
+    [Fact]
+    public void No_backup_is_written_when_the_migration_changes_nothing()
+    {
+        var path = WriteSettings(Prior(monitor: false));
+        using var store = new JsonConfigStore(path);
+
+        store.Load();
+
+        Assert.False(File.Exists(path + ".pre-v29"));
+    }
+
+    [Fact]
     public void A_later_edit_survives_a_reload()
     {
         var path = WriteSettings(Prior(monitor: true));

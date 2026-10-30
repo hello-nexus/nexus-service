@@ -511,6 +511,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 {
                     _notifyPanelChanged?.Invoke(remintedPanelId);
                 }
+                RememberPanel(discovery.HandlerId, found.Serial);
             }
 
             List<DeviceSession> absent;
@@ -608,33 +609,57 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
     }
 
+    // Panel records of the units each handler has served, kept after their session closes so a release does not forget which unit wanted the monitor.
+    private readonly Dictionary<string, HashSet<string>> _servedPanels = new(StringComparer.OrdinalIgnoreCase);
+
+    private void RememberPanel(string handlerId, string serial)
+    {
+        lock (_lock)
+        {
+            if (!_bySerial.TryGetValue(serial, out var ds) || ds.Session.Closed)
+            {
+                return;
+            }
+            if (!_servedPanels.TryGetValue(handlerId, out var ids))
+            {
+                _servedPanels[handlerId] = ids = new HashSet<string>(StringComparer.Ordinal);
+            }
+            ids.Add(ds.Session.PanelDeviceId);
+        }
+    }
+
     /// <summary>
-    /// True while the unit this handler is serving has its secondary monitor on, so it stays claimed with
-    /// Nexus Control off. Keyed on the live session's own record; with no session yet, the family's records.
+    /// True while a unit this handler serves has its secondary monitor on, so it stays claimed with Nexus Control off.
+    /// Decided on the records of the units served (the live sessions, else every unit served since start);
+    /// before any unit was served, the handler's most recently seen record.
     /// </summary>
     private bool KeepsMonitorForHandler(string handlerId)
     {
-        var liveIds = new List<string>();
+        var ids = new List<string>();
         lock (_lock)
         {
             foreach (var ds in _bySerial.Values)
             {
                 if (!ds.Session.Closed && string.Equals(ds.Discovery.HandlerId, handlerId, StringComparison.OrdinalIgnoreCase))
                 {
-                    liveIds.Add(ds.Session.PanelDeviceId);
+                    ids.Add(ds.Session.PanelDeviceId);
                 }
             }
+            if (ids.Count == 0 && _servedPanels.TryGetValue(handlerId, out var served))
+            {
+                ids.AddRange(served);
+            }
         }
-        if (liveIds.Count > 0)
+        if (ids.Count > 0)
         {
-            return liveIds.Any(id => _registry.Get(id)?.SecondaryMonitor == true);
+            return ids.Any(id => _registry.Get(id)?.SecondaryMonitor == true);
         }
-        // No session yet (a restart with Nexus Control off): only when every record of the family has the monitor on, so a stale record cannot claim a unit that does not use it.
-        var family = _registry.List()
+        var last = _registry.List()
             .Where(r => r.Capabilities?.SupportsSecondaryMonitor == true
                 && string.Equals(r.Capabilities.Family, handlerId, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        return family.Count > 0 && family.All(r => r.SecondaryMonitor == true);
+            .OrderByDescending(r => r.LastSeenAt)
+            .FirstOrDefault();
+        return last?.SecondaryMonitor == true;
     }
 
     /// <summary>

@@ -28,6 +28,7 @@ public sealed class VendorAppControlPause : BackgroundService
         TryRefresh();
         // A device choice re-checks at once rather than on the next poll.
         _gate.Changed += (_, _) => TryRefresh();
+        _gate.HoldSourceChanged += TryRefresh;
     }
 
     /// <summary>Scans only while the user has a device on whose competing app is whitelisted.</summary>
