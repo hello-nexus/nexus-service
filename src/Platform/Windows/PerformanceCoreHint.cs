@@ -81,8 +81,8 @@ public static class CoreHintPolicy
 /// <summary>
 /// Keeps a paced encode thread off the efficiency cores of a hybrid CPU: it sleeps between frames
 /// and the scheduler otherwise lands it there, where the same JPEG encode takes several times
-/// longer. No-op on a CPU with a single efficiency class. The mode comes from NEXUS_STREAM_CORE_HINT
-/// (off, soft, hard) so a bench can flip it; it is not a user setting.
+/// longer. No-op on a CPU with a single efficiency class. Soft is the default; NEXUS_STREAM_CORE_HINT
+/// (off, soft, hard) is a support toggle for tracing stutter, not a user setting.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal static unsafe partial class PerformanceCoreHint
