@@ -13,6 +13,7 @@ public enum McpCapability
     Lighting,
     Profiles,
     History,
+    Panels,
 }
 
 public static class McpCapabilityExtensions
@@ -24,6 +25,7 @@ public static class McpCapabilityExtensions
         McpCapability.Lighting => settings.AllowLighting,
         McpCapability.Profiles => settings.AllowProfiles,
         McpCapability.History => settings.AllowHistory,
+        McpCapability.Panels => settings.AllowPanels,
         _ => false,
     };
 
@@ -36,6 +38,7 @@ public static class McpCapabilityExtensions
         McpCapability.Lighting => "Allow lighting control",
         McpCapability.Profiles => "Allow profile switching",
         McpCapability.History => "Allow history access",
+        McpCapability.Panels => "Allow panel editing",
         _ => capability.ToString(),
     };
 }
