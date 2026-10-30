@@ -41,7 +41,7 @@ public class ApexOledPanelDiscoveryTests
         Assert.Equal(1.0, profile.Dpr);
         Assert.Equal(StreamCodec.RawBgra, profile.Codec);
         Assert.True(profile.MultiInstance);
-        Assert.Contains(profile.Fps, StreamFpsCap.Allowed);
+        Assert.Equal(ApexOledPanelDiscovery.StreamFps, profile.Fps);
         Assert.Equal(ApexOledMono.FrameLength, StreamedPanelProfile.FramePixels(profile.CssWidth, 1.0) * StreamedPanelProfile.FramePixels(profile.CssHeight, 1.0) * 4);
     }
 

@@ -113,8 +113,14 @@ public class NexusServiceCollectionExtensionsTests
         // Corsair XC7, Corsair Elite Capellix, ID-Cooling FX-LCD).
         // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8,
         // ZMatrices, HydroShift II, HydroShift II OLED Curved), plus the Glacial LCD and DeepCool Mystique handlers.
+        // ApexOled registers only where its streamed panel does (Windows and Linux).
+#if WINDOWS || LINUX
+        const int platformHandlers = 1;
+#else
+        const int platformHandlers = 0;
+#endif
         Assert.Equal(
-            26 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 8,
+            26 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 8 + platformHandlers,
             handlers.Length);
     }
 
