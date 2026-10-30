@@ -53,6 +53,10 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     // A monitor that failed to come up or died is retried at this pace while the setting is on.
     private const long MonitorRetryMs = 30_000;
     private const int MonitorPollMs = 1000;
+    private const int RenegotiateAfterRejects = 3;
+    private const long RenegotiateGapMs = 5_000;
+    private int _rejectedRun;
+    private long _lastRenegotiateMs;
 
     public BulkPanelStreamTransport(BulkPanelHub hub, string serial, IVirtualMonitorHost? monitors = null)
     {
@@ -350,6 +354,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             {
                 Volatile.Write(ref _lastSendMs, Environment.TickCount64);
                 _dropLogged = false;
+                _rejectedRun = 0;
                 lock (_brightnessLock)
                 {
                     TryApplyBrightnessLocked();
@@ -360,6 +365,14 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             {
                 _dropLogged = true;
                 ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frame rejected: the panel did not take the write; retrying");
+            }
+            // A panel whose driver opts in and keeps refusing frames gets its handshake run again on the open pipe.
+            if (_hub.Driver.RenegotiateOnRejectedFrames && ++_rejectedRun >= RenegotiateAfterRejects && Environment.TickCount64 - _lastRenegotiateMs >= RenegotiateGapMs)
+            {
+                _rejectedRun = 0;
+                _lastRenegotiateMs = Environment.TickCount64;
+                ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frames keep being rejected; running the panel handshake again");
+                _hub.Renegotiate();
             }
             return false;
         }

@@ -34,6 +34,7 @@ public sealed class UniversalScreen88Driver : IBulkPanelDriver
     private volatile bool _portrait;
     private volatile bool _retired;
     private volatile bool _sessionUp;
+    private bool _writeFailureLogged;
 
     public string HandlerId => Id;
     public string Name => "Lian Li Universal Screen 8.8";
@@ -50,6 +51,7 @@ public sealed class UniversalScreen88Driver : IBulkPanelDriver
     public bool SupportsBrightness => true;
     public bool SupportsSecondaryMonitor => true;
     public bool SupportsPortrait => true;
+    public bool RenegotiateOnRejectedFrames => true;
 
     /// <summary>The glass's real density (1920x480 on an 8.8 in diagonal); the monitor surface's desk-monitor estimate doubles the grid's rows.</summary>
     public double? Dpi => 225;
@@ -135,10 +137,24 @@ public sealed class UniversalScreen88Driver : IBulkPanelDriver
         }
         var packet = UniversalScreen88Protocol.EncodeImage(
             UniversalScreen88Protocol.CommandPushJpeg, _jpeg.Encode(native), NextTimestamp());
-        if (!pipe.Write(packet))
+        int written = pipe.WriteCounted(WritePipeId, packet);
+        if (written != packet.Length)
         {
-            return false;
+            if (!_writeFailureLogged)
+            {
+                _writeFailureLogged = true;
+                ServiceLog.Warn($"[{HandlerId}] frame write took {(written < 0 ? "an unknown number of" : written.ToString())} of {packet.Length} bytes");
+            }
+            // A stalled endpoint refuses every later write until it is reset. The packet is
+            // resent only when nothing went out; after a partial write the glass is resynced
+            // by the handshake the transport reruns instead.
+            bool halted = pipe.ClearHalt(WritePipeId);
+            if (written != 0 || !halted || !pipe.Write(packet))
+            {
+                return false;
+            }
         }
+        _writeFailureLogged = false;
         ReadReply(pipe, UniversalScreen88Protocol.CommandPushJpeg);
         return true;
     }
