@@ -1,13 +1,11 @@
 uniform float u_density; // hint_range(12.0, 80.0, 1.0) = 28.0  rain column density
 uniform float u_length; // hint_range(0.03, 0.5, 0.01) = 0.3  streak length
-uniform float u_splash; // hint_range(0.0, 1.0, 0.02) = 0.85  puddle reflection intensity
 
 void main() {
     vec2 uv = uv01();
     float t = mod(u_time * u_speed * 0.45, 1000.0);
     float cols = max(8.0, u_density);
     float len = clamp(u_length, 0.02, 0.6);
-    float splash = clamp(u_splash, 0.0, 1.0);
 
     vec3 col = vec3(0.01, 0.005, 0.02);
     // A drop travels past both frame edges before it wraps, so it never pops in or out; the
@@ -36,21 +34,5 @@ void main() {
         float depth = 1.0 - fl * 0.22;
         col += tint * (streak * 0.75 + tip) * xMask * depth;
     }
-    // Puddle reflection at the bottom: mirror the rain with a fade.
-    float puddleY = 1.0 - uv.y; // reflected y
-    float puddleMask = smoothstep(0.70, 1.0, uv.y) * splash;
-    // Re-use rain pattern at reflected y, darkened.
-    float reflX = floor(uv.x * cols);
-    float reflRand = hash21(vec2(reflX, 17.0));
-    float reflFall = t * (1.5 + reflRand * 2.5);
-    float reflHead = fract(reflFall / span + reflRand) * span - 0.15;
-    float reflDy = puddleY - reflHead;
-    float reflStreak = step(0.0, -reflDy) * (1.0 - smoothstep(0.0, len * 1.6, -reflDy));
-    float reflXLocal = fract(uv.x * cols) - 0.5;
-    float reflXMask = 1.0 - smoothstep(0.2, 0.34 + aa, abs(reflXLocal));
-    vec3 reflTint = tintedPalette(reflRand * 0.6);
-    col += reflTint * reflStreak * 0.35 * reflXMask * puddleMask;
-    // Wet ground shimmer.
-    col += vec3(0.03, 0.02, 0.045) * puddleMask * (0.5 + 0.5 * vnoise(vec2(uv.x * 12.0, t * 0.25)));
     fragColor = vec4(finalize(col), 1.0);
 }

@@ -2574,7 +2574,7 @@
   "selected": 0,
   "slots": [
    {
-    "speed": 85,
+    "speed": 70,
     "intensity": 1,
     "hue": 0.88,
     "colorize": 0.5,
@@ -2582,8 +2582,7 @@
     "contrast": 1.05,
     "params": {
      "u_density": 35,
-     "u_length": 0.15,
-     "u_splash": 0.6
+     "u_length": 0.24
     }
    },
    {
@@ -2595,8 +2594,7 @@
     "contrast": 1,
     "params": {
      "u_density": 70,
-     "u_length": 0.08,
-     "u_splash": 1
+     "u_length": 0.08
     }
    },
    {
@@ -2608,8 +2606,7 @@
     "contrast": 1.05,
     "params": {
      "u_density": 18,
-     "u_length": 0.35,
-     "u_splash": 0.2
+     "u_length": 0.35
     }
    },
    {
@@ -2621,8 +2618,7 @@
     "contrast": 1,
     "params": {
      "u_density": 45,
-     "u_length": 0.2,
-     "u_splash": 0.7
+     "u_length": 0.2
     }
    }
   ]

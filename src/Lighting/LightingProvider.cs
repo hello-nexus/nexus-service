@@ -1433,7 +1433,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "lavalamp" => new(0.85f, 0.50f, 35f, 1.00f, 1.00f, 1f),
         "starfield" => new(0.60f, 0.25f, 55f, 1.00f, 1.00f, 1f),
         "voronoi" => new(0.40f, 0.50f, 40f, 1.05f, 1.00f, 1f),
-        "neonrain" => new(0.88f, 0.50f, 85f, 1.10f, 1.05f, 1f),
+        "neonrain" => new(0.88f, 0.50f, 70f, 1.10f, 1.05f, 1f),
         "nebula" => new(0.72f, 0.35f, 30f, 1.00f, 1.00f, 1f),
         "bursts" => new(0.08f, 0.50f, 65f, 1.05f, 1.00f, 1f),
         "lavafissure" => new(0.03f, 0.45f, 40f, 1.05f, 1.05f, 1f),
