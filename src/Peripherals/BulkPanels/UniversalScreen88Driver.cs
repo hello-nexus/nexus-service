@@ -143,7 +143,9 @@ public sealed class UniversalScreen88Driver : IBulkPanelDriver
             if (!_writeFailureLogged)
             {
                 _writeFailureLogged = true;
-                ServiceLog.Warn($"[{HandlerId}] frame write took {(written < 0 ? "an unknown number of" : written.ToString())} of {packet.Length} bytes");
+                ServiceLog.Warn(written < 0
+                    ? $"[{HandlerId}] frame write of {packet.Length} bytes returned an unknown count"
+                    : $"[{HandlerId}] frame write took {written} of {packet.Length} bytes");
             }
             // A stalled endpoint refuses every later write until it is reset. The packet is
             // resent only when nothing went out; after a partial write the glass is resynced
