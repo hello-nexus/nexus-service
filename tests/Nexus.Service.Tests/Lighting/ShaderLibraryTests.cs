@@ -120,5 +120,7 @@ public class ShaderLibraryTests
         Assert.DoesNotContain("mod(u_time", src);
         Assert.Contains("float t = u_time * u_speed * 0.55;", src);
         Assert.Contains("wA", src);
+        // Jellies fade to nothing at the path seam instead of teleporting.
+        Assert.Contains("* depth * seam;", src);
     }
 }
