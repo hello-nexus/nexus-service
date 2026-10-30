@@ -37,13 +37,15 @@ public sealed class GetLightingStateTool : IMcpTool
 
     public Task<McpToolExecutionResult> ExecuteAsync(JsonElement? args, CancellationToken ct)
     {
-        var lighting = _store.Load().Lighting;
+        var settings = _store.Load();
+        var lighting = settings.Lighting;
         var color = lighting.StaticColor;
         var result = new McpLightingStateResult
         {
             Sync = _lighting.GetSync(),
             CurrentEffect = _engine.CurrentEffectName,
             GlobalBrightness = lighting.GlobalBrightness,
+            MasterScalesDevices = settings.MasterScalesDevices,
             StaticColor = $"#{color.R:x2}{color.G:x2}{color.B:x2}",
         };
         var json = JsonSerializer.Serialize(result, AppJsonContext.Default.McpLightingStateResult);

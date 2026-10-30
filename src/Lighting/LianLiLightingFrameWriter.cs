@@ -279,7 +279,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
 
         // A rejected init is retried on its own window but never aborts the tick:
         // pre-retry this was fire-and-forget, and custom mode streams without it.

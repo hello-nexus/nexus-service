@@ -161,7 +161,7 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
 
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var brightnessMul = ComputeBrightnessMul(id, disabled, prefs, globalBrightness, out var adjust);

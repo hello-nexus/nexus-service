@@ -101,7 +101,7 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var global = MasterBrightness.Resolve(settings.Lighting);
+        var global = MasterBrightness.Resolve(settings);
         var streamed = false;
 
         for (var i = 0; i < devices.Length; i++)

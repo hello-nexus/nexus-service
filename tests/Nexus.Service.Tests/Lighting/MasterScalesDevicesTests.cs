@@ -39,17 +39,17 @@ public sealed class MasterScalesDevicesTests
     [Fact]
     public void Resolve_reads_level_and_mode_from_one_snapshot()
     {
-        var lighting = new LightingSettings { GlobalBrightness = 0.4f, MasterScalesDevices = true };
-        var level = MasterBrightness.Resolve(lighting);
+        var settings = new NexusSettings { Lighting = new LightingSettings { GlobalBrightness = 0.4f }, MasterScalesDevices = true };
+        var level = MasterBrightness.Resolve(settings);
         Assert.Equal(0.4f, level.Level);
         Assert.True(level.Scales);
-        Assert.False(MasterBrightness.Resolve(new LightingSettings()).Scales);
+        Assert.False(MasterBrightness.Resolve(new NexusSettings()).Scales);
     }
 
     [Fact]
     public void Default_is_off()
     {
-        Assert.False(new LightingSettings().MasterScalesDevices);
+        Assert.False(new NexusSettings().MasterScalesDevices);
     }
 
     public delegate double Mul(MasterLevel master, IReadOnlyDictionary<string, LightingDevicePreference> prefs);
@@ -74,9 +74,8 @@ public sealed class MasterScalesDevicesTests
     [MemberData(nameof(Families))]
     public void Every_family_caps_when_off(string name, Mul fn)
     {
-        Assert.True(true, name);
         var prefs = Prefs(50);
-        Assert.Equal(0.5, fn(new MasterLevel(0.8f, false), prefs), 5);
+        Assert.True(Math.Abs(0.5 - fn(new MasterLevel(0.8f, false), prefs)) < 1e-5, name);
         Assert.Equal(0.3, fn(new MasterLevel(0.3f, false), prefs), 5);
     }
 
@@ -84,9 +83,8 @@ public sealed class MasterScalesDevicesTests
     [MemberData(nameof(Families))]
     public void Every_family_multiplies_when_on(string name, Mul fn)
     {
-        Assert.True(true, name);
         var prefs = Prefs(50);
-        Assert.Equal(0.4, fn(new MasterLevel(0.8f, true), prefs), 5);
+        Assert.True(Math.Abs(0.4 - fn(new MasterLevel(0.8f, true), prefs)) < 1e-5, name);
         Assert.Equal(0.15, fn(new MasterLevel(0.3f, true), prefs), 5);
         // No preference entry: the device is at 100, so the master alone applies.
         Assert.Equal(0.3, fn(new MasterLevel(0.3f, true), new Dictionary<string, LightingDevicePreference>()), 5);

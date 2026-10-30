@@ -130,7 +130,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
 
         if (ls.Mode == "custom")
         {

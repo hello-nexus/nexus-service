@@ -259,7 +259,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
 
     private static MasterLevel LoopMasterBrightness(NexusSettings settings)
     {
-        var resolved = MasterBrightness.Resolve(settings.Lighting);
+        var resolved = MasterBrightness.Resolve(settings);
         var master = resolved.Level;
         if (master <= 0)
         {
@@ -270,7 +270,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     }
 
     private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring) =>
-        ToRing(settings, id, src, ring, MasterBrightness.Resolve(settings.Lighting));
+        ToRing(settings, id, src, ring, MasterBrightness.Resolve(settings));
 
     private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring, MasterLevel master)
     {
@@ -399,7 +399,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
         // The card and master brightness (and the blackouts that zero it) cap the effect's own
         // level, rounded up so a dim setting dims the ring rather than switching it off.
-        var cap = MasterBrightness.Resolve(settings.Lighting).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
+        var cap = MasterBrightness.Resolve(settings).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
         var level = Math.Min(ls.Brightness, (int)Math.Ceiling(cap * HydroShift2RingEffects.MaxLevel));
         var signature = $"{mode}|{level}|{ls.Speed}|{ls.Direction}|{string.Join(',', ls.Colors)}|{pref?.ColorOrder}";
         if (signature == _effectSignature)

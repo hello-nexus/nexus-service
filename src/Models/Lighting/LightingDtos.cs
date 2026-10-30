@@ -63,8 +63,9 @@ public class BrightnessScale
     public bool Enabled { get; set; }
 }
 
-/// <summary>Master brightness cap applied to every LED channel before it leaves
-/// the RGB bridge: a device never renders brighter than this. 0..1 (UI slider is
+/// <summary>Master brightness applied to every LED channel before it leaves
+/// the RGB bridge: by default a device never renders brighter than this, with
+/// <see cref="MasterScalesDevices"/> it multiplies the device level instead. 0..1 (UI slider is
 /// 0..100% and divides client-side). Both the /lighting/global-brightness GET
 /// response and POST body share this shape.</summary>
 public class GlobalBrightnessBody

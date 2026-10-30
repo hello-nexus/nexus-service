@@ -212,8 +212,9 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
-        // The keeb software stream brightness is min(global, per-zone) scaled by the
+        var globalBrightness = MasterBrightness.Resolve(settings);
+        // The keeb software stream brightness is the master joined to the per-zone level
+        // (MasterLevel.Combine: capped, or multiplied when the master scales devices), scaled by the
         // keeb's own firmware level (the Settings slider). The level never feeds
         // global, and the knob moves global only, so the two never compound.
         var keebLevel = KeebStreamLevel(settings);

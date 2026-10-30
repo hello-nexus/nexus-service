@@ -159,7 +159,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
@@ -856,6 +856,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 break;
             }
         }
+        // Already a product with master in both modes; the multiplier setting does not change it.
         var brightnessPercent = poweredOff || _engine.Blackout
             ? 0
             : (int)Math.Round(Math.Clamp(lighting.Brightness, 0, 4) * 25 * globalBrightness.Level);

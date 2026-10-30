@@ -103,7 +103,7 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
         else if (!settings.Devices.DisabledLightingDevices.Contains(id))
         {
             settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
-            var brightness = MasterBrightness.Resolve(settings.Lighting).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
+            var brightness = MasterBrightness.Resolve(settings).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
             var adjust = DeviceColorAdjust.For(pref);
             var src = frame.LedBytes;
             for (int i = 0; i < LedBytes && i + 2 < src.Length; i += 3)

@@ -79,6 +79,8 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
             Assert.True(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
             Assert.Equal(0.7, doc.RootElement.GetProperty("value").GetDouble(), 2);
         }
+
+        await client.PostAsync("/lighting/global-brightness", Json("{\"masterScalesDevices\":false}"));
     }
 
     [Fact]

@@ -83,7 +83,7 @@ public sealed class Galahad2LcdLightingFrameWriter : BackgroundService
         else if (!settings.Devices.DisabledLightingDevices.Contains(id))
         {
             settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
-            var brightness = MasterBrightness.Resolve(settings.Lighting).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
+            var brightness = MasterBrightness.Resolve(settings).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
             var src = frame.LedBytes;
             DeviceColorAdjust.For(pref).Apply(src[0], src[1], src[2], brightness, out r, out g, out b);
         }

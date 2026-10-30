@@ -59,7 +59,7 @@ public static class SegmentFrameComposer
 
             // The keeb firmware-brightness level (masterMul, set by the knob and
             // the Settings slider) multiplies the per-zone software level, which the
-            // global master brightness caps: effective = min(global, zone) * masterMul.
+            // master brightness joins (MasterLevel.Combine, a cap or a multiplier): effective = combine(global, zone) * masterMul.
             var mul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust) * masterMul;
             var identifying = false;
             var identifyOn = false;
@@ -147,8 +147,9 @@ public static class SegmentFrameComposer
         }
     }
 
-    /// <summary>Combined off-switch + per-card brightness capped by the master
-    /// level: a card never renders brighter than master (min(device/100, global)).
+    /// <summary>Combined off-switch + per-card brightness joined to the master level
+    /// by <see cref="MasterLevel.Combine"/>: capped by it, or multiplied by it when the
+    /// master scales devices.
     /// An uncontrolled zone renders black too - the shared hardware transport means
     /// only the whole physical device can be handed back to firmware, so a
     /// zone-level uncontrolled flag on a device with controlled siblings just blacks it.</summary>

@@ -25,8 +25,8 @@ public static class MasterBrightness
     /// <summary>The master level plus the combine mode, snapshotted once per operation
     /// so a writer reads the settings a single time. Writers pass this down to the
     /// place they apply the per-device level and call <see cref="MasterLevel.Combine"/>.</summary>
-    public static MasterLevel Resolve(LightingSettings lighting) =>
-        new(Effective(lighting), lighting.MasterScalesDevices);
+    public static MasterLevel Resolve(NexusSettings settings) =>
+        new(Effective(settings.Lighting), settings.MasterScalesDevices);
 
     /// <summary>The one rule joining a device's own level and the master level, both
     /// 0..1. Off: master caps the device (<c>min</c>). On: master multiplies the

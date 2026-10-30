@@ -22,8 +22,8 @@ public static class LightingRoutes
 
     private const int MaxSunLabelLength = 80;
 
-    private static Models.Lighting.GlobalBrightnessBody ToGlobalBrightnessBody(Nexus.Service.Persistence.LightingSettings lighting) =>
-        new() { Value = lighting.GlobalBrightness, MasterScalesDevices = lighting.MasterScalesDevices };
+    private static Models.Lighting.GlobalBrightnessBody ToGlobalBrightnessBody(Nexus.Service.Persistence.NexusSettings settings) =>
+        new() { Value = settings.Lighting.GlobalBrightness, MasterScalesDevices = settings.MasterScalesDevices };
 
     private static Models.Lighting.BrightnessScheduleBody BuildBrightnessScheduleBody(
         Nexus.Service.Persistence.BrightnessSchedule schedule, Nexus.Service.Lighting.Sun.SunLocationResolver resolver, bool forceResolve = false)
@@ -281,25 +281,25 @@ public static class LightingRoutes
                 GpuSoftwareForced = gpu is { Available: true, IsWarp: true } && GpuBackend.SoftwareForced,
             };
         }).AllowPanel();
-        // Master brightness slider: caps every LED channel before it leaves the
-        // RGB bridge (a device never renders brighter than master). Read live by
+        // Master brightness slider: joined to each device's brightness before an LED
+        // leaves the RGB bridge, as a cap or (masterScalesDevices) a multiplier. Read live by
         // RgbBridge.OnFrame, so a POST takes effect on the next frame push
         // without restarting any effect.
         app.MapGet("/lighting/global-brightness", (Nexus.Service.Persistence.IConfigStore store) =>
-            ToGlobalBrightnessBody(store.Load().Lighting)).AllowPanel();
+            ToGlobalBrightnessBody(store.Load())).AllowPanel();
         app.MapPost("/lighting/global-brightness", (Models.Lighting.GlobalBrightnessBody body,
             Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
         {
             // Math.Clamp(NaN, ...) returns NaN, which would propagate through
             // RgbBridge.OnFrame and zero every LED. Treat a non-finite payload
-            // as "no change requested" - fall back to the documented default.
-            float? clamped = body.Value is { } v ? Math.Clamp(float.IsFinite(v) ? v : 1.0f, 0f, 1f) : null;
+            // as "no change requested".
+            float? clamped = body.Value is { } v && float.IsFinite(v) ? Math.Clamp(v, 0f, 1f) : null;
             var scales = body.MasterScalesDevices;
             store.Update(s =>
             {
                 if (scales is { } on)
                 {
-                    s.Lighting.MasterScalesDevices = on;
+                    s.MasterScalesDevices = on;
                 }
                 if (clamped is { } level)
                 {

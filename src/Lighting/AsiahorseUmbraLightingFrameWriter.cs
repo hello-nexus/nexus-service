@@ -104,7 +104,7 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         _lastPlanTimestamp = now;
         var ls = settings.Devices.AsiahorseUmbra;
         var source = UmbraLightingPlan.SourceOf(ls);
-        var master = MasterBrightness.Resolve(settings.Lighting);
+        var master = MasterBrightness.Resolve(settings);
         var plan = UmbraLightingPlan.Build(ls, _hub.Snapshot.Ports, master.Level, settings.Devices.LightingDevicePrefs, master.Scales);
         var signature = UmbraLightingPlan.Signature(plan);
         if (_planSignature == signature && epoch == _planEpoch)
@@ -141,7 +141,7 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var master = MasterBrightness.Resolve(settings.Lighting);
+        var master = MasterBrightness.Resolve(settings);
         if (_buffer.Length != total * 3)
         {
             _buffer = new byte[total * 3];

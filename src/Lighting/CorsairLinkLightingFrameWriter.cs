@@ -118,7 +118,7 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Resolve(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
 
         var hubDevices = WireOrder(hub.State.Devices, _wireOrder);
         var hubHasLcd = hub.State.HasLcd;

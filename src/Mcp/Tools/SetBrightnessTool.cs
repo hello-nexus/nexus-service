@@ -9,7 +9,7 @@ using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Mcp.Tools;
 
-/// <summary>Write tool: the same master brightness cap POST /lighting/global-brightness sets.</summary>
+/// <summary>Write tool: the same master brightness level POST /lighting/global-brightness sets.</summary>
 public sealed class SetBrightnessTool : IMcpTool
 {
     private readonly IConfigStore _store;
