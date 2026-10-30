@@ -470,6 +470,7 @@ public sealed partial class ProfileManager : IDisposable
                 var settings = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings);
                 Nexus.Service.Lighting.PinMigration.Apply(settings);
                 Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(settings);
+                Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(settings, _store.Load().UsbMonitorPanelPairs);
                 return settings is null ? null : ProfileSharing.ExtractShareable(settings);
             }
             catch { return null; }
@@ -530,6 +531,7 @@ public sealed partial class ProfileManager : IDisposable
     {
         Nexus.Service.Lighting.PinMigration.Apply(data);
         Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
+        Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
         var trimmedName = string.IsNullOrWhiteSpace(name) ? "Imported" : name.Trim();
         bool reactivate;
         var panelsAdded = false;
@@ -684,6 +686,7 @@ public sealed partial class ProfileManager : IDisposable
                 {
                     Nexus.Service.Lighting.PinMigration.Apply(data);
                     Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
+                    Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
                     data.Auth = null;
                     data.PrimaryProfileId = null;
                     data.SharedCategories = new List<string>();
@@ -753,6 +756,7 @@ public sealed partial class ProfileManager : IDisposable
     {
         Nexus.Service.Lighting.PinMigration.Apply(data);
         Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
+        Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
         bool reactivate = false;
         var panelsAdded = false;
         NexusSettings? importedPanels = null;
@@ -1215,6 +1219,7 @@ public sealed partial class ProfileManager : IDisposable
             // pre-pin file is folded into pins here (a no-op once migrated).
             Nexus.Service.Lighting.PinMigration.Apply(data);
             Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
+            Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
             return data;
         }
         catch
@@ -1258,6 +1263,7 @@ public sealed partial class ProfileManager : IDisposable
         }
         // The file is rewritten stamped current, so its untouched categories must be shifted first.
         Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(target);
+        Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(target, _store.Load().UsbMonitorPanelPairs);
 
         foreach (var cat in categories)
         {

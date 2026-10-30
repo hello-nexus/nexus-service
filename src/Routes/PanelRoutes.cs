@@ -13,6 +13,21 @@ namespace Nexus.Service.Routes;
 
 public static class PanelRoutes
 {
+    /// <summary>
+    /// Stamps displayAttached on display-bound records. The virtual monitor a USB device owns reads as
+    /// detached, so a leftover panel record on it never gets a sidebar entry next to the device's own.
+    /// </summary>
+    internal static void MarkDisplayAttached(IEnumerable<PanelDeviceRecord> devices, HashSet<string>? attached, string ownedDisplayId)
+    {
+        foreach (var device in devices)
+        {
+            if (string.IsNullOrEmpty(device.DisplayId)) continue;
+            device.DisplayAttached = ownedDisplayId.Length > 0 && device.DisplayId == ownedDisplayId
+                ? false
+                : attached?.Contains(device.DisplayId);
+        }
+    }
+
     public static void MapPanelEndpoints(this WebApplication app)
     {
         app.MapGet("/panel/status", (PanelKioskLauncher launcher, MultiplexHub hub) =>
@@ -298,16 +313,11 @@ public static class PanelRoutes
             // showing the panel rather than flickering it away.
             if (devices.Any(d => !string.IsNullOrEmpty(d.DisplayId)))
             {
-                var attached = topology.GetAttachedIds();
-                // The virtual monitor of a USB device is that device's own sidebar entry; a leftover panel record on it is not listed.
-                var ownedDisplay = topology.OwnedVirtualDisplayId();
+                MarkDisplayAttached(devices, topology.GetAttachedIds(), topology.OwnedVirtualDisplayId());
                 foreach (var device in devices)
                 {
-                    if (string.IsNullOrEmpty(device.DisplayId)) continue;
-                    device.DisplayAttached = ownedDisplay.Length > 0 && device.DisplayId == ownedDisplay
-                        ? false
-                        : attached?.Contains(device.DisplayId);
-                    device.Warning = touchRouting.WarningFor(device.DisplayId);
+                    if (!string.IsNullOrEmpty(device.DisplayId))
+                        device.Warning = touchRouting.WarningFor(device.DisplayId);
                 }
             }
             return Results.Json(

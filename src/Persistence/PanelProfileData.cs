@@ -352,7 +352,7 @@ public static class PanelProfileData
         return stripped;
     }
 
-    private static void CopyLook(PanelDeviceRecord from, PanelDeviceRecord to)
+    internal static void CopyLook(PanelDeviceRecord from, PanelDeviceRecord to)
     {
         PanelPresets.Copy(from, to);
         to.Presets = from.Presets?.Select(ClonePreset).ToList();
