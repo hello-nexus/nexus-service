@@ -87,13 +87,12 @@ void main() {
         vec2 dir        = vec2(cos(angle), sin(angle));
         vec2 startPos   = vec2(sin(fi * 7.31 + 1.0), cos(fi * 4.11 + 2.3)) * 1.3;
         vec2 drift      = startPos + dir * t * swimSpeed;
-        // Wrap into a region just slightly larger than the visible frame
-        // (visible is roughly +-1.78 in x for 16:9, +-1 in y) so jellies
-        // are almost always on screen and only briefly slip off an edge
-        // before re-appearing on the opposite side. Previous +-3.6 / +-2.4
-        // bounds meant most of the population was off-screen at any time.
-        drift.x = mod(drift.x + 2.0, 4.0) - 2.0;
-        drift.y = mod(drift.y + 1.25, 2.5) - 1.25;
+        // Wrap into a region wider than the frame (about +-1.78 in x, +-1 in y). The
+        // creature fades to nothing toward the seam, so the wrap is invisible: its
+        // halo and tentacles reach well past the center and would pop otherwise.
+        drift.x = mod(drift.x + 2.6, 5.2) - 2.6;
+        drift.y = mod(drift.y + 1.6, 3.2) - 1.6;
+        float seam = smoothstep(0.0, 0.7, 2.6 - abs(drift.x)) * smoothstep(0.0, 0.7, 1.6 - abs(drift.y));
         // Organic wobble on top of the linear path.
         drift += vec2(
             sin(t * 0.7 + fi * 2.1) * 0.10,
@@ -146,7 +145,7 @@ void main() {
         vec3  haloCol = tintedPalette(fi * 0.14 + 0.35) * halo;
 
         float depth = 1.0 - fi * 0.1;
-        col += (bodyCol + haloCol) * depth;
+        col += (bodyCol + haloCol) * depth * seam;
     }
     fragColor = vec4(finalize(col), 1.0);
 }
