@@ -283,11 +283,10 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             var direct = Nexus.Service.Lifecycle.OobeSessionLaunch.Start(
                 exePath, string.Empty, workingDir, "overlay",
                 allowServiceToken: plan == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser);
-            // The setup account falls back to the schtasks route when its token is unavailable.
-            if (direct is not null || plan == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser)
-            {
-                return direct;
-            }
+            // Without the setup account's token nothing is started: a schtasks launch would be untracked
+            // and outlive OOBE. The supervisor retries.
+            if (direct is null) Console.Error.WriteLine("[overlay-host] OOBE overlay not started");
+            return direct;
         }
         if (string.IsNullOrEmpty(username))
         {

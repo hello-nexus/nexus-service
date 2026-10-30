@@ -7,7 +7,7 @@ internal enum ConsoleLaunchPlan
 {
     /// <summary>A user is signed in: the existing schtasks launch for that user.</summary>
     ConsoleUser,
-    /// <summary>Nobody is signed in and OOBE is not running: wait for a logon, as before.</summary>
+    /// <summary>Nobody is signed in and OOBE is not running: wait for a logon.</summary>
     WaitForLogon,
     /// <summary>Nobody is signed in and Windows is in OOBE: start directly in the console session.</summary>
     OobeNoUser,

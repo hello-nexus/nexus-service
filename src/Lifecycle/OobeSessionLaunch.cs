@@ -67,33 +67,77 @@ internal static class OobeSessionLaunch
     }
 
     // The pid file is writable by others, so a process is ended only when its start time
-    // and its image both match what this service launched.
-    private static void Kill(int pid, long startFileTime)
+    // and its image both match what this service launched. The open handle keeps the pid
+    // from being reused while the tree is ended.
+    private static bool Kill(int pid, long startFileTime)
     {
 #if WINDOWS
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows()) return false;
         var handle = OpenProcess(ProcessQueryLimited | ProcessTerminate, false, (uint)pid);
-        if (handle == IntPtr.Zero) return;
+        if (handle == IntPtr.Zero) return false;
         try
         {
             if (!GetProcessTimes(handle, out var created, out _, out _, out _)
                 || FileTimeValue(created) != startFileTime)
             {
-                return;
+                return false;
             }
             var buf = new StringBuilder(1024);
             var size = (uint)buf.Capacity;
-            if (QueryFullProcessImageNameW(handle, 0, buf, ref size)
-                && OobePanelPolicy.IsOwnImage(buf.ToString(), AppContext.BaseDirectory))
+            if (!QueryFullProcessImageNameW(handle, 0, buf, ref size)
+                || !OobePanelPolicy.IsOwnImage(buf.ToString(), AppContext.BaseDirectory))
             {
-                TerminateProcess(handle, 1);
+                return false;
+            }
+            try
+            {
+                using var p = Process.GetProcessById(pid);
+                p.Kill(entireProcessTree: true);
+                return true;
+            }
+            catch
+            {
+                return TerminateProcess(handle, 1);
             }
         }
         finally
         {
             CloseHandle(handle);
         }
+#else
+        return false;
 #endif
+    }
+
+    // Whether the tracked process is still the one launched: running, with the same start time.
+    private static bool StillRunning(int pid, long startFileTime)
+    {
+#if WINDOWS
+        if (!OperatingSystem.IsWindows()) return false;
+        var handle = OpenProcess(ProcessQueryLimited | Synchronize, false, (uint)pid);
+        if (handle == IntPtr.Zero) return false;
+        try
+        {
+            return WaitForSingleObject(handle, 0) != WaitObject0
+                && GetProcessTimes(handle, out var created, out _, out _, out _)
+                && FileTimeValue(created) == startFileTime;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+#else
+        return false;
+#endif
+    }
+
+    // Pids this service ended on purpose; the helper drop handler skips them so a reap is not a crash.
+    private static readonly HashSet<int> s_reaped = new();
+
+    /// <summary>True once for a pid the reap ended.</summary>
+    internal static bool TakeReaped(int pid)
+    {
+        lock (s_lock) { return s_reaped.Remove(pid); }
     }
 
     private static void PersistLocked()
@@ -117,12 +161,12 @@ internal static class OobeSessionLaunch
         {
             s_tracked.Add((pid, startFileTime));
             PersistLocked();
-            s_reaper ??= new Timer(_ => ReapIfOobeOver(), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+            s_reaper ??= new Timer(_ => { ReapIfOobeOver(); }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
 #if WINDOWS
             if (!s_logonHooked)
             {
                 s_logonHooked = true;
-                WindowsServiceHost.SessionLogon += () => _ = System.Threading.Tasks.Task.Run(ReapIfOobeOver);
+                WindowsServiceHost.SessionLogon += () => _ = System.Threading.Tasks.Task.Run(() => ReapIfOobeOver());
             }
 #endif
         }
@@ -159,40 +203,61 @@ internal static class OobeSessionLaunch
     internal static bool ConsoleUserIsLocal()
     {
 #if WINDOWS
-        if (!OperatingSystem.IsWindows()) return false;
-        var session = WTSGetActiveConsoleSessionId();
-        if (session == 0xFFFFFFFF) return false;
-        var buf = IntPtr.Zero;
-        try
-        {
-            if (!WTSQuerySessionInformation(IntPtr.Zero, session, WtsDomainName, out buf, out _) || buf == IntPtr.Zero)
-            {
-                return false;
-            }
-            return string.Equals(Marshal.PtrToStringUni(buf), Environment.MachineName, StringComparison.OrdinalIgnoreCase);
-        }
-        catch { return false; }
-        finally { if (buf != IntPtr.Zero) WTSFreeMemory(buf); }
+        return OperatingSystem.IsWindows()
+            && string.Equals(ConsoleSessionAccount.ConsoleDomain(), Environment.MachineName, StringComparison.OrdinalIgnoreCase);
 #else
         return false;
 #endif
     }
 
-    /// <summary>Ends every tracked process once OOBE is over or a real user is on the console, then stops the timer.</summary>
-    internal static void ReapIfOobeOver()
+    /// <summary>
+    /// Ends every tracked process once OOBE is over or a real user is on the console, then stops
+    /// the timer. Returns how many it ended. Runs from a timer and from the logon path, which calls
+    /// it before deciding whether a helper is already present.
+    /// </summary>
+    internal static int ReapIfOobeOver()
     {
-        List<(int Pid, long StartFileTime)> victims;
-        lock (s_lock)
+        try
         {
-            if (!OobePanelPolicy.ShouldReap(s_tracked.Count, OobeDetector.IsInOobe, () => OobePanelPolicy.IsRealUser(ConsoleUser()))) return;
-            victims = new List<(int, long)>(s_tracked);
-            s_tracked.Clear();
+            List<(int Pid, long StartFileTime)> victims;
+            lock (s_lock)
+            {
+                PruneExitedLocked();
+                if (!OobePanelPolicy.ShouldReap(s_tracked.Count, OobeDetector.IsInOobe, () => OobePanelPolicy.IsRealUser(ConsoleUser()))) return 0;
+                victims = new List<(int, long)>(s_tracked);
+                s_tracked.Clear();
+                s_reaper?.Dispose();
+                s_reaper = null;
+                PersistLocked();
+            }
+            var ended = 0;
+            foreach (var (pid, fileTime) in victims)
+            {
+                if (!Kill(pid, fileTime)) continue;
+                ended++;
+                lock (s_lock) { s_reaped.Add(pid); }
+            }
+            Console.WriteLine($"[oobe-session] OOBE over or a real user is on the console; ended {ended} of {victims.Count} setup-session process(es)");
+            return ended;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[oobe-session] reap failed: {ex.Message}");
+            return 0;
+        }
+    }
+
+    // Drops entries whose process has exited; with none left the timer has nothing to watch.
+    private static void PruneExitedLocked()
+    {
+        if (s_tracked.Count == 0) return;
+        if (s_tracked.RemoveAll(t => !StillRunning(t.Pid, t.StartFileTime)) == 0) return;
+        PersistLocked();
+        if (s_tracked.Count == 0)
+        {
             s_reaper?.Dispose();
             s_reaper = null;
-            PersistLocked();
         }
-        foreach (var (pid, fileTime) in victims) Kill(pid, fileTime);
-        Console.WriteLine($"[oobe-session] OOBE over or a real user is on the console; ended {victims.Count} setup-session process(es)");
     }
 
     /// <summary>
@@ -225,9 +290,10 @@ internal static class OobeSessionLaunch
     private const uint DisableMaxPrivilege = 1;
     private const uint SeGroupIntegrity = 0x20;
     private const string MediumIntegritySid = "S-1-16-8192";
-    private const int WtsDomainName = 7;
     private const uint ProcessTerminate = 0x0001;
     private const uint ProcessQueryLimited = 0x1000;
+    private const uint Synchronize = 0x00100000;
+    private const uint WaitObject0 = 0;
 
     private static long FileTimeValue(FILETIME t) => ((long)t.dwHighDateTime << 32) | t.dwLowDateTime;
 
@@ -437,19 +503,15 @@ internal static class OobeSessionLaunch
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessTimes(IntPtr process, out FILETIME creation, out FILETIME exit, out FILETIME kernel, out FILETIME user);
 
+    [DllImport("kernel32.dll")]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref uint size);
-
-    [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool WTSQuerySessionInformation(IntPtr server, uint sessionId, int infoClass, out IntPtr buffer, out uint bytes);
-
-    [DllImport("wtsapi32.dll")]
-    private static extern void WTSFreeMemory(IntPtr memory);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

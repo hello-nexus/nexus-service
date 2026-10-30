@@ -58,6 +58,8 @@ internal static class UserHelperBootstrapper
         // replaced; every deliberate helper exit also stops the service.
         registry.Disconnected += conn =>
         {
+            // A setup-session helper ended on purpose when a real user signed in is not a crash.
+            if (OobeSessionLaunch.TakeReaped(conn.Pid)) return;
             if (conn.SessionId == (int)WTSGetActiveConsoleSessionId())
             {
                 _ = Task.Run(() => RelaunchAfterDropAsync(serviceStopping));
@@ -183,6 +185,8 @@ internal static class UserHelperBootstrapper
     {
         for (var attempt = 1; attempt <= LaunchAttempts; attempt++)
         {
+            // A setup-session helper must be gone before "already connected" is believed.
+            if (OobeSessionLaunch.ReapIfOobeOver() > 0) await WaitForHelperGoneAsync(TimeSpan.FromSeconds(5));
             if (HelperConnected()) return;
             var tag = $"({trigger}, attempt {attempt}/{LaunchAttempts})";
 
@@ -203,12 +207,10 @@ internal static class UserHelperBootstrapper
                     Console.Error.WriteLine($"[helper-bootstrap] no OOBE helper connected within {ConnectWait.TotalSeconds:0}s {tag}");
                     return;
                 }
-                if (plan == ConsoleLaunchPlan.OobeNoUser)
-                {
-                    await Task.Delay(5000);
-                    continue;
-                }
-                // The setup account falls through to the schtasks route below.
+                // No token for the setup session: nothing is launched untracked, the next trigger retries.
+                Console.Error.WriteLine($"[helper-bootstrap] OOBE helper not started {tag}");
+                await Task.Delay(5000);
+                continue;
             }
             if (string.IsNullOrEmpty(username))
             {
@@ -256,6 +258,12 @@ internal static class UserHelperBootstrapper
         // Distinguishes "never launched" from "alive but silent" (a stale
         // mutex holder, a pipe that cannot be reached) in the next bundle.
         Console.Error.WriteLine($"[helper-bootstrap] giving up after {LaunchAttempts} attempts ({trigger}); Nexus.exe processes in the console session: {CountNexusProcessesInConsoleSession()}");
+    }
+
+    private static async Task WaitForHelperGoneAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (HelperConnected() && DateTime.UtcNow < deadline) await Task.Delay(100);
     }
 
     private static async Task<bool> WaitForHelperAsync(TimeSpan timeout)
