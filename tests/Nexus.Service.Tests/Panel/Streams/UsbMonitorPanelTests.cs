@@ -411,6 +411,7 @@ public sealed class UsbMonitorPanelTests : IDisposable
         public string? SecondaryMonitorState => _state;
         public event Action? SecondaryMonitorStateChanged;
         public void BindSecondaryMonitor(Func<bool> source) => _wants = source;
+        public void BindFpsCap(Func<int?> source) { }
         public void ApplySecondaryMonitor() => Apply();
         public void Apply()
         {
