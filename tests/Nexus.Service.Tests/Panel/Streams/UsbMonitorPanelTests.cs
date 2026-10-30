@@ -234,6 +234,17 @@ public sealed class UsbMonitorPanelTests : IDisposable
     }
 
     [Fact]
+    public void The_plain_display_list_uses_the_device_name_for_the_virtual_display()
+    {
+        var topology = Topology(out _);
+        SetMonitor(true);
+        topology.GetTopology();
+
+        Assert.Equal("Lian Li Universal Screen 8.8", topology.DevicePanelNameFor(VirtualDisplayId));
+        Assert.Null(topology.DevicePanelNameFor("DEL41B7-1"));
+    }
+
+    [Fact]
     public void The_virtual_display_keeps_its_windows_name_when_no_device_owns_it()
     {
         var topology = Topology(out _);

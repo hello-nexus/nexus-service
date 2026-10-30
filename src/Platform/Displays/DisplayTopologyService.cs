@@ -69,6 +69,16 @@ public sealed class DisplayTopologyService : IDisposable
         lock (_cacheLock) return _ownedDisplayId;
     }
 
+    /// <summary>The owning USB device's name when <paramref name="displayId"/> is its virtual display, else null. Cached ids only.</summary>
+    public string? DevicePanelNameFor(string displayId)
+    {
+        lock (_cacheLock)
+        {
+            if (_ownedDisplayId.Length == 0 || !string.Equals(_ownedDisplayId, displayId, StringComparison.Ordinal)) return null;
+        }
+        return DevicePanelOwner?.Invoke()?.Name;
+    }
+
     private bool IsOwnedVirtualDisplay(RawDisplayInfo info)
         => _virtualMonitors?.OwnsAdapter(info.AdapterName) == true;
 

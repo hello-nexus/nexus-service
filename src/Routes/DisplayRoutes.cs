@@ -217,7 +217,15 @@ public static class DisplayRoutes
         }).AllowPanel();
 
         // System monitors (external DDC/CI + internal panels)
-        app.MapGet("/displays", (DisplayBrightnessController d) => d.ListDisplays()).AllowPanel();
+        app.MapGet("/displays", (DisplayBrightnessController d, DisplayTopologyService topology) =>
+        {
+            var list = d.ListDisplays();
+            foreach (var display in list.Displays)
+            {
+                if (topology.DevicePanelNameFor(display.Id) is { } deviceName) display.Name = deviceName;
+            }
+            return list;
+        }).AllowPanel();
 
         // OS monitor topology (positions, modes, scale) merged with panel state.
         app.MapGet("/displays/topology", (DisplayTopologyService topology) => topology.GetTopology()).AllowPanel();
