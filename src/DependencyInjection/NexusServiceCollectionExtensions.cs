@@ -2680,7 +2680,11 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
-            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0,
+            () =>
+            {
+                var streams = sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>();
+                return streams.GetAssignments().Assignments.Count > 0 || streams.MonitorProjectedPanelId() is not null;
+            },
             () => sp.GetRequiredService<Nexus.Service.Panel.DisplayIdentifyService>().IsActive,
             settings => sp.GetRequiredService<Nexus.Service.Panel.DesktopWidgetsMigration>().HostCanAdvance(settings)));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
