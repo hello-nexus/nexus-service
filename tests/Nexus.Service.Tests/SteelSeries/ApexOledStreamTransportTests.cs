@@ -460,7 +460,7 @@ public class ApexOledStreamTransportTests
         a.AcceptFeatures = false;
         var discovery = new ApexOledPanelDiscovery(hid, clock: () => Interlocked.Read(ref now));
         var infos = discovery.Discover();
-        using var failing = discovery.CreateTransport(infos[0]);
+        using var failing = discovery.CreateTransport(infos.Single(i => i.Serial.EndsWith(":A", StringComparison.Ordinal)));
         failing.Open();
         Assert.Throws<IOException>(() => failing.Write(Frame(255)));
 
@@ -468,22 +468,42 @@ public class ApexOledStreamTransportTests
         Assert.EndsWith(":B", left.Serial);
     }
 
-    [Fact]
-    public void A_keyboard_that_leaves_starts_over_when_it_returns()
+    private static (ApexOledPanelDiscovery Discovery, FakeHid Hid, ApexOledStreamTransport Failed, Action<long> Advance) RefusedKeyboard()
     {
         long now = 1000;
         var hid = new FakeHid();
-        var screen = hid.Add(0x1628);
-        screen.AcceptFeatures = false;
-        var discovery = new ApexOledPanelDiscovery(hid, clock: () => Interlocked.Read(ref now));
-        var info = Assert.Single(discovery.Discover());
-        using var transport = discovery.CreateTransport(info);
+        hid.Add(0x1628).AcceptFeatures = false;
+        var discovery = new ApexOledPanelDiscovery(hid, clock: () => Interlocked.Read(ref now), enforceLength: true);
+        var transport = (ApexOledStreamTransport)discovery.CreateTransport(Assert.Single(discovery.Discover()));
         transport.Open();
         Assert.Throws<IOException>(() => transport.Write(Frame(255)));
         Assert.Empty(discovery.Discover());
+        return (discovery, hid, transport, ms => Interlocked.Add(ref now, ms));
+    }
 
+    [Fact]
+    public void One_missed_pass_keeps_the_backoff()
+    {
+        var (discovery, hid, failed, advance) = RefusedKeyboard();
+        using var _ = failed;
         var infos = hid.Infos.ToList();
         hid.Infos.Clear();
+        Assert.Empty(discovery.Discover());
+        advance(1000);
+        hid.Infos.AddRange(infos);
+
+        Assert.Empty(discovery.Discover());
+    }
+
+    [Fact]
+    public void An_absence_past_the_linger_resets_the_backoff_in_place()
+    {
+        var (discovery, hid, failed, advance) = RefusedKeyboard();
+        using var _ = failed;
+        var infos = hid.Infos.ToList();
+        hid.Infos.Clear();
+        Assert.Empty(discovery.Discover());
+        advance(ApexOledPanelDiscovery.AbsentResetMs);
         Assert.Empty(discovery.Discover());
         hid.Infos.AddRange(infos);
 
@@ -491,22 +511,63 @@ public class ApexOledStreamTransportTests
     }
 
     [Fact]
-    public void A_gap_between_passes_means_the_gate_was_off_and_clears_the_delay()
+    public void A_transport_opened_before_a_reset_still_shares_the_backoff_with_discovery()
     {
-        long now = 1000;
-        var hid = new FakeHid();
-        var screen = hid.Add(0x1628);
-        screen.AcceptFeatures = false;
-        var discovery = new ApexOledPanelDiscovery(hid, clock: () => Interlocked.Read(ref now));
-        var info = Assert.Single(discovery.Discover());
-        using var transport = discovery.CreateTransport(info);
-        transport.Open();
-        Assert.Throws<IOException>(() => transport.Write(Frame(255)));
+        var (discovery, hid, failed, advance) = RefusedKeyboard();
+        using var _ = failed;
+        var infos = hid.Infos.ToList();
+        hid.Infos.Clear();
         Assert.Empty(discovery.Discover());
+        advance(ApexOledPanelDiscovery.AbsentResetMs);
+        Assert.Empty(discovery.Discover());
+        hid.Infos.AddRange(infos);
+        var info = Assert.Single(discovery.Discover());
 
-        Interlocked.Add(ref now, 20_000);
+        // The old transport is reopened and refuses again: the delay it records must be the one discovery honors.
+        failed.Open();
+        Assert.Throws<IOException>(() => failed.Write(Frame(255)));
 
-        Assert.Single(discovery.Discover());
+        Assert.Empty(discovery.Discover());
+        Assert.NotNull(info);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Elsewhere_the_lowest_path_wins_whatever_the_enumeration_order(bool reversed)
+    {
+        var hid = new FakeHid();
+        var first = hid.Add(0x1628, featureLength: 64);
+        var second = hid.Add(0x1628, featureLength: 644);
+        if (reversed)
+        {
+            hid.Infos.Reverse();
+        }
+        var lowest = hid.Infos.OrderBy(i => i.Path, StringComparer.Ordinal).First().Path;
+
+        var screen = Assert.Single(ApexOledScreens.Find(hid, false));
+
+        Assert.Equal(lowest, screen.Info.Path);
+        using var transport = Create(hid, 0x1628, enforceLength: false);
+        transport.Open();
+        transport.Write(Frame(255));
+        Assert.Single((lowest == hid.Infos.First(i => i.FeatureReportByteLength == 64).Path ? first : second).Features);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void On_windows_the_fitting_collection_wins_whatever_the_enumeration_order(bool reversed)
+    {
+        var hid = new FakeHid();
+        hid.Add(0x1628, featureLength: 64);
+        hid.Add(0x1628, featureLength: 644);
+        if (reversed)
+        {
+            hid.Infos.Reverse();
+        }
+
+        Assert.Equal(644, Assert.Single(ApexOledScreens.Find(hid, true)).Info.FeatureReportByteLength);
     }
 
     [Fact]

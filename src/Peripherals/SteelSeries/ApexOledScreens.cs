@@ -23,10 +23,11 @@ public static class ApexOledScreens
     private const string UnitKey = "unit0";
 
     /// <summary>
-    /// <paramref name="enforceLength"/> drops collections whose reported feature length cannot carry a
-    /// frame. Only Windows needs it, where a feature report longer than the collection's is refused; the
-    /// other platforms size collections from the first top-level collection of the descriptor, which
-    /// is not reliable for this one.
+    /// <paramref name="enforceLength"/> is Windows only, where a feature report longer than the
+    /// collection's is refused: collections known to be too short are dropped and one that reports a
+    /// fitting length is preferred. Elsewhere lengths are ignored, because they come from the first
+    /// top-level collection of the descriptor and are not reliable for this one. Either way the pick
+    /// among equals is the lowest path, so it never depends on enumeration order.
     /// </summary>
     public static List<ApexOledScreen> Find(IHidEnumerator hid, bool? enforceLength = null)
     {
@@ -34,38 +35,40 @@ public static class ApexOledScreens
         var screens = new List<ApexOledScreen>();
         foreach (var model in ApexOledProtocol.Models)
         {
-            var best = new Dictionary<string, ApexOledScreen>(StringComparer.Ordinal);
-            var order = new List<string>();
-            var onPage = 0;
+            var candidates = new List<HidDeviceInfo>();
             foreach (var info in hid.Find(ApexOledProtocol.VendorId, model.ProductId))
             {
-                if (info.UsagePage != ApexOledProtocol.ControlUsagePage)
+                if (info.UsagePage == ApexOledProtocol.ControlUsagePage)
                 {
-                    continue;
+                    candidates.Add(info);
                 }
-                onPage++;
-                // A length of zero means the platform could not size the collection; only a known
-                // short one is ruled out (Windows refuses a feature report longer than the collection's).
+            }
+            candidates.Sort((x, y) => string.CompareOrdinal(x.Path, y.Path));
+            var chosen = new Dictionary<string, HidDeviceInfo>(StringComparer.Ordinal);
+            var order = new List<string>();
+            foreach (var info in candidates)
+            {
+                // A length of zero means the platform could not size the collection; only a known short one is ruled out.
                 if (enforce && info.FeatureReportByteLength is > 0 and < MinFeatureLength)
                 {
                     continue;
                 }
                 var key = string.IsNullOrEmpty(info.Serial) ? UnitKey : info.Serial;
-                if (!best.TryGetValue(key, out var held))
+                if (!chosen.TryGetValue(key, out var held))
                 {
                     order.Add(key);
-                    best[key] = new ApexOledScreen(model, info, key);
+                    chosen[key] = info;
                 }
-                else if (held.Info.FeatureReportByteLength == 0 && info.FeatureReportByteLength >= MinFeatureLength)
+                else if (enforce && held.FeatureReportByteLength == 0 && info.FeatureReportByteLength >= MinFeatureLength)
                 {
-                    best[key] = new ApexOledScreen(model, info, key);
+                    chosen[key] = info;
                 }
             }
             foreach (var key in order)
             {
-                screens.Add(best[key]);
+                screens.Add(new ApexOledScreen(model, chosen[key], key));
             }
-            if (onPage > 0 && order.Count == 0)
+            if (candidates.Count > 0 && order.Count == 0)
             {
                 LogOnce($"short:{model.ProductId}",
                     $"{model.Name}: no screen collection takes a {ApexOledProtocol.FeatureReportLength} byte feature report; the screen cannot be driven");

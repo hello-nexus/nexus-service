@@ -27,14 +27,22 @@ public sealed class ApexOledPanelDiscovery : IStreamedPanelDiscovery
     private readonly IHidEnumerator _hid;
     private readonly HardwarePresence? _presence;
     private readonly LcdLockState? _lock;
-    private readonly Dictionary<string, AttachBackoff> _backoffs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Tracked> _tracked = new(StringComparer.Ordinal);
     private readonly object _backoffLock = new();
     private readonly Func<long> _clock;
     private readonly bool? _enforceLength;
-    private long _lastPassMs = long.MinValue;
 
-    /// <summary>A gap this long between passes means the gate was off meanwhile (the coordinator polls far more often), so earlier failures no longer apply.</summary>
-    private const long GateOffGapMs = 15_000;
+    /// <summary>A keyboard missing from passes for this long starts over when it returns; the coordinator's own detach linger.</summary>
+    internal const long AbsentResetMs = 60_000;
+
+    // One backoff per serial for the life of the discovery, shared with its transport; it is only ever reset in place.
+    private sealed class Tracked
+    {
+        public readonly AttachBackoff Backoff;
+        public long AbsentSinceMs = -1;
+
+        public Tracked(Func<long> clock) { Backoff = new AttachBackoff(clock); }
+    }
 
     public ApexOledPanelDiscovery(IHidEnumerator hid, HardwarePresence? presence = null, LcdLockState? lockState = null, Func<long>? clock = null, bool? enforceLength = null)
     {
@@ -52,33 +60,10 @@ public sealed class ApexOledPanelDiscovery : IStreamedPanelDiscovery
 
     public IReadOnlyList<StreamedPanelDeviceInfo> Discover()
     {
-        var now = _clock();
-        lock (_backoffLock)
-        {
-            if (_lastPassMs != long.MinValue && now - _lastPassMs > GateOffGapMs)
-            {
-                _backoffs.Clear();
-            }
-            _lastPassMs = now;
-        }
-        if (_presence is not null && !_presence.UsbPresent(ApexOledProtocol.VendorId, ApexOledProtocol.ProductIds))
-        {
-            lock (_backoffLock) { _backoffs.Clear(); }
-            return Array.Empty<StreamedPanelDeviceInfo>();
-        }
-        var screens = ApexOledScreens.Find(_hid, _enforceLength);
-        lock (_backoffLock)
-        {
-            // A keyboard that left starts over when it returns.
-            var present = new HashSet<string>(screens.ConvertAll(PanelSerial), StringComparer.Ordinal);
-            foreach (var gone in new List<string>(_backoffs.Keys))
-            {
-                if (!present.Contains(gone))
-                {
-                    _backoffs.Remove(gone);
-                }
-            }
-        }
+        var screens = _presence is not null && !_presence.UsbPresent(ApexOledProtocol.VendorId, ApexOledProtocol.ProductIds)
+            ? new List<ApexOledScreen>()
+            : ApexOledScreens.Find(_hid, _enforceLength);
+        NotePresence(screens);
         var panels = new List<StreamedPanelDeviceInfo>();
         foreach (var screen in screens)
         {
@@ -117,15 +102,41 @@ public sealed class ApexOledPanelDiscovery : IStreamedPanelDiscovery
         return new ApexOledStreamTransport(_hid, model, info.Serial, _lock, backoff: BackoffFor(info.Serial), enforceLength: _enforceLength);
     }
 
+    // A single missed pass changes nothing; only an absence past the linger resets a keyboard's backoff.
+    private void NotePresence(List<ApexOledScreen> screens)
+    {
+        var now = _clock();
+        var present = new HashSet<string>(screens.ConvertAll(PanelSerial), StringComparer.Ordinal);
+        lock (_backoffLock)
+        {
+            foreach (var (serial, tracked) in _tracked)
+            {
+                if (present.Contains(serial))
+                {
+                    tracked.AbsentSinceMs = -1;
+                    continue;
+                }
+                if (tracked.AbsentSinceMs < 0)
+                {
+                    tracked.AbsentSinceMs = now;
+                }
+                else if (now - tracked.AbsentSinceMs >= AbsentResetMs)
+                {
+                    tracked.Backoff.Clear();
+                }
+            }
+        }
+    }
+
     private AttachBackoff BackoffFor(string serial)
     {
         lock (_backoffLock)
         {
-            if (!_backoffs.TryGetValue(serial, out var backoff))
+            if (!_tracked.TryGetValue(serial, out var tracked))
             {
-                _backoffs[serial] = backoff = new AttachBackoff(_clock);
+                _tracked[serial] = tracked = new Tracked(_clock);
             }
-            return backoff;
+            return tracked.Backoff;
         }
     }
 }
