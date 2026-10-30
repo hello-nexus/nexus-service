@@ -348,7 +348,7 @@ internal static class TrayBootstrap
         // nothing once OOBE is over.
         var oobeY70 = app.Services.GetService<Nexus.Service.Peripherals.Y70.IY70Provider>();
         var oobeGate = app.Services.GetService<Nexus.Service.Devices.DeviceControlGate>();
-        helperRegistry.Connected += _ =>
+        helperRegistry.Connected += conn =>
         {
             if (oobeY70 is null || !Nexus.Service.Lifecycle.OobeDetector.IsInOobe()) return;
             _ = Task.Run(async () =>
