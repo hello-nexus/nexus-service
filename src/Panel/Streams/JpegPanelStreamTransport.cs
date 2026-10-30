@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using Nexus.Service.Peripherals.JpegPanels;
 using Nexus.Service.Peripherals.PixelFormats;
 using Nexus.Service.Platform;
@@ -38,6 +39,12 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private readonly object _brightnessLock = new();
 
     private readonly byte[] _turned;
+
+    private readonly object _repeatLock = new();
+    private byte[] _lastJpeg = Array.Empty<byte>();
+    private int _lastJpegLength;
+    private long _lastSentMs;
+    private Timer? _repeat;
 
     private const long FailureStatsIntervalMs = 30_000;
     private long _statsWindowStartMs;
@@ -136,6 +143,31 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             throw new IOException($"{_hub.Model.Name} not connected");
         }
         _filled = 0;
+        var repeatMs = _hub.Model.RepeatLastFrameMs;
+        if (repeatMs > 0 && _repeat is null)
+        {
+            _repeat = new Timer(_ => RepeatLast(repeatMs), null, repeatMs, repeatMs);
+        }
+    }
+
+    internal static bool RepeatDue(int repeatMs, long nowMs, long lastSentMs, bool hasFrame) =>
+        repeatMs > 0 && hasFrame && nowMs - lastSentMs >= repeatMs;
+
+    private void RepeatLast(int repeatMs)
+    {
+        if (_disposed || !_hub.IsConnected)
+        {
+            return;
+        }
+        lock (_repeatLock)
+        {
+            if (!RepeatDue(repeatMs, Environment.TickCount64, _lastSentMs, _lastJpegLength > 0))
+            {
+                return;
+            }
+            _lastSentMs = Environment.TickCount64;
+            _hub.SendFrame(_lastJpeg.AsSpan(0, _lastJpegLength));
+        }
     }
 
     /// <summary>The panel has no player to start; the first pushed frame is the start.</summary>
@@ -193,6 +225,19 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             return;
         }
 
+        if (_hub.Model.RepeatLastFrameMs > 0)
+        {
+            lock (_repeatLock)
+            {
+                if (_lastJpeg.Length < jpeg.Length)
+                {
+                    _lastJpeg = new byte[jpeg.Length];
+                }
+                jpeg.CopyTo(_lastJpeg);
+                _lastJpegLength = jpeg.Length;
+                _lastSentMs = Environment.TickCount64;
+            }
+        }
         if (_hub.SendFrame(jpeg))
         {
             _dropLogged = false;
@@ -288,6 +333,8 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             return;
         }
         _disposed = true;
+        _repeat?.Dispose();
+        _repeat = null;
         _encoder.Dispose();
         if (_stepDown is not null)
         {
