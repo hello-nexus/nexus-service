@@ -23,6 +23,7 @@ public class CorsairLinkHubHandleTests
         public readonly HashSet<byte> Blocked = new();
         public readonly List<byte[]> Commands = new();
         public int AcceptedColourFrames;
+        public byte Mode = 1;
         public Action<byte>? AfterClose;
         /// <summary>Pings answered busy before the chain counts as re-mapped.</summary>
         public int BusyPings;
@@ -89,7 +90,12 @@ public class CorsairLinkHubHandleTests
                 case 0x02 when cmd[1] == 0x13:
                     return (0, new byte[] { 4, 1, 0x90, 0x02 });
                 case 0x01:
+                    Mode = cmd[3];
                     return (0, Array.Empty<byte>());
+                case 0x02 when cmd[1] == 0x03:
+                    return (0, new byte[] { Mode });
+                case 0x09:
+                    return Handles.ContainsKey(cmd[1]) ? (0, Array.Empty<byte>()) : (3, Array.Empty<byte>());
                 case 0x0D:
                     if (Handles.ContainsKey(cmd[1])) return (3, Array.Empty<byte>());
                     Handles[cmd[1]] = cmd[2];
@@ -232,10 +238,11 @@ public class CorsairLinkHubHandleTests
     public void Detach_hands_the_hub_back_to_hardware_mode_only_when_asked(bool handBack, int hardwareModeWrites)
     {
         var (hub, device) = Connected();
+        var beforeDetach = device.Commands.Count;
 
         hub.Detach(handBack);
 
-        Assert.Equal(hardwareModeWrites, device.Commands.Count(c => c.Take(4).SequenceEqual(new byte[] { 0x01, 0x03, 0x00, 0x01 })));
+        Assert.Equal(hardwareModeWrites, device.Commands.Skip(beforeDetach).Count(c => c.Take(4).SequenceEqual(new byte[] { 0x01, 0x03, 0x00, 0x01 })));
     }
 
     [Fact]
@@ -354,14 +361,14 @@ public class CorsairLinkHubHandleTests
     public void A_foreign_reply_during_initialize_is_recorded_with_its_bytes()
     {
         var device = new FakeLinkHub();
-        device.InjectReply(0x09);
+        device.InjectReply(0x0B);
         var hub = new CorsairLinkHub();
         hub.Attach(device);
 
         Assert.False(hub.Initialize());
 
         Assert.True(hub.ForeignHostSeen);
-        Assert.Contains("echo=09", hub.ForeignReplyHex);
+        Assert.Contains("echo=0b", hub.ForeignReplyHex);
         Assert.Contains("foreign", hub.LastInitTrace);
     }
 

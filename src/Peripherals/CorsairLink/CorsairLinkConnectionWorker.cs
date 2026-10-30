@@ -84,6 +84,16 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
         _gate.PausedByApp("corsair") is null
         && !(DeviceControlPolicy.ConflictAppFor("corsair") is { } app && _conflicts?.IsAppRunning(app) == true);
 
+    // Set by the service-stop release; no session connects or polls after it.
+    private volatile bool _retired;
+
+    /// <summary>Service-stop release: the fast teardown skips each session's own detach, so every hub is handed back here, and no session retakes one before the process exits.</summary>
+    public void ReleaseForShutdown()
+    {
+        _retired = true;
+        foreach (var hub in _hubs.All) hub.Detach(handBack: HandBack() && !hub.ForeignHostSeen);
+    }
+
     private static string Tag(CorsairLinkHub hub) => hub.Number == 1 ? "[corsair]" : $"[corsair hub {hub.Number}]";
 
     // The trace suffix for a failure line: empty when it repeats the last one logged.
@@ -245,7 +255,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
             // The full init trace is attached only when it differs from the last one logged this run.
             string? lastLoggedTrace = null;
             var ownEchoLogged = false;
-            while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("corsair"))
+            while (!stoppingToken.IsCancellationRequested && !_retired && _gate.IsEnabled("corsair"))
             {
                 // Unplugged: the session ends and a new one starts when the hub returns.
                 if (!StillPresent(path)) return;
@@ -395,7 +405,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
     private async Task PollConnectedAsync(CorsairLinkHub hub, AutoRedetect redetect, Action ensureLcd, CancellationToken stoppingToken)
     {
         var failures = 0;
-        while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled("corsair") && !hub.ForeignHostSeen)
+        while (!stoppingToken.IsCancellationRequested && !_retired && _gate.IsEnabled("corsair") && !hub.ForeignHostSeen)
         {
             var now = Environment.TickCount64;
             var broken = hub.State.Devices.Count == 0 || hub.State.UnmappedChannels.Count > 0;

@@ -1661,7 +1661,8 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Lighting.CorsairLinkLightingDeviceProvider>());
         services.AddSingleton<Nexus.Service.Lighting.CorsairLinkLightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.CorsairLinkLightingFrameWriter>());
-        services.AddHostedService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkConnectionWorker>();
+        services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkConnectionWorker>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkConnectionWorker>());
         services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd>();
         services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcdMediaLibrary>();
         services.AddHostedService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcdWorker>();
