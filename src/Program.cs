@@ -1018,6 +1018,7 @@ static void FastServiceShutdown(WebApplication app)
         Task.Run(() => { try { sp.GetService<Nexus.Service.Sensors.ISpdPageReset>()?.ResetSpdPages(TimeSpan.FromMilliseconds(osShutdown ? 4000 : 1200)); } catch { } }),
         Task.Run(() => { try { ReleaseUniversalScreen88(sp); } catch { } }),
         Task.Run(() => { try { ReleaseCorsairLinkLcd(sp); } catch { } }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkConnectionWorker>()?.ReleaseForShutdown(); } catch { } }),
         Task.Run(() => { try { ReleaseGalleonSd(sp); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>()?.ReleaseForShutdown(TimeSpan.FromSeconds(1)); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Common.ExternalTools.ExternalToolManager>()?.TerminateAll(); } catch { } }),
