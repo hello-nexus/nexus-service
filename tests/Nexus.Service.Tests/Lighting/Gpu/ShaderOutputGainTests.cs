@@ -61,6 +61,11 @@ public class ShaderOutputGainTests
         Assert.True(m.Success, $"{key} calls finalize/tonemap but defines no outGain()");
         var gain = float.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
         Assert.InRange(gain, 0.9f, 4.0f);
+        // The unity gain ShaderLibrary appends for gainless bodies is not a tonemapped effect's own.
+        if (key != "reactiveglow")
+        {
+            Assert.NotEqual(1.0f, gain);
+        }
     }
 
     [Fact]
@@ -71,33 +76,36 @@ public class ShaderOutputGainTests
         Assert.Equal(1.0f, float.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
     }
 
+    public static TheoryData<string> AllComposedKeys()
+    {
+        var data = new TheoryData<string>();
+        foreach (var key in ShaderLibrary.AllEffectKeys.Where(k => !ShaderLibrary.IsSensorEffect(k)).Distinct())
+        {
+            data.Add(key);
+        }
+        data.Add("reactiveglow");
+        return data;
+    }
+
+    // The prelude's gainOut() calls outGain(), and GLSL ES compilers (ANGLE) reject a program
+    // whose defined function calls an undefined one, so every composed source must define it once.
+    // Source-level only: a real compile needs a GL context.
+    [Theory]
+    [MemberData(nameof(AllComposedKeys))]
+    public void ComposedSourceDefinesOutGainExactlyOnce(string key)
+    {
+        Assert.Single(GainDef.Matches(Code(ShaderLibrary.Get(key))));
+    }
+
     [Theory]
     [InlineData("simple")]
     [InlineData("corners")]
     [InlineData("gradientlinear")]
-    public void UntonemappedEffectsHaveNoGain(string key)
+    public void UntonemappedEffectsGetUnityGain(string key)
     {
-        Assert.DoesNotMatch(GainDef, ShaderLibrary.Get(key));
-    }
-
-    // Mirror of the prelude tonemap, to pin that channel ratios survive it.
-    private static (double R, double G, double B) Tonemap(double r, double g, double b)
-    {
-        var d = 1.0 + Math.Max(Math.Max(r, g), b);
-        return (r / d, g / d, b / d);
-    }
-
-    [Theory]
-    [InlineData(2.69, 1.55, 1.55)]
-    [InlineData(0.4, 1.0, 0.004)]
-    [InlineData(1.0, 1.0, 0.0)]
-    public void TonemapKeepsChannelRatios(double r, double g, double b)
-    {
-        var (tr, tg, tb) = Tonemap(r, g, b);
-        var scale = Math.Max(Math.Max(r, g), b);
-        Assert.Equal(r / scale, tr / Math.Max(Math.Max(tr, tg), tb), 9);
-        Assert.Equal(g / scale, tg / Math.Max(Math.Max(tr, tg), tb), 9);
-        Assert.Equal(b / scale, tb / Math.Max(Math.Max(tr, tg), tb), 9);
+        var m = GainDef.Match(ShaderLibrary.Get(key));
+        Assert.True(m.Success);
+        Assert.Equal(1.0f, float.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     [Fact]

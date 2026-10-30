@@ -162,8 +162,11 @@ vec3 tonemap(vec3 c) {
 }
 
 // Each effect that tonemaps defines outGain(): a constant multiplier applied
-// after the tonemap so its brightest pixel reaches full scale. Hue, saturation
-// and structure are untouched; the clamp keeps rare overshoots in range.
+// after the tonemap, sized so its brightest pixel peaks near the top of the
+// range without clipping. Hue, saturation and structure are untouched; the
+// clamp is a safety net. ShaderLibrary.Get appends a unity outGain() to any
+// composed source whose body defines none, since a defined gainOut() may not
+// call an undefined function on every GLSL ES compiler.
 float outGain();
 vec3 gainOut(vec3 c) {
     return clamp(c * outGain(), 0.0, 1.0);

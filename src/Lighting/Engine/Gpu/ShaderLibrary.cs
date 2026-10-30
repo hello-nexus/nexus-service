@@ -133,6 +133,9 @@ internal static class ShaderLibrary
     }
 
     /// <summary>Resolve an effect name ("plasma") to its concatenated GLSL source.</summary>
+    private static readonly System.Text.RegularExpressions.Regex OutGainDefinition =
+        new(@"float\s+outGain\s*\(\s*\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     public static string Get(string effectName)
     {
         if (IsCustomKey(effectName))
@@ -146,7 +149,13 @@ internal static class ShaderLibrary
             var file = key.StartsWith("simple", System.StringComparison.Ordinal) ? "simple" : key;
             var body = LoadRaw(ResourcePrefix + file + ".frag");
             // A sensor effect is a baked Studio fragment that declares everything itself; the prelude would redeclare it.
-            return IsSensorEffect(key) ? body : Prelude + "\n" + body;
+            if (IsSensorEffect(key))
+            {
+                return body;
+            }
+            // The prelude's gainOut() calls outGain(); a body that tonemaps defines its own.
+            var unityGain = OutGainDefinition.IsMatch(body) ? "" : "\nfloat outGain() { return 1.0; }\n";
+            return Prelude + "\n" + body + unityGain;
         });
     }
 
@@ -257,9 +266,11 @@ internal static class ShaderLibrary
 
     /// <summary>Effects that sample the whole canvas on every device, simple mode's
     /// set. Each is also a regular animate effect with preset slots. Their stock
-    /// looks travel on +x only (breathing and cycle do not travel; the whole frame
-    /// is one colour): a y-travelling stock look added here would collapse every
-    /// linear strip to one colour under <see cref="LightingEngine.FullFrameSampling"/>.</summary>
+    /// looks travel horizontally, or not at all (breathing and cycle do not travel; the
+    /// whole frame is one colour). Brush is the exception: its stock slot is rotated off
+    /// the horizontal, so <see cref="IsFullFrame"/> returns false for it and it samples the canvas.
+    /// Any other y-travelling stock look added here would collapse every linear strip to one
+    /// colour under <see cref="LightingEngine.FullFrameSampling"/>.</summary>
     public static readonly HashSet<string> SweepEffectKeys = new(System.StringComparer.Ordinal)
     {
         "rainbow", "breathing", "sharplines", "sweepcycle",
