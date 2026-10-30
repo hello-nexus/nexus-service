@@ -37,6 +37,6 @@ public class DefaultPresetOrderTests
     [Fact]
     public void Color_cycle_runs_at_double_its_old_time_rate()
     {
-        Assert.Contains("u_time * u_speed * 0.16", Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Get("sweepcycle"));
+        Assert.Contains("u_time * u_speed * 0.24", Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Get("sweepcycle"));
     }
 }
