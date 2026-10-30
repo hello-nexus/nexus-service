@@ -88,4 +88,4 @@ void main() {
 }
 
 // Output gain applied after the tonemap so the brightest pixel reaches full scale.
-float outGain() { return 1.52; }
+float outGain() { return 1.44; }

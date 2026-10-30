@@ -153,9 +153,12 @@ float sweep01() {
     return fract(atan(p.y, p.x) / 6.28318 + 1.0);
 }
 
-// Soft-knee tonemap to keep HDR highlights from clipping.
+// Soft-knee tonemap to keep HDR highlights from clipping. It compresses by the
+// brightest channel and scales all three by the same factor, so hue and
+// saturation survive; a per-channel curve would desaturate bright colors.
 vec3 tonemap(vec3 c) {
-    return c / (1.0 + c);
+    vec3 p = max(c, 0.0);
+    return p / (1.0 + max(max(p.r, p.g), p.b));
 }
 
 // Each effect that tonemaps defines outGain(): a constant multiplier applied

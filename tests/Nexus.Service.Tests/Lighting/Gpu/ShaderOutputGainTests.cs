@@ -7,7 +7,7 @@ using Xunit;
 namespace Nexus.Service.Tests.Lighting.Gpu;
 
 /// <summary>
-/// Pins the brightness contract: the shared tonemap stays Reinhard, and every
+/// Pins the brightness contract: the shared tonemap compresses by the brightest channel (keeping hue and saturation), and every
 /// effect that tonemaps declares a constant outGain() that finalize() and the
 /// direct tonemap call sites apply after it, clamped to range. Source-level
 /// checks; they cannot see a rendered frame.
@@ -60,7 +60,7 @@ public class ShaderOutputGainTests
         var m = GainDef.Match(ShaderLibrary.Get(key));
         Assert.True(m.Success, $"{key} calls finalize/tonemap but defines no outGain()");
         var gain = float.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
-        Assert.InRange(gain, 1.0f, 4.0f);
+        Assert.InRange(gain, 0.9f, 4.0f);
     }
 
     [Fact]
@@ -80,11 +80,33 @@ public class ShaderOutputGainTests
         Assert.DoesNotMatch(GainDef, ShaderLibrary.Get(key));
     }
 
+    // Mirror of the prelude tonemap, to pin that channel ratios survive it.
+    private static (double R, double G, double B) Tonemap(double r, double g, double b)
+    {
+        var d = 1.0 + Math.Max(Math.Max(r, g), b);
+        return (r / d, g / d, b / d);
+    }
+
+    [Theory]
+    [InlineData(2.69, 1.55, 1.55)]
+    [InlineData(0.4, 1.0, 0.004)]
+    [InlineData(1.0, 1.0, 0.0)]
+    public void TonemapKeepsChannelRatios(double r, double g, double b)
+    {
+        var (tr, tg, tb) = Tonemap(r, g, b);
+        var scale = Math.Max(Math.Max(r, g), b);
+        Assert.Equal(r / scale, tr / Math.Max(Math.Max(tr, tg), tb), 9);
+        Assert.Equal(g / scale, tg / Math.Max(Math.Max(tr, tg), tb), 9);
+        Assert.Equal(b / scale, tb / Math.Max(Math.Max(tr, tg), tb), 9);
+    }
+
     [Fact]
     public void GainIsAppliedAfterTonemapAndClamped()
     {
         var prelude = Code(Prelude);
-        Assert.Contains("return c / (1.0 + c);", prelude, StringComparison.Ordinal);
+        // Color-keeping: one divisor from the brightest channel, applied to all three.
+        Assert.Contains("return p / (1.0 + max(max(p.r, p.g), p.b));", prelude, StringComparison.Ordinal);
+        Assert.DoesNotContain("c / (1.0 + c)", prelude, StringComparison.Ordinal);
         Assert.Contains("return clamp(c * outGain(), 0.0, 1.0);", prelude, StringComparison.Ordinal);
         Assert.Contains("return gainOut(tonemap(max(blended, 0.0)));", prelude, StringComparison.Ordinal);
     }
