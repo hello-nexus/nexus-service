@@ -394,6 +394,70 @@ public sealed class SimplePatternMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Brush_is_full_frame_at_any_rotation()
+    {
+        foreach (var rotation in new[] { 0f, 45f, 90f, 180f, 270f })
+        {
+            var extras = new Dictionary<string, float> { ["u_rotation"] = rotation };
+            Assert.True(Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsFullFrame("sweepbrush", extras));
+        }
+    }
+
+    [Fact]
+    public void Brush_presets_use_only_its_declared_params_inside_their_ranges()
+    {
+        var specs = Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Params("sweepbrush");
+        Assert.False(specs.ContainsKey("u_step"));
+        var stock = AnimateTemplateDefaults.Slot("sweepbrush", 0)!;
+        Assert.Equal(0.5f, stock.Params["u_wash"]);
+        Assert.Equal(0f, stock.Params["u_rotation"]);
+        for (var slot = 0; slot < AnimateTemplateDefaults.SlotCount; slot++)
+        {
+            var look = AnimateTemplateDefaults.Slot("sweepbrush", slot)!;
+            Assert.Equal(
+                new[] { "u_feather", "u_fill", "u_rotation", "u_strokes", "u_wash" },
+                look.Params.Keys.OrderBy(k => k, StringComparer.Ordinal));
+            foreach (var (name, value) in look.Params)
+            {
+                Assert.InRange(value, specs[name].Min, specs[name].Max);
+            }
+        }
+    }
+
+    [Fact]
+    public void Brush_shader_has_no_time_wrap_and_mirrors_for_negative_speed()
+    {
+        var src = Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Get("sweepbrush");
+        Assert.DoesNotContain("mod(u_time", src);
+        Assert.Contains("abs(u_speed)", src);
+    }
+
+    [Fact]
+    public void A_stored_brush_slot_still_carrying_the_retired_step_is_replayed_without_harm()
+    {
+        var lighting = new LightingSettings();
+        lighting.Animate.Templates["sweepbrush"] = new AnimateEffectTemplates
+        {
+            Selected = 0,
+            Slots =
+            {
+                new AnimateEffectState
+                {
+                    Speed = 50,
+                    Params = new Dictionary<string, float> { ["u_strokes"] = 4f, ["u_step"] = 0.3f },
+                },
+            },
+        };
+        var start = AnimateTemplateDefaults.SavedStart(lighting, "sweepbrush");
+        // The stale value rides along but no declared spec or uniform matches it: spec clamping
+        // skips unknown names and the GL uniform lookup returns no location.
+        var specs = Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Params("sweepbrush");
+        Assert.Contains(start.Params, p => p.Name == "u_strokes");
+        Assert.DoesNotContain(start.Params, p => specs.ContainsKey(p.Name) && p.Name == "u_step");
+        Assert.DoesNotContain("u_step", Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Get("sweepbrush"));
+    }
+
+    [Fact]
     public void A_named_effect_start_replays_the_selected_preset_not_the_shader_defaults()
     {
         var lighting = new LightingSettings();

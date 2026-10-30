@@ -7512,49 +7512,53 @@
      "u_strokes": 4,
      "u_feather": 0.12,
      "u_fill": 0.45,
-     "u_step": 0.2
+     "u_rotation": 0,
+     "u_wash": 0.5
     }
    },
    {
     "speed": 65,
     "intensity": 1,
-    "hue": 0,
-    "colorize": 0,
+    "hue": 0.04,
+    "colorize": 0.75,
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_strokes": 9,
+     "u_strokes": 8,
      "u_feather": 0.08,
      "u_fill": 0.6,
-     "u_step": 0.2
+     "u_rotation": 45,
+     "u_wash": 0.3
     }
    },
    {
     "speed": 35,
     "intensity": 1,
-    "hue": 0,
-    "colorize": 0,
+    "hue": 0.58,
+    "colorize": 0.72,
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_strokes": 2,
-     "u_feather": 0.35,
+     "u_strokes": 3,
+     "u_feather": 0.3,
      "u_fill": 0.8,
-     "u_step": 0.12
+     "u_rotation": 0,
+     "u_wash": 0.9
     }
    },
    {
     "speed": 45,
     "intensity": 1,
-    "hue": 0.0,
-    "colorize": 0,
+    "hue": 0.8,
+    "colorize": 0.5,
     "saturation": 1,
     "contrast": 1,
     "params": {
-     "u_strokes": 5,
-     "u_feather": 0.15,
-     "u_fill": 0.5,
-     "u_step": 0.04
+     "u_strokes": 6,
+     "u_feather": 0.18,
+     "u_fill": 0.35,
+     "u_rotation": 270,
+     "u_wash": 0.65
     }
    }
   ]

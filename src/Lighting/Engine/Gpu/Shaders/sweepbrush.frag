@@ -1,61 +1,113 @@
-uniform float u_strokes;  // hint_range(2.0, 12.0, 1.0) = 4.0  strokes across the frame
-uniform float u_feather;  // hint_range(0.02, 0.4, 0.01) = 0.12  taper at each stroke end
-uniform float u_fill;     // hint_range(0.2, 1.0, 0.01) = 0.45  painted share of each pass
-uniform float u_step;     // hint_range(0.0, 0.4, 0.01) = 0.2  hue step between neighbouring strokes
+uniform float u_strokes;  // hint_range(2.0, 12.0, 1.0) = 4.0  brush lanes side by side, each with its own brush
+uniform float u_feather;  // hint_range(0.02, 0.4, 0.01) = 0.12  how ragged and soft the brush edge is
+uniform float u_fill;     // hint_range(0.2, 1.0, 0.01) = 0.45  length of the bright wet band behind the brush, as a share of the frame; the rest dries darker
+uniform float u_rotation; // hint_range(0.0, 360.0, 5.0) = 0.0  brush direction in degrees
+uniform float u_wash;     // hint_range(0.0, 1.0, 0.05) = 0.5  watercolor look: pooled edge, bleed, paper grain
 
-// Strokes painted in place, not scrolled: each slot's brush head sweeps
-// forward and deposits paint behind it, the loaded head is the brightest and
-// most saturated part, the paint thins into bristle streaks toward the tail,
-// then the stroke dries out while neighbours are mid-stroke (clocks staggered
-// per slot). Silk-style folds bend the strokes along y.
+// Paint-over: in each lane a brush keeps dragging a new coat across the old
+// one. Coats take their hue from the color wheel range (hue is its middle,
+// 1 - colorize its width, as in ball.frag), and the edge blends in hue space.
+const bool WHEEL_RANGE = true;
+// How far each new coat moves along the wheel range.
+const float STEP = 0.2;
+
+bool artActive() {
+    vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
+    return u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0;
+}
+
+// Hue of coat index c inside the wheel range; a partial range ping-pongs so
+// consecutive coats never jump across it.
+float coatHue(float c) {
+    float span = 1.0 - clamp(u_colorize, 0.0, 1.0);
+    float k = span > 0.999 ? fract(c) : 1.0 - abs(2.0 * fract(c * 0.5) - 1.0);
+    return u_hue + (k - 0.5) * span;
+}
+
+vec3 coat(float cOld, float cNew, float painted, float v) {
+    if (artActive()) {
+        return mix(artPalette(cOld), artPalette(cNew), painted) * v;
+    }
+    if (!WHEEL_RANGE) {
+        return tintedPalette(mix(cOld, cNew, painted)) * v;
+    }
+    float hOld = coatHue(cOld);
+    float d = coatHue(cNew) - hOld;
+    d -= floor(d + 0.5);
+    return hsv2rgb(vec3(hOld + d * painted, 1.0, v));
+}
+
+// Seamless phase for sin(): fract wraps exactly at the period, so a large
+// clock never shows a jump or loses precision inside sin.
+float cyc(float t, float k) {
+    return fract(t * k * 0.1591549) * 6.2831853;
+}
+
+vec3 laneColor(float lane, float s, float q, float t, float wash) {
+    float feather = clamp(u_feather, 0.02, 0.4);
+    float fill = clamp(u_fill, 0.2, 1.0);
+    float ph = t * 0.2 + lane * 0.17 + 0.08 * hash21(vec2(lane, 1.3));
+    float pass = floor(ph);
+    // The edge starts and ends off-frame, so a new pass continues the old coat without a jump.
+    float reach = feather * 1.4 + 0.15;
+    float hx = -reach + (1.0 + 2.0 * reach) * (ph - pass);
+    float rn = vnoise(vec2(q * 6.0, pass * 3.0 + lane * 7.0));
+    float rag = feather * 2.0 * (rn - 0.5);
+    float bend = 0.05 * sin(q * 5.0 + cyc(t, 0.6) + lane * 2.0);
+    // Distance behind the edge along the travel axis; negative is still old coat.
+    float e = hx + rag + bend - s;
+    float soft = 0.02 + 0.4 * feather + wash * 0.04 * rn;
+    float painted = smoothstep(-soft, 0.01, e);
+    // Wetness ignores the per-pass rag so the old coat continues the last pass exactly.
+    float eW = hx + bend - s;
+    float vNew = mix(0.5, 1.0, 1.0 - smoothstep(0.55 * fill, fill, eW));
+    float vOld = mix(0.5, 1.0, 1.0 - smoothstep(0.55 * fill, fill, eW + 1.0 + 2.0 * reach));
+    float v = mix(vOld, vNew, painted);
+    // Watercolor: pigment pools in a line behind the wet edge, and the old hue bleeds into it.
+    float nearEdge = exp(-max(e, 0.0) * 7.0) * painted;
+    v *= 1.0 - 0.4 * wash * exp(-max(e, 0.0) * 20.0) * painted;
+    float hueMix = painted * (1.0 - 0.45 * wash * rn * nearEdge);
+    float cNew = (pass + lane * 0.5) * STEP;
+    return coat(cNew - STEP, cNew, hueMix, v);
+}
+
+// finalize() without its colorize blend: the wheel range alone decides hue.
+vec3 finish(vec3 col) {
+    float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
+    col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
+    col = (col - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
+    return tonemap(max(col, 0.0));
+}
+
 void main() {
     vec2 uv = uv01();
-    // Wrapped first: seconds of the day times speed is large enough that float
-    // rounding quantizes the phase, more so at high speed.
-    float t = mod(u_time, 600.0) * u_speed * 0.7;
-    float strokes = max(1.0, u_strokes);
-    float feather = clamp(u_feather, 0.02, 0.4);
-    // Stroke length in slot widths; above one cell the tail overlaps the next
-    // slot's stroke.
-    float len = clamp(u_fill, 0.2, 1.0) * 1.5;
-
-    float fold = 0.5 * sin(uv.y * 5.0 + uv.x * 1.5 + t * 0.9)
-               + 0.3 * sin(uv.y * 9.0 - uv.x * 0.8 - t * 0.65 + 0.9)
-               + 0.2 * sin(uv.y * 3.0 + uv.x * 0.5 + t * 0.4 + 2.1);
-    float crest = fold * 0.5 + 0.5;
-
-    float xs = uv.x * strokes + 0.25 * fold;
-    float base = floor(xs);
-    vec3 col = vec3(0.0);
-    // A stroke reaches at most two slots, so the slot and its left neighbour.
-    for (int k = 0; k < 2; k++) {
-        float idx = base - float(k);
-        float h1 = fract(sin(idx * 12.9898 + 78.233) * 43758.5453);
-        float h2 = fract(sin(idx * 39.346 + 11.135) * 24634.6345);
-        // Golden-ratio stagger keeps neighbours in different stages.
-        float c = t * 0.3 + idx * 0.382 + h2 * 0.15;
-        float cyc = floor(c);
-        float ph = c - cyc;
-        // Painting happens in the first share of the life, then it holds and dries.
-        float g = clamp(ph / 0.55, 0.0, 1.0);
-        float head = len * (1.0 - (1.0 - g) * (1.0 - g));
-        float a = xs - (idx + 0.25 * h1);
-        float dry = 1.0 - smoothstep(0.7, 1.0, ph);
-        // Soft rounded head, tapered start.
-        float edge = smoothstep(0.0, feather + 0.1, a) * smoothstep(head, head - feather - 0.1, a);
-        float behind = clamp((head - a) / len, 0.0, 1.0);
-        // Loaded head: bright and saturated, decaying quickly behind it.
-        float load = exp(-4.0 * behind);
-        // Bristle streaks along y; along-stroke term makes strips break up too.
-        float bristle = vnoise(vec2(uv.y * 7.0 + h1 * 40.0, a * 2.5 + h2 * 20.0));
-        float thin = smoothstep(0.0, 1.0, behind);
-        float coat = mix(1.0, smoothstep(0.15, 0.6, bristle + 0.35 * (1.0 - thin)), thin);
-        float v = (0.4 + 0.6 * load) * coat * dry;
-        float sat = 0.75 + 0.25 * load;
-        vec3 c0 = hsv2rgb(vec3((idx + 3.0 * cyc) * u_step + u_hue + 0.008 * fold, sat, 1.0)) * v * edge;
-        c0 += vec3(0.25) * load * edge * dry;
-        col = max(col, c0);
+    // A negative speed mirrors the travel axis, so the brush paints the other way instead of unpainting.
+    float dir = u_speed < 0.0 ? -1.0 : 1.0;
+    float t = u_time * abs(u_speed) * 0.7;
+    float wash = clamp(u_wash, 0.0, 1.0);
+    float s = axis01(u_rotation);
+    if (dir < 0.0) {
+        s = 1.0 - s;
     }
-    col *= 0.6 + 0.4 * crest;
-    fragColor = vec4(finalize(col), 1.0);
+    float q = axis01(u_rotation + 90.0);
+    float lanes = floor(max(1.0, u_strokes) + 0.5);
+    // Lane centres sit on q = 0.5, so a strip through the middle stays inside one lane.
+    float lq = (q - 0.5) * lanes + 0.5 + 0.1 * sin(s * 4.0 + cyc(t, 0.5));
+    float lane = floor(lq);
+    float fy = lq - lane;
+    vec3 col = laneColor(lane, s, q, t, wash);
+    float a = u_rotation * 0.01745329;
+    float px = mix(u_resolution.y, u_resolution.x, abs(sin(a)));
+    float aa = 1.5 * lanes / px;
+    float wUp = 1.0 - smoothstep(0.0, aa, fy);
+    float wDn = smoothstep(1.0 - aa, 1.0, fy);
+    if (wUp > 0.0) col = mix(col, laneColor(lane - 1.0, s, q, t, wash), 0.5 * wUp);
+    if (wDn > 0.0) col = mix(col, laneColor(lane + 1.0, s, q, t, wash), 0.5 * wDn);
+    if (wash > 0.001) {
+        // Paper grain: fixed to the frame, low frequency so LED sampling keeps it smooth.
+        float ar = u_resolution.x / u_resolution.y;
+        col *= 1.0 - wash * 0.22 * vnoise(vec2(uv.x * ar, uv.y) * 3.0);
+    }
+    bool ranged = WHEEL_RANGE && !artActive();
+    fragColor = vec4(ranged ? finish(col) : finalize(col), 1.0);
 }
