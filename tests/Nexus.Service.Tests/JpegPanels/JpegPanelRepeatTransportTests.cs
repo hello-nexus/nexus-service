@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.JpegPanels;
@@ -74,15 +75,41 @@ public sealed class JpegPanelRepeatTransportTests
     }
 
     [Fact]
-    public void A_frame_in_flight_makes_the_repeat_stand_down()
+    public void A_repeat_during_a_live_write_never_lands_after_the_new_frame()
+    {
+        var control = LiveWrites(repeatMidWrite: false);
+        var raced = LiveWrites(repeatMidWrite: true);
+
+        Assert.NotEmpty(control);
+        Assert.Equal(control.Count, raced.Count);
+        for (var i = 0; i < control.Count; i++)
+        {
+            Assert.Equal(control[i], raced[i]);
+        }
+    }
+
+    // Sends a black frame, then a white one; with repeatMidWrite the other thread tries a due repeat while the white frame is being written.
+    private static List<byte[]> LiveWrites(bool repeatMidWrite)
     {
         using var f = new Fixture();
+        var model = JpegPanelModel.CorsairCapellix;
+        var white = new byte[model.Width * model.Height * 4];
+        Array.Fill(white, (byte)255);
         f.Now = RepeatMs;
-        f.Transport.LiveSends = 1;
+        if (repeatMidWrite)
+        {
+            // A dedicated thread: Task.Wait may inline the work on this thread, where the lock is reentrant.
+            f.Hid.OnFirstWrite = () =>
+            {
+                var other = new Thread(() => f.Transport.RepeatLast(RepeatMs));
+                other.Start();
+                other.Join();
+            };
+        }
 
-        f.Transport.RepeatLast(RepeatMs);
+        f.Transport.Write(white);
 
-        Assert.Empty(f.Hid.Writes);
+        return f.Hid.Writes;
     }
 
     [Fact]
@@ -97,19 +124,6 @@ public sealed class JpegPanelRepeatTransportTests
         Assert.Empty(f.Hid.Writes);
     }
 
-    [Fact]
-    public void The_hub_stands_down_when_the_caller_withdraws_under_its_lock()
-    {
-        using var hub = new JpegPanelHub(JpegPanelModel.CorsairCapellix);
-        var device = new Device();
-        hub.Attach(device);
-        device.Writes.Clear();
-
-        Assert.True(hub.SendFrame(new byte[] { 1, 2, 3 }, () => false));
-
-        Assert.Empty(device.Writes);
-    }
-
     private sealed class Device : IHidDevice
     {
         public List<byte[]> Writes { get; } = new();
@@ -120,8 +134,13 @@ public sealed class JpegPanelRepeatTransportTests
         public int UsagePage => 0xFF00;
         public int Usage => 1;
 
+        public Action? OnFirstWrite { get; set; }
+
         public bool Write(ReadOnlySpan<byte> report)
         {
+            var first = OnFirstWrite;
+            OnFirstWrite = null;
+            first?.Invoke();
             Writes.Add(report.ToArray());
             return true;
         }

@@ -40,12 +40,11 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private readonly byte[] _turned;
 
-    // Serializes repeats and Dispose; the render thread never takes it.
-    private readonly object _repeatLock = new();
-    private volatile byte[]? _lastJpeg;
+    // Live sends, repeats and Dispose all run under this lock, and the last frame is stored under it too,
+    // so a repeat can never send a frame older than the last live one.
+    private readonly object _sendLock = new();
+    private byte[]? _lastJpeg;
     private long _lastSentMs;
-    // Frames the render thread has started and not finished; a due repeat stands down while one is in flight.
-    internal int LiveSends;
     internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
     private Timer? _repeat;
     private volatile Func<bool>? _repeatAllowed;
@@ -170,24 +169,24 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             {
                 return;
             }
-            // A busy lock means an earlier repeat is still being written.
-            if (!Monitor.TryEnter(_repeatLock))
+            // A busy lock means a live frame or an earlier repeat is being written.
+            if (!Monitor.TryEnter(_sendLock))
             {
                 return;
             }
             try
             {
                 var last = _lastJpeg;
-                if (_disposed || !RepeatDue(repeatMs, Clock(), Interlocked.Read(ref _lastSentMs), last is not null))
+                if (_disposed || !RepeatDue(repeatMs, Clock(), _lastSentMs, last is not null))
                 {
                     return;
                 }
-                Interlocked.Exchange(ref _lastSentMs, Clock());
-                _hub.SendFrame(last!, () => !_disposed && Volatile.Read(ref LiveSends) == 0);
+                _lastSentMs = Clock();
+                _hub.SendFrame(last!);
             }
             finally
             {
-                Monitor.Exit(_repeatLock);
+                Monitor.Exit(_sendLock);
             }
         }
         catch (Exception ex)
@@ -251,20 +250,19 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             return;
         }
 
-        Interlocked.Increment(ref LiveSends);
         bool sent;
-        try
+        lock (_sendLock)
         {
             sent = _hub.SendFrame(jpeg);
-        }
-        finally
-        {
-            Interlocked.Decrement(ref LiveSends);
+            if (sent && _hub.Model.RepeatLastFrameMs > 0)
+            {
+                _lastJpeg = jpeg.ToArray();
+                _lastSentMs = Clock();
+            }
         }
         if (sent)
         {
             _dropLogged = false;
-            RememberFrame(jpeg);
         }
         else if (!_dropLogged)
         {
@@ -272,16 +270,6 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             ServiceLog.Warn($"[{_hub.Model.HandlerId}] frame rejected; retrying on the next frame");
         }
         LogFailureStats();
-    }
-
-    private void RememberFrame(ReadOnlySpan<byte> jpeg)
-    {
-        if (_hub.Model.RepeatLastFrameMs <= 0)
-        {
-            return;
-        }
-        _lastJpeg = jpeg.ToArray();
-        Interlocked.Exchange(ref _lastSentMs, Clock());
     }
 
     /// <summary>One line per interval, and only when frames failed in it, so a healthy stream stays silent.</summary>
@@ -366,7 +354,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         {
             return;
         }
-        lock (_repeatLock)
+        lock (_sendLock)
         {
             _disposed = true;
         }
