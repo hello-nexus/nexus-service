@@ -58,6 +58,14 @@ public static class CorsairLinkProtocol
     public static ReadOnlySpan<byte> CmdGetFirmware => new byte[] { 0x02, 0x13 };
     public static ReadOnlySpan<byte> CmdSoftwareMode => new byte[] { 0x01, 0x03, 0x00, 0x02 };
     public static ReadOnlySpan<byte> CmdHardwareMode => new byte[] { 0x01, 0x03, 0x00, 0x01 };
+    // Read-only property reads and handle housekeeping used by the refusal recovery:
+    // 02 03 00 reads the current mode, 02 14 the bootloader version, 09 <h> probes
+    // handle h, 05 01 <h> closes it (a closed handle answers 06).
+    public static ReadOnlySpan<byte> CmdGetMode => new byte[] { 0x02, 0x03, 0x00 };
+    public static ReadOnlySpan<byte> CmdGetBootloader => new byte[] { 0x02, 0x14 };
+    public static ReadOnlySpan<byte> CmdProbeHandle => new byte[] { 0x09 };
+    public static ReadOnlySpan<byte> CmdCloseHandle => new byte[] { 0x05, 0x01 };
+    public const int RecoveryHandleCount = 8;
     public static ReadOnlySpan<byte> CmdOpenEndpoint => new byte[] { 0x0D, 0x01 };
     public static ReadOnlySpan<byte> CmdOpenColorEndpoint => new byte[] { 0x0D, 0x00 };
     public static ReadOnlySpan<byte> CmdCloseEndpoint => new byte[] { 0x05, 0x01, 0x01 };

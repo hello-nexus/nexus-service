@@ -167,9 +167,18 @@ public sealed class CorsairLinkHub : IDisposable
     /// <summary>Hex of the reply that marked another program, empty when none.</summary>
     public string ForeignReplyHex { get; private set; } = "";
 
+    private bool _recovering;
+    private long _lastRecoveryMs = long.MinValue / 2;
+
+    /// <summary>Minimum time between two refusal recoveries on this hub.</summary>
+    internal const long RecoveryMinIntervalMs = 60_000;
+
+    /// <summary>Pause between the hardware and the second software mode command; tests shorten it.</summary>
+    internal int RecoveryHardwareWaitMs { get; set; } = 750;
+
     private void TraceNote(string note)
     {
-        if (_trace is { } t && (t.Length < TraceMaxChars || note.StartsWith("step=", StringComparison.Ordinal) || note.StartsWith("color open", StringComparison.Ordinal))) t.Append(" | ").Append(note);
+        if (_trace is { } t && (_recovering || t.Length < TraceMaxChars || note.StartsWith("step=", StringComparison.Ordinal) || note.StartsWith("color open", StringComparison.Ordinal))) t.Append(" | ").Append(note);
     }
 
     /// <summary>Another program answered on the hub; every write is refused from then on, since the hub's handles are shared by all hosts.</summary>
@@ -256,6 +265,11 @@ public sealed class CorsairLinkHub : IDisposable
             TraceNote($"fw={State.Firmware}");
             TraceNote("step=software-mode");
             Transfer(CorsairLinkProtocol.CmdSoftwareMode);
+            if (Refused(CorsairLinkProtocol.CmdSoftwareMode) && NowMs() - _lastRecoveryMs >= RecoveryMinIntervalMs)
+            {
+                _lastRecoveryMs = NowMs();
+                RecoverFromRefusalLocked();
+            }
             // Firmware needs ~500 ms after entering software mode before it accepts
             // further commands (OpenLinkHub transferTimeout, lsh.go:4886).
             Thread.Sleep(CorsairLinkProtocol.SoftwareModeSettleMs);
@@ -281,6 +295,42 @@ public sealed class CorsairLinkHub : IDisposable
 
             State.IsConnected = true;
             return true;
+        }
+    }
+
+    // The hub refused software mode (status 07). Another host killed mid-run can leave
+    // handles open on its files, so every handle is closed (no-op when not open), then
+    // the mode is cycled hardware -> software, as other LINK clients do. Reads and
+    // closes only: nothing here creates, deletes, writes or commits a file, and there
+    // is no re-detect.
+    private void RecoverFromRefusalLocked()
+    {
+        _recovering = true;
+        try
+        {
+            TraceNote("step=recover-mode");
+            Transfer(CorsairLinkProtocol.CmdGetMode);
+            Transfer(CorsairLinkProtocol.CmdGetBootloader);
+            TraceNote("step=recover-handles");
+            Span<byte> handle = stackalloc byte[1];
+            for (byte h = 0; h < CorsairLinkProtocol.RecoveryHandleCount; h++)
+            {
+                handle[0] = h;
+                Transfer(CorsairLinkProtocol.CmdProbeHandle, handle);
+                Transfer(CorsairLinkProtocol.CmdCloseHandle, handle);
+            }
+            Transfer(CorsairLinkProtocol.CmdPing);
+            TraceNote("step=recover-cycle");
+            Transfer(CorsairLinkProtocol.CmdHardwareMode);
+            Thread.Sleep(RecoveryHardwareWaitMs);
+            var accepted = Transfer(CorsairLinkProtocol.CmdSoftwareMode) > CorsairLinkProtocol.ResponseStatusOffset
+                && !Refused(CorsairLinkProtocol.CmdSoftwareMode);
+            Transfer(CorsairLinkProtocol.CmdGetMode);
+            TraceNote(accepted ? "recover: software mode accepted" : "recover: software mode still refused");
+        }
+        finally
+        {
+            _recovering = false;
         }
     }
 
@@ -612,7 +662,8 @@ public sealed class CorsairLinkHub : IDisposable
     private bool IsOwnCommand(byte cmd) =>
         cmd is 0x01 or 0x05 or 0x06 or 0x07 or 0x08 or 0x0D
         || (cmd == 0x02 && !_colorPrimed)
-        || (cmd is 0x12 or 0x1A && _redetecting);
+        || (cmd is 0x12 or 0x1A && _redetecting)
+        || (cmd is 0x02 or 0x09 or 0x12 && _recovering);
 
     private void NoteEcho(byte sent)
     {
