@@ -41,6 +41,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     private volatile bool _starting;
     private bool _waitingForLogon;
     private bool _missingHostLogged;
+    private static bool _oobeStartFailureLogged;
     /// <summary>Bumped by every Stop so an in-flight spawn abandons the process it started instead of adopting it.</summary>
     private int _spawnGeneration;
     private static readonly string PidFilePath = Path.Combine(
@@ -110,7 +111,10 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             return false;
         }
         if (System.Security.Principal.WindowsIdentity.GetCurrent().IsSystem
-            && string.IsNullOrEmpty(ResolveActiveConsoleUsername()))
+            && string.IsNullOrEmpty(ResolveActiveConsoleUsername())
+            && Nexus.Service.Lifecycle.OobePanelPolicy.Decide(
+                string.Empty, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleSessionExists(),
+                Nexus.Service.Lifecycle.OobeDetector.IsInOobe) != Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser)
         {
             if (!_waitingForLogon) Console.WriteLine("[overlay-host] no active console user; waiting for logon");
             _waitingForLogon = true;
@@ -225,6 +229,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     {
         KillTrackedHost();
         try { DeletePidFile(); } catch { }
+        if (OperatingSystem.IsWindows()) Nexus.Service.Lifecycle.OobeSessionLaunch.ReapLeftovers();
     }
 
     /// <summary>
@@ -269,6 +274,29 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
         // Tradeoff: we lose direct parent-child handle tracking, but we
         // recover the PID by polling nexus-overlay.exe after Run completes.
         var username = ResolveActiveConsoleUsername();
+        // Only the OOBE cases start directly in the console session; Decide never asks about
+        // OOBE for a user whose name is not the setup account's.
+        var plan = Nexus.Service.Lifecycle.OobePanelPolicy.Decide(
+            username, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleSessionExists(),
+            Nexus.Service.Lifecycle.OobeDetector.IsInOobe, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleUserIsLocal);
+        if (plan is Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser or Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeTempUser)
+        {
+            var direct = Nexus.Service.Lifecycle.OobeSessionLaunch.Start(
+                exePath, string.Empty, workingDir, "overlay",
+                allowServiceToken: plan == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser);
+            // Without the setup account's token nothing is started: a schtasks launch would be untracked
+            // and outlive OOBE. The supervisor retries.
+            if (direct is null)
+            {
+                if (!_oobeStartFailureLogged) Console.Error.WriteLine("[overlay-host] OOBE overlay not started");
+                _oobeStartFailureLogged = true;
+            }
+            else
+            {
+                _oobeStartFailureLogged = false;
+            }
+            return direct;
+        }
         if (string.IsNullOrEmpty(username))
         {
             Console.Error.WriteLine("[overlay-host] no active console user; deferring");

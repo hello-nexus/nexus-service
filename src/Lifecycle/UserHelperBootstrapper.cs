@@ -29,6 +29,8 @@ namespace Nexus.Service.Lifecycle;
 internal static class UserHelperBootstrapper
 {
     private const int LaunchAttempts = 3;
+    /// <summary>Marks a helper started during OOBE with no user; it skips the per-user autostart sync.</summary>
+    internal const string OobeHelperArg = "--oobe";
     // Not shorter than the helper's pipe reconnect backoff cap
     // (HelperClientLoop): a helper that is alive but backing off would
     // otherwise read as a failed spawn.
@@ -56,6 +58,16 @@ internal static class UserHelperBootstrapper
         // replaced; every deliberate helper exit also stops the service.
         registry.Disconnected += conn =>
         {
+            // A setup-session helper ended on purpose when a real user signed in is not a crash.
+            if (OobeSessionLaunch.TakeReaped(conn.Pid))
+            {
+                // The real user has no helper until one starts; this is not a relaunch after a crash.
+                if (OobePanelPolicy.IsRealUser(ResolveActiveConsoleUsername()) && !HelperConnected())
+                {
+                    _ = Task.Run(() => LaunchAndVerifyAsync("setup-helper-ended"));
+                }
+                return;
+            }
             if (conn.SessionId == (int)WTSGetActiveConsoleSessionId())
             {
                 _ = Task.Run(() => RelaunchAfterDropAsync(serviceStopping));
@@ -67,6 +79,7 @@ internal static class UserHelperBootstrapper
         // leave the session helper-less until the next service start. The SCM
         // delivers the logon on its control-handler thread, so hop off it
         // before touching WTS or schtasks.
+        registry.Connected += conn => OobeSessionLaunch.ClearReaped(conn.SessionId);
         WindowsServiceHost.SessionLogon += () => _ = Task.Run(() => LaunchAndVerifyAsync("logon"));
 
         // Cold boot: the service starts seconds after power-on, before the
@@ -84,6 +97,13 @@ internal static class UserHelperBootstrapper
                 if (!string.IsNullOrEmpty(ResolveActiveConsoleUsername()))
                 {
                     await LaunchAndVerifyAsync("startup");
+                    return;
+                }
+                // No user yet: during OOBE the helper starts without one.
+                if (OobePanelPolicy.Decide(string.Empty, OobeSessionLaunch.ConsoleSessionExists(), OobeDetector.IsInOobe)
+                    == ConsoleLaunchPlan.OobeNoUser)
+                {
+                    await LaunchAndVerifyAsync("oobe");
                     return;
                 }
                 if (DateTime.UtcNow >= deadline)
@@ -110,8 +130,14 @@ internal static class UserHelperBootstrapper
             return;
         }
         if (s_serviceStopping || serviceStopping.IsCancellationRequested || HelperConnected()) return;
-        // A logoff also drops the helper; the logon hook launches the next one.
-        if (string.IsNullOrEmpty(ResolveActiveConsoleUsername())) return;
+        // A logoff also drops the helper; the logon hook launches the next one. During
+        // OOBE with nobody signed in, the helper started there is replaced.
+        if (string.IsNullOrEmpty(ResolveActiveConsoleUsername())
+            && OobePanelPolicy.Decide(string.Empty, OobeSessionLaunch.ConsoleSessionExists(), OobeDetector.IsInOobe)
+                != ConsoleLaunchPlan.OobeNoUser)
+        {
+            return;
+        }
         lock (s_relaunches)
         {
             var now = DateTime.UtcNow;
@@ -168,10 +194,34 @@ internal static class UserHelperBootstrapper
     {
         for (var attempt = 1; attempt <= LaunchAttempts; attempt++)
         {
+            // Setup-session processes end before "already connected" is believed; HelperConnected
+            // ignores a connection whose process was ended, whichever caller ended it.
+            OobeSessionLaunch.ReapIfOobeOver();
             if (HelperConnected()) return;
             var tag = $"({trigger}, attempt {attempt}/{LaunchAttempts})";
 
             var username = ResolveActiveConsoleUsername();
+            var plan = OobePanelPolicy.Decide(
+                username, OobeSessionLaunch.ConsoleSessionExists(), OobeDetector.IsInOobe, OobeSessionLaunch.ConsoleUserIsLocal);
+            if (plan is ConsoleLaunchPlan.OobeNoUser or ConsoleLaunchPlan.OobeTempUser)
+            {
+                var oobeExe = Path.Combine(AppContext.BaseDirectory, "Nexus.exe");
+                using var started = File.Exists(oobeExe)
+                    ? OobeSessionLaunch.Start(oobeExe, HelperSpawnArg() + " " + OobeHelperArg, AppContext.BaseDirectory, "helper",
+                        allowServiceToken: plan == ConsoleLaunchPlan.OobeNoUser)
+                    : null;
+                if (started is not null)
+                {
+                    if (await WaitForHelperAsync(ConnectWait)) return;
+                    // One OOBE helper only; a drop is relaunched by RelaunchAfterDropAsync.
+                    Console.Error.WriteLine($"[helper-bootstrap] no OOBE helper connected within {ConnectWait.TotalSeconds:0}s {tag}");
+                    return;
+                }
+                // No token for the setup session: nothing is launched untracked, the next trigger retries.
+                Console.Error.WriteLine($"[helper-bootstrap] OOBE helper not started {tag}");
+                await Task.Delay(5000);
+                continue;
+            }
             if (string.IsNullOrEmpty(username))
             {
                 Console.WriteLine($"[helper-bootstrap] no active console user; skipping {tag}");
@@ -237,7 +287,7 @@ internal static class UserHelperBootstrapper
     {
         var sessionId = WTSGetActiveConsoleSessionId();
         if (sessionId == 0xFFFFFFFF) return false;
-        return s_registry?.GetForSession((int)sessionId) is not null;
+        return s_registry?.GetForSession((int)sessionId) is { } conn && !OobeSessionLaunch.IsReapedHelper(conn.Pid);
     }
 
     private static int CountNexusProcessesInConsoleSession()
