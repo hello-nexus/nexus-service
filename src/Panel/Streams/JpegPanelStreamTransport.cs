@@ -40,10 +40,13 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     private readonly byte[] _turned;
 
+    // Serializes repeats and Dispose; the render thread never takes it.
     private readonly object _repeatLock = new();
-    private byte[] _lastJpeg = Array.Empty<byte>();
-    private int _lastJpegLength;
+    private volatile byte[]? _lastJpeg;
     private long _lastSentMs;
+    // Frames the render thread has started and not finished; a due repeat stands down while one is in flight.
+    internal int LiveSends;
+    internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
     private Timer? _repeat;
     private volatile Func<bool>? _repeatAllowed;
 
@@ -158,7 +161,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
     internal static bool RepeatDue(int repeatMs, long nowMs, long lastSentMs, bool hasFrame) =>
         repeatMs > 0 && hasFrame && nowMs - lastSentMs >= repeatMs;
 
-    private void RepeatLast(int repeatMs)
+    internal void RepeatLast(int repeatMs)
     {
         try
         {
@@ -167,19 +170,20 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             {
                 return;
             }
-            // A busy lock means a frame or an earlier repeat is still being written.
+            // A busy lock means an earlier repeat is still being written.
             if (!Monitor.TryEnter(_repeatLock))
             {
                 return;
             }
             try
             {
-                if (_disposed || !RepeatDue(repeatMs, Environment.TickCount64, _lastSentMs, _lastJpegLength > 0))
+                var last = _lastJpeg;
+                if (_disposed || !RepeatDue(repeatMs, Clock(), Interlocked.Read(ref _lastSentMs), last is not null))
                 {
                     return;
                 }
-                _lastSentMs = Environment.TickCount64;
-                _hub.SendFrame(_lastJpeg.AsSpan(0, _lastJpegLength));
+                Interlocked.Exchange(ref _lastSentMs, Clock());
+                _hub.SendFrame(last!, () => !_disposed && Volatile.Read(ref LiveSends) == 0);
             }
             finally
             {
@@ -247,7 +251,17 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             return;
         }
 
-        if (_hub.SendFrame(jpeg))
+        Interlocked.Increment(ref LiveSends);
+        bool sent;
+        try
+        {
+            sent = _hub.SendFrame(jpeg);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref LiveSends);
+        }
+        if (sent)
         {
             _dropLogged = false;
             RememberFrame(jpeg);
@@ -266,16 +280,8 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         {
             return;
         }
-        lock (_repeatLock)
-        {
-            if (_lastJpeg.Length < jpeg.Length)
-            {
-                _lastJpeg = new byte[jpeg.Length];
-            }
-            jpeg.CopyTo(_lastJpeg);
-            _lastJpegLength = jpeg.Length;
-            _lastSentMs = Environment.TickCount64;
-        }
+        _lastJpeg = jpeg.ToArray();
+        Interlocked.Exchange(ref _lastSentMs, Clock());
     }
 
     /// <summary>One line per interval, and only when frames failed in it, so a healthy stream stays silent.</summary>

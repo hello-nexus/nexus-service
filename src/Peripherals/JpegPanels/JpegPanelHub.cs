@@ -199,7 +199,7 @@ public sealed class JpegPanelHub : IDisposable
     /// the frame half-written - the next frame starts from chunk 0, so a partial upload
     /// costs one dropped frame rather than a desynchronised stream.
     /// </summary>
-    public bool SendFrame(ReadOnlySpan<byte> jpeg)
+    public bool SendFrame(ReadOnlySpan<byte> jpeg, Func<bool>? proceed = null)
     {
         if (jpeg.IsEmpty)
         {
@@ -210,6 +210,11 @@ public sealed class JpegPanelHub : IDisposable
             if (_device == null || !_attached)
             {
                 return false;
+            }
+            // Checked under the hub lock so a caller queued behind a newer frame can still stand down.
+            if (proceed is not null && !proceed())
+            {
+                return true;
             }
             // A panel with a control channel may not be ready for pixels yet (ASRock reports
             // a boot state), and some want a periodic re-assert while streaming.
