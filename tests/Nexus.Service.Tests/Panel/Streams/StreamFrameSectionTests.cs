@@ -122,11 +122,156 @@ public sealed unsafe class StreamFrameSectionTests
             },
             "p");
         var section = new CountingDisposable();
-        session.AttachSection(section, "Global\\n", 10);
+        session.OfferSharedFrames("Global\\n", 10);
+        session.ReplaceSection(section);
         session.Close();
         session.Close();
         Assert.Equal(1, section.Disposed);
         Assert.Equal("Global\\n", session.FrameSectionName);
+    }
+
+    [Fact]
+    public void ReplaceSection_disposes_the_previous_section_and_a_late_one_after_close()
+    {
+        var session = new StreamSession(
+            "s",
+            new StreamedPanelDeviceInfo
+            {
+                Serial = "x",
+                Profile = new StreamedPanelProfile { Kind = "t", DisplayName = "t", Surface = "monitor", CssWidth = 64, CssHeight = 64, Fps = 30 },
+            },
+            "p");
+        var first = new CountingDisposable();
+        var second = new CountingDisposable();
+        var late = new CountingDisposable();
+        session.ReplaceSection(first);
+        session.ReplaceSection(second);
+        Assert.Equal(1, first.Disposed);
+        Assert.Equal(0, second.Disposed);
+        session.Close();
+        Assert.Equal(1, second.Disposed);
+        session.ReplaceSection(late);
+        Assert.Equal(1, late.Disposed);
+    }
+
+    [Fact]
+    public void A_reader_never_accepts_a_frame_the_writer_overwrote_mid_copy()
+    {
+        const int Bytes = 1 << 16;
+        var section = new byte[StreamFrameSection.HeaderBytes + Bytes];
+        fixed (byte* p = section)
+        {
+            StreamFrameSection.Initialize(p);
+        }
+        using var stop = new System.Threading.CancellationTokenSource();
+        var writer = new System.Threading.Thread(() =>
+        {
+            fixed (byte* p = section)
+            {
+                long sequence = 0;
+                byte fill = 1;
+                while (!stop.IsCancellationRequested)
+                {
+                    System.Threading.Volatile.Write(ref *(long*)(p + 8), sequence + 1);
+                    *(int*)(p + 28) = Bytes;
+                    new Span<byte>(p + StreamFrameSection.HeaderBytes, Bytes).Fill(fill);
+                    System.Threading.Volatile.Write(ref *(long*)(p + 8), sequence + 2);
+                    sequence += 2;
+                    fill = fill == 1 ? (byte)2 : (byte)1;
+                }
+            }
+        });
+        writer.Start();
+        var accepted = 0;
+        var destination = new byte[Bytes];
+        long last = 0;
+        var deadline = Environment.TickCount64 + 400;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (Read(section, ref last, destination, out var length))
+            {
+                accepted++;
+                var first = destination[0];
+                Assert.Equal(Bytes, length);
+                Assert.True(destination.AsSpan(0, length).IndexOfAnyExcept(first) < 0, "accepted a frame mixing two writes");
+            }
+        }
+        stop.Cancel();
+        writer.Join();
+        Assert.True(accepted > 0);
+    }
+
+    [Fact]
+    public void HasNew_follows_the_sequence()
+    {
+        var section = NewSection();
+        long last = 0;
+        fixed (byte* p = section)
+        {
+            Assert.False(StreamFrameSection.HasNew(p, last));
+        }
+        Write(section, 2, 1);
+        fixed (byte* p = section)
+        {
+            Assert.True(StreamFrameSection.HasNew(p, last));
+            Assert.False(StreamFrameSection.HasNew(p, 2));
+        }
+        Write(section, 3, 1);
+        fixed (byte* p = section)
+        {
+            Assert.False(StreamFrameSection.HasNew(p, 2));
+        }
+    }
+
+    [Fact]
+    public void PublishConsumed_lands_in_the_header()
+    {
+        var section = NewSection();
+        fixed (byte* p = section)
+        {
+            StreamFrameSection.PublishConsumed(p, 42);
+        }
+        Assert.Equal(42, BinaryPrimitives.ReadInt64LittleEndian(section.AsSpan(32)));
+    }
+
+    [Theory]
+    [InlineData("0123456789abcdef", true)]
+    [InlineData("0123456789ABCDEF", false)]
+    [InlineData("0123456789abcde", false)]
+    [InlineData("0123456789abcdeg", false)]
+    [InlineData("..\\x-0123456789abcd", false)]
+    [InlineData(null, false)]
+    public void Writer_nonce_is_sixteen_lowercase_hex_digits(string? nonce, bool valid)
+    {
+        Assert.Equal(valid, StreamFrameSection.IsValidNonce(nonce));
+    }
+
+    [Fact]
+    public void Section_and_event_names_carry_the_nonce()
+    {
+        var name = StreamFrameSection.SectionName("Global\\NexusPanelStream-abc", "0123456789abcdef");
+        Assert.Equal("Global\\NexusPanelStream-abc-0123456789abcdef", name);
+        Assert.Equal(name + "-Ready", StreamFrameSection.ReadyName(name));
+    }
+
+    [Theory]
+    [InlineData("S-1-5-21-1004336348-1177238915-682003330-1001", true)]
+    [InlineData("S-1-5-18", true)]
+    [InlineData("S-1-5-21-1)(A;;GA;;;WD", false)]
+    [InlineData("S-1-5", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void Sddl_names_only_system_and_the_given_user(string? sid, bool valid)
+    {
+        var sddl = StreamFrameSection.Sddl(sid);
+        if (!valid)
+        {
+            Assert.Null(sddl);
+            return;
+        }
+        Assert.Equal($"D:(A;;GA;;;SY)(A;;GRGW;;;{sid})", sddl);
+        Assert.DoesNotContain(";IU)", sddl);
+        Assert.DoesNotContain(";WD)", sddl);
     }
 
     private sealed class CountingDisposable : IDisposable

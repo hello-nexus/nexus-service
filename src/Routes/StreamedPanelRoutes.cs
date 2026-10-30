@@ -61,7 +61,7 @@ public static class StreamedPanelRoutes
         {
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
-            var session = coordinator.TryBindIngest(sessionId, ctx);
+            var session = coordinator.TryBindIngest(sessionId, ctx, ctx.Request.Headers[StreamFrameSection.NonceHeader].ToString());
             if (session is null)
                 return Results.NotFound();
 

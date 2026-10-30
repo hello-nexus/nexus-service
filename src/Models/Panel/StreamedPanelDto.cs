@@ -22,7 +22,7 @@ public sealed class StreamAssignmentDto
     /// <summary>"h264" (default) or "rawBgra"; picks the overlay's frame sink.</summary>
     public string Codec { get; set; } = "h264";
 
-    /// <summary>Global shared-memory section the overlay may write raw frames into (event name is this plus "-Ready"); null keeps HTTP ingest only.</summary>
+    /// <summary>Base name of the Global shared-memory section the overlay may write raw frames into: it appends its writer nonce (the X-Nexus-Frame-Writer ingest header) and the service creates that section when the ingest binds; null keeps HTTP ingest only.</summary>
     public string? FrameSection { get; set; }
 
     /// <summary>Bytes one frame may occupy in <see cref="FrameSection"/>.</summary>

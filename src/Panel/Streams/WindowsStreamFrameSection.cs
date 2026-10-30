@@ -4,24 +4,22 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Security.Principal;
 using System.Threading;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Panel.Streams;
 
 /// <summary>
-/// Service-owned Global section plus frame-ready event for one stream session, with a reader
+/// Service-owned Global section plus frame-ready event for one stream writer, with a reader
 /// thread that hands every new frame to a callback. The service runs as SYSTEM in session 0 and
-/// the overlay in the user session, so the objects are created here with a DACL that lets the
-/// interactive user write. Direct CreateFileMappingW because the managed MemoryMappedFile API
-/// lost named-object security descriptors in .NET Core.
+/// the overlay in the user session, so the objects are created here with a DACL naming SYSTEM
+/// and the overlay's user only. Direct CreateFileMappingW because the managed MemoryMappedFile
+/// API lost named-object security descriptors in .NET Core.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
 {
-    private const string Sddl = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
-    private const int WaitMs = 250;
-
     private readonly nint _mapping;
     private readonly byte* _view;
     private readonly nint _ready;
@@ -33,11 +31,34 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
     private long _lastSequence;
 
     public string Name { get; }
-    public string ReadyName => ReadyNameFor(Name);
-    public int FrameBytes => _maxFrameBytes;
 
-    public static string NameFor(string sessionId) => @"Global\NexusPanelStream-" + sessionId;
-    public static string ReadyNameFor(string sectionName) => sectionName + "-Ready";
+    /// <summary>
+    /// SID of the user the overlay runs as: the console session's user when this process is
+    /// SYSTEM, otherwise the process user. Null when nobody can be resolved.
+    /// </summary>
+    public static string? ResolveOverlayUserSid()
+    {
+        try
+        {
+            using var self = WindowsIdentity.GetCurrent();
+            if (!self.IsSystem)
+            {
+                return self.User?.Value;
+            }
+            var session = WTSGetActiveConsoleSessionId();
+            if (session == 0xFFFFFFFF || !WTSQueryUserToken(session, out var raw) || raw == 0)
+            {
+                return null;
+            }
+            using var token = new Microsoft.Win32.SafeHandles.SafeAccessTokenHandle(raw);
+            using var identity = new WindowsIdentity(token.DangerousGetHandle());
+            return identity.User?.Value;
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or ArgumentException)
+        {
+            return null;
+        }
+    }
 
     /// <param name="onFrame">Gets a pooled array and the frame length in it; ownership of the array passes to the callback.</param>
     private WindowsStreamFrameSection(string name, nint mapping, byte* view, nint ready, int frameBytes, Action<byte[], int> onFrame)
@@ -54,11 +75,10 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
         _thread.Start();
     }
 
-    public static WindowsStreamFrameSection Create(string sessionId, int frameBytes, Action<byte[], int> onFrame)
+    public static WindowsStreamFrameSection Create(string name, string sddl, int frameBytes, Action<byte[], int> onFrame)
     {
-        var name = NameFor(sessionId);
         var total = StreamFrameSection.SectionBytes(frameBytes);
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(Sddl, 1, out var descriptor, out _))
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, out var descriptor, out _))
             throw new Win32Exception(Marshal.GetLastPInvokeError(), "invalid stream section SDDL");
         try
         {
@@ -72,9 +92,9 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
             var error = Marshal.GetLastPInvokeError();
             if (mapping == 0)
                 throw new Win32Exception(error, "failed to create the stream section");
-            if (error == 183)
+            if (error == ErrorAlreadyExists)
             {
-                // A section of this name already exists, so our size and DACL were ignored.
+                // The name exists, so our size and DACL were ignored.
                 CloseHandle(mapping);
                 throw new IOException("stream section name already in use");
             }
@@ -85,13 +105,19 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
                 CloseHandle(mapping);
                 throw new Win32Exception(viewError, "failed to map the stream section");
             }
-            var ready = CreateEventW(in attributes, 0, 0, ReadyNameFor(name));
-            if (ready == 0)
+            var ready = CreateEventW(in attributes, 0, 0, StreamFrameSection.ReadyName(name));
+            var eventError = Marshal.GetLastPInvokeError();
+            if (ready == 0 || eventError == ErrorAlreadyExists)
             {
-                var eventError = Marshal.GetLastPInvokeError();
+                if (ready != 0)
+                {
+                    CloseHandle(ready);
+                }
                 UnmapViewOfFile(view);
                 CloseHandle(mapping);
-                throw new Win32Exception(eventError, "failed to create the stream section event");
+                throw ready == 0
+                    ? new Win32Exception(eventError, "failed to create the stream section event")
+                    : new IOException("stream section event name already in use");
             }
             return new WindowsStreamFrameSection(name, mapping, (byte*)view, ready, frameBytes, onFrame);
         }
@@ -105,16 +131,21 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
     {
         while (!_disposed)
         {
-            WaitForSingleObject(_ready, WaitMs);
+            WaitForSingleObject(_ready, Infinite);
             if (_disposed)
             {
                 break;
+            }
+            if (!StreamFrameSection.HasNew(_view, _lastSequence))
+            {
+                continue;
             }
             var buffer = StreamFrame.Pool.Rent(_maxFrameBytes);
             try
             {
                 if (StreamFrameSection.TryRead(_view, _capacity, ref _lastSequence, buffer, out var length))
                 {
+                    StreamFrameSection.PublishConsumed(_view, _lastSequence);
                     var handedOver = buffer;
                     buffer = null!;
                     _onFrame(handedOver, length);
@@ -151,6 +182,9 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
         CloseHandle(_mapping);
         CloseHandle(_ready);
     }
+
+    private const int ErrorAlreadyExists = 183;
+    private const uint Infinite = 0xFFFFFFFF;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SecurityAttributes
@@ -192,4 +226,11 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
 
     [LibraryImport("kernel32.dll")]
     private static partial nint LocalFree(nint memory);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial uint WTSGetActiveConsoleSessionId();
+
+    [LibraryImport("wtsapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool WTSQueryUserToken(uint sessionId, out nint token);
 }

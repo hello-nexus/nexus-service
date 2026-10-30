@@ -75,22 +75,42 @@ public sealed class StreamSession
         get { lock (_lock) return _closed; }
     }
 
-    /// <summary>Name of the shared-memory section the overlay may write frames into, or null when the session only takes HTTP ingest.</summary>
+    /// <summary>Base name of the shared-memory sections the overlay may write frames into (the writer nonce is appended), or null when the session only takes HTTP ingest.</summary>
     public string? FrameSectionName { get; private set; }
 
-    /// <summary>Capacity of one frame in the section.</summary>
+    /// <summary>Capacity of one frame in a section.</summary>
     public int FrameSectionBytes { get; private set; }
 
-    /// <summary>Hands the session a section whose lifetime ends with <see cref="Close"/>.</summary>
-    public void AttachSection(IDisposable section, string name, int frameBytes)
+    public void OfferSharedFrames(string baseName, int frameBytes)
     {
         lock (_lock)
         {
-            if (_closed) { section.Dispose(); return; }
-            _section = section;
-            FrameSectionName = name;
+            FrameSectionName = baseName;
             FrameSectionBytes = frameBytes;
         }
+    }
+
+    /// <summary>
+    /// Makes <paramref name="section"/> the only section read for this session and disposes the
+    /// previous one, which cuts a superseded writer off. Null drops shared frames for the session.
+    /// </summary>
+    public void ReplaceSection(IDisposable? section)
+    {
+        IDisposable? previous;
+        lock (_lock)
+        {
+            if (_closed)
+            {
+                previous = section;
+            }
+            else
+            {
+                previous = _section;
+                _section = section;
+            }
+        }
+        // Outside the lock: disposing joins a reader thread that may be inside Enqueue.
+        previous?.Dispose();
     }
 
     /// <summary>
