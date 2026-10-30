@@ -102,7 +102,7 @@
           },
           {
             "type": "lighting",
-            "size": "4x2",
+            "size": "4x4",
             "col": 0,
             "row": 4
           },
@@ -110,7 +110,7 @@
             "type": "cooling",
             "size": "4x2",
             "col": 0,
-            "row": 6
+            "row": 8
           }
         ]
       },
