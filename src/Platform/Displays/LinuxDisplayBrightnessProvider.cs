@@ -45,8 +45,8 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     // Without DRM connector status files (NVIDIA without modeset) a hotplug leaves no sysfs trace, so the scan ages out instead.
     internal const long NoConnectorRescanMs = 300_000;
 
-    // A connected display can ignore its first probes while it wakes, with no sysfs change after; retry such a scan a few times per signature.
-    internal const int MaxRejectRetries = 5;
+    // A connected display can ignore its first probes while it wakes, with no sysfs change after; retry such a scan per signature with a doubling gap, so callers that poll every few seconds cannot spend the budget.
+    internal const int MaxRejectRetries = 6;
 
     private readonly Func<(string Signature, bool HasConnectors)> _signature;
     private readonly Func<IEnumerable<Target>> _scan;
@@ -58,7 +58,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     private readonly ScanStats _stats;
     private int _rejectRetries;
 
-    /// <summary>Filled by the scan: connected connectors none of whose candidate buses answered.</summary>
+    /// <summary>Filled by the scan: DRM connectors that are connected but none of whose candidate buses answered; adapter-scoped groups never count.</summary>
     internal sealed class ScanStats
     {
         public int Unanswered;
@@ -310,7 +310,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         var now = _clock();
         var aged = !hasConnectors && now - _lastScanAt >= NoConnectorRescanMs;
         var changed = _ddcScan is null || signature != _ddcSignature;
-        var retry = !changed && _stats.Unanswered > 0 && _rejectRetries < MaxRejectRetries && now - _lastScanAt >= ForcedRescanMinMs;
+        var retry = !changed && _stats.Unanswered > 0 && _rejectRetries < MaxRejectRetries && now - _lastScanAt >= ForcedRescanMinMs << _rejectRetries;
         if (changed || aged || retry)
         {
             if (changed)
@@ -413,7 +413,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         // A bus is a DDC/CI monitor only if it answers a VCP 0x10 read.
         var groups = SelectDdcCandidates(drmRoot, log: ScanLog);
         var accepted = ProbeCandidates(groups, b => ReadDdcVcp(b, VcpBrightness) is not null, ScanLog);
-        stats.Unanswered = groups.Count(g => !g.Primary.Concat(g.Fallback).Any(accepted.Contains));
+        stats.Unanswered = groups.Count(g => g.OnConnector && !g.Primary.Concat(g.Fallback).Any(accepted.Contains));
         foreach (var bus in accepted)
         {
             var (mfg, model, pnpId) = ReadEdidIdentity(bus);
@@ -445,7 +445,8 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     // One line per scan decision, so a bundle shows why a monitor was or was not reached. Scans are rate limited (sysfs change, forced rescan, age-out, unanswered-connector retry).
     private static void ScanLog(string message) => ServiceLog.Info($"[ddc-scan] {message}");
 
-    internal sealed record DdcCandidates(List<int> Primary, List<int> Fallback);
+    /// <summary><paramref name="OnConnector"/> is false for adapter-scoped groups (NVIDIA) that have no connector status to wait on.</summary>
+    internal sealed record DdcCandidates(List<int> Primary, List<int> Fallback, bool OnConnector = true);
 
     /// <summary>Probes each group's primary buses, then its fallbacks only when no primary answered; a bus is probed at most once.</summary>
     internal static List<int> ProbeCandidates(IEnumerable<DdcCandidates> groups, Func<int, bool> answers, Action<string>? log = null)
@@ -540,7 +541,7 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
         }
         catch { }
         foreach (var bus in nvidia)
-            groups.Add(new DdcCandidates(new List<int> { bus }, new List<int>()));
+            groups.Add(new DdcCandidates(new List<int> { bus }, new List<int>(), false));
         return groups;
     }
 

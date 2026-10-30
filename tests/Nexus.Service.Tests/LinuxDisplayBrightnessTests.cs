@@ -421,7 +421,7 @@ public class LinuxDisplayBrightnessTests
 
         for (var i = 1; i <= LinuxDisplayBrightnessProvider.MaxRejectRetries + 2; i++)
         {
-            now = i * LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+            now = i * (LinuxDisplayBrightnessProvider.ForcedRescanMinMs << LinuxDisplayBrightnessProvider.MaxRejectRetries);
             p.Enumerate();
         }
         Assert.Equal(1 + LinuxDisplayBrightnessProvider.MaxRejectRetries, scans);
@@ -446,7 +446,7 @@ public class LinuxDisplayBrightnessTests
 
         for (var i = 0; i <= LinuxDisplayBrightnessProvider.MaxRejectRetries; i++)
         {
-            now = i * LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+            now = i * (LinuxDisplayBrightnessProvider.ForcedRescanMinMs << LinuxDisplayBrightnessProvider.MaxRejectRetries);
             p.Enumerate();
         }
         var before = scans;
@@ -455,6 +455,43 @@ public class LinuxDisplayBrightnessTests
         now += LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
         p.Enumerate();
         Assert.Equal(before + 1, scans);
+    }
+
+    [Fact]
+    public void Enumerate_RetryGapDoublesSoThePollingRateCannotSpendTheBudget()
+    {
+        var stats = new LinuxDisplayBrightnessProvider.ScanStats();
+        var scans = 0;
+        long now = 0;
+        var p = new LinuxDisplayBrightnessProvider(
+            () => ("a", true),
+            () =>
+            {
+                scans++;
+                stats.Unanswered = 1;
+                return Array.Empty<LinuxDisplayBrightnessProvider.Target>();
+            },
+            () => now,
+            stats);
+
+        var gap = LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
+        p.Enumerate();
+        // A 5 s poller for 20 minutes keeps the schedule at 30 s, 60 s, 120 s, ... after each scan.
+        var lastScanAt = 0L;
+        var expectedGap = gap;
+        for (now = 5_000; now <= 20 * 60_000; now += 5_000)
+        {
+            var before = scans;
+            p.Enumerate();
+            if (scans > before)
+            {
+                Assert.True(now - lastScanAt >= expectedGap);
+                lastScanAt = now;
+                expectedGap *= 2;
+            }
+        }
+        Assert.Equal(6, scans);
+        Assert.True(lastScanAt >= 15 * 60_000);
     }
 
     [Fact]
