@@ -73,7 +73,11 @@ public sealed class PacedStreamWriter : IDisposable
         // Windows rounds Thread.Sleep to the ~15ms scheduler quantum by
         // default, which jitters the tick visibly; request finer timer
         // resolution while this thread lives.
-        if (OperatingSystem.IsWindows()) TimeBeginPeriod(1);
+        if (OperatingSystem.IsWindows())
+        {
+            TimeBeginPeriod(1);
+            Nexus.Service.Platform.Windows.PerformanceCoreHint.ApplyToCurrentThread();
+        }
         try
         {
             // One tick per batch: fps stays the frame rate on the wire while
