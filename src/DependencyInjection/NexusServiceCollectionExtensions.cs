@@ -2768,9 +2768,7 @@ public static class NexusServiceCollectionExtensions
                 notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id),
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
-                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized,
-                legacyFpsCap: () => configStore.Load().StreamedPanelFpsCap,
-                clearLegacyFpsCap: () => configStore.Update(s => s.StreamedPanelFpsCap = null));
+                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());

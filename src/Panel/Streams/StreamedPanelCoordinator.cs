@@ -53,8 +53,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly PanelDeviceRegistry _registry;
     private readonly Func<string, bool> _removePanel;
     private readonly Func<string, bool> _isCustomized;
-    private readonly Func<int?>? _legacyFpsCap;
-    private readonly Action? _clearLegacyFpsCap;
     private readonly DeviceControlGate _gate;
     private readonly Action? _notifyOverlay;
     private readonly Action<string>? _notifyPanelChanged;
@@ -81,12 +79,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Action<string>? notifyPanelChanged = null,
         LcdLockState? lockState = null,
         Func<string, bool>? removePanel = null,
-        Func<string, bool>? isCustomized = null,
-        Func<int?>? legacyFpsCap = null,
-        Action? clearLegacyFpsCap = null)
+        Func<string, bool>? isCustomized = null)
     {
-        _legacyFpsCap = legacyFpsCap;
-        _clearLegacyFpsCap = clearLegacyFpsCap;
         _removePanel = removePanel ?? registry.Remove;
         _isCustomized = isCustomized ?? registry.IsCustomized;
         _discoveries = discoveries.ToList();
@@ -443,31 +437,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         catch (SemaphoreFullException) { }
     }
 
-    /// <summary>
-    /// One-shot upgrade from the retired global cap: copies its value to every known streamed
-    /// device record, then clears it so the copy never repeats. A device that was never attached
-    /// has no record and starts at Off.
-    /// </summary>
-    internal void MigrateLegacyFpsCap()
-    {
-        if (_legacyFpsCap?.Invoke() is not { } legacy) return;
-        if (legacy > 0)
-        {
-            foreach (var rec in _store.Load().Values)
-            {
-                if (string.IsNullOrEmpty(rec.PanelDeviceId)) continue;
-                var record = _registry.Get(rec.PanelDeviceId);
-                if (record is null || record.FpsCap is not null) continue;
-                _registry.Patch(rec.PanelDeviceId, new PanelDevicePatch { FpsCap = legacy });
-                _notifyPanelChanged?.Invoke(rec.PanelDeviceId);
-            }
-        }
-        _clearLegacyFpsCap?.Invoke();
-    }
-
     internal void TickOnce()
     {
-        MigrateLegacyFpsCap();
         var changed = false;
         foreach (var discovery in _discoveries)
         {

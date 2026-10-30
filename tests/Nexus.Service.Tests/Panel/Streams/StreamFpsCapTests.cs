@@ -18,24 +18,31 @@ public sealed class StreamFpsCapTests
     public void Effective_never_raises_the_model_rate(int model, int? cap, int expected) =>
         Assert.Equal(expected, StreamFpsCap.Effective(model, cap));
 
-    [Fact]
-    public void Legacy_global_cap_is_read_from_a_prior_file_and_never_written_once_cleared()
+    // The fixture is the settings file the code that carried the global cap wrote (cap 10); 30 was its default.
+    [Theory]
+    [InlineData(10)]
+    [InlineData(30)]
+    public void A_prior_file_with_the_global_cap_loads_and_every_device_starts_uncapped(int legacyCap)
     {
         var path = Path.Combine(Path.GetTempPath(), "nexus-fpscap-" + Guid.NewGuid().ToString("N") + ".json");
         try
         {
-            File.Copy(Path.Combine(AppContext.BaseDirectory, "Fixtures", "settings", "pre-per-device-fps-cap10.json"), path);
+            var json = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "settings", "pre-per-device-fps-cap10.json"))
+                .Replace("\"streamedPanelFpsCap\": 10", $"\"streamedPanelFpsCap\": {legacyCap}");
+            Assert.Contains($"\"streamedPanelFpsCap\": {legacyCap}", json);
+            File.WriteAllText(path, json);
             using (var store = new JsonConfigStore(path))
             {
-                Assert.Equal(10, store.Load().StreamedPanelFpsCap);
-                store.Update(s => s.StreamedPanelFpsCap = null);
+                var registry = new PanelDeviceRegistry(store);
+                var first = registry.Allocate("Streamed", null);
+                var second = registry.Allocate("Kiosk", null);
+                Assert.Null(registry.Get(first.Id)!.FpsCap);
+                Assert.Null(registry.Get(second.Id)!.FpsCap);
+                Assert.All(store.Load().PanelDevices.Values, d => Assert.Null(d.FpsCap));
+                store.Update(_ => { });
                 store.FlushNow();
             }
             Assert.DoesNotContain("streamedPanelFpsCap", File.ReadAllText(path));
-            using (var store = new JsonConfigStore(path))
-            {
-                Assert.Null(store.Load().StreamedPanelFpsCap);
-            }
         }
         finally
         {
