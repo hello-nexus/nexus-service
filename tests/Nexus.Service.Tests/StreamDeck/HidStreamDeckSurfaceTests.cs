@@ -8,11 +8,7 @@ using Nexus.Service.Peripherals.StreamDeck;
 
 namespace Nexus.Service.Tests.StreamDeck;
 
-/// <summary>
-/// Write log appended by the surface's ping and settle threads while the test
-/// thread reads it. Enumeration walks a snapshot so a concurrent append cannot
-/// invalidate it.
-/// </summary>
+/// <summary>Enumeration walks a snapshot so a concurrent append cannot invalidate it.</summary>
 internal sealed class LockedWrites : IReadOnlyList<byte[]>
 {
     private readonly List<byte[]> _items = new();
