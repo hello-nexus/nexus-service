@@ -52,6 +52,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private long _monitorStartedMs;
     // A monitor that failed to come up or died is retried at this pace while the setting is on.
     private const long MonitorRetryMs = 30_000;
+    private const int MonitorPollMs = 1000;
 
     public BulkPanelStreamTransport(BulkPanelHub hub, string serial, IVirtualMonitorHost? monitors = null)
     {
@@ -237,6 +238,29 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         if (keepaliveMs > 0)
         {
             _keepalive = new Timer(_ => Keepalive(keepaliveMs), null, keepaliveMs / 2, keepaliveMs / 2);
+        }
+        else if (_monitors is not null)
+        {
+            // No keepalive to piggyback on, but a record that already has the monitor on must
+            // start it, and a refused or failed monitor must be retried. The first tick runs
+            // after the coordinator has published this transport, so its state change is seen.
+            _keepalive = new Timer(_ => PollSecondaryMonitor(), null, MonitorPollMs, MonitorPollMs);
+        }
+    }
+
+    private void PollSecondaryMonitor()
+    {
+        if (Interlocked.Exchange(ref _keepaliveBusy, 1) == 1)
+        {
+            return;
+        }
+        try
+        {
+            ApplySecondaryMonitor();
+        }
+        finally
+        {
+            Volatile.Write(ref _keepaliveBusy, 0);
         }
     }
 

@@ -100,6 +100,20 @@ public class BulkPanelStreamTransportTests
     }
 
     [Fact]
+    public void Opening_a_panel_whose_record_already_has_the_monitor_on_starts_it_without_a_keepalive()
+    {
+        using var hub = new BulkPanelHub(new UndimmableDriver { SecondaryMonitor = true });
+        Assert.True(hub.Attach(new RecordingPipe(), null));
+        var host = new FakeMonitorHost();
+        using var transport = new BulkPanelStreamTransport(hub, "serial", host);
+        transport.BindSecondaryMonitor(() => true);
+
+        transport.Open();
+
+        Assert.True(SpinWait.SpinUntil(() => host.Monitor is not null, 5000));
+    }
+
+    [Fact]
     public void Secondary_monitor_reports_a_missing_driver()
     {
         using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
