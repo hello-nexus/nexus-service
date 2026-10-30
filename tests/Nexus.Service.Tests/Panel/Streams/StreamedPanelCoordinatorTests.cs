@@ -1470,4 +1470,19 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
 
         Assert.Equal(transports + 1, _discovery.Transports.Count);
     }
+
+    [Fact]
+    public void A_stale_monitor_flag_on_a_panel_that_cannot_show_one_does_not_freeze_the_cap()
+    {
+        _discovery.Devices.Add(Device(fps: 60));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        _registry.Patch(panelId, new PanelDevicePatch { SecondaryMonitor = true });
+
+        _registry.Patch(panelId, new PanelDevicePatch { FpsCap = 10 });
+        coordinator.TickOnce();
+
+        Assert.Equal(10, Assert.Single(coordinator.GetAssignments().Assignments).Fps);
+    }
 }

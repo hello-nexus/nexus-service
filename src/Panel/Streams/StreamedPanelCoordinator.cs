@@ -1084,7 +1084,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private StreamedPanelDeviceInfo WithFpsCap(StreamedPanelDeviceInfo info, string panelDeviceId, DeviceSession? existing = null)
     {
         var record = _registry.Get(panelDeviceId);
-        var fps = existing is not null && record?.SecondaryMonitor == true
+        var fps = existing is not null && ShowsSecondaryMonitor(existing)
             ? existing.Info.Profile.Fps
             : StreamFpsCap.Effective(info.Profile.Fps, record?.FpsCap);
         return fps == info.Profile.Fps
