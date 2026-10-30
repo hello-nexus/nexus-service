@@ -23,6 +23,7 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
     private readonly nint _mapping;
     private readonly byte* _view;
     private readonly nint _ready;
+    private readonly nint _stop;
     private readonly long _capacity;
     private readonly int _maxFrameBytes;
     private readonly Action<byte[], int> _onFrame;
@@ -67,6 +68,9 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
         _mapping = mapping;
         _view = view;
         _ready = ready;
+        // Service-only: the overlay user holds write access to the ready event, so Dispose cannot rely on it to wake the reader.
+        var local = new SecurityAttributes { Length = (uint)Unsafe.SizeOf<SecurityAttributes>() };
+        _stop = CreateEventW(in local, 1, 0, null!);
         _maxFrameBytes = frameBytes;
         _capacity = StreamFrameSection.SectionBytes(frameBytes);
         _onFrame = onFrame;
@@ -129,9 +133,10 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
 
     private void Run()
     {
+        var handles = stackalloc nint[2] { _ready, _stop };
         while (!_disposed)
         {
-            WaitForSingleObject(_ready, Infinite);
+            WaitForMultipleObjects(2, handles, 0, Infinite);
             if (_disposed)
             {
                 break;
@@ -172,7 +177,7 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
             return;
         }
         _disposed = true;
-        SetEvent(_ready);
+        SetEvent(_stop);
         if (Thread.CurrentThread != _thread && !_thread.Join(2000))
         {
             // The reader outlived the join (a callback still running): leak the mapping rather than unmap under it.
@@ -181,6 +186,7 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
         UnmapViewOfFile((nint)_view);
         CloseHandle(_mapping);
         CloseHandle(_ready);
+        CloseHandle(_stop);
     }
 
     private const int ErrorAlreadyExists = 183;
@@ -218,7 +224,7 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
     private static partial bool SetEvent(nint handle);
 
     [LibraryImport("kernel32.dll")]
-    private static partial uint WaitForSingleObject(nint handle, uint milliseconds);
+    private static partial uint WaitForMultipleObjects(uint count, nint* handles, int waitAll, uint milliseconds);
 
     [LibraryImport("kernel32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -53,6 +53,24 @@ public static class CoreHintPolicy
         return all;
     }
 
+    /// <summary>
+    /// Spreads writers over the performance cores and avoids logical processor 0 of group 0, which
+    /// takes most interrupt and DPC work, whenever another core is available.
+    /// </summary>
+    public static CpuSet PickIdeal(IReadOnlyList<CpuSet> best, int counter)
+    {
+        var candidates = new List<CpuSet>();
+        foreach (var set in best)
+        {
+            if (!(set.Group == 0 && set.LogicalProcessorIndex == 0))
+            {
+                candidates.Add(set);
+            }
+        }
+        var pool = candidates.Count > 0 ? candidates : new List<CpuSet>(best);
+        return pool[(int)((uint)counter % (uint)pool.Count)];
+    }
+
     /// <summary>The CPU sets of the highest efficiency class, or empty when every set shares one class.</summary>
     public static List<CpuSet> SelectBestClass(IReadOnlyList<CpuSet> all)
     {
@@ -92,6 +110,7 @@ internal static unsafe partial class PerformanceCoreHint
     private static readonly object Gate = new();
     private static List<CoreHintPolicy.CpuSet>? _best;
     private static bool _resolved;
+    private static int _idealCounter;
 
     public static CoreHintMode Mode { get; } = CoreHintPolicy.ParseMode(Environment.GetEnvironmentVariable("NEXUS_STREAM_CORE_HINT"));
 
@@ -132,7 +151,8 @@ internal static unsafe partial class PerformanceCoreHint
         }
         var throttling = stackalloc uint[3] { 1, ThrottlingExecutionSpeed, 0 };
         SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, throttling, 12);
-        var ideal = new ProcessorNumber { Group = best[0].Group, Number = best[0].LogicalProcessorIndex };
+        var pick = CoreHintPolicy.PickIdeal(best, Interlocked.Increment(ref _idealCounter));
+        var ideal = new ProcessorNumber { Group = pick.Group, Number = pick.LogicalProcessorIndex };
         SetThreadIdealProcessorEx(GetCurrentThread(), &ideal, null);
         Thread.CurrentThread.Priority = ThreadPriority.AboveNormal;
     }

@@ -76,4 +76,21 @@ public sealed class CoreHintPolicyTests
     {
         Assert.Equal(expected, CoreHintPolicy.ParseMode(value));
     }
+
+    [Fact]
+    public void Ideal_processor_rotates_over_the_performance_cores_and_skips_logical_zero()
+    {
+        var best = CoreHintPolicy.SelectBestClass(CoreHintPolicy.ParseCpuSets(Concat(
+            Record(1, 0, 0, 1), Record(2, 0, 1, 1), Record(3, 0, 2, 1), Record(4, 0, 16, 0))));
+        var picks = new HashSet<byte>();
+        for (var i = 0; i < 8; i++) picks.Add(CoreHintPolicy.PickIdeal(best, i).LogicalProcessorIndex);
+        Assert.Equal(new HashSet<byte> { 1, 2 }, picks);
+    }
+
+    [Fact]
+    public void Ideal_processor_falls_back_to_logical_zero_when_it_is_the_only_one()
+    {
+        var best = new List<CoreHintPolicy.CpuSet> { new(1, 0, 0, 1) };
+        Assert.Equal((byte)0, CoreHintPolicy.PickIdeal(best, 5).LogicalProcessorIndex);
+    }
 }

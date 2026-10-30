@@ -50,14 +50,14 @@ public static unsafe class StreamFrameSection
 
     public static string ReadyName(string sectionName) => sectionName + "-Ready";
 
-    /// <summary>Owner-only DACL: SYSTEM plus the one user the overlay runs as, read/write on the section and event.</summary>
+    /// <summary>Protected DACL (no inherited ACEs from the object directory): SYSTEM plus the one user the overlay runs as, read/write on the section and event.</summary>
     public static string? Sddl(string? userSid)
     {
         if (!IsSid(userSid))
         {
             return null;
         }
-        return $"D:(A;;GA;;;SY)(A;;GRGW;;;{userSid})";
+        return $"D:P(A;;GA;;;SY)(A;;GRGW;;;{userSid})";
     }
 
     private static bool IsSid(string? sid)

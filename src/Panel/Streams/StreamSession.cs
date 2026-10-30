@@ -32,6 +32,7 @@ public sealed class StreamSession
     private bool _transportUp;
     private bool _closed;
     private long _lastIngestTicks;
+    private long _bindGeneration;
     private IDisposable? _section;
 
     public StreamSession(string sessionId, StreamedPanelDeviceInfo info, string panelDeviceId)
@@ -93,13 +94,15 @@ public sealed class StreamSession
     /// <summary>
     /// Makes <paramref name="section"/> the only section read for this session and disposes the
     /// previous one, which cuts a superseded writer off. Null drops shared frames for the session.
+    /// A section built for a bind that a later bind has since replaced (<paramref name="generation"/>
+    /// from <see cref="ResetForNewIngest"/>) is disposed instead of installed.
     /// </summary>
-    public void ReplaceSection(IDisposable? section)
+    public void ReplaceSection(IDisposable? section, long generation)
     {
         IDisposable? previous;
         lock (_lock)
         {
-            if (_closed)
+            if (_closed || generation != _bindGeneration)
             {
                 previous = section;
             }
@@ -173,15 +176,17 @@ public sealed class StreamSession
     /// New ingest connection: the previous encoder's tail is a dead stream,
     /// and a fresh encoder always opens with SPS/PPS+IDR.
     /// </summary>
-    public void ResetForNewIngest()
+    public long ResetForNewIngest()
     {
         lock (_lock)
         {
+            _bindGeneration++;
             _dropped += _queue.Count;
             ClearLocked();
             _waitingForIdr = true;
             _ingestBound = true;
             _lastIngestTicks = 0;
+            return _bindGeneration;
         }
     }
 

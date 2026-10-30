@@ -123,7 +123,7 @@ public sealed unsafe class StreamFrameSectionTests
             "p");
         var section = new CountingDisposable();
         session.OfferSharedFrames("Global\\n", 10);
-        session.ReplaceSection(section);
+        session.ReplaceSection(section, session.ResetForNewIngest());
         session.Close();
         session.Close();
         Assert.Equal(1, section.Disposed);
@@ -144,14 +144,39 @@ public sealed unsafe class StreamFrameSectionTests
         var first = new CountingDisposable();
         var second = new CountingDisposable();
         var late = new CountingDisposable();
-        session.ReplaceSection(first);
-        session.ReplaceSection(second);
+        var generation = session.ResetForNewIngest();
+        session.ReplaceSection(first, generation);
+        session.ReplaceSection(second, generation);
         Assert.Equal(1, first.Disposed);
         Assert.Equal(0, second.Disposed);
         session.Close();
         Assert.Equal(1, second.Disposed);
-        session.ReplaceSection(late);
+        session.ReplaceSection(late, generation);
         Assert.Equal(1, late.Disposed);
+    }
+
+    [Fact]
+    public void A_section_from_a_superseded_bind_is_disposed_not_installed()
+    {
+        var session = new StreamSession(
+            "s",
+            new StreamedPanelDeviceInfo
+            {
+                Serial = "x",
+                Profile = new StreamedPanelProfile { Kind = "t", DisplayName = "t", Surface = "monitor", CssWidth = 64, CssHeight = 64, Fps = 30 },
+            },
+            "p");
+        var slowA = new CountingDisposable();
+        var fastB = new CountingDisposable();
+        var genA = session.ResetForNewIngest();
+        var genB = session.ResetForNewIngest();
+        session.ReplaceSection(fastB, genB);
+        session.ReplaceSection(slowA, genA);
+        Assert.Equal(1, slowA.Disposed);
+        Assert.Equal(0, fastB.Disposed);
+        session.Close();
+        Assert.Equal(1, fastB.Disposed);
+        Assert.Equal(1, slowA.Disposed);
     }
 
     [Fact]
@@ -269,7 +294,7 @@ public sealed unsafe class StreamFrameSectionTests
             Assert.Null(sddl);
             return;
         }
-        Assert.Equal($"D:(A;;GA;;;SY)(A;;GRGW;;;{sid})", sddl);
+        Assert.Equal($"D:P(A;;GA;;;SY)(A;;GRGW;;;{sid})", sddl);
         Assert.DoesNotContain(";IU)", sddl);
         Assert.DoesNotContain(";WD)", sddl);
     }
