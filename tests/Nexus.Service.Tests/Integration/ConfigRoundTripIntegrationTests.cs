@@ -54,33 +54,39 @@ public sealed class ConfigRoundTripIntegrationTests : IClassFixture<NexusAppFact
     public async Task Master_scales_devices_round_trips_and_each_field_is_independent()
     {
         var client = AuthedClient();
-        await client.PostAsync("/lighting/global-brightness", Json("{\"value\":0.42}"));
-
-        var get = await client.GetAsync("/lighting/global-brightness");
-        using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
+        try
         {
-            Assert.False(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
-        }
+            await client.PostAsync("/lighting/global-brightness", Json("{\"value\":0.42}"));
 
-        // Flag only: the slider must not move.
-        await client.PostAsync("/lighting/global-brightness", Json("{\"masterScalesDevices\":true}"));
-        get = await client.GetAsync("/lighting/global-brightness");
-        using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
+            var get = await client.GetAsync("/lighting/global-brightness");
+            using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
+            {
+                Assert.False(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
+            }
+
+            // Flag only: the slider must not move.
+            await client.PostAsync("/lighting/global-brightness", Json("{\"masterScalesDevices\":true}"));
+            get = await client.GetAsync("/lighting/global-brightness");
+            using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
+            {
+                Assert.True(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
+                Assert.Equal(0.42, doc.RootElement.GetProperty("value").GetDouble(), 2);
+            }
+
+            // Value only: the flag must not move.
+            await client.PostAsync("/lighting/global-brightness", Json("{\"value\":0.7}"));
+            get = await client.GetAsync("/lighting/global-brightness");
+            using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
+            {
+                Assert.True(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
+                Assert.Equal(0.7, doc.RootElement.GetProperty("value").GetDouble(), 2);
+            }
+        }
+        finally
         {
-            Assert.True(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
-            Assert.Equal(0.42, doc.RootElement.GetProperty("value").GetDouble(), 2);
+            // The fixture is shared across the class: never leave it in multiply mode.
+            await client.PostAsync("/lighting/global-brightness", Json("{\"masterScalesDevices\":false}"));
         }
-
-        // Value only: the flag must not move.
-        await client.PostAsync("/lighting/global-brightness", Json("{\"value\":0.7}"));
-        get = await client.GetAsync("/lighting/global-brightness");
-        using (var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync()))
-        {
-            Assert.True(doc.RootElement.GetProperty("masterScalesDevices").GetBoolean());
-            Assert.Equal(0.7, doc.RootElement.GetProperty("value").GetDouble(), 2);
-        }
-
-        await client.PostAsync("/lighting/global-brightness", Json("{\"masterScalesDevices\":false}"));
     }
 
     [Fact]
