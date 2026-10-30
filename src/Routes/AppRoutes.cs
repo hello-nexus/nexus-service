@@ -138,7 +138,7 @@ public static class AppRoutes
         {
             var body = await proxy.ListAsync(
                 http.Request.Query["nexusVersion"], ParseTouch(http), http.Request.Query["locale"], ct);
-            body = Nexus.Service.Store.HardwareAnnotation.Apply(body, null, hardware);
+            body = await Nexus.Service.Store.HardwareAnnotation.ApplyAsync(body, null, hardware);
 #if DEV_TOOLS
             if (body is not null)
             {
@@ -155,7 +155,7 @@ public static class AppRoutes
             async (string appId, Nexus.Service.Store.StoreCatalogProxy proxy, Nexus.Service.Store.HardwareAppCatalog hardware, HttpContext http, CancellationToken ct) =>
         {
             var body = await proxy.DetailAsync(appId, http.Request.Query["nexusVersion"], ParseTouch(http), http.Request.Query["locale"], ct);
-            body = Nexus.Service.Store.HardwareAnnotation.Apply(body, appId, hardware);
+            body = await Nexus.Service.Store.HardwareAnnotation.ApplyAsync(body, appId, hardware);
 #if DEV_TOOLS
             if (body is null
                 && AppIds.IsValid(appId)
@@ -225,11 +225,12 @@ public static class AppRoutes
                    Nexus.Service.Store.StoreInstaller installer,
                    Nexus.Service.Store.HardwareAppCatalog hardware,
                    Nexus.Service.Store.StoreCatalogProxy catalog,
-                   IConfigStore store, MultiplexHub hub, HttpContext http, CancellationToken ct) =>
+                   AppRegistry registry, IConfigStore store, MultiplexHub hub, HttpContext http, CancellationToken ct) =>
         {
             var appId = body.AppId ?? "";
-            // Hardware-bound apps install only where the hardware is attached, account or not.
-            if (!hardware.MayInstall(appId))
+            // A first install of a hardware-bound app needs the hardware attached, account or not; an installed copy may update.
+            var installed = registry.TryGet(appId, out var existing) && existing.Source == AppInstallPaths.Source.User;
+            if (await hardware.RefusesFirstInstallAsync(appId, installed))
             {
                 return Results.Json(new StoreInstallResponse
                 {

@@ -44,9 +44,7 @@ public sealed class StoreAppUpdater : BackgroundService
         : this(
             () => registry.All().ToList(),
             (appId, ct) => StoreRelease.LatestAsync(catalog, appId, NexusVersion(), ct),
-            (appId, version, ct) => hardware.MayInstall(appId)
-                ? StoreRelease.ResolveAsync(entitlements, appId, version, NexusVersion(), hardware.IsMatched(appId), ct)
-                : Task.FromResult<StoreInstallRequest?>(null),
+            (appId, version, ct) => StoreRelease.ResolveAsync(entitlements, appId, version, NexusVersion(), hardware.IsMatched(appId), ct),
             installer.UpdateAsync,
             () => PanelTopics.BroadcastAppsChanged(hub))
     {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
 using Nexus.Service.Platform.Displays;
 using Nexus.Service.Sensors;
@@ -82,8 +83,16 @@ public sealed class HardwareAppCatalog
         "HYTE Y70 Touch Infinite (Ina edition)",
         "https://hyte.com/store/ninomae-ina-nis-y70ti-product-page/cs-hyte-y70tti-ina");
 
-    /// <summary>True unless the app is bound to hardware that is not attached.</summary>
-    public bool MayInstall(string appId) => ProductFor(appId) is null || IsMatched(appId);
+    /// <summary>
+    /// Whether a first install must be refused: the app is bound to hardware that is not attached and no copy is
+    /// installed. An installed copy keeps updating, since the display read can be empty before the helper connects.
+    /// The read runs off the request thread because a stale cache enumerates synchronously.
+    /// </summary>
+    public async Task<bool> RefusesFirstInstallAsync(string appId, bool installed) =>
+        !installed && ProductFor(appId) is not null && !await IsMatchedAsync(appId).ConfigureAwait(false);
+
+    /// <summary><see cref="IsMatched"/> off the calling thread, for request handlers.</summary>
+    public Task<bool> IsMatchedAsync(string appId) => Task.Run(() => IsMatched(appId));
 
     /// <summary>Attached DDC-only Y70 variant; empty until the user-session helper connects, which is why callers re-read rather than caching.</summary>
     private static string ResolvePanelVariant(DisplayTopologyService displays)
