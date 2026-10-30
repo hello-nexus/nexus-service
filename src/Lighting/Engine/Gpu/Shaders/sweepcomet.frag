@@ -8,15 +8,25 @@ uniform float u_head;   // hint_range(0.0, 1.0, 0.01) = 0.7  how white the leadi
 // through the body and low-frequency noise drifts slowly along y.
 void main() {
     vec2 uv = uv01();
-    // u_time counts seconds of the day, so time * speed reaches 1e5 and float
-    // rounding at that size quantizes the comet phase in steps that grow with
-    // speed. Wrapping first keeps the product small; the pan repeats its
-    // phase once per wrap.
-    float tw = mod(u_time, 600.0);
-    float T = tw * u_speed;
+    // u_time counts seconds of the day, so time * speed is large and float rounding
+    // quantizes the pan phase. Time wraps over one loop sized so the pan moves a whole
+    // multiple of CELLS comet cells per loop, and every other time term is periodic over
+    // that loop (whole sine cycles, a cross-faded noise window, cell identity mod CELLS),
+    // so the wrap is invisible. Below a minimum speed the pan product stays small and
+    // reads unwrapped time.
+    const float CELLS = 8.0;
+    const float TAU = 6.2831853;
+    float sa = abs(u_speed);
+    float loops = max(1.0, floor(600.0 * 1.8 * sa / CELLS + 0.5));
+    float L = sa >= 0.02 ? CELLS * loops / (1.8 * sa) : 600.0;
+    float tw = mod(u_time, L);
+    float u = tw / L;
+    float T = (sa >= 0.02 ? tw : u_time) * u_speed;
     // Texture drift and sheen evolve slower than the pan and grow only gently with speed.
-    float Tn = tw * (0.5 + 0.5 * abs(u_speed)) * sign(u_speed + 1e-4);
-    float f = uv.x * u_comets - T * 1.8 + 0.05 * sin(uv.y * 3.0 + Tn * 0.8 + uv.x * 2.0);
+    float rate = (0.5 + 0.5 * sa) * (u_speed < 0.0 ? -1.0 : 1.0);
+    float cyA = TAU * fract(max(1.0, floor(L * abs(rate) * 0.8 / TAU + 0.5)) * u) * sign(rate);
+    float cyB = TAU * fract(max(1.0, floor(L * abs(rate) * 1.2 / TAU + 0.5)) * u) * sign(rate);
+    float f = uv.x * u_comets - T * 1.8 + 0.05 * sin(uv.y * 3.0 + cyA + uv.x * 2.0);
     float cell = floor(f);
     float d = f - cell;
     float behind = 1.0 - d;
@@ -24,8 +34,11 @@ void main() {
     float head = smoothstep(0.8, 1.0, d);
     float bloom = exp(-behind * behind * 40.0) * 0.55;
     float core = exp(-behind * behind * 120.0);
-    float drift = vnoise(vec2(d * 2.5 + cell * 7.3, uv.y * 2.0 - Tn * 0.5));
-    float wave = 0.5 + 0.5 * sin(d * 4.0 + uv.y * 3.0 - Tn * 1.2 + cell * 1.7);
+    float cid = mod(cell, CELLS);
+    float span = 0.5 * rate * L;
+    vec2 np = vec2(d * 2.5 + cid * 7.3, uv.y * 2.0 - span * u);
+    float drift = mix(vnoise(np), vnoise(np + vec2(0.0, span)), u);
+    float wave = 0.5 + 0.5 * sin(d * 4.0 + uv.y * 3.0 - cyB + cid * 1.7);
     float crest = wave * wave * (3.0 - 2.0 * wave);
     float grain = (0.9 + 0.2 * drift) * mix(0.7, 1.2, crest);
     float glow = (tail * 0.5 + bloom) * crest * 0.5;

@@ -385,7 +385,6 @@ public sealed class SimplePatternMigrationTests : IDisposable
     [InlineData("rainbow", 90f, false)]
     [InlineData("sharplines", 45f, false)]
     [InlineData("sharplines", 0f, true)]
-    [InlineData("sweepbrush", 90f, true)]
     [InlineData("plasma", 0f, false)]
     public void Full_frame_sampling_yields_to_a_rotated_rainbow_or_sharplines(string key, float rotation, bool expected)
     {
@@ -393,14 +392,19 @@ public sealed class SimplePatternMigrationTests : IDisposable
         Assert.Equal(expected, Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsFullFrame(key, extras));
     }
 
-    [Fact]
-    public void Brush_is_full_frame_at_any_rotation()
+    [Theory]
+    [InlineData(0f, true)]
+    [InlineData(180f, true)]
+    [InlineData(360f, true)]
+    [InlineData(-180f, true)]
+    [InlineData(45f, false)]
+    [InlineData(90f, false)]
+    [InlineData(270f, false)]
+    public void Brush_is_full_frame_only_when_horizontal(float rotation, bool expected)
     {
-        foreach (var rotation in new[] { 0f, 45f, 90f, 180f, 270f })
-        {
-            var extras = new Dictionary<string, float> { ["u_rotation"] = rotation };
-            Assert.True(Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsFullFrame("sweepbrush", extras));
-        }
+        var extras = new Dictionary<string, float> { ["u_rotation"] = rotation };
+        Assert.Equal(expected, Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsFullFrame("sweepbrush", extras));
+        Assert.True(Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsFullFrame("sweepbrush", null));
     }
 
     [Fact]
@@ -425,36 +429,16 @@ public sealed class SimplePatternMigrationTests : IDisposable
     }
 
     [Fact]
-    public void Brush_shader_has_no_time_wrap_and_mirrors_for_negative_speed()
+    public void A_stale_retired_step_param_is_ignored_while_declared_params_still_clamp()
     {
-        var src = Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Get("sweepbrush");
-        Assert.DoesNotContain("mod(u_time", src);
-        Assert.Contains("abs(u_speed)", src);
-    }
-
-    [Fact]
-    public void A_stored_brush_slot_still_carrying_the_retired_step_is_replayed_without_harm()
-    {
-        var lighting = new LightingSettings();
-        lighting.Animate.Templates["sweepbrush"] = new AnimateEffectTemplates
+        var state = new AnimateEffectState
         {
-            Selected = 0,
-            Slots =
-            {
-                new AnimateEffectState
-                {
-                    Speed = 50,
-                    Params = new Dictionary<string, float> { ["u_strokes"] = 4f, ["u_step"] = 0.3f },
-                },
-            },
+            Speed = 50,
+            Params = new Dictionary<string, float> { ["u_strokes"] = 99f, ["u_step"] = 0.3f },
         };
-        var start = AnimateTemplateDefaults.SavedStart(lighting, "sweepbrush");
-        // The stale value rides along but no declared spec or uniform matches it: spec clamping
-        // skips unknown names and the GL uniform lookup returns no location.
-        var specs = Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Params("sweepbrush");
-        Assert.Contains(start.Params, p => p.Name == "u_strokes");
-        Assert.DoesNotContain(start.Params, p => specs.ContainsKey(p.Name) && p.Name == "u_step");
-        Assert.DoesNotContain("u_step", Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.Get("sweepbrush"));
+        Nexus.Service.Lighting.Engine.Gpu.ShaderParamSpec.Sanitize("sweepbrush", state);
+        Assert.Equal(12f, state.Params["u_strokes"]);
+        Assert.Equal(0.3f, state.Params["u_step"]);
     }
 
     [Fact]

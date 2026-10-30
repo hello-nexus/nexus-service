@@ -37,8 +37,8 @@ vec3 coat(float cOld, float cNew, float painted, float v) {
     return hsv2rgb(vec3(hOld + d * painted, 1.0, v));
 }
 
-// Seamless phase for sin(): fract wraps exactly at the period, so a large
-// clock never shows a jump or loses precision inside sin.
+// Phase for sin(): fract keeps the argument inside one period, so there is no jump at
+// the wrap. t * k still rounds at a large clock, so the phase steps coarsely there.
 float cyc(float t, float k) {
     return fract(t * k * 0.1591549) * 6.2831853;
 }
@@ -51,7 +51,8 @@ vec3 laneColor(float lane, float s, float q, float t, float wash) {
     // The edge starts and ends off-frame, so a new pass continues the old coat without a jump.
     float reach = feather * 1.4 + 0.15;
     float hx = -reach + (1.0 + 2.0 * reach) * (ph - pass);
-    float rn = vnoise(vec2(q * 6.0, pass * 3.0 + lane * 7.0));
+    // Bounded seed; it only changes while the edge is off-frame at rollover.
+    float rn = vnoise(vec2(q * 6.0, mod(pass, 64.0) * 3.0 + lane * 7.0));
     float rag = feather * 2.0 * (rn - 0.5);
     float bend = 0.05 * sin(q * 5.0 + cyc(t, 0.6) + lane * 2.0);
     // Distance behind the edge along the travel axis; negative is still old coat.
@@ -64,8 +65,10 @@ vec3 laneColor(float lane, float s, float q, float t, float wash) {
     float vOld = mix(0.5, 1.0, 1.0 - smoothstep(0.55 * fill, fill, eW + 1.0 + 2.0 * reach));
     float v = mix(vOld, vNew, painted);
     // Watercolor: pigment pools in a line behind the wet edge, and the old hue bleeds into it.
-    float nearEdge = exp(-max(e, 0.0) * 7.0) * painted;
-    v *= 1.0 - 0.4 * wash * exp(-max(e, 0.0) * 20.0) * painted;
+    // Faded out before the pass rolls over, so nothing snaps when the edge restarts.
+    float settle = 1.0 - smoothstep(0.85, 1.0, ph - pass);
+    float nearEdge = exp(-max(e, 0.0) * 7.0) * painted * settle;
+    v *= 1.0 - 0.4 * wash * exp(-max(e, 0.0) * 20.0) * painted * settle;
     float hueMix = painted * (1.0 - 0.45 * wash * rn * nearEdge);
     float cNew = (pass + lane * 0.5) * STEP;
     return coat(cNew - STEP, cNew, hueMix, v);
