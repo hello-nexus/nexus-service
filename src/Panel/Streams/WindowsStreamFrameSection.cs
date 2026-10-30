@@ -62,15 +62,13 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
     }
 
     /// <param name="onFrame">Gets a pooled array and the frame length in it; ownership of the array passes to the callback.</param>
-    private WindowsStreamFrameSection(string name, nint mapping, byte* view, nint ready, int frameBytes, Action<byte[], int> onFrame)
+    private WindowsStreamFrameSection(string name, nint mapping, byte* view, nint ready, nint stop, int frameBytes, Action<byte[], int> onFrame)
     {
         Name = name;
         _mapping = mapping;
         _view = view;
         _ready = ready;
-        // Service-only: the overlay user holds write access to the ready event, so Dispose cannot rely on it to wake the reader.
-        var local = new SecurityAttributes { Length = (uint)Unsafe.SizeOf<SecurityAttributes>() };
-        _stop = CreateEventW(in local, 1, 0, null!);
+        _stop = stop;
         _maxFrameBytes = frameBytes;
         _capacity = StreamFrameSection.SectionBytes(frameBytes);
         _onFrame = onFrame;
@@ -123,7 +121,18 @@ internal sealed unsafe partial class WindowsStreamFrameSection : IDisposable
                     ? new Win32Exception(eventError, "failed to create the stream section event")
                     : new IOException("stream section event name already in use");
             }
-            return new WindowsStreamFrameSection(name, mapping, (byte*)view, ready, frameBytes, onFrame);
+            // Service-only: the overlay user holds write access to the ready event, so Dispose cannot rely on it to wake the reader.
+            var local = new SecurityAttributes { Length = (uint)Unsafe.SizeOf<SecurityAttributes>() };
+            var stop = CreateEventW(in local, 1, 0, null!);
+            if (stop == 0)
+            {
+                var stopError = Marshal.GetLastPInvokeError();
+                CloseHandle(ready);
+                UnmapViewOfFile(view);
+                CloseHandle(mapping);
+                throw new Win32Exception(stopError, "failed to create the stream section stop event");
+            }
+            return new WindowsStreamFrameSection(name, mapping, (byte*)view, ready, stop, frameBytes, onFrame);
         }
         finally
         {
