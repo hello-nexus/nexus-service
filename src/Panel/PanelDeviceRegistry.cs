@@ -1027,9 +1027,11 @@ public sealed class PanelDeviceRegistry
                 hitCap = true;
                 return;
             }
+            // With no preset active, fresh would discard the only copy of the live layout.
+            var emptyIt = fresh && record.Presets.Exists(p => p.Id == record.ActivePresetId);
             PanelPresets.CaptureActive(record);
             // A fresh preset empties the widgets and keeps the rest of the personalization; the live record follows so the next switch-away capture does not write the old layout back.
-            if (fresh)
+            if (emptyIt)
                 record.Layout = PanelPresets.EmptyLayout(record.Layout, record.Capabilities?.Surface ?? PanelSurfaces.Y70);
             var preset = new PanelPreset { Id = Guid.NewGuid().ToString("n"), Name = name };
             PanelPresets.Copy(record, preset);

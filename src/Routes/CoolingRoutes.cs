@@ -458,18 +458,25 @@ public static class CoolingRoutes
             {
                 return Results.BadRequest(new CreateCoolingPresetResponse { Error = true, Msg = "Preset name required" });
             }
-            if (store.Load().Cooling.Presets.Count >= CoolingPresets.Cap)
+            if (body.Fresh && !gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var cooling = store.Load().Cooling;
+            if (cooling.Presets.Count >= CoolingPresets.Cap)
             {
                 return Results.BadRequest(new CreateCoolingPresetResponse { Error = true, Msg = $"Preset cap of {CoolingPresets.Cap} reached" });
             }
+            // With no preset active, fresh would discard the only copy of the live configuration.
+            var fresh = body.Fresh && cooling.Presets.Exists(p => p.Id == cooling.ActivePresetId);
             var id = Guid.NewGuid().ToString("n");
-            var created = body.Fresh ? CoolingPresets.CreateFresh(id, name) : CoolingPresets.Capture(id, name, store, f);
+            var created = fresh ? CoolingPresets.CreateFresh(id, name) : CoolingPresets.Capture(id, name, store, f);
             store.Update(s =>
             {
                 s.Cooling.Presets.Add(created);
                 s.Cooling.ActivePresetId = created.Id;
             });
-            if (body.Fresh && gates.Cooling)
+            if (fresh)
             {
                 // The live fans still follow the old configuration; replay the defaults so the active preset matches them.
                 CoolingPresets.Activate(created.Id, store, f);

@@ -494,7 +494,12 @@ public static partial class DevicesRoutes
             Nexus.Service.Lighting.Engine.LightingEngine engine,
             FeatureGates gates) =>
         {
+            if (body.Fresh && !gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
             bool capped = false;
+            bool fresh = false;
             Nexus.Service.Persistence.LayoutPreset? created = null;
             store.Update(s =>
             {
@@ -503,6 +508,8 @@ public static partial class DevicesRoutes
                     capped = true;
                     return;
                 }
+                // With no preset active, fresh would discard the only copy of the live look.
+                fresh = body.Fresh && s.Lighting.LayoutPresets.Exists(p => p.Id == s.Lighting.ActiveLayoutPresetId);
                 var id = Guid.NewGuid().ToString("n");
                 created = new Nexus.Service.Persistence.LayoutPreset
                 {
@@ -511,17 +518,29 @@ public static partial class DevicesRoutes
                     Layouts = DeepCopyLayouts(s.Lighting.DeviceLayouts),
                     // Fresh: the clean-install look, no pins, no per-device color prefs. Layouts, scene view and power lists stay as they are.
                     Look = Nexus.Service.Lighting.LightingPresetLooks.Capture(
-                        body.Fresh ? new Nexus.Service.Persistence.LightingSettings() : s.Lighting),
+                        fresh ? new Nexus.Service.Persistence.LightingSettings() : s.Lighting),
                     SceneView = CopySceneView(s.Lighting.SceneView),
                 };
                 CaptureDeviceSlices(s, created);
-                if (body.Fresh)
+                if (fresh)
                 {
                     created.DevicePins = new();
+                    // Color order is a wiring correction, so it survives the reset.
                     created.DevicePrefs = new();
+                    foreach (var kv in s.Devices.LightingDevicePrefs)
+                    {
+                        if (kv.Value?.ColorOrder is { } order)
+                        {
+                            created.DevicePrefs[kv.Key] = new Nexus.Service.Persistence.LightingDevicePreference { ColorOrder = order };
+                        }
+                    }
                 }
                 s.Lighting.LayoutPresets.Add(created);
-                s.Lighting.ActiveLayoutPresetId = id;
+                // Fresh keeps the old active id until ActivateLayoutPreset sets it with the look, so no live mirror lands in between.
+                if (!fresh)
+                {
+                    s.Lighting.ActiveLayoutPresetId = id;
+                }
             });
             if (capped)
             {
@@ -530,9 +549,8 @@ public static partial class DevicesRoutes
                     Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
                     statusCode: 400);
             }
-            if (body.Fresh && gates.Lighting)
+            if (fresh)
             {
-                // The live look, pins and prefs still belong to the old state, and the live mirror would write them back into the new preset.
                 ActivateLayoutPreset(created!.Id, store, hub, lightingProvider, lighting, bridge, smart, engine);
             }
             return Results.Json(

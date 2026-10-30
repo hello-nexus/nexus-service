@@ -123,17 +123,30 @@ public sealed class DashboardPresetRoutesTests : IClassFixture<StubDeviceHostFac
     [Fact]
     public async Task Create_fresh_stores_an_empty_layout_and_clears_the_live_one()
     {
+        await ReadJson(await SeedAsync(("Default", "clock")));
         Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
 
         var root = await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"Blank","fresh":true}""")));
 
         var stored = Store.Load().Panel;
-        var layout = stored.DashboardPresets!.Single().Layout!;
-        Assert.Equal(root.GetProperty("presets")[0].GetProperty("id").GetString(), stored.DashboardActivePresetId);
+        var layout = stored.DashboardPresets!.Single(p => p.Name == "Blank").Layout!;
+        Assert.Equal(root.GetProperty("presets")[1].GetProperty("id").GetString(), stored.DashboardActivePresetId);
         Assert.Equal("desktop", layout.Surface);
         Assert.Equal(2, layout.LayoutSchemaVersion);
         Assert.Empty(layout.Pages.SelectMany(p => p.Widgets));
         Assert.Empty(stored.DashboardLayout!.Pages.SelectMany(p => p.Widgets));
+    }
+
+    [Fact]
+    public async Task Create_fresh_without_an_active_preset_snapshots_the_live_layout()
+    {
+        Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
+
+        await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"First","fresh":true}""")));
+
+        var stored = Store.Load().Panel;
+        Assert.Equal("calendar", WidgetType(stored.DashboardPresets!.Single().Layout));
+        Assert.Equal("calendar", WidgetType(stored.DashboardLayout));
     }
 
     [Fact]

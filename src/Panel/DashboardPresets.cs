@@ -46,6 +46,8 @@ public static class DashboardPresets
         panel.DashboardPresets ??= new List<DashboardPreset>();
         if (panel.DashboardPresets.Count >= Cap)
             return false;
+        // With no preset active, fresh would discard the only copy of the live layout.
+        fresh &= panel.DashboardPresets.Exists(p => p.Id == panel.DashboardActivePresetId);
         CaptureActive(panel);
         if (fresh)
             panel.DashboardLayout = PanelPresets.EmptyLayout(panel.DashboardLayout);

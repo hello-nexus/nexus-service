@@ -89,6 +89,17 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
             s.Lighting.DevicePins["dev-1"] = new DevicePin();
             s.Devices.LightingDevicePrefs["dev-1"] = new LightingDevicePreference { Brightness = 30 };
             s.Devices.DisabledLightingDevices = new List<string> { "dev-2" };
+            s.FeaturesOnboardingCompleted = true;
+            s.Features.Lighting = true;
+        });
+    }
+
+    private void SeedActivePreset()
+    {
+        Store.Update(s =>
+        {
+            s.Lighting.LayoutPresets.Add(new LayoutPreset { Id = "old", Name = "Old" });
+            s.Lighting.ActiveLayoutPresetId = "old";
         });
     }
 
@@ -96,6 +107,7 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
     public async Task Create_fresh_resets_looks_to_install_defaults_and_keeps_placement()
     {
         SeedCustomLook();
+        SeedActivePreset();
         var defaults = Nexus.Service.Defaults.InstallDefaults.Lighting;
 
         var res = await _client.PostAsync(
@@ -104,7 +116,7 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         var stored = Store.Load();
-        var preset = Assert.Single(stored.Lighting.LayoutPresets);
+        var preset = Assert.Single(stored.Lighting.LayoutPresets, p => p.Id != "old");
         Assert.Equal(defaults.Sync, preset.Look!.Sync);
         Assert.Equal(defaults.Animate.Effect, preset.Look.AnimateEffect);
         Assert.Empty(preset.DevicePins!);
@@ -119,6 +131,55 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
         Assert.Empty(stored.Lighting.DevicePins);
         Assert.Empty(stored.Devices.LightingDevicePrefs);
         Assert.Equal(5, stored.Lighting.DeviceLayouts["dev-1"].X);
+    }
+
+    [Fact]
+    public async Task Create_fresh_keeps_the_color_order_of_each_device()
+    {
+        SeedCustomLook();
+        SeedActivePreset();
+        Store.Update(s => s.Devices.LightingDevicePrefs["dev-1"].ColorOrder = "GRB");
+
+        await _client.PostAsync("/devices/lighting-devices/layout-presets", Json("""{"name":"Clean","fresh":true}"""));
+
+        var stored = Store.Load();
+        var preset = Assert.Single(stored.Lighting.LayoutPresets, p => p.Id != "old");
+        Assert.Equal("GRB", preset.DevicePrefs!["dev-1"].ColorOrder);
+        Assert.Equal(100, preset.DevicePrefs["dev-1"].Brightness);
+        Assert.Equal("GRB", stored.Devices.LightingDevicePrefs["dev-1"].ColorOrder);
+    }
+
+    [Fact]
+    public async Task Create_fresh_without_an_active_preset_snapshots_the_live_state()
+    {
+        SeedCustomLook();
+
+        var res = await _client.PostAsync("/devices/lighting-devices/layout-presets", Json("""{"name":"First","fresh":true}"""));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var stored = Store.Load();
+        var preset = Assert.Single(stored.Lighting.LayoutPresets);
+        Assert.Equal("static", preset.Look!.Sync);
+        Assert.Contains("dev-1", preset.DevicePins!.Keys);
+        Assert.Equal(preset.Id, stored.Lighting.ActiveLayoutPresetId);
+        Assert.Equal("static", stored.Lighting.Sync);
+        Assert.Contains("dev-1", stored.Lighting.DevicePins.Keys);
+    }
+
+    [Fact]
+    public async Task Create_fresh_with_lighting_gate_off_returns_409_and_creates_nothing()
+    {
+        SeedCustomLook();
+        SeedActivePreset();
+        Store.Update(s => s.Features.Lighting = false);
+
+        var res = await _client.PostAsync("/devices/lighting-devices/layout-presets", Json("""{"name":"Clean","fresh":true}"""));
+
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+        var stored = Store.Load();
+        Assert.Single(stored.Lighting.LayoutPresets);
+        Assert.Equal("old", stored.Lighting.ActiveLayoutPresetId);
+        Assert.Equal("static", stored.Lighting.Sync);
     }
 
     [Theory]

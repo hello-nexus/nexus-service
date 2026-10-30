@@ -406,7 +406,7 @@ public static class PanelRoutes
             return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
         });
 
-        app.MapPost("/panel/devices/{id}/presets", (string id, PanelPresetNameBody body, PanelDeviceRegistry registry) =>
+        app.MapPost("/panel/devices/{id}/presets", (string id, PanelPresetNameBody body, PanelDeviceRegistry registry, MultiplexHub hub) =>
         {
             var name = (body.Name ?? "").Trim();
             if (name.Length == 0)
@@ -416,6 +416,8 @@ public static class PanelRoutes
                 return Results.BadRequest(ApiResponse.Fail($"Preset cap of {PanelPresets.Cap} reached"));
             if (presets is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            if (body.Fresh)
+                BroadcastDeviceChanged(hub, id);
             return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
         });
 

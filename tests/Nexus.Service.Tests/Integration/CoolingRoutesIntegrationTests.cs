@@ -345,13 +345,15 @@ public sealed class CoolingRoutesIntegrationTests
                 s.Cooling.ManualSpeeds["fan1"] = 60;
                 s.Cooling.FanOffsets["fan1"] = 9;
                 s.Cooling.GlobalSpeedModifier = 1.4;
+                s.Cooling.Presets.Add(new CoolingPreset { Id = "old", Name = "Old" });
+                s.Cooling.ActivePresetId = "old";
             });
 
             var res = await client.PostAsJsonAsync("/cooling/presets", new { name = "Clean", fresh = true });
 
             Assert.True(res.IsSuccessStatusCode);
             var cooling = store.Load().Cooling;
-            var preset = Assert.Single(cooling.Presets);
+            var preset = Assert.Single(cooling.Presets, p => p.Id != "old");
             Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.ActivePreset, preset.Mode);
             Assert.Empty(preset.FanCurveAssignments);
             Assert.Empty(preset.ManualSpeeds);
@@ -362,6 +364,52 @@ public sealed class CoolingRoutesIntegrationTests
             Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.ActivePreset, cooling.ActivePreset);
             Assert.Empty(cooling.FanOffsets);
             Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.GlobalSpeedModifier, cooling.GlobalSpeedModifier);
+        }
+    }
+
+    [Fact]
+    public async Task CreatePreset_FreshWithNoActivePreset_SnapshotsTheLiveState()
+    {
+        var (factory, client) = Boot(new FakeFanProvider());
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                s.Cooling.ActivePreset = "custom";
+                s.Cooling.FanOffsets["fan1"] = 9;
+            });
+
+            var res = await client.PostAsJsonAsync("/cooling/presets", new { name = "First", fresh = true });
+
+            Assert.True(res.IsSuccessStatusCode);
+            var cooling = store.Load().Cooling;
+            Assert.Equal("custom", Assert.Single(cooling.Presets).Mode);
+            Assert.Equal(9, cooling.Presets[0].FanOffsets["fan1"]);
+            Assert.Equal(9, cooling.FanOffsets["fan1"]);
+        }
+    }
+
+    [Fact]
+    public async Task CreatePreset_FreshWithCoolingGateOff_Returns409AndCreatesNothing()
+    {
+        var (factory, client) = Boot(new FakeFanProvider());
+        using (factory)
+        {
+            var store = factory.Services.GetRequiredService<IConfigStore>();
+            store.Update(s =>
+            {
+                s.Features.Cooling = false;
+                s.Cooling.Presets.Add(new CoolingPreset { Id = "old", Name = "Old" });
+                s.Cooling.ActivePresetId = "old";
+            });
+
+            var res = await client.PostAsJsonAsync("/cooling/presets", new { name = "Clean", fresh = true });
+
+            Assert.Equal(System.Net.HttpStatusCode.Conflict, res.StatusCode);
+            var cooling = store.Load().Cooling;
+            Assert.Single(cooling.Presets);
+            Assert.Equal("old", cooling.ActivePresetId);
         }
     }
 

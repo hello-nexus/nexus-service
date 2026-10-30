@@ -63,13 +63,14 @@ public static class PanelPresets
         to.GridSlots = from.GridSlots;
     }
 
-    /// <summary>A layout with no widgets that keeps the source's surface and schema version. Without a source it uses a v2 layout on <paramref name="fallbackSurface"/>, on one empty page.</summary>
-    public static PanelLayoutDto EmptyLayout(PanelLayoutDto? like, string fallbackSurface = "desktop") => new()
+    /// <summary>The default layout for the source's surface (or <paramref name="fallbackSurface"/>) with every widget removed.</summary>
+    public static PanelLayoutDto EmptyLayout(PanelLayoutDto? like, string fallbackSurface = "desktop")
     {
-        LayoutSchemaVersion = like?.LayoutSchemaVersion ?? 2,
-        Surface = like?.Surface ?? fallbackSurface,
-        Pages = { new PanelPageDto { Id = System.Guid.NewGuid().ToString() } },
-    };
+        var layout = PanelLayoutDefaults.ForSurface(like?.Surface ?? fallbackSurface);
+        foreach (var page in layout.Pages)
+            page.Widgets.Clear();
+        return layout;
+    }
 
     public static PanelPresetsResponse ToResponse(PanelDeviceRecord record) => new()
     {
