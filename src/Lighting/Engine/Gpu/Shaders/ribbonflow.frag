@@ -27,14 +27,14 @@ void main() {
         // ribbon to scroll backward so the field looks woven.
         float dir = mod(fi, 2.0) < 0.5 ? 1.0 : -1.0;
         float vScroll = (0.6 + hash21(vec2(fi, 17.0)) * 0.9) * dir;
-        float xShift = uv.x + t * vScroll * 0.18;
+        float xShift = uv.x + t * vScroll * 0.45;
 
         // Vertical wobble: a 3-octave fbm gives the gentle snake, a single
         // value-noise tap the faint edge ripple. Both were 5-octave fbm; at
         // these small amplitudes the dropped octaves don't read, and this loop's
         // per-ribbon noise is the shader's dominant cost on the q-series GPU.
-        float wobble = (fbm3(vec2(xShift * 1.6, fi * 3.13 + t * 0.25)) - 0.5) * 0.16 * turb;
-        wobble += (vnoise(vec2(xShift * 5.0, fi * 7.7 - t * 0.4)) - 0.5) * 0.04 * turb;
+        float wobble = (fbm3(vec2(xShift * 1.6, fi * 3.13 + t * 0.7)) - 0.5) * 0.16 * turb;
+        wobble += (vnoise(vec2(xShift * 5.0, fi * 7.7 - t * 1.1)) - 0.5) * 0.04 * turb;
         float yLine = yPos + wobble;
 
         // Soft Gaussian thickness profile, modulated by a sin so the
@@ -45,7 +45,7 @@ void main() {
 
         // Hue rolls along ribbon length and across ribbons so neighbours
         // never share the same colour at the same x.
-        vec3 c = tintedPalette(fi / ribbons + xShift * 0.45 + t * 0.05);
+        vec3 c = tintedPalette(fi / ribbons + xShift * 0.45 + t * 0.15);
 
         // Outer glow: wider Gaussian, dimmer, additive.
         float halo = exp(-dy * dy / (thickness * thickness * 6.0)) * 0.35 * glow;

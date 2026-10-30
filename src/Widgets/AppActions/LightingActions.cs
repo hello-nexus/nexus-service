@@ -39,7 +39,7 @@ public static class LightingActions
             }
             else
             {
-                mode = Nexus.Service.Lighting.RemovedSyncModes.Normalize(mode);
+                mode = Nexus.Service.Lighting.SimplePatternMigration.Normalize(Nexus.Service.Lighting.RemovedSyncModes.Normalize(mode));
                 l.SetSync(mode);
             }
             return Task.FromResult<JsonElement?>(Ack(true, applied: mode));

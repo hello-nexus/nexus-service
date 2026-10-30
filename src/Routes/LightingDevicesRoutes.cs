@@ -453,6 +453,10 @@ public static partial class DevicesRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
+            if (body.Pin is { Kind: Nexus.Service.Persistence.DevicePinKinds.Animate })
+            {
+                body.Pin.Effect = Nexus.Service.Lighting.SimplePatternMigration.Normalize(body.Pin.Effect);
+            }
             if (body.Pin is not null && Nexus.Service.Lighting.DevicePinTracker.Validate(body.Pin) is { } why)
             {
                 return Results.Json(

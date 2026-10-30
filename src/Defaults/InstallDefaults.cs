@@ -92,9 +92,9 @@ public sealed class InstallDefaultsDocument
 
 public sealed class LightingDefaults
 {
-    // Simple mode's first Rainbow tile: fresh installs open the lighting page in
-    // simple mode, which can only mark a simple tile or a palette colour active.
-    public string Sync { get; set; } = "sweeprainbow";
+    // Rainbow's first preset is simple mode's first tile: fresh installs open the
+    // lighting page in simple mode, which can only mark a simple tile or a palette colour active.
+    public string Sync { get; set; } = "rainbow";
     public bool BrightnessEnabled { get; set; }
     public bool SpeedEnabled { get; set; }
     public int FrameRate { get; set; } = 60;
@@ -120,7 +120,7 @@ public sealed class LightingStaticColor
 
 public sealed class LightingAnimateDefaults
 {
-    public string Effect { get; set; } = "sweeprainbow";
+    public string Effect { get; set; } = "rainbow";
     public LightingAnimateState State { get; set; } = new();
 }
 

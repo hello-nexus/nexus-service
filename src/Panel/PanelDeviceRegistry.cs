@@ -760,7 +760,7 @@ public sealed class PanelDeviceRegistry
             if (patch.BackgroundMode is not null)
                 record.BackgroundMode = NullIfEmpty(patch.BackgroundMode);
             if (patch.BackgroundEffect is not null)
-                record.BackgroundEffect = NullIfEmpty(patch.BackgroundEffect);
+                record.BackgroundEffect = NullIfEmpty(Nexus.Service.Lighting.SimplePatternMigration.Normalize(patch.BackgroundEffect));
             if (patch.BackgroundTemplate.HasValue)
                 record.BackgroundTemplate = patch.BackgroundTemplate.Value;
             if (patch.BackgroundTemplates is not null)

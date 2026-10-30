@@ -234,6 +234,8 @@ public sealed partial class LightingEngine : IDisposable
         public long RetryAtMs;
     }
     private readonly Dictionary<string, PinRender> _pinRenders = new(StringComparer.Ordinal);
+
+    private static IReadOnlyDictionary<string, float>? ExtrasOf(IEffect? effect) => (effect as Gpu.ShaderEffect)?.ExtraParams;
     // Device id to the canvas it samples this tick; a null canvas means the
     // main one. Absent means no animate/mirror pin (or its source failed to render).
     private readonly Dictionary<string, CanvasBuffer?> _pinnedDevices = new(StringComparer.Ordinal);
@@ -1114,7 +1116,8 @@ public sealed partial class LightingEngine : IDisposable
             {
                 continue;
             }
-            var sweep = key != MirrorPinKey && key != MediaPinKey && Gpu.ShaderLibrary.IsSweepEffect(key);
+            var sweepKey = key != MirrorPinKey && key != MediaPinKey && Gpu.ShaderLibrary.IsSweepEffect(key);
+            var sweep = sweepKey && Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(active));
             // Pinned to what is already running globally: share its canvas.
             var shared = key == MirrorPinKey ? ScreenEffectName : key == MediaPinKey ? MediaEffectName : key;
             if (string.Equals(activeName, shared, StringComparison.Ordinal))
@@ -1160,7 +1163,7 @@ public sealed partial class LightingEngine : IDisposable
             if (render.Rendered)
             {
                 _pinnedDevices[dev.Id] = render.Canvas;
-                if (sweep) _pinFullFrame.Add(dev.Id);
+                if (sweepKey && Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(render.Effect))) _pinFullFrame.Add(dev.Id);
             }
         }
         if (used < _pinRenders.Count)
@@ -1752,7 +1755,7 @@ public sealed partial class LightingEngine : IDisposable
             return AheadPinKind.Base;
         }
         key = PinRenderKey(pin)!;
-        sweep = Gpu.ShaderLibrary.IsSweepEffect(key);
+        sweep = Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(string.Equals(active.Name, key, StringComparison.Ordinal) ? active : _pinRenders.GetValueOrDefault(key)?.Effect));
         if (string.Equals(active.Name, key, StringComparison.Ordinal))
         {
             return AheadPinKind.FollowActive;
