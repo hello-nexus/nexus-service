@@ -45,6 +45,14 @@ public sealed class DeviceControlGate
     private Dictionary<string, string> _pausedByApp = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _pauseLock = new();
 
+    /// <summary>Handlers whose device must stay claimed although Nexus Control is off, because it carries a secondary monitor the user turned on. Set once by the stream coordinator.</summary>
+    public Func<string, bool>? KeepsDeviceClaimed { get; set; }
+
+    /// <summary>Whether a connection worker should hold the device: <see cref="IsEnabled"/>, or Nexus Control is off but the secondary monitor still needs the glass.</summary>
+    public bool IsClaimed(string handlerId) =>
+        IsEnabled(handlerId)
+        || (PausedByApp(handlerId) is null && KeepsDeviceClaimed?.Invoke(handlerId) == true);
+
     /// <summary>The user's choice alone, ignoring a running competing app.</summary>
     public bool IsChosenOn(string handlerId) => IsEnabled(_store.Load().Devices, handlerId);
 

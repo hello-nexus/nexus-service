@@ -299,10 +299,14 @@ public static class PanelRoutes
             if (devices.Any(d => !string.IsNullOrEmpty(d.DisplayId)))
             {
                 var attached = topology.GetAttachedIds();
+                // The virtual monitor of a USB device is that device's own sidebar entry; a leftover panel record on it is not listed.
+                var ownedDisplay = topology.OwnedVirtualDisplayId();
                 foreach (var device in devices)
                 {
                     if (string.IsNullOrEmpty(device.DisplayId)) continue;
-                    device.DisplayAttached = attached?.Contains(device.DisplayId);
+                    device.DisplayAttached = ownedDisplay.Length > 0 && device.DisplayId == ownedDisplay
+                        ? false
+                        : attached?.Contains(device.DisplayId);
                     device.Warning = touchRouting.WarningFor(device.DisplayId);
                 }
             }
@@ -368,7 +372,10 @@ public static class PanelRoutes
             if (body.LcdBrightness.HasValue)
                 streams.ApplyBrightness(updated.Id);
             if (body.SecondaryMonitor.HasValue)
+            {
                 streams.ApplySecondaryMonitor(updated.Id);
+                streams.Wake();
+            }
             if (body.HighResolution.HasValue)
                 streams.Wake();
             BroadcastDeviceChanged(hub, id);

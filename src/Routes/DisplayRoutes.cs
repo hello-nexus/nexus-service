@@ -22,6 +22,50 @@ namespace Nexus.Service.Routes;
 
 public static class DisplayRoutes
 {
+    /// <summary>
+    /// Kiosk bindings for the overlay: the display-bound records, with the virtual monitor a USB
+    /// device owns bound to that device's own panel instead (nothing while its Nexus Control is off,
+    /// so the glass shows the desktop). A separate panel record on that display stays in settings, unhosted.
+    /// </summary>
+    internal static List<DisplayAssignmentDto> ComposeAssignments(
+        PanelDeviceRegistry registry, DisplayTopologyService topology, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams)
+    {
+        var list = new List<DisplayAssignmentDto>();
+        var ownedId = topology.OwnedVirtualDisplayId();
+        foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
+        {
+            if (ownedId.Length > 0 && string.Equals(displayId, ownedId, StringComparison.Ordinal)) continue;
+            list.Add(new DisplayAssignmentDto
+            {
+                DisplayId = displayId,
+                PanelDeviceId = panelDeviceId,
+                ReserveMonitor = reserveMonitor,
+                Backdrop = backdrop,
+                KeepCursorOff = keepCursorOff,
+                AlwaysOnTop = alwaysOnTop,
+                ClickThrough = clickThrough,
+                IsPrimary = isPrimary,
+            });
+        }
+        if (ownedId.Length > 0 && streams.MonitorProjectedPanelId() is { } projected)
+        {
+            var record = registry.Get(projected);
+            var primary = topology.IsPrimaryDisplay(ownedId);
+            list.Add(new DisplayAssignmentDto
+            {
+                DisplayId = ownedId,
+                PanelDeviceId = projected,
+                ReserveMonitor = !primary && (record?.ReserveMonitor ?? true),
+                Backdrop = "",
+                KeepCursorOff = !primary && (record?.KeepCursorOff ?? false),
+                AlwaysOnTop = true,
+                ClickThrough = false,
+                IsPrimary = primary,
+            });
+        }
+        return list;
+    }
+
 #if WINDOWS
     // Guards the setup-wizard route below: a second POST while MultiDigiMon
     // is already running must not spawn another instance/poll.
@@ -180,25 +224,12 @@ public static class DisplayRoutes
 
         // displayId -> panelDeviceId bindings; the overlay reconciles its
         // kiosk windows against this on every prefs poll / push.
-        app.MapGet("/displays/assignments", (HttpContext ctx, PanelDeviceRegistry registry, DisplayTopologyService topology, TokenService tokens) =>
+        app.MapGet("/displays/assignments", (HttpContext ctx, PanelDeviceRegistry registry, DisplayTopologyService topology, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams, TokenService tokens) =>
         {
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
             var response = new DisplayAssignmentsResponse { PanelBackdrop = registry.GetY70Backdrop() };
-            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
-            {
-                response.Assignments.Add(new DisplayAssignmentDto
-                {
-                    DisplayId = displayId,
-                    PanelDeviceId = panelDeviceId,
-                    ReserveMonitor = reserveMonitor,
-                    Backdrop = backdrop,
-                    KeepCursorOff = keepCursorOff,
-                    AlwaysOnTop = alwaysOnTop,
-                    ClickThrough = clickThrough,
-                    IsPrimary = isPrimary,
-                });
-            }
+            response.Assignments.AddRange(ComposeAssignments(registry, topology, streams));
             return Results.Json(response, AppJsonContext.Default.DisplayAssignmentsResponse);
         });
 

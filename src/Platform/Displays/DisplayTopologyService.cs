@@ -54,6 +54,23 @@ public sealed class DisplayTopologyService : IDisposable
     private string _primaryDisplayId = "";
     private long _attachedIdsAtMs;
     private bool _attachedIdsValid;
+    // Id of the virtual display a USB device's panel owns ("" when none), refreshed with the attached-id cache.
+    private string _ownedDisplayId = "";
+
+    /// <summary>The USB device panel (record id and name) whose secondary monitor is up, or null. Wired by the host once the stream coordinator exists.</summary>
+    public Func<(string PanelDeviceId, string Name)?>? DevicePanelOwner { get; set; }
+
+    /// <summary>Raised when the virtual display a USB device's panel owns appears, goes, or changes id.</summary>
+    public event Action? OwnedDisplayChanged;
+
+    /// <summary>Id of the virtual display a USB device's panel owns, from the last enumeration whatever its age; "" when none. Never enumerates.</summary>
+    public string OwnedVirtualDisplayId()
+    {
+        lock (_cacheLock) return _ownedDisplayId;
+    }
+
+    private bool IsOwnedVirtualDisplay(RawDisplayInfo info)
+        => _virtualMonitors?.OwnsAdapter(info.AdapterName) == true;
 
     public DisplayTopologyService(IDisplayTopologyProvider provider, PanelDeviceRegistry panelRegistry, Nexus.Service.Persistence.IConfigStore? store = null, IVirtualMonitorHost? virtualMonitors = null)
     {
@@ -105,11 +122,13 @@ public sealed class DisplayTopologyService : IDisposable
             // re-activates the same record.
             var assigned = _panelRegistry.FindByDisplayId(info.Id);
             if (assigned is not null && !PanelHosting.IsOn(assigned)) assigned = null;
+            // A USB device's secondary monitor is that device's glass: named after it, panel managed by the device.
+            var devicePanel = IsOwnedVirtualDisplay(info) ? DevicePanelOwner?.Invoke() : null;
             response.Displays.Add(new DisplayTopologyEntryDto
             {
                 Id = info.Id,
                 Number = info.Number,
-                Name = info.Name,
+                Name = devicePanel?.Name ?? info.Name,
                 Manufacturer = info.Manufacturer,
                 Model = info.Model,
                 Bounds = info.X is int x && info.Y is int y
@@ -124,9 +143,10 @@ public sealed class DisplayTopologyService : IDisposable
                 Orientation = info.Orientation,
                 IsY70 = isY70,
                 DdcEnabled = !ddcDisabled.Contains(info.Id),
-                HostingSupported = HostingSupportedOnHost && !isY70,
-                AssignedPanelDeviceId = assigned?.Id,
-                AssignedPanelName = assigned?.DisplayName,
+                HostingSupported = HostingSupportedOnHost && !isY70 && devicePanel is null,
+                OwnedByDevicePanel = devicePanel is not null,
+                AssignedPanelDeviceId = devicePanel?.PanelDeviceId ?? assigned?.Id,
+                AssignedPanelName = devicePanel?.Name ?? assigned?.DisplayName,
                 Fingerprint = info.Fingerprint,
             });
         }
@@ -243,6 +263,7 @@ public sealed class DisplayTopologyService : IDisposable
         var y70DisplayId = "";
         var ddcOnlyVariant = "";
         var primaryId = "";
+        var ownedId = "";
         if (raw is not null)
         {
             ids = new HashSet<string>(StringComparer.Ordinal);
@@ -250,15 +271,18 @@ public sealed class DisplayTopologyService : IDisposable
             {
                 ids.Add(info.Id);
                 if (primaryId.Length == 0 && info.IsPrimary) primaryId = info.Id;
+                if (ownedId.Length == 0 && IsOwnedVirtualDisplay(info)) ownedId = info.Id;
                 if (y70DisplayId.Length == 0 && IsY70Display(info.RawHardwareId)) y70DisplayId = info.Id;
                 if (ddcOnlyVariant.Length == 0)
                     ddcOnlyVariant = Y70DisplayProtocol.DdcOnlyVariantForHardwareId(info.RawHardwareId);
             }
         }
-        bool primaryChanged;
+        bool primaryChanged, ownedChanged;
         lock (_cacheLock)
         {
             primaryChanged = !string.Equals(_primaryDisplayId, primaryId, StringComparison.Ordinal);
+            ownedChanged = !string.Equals(_ownedDisplayId, ownedId, StringComparison.Ordinal);
+            _ownedDisplayId = ownedId;
             _attachedIds = ids;
             _y70DisplayId = y70DisplayId;
             _ddcOnlyY70Variant = ddcOnlyVariant;
@@ -267,6 +291,7 @@ public sealed class DisplayTopologyService : IDisposable
             _attachedIdsValid = true;
         }
         if (primaryChanged) PrimaryDisplayChanged?.Invoke();
+        if (ownedChanged) OwnedDisplayChanged?.Invoke();
         if (raw is not null)
         {
             RelinkPanelDisplays(raw);

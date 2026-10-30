@@ -50,6 +50,17 @@ internal static class OverlayHostBootstrap
             catch { }
         }
         topology?.PrimaryDisplayChanged += OnPrimaryChanged;
+        if (topology is not null)
+        {
+            var streams = app.Services.GetService<Streams.StreamedPanelCoordinator>();
+            topology.DevicePanelOwner = () => streams?.MonitorOwner();
+            // The owned display's appearance is not a settings edit, so the host is told directly.
+            topology.OwnedDisplayChanged += () =>
+            {
+                try { overlayHost.NotifyDisplayAssignmentsChanged(); }
+                catch { }
+            };
+        }
         store.OnChanged += () =>
         {
             try

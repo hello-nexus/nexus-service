@@ -88,6 +88,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         _store = store;
         _registry = registry;
         _gate = gate;
+        _gate.KeepsDeviceClaimed = KeepsMonitorForHandler;
+        // Nexus Control moves the projected panel on and off the virtual monitor without touching the session.
+        _gate.Changed += OnGateChanged;
         _notifyOverlay = notifyOverlay;
         _notifyPanelChanged = notifyPanelChanged;
         _nowMs = nowMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -100,8 +103,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
     }
 
+    private void OnGateChanged(string handlerId, bool enabled) => _notifyOverlay?.Invoke();
+
     public override void Dispose()
     {
+        _gate.Changed -= OnGateChanged;
         _lockState?.Changed -= OnLockChanged;
         base.Dispose();
     }
@@ -443,7 +449,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         var changed = false;
         foreach (var discovery in _discoveries)
         {
-            var enabled = _gate.IsEnabled(discovery.HandlerId);
+            var enabled = _gate.IsClaimed(discovery.HandlerId);
             var withheld = enabled && discovery.Withheld;
             TrackHeld(discovery, withheld);
             IReadOnlyList<StreamedPanelDeviceInfo> devices;
@@ -600,6 +606,63 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             _ = Task.Run(transport.ApplySecondaryMonitor);
         }
+    }
+
+    /// <summary>True while a panel of this handler has its secondary monitor on, so the device stays claimed with Nexus Control off.</summary>
+    private bool KeepsMonitorForHandler(string handlerId)
+    {
+        foreach (var record in _registry.List())
+        {
+            if (record.SecondaryMonitor == true
+                && record.Capabilities?.SupportsSecondaryMonitor == true
+                && string.Equals(record.Capabilities.Family, handlerId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The device panel whose secondary monitor is up, for naming the virtual display after it;
+    /// null when none is. Independent of Nexus Control: the monitor outlives it.
+    /// </summary>
+    public (string PanelDeviceId, string Name)? MonitorOwner()
+    {
+        string? id = null;
+        lock (_lock)
+        {
+            foreach (var ds in _bySerial.Values)
+            {
+                if (!ds.Session.Closed && ds.Transport is ISecondaryMonitorTransport { SecondaryMonitorState: not null })
+                {
+                    id = ds.Session.PanelDeviceId;
+                    break;
+                }
+            }
+        }
+        return id is null ? null : (id, _registry.Get(id)?.DisplayName ?? id);
+    }
+
+    /// <summary>
+    /// Panel record id to project full-screen on the virtual monitor: the panel whose monitor is up
+    /// while its Nexus Control is on. With Nexus Control off the monitor keeps showing the desktop.
+    /// </summary>
+    public string? MonitorProjectedPanelId()
+    {
+        lock (_lock)
+        {
+            foreach (var ds in _bySerial.Values)
+            {
+                if (!ds.Session.Closed
+                    && ds.Transport is ISecondaryMonitorTransport { SecondaryMonitorState: not null }
+                    && _gate.IsEnabled(ds.Discovery.HandlerId))
+                {
+                    return ds.Session.PanelDeviceId;
+                }
+            }
+        }
+        return null;
     }
 
     /// <summary>Monitor state per panel record id, for the records whose monitor is on.</summary>
@@ -954,7 +1017,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             if (transport is ISecondaryMonitorTransport monitorable)
             {
                 monitorable.BindSecondaryMonitor(() => _registry.Get(panelId)?.SecondaryMonitor == true);
-                monitorable.SecondaryMonitorStateChanged += () => _notifyPanelChanged?.Invoke(panelId);
+                monitorable.SecondaryMonitorStateChanged += () =>
+                {
+                    _notifyPanelChanged?.Invoke(panelId);
+                    _notifyOverlay?.Invoke();
+                };
             }
             transport.Open();
             transport.StartPlayer();

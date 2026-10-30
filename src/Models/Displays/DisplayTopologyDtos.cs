@@ -111,6 +111,8 @@ public sealed class DisplayTopologyEntryDto
     public bool DdcEnabled { get; set; } = true;
     public string? AssignedPanelDeviceId { get; set; }
     public string? AssignedPanelName { get; set; }
+    /// <summary>The display is a virtual monitor owned by a USB device's panel: it is named after the device, its panel is managed automatically (as the Y70's is), and it takes no separate panel.</summary>
+    public bool OwnedByDevicePanel { get; set; }
     /// <summary>Server-side only: lets a promote record the fingerprint at once instead of waiting for a relink scan.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public DisplayFingerprint? Fingerprint { get; set; }
