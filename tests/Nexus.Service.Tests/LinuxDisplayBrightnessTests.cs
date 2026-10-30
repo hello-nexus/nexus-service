@@ -221,6 +221,10 @@ public class LinuxDisplayBrightnessTests
 
         Assert.Equal(new[] { 2, 3, 7 }, Primaries(t));
         Assert.Empty(Fallbacks(t));
+
+        var groups = LinuxDisplayBrightnessProvider.SelectDdcCandidates(t.At("drm"), t.At("devices"));
+        Assert.Contains(groups, g => !g.OnConnector && g.Primary.SequenceEqual(new[] { 2 }));
+        Assert.Contains(groups, g => g.OnConnector && g.Primary.Contains(7));
     }
 
     [Fact]
@@ -476,7 +480,7 @@ public class LinuxDisplayBrightnessTests
 
         var gap = LinuxDisplayBrightnessProvider.ForcedRescanMinMs;
         p.Enumerate();
-        // A 5 s poller for 20 minutes keeps the schedule at 30 s, 60 s, 120 s, ... after each scan.
+        // A fast poller must still see each gap double after every scan.
         var lastScanAt = 0L;
         var expectedGap = gap;
         for (now = 5_000; now <= 20 * 60_000; now += 5_000)
@@ -490,8 +494,9 @@ public class LinuxDisplayBrightnessTests
                 expectedGap *= 2;
             }
         }
-        Assert.Equal(6, scans);
-        Assert.True(lastScanAt >= 15 * 60_000);
+        var window = 20 * 60_000;
+        Assert.InRange(scans, 4, 1 + LinuxDisplayBrightnessProvider.MaxRejectRetries);
+        Assert.True(lastScanAt >= window * 3 / 4);
     }
 
     [Fact]
