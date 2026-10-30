@@ -58,7 +58,7 @@ internal static class OobeSessionLaunch
                 if (parts.Length == 2 && int.TryParse(parts[0], out var pid) && long.TryParse(parts[1], out var fileTime)
                     && pid != Environment.ProcessId)
                 {
-                    Kill(pid, fileTime);
+                    Kill(pid, fileTime, waitForExit: false);
                 }
             }
             File.Delete(PidFilePath);
@@ -69,12 +69,13 @@ internal static class OobeSessionLaunch
     // The pid file is writable by others, so a process is ended only when its start time
     // and its image both match what this service launched. The open handle keeps the pid
     // from being reused while the tree is ended.
-    private static bool Kill(int pid, long startFileTime)
+    private static bool Kill(int pid, long startFileTime, bool waitForExit = true)
     {
 #if WINDOWS
         if (!OperatingSystem.IsWindows()) return false;
         var handle = OpenProcess(ProcessQueryLimited | ProcessTerminate | Synchronize, false, (uint)pid);
         if (handle == IntPtr.Zero) return false;
+        var exitWaitMs = waitForExit ? ExitWaitMs : 0;
         try
         {
             if (!GetProcessTimes(handle, out var created, out _, out _, out _)
@@ -94,14 +95,16 @@ internal static class OobeSessionLaunch
                 using var p = Process.GetProcessById(pid);
                 p.Kill(entireProcessTree: true);
                 // The next launch may need what this process held (the helper's session mutex).
-                WaitForSingleObject(handle, ExitWaitMs);
+                WaitForSingleObject(handle, exitWaitMs);
                 return true;
             }
             catch
             {
                 // The root may already be gone when ending a child threw.
-                return WaitForSingleObject(handle, 0) == WaitObject0
-                    || (TerminateProcess(handle, 1) && WaitForSingleObject(handle, ExitWaitMs) == WaitObject0);
+                if (WaitForSingleObject(handle, 0) == WaitObject0) return true;
+                if (!TerminateProcess(handle, 1)) return false;
+                WaitForSingleObject(handle, exitWaitMs);
+                return true;
             }
         }
         finally
@@ -140,7 +143,8 @@ internal static class OobeSessionLaunch
     }
 
     private static readonly ReapedHelperSet s_reaped = new(
-        () => DateTime.UtcNow, StartMatchesOrGone, TimeSpan.FromMinutes(2));
+        // Monotonic: OOBE often applies a wall-clock jump.
+        () => new DateTime(Environment.TickCount64 * TimeSpan.TicksPerMillisecond), StartMatchesOrGone, TimeSpan.FromMinutes(2));
 
     /// <summary>True once for a helper pid the reap ended; also forgets it.</summary>
     internal static bool TakeReaped(int pid) => s_reaped.Take(pid);
@@ -252,16 +256,19 @@ internal static class OobeSessionLaunch
                 if (!OobePanelPolicy.ShouldReap(s_tracked.Count, OobeDetector.IsInOobe, () => OobePanelPolicy.IsRealUser(ConsoleUser()))) return 0;
                 victims = new List<(int, long, bool, int)>(s_tracked);
                 s_tracked.Clear();
+                // Recorded before the kill: the helper's pipe drops while it is still exiting.
+                foreach (var v in victims)
+                {
+                    if (v.Helper) s_reaped.Add(v.Pid, v.StartFileTime, v.Session);
+                }
                 s_reaper?.Dispose();
                 s_reaper = null;
                 PersistLocked();
             }
             var ended = 0;
-            foreach (var (pid, fileTime, helper, session) in victims)
+            foreach (var (pid, fileTime, _, _) in victims)
             {
-                if (!Kill(pid, fileTime)) continue;
-                ended++;
-                if (helper) s_reaped.Add(pid, fileTime, session);
+                if (Kill(pid, fileTime)) ended++;
             }
             Console.WriteLine($"[oobe-session] OOBE over or a real user is on the console; ended {ended} of {victims.Count} setup-session process(es)");
             return ended;
