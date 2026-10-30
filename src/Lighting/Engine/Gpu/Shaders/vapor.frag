@@ -31,3 +31,6 @@ void main() {
     col += tintedPalette(0.25 + n2 * 0.3) * n * n2 * 0.9;
     fragColor = vec4(finalize(col), 1.0);
 }
+
+// Output gain applied after the tonemap so the brightest pixel reaches full scale.
+float outGain() { return 1.49; }

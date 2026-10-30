@@ -35,7 +35,7 @@ vec3 finish(vec3 col) {
     float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
     col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
     col = (col - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
-    return tonemap(max(col, 0.0));
+    return gainOut(tonemap(max(col, 0.0)));
 }
 
 float ripple(float dx, float v, float age, float amp, float life) {
@@ -134,3 +134,6 @@ void main() {
     bool ranged = !artActive() && u_mood <= 0.5;
     fragColor = vec4(ranged ? finish(outCol) : finalize(outCol), 1.0);
 }
+
+// Output gain applied after the tonemap so the brightest pixel reaches full scale.
+float outGain() { return 1.32; }

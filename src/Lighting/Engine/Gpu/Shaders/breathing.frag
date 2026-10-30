@@ -45,5 +45,8 @@ void main() {
     float wk = pow(w, k);
     w = wk / (wk + pow(1.0 - w, k));
     // tonemap, not finalize: the slots own the colour, so the global tint is off.
-    fragColor = vec4(tonemap(mix(b, a, w)), 1.0);
+    fragColor = vec4(gainOut(tonemap(mix(b, a, w))), 1.0);
 }
+
+// Output gain applied after the tonemap so the brightest pixel reaches full scale.
+float outGain() { return 2.00; }

@@ -31,3 +31,6 @@ void main() {
     col += vec3(0.95, 0.95, 1.0) * (0.45 / (1.0 + r * r * 24.0));
     fragColor = vec4(finalize(col), 1.0);
 }
+
+// Output gain applied after the tonemap so the brightest pixel reaches full scale.
+float outGain() { return 1.88; }

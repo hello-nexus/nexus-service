@@ -158,6 +158,14 @@ vec3 tonemap(vec3 c) {
     return c / (1.0 + c);
 }
 
+// Each effect that tonemaps defines outGain(): a constant multiplier applied
+// after the tonemap so its brightest pixel reaches full scale. Hue, saturation
+// and structure are untouched; the clamp keeps rare overshoots in range.
+float outGain();
+vec3 gainOut(vec3 c) {
+    return clamp(c * outGain(), 0.0, 1.0);
+}
+
 // Post-process every effect's output: blend from palette-shifted colour
 // (u_colorize = 0, Shifter mode) toward a grayscale-and-tint (u_colorize = 1,
 // Colorizer mode) using Rec. 709 luma, then apply saturation and contrast.
@@ -171,7 +179,7 @@ vec3 finalize(vec3 col) {
     float bl = dot(max(blended, 0.0), vec3(0.2126, 0.7152, 0.0722));
     blended = mix(vec3(bl), blended, clamp(u_saturation, 0.0, 4.0));
     blended = (blended - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
-    return tonemap(max(blended, 0.0));
+    return gainOut(tonemap(max(blended, 0.0)));
 }
 
 // Hash + value noise - fast, cheap, good enough for lighting.
