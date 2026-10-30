@@ -10,21 +10,24 @@ using System.Threading;
 namespace Nexus.Service.Lifecycle;
 
 /// <summary>
-/// Starts a process in the console session while Windows is in OOBE and nobody
-/// is signed in, where the schtasks route has no user to run as. Only reached
-/// through <see cref="OobePanelPolicy.Decide"/> returning OobeNoUser.
+/// Starts a process in the console session while Windows is in OOBE, where the
+/// ordinary schtasks route cannot show the panel. Reached through
+/// <see cref="OobePanelPolicy.Decide"/> returning OobeNoUser (nobody signed in) or
+/// OobeTempUser (the temporary setup account is signed in).
 ///
-/// Token: the console session's user token when one exists, otherwise this
-/// service's own token retargeted to the console session, with its privileges
-/// stripped, the Administrators group made deny-only and the integrity level
-/// lowered. The SYSTEM user SID stays: a token cannot change its user. Every
-/// process started here is tracked and ended once OOBE is over or a user is on
-/// the console, so the real user's overlay and helper start clean.
+/// Token: the console session's user token when there is one. With nobody signed in
+/// and <c>allowServiceToken</c>, this service's own token retargeted to the console
+/// session instead, with privileges stripped, the Administrators group made
+/// deny-only and Medium integrity; the SYSTEM user SID stays, since a token cannot
+/// change its user. Every process started here is tracked and ended once OOBE is
+/// over or a real user is on the console, so that user's overlay and helper start
+/// clean.
 /// </summary>
 internal static class OobeSessionLaunch
 {
     private static readonly object s_lock = new();
-    private static readonly List<(int Pid, long StartTicks)> s_tracked = new();
+    // Start time as the raw FILETIME value of GetProcessTimes, the same source on both sides.
+    private static readonly List<(int Pid, long StartFileTime)> s_tracked = new();
     private static Timer? s_reaper;
 #if WINDOWS
     private static bool s_logonHooked;
@@ -52,9 +55,10 @@ internal static class OobeSessionLaunch
             foreach (var line in File.ReadAllLines(PidFilePath))
             {
                 var parts = line.Split(',');
-                if (parts.Length == 2 && int.TryParse(parts[0], out var pid) && long.TryParse(parts[1], out var ticks))
+                if (parts.Length == 2 && int.TryParse(parts[0], out var pid) && long.TryParse(parts[1], out var fileTime)
+                    && pid != Environment.ProcessId)
                 {
-                    Kill(pid, ticks);
+                    Kill(pid, fileTime);
                 }
             }
             File.Delete(PidFilePath);
@@ -62,34 +66,57 @@ internal static class OobeSessionLaunch
         catch { /* best-effort */ }
     }
 
-    private static void Kill(int pid, long startTicks)
+    // The pid file is writable by others, so a process is ended only when its start time
+    // and its image both match what this service launched.
+    private static void Kill(int pid, long startFileTime)
+    {
+#if WINDOWS
+        if (!OperatingSystem.IsWindows()) return;
+        var handle = OpenProcess(ProcessQueryLimited | ProcessTerminate, false, (uint)pid);
+        if (handle == IntPtr.Zero) return;
+        try
+        {
+            if (!GetProcessTimes(handle, out var created, out _, out _, out _)
+                || FileTimeValue(created) != startFileTime)
+            {
+                return;
+            }
+            var buf = new StringBuilder(1024);
+            var size = (uint)buf.Capacity;
+            if (QueryFullProcessImageNameW(handle, 0, buf, ref size)
+                && OobePanelPolicy.IsOwnImage(buf.ToString(), AppContext.BaseDirectory))
+            {
+                TerminateProcess(handle, 1);
+            }
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+#endif
+    }
+
+    private static void PersistLocked()
     {
         try
         {
-            using var p = Process.GetProcessById(pid);
-            // The start time rejects a recycled pid and the image check rejects a pid file
-            // someone else wrote; only the process itself is ended.
-            if (!p.HasExited
-                && p.StartTime.ToUniversalTime().Ticks == startTicks
-                && OobePanelPolicy.IsOwnImage(p.MainModule?.FileName, AppContext.BaseDirectory))
+            if (s_tracked.Count == 0)
             {
-                p.Kill(entireProcessTree: false);
+                if (File.Exists(PidFilePath)) File.Delete(PidFilePath);
+                return;
             }
+            Directory.CreateDirectory(Path.GetDirectoryName(PidFilePath)!);
+            File.WriteAllLines(PidFilePath, s_tracked.ConvertAll(t => $"{t.Pid},{t.StartFileTime}"));
         }
-        catch { /* already gone */ }
+        catch { /* best-effort */ }
     }
 
-    private static void Track(int pid, long startTicks, string tag)
+    private static void Track(int pid, long startFileTime, string tag)
     {
         lock (s_lock)
         {
-            s_tracked.Add((pid, startTicks));
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(PidFilePath)!);
-                File.WriteAllLines(PidFilePath, s_tracked.ConvertAll(t => $"{t.Pid},{t.StartTicks}"));
-            }
-            catch { /* best-effort */ }
+            s_tracked.Add((pid, startFileTime));
+            PersistLocked();
             s_reaper ??= new Timer(_ => ReapIfOobeOver(), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
 #if WINDOWS
             if (!s_logonHooked)
@@ -104,7 +131,16 @@ internal static class OobeSessionLaunch
 
     private static void Untrack(int pid)
     {
-        lock (s_lock) { s_tracked.RemoveAll(t => t.Pid == pid); }
+        lock (s_lock)
+        {
+            s_tracked.RemoveAll(t => t.Pid == pid);
+            PersistLocked();
+            if (s_tracked.Count == 0)
+            {
+                s_reaper?.Dispose();
+                s_reaper = null;
+            }
+        }
     }
 
     internal static string ConsoleUser()
@@ -116,38 +152,58 @@ internal static class OobeSessionLaunch
 #endif
     }
 
-    /// <summary>Ends every tracked process once OOBE is over, then stops the timer.</summary>
+    /// <summary>
+    /// Whether the console session's account is local to this PC: the OOBE temporary account
+    /// is, a domain or Microsoft account that happens to be named alike is not.
+    /// </summary>
+    internal static bool ConsoleUserIsLocal()
+    {
+#if WINDOWS
+        if (!OperatingSystem.IsWindows()) return false;
+        var session = WTSGetActiveConsoleSessionId();
+        if (session == 0xFFFFFFFF) return false;
+        var buf = IntPtr.Zero;
+        try
+        {
+            if (!WTSQuerySessionInformation(IntPtr.Zero, session, WtsDomainName, out buf, out _) || buf == IntPtr.Zero)
+            {
+                return false;
+            }
+            return string.Equals(Marshal.PtrToStringUni(buf), Environment.MachineName, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+        finally { if (buf != IntPtr.Zero) WTSFreeMemory(buf); }
+#else
+        return false;
+#endif
+    }
+
+    /// <summary>Ends every tracked process once OOBE is over or a real user is on the console, then stops the timer.</summary>
     internal static void ReapIfOobeOver()
     {
-        List<(int Pid, long StartTicks)> victims;
+        List<(int Pid, long StartFileTime)> victims;
         lock (s_lock)
         {
-            if (!OobePanelPolicy.ShouldReap(s_tracked.Count, OobeDetector.IsInOobe, () => !string.IsNullOrEmpty(ConsoleUser()))) return;
+            if (!OobePanelPolicy.ShouldReap(s_tracked.Count, OobeDetector.IsInOobe, () => OobePanelPolicy.IsRealUser(ConsoleUser()))) return;
             victims = new List<(int, long)>(s_tracked);
             s_tracked.Clear();
             s_reaper?.Dispose();
             s_reaper = null;
-            try { File.Delete(PidFilePath); } catch { }
+            PersistLocked();
         }
-        foreach (var (pid, ticks) in victims) Kill(pid, ticks);
-        Console.WriteLine($"[oobe-session] OOBE over or a user is on the console; ended {victims.Count} setup-session process(es)");
+        foreach (var (pid, fileTime) in victims) Kill(pid, fileTime);
+        Console.WriteLine($"[oobe-session] OOBE over or a real user is on the console; ended {victims.Count} setup-session process(es)");
     }
 
-    /// <summary>Starts <paramref name="exePath"/> on the console session's default desktop; null when it could not.</summary>
-    internal static Process? Start(string exePath, string arguments, string workingDir, string tag)
+    /// <summary>
+    /// Starts <paramref name="exePath"/> on the console session's default desktop; null when it could not.
+    /// <paramref name="allowServiceToken"/> permits the stripped service token when the console
+    /// session has no user token; the temporary-account path leaves it off.
+    /// </summary>
+    internal static Process? Start(string exePath, string arguments, string workingDir, string tag, bool allowServiceToken)
     {
 #if WINDOWS
-        if (!OperatingSystem.IsWindows()) return null;
-        var launched = StartWindows(exePath, arguments, workingDir, tag);
-        if (launched is null) return null;
-        var (pid, ticks) = launched.Value;
-        try { return Process.GetProcessById(pid); }
-        catch
-        {
-            Kill(pid, ticks);
-            Untrack(pid);
-            return null;
-        }
+        return OperatingSystem.IsWindows() ? StartWindows(exePath, arguments, workingDir, tag, allowServiceToken) : null;
 #else
         return null;
 #endif
@@ -169,9 +225,14 @@ internal static class OobeSessionLaunch
     private const uint DisableMaxPrivilege = 1;
     private const uint SeGroupIntegrity = 0x20;
     private const string MediumIntegritySid = "S-1-16-8192";
+    private const int WtsDomainName = 7;
+    private const uint ProcessTerminate = 0x0001;
+    private const uint ProcessQueryLimited = 0x1000;
+
+    private static long FileTimeValue(FILETIME t) => ((long)t.dwHighDateTime << 32) | t.dwLowDateTime;
 
     [SupportedOSPlatform("windows")]
-    private static (int Pid, long StartTicks)? StartWindows(string exePath, string arguments, string workingDir, string tag)
+    private static Process? StartWindows(string exePath, string arguments, string workingDir, string tag, bool allowServiceToken)
     {
         var session = WTSGetActiveConsoleSessionId();
         if (session == 0xFFFFFFFF) return null;
@@ -185,22 +246,28 @@ internal static class OobeSessionLaunch
             }
             else
             {
-                token = StrippedServiceToken(session);
-                source = "service token, privileges stripped";
-                if (token == IntPtr.Zero)
+                var wtsError = Marshal.GetLastWin32Error();
+                if (!allowServiceToken)
                 {
-                    Console.Error.WriteLine($"[oobe-session] no token for {tag}: {Marshal.GetLastWin32Error()}");
+                    Console.Error.WriteLine($"[oobe-session] no user token for {tag} (WTSQueryUserToken error {wtsError}); not using the service token");
                     return null;
                 }
+                token = StrippedServiceToken(session, out var stripError, out var stripStep);
+                if (token == IntPtr.Zero)
+                {
+                    Console.Error.WriteLine($"[oobe-session] no token for {tag}: WTSQueryUserToken error {wtsError}, {stripStep} error {stripError}");
+                    return null;
+                }
+                source = "stripped service token";
             }
             if (!CreateEnvironmentBlock(out env, token, false)) env = IntPtr.Zero;
             desktop = Marshal.StringToHGlobalUni(@"winsta0\default");
             var si = new STARTUPINFO { cb = Marshal.SizeOf<STARTUPINFO>(), lpDesktop = desktop };
             var cmd = new StringBuilder($"\"{exePath}\"");
             if (arguments.Length > 0) cmd.Append(' ').Append(arguments);
-            // A user may have signed in since the caller decided nobody had; that user's
-            // processes start through the normal path.
-            if (!string.IsNullOrEmpty(ConsoleUser())) return null;
+            // A real user may have signed in since the caller decided; that user's processes
+            // start through the normal path.
+            if (OobePanelPolicy.IsRealUser(ConsoleUser())) return null;
             if (!CreateProcessAsUserW(token, null, cmd, IntPtr.Zero, IntPtr.Zero, false,
                     CreateUnicodeEnvironment | CreateNoWindow, env, workingDir, ref si, out var pi))
             {
@@ -209,18 +276,25 @@ internal static class OobeSessionLaunch
                 return null;
             }
             CloseHandle(pi.hThread);
+            // The create's own handle is held until the process is tracked or ended, so a failure
+            // below can never leave a live process nothing knows about.
             try
             {
-                // Tracked from the handle the create returned, before anything else can throw.
                 if (!GetProcessTimes(pi.hProcess, out var created, out _, out _, out _))
                 {
                     TerminateProcess(pi.hProcess, 1);
                     return null;
                 }
-                var ticks = DateTime.FromFileTimeUtc(((long)created.dwHighDateTime << 32) | created.dwLowDateTime).Ticks;
-                Track((int)pi.dwProcessId, ticks, tag);
-                Console.WriteLine($"[oobe-session] {tag} launched with {source}");
-                return ((int)pi.dwProcessId, ticks);
+                var pid = (int)pi.dwProcessId;
+                Track(pid, FileTimeValue(created), tag);
+                Console.WriteLine($"[oobe-session] {tag} launched in the console session as {source}");
+                try { return Process.GetProcessById(pid); }
+                catch
+                {
+                    TerminateProcess(pi.hProcess, 1);
+                    Untrack(pid);
+                    return null;
+                }
             }
             finally
             {
@@ -257,23 +331,29 @@ internal static class OobeSessionLaunch
     /// <summary>
     /// The service token, retargeted to the console session, with privileges removed,
     /// the Administrators group deny-only and Medium integrity. The user stays SYSTEM.
+    /// On failure returns zero with the Win32 error and the step that failed, captured at the call.
     /// </summary>
     [SupportedOSPlatform("windows")]
-    private static IntPtr StrippedServiceToken(uint session)
+    private static IntPtr StrippedServiceToken(uint session, out int error, out string step)
     {
         const uint Access = TokenDuplicate | TokenAssignPrimary | TokenQuery | TokenAdjustDefault | TokenAdjustSessionId;
+        error = 0;
+        step = "";
         IntPtr own = IntPtr.Zero, dup = IntPtr.Zero, restricted = IntPtr.Zero;
         IntPtr adminSid = IntPtr.Zero, adminSidBuf = IntPtr.Zero, labelBuf = IntPtr.Zero, mediumSid = IntPtr.Zero;
         try
         {
-            if (!OpenProcessToken(GetCurrentProcess(), Access, out own)) return IntPtr.Zero;
-            if (!DuplicateTokenEx(own, MaximumAllowed, IntPtr.Zero, SecurityImpersonation, TokenPrimary, out dup)) return IntPtr.Zero;
-            if (!SetTokenInformation(dup, TokenSessionIdClass, ref session, sizeof(uint))) return IntPtr.Zero;
+            if (!OpenProcessToken(GetCurrentProcess(), Access, out own)) { error = Marshal.GetLastWin32Error(); step = "OpenProcessToken"; return IntPtr.Zero; }
+            if (!DuplicateTokenEx(own, MaximumAllowed, IntPtr.Zero, SecurityImpersonation, TokenPrimary, out dup)) { error = Marshal.GetLastWin32Error(); step = "DuplicateTokenEx"; return IntPtr.Zero; }
+            if (!SetTokenInformation(dup, TokenSessionIdClass, ref session, sizeof(uint))) { error = Marshal.GetLastWin32Error(); step = "SetTokenInformation(session)"; return IntPtr.Zero; }
 
-            if (!ConvertStringSidToSidW(MediumIntegritySid, out mediumSid)) return IntPtr.Zero;
+            if (!ConvertStringSidToSidW(MediumIntegritySid, out mediumSid)) { error = Marshal.GetLastWin32Error(); step = "ConvertStringSidToSid"; return IntPtr.Zero; }
             labelBuf = Marshal.AllocHGlobal(Marshal.SizeOf<SID_AND_ATTRIBUTES>());
             Marshal.StructureToPtr(new SID_AND_ATTRIBUTES { Sid = mediumSid, Attributes = SeGroupIntegrity }, labelBuf, false);
-            if (!SetTokenInformation(dup, TokenIntegrityLevelClass, labelBuf, Marshal.SizeOf<SID_AND_ATTRIBUTES>() + (int)GetLengthSid(mediumSid))) return IntPtr.Zero;
+            if (!SetTokenInformation(dup, TokenIntegrityLevelClass, labelBuf, Marshal.SizeOf<SID_AND_ATTRIBUTES>() + (int)GetLengthSid(mediumSid)))
+            {
+                error = Marshal.GetLastWin32Error(); step = "SetTokenInformation(integrity)"; return IntPtr.Zero;
+            }
 
             var admins = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
             var bytes = new byte[admins.BinaryLength];
@@ -283,7 +363,10 @@ internal static class OobeSessionLaunch
             adminSidBuf = Marshal.AllocHGlobal(Marshal.SizeOf<SID_AND_ATTRIBUTES>());
             Marshal.StructureToPtr(new SID_AND_ATTRIBUTES { Sid = adminSid, Attributes = 0 }, adminSidBuf, false);
 
-            if (!CreateRestrictedToken(dup, DisableMaxPrivilege, 1, adminSidBuf, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted)) return IntPtr.Zero;
+            if (!CreateRestrictedToken(dup, DisableMaxPrivilege, 1, adminSidBuf, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted))
+            {
+                error = Marshal.GetLastWin32Error(); step = "CreateRestrictedToken"; return IntPtr.Zero;
+            }
             return restricted;
         }
         finally
@@ -353,6 +436,20 @@ internal static class OobeSessionLaunch
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetProcessTimes(IntPtr process, out FILETIME creation, out FILETIME exit, out FILETIME kernel, out FILETIME user);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref uint size);
+
+    [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WTSQuerySessionInformation(IntPtr server, uint sessionId, int infoClass, out IntPtr buffer, out uint bytes);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr memory);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

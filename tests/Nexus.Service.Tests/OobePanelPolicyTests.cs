@@ -7,13 +7,55 @@ public sealed class OobePanelPolicyTests
     [Theory]
     [InlineData("alice", true)]
     [InlineData("alice", false)]
-    [InlineData("defaultuser0", true)]
-    public void SignedInUser_IsAlwaysTheConsoleUserPath_AndNeverAsksOobe(string user, bool sessionExists)
+    [InlineData("defaultuserX", true)]
+    [InlineData("defaultuser", true)]
+    [InlineData("defaultuser0x", true)]
+    public void RealUser_IsAlwaysTheConsoleUserPath_AndNeverAsksOobe(string user, bool sessionExists)
     {
         var asked = false;
-        var plan = OobePanelPolicy.Decide(user, sessionExists, () => { asked = true; return true; });
+        var plan = OobePanelPolicy.Decide(user, sessionExists, () => { asked = true; return true; }, () => { asked = true; return true; });
         Assert.Equal(ConsoleLaunchPlan.ConsoleUser, plan);
         Assert.False(asked);
+    }
+
+    [Theory]
+    [InlineData("defaultuser0")]
+    [InlineData("DefaultUser1")]
+    [InlineData("defaultuser12")]
+    public void TempAccount_InOobe_LaunchesDirectly(string user)
+    {
+        Assert.Equal(ConsoleLaunchPlan.OobeTempUser, OobePanelPolicy.Decide(user, true, () => true, () => true));
+    }
+
+    [Fact]
+    public void TempAccount_OobeComplete_IsTheNormalPath()
+    {
+        Assert.Equal(ConsoleLaunchPlan.ConsoleUser, OobePanelPolicy.Decide("defaultuser0", true, () => false, () => true));
+    }
+
+    [Fact]
+    public void TempAccountName_OnANonLocalAccount_IsTheNormalPath()
+    {
+        Assert.Equal(ConsoleLaunchPlan.ConsoleUser, OobePanelPolicy.Decide("defaultuser0", true, () => true, () => false));
+    }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("alice", true)]
+    [InlineData("defaultuser0", false)]
+    [InlineData("DEFAULTUSER3", false)]
+    public void IsRealUser_ExcludesNoUserAndTheSetupAccount(string user, bool expected)
+    {
+        Assert.Equal(expected, OobePanelPolicy.IsRealUser(user));
+    }
+
+    [Theory]
+    [InlineData("defaultuser0", false)]
+    [InlineData("", false)]
+    [InlineData("alice", true)]
+    public void Reap_KeepsRunningWhileOnlyTheSetupAccountIsOnTheConsole(string consoleUser, bool expectedReap)
+    {
+        Assert.Equal(expectedReap, OobePanelPolicy.ShouldReap(2, () => true, () => OobePanelPolicy.IsRealUser(consoleUser)));
     }
 
     [Theory]

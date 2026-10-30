@@ -11,6 +11,8 @@ internal enum ConsoleLaunchPlan
     WaitForLogon,
     /// <summary>Nobody is signed in and Windows is in OOBE: start directly in the console session.</summary>
     OobeNoUser,
+    /// <summary>The temporary OOBE account is signed in and Windows is in OOBE: start in the console session with that account's token.</summary>
+    OobeTempUser,
 }
 
 /// <summary>
@@ -20,21 +22,44 @@ internal enum ConsoleLaunchPlan
 internal static class OobePanelPolicy
 {
     /// <summary>
-    /// <paramref name="inOobe"/> is only evaluated when no user is signed in, so a
-    /// signed-in session, locked or not, never reaches it.
+    /// <paramref name="inOobe"/> and <paramref name="userIsLocal"/> are evaluated only for a
+    /// console user named like the OOBE temporary account, or for no user at all, so a
+    /// signed-in user, locked or not, never reaches them.
     /// </summary>
-    internal static ConsoleLaunchPlan Decide(string consoleUser, bool consoleSessionExists, Func<bool> inOobe)
+    internal static ConsoleLaunchPlan Decide(string consoleUser, bool consoleSessionExists, Func<bool> inOobe, Func<bool>? userIsLocal = null)
     {
-        if (!string.IsNullOrEmpty(consoleUser))
+        if (string.IsNullOrEmpty(consoleUser))
+        {
+            return consoleSessionExists && inOobe() ? ConsoleLaunchPlan.OobeNoUser : ConsoleLaunchPlan.WaitForLogon;
+        }
+        if (!IsOobeTempAccount(consoleUser))
         {
             return ConsoleLaunchPlan.ConsoleUser;
         }
-        return consoleSessionExists && inOobe() ? ConsoleLaunchPlan.OobeNoUser : ConsoleLaunchPlan.WaitForLogon;
+        return (userIsLocal?.Invoke() ?? true) && inOobe() ? ConsoleLaunchPlan.OobeTempUser : ConsoleLaunchPlan.ConsoleUser;
     }
 
+    /// <summary>The account Windows setup runs under: defaultuser0, or defaultuser followed by digits.</summary>
+    internal static bool IsOobeTempAccount(string user)
+    {
+        const string prefix = "defaultuser";
+        if (user.Length <= prefix.Length || !user.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        for (var i = prefix.Length; i < user.Length; i++)
+        {
+            if (user[i] < '0' || user[i] > '9') return false;
+        }
+        return true;
+    }
+
+    /// <summary>A console user other than the OOBE temporary account.</summary>
+    internal static bool IsRealUser(string user) => !string.IsNullOrEmpty(user) && !IsOobeTempAccount(user);
+
     /// <summary>
-    /// OOBE-launched processes are reaped once OOBE is over, or as soon as a user is
-    /// on the console (OOBEComplete can lag a real logon). Nothing tracked means
+    /// OOBE-launched processes are reaped once OOBE is over, or as soon as a real user is
+    /// on the console (OOBEComplete can lag a real logon); the temporary OOBE account does not count. Nothing tracked means
     /// nothing is evaluated.
     /// </summary>
     internal static bool ShouldReap(int trackedCount, Func<bool> inOobe, Func<bool> consoleUserPresent)

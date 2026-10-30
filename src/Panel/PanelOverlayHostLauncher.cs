@@ -273,15 +273,24 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
         // Tradeoff: we lose direct parent-child handle tracking, but we
         // recover the PID by polling nexus-overlay.exe after Run completes.
         var username = ResolveActiveConsoleUsername();
+        // Only the OOBE cases start directly in the console session; Decide never asks about
+        // OOBE for a user whose name is not the setup account's.
+        var plan = Nexus.Service.Lifecycle.OobePanelPolicy.Decide(
+            username, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleSessionExists(),
+            Nexus.Service.Lifecycle.OobeDetector.IsInOobe, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleUserIsLocal);
+        if (plan is Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser or Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeTempUser)
+        {
+            var direct = Nexus.Service.Lifecycle.OobeSessionLaunch.Start(
+                exePath, string.Empty, workingDir, "overlay",
+                allowServiceToken: plan == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser);
+            // The setup account falls back to the schtasks route when its token is unavailable.
+            if (direct is not null || plan == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser)
+            {
+                return direct;
+            }
+        }
         if (string.IsNullOrEmpty(username))
         {
-            // Only while Windows is in OOBE with nobody signed in; Start() has already gated on it.
-            if (Nexus.Service.Lifecycle.OobePanelPolicy.Decide(
-                    username, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleSessionExists(),
-                    Nexus.Service.Lifecycle.OobeDetector.IsInOobe) == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser)
-            {
-                return Nexus.Service.Lifecycle.OobeSessionLaunch.Start(exePath, string.Empty, workingDir, "overlay");
-            }
             Console.Error.WriteLine("[overlay-host] no active console user; deferring");
             return null;
         }

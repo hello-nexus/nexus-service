@@ -187,23 +187,28 @@ internal static class UserHelperBootstrapper
             var tag = $"({trigger}, attempt {attempt}/{LaunchAttempts})";
 
             var username = ResolveActiveConsoleUsername();
-            if (string.IsNullOrEmpty(username)
-                && OobePanelPolicy.Decide(username, OobeSessionLaunch.ConsoleSessionExists(), OobeDetector.IsInOobe)
-                    == ConsoleLaunchPlan.OobeNoUser)
+            var plan = OobePanelPolicy.Decide(
+                username, OobeSessionLaunch.ConsoleSessionExists(), OobeDetector.IsInOobe, OobeSessionLaunch.ConsoleUserIsLocal);
+            if (plan is ConsoleLaunchPlan.OobeNoUser or ConsoleLaunchPlan.OobeTempUser)
             {
                 var oobeExe = Path.Combine(AppContext.BaseDirectory, "Nexus.exe");
                 using var started = File.Exists(oobeExe)
-                    ? OobeSessionLaunch.Start(oobeExe, HelperSpawnArg() + " " + OobeHelperArg, AppContext.BaseDirectory, "helper")
+                    ? OobeSessionLaunch.Start(oobeExe, HelperSpawnArg() + " " + OobeHelperArg, AppContext.BaseDirectory, "helper",
+                        allowServiceToken: plan == ConsoleLaunchPlan.OobeNoUser)
                     : null;
-                if (started is null)
+                if (started is not null)
+                {
+                    if (await WaitForHelperAsync(ConnectWait)) return;
+                    // One OOBE helper only; a drop is relaunched by RelaunchAfterDropAsync.
+                    Console.Error.WriteLine($"[helper-bootstrap] no OOBE helper connected within {ConnectWait.TotalSeconds:0}s {tag}");
+                    return;
+                }
+                if (plan == ConsoleLaunchPlan.OobeNoUser)
                 {
                     await Task.Delay(5000);
                     continue;
                 }
-                if (await WaitForHelperAsync(ConnectWait)) return;
-                // One OOBE helper only; a drop is relaunched by RelaunchAfterDropAsync.
-                Console.Error.WriteLine($"[helper-bootstrap] no OOBE helper connected within {ConnectWait.TotalSeconds:0}s {tag}");
-                return;
+                // The setup account falls through to the schtasks route below.
             }
             if (string.IsNullOrEmpty(username))
             {
