@@ -108,8 +108,11 @@ public sealed class CurveEngine : BackgroundService
         IConfigStore store,
         MultiplexHub hub,
         FeatureGates? gates = null,
-        ThermalGuardController? guard = null)
+        ThermalGuardController? guard = null,
+        Nexus.Service.Sensors.ISuperIoRecovery? superIo = null)
     {
+        // A re-opened chip comes back on BIOS control; re-arm the duty replay and write gate.
+        if (superIo is { } recovery) recovery.Reopened += ResetSmoothing;
         _fans = fans;
         _store = store;
         _hub = hub;

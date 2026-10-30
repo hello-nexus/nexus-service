@@ -40,7 +40,7 @@ namespace Nexus.Service.Sensors;
 /// preset (via SignalLhmOpened), and CurveEngine re-drives channels as they
 /// appear, so the delayed open never strands fan control.
 /// </summary>
-public sealed class LhmComputer : IDisposable, ISpdPageReset
+public sealed class LhmComputer : IDisposable, ISpdPageReset, ISuperIoRecovery
 {
     private readonly Computer _computer;
     private readonly Task _openTask;
@@ -60,6 +60,15 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private volatile bool _disposed;
     private readonly bool _testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1";
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
+    private readonly SuperIoStallWatch _stallWatch = new();
+    private int _reopening;
+    // Firmware reinitializes the Super I/O after resume; a re-open before it finishes reads the same dead registers.
+    private static readonly TimeSpan ResumeReopenDelay = TimeSpan.FromSeconds(5);
+    // Lets the first tach readings settle before the after-re-open log line.
+    private static readonly TimeSpan PostReopenReadDelay = TimeSpan.FromSeconds(5);
+
+    /// <inheritdoc />
+    public event Action? Reopened;
 
     // Hard cap of one hardware walk per second. Measured from the walk's START,
     // not its end, so the cap is a real 1Hz rather than 1Hz-plus-walk-duration
@@ -374,6 +383,154 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                         TryUpdate(sub);
                 }
             }
+            CheckSuperIoStall();
+        }
+    }
+
+    /// <summary>Runs under _updateLock after a walk.</summary>
+    private void CheckSuperIoStall()
+    {
+        if (_testHost)
+        {
+            return;
+        }
+        try
+        {
+            foreach (var chip in SuperIoChips())
+            {
+                var fans = new List<float?>();
+                var controls = new List<float?>();
+                foreach (var sensor in chip.Sensors)
+                {
+                    if (sensor.SensorType == SensorType.Fan) fans.Add(sensor.Value);
+                    else if (sensor.SensorType == SensorType.Control) controls.Add(sensor.Value);
+                }
+                if (_stallWatch.ShouldReopen(chip.Identifier.ToString(), fans, controls, Environment.TickCount64))
+                {
+                    ServiceLog.Warn($"[lhm] {chip.Identifier}: every fan reads 0 RPM while every control reads 100%, re-opening the motherboard group");
+                    ScheduleReopen("stalled super io", TimeSpan.Zero);
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lhm] super io stall check failed: {ex.Message}");
+        }
+    }
+
+    private IEnumerable<IHardware> SuperIoChips()
+    {
+        foreach (var hw in _computer.Hardware)
+        {
+            if (hw.HardwareType != HardwareType.Motherboard) continue;
+            foreach (var sub in hw.SubHardware)
+            {
+                if (sub.HardwareType == HardwareType.SuperIO) yield return sub;
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public void OnSystemResumed()
+    {
+        if (_testHost) return;
+        ScheduleReopen("system resume", ResumeReopenDelay);
+    }
+
+    // Single-flight: a resume and a stall check landing together run one re-open.
+    private void ScheduleReopen(string reason, TimeSpan delay)
+    {
+        if (Interlocked.Exchange(ref _reopening, 1) == 1)
+        {
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReopenMotherboardAsync(reason, delay).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[lhm] motherboard re-open failed: {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                Volatile.Write(ref _reopening, 0);
+            }
+        });
+    }
+
+    private async Task ReopenMotherboardAsync(string reason, TimeSpan delay)
+    {
+        await _openTask.ConfigureAwait(false);
+        if (delay > TimeSpan.Zero)
+        {
+            await Task.Delay(delay).ConfigureAwait(false);
+        }
+        lock (_updateLock)
+        {
+            if (_disposed) return;
+            LogSuperIo($"before re-open ({reason})");
+            _stallWatch.NoteReopen(Environment.TickCount64);
+            // Same group swap ApplySpdGate does for memory: remove, then add, which re-runs the Super I/O probe.
+            _computer.IsMotherboardEnabled = false;
+            _computer.IsMotherboardEnabled = true;
+            Interlocked.Exchange(ref _lastUpdateTicks, 0);
+        }
+        ServiceLog.Info($"[lhm] motherboard group re-opened ({reason})");
+        try { Reopened?.Invoke(); }
+        catch (Exception ex) { ServiceLog.Warn($"[lhm] re-open subscriber failed: {ex.Message}"); }
+
+        await Task.Delay(PostReopenReadDelay).ConfigureAwait(false);
+        Update(SensorRefresh.Force);
+        lock (_updateLock)
+        {
+            if (_disposed) return;
+            LogSuperIo("after re-open");
+            var spinning = 0;
+            var total = 0;
+            foreach (var chip in SuperIoChips())
+            {
+                foreach (var sensor in chip.Sensors)
+                {
+                    if (sensor.SensorType != SensorType.Fan) continue;
+                    total++;
+                    if (sensor.Value is > 0f) spinning++;
+                }
+            }
+            ServiceLog.Info($"[lhm] after re-open: board fans non-zero={spinning > 0} ({spinning} of {total} fans above 0 RPM)");
+        }
+    }
+
+    private void LogSuperIo(string when)
+    {
+        foreach (var chip in SuperIoChips())
+        {
+            var samples = new List<SuperIoSample>();
+            foreach (var sensor in chip.Sensors)
+            {
+                var kind = sensor.SensorType switch
+                {
+                    SensorType.Temperature => 'T',
+                    SensorType.Voltage => 'V',
+                    SensorType.Fan => 'F',
+                    SensorType.Control => 'C',
+                    _ => '\0',
+                };
+                if (kind != '\0') samples.Add(new SuperIoSample(kind, sensor.Index, sensor.Value));
+            }
+            ServiceLog.Info($"[lhm] superio {when}: {SuperIoStallWatch.Format(chip.Identifier.ToString(), samples)}");
+        }
+    }
+
+    /// <summary>Runs a hardware write under the walk lock so it never meets a half-rebuilt motherboard group.</summary>
+    public void WithHardware(Action action)
+    {
+        lock (_updateLock)
+        {
+            action();
         }
     }
 

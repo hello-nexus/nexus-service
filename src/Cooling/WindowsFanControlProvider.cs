@@ -71,6 +71,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         _hub = hub;
         _lhm = lhm;
         _config = config;
+        // Sensor objects from before a motherboard re-open are dead; ReleaseAll would otherwise reuse them.
+        _lhm.Reopened += () => Volatile.Write(ref _channels, null);
     }
 
     private bool IsLeasedForCalibration(string channelId)
@@ -360,17 +362,17 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     private sealed class CalibrationWriteRefusedException : Exception;
 
-    private static bool WriteDuty(ChannelMapping mapping, float duty)
+    private bool WriteDuty(ChannelMapping mapping, float duty)
     {
         if (mapping.AmdFan is { } amd) return amd.SetDuty((int)MathF.Round(duty));
-        mapping.ControlSensor.Control.SetSoftware(duty);
+        _lhm.WithHardware(() => mapping.ControlSensor.Control.SetSoftware(duty));
         return true;
     }
 
-    private static void WriteDefault(ChannelMapping mapping)
+    private void WriteDefault(ChannelMapping mapping)
     {
         if (mapping.AmdFan is { } amd) amd.Release();
-        else mapping.ControlSensor.Control.SetDefault();
+        else _lhm.WithHardware(() => mapping.ControlSensor.Control.SetDefault());
     }
 
     private static (ControlMode Mode, float Value) ReadControlState(ChannelMapping mapping)

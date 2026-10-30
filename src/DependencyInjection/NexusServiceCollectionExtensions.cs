@@ -40,6 +40,7 @@ public static class NexusServiceCollectionExtensions
 #if WINDOWS
         services.AddSingleton<LhmComputer>();
         services.AddSingleton<ISpdPageReset>(sp => sp.GetRequiredService<LhmComputer>());
+        services.AddSingleton<ISuperIoRecovery>(sp => sp.GetRequiredService<LhmComputer>());
         services.AddSingleton<IPerformanceProvider, Nexus.Service.Platform.Windows.WindowsPerformanceProvider>();
 #else
         services.AddSingleton<IPerformanceProvider>(_ => PerformanceProviderFactory.Create());
