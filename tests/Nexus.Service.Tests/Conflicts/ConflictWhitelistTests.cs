@@ -72,13 +72,20 @@ public class ConflictWhitelistTests
 
     [Theory]
     [InlineData("corsair-link-lcd", ICue)]
-    [InlineData("lianli-screen88", LConnect)]
     [InlineData("lianli-hydroshift2", LConnect)]
     [InlineData("lianli-galahad2-lcd", LConnect)]
     public void EveryThirdPartyDeviceNamesItsVendorApp(string handlerId, string appId)
     {
         Assert.Equal(appId, DeviceControlPolicy.ConflictAppFor(handlerId));
         Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
+    }
+
+    [Fact]
+    public void TheUniversalScreenNamesLConnectButDefaultsOn()
+    {
+        Assert.Equal(LConnect, DeviceControlPolicy.ConflictAppFor("lianli-screen88"));
+        Assert.True(DeviceControlPolicy.DefaultOn("lianli-screen88"));
+        Assert.Contains("lianli-screen88", DeviceControlPolicy.HandlersFor(LConnect));
     }
 
     [Fact]
@@ -190,6 +197,7 @@ public class ConflictWhitelistTests
     {
         var store = new InMemoryConfigStore();
         var gate = new DeviceControlGate(store);
+        gate.SetEnabled("lianli-screen88", false);
         gate.SetEnabled("lianli", true);
         gate.SetEnabled("lianli-wireless", true);
 

@@ -57,8 +57,14 @@ public static class DeviceControlPolicy
         "lianli-galahad2-lcd",
         "corsair-xc7-lcd", "corsair-capellix-lcd", "corsair-nautilus-lcd", "idcooling-fx-lcd",
         "asrock-lcd", "asus-slc4-lcd", "corsair-link-lcd",
-        "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88", "asus-glacial-lcd",
+        "thermalright-lcd", "asus-ryujin-lcd", "asus-glacial-lcd",
         "deepcool-mystique", "steelseries-apex-oled",
+    };
+
+    /// <summary>Handlers in ConflictAppByHandler that still default on: hardware-verified, and L-Connect only pauses them while it runs (<see cref="VendorAppControlPause"/>).</summary>
+    private static readonly HashSet<string> ForceDefaultOn = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "lianli-screen88",
     };
 
     /// <summary>Feeds <see cref="ConflictAppFor"/> alone: names a competing app for the UI hint; the handler defaults on unless that app starts whitelisted.</summary>
@@ -97,7 +103,8 @@ public static class DeviceControlPolicy
     public static bool RequiresBeta(string handlerId) => !ExperimentalUnlocked && IsExperimental(handlerId);
 
     public static bool DefaultOn(string handlerId) =>
-        !ConflictAppByHandler.ContainsKey(handlerId)
+        ForceDefaultOn.Contains(handlerId)
+        || !ConflictAppByHandler.ContainsKey(handlerId)
         && !UnverifiedHandlers.Contains(handlerId)
         && !(HintOnlyConflictAppByHandler.TryGetValue(handlerId, out var app)
             && Conflicts.ConflictWatcher.FindById(app)?.DefaultWhitelisted == true);

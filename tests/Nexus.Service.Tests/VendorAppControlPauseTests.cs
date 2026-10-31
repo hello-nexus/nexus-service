@@ -133,7 +133,6 @@ public class VendorAppControlPauseTests
     [InlineData("lianli-wireless")]
     [InlineData("lianli-aio")]
     [InlineData("strimer")]
-    [InlineData("lianli-screen88")]
     [InlineData("lianli-hydroshift2")]
     public void EveryLianLiDeviceWaitsForAWhitelistedLConnect(string handler)
     {
@@ -143,6 +142,29 @@ public class VendorAppControlPauseTests
         pause.Refresh();
 
         Assert.False(gate.IsEnabled(handler));
+    }
+
+    [Fact]
+    public void TheUniversalScreenIsOnByDefaultAndWaitsForLConnect()
+    {
+        var (gate, detector, pause) = Setup(Array.Empty<string>(), whitelisted: new[] { "lian-li-l-connect" });
+        var previous = DeviceControlPolicy.ExperimentalUnlocked;
+        DeviceControlPolicy.ExperimentalUnlocked = true;
+        try
+        {
+            pause.Refresh();
+            Assert.True(gate.IsEnabled("lianli-screen88"));
+
+            detector.Running.Add("lian-li-l-connect");
+            pause.Refresh();
+            Assert.False(gate.IsEnabled("lianli-screen88"));
+            Assert.Equal("lian-li-l-connect", gate.PausedByApp("lianli-screen88"));
+
+            detector.Running.Clear();
+            pause.Refresh();
+            Assert.True(gate.IsEnabled("lianli-screen88"));
+        }
+        finally { DeviceControlPolicy.ExperimentalUnlocked = previous; }
     }
 
     [Fact]
