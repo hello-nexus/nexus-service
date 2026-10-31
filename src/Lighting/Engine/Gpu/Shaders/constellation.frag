@@ -12,8 +12,8 @@ uniform float u_dots; // hint_range(0.2, 2.0, 0.05) = 1.3  node size
 // so the field behind the mesh is always a soft gradient of whatever the
 // nearby nodes are lit with rather than flat black.
 //
-// Every angular rate is a whole multiple of 1/20, so each sine is back at its
-// starting phase when the shared clock wraps at 40 pi and the wrap is invisible.
+// Every angular rate is a whole multiple of one shared base rate, so each sine
+// is back at its starting phase when the clock wraps and the wrap is invisible.
 const float WRAP = 125.6637;
 
 vec2 nodeAt(vec2 cell, float t) {
@@ -25,7 +25,7 @@ vec2 nodeAt(vec2 cell, float t) {
     // its own cell while any node outside the 3x3 gather stays beyond 1.20.
     // That gap is what lets the backdrop blend below use a single cutoff that
     // is both always covered and never clipped.
-    // 0.22 + 0.08 keeps the total at that cap: a wide orbit plus a faster
+    // The two orbit amplitudes sum to that cap: a wide orbit plus a faster
     // small one, so the path wanders instead of tracing one ellipse.
     return cell + 0.5
         + 0.22 * vec2(cos(t * floor(10.0 + b * 20.0) * 0.05 + ph),
@@ -79,7 +79,9 @@ void main() {
         vec2 cell = base + vec2(float(i % 3) - 1.0, float(i / 3) - 1.0);
         nodes[i] = nodeAt(cell, t);
         cols[i] = tintedPalette(hash21(cell) * 0.85 + t * 0.015915);
-        rads[i] = rd * (1.0 + 0.3 * sin(t * floor(6.0 + hash21(cell + 3.3) * 12.0) * 0.05
+        // Only ever shrinks from rd: a larger halo would be clipped where a
+        // neighbour outside the gather reaches this cell.
+        rads[i] = rd * (1.0 - 0.15 - 0.15 * sin(t * floor(6.0 + hash21(cell + 3.3) * 12.0) * 0.05
                                          + hash21(cell + 9.1) * 6.28318));
     }
 

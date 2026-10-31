@@ -8,7 +8,11 @@ uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  pulse glow
 // hashed; pulses are bright dots moving along the traces.
 void main() {
     vec2 uv = uvCentered();
-    float t = mod(u_time * u_speed * 0.7, 1000.0);
+    // Pulses run on their own long clock because their rate is user-set; every
+    // other motion uses the short clock below, whose rates are whole multiples
+    // of one shared base rate so its wrap is invisible.
+    float tPulse = mod(u_time * u_speed * 0.7, 1000.0);
+    float t = mod(u_time * u_speed * 0.7, 125.6637);
     float dens = clamp(u_density, 3.0, 20.0);
     float pulseRate = clamp(u_pulse, 0.1, 4.0);
     float glow = clamp(u_glow, 0.1, 3.0);
@@ -51,7 +55,7 @@ void main() {
     if (trace > 0.0) {
         float invGlow = 20.0 / glow;
         for (int k = 0; k < 3; k++) {
-            float pulsePhase = fract(t * pulseRate * 1.3 + cellHash + float(k) * 0.3333);
+            float pulsePhase = fract(tPulse * pulseRate * 1.3 + cellHash + float(k) * 0.3333);
             float pulseDistH = abs(p.x - (pulsePhase - 0.5)) + abs(p.y) * 4.0;
             float pulseDistV = abs(p.y - ((1.0 - pulsePhase) - 0.5)) + abs(p.x) * 4.0;
             pulseGlow += exp(-pulseDistH * invGlow) + exp(-pulseDistV * invGlow);

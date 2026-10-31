@@ -6,8 +6,8 @@ uniform float u_drift; // hint_range(0.1, 2.0, 0.05) = 1.0  drift speed
 // rainy window. Each light is a gaussian disc whose centre wobbles
 // slowly; many overlapping create a dreamy out-of-focus look.
 //
-// Every angular rate below is a whole multiple of 1/20, so each sine is back
-// at its starting phase when the shared clock wraps at 40 pi: the wrap that
+// Every angular rate below is a whole multiple of one shared base rate, so
+// each sine is back at its starting phase when the clock wraps: the wrap that
 // keeps the clock small is invisible instead of a once-per-loop jump.
 const float WRAP = 125.6637;
 float rate(float h, float lo, float hi) { return floor(mix(lo, hi, h)) * 0.05; }
