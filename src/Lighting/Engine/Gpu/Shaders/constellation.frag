@@ -11,16 +11,26 @@ uniform float u_dots; // hint_range(0.2, 2.0, 0.05) = 1.3  node size
 // The backdrop is an inverse-distance blend of those same nine node colours,
 // so the field behind the mesh is always a soft gradient of whatever the
 // nearby nodes are lit with rather than flat black.
+//
+// Every angular rate is a whole multiple of one shared base rate, so each sine
+// is back at its starting phase when the clock wraps and the wrap is invisible.
+const float WRAP = 125.6637;
+
 vec2 nodeAt(vec2 cell, float t) {
     float a = hash21(cell);
     float b = hash21(cell + 31.7);
     float ph = a * 6.28318;
+    float wx = floor(14.0 + hash21(cell + 7.3) * 20.0) * 0.05;
     // Drift is capped at 0.30 so a node stays within 1.13 of every pixel in
     // its own cell while any node outside the 3x3 gather stays beyond 1.20.
     // That gap is what lets the backdrop blend below use a single cutoff that
     // is both always covered and never clipped.
-    return cell + 0.5 + 0.30 * vec2(cos(t * (0.5 + b) + ph),
-                                    sin(t * (0.42 + a) + ph * 1.7));
+    // The two orbit amplitudes sum to that cap: a wide orbit plus a faster
+    // small one, so the path wanders instead of tracing one ellipse.
+    return cell + 0.5
+        + 0.22 * vec2(cos(t * floor(10.0 + b * 20.0) * 0.05 + ph),
+                      sin(t * floor(8.0 + a * 20.0) * 0.05 + ph * 1.7))
+        + 0.08 * vec2(sin(t * wx + ph * 2.3), cos(t * (wx + 0.15) + ph * 0.6));
 }
 
 // One link. Near-binary cutoff: a link draws at full strength or not at all,
@@ -44,9 +54,12 @@ void main() {
     float ar = u_resolution.x / u_resolution.y;
     vec2 uv = uv01();
     float cells = clamp(u_points, 3.0, 10.0);
-    vec2 p = vec2(uv.x * ar, uv.y) * cells;
+    float t = mod(u_time * u_speed * 0.70, WRAP);
+    // The whole field sways on a slow loop, so even the lattice itself travels
+    // across the frame; the node orbits above are capped by the cell gather.
+    vec2 pan = 0.9 * vec2(sin(t * 0.30 + 0.7), cos(t * 0.45));
+    vec2 p = vec2(uv.x * ar, uv.y) * cells + pan;
     vec2 base = floor(p);
-    float t = mod(u_time * u_speed * 0.20, 1000.0);
 
     // One screen pixel in grid units. Sizes take a pixel-scaled term clamped
     // between a grid-scaled floor and ceiling: the floor keeps the mesh
@@ -61,10 +74,15 @@ void main() {
 
     vec2 nodes[9];
     vec3 cols[9];
+    float rads[9];
     for (int i = 0; i < 9; i++) {
         vec2 cell = base + vec2(float(i % 3) - 1.0, float(i / 3) - 1.0);
         nodes[i] = nodeAt(cell, t);
-        cols[i] = tintedPalette(hash21(cell) * 0.85 + t * 0.05);
+        cols[i] = tintedPalette(hash21(cell) * 0.85 + t * 0.015915);
+        // Only ever shrinks from rd: a larger halo would be clipped where a
+        // neighbour outside the gather reaches this cell.
+        rads[i] = rd * (1.0 - 0.15 - 0.15 * sin(t * floor(6.0 + hash21(cell + 3.3) * 12.0) * 0.05
+                                         + hash21(cell + 9.1) * 6.28318));
     }
 
     vec3 col = vec3(0.0);
@@ -81,8 +99,8 @@ void main() {
         bgw += w;
 
         // Filled disc with a halo around it, not a gaussian smudge.
-        float disc = smoothstep(rd, rd * 0.72, nd);
-        float halo = exp(-(nd * nd) / (rd * rd * 2.2));
+        float disc = smoothstep(rads[i], rads[i] * 0.72, nd);
+        float halo = exp(-(nd * nd) / (rads[i] * rads[i] * 2.2));
         col += cols[i] * (disc * 2.4 + halo * 0.60);
     }
 

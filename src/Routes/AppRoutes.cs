@@ -134,10 +134,11 @@ public static class AppRoutes
         // so it cannot reach the cloud API itself; these hand back its JSON
         // verbatim rather than widening the CSP.
         app.MapGet("/apps-api/store/apps",
-            async (Nexus.Service.Store.StoreCatalogProxy proxy, HttpContext http, CancellationToken ct) =>
+            async (Nexus.Service.Store.StoreCatalogProxy proxy, Nexus.Service.Store.HardwareAppCatalog hardware, HttpContext http, CancellationToken ct) =>
         {
             var body = await proxy.ListAsync(
                 http.Request.Query["nexusVersion"], ParseTouch(http), http.Request.Query["locale"], ct);
+            body = await Nexus.Service.Store.HardwareAnnotation.ApplyAsync(body, null, hardware);
 #if DEV_TOOLS
             if (body is not null)
             {
@@ -151,9 +152,10 @@ public static class AppRoutes
         }).AllowPanel();
 
         app.MapGet("/apps-api/store/apps/{appId}",
-            async (string appId, Nexus.Service.Store.StoreCatalogProxy proxy, HttpContext http, CancellationToken ct) =>
+            async (string appId, Nexus.Service.Store.StoreCatalogProxy proxy, Nexus.Service.Store.HardwareAppCatalog hardware, HttpContext http, CancellationToken ct) =>
         {
             var body = await proxy.DetailAsync(appId, http.Request.Query["nexusVersion"], ParseTouch(http), http.Request.Query["locale"], ct);
+            body = await Nexus.Service.Store.HardwareAnnotation.ApplyAsync(body, appId, hardware);
 #if DEV_TOOLS
             if (body is null
                 && AppIds.IsValid(appId)
@@ -223,9 +225,21 @@ public static class AppRoutes
                    Nexus.Service.Store.StoreInstaller installer,
                    Nexus.Service.Store.HardwareAppCatalog hardware,
                    Nexus.Service.Store.StoreCatalogProxy catalog,
-                   IConfigStore store, MultiplexHub hub, HttpContext http, CancellationToken ct) =>
+                   AppRegistry registry, IConfigStore store, MultiplexHub hub, HttpContext http, CancellationToken ct) =>
         {
             var appId = body.AppId ?? "";
+            // A first install of a hardware-bound app needs the hardware attached, account or not; an installed copy may update.
+            var installed = registry.TryGet(appId, out var existing) && existing.Source == AppInstallPaths.Source.User;
+            if (await hardware.RefusesFirstInstallAsync(appId, installed))
+            {
+                return Results.Json(new StoreInstallResponse
+                {
+                    AppId = appId,
+                    Version = body.Version ?? "",
+                    Ok = false,
+                    Reason = "hardware_required",
+                }, AppJsonContext.Default.StoreInstallResponse);
+            }
             var auth = await entitlements.AuthorizeAsync(
                 appId, body.Version ?? "", http.Request.Query["nexusVersion"], ct);
             if (!auth.Ok || auth.Grant is null)

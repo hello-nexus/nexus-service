@@ -1,8 +1,7 @@
 uniform float u_particles; // hint_range(0.3, 3.0, 0.05) = 1.8  density multiplier
 uniform float u_twinkle; // hint_range(0.2, 4.0, 0.05) = 1.5  flicker rate
 uniform float u_parallax; // hint_range(0.0, 1.2, 0.02) = 0.6  depth drift strength
-uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
-#define tintedPalette(t) moodPalette((t), u_mood)
+#define tintedPalette(t) wheelColor(t)
 
 // Glittering dust drifting through a colored gas haze. The haze is a slow
 // domain-warped color field that always fills the frame; parallax
@@ -58,7 +57,7 @@ void main() {
         col += (vec3(1.0) * core * 1.4 + tint * (core * 1.0 + halo * 1.8)) * br;
     }
 
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finish(col), 1.0);
 }
 
 float outGain() { return 1.09; }

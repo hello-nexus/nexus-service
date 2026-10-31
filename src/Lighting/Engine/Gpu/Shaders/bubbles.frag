@@ -1,8 +1,7 @@
 uniform float u_count; // hint_range(4.0, 24.0, 1.0) = 12.0  bubble count
 uniform float u_rise; // hint_range(0.2, 2.5, 0.05) = 1.0  upward speed
 uniform float u_irid; // hint_range(0.0, 1.5, 0.05) = 0.8  iridescent band strength
-uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
-#define tintedPalette(t) moodPalette((t), u_mood)
+#define tintedPalette(t) wheelColor(t)
 
 // Soft radial gaussian mask - used for halos and glow falloffs.
 float gauss(float r, float sigma) {
@@ -129,7 +128,7 @@ void main() {
         col += vec3(1.0, 0.98, 0.94) * (arc1 * 1.3 + arc2 * 0.5) * edgeFade;
     }
 
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finish(col), 1.0);
 }
 
 float outGain() { return 1.29; }

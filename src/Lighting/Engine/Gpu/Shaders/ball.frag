@@ -1,42 +1,17 @@
 uniform float u_size; // hint_range(0.03, 0.25, 0.005) = 0.08  ball radius
 uniform float u_count; // hint_range(1.0, 24.0, 1.0) = 8.0  ball count
 uniform float u_trail; // hint_range(0.0, 1.0, 0.02) = 0.6  shockwave length
-uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
 
 // Glowing orbs bounce on a floor along decaying parabolic arcs, squash on
 // impact and fire a flash plus an expanding ripple along the floor. Orbs that
 // drift together merge like liquid light inside one soft bloom. Colors spread
 // evenly across the color wheel range (hue is its middle, 1 - colorize its
-// width); a nonzero mood swaps in a restricted palette instead.
+// width).
 const float E = 0.6;
 const float LOGE = -0.5108256;
 const float ARCS = 2.176;
 const float CYCLE = 3.1;
 const float FLOOR = 0.85;
-
-bool artActive() {
-    vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
-    return u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0;
-}
-
-vec3 wheelColor(float k) {
-    if (artActive()) {
-        return artPalette(k);
-    }
-    if (u_mood > 0.5) {
-        return moodPalette(k, u_mood);
-    }
-    float span = 1.0 - clamp(u_colorize, 0.0, 1.0);
-    return hsv2rgb(vec3(u_hue + (k - 0.5) * span, 1.0, 1.0));
-}
-
-// finalize() without its colorize blend, used when the wheel range alone decides hue.
-vec3 finish(vec3 col) {
-    float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
-    col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
-    col = (col - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
-    return gainOut(tonemap(max(col, 0.0)));
-}
 
 float ripple(float dx, float v, float age, float amp, float life) {
     float a = age / life;
@@ -131,8 +106,7 @@ void main() {
     col += halo;
     col = mix(col, base * 0.95 + vec3(core * 0.45), body);
     vec3 outCol = col * 1.15;
-    bool ranged = !artActive() && u_mood <= 0.5;
-    fragColor = vec4(ranged ? finish(outCol) : finalize(outCol), 1.0);
+    fragColor = vec4(finish(outCol), 1.0);
 }
 
 float outGain() { return 1.26; }

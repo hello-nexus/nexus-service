@@ -55,6 +55,13 @@ internal static class OobePanelPolicy
         return true;
     }
 
+    /// <summary>Service-token setup launches are replaced once the setup account is on the console, since WebView2 does not run as SYSTEM.</summary>
+    internal static bool ShouldReplaceServiceTokenLaunches(ConsoleLaunchPlan plan, int serviceTokenTracked)
+        => plan == ConsoleLaunchPlan.OobeTempUser && serviceTokenTracked > 0;
+
+    /// <summary>The overlay hosts WebView2, which cannot run as the SYSTEM user the service token carries, so with nobody signed in only the helper starts.</summary>
+    internal static bool OverlayCanStart(ConsoleLaunchPlan plan) => plan != ConsoleLaunchPlan.OobeNoUser;
+
     /// <summary>A console user other than the OOBE temporary account.</summary>
     internal static bool IsRealUser(string user) => !string.IsNullOrEmpty(user) && !IsOobeTempAccount(user);
 

@@ -1,8 +1,7 @@
 uniform float u_wind; // hint_range(0.3, 3.0, 0.05) = 1.2  wind speed
 uniform float u_density; // hint_range(0.3, 2.5, 0.05) = 1.0  particle density
 uniform float u_gusts; // hint_range(0.1, 2.0, 0.05) = 0.8  gust frequency
-uniform float u_mood; // hint_range(0.0, 7.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora, 6 desert, 7 dusk
-#define tintedPalette(t) moodPalette((t), u_mood)
+#define tintedPalette(t) wheelColor(t)
 
 mat2 rot2(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
 
@@ -13,9 +12,8 @@ mat2 rot2(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
 //      of parallel lines. Gives a much less mechanical look.
 //   2. Every layer gets a domain-warp offset so fbm features twist and
 //      fold as they advect - real sand doesn't flow as a uniform grid.
-//   3. Palette samples are spread across 0.05..0.82 so the shader is
-//      genuinely rainbow-capable (template slot 1). The signature's
-//      colorize=0.55 still pulls slot 0 to warm sand.
+//   3. Palette samples spread across the color wheel arc, so a full arc is
+//      rainbow and a narrow one is a single tone.
 void main() {
     vec2 uv = uv01();
     float t = mod(u_time * u_speed * u_wind * 0.5, 1000.0);
@@ -33,10 +31,6 @@ void main() {
     mat2 R = rot2(-windAngle);
     vec2 w = R * uv;
 
-    // Palette samples spread across the spectrum so template slot 1
-    // (rainbow) actually reads as rainbow. Under the default sand
-    // signature (colorize ~0.55), finalize() pulls them all back toward
-    // a warm monochrome sand look.
     vec3 palA = tintedPalette(0.05);
     vec3 palB = tintedPalette(0.30);
     vec3 palC = tintedPalette(0.55);
@@ -105,7 +99,7 @@ void main() {
     float gustEnv = smoothstep(0.0, 0.08, gustPhase) * smoothstep(1.0, 0.88, gustPhase);
     col += palD * gustBand * gustEnv * dens * 2.2;
 
-    fragColor = vec4(finalize(col * 3.0), 1.0);
+    fragColor = vec4(finish(col * 3.0), 1.0);
 }
 
 float outGain() { return 1.02; }
