@@ -629,14 +629,15 @@ public static class UiRecents
     }
 
     /// <summary>
-    /// Drops every entry for <paramref name="effectKey"/>: the bare key and its preset-tagged form "key@N".
-    /// True when anything was removed.
+    /// A copy without <paramref name="effectKey"/> and its "key@N" forms, or null when none matched.
+    /// Never mutates the input: GET /preferences serializes the cached list outside the store lock.
     /// </summary>
-    public static bool PruneEffect(List<string> keys, string effectKey)
+    public static List<string>? PruneEffect(IReadOnlyList<string> keys, string effectKey)
     {
         var tagged = effectKey + "@";
-        return keys.RemoveAll(k => string.Equals(k, effectKey, StringComparison.Ordinal)
-            || (k.StartsWith(tagged, StringComparison.Ordinal) && k.Length > tagged.Length && k.AsSpan(tagged.Length).IndexOf('@') < 0)) > 0;
+        var kept = keys.Where(k => !(string.Equals(k, effectKey, StringComparison.Ordinal)
+            || (k.StartsWith(tagged, StringComparison.Ordinal) && k.Length > tagged.Length && k.AsSpan(tagged.Length).IndexOf('@') < 0))).ToList();
+        return kept.Count < keys.Count ? kept : null;
     }
 
     private static bool IsHexColor(string? c)

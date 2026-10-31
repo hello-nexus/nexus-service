@@ -659,7 +659,14 @@ public static class LightingRoutes
             l.DropCustomEffect(key);
             // Recents live in settings and every client reads them, so the entries go here, not in one client.
             var pruned = false;
-            config.Update(s => pruned = Nexus.Service.Persistence.UiRecents.PruneEffect(s.Ui.RecentAnimations, key));
+            config.Update(s =>
+            {
+                if (Nexus.Service.Persistence.UiRecents.PruneEffect(s.Ui.RecentAnimations, key) is { } kept)
+                {
+                    s.Ui.RecentAnimations = kept;
+                    pruned = true;
+                }
+            });
             if (pruned)
             {
                 PanelTopics.BroadcastPrefs(hub);

@@ -49,9 +49,11 @@ public class UiRecentsTests
     public void Prune_removes_the_bare_key_and_every_preset_tagged_form_only()
     {
         var list = new List<string> { "custom:abc@2", "fire@1", "custom:abc", "custom:abcd@0", "custom:abc@0", "custom:abc@x@1" };
-        Assert.True(UiRecents.PruneEffect(list, "custom:abc"));
-        Assert.Equal(new[] { "fire@1", "custom:abcd@0", "custom:abc@x@1" }, list);
-        Assert.False(UiRecents.PruneEffect(list, "custom:abc"));
+        var original = list.ToList();
+        var kept = UiRecents.PruneEffect(list, "custom:abc");
+        Assert.Equal(new[] { "fire@1", "custom:abcd@0", "custom:abc@x@1" }, kept);
+        Assert.Equal(original, list);
+        Assert.Null(UiRecents.PruneEffect(kept!, "custom:abc"));
     }
 
     [Fact]
