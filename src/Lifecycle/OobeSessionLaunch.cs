@@ -191,7 +191,7 @@ internal static class OobeSessionLaunch
         {
             s_tracked.Add((pid, startFileTime, tag == "helper", session, serviceToken));
             PersistLocked();
-            s_reaper ??= new Timer(_ => { ReplaceServiceTokenLaunchesForTempUser(); ReapIfOobeOver(); }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+            EnsureReaperLocked();
 #if WINDOWS
             if (!s_logonHooked)
             {
@@ -201,6 +201,11 @@ internal static class OobeSessionLaunch
 #endif
         }
         Console.WriteLine($"[oobe-session] started {tag} pid {pid}");
+    }
+
+    private static void EnsureReaperLocked()
+    {
+        s_reaper ??= new Timer(_ => { ReplaceServiceTokenLaunchesForTempUser(); ReapIfOobeOver(); }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
     }
 
     private static void Untrack(int pid)
@@ -283,12 +288,7 @@ internal static class OobeSessionLaunch
     /// <summary>Raised after setup processes started with the service token were ended because the temporary setup account signed in.</summary>
     internal static event Action? ServiceTokenLaunchesReplaced;
 
-    /// <summary>
-    /// The setup panel is first started while nobody is signed in, with the service token. Once the
-    /// temporary setup account is on the console those processes are ended so the next launch uses
-    /// that account's token; WebView2 cannot run as the SYSTEM user the service token carries.
-    /// Returns how many it ended. A no-op unless something tracked used the service token.
-    /// </summary>
+    /// <summary>Ends service-token setup processes once the setup account is on the console, so the next launch uses that account's token (WebView2 cannot run as the SYSTEM user the service token carries); returns how many it ended.</summary>
     internal static int ReplaceServiceTokenLaunchesForTempUser()
     {
         try
@@ -312,9 +312,21 @@ internal static class OobeSessionLaunch
                 Console.WriteLine($"[oobe-session] plan={plan} for console user '{user}': ending {victims.Count} process(es) started with the service token so they restart with the user token");
             }
             var ended = 0;
-            foreach (var (pid, fileTime, _, _, _) in victims)
+            var survivors = new List<(int Pid, long StartFileTime, bool Helper, int Session, bool ServiceToken)>();
+            foreach (var victim in victims)
             {
-                if (Kill(pid, fileTime)) ended++;
+                if (Kill(victim.Pid, victim.StartFileTime)) ended++;
+                else if (StillRunning(victim.Pid, victim.StartFileTime)) survivors.Add(victim);
+            }
+            if (survivors.Count > 0)
+            {
+                // A process the swap failed to end stays tracked so a later tick or the reap can still end it.
+                lock (s_lock)
+                {
+                    s_tracked.AddRange(survivors);
+                    PersistLocked();
+                    EnsureReaperLocked();
+                }
             }
             try { ServiceTokenLaunchesReplaced?.Invoke(); }
             catch (Exception ex) { Console.Error.WriteLine($"[oobe-session] replace handler failed: {ex.Message}"); }
