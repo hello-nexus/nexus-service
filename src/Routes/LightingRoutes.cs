@@ -645,7 +645,7 @@ public static class LightingRoutes
         });
         app.MapDelete("/lighting/custom-effects/{id}", (string id,
             Nexus.Service.Lighting.CustomEffects.CustomEffectStore custom,
-            ILightingProvider l, MultiplexHub hub) =>
+            ILightingProvider l, MultiplexHub hub, Nexus.Service.Persistence.IConfigStore config) =>
         {
             if (!custom.EnsureAvailable())
             {
@@ -656,6 +656,14 @@ public static class LightingRoutes
                 return Results.NotFound();
             }
             l.DropCustomEffect(ShaderLibrary.CustomPrefix + id);
+            // Recents live in settings and every client reads them, so the entries go here, not in one client.
+            var key = ShaderLibrary.CustomPrefix + id;
+            var pruned = false;
+            config.Update(s => pruned = Nexus.Service.Persistence.UiRecents.PruneEffect(s.Ui.RecentAnimations, key));
+            if (pruned)
+            {
+                PanelTopics.BroadcastPrefs(hub);
+            }
             PanelTopics.BroadcastLighting(hub);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });

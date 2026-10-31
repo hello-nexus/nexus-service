@@ -580,7 +580,7 @@ public sealed class UiSettings
     public List<string> HiddenSidebarDevices { get; set; } = new();
     /// <summary>Static colors the user recently applied in the lighting widget, "#RRGGBB", newest first. Workstation-level. POST /preferences caps and validates through <see cref="UiRecents"/>.</summary>
     public List<string> RecentStaticColors { get; set; } = new();
-    /// <summary>Animation effect keys the user recently applied in the lighting widget, newest first. Workstation-level. POST /preferences caps and validates through <see cref="UiRecents"/>.</summary>
+    /// <summary>Animations the user recently applied in the lighting widget, newest first. An entry is an effect key, optionally followed by "@N" for the preset slot picked (a bare key means the effect's current preset). Workstation-level. POST /preferences caps and validates through <see cref="UiRecents"/>.</summary>
     public List<string> RecentAnimations { get; set; } = new();
 }
 
@@ -626,6 +626,17 @@ public static class UiRecents
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// Drops every entry for <paramref name="effectKey"/>: the bare key and its preset-tagged form "key@N".
+    /// True when anything was removed.
+    /// </summary>
+    public static bool PruneEffect(List<string> keys, string effectKey)
+    {
+        var tagged = effectKey + "@";
+        return keys.RemoveAll(k => string.Equals(k, effectKey, StringComparison.Ordinal)
+            || (k.StartsWith(tagged, StringComparison.Ordinal) && k.Length > tagged.Length && k.AsSpan(tagged.Length).IndexOf('@') < 0)) > 0;
     }
 
     private static bool IsHexColor(string? c)
