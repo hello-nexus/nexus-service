@@ -63,15 +63,6 @@ public static class PanelPresets
         to.GridSlots = from.GridSlots;
     }
 
-    /// <summary>The default layout for the source's surface (or <paramref name="fallbackSurface"/>) with every widget removed.</summary>
-    public static PanelLayoutDto EmptyLayout(PanelLayoutDto? like, string fallbackSurface = "desktop")
-    {
-        var layout = PanelLayoutDefaults.ForSurface(like?.Surface ?? fallbackSurface);
-        foreach (var page in layout.Pages)
-            page.Widgets.Clear();
-        return layout;
-    }
-
     public static PanelPresetsResponse ToResponse(PanelDeviceRecord record) => new()
     {
         Presets = record.Presets?.ConvertAll(p => new PanelPresetDto

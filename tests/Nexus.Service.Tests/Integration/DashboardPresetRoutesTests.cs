@@ -39,6 +39,9 @@ public sealed class DashboardPresetRoutesTests : IClassFixture<StubDeviceHostFac
         Pages = { new PanelPageDto { Id = "p", Widgets = { new PanelWidgetDto { Id = "w", Type = widgetType } } } },
     };
 
+    private static List<string> Types(PanelLayoutDto? layout) =>
+        layout?.Pages.SelectMany(p => p.Widgets).Select(w => w.Type).ToList() ?? new();
+
     private static string? WidgetType(PanelLayoutDto? layout) => layout?.Pages.SingleOrDefault()?.Widgets.SingleOrDefault()?.Type;
 
     private async Task<JsonElement> ReadJson(HttpResponseMessage res)
@@ -121,7 +124,7 @@ public sealed class DashboardPresetRoutesTests : IClassFixture<StubDeviceHostFac
     }
 
     [Fact]
-    public async Task Create_fresh_stores_an_empty_layout_and_clears_the_live_one()
+    public async Task Create_fresh_stores_the_starter_dashboard_and_makes_it_live()
     {
         await ReadJson(await SeedAsync(("Default", "clock")));
         Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
@@ -133,8 +136,11 @@ public sealed class DashboardPresetRoutesTests : IClassFixture<StubDeviceHostFac
         Assert.Equal(root.GetProperty("presets")[1].GetProperty("id").GetString(), stored.DashboardActivePresetId);
         Assert.Equal("desktop", layout.Surface);
         Assert.Equal(2, layout.LayoutSchemaVersion);
-        Assert.Empty(layout.Pages.SelectMany(p => p.Widgets));
-        Assert.Empty(stored.DashboardLayout!.Pages.SelectMany(p => p.Widgets));
+        var starter = Types(Nexus.Service.Panel.PanelLayoutDefaults.ForSurface("desktop"));
+        Assert.NotEmpty(starter);
+        Assert.Equal(starter, Types(layout));
+        Assert.Equal(starter, Types(stored.DashboardLayout));
+        Assert.Equal("calendar", WidgetType(stored.DashboardPresets!.Single(p => p.Name == "Default").Layout));
     }
 
     [Fact]

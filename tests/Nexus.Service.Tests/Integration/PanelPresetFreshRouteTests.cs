@@ -28,11 +28,11 @@ public sealed class PanelPresetFreshRouteTests : IClassFixture<NexusAppFactory>
     {
         LayoutSchemaVersion = 2,
         Surface = "y70",
-        Pages = { new PanelPageDto { Id = "p", Widgets = { new PanelWidgetDto { Id = "w", Type = "clock" } } } },
+        Pages = { new PanelPageDto { Id = "p", Widgets = { new PanelWidgetDto { Id = "w", Type = "gallery" } } } },
     };
 
     [Fact]
-    public async Task Create_fresh_with_an_active_preset_empties_the_panel_and_keeps_the_old_preset()
+    public async Task Create_fresh_with_an_active_preset_takes_the_starter_layout_and_keeps_the_old_preset()
     {
         var store = _factory.Services.GetRequiredService<IConfigStore>();
         var id = "fresh-route-" + Guid.NewGuid().ToString("N")[..8];
@@ -49,8 +49,10 @@ public sealed class PanelPresetFreshRouteTests : IClassFixture<NexusAppFactory>
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         var record = store.Load().PanelDevices[id];
-        Assert.Empty(record.Layout!.Pages.SelectMany(p => p.Widgets));
-        Assert.Equal("clock", record.Presets!.Single(p => p.Name == "Desk").Layout!.Pages[0].Widgets[0].Type);
-        Assert.Empty(record.Presets!.Single(p => p.Name == "Blank").Layout!.Pages.SelectMany(p => p.Widgets));
+        var starter = Nexus.Service.Panel.PanelLayoutDefaults.ForSurface(PanelSurfaces.Y70).Pages.SelectMany(p => p.Widgets).Select(w => w.Type).ToList();
+        Assert.NotEmpty(starter);
+        Assert.Equal(starter, record.Layout!.Pages.SelectMany(p => p.Widgets).Select(w => w.Type));
+        Assert.Equal("gallery", record.Presets!.Single(p => p.Name == "Desk").Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal(starter, record.Presets!.Single(p => p.Name == "Blank").Layout!.Pages.SelectMany(p => p.Widgets).Select(w => w.Type));
     }
 }
