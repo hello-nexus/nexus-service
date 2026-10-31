@@ -614,8 +614,8 @@
    {
     "speed": 40,
     "intensity": 1,
-    "hue": 0.56,
-    "colorize": 0.83,
+    "hue": 0.57,
+    "colorize": 0.7,
     "saturation": 1.35,
     "contrast": 1.1,
     "params": {
@@ -1799,8 +1799,8 @@
    {
     "speed": 45,
     "intensity": 1,
-    "hue": 0.56,
-    "colorize": 0.83,
+    "hue": 0.57,
+    "colorize": 0.7,
     "saturation": 1.45,
     "contrast": 1.1,
     "params": {
