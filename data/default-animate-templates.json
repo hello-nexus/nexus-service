@@ -533,11 +533,11 @@
     "params": {
      "u_lights": 8,
      "u_size": 0.08,
-     "u_drift": 0.3
+     "u_drift": 0.9
     }
    },
    {
-    "speed": 30,
+    "speed": 50,
     "intensity": 1,
     "hue": 0.62,
     "colorize": 0.75,
@@ -6311,7 +6311,7 @@
     }
    },
    {
-    "speed": 30,
+    "speed": 50,
     "intensity": 1,
     "hue": 0.62,
     "colorize": 0.75,

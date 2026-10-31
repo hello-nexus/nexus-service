@@ -50,8 +50,8 @@ void main() {
     float pulseGlow = 0.0;
     if (trace > 0.0) {
         float invGlow = 20.0 / glow;
-        for (int k = 0; k < 2; k++) {
-            float pulsePhase = fract(t * pulseRate * 1.3 + cellHash + float(k) * 0.5);
+        for (int k = 0; k < 3; k++) {
+            float pulsePhase = fract(t * pulseRate * 1.3 + cellHash + float(k) * 0.3333);
             float pulseDistH = abs(p.x - (pulsePhase - 0.5)) + abs(p.y) * 4.0;
             float pulseDistV = abs(p.y - ((1.0 - pulsePhase) - 0.5)) + abs(p.x) * 4.0;
             pulseGlow += exp(-pulseDistH * invGlow) + exp(-pulseDistV * invGlow);
@@ -61,19 +61,25 @@ void main() {
     vec3 traceColor = tintedPalette(0.55 + cellHash * 0.2);
     vec3 pulseColor = tintedPalette(0.4 + cellHash * 0.2 + t * 0.1);
 
+    // A slow wave sweeps across the board and swells the traces it passes, so
+    // the static layout itself shimmers; the base level sits low so the
+    // moving pulses read brighter against it.
+    float sweep = 0.5 + 0.5 * sin(grid.x * 0.55 + grid.y * 0.35 - t * 2.2 + cellHash * 1.5);
+    float traceLevel = 0.35 + 0.65 * sweep;
+
     // Board tint varies across the frame so the background itself carries
     // colour instead of being a dim uniform slab.
     // perf: faint 0.18-scaled background tint, no fine detail needed -> fbm3
-    float boardFbm = fbm3(uv * 1.4 + vec2(t * 0.2, 0.0));
+    float boardFbm = fbm3(uv * 1.4 + vec2(t * 0.5, t * 0.3));
     vec3 boardTint = tintedPalette(0.35 + boardFbm * 0.3) * 0.32;
 
     vec3 col = boardTint;
-    col += traceColor * trace * 1.4;
-    col += pulseColor * pulseGlow * 2.2;
+    col += traceColor * trace * 1.1 * traceLevel;
+    col += pulseColor * pulseGlow * 3.0;
     // Solder-mask glow where traces are dense.
-    col += traceColor * trace * trace * 0.6;
+    col += traceColor * trace * trace * 0.45 * traceLevel;
     // Nodes at the cell centers light up in turn.
-    float node = exp(-dot(inCell, inCell) * 90.0) * (0.35 + 0.65 * pow(0.5 + 0.5 * sin(t * 2.4 + cellHash * 40.0), 4.0));
+    float node = exp(-dot(inCell, inCell) * 90.0) * (0.35 + 0.65 * pow(0.5 + 0.5 * sin(t * 4.8 + cellHash * 40.0), 4.0));
     col += pulseColor * node * 1.6;
 
     fragColor = vec4(finish(col), 1.0);
