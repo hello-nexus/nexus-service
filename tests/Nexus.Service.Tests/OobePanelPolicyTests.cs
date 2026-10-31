@@ -161,4 +161,20 @@ public sealed class OobePanelPolicyTests
         Assert.False(set.IsReaped(10));
         Assert.True(set.IsReaped(20));
     }
+
+    [Theory]
+    [InlineData("OobeTempUser", 1, true)]
+    [InlineData("OobeTempUser", 0, false)]
+    [InlineData("OobeNoUser", 1, false)]
+    [InlineData("ConsoleUser", 2, false)]
+    [InlineData("WaitForLogon", 1, false)]
+    public void ShouldReplaceServiceTokenLaunches_OnlyForTempUserWithServiceTokenProcesses(string plan, int tracked, bool expected)
+        => Assert.Equal(expected, OobePanelPolicy.ShouldReplaceServiceTokenLaunches(Enum.Parse<ConsoleLaunchPlan>(plan), tracked));
+
+    [Theory]
+    [InlineData("OobeNoUser", false)]
+    [InlineData("OobeTempUser", true)]
+    [InlineData("ConsoleUser", true)]
+    public void OverlayCanStart_NeverUnderTheServiceToken(string plan, bool expected)
+        => Assert.Equal(expected, OobePanelPolicy.OverlayCanStart(Enum.Parse<ConsoleLaunchPlan>(plan)));
 }

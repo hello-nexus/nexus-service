@@ -111,10 +111,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             return false;
         }
         if (System.Security.Principal.WindowsIdentity.GetCurrent().IsSystem
-            && string.IsNullOrEmpty(ResolveActiveConsoleUsername())
-            && Nexus.Service.Lifecycle.OobePanelPolicy.Decide(
-                string.Empty, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleSessionExists(),
-                Nexus.Service.Lifecycle.OobeDetector.IsInOobe) != Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser)
+            && string.IsNullOrEmpty(ResolveActiveConsoleUsername()))
         {
             if (!_waitingForLogon) Console.WriteLine("[overlay-host] no active console user; waiting for logon");
             _waitingForLogon = true;
@@ -281,9 +278,11 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
             Nexus.Service.Lifecycle.OobeDetector.IsInOobe, Nexus.Service.Lifecycle.OobeSessionLaunch.ConsoleUserIsLocal);
         if (plan is Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser or Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeTempUser)
         {
+            // WebView2 cannot run as SYSTEM, the user the service token carries, so the overlay
+            // waits for the setup account instead of starting a host that never paints.
+            if (!Nexus.Service.Lifecycle.OobePanelPolicy.OverlayCanStart(plan)) return null;
             var direct = Nexus.Service.Lifecycle.OobeSessionLaunch.Start(
-                exePath, string.Empty, workingDir, "overlay",
-                allowServiceToken: plan == Nexus.Service.Lifecycle.ConsoleLaunchPlan.OobeNoUser);
+                exePath, string.Empty, workingDir, "overlay", plan);
             // Without the setup account's token nothing is started: a schtasks launch would be untracked
             // and outlive OOBE. The supervisor retries.
             if (direct is null)

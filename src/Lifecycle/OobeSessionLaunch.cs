@@ -27,7 +27,7 @@ internal static class OobeSessionLaunch
 {
     private static readonly object s_lock = new();
     // Start time as the raw FILETIME value of GetProcessTimes, the same source on both sides.
-    private static readonly List<(int Pid, long StartFileTime, bool Helper, int Session)> s_tracked = new();
+    private static readonly List<(int Pid, long StartFileTime, bool Helper, int Session, bool ServiceToken)> s_tracked = new();
     private static Timer? s_reaper;
 #if WINDOWS
     private static bool s_logonHooked;
@@ -185,13 +185,13 @@ internal static class OobeSessionLaunch
         catch { /* best-effort */ }
     }
 
-    private static void Track(int pid, long startFileTime, string tag, int session)
+    private static void Track(int pid, long startFileTime, string tag, int session, bool serviceToken)
     {
         lock (s_lock)
         {
-            s_tracked.Add((pid, startFileTime, tag == "helper", session));
+            s_tracked.Add((pid, startFileTime, tag == "helper", session, serviceToken));
             PersistLocked();
-            s_reaper ??= new Timer(_ => { ReapIfOobeOver(); }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+            s_reaper ??= new Timer(_ => { ReplaceServiceTokenLaunchesForTempUser(); ReapIfOobeOver(); }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
 #if WINDOWS
             if (!s_logonHooked)
             {
@@ -249,12 +249,12 @@ internal static class OobeSessionLaunch
     {
         try
         {
-            List<(int Pid, long StartFileTime, bool Helper, int Session)> victims;
+            List<(int Pid, long StartFileTime, bool Helper, int Session, bool ServiceToken)> victims;
             lock (s_lock)
             {
                 PruneExitedLocked();
                 if (!OobePanelPolicy.ShouldReap(s_tracked.Count, OobeDetector.IsInOobe, () => OobePanelPolicy.IsRealUser(ConsoleUser()))) return 0;
-                victims = new List<(int, long, bool, int)>(s_tracked);
+                victims = new List<(int, long, bool, int, bool)>(s_tracked);
                 s_tracked.Clear();
                 // Recorded before the kill: the helper's pipe drops while it is still exiting.
                 foreach (var v in victims)
@@ -266,7 +266,7 @@ internal static class OobeSessionLaunch
                 PersistLocked();
             }
             var ended = 0;
-            foreach (var (pid, fileTime, _, _) in victims)
+            foreach (var (pid, fileTime, _, _, _) in victims)
             {
                 if (Kill(pid, fileTime)) ended++;
             }
@@ -276,6 +276,53 @@ internal static class OobeSessionLaunch
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[oobe-session] reap failed: {ex.Message}");
+            return 0;
+        }
+    }
+
+    /// <summary>Raised after setup processes started with the service token were ended because the temporary setup account signed in.</summary>
+    internal static event Action? ServiceTokenLaunchesReplaced;
+
+    /// <summary>
+    /// The setup panel is first started while nobody is signed in, with the service token. Once the
+    /// temporary setup account is on the console those processes are ended so the next launch uses
+    /// that account's token; WebView2 cannot run as the SYSTEM user the service token carries.
+    /// Returns how many it ended. A no-op unless something tracked used the service token.
+    /// </summary>
+    internal static int ReplaceServiceTokenLaunchesForTempUser()
+    {
+        try
+        {
+            List<(int Pid, long StartFileTime, bool Helper, int Session, bool ServiceToken)> victims;
+            lock (s_lock)
+            {
+                PruneExitedLocked();
+                var serviceTokenCount = s_tracked.FindAll(t => t.ServiceToken).Count;
+                if (serviceTokenCount == 0) return 0;
+                var user = ConsoleUser();
+                var plan = OobePanelPolicy.Decide(user, ConsoleSessionExists(), OobeDetector.IsInOobe, ConsoleUserIsLocal);
+                if (!OobePanelPolicy.ShouldReplaceServiceTokenLaunches(plan, serviceTokenCount)) return 0;
+                victims = s_tracked.FindAll(t => t.ServiceToken);
+                s_tracked.RemoveAll(t => t.ServiceToken);
+                foreach (var v in victims)
+                {
+                    if (v.Helper) s_reaped.Add(v.Pid, v.StartFileTime, v.Session);
+                }
+                PersistLocked();
+                Console.WriteLine($"[oobe-session] plan={plan} for console user '{user}': ending {victims.Count} process(es) started with the service token so they restart with the user token");
+            }
+            var ended = 0;
+            foreach (var (pid, fileTime, _, _, _) in victims)
+            {
+                if (Kill(pid, fileTime)) ended++;
+            }
+            try { ServiceTokenLaunchesReplaced?.Invoke(); }
+            catch (Exception ex) { Console.Error.WriteLine($"[oobe-session] replace handler failed: {ex.Message}"); }
+            return ended;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[oobe-session] replace failed: {ex.Message}");
             return 0;
         }
     }
@@ -295,13 +342,13 @@ internal static class OobeSessionLaunch
 
     /// <summary>
     /// Starts <paramref name="exePath"/> on the console session's default desktop; null when it could not.
-    /// <paramref name="allowServiceToken"/> permits the stripped service token when the console
-    /// session has no user token; the temporary-account path leaves it off.
+    /// <paramref name="plan"/> is the decision being carried out: only OobeNoUser permits the
+    /// stripped service token, when the console session has no user token.
     /// </summary>
-    internal static Process? Start(string exePath, string arguments, string workingDir, string tag, bool allowServiceToken)
+    internal static Process? Start(string exePath, string arguments, string workingDir, string tag, ConsoleLaunchPlan plan)
     {
 #if WINDOWS
-        return OperatingSystem.IsWindows() ? StartWindows(exePath, arguments, workingDir, tag, allowServiceToken) : null;
+        return OperatingSystem.IsWindows() ? StartWindows(exePath, arguments, workingDir, tag, plan) : null;
 #else
         return null;
 #endif
@@ -333,7 +380,7 @@ internal static class OobeSessionLaunch
     private static long FileTimeValue(FILETIME t) => ((long)t.dwHighDateTime << 32) | t.dwLowDateTime;
 
     [SupportedOSPlatform("windows")]
-    private static Process? StartWindows(string exePath, string arguments, string workingDir, string tag, bool allowServiceToken)
+    private static Process? StartWindows(string exePath, string arguments, string workingDir, string tag, ConsoleLaunchPlan plan)
     {
         var session = WTSGetActiveConsoleSessionId();
         if (session == 0xFFFFFFFF) return null;
@@ -341,6 +388,7 @@ internal static class OobeSessionLaunch
         try
         {
             string source;
+            var serviceToken = false;
             if (WTSQueryUserToken(session, out token) && token != IntPtr.Zero)
             {
                 source = "console user token";
@@ -348,11 +396,13 @@ internal static class OobeSessionLaunch
             else
             {
                 var wtsError = Marshal.GetLastWin32Error();
-                if (!allowServiceToken)
+                if (plan != ConsoleLaunchPlan.OobeNoUser)
                 {
-                    Console.Error.WriteLine($"[oobe-session] no user token for {tag} (WTSQueryUserToken error {wtsError}); not using the service token");
+                    Console.Error.WriteLine($"[oobe-session] plan={plan}: no user token for {tag} (WTSQueryUserToken error {wtsError}); not using the service token");
                     return null;
                 }
+                Console.WriteLine($"[oobe-session] plan={plan}: no console user, {tag} falls back to the stripped service token (WTSQueryUserToken error {wtsError})");
+                serviceToken = true;
                 token = StrippedServiceToken(session, out var stripError, out var stripStep);
                 if (token == IntPtr.Zero)
                 {
@@ -387,8 +437,8 @@ internal static class OobeSessionLaunch
                     return null;
                 }
                 var pid = (int)pi.dwProcessId;
-                Track(pid, FileTimeValue(created), tag, (int)session);
-                Console.WriteLine($"[oobe-session] {tag} launched in the console session as {source}");
+                Track(pid, FileTimeValue(created), tag, (int)session, serviceToken);
+                Console.WriteLine($"[oobe-session] plan={plan}: {tag} launched in the console session as {source}");
                 try { return Process.GetProcessById(pid); }
                 catch
                 {
