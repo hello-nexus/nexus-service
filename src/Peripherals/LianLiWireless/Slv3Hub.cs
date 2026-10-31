@@ -348,6 +348,17 @@ public sealed partial class Slv3Hub : IDisposable
     private long _saveCfgDueMs;
     private long _lastConfigChangeMs;
 
+    // A rebind that converged arms one save, sent once every owned chain has sat at its target for
+    // BindSaveStablePolls consecutive polls with no binding change anywhere. Effect uploads do not touch it.
+    // A chain that flaps keeps resetting the run, and a sent save is followed by at least BindSaveMinIntervalMs of quiet.
+    internal const int BindSaveStablePolls = 10;
+    internal const long BindSaveMinIntervalMs = 120_000;
+    private bool _bindSaveArmed;
+    private int _bindSaveStablePolls;
+    private long _bindSaveEvalPoll;
+    private long _lastBindingChangePoll;
+    private long? _lastBindSaveMs;
+
     // Sends a sequenced control frame (RF_Select / RF_RebootLcd) gets before it
     // is dropped without an echo (L-Connect selected / reboot_lcd counters).
     internal const int SequencedCommandBudget = 10;
@@ -585,6 +596,8 @@ public sealed partial class Slv3Hub : IDisposable
         _bothAbsentSinceMs = 0;
         _lastBindMs = null;
         _saveCfgDueMs = 0;
+        _bindSaveArmed = false;
+        _bindSaveStablePolls = 0;
         _videoModeActive = false;
         _videoModePreppedCount = 0;
     }
@@ -1425,6 +1438,10 @@ public sealed partial class Slv3Hub : IDisposable
     {
         if (!NeedsBind(intent, record))
         {
+            if (intent.Sends > 0 && !intent.Manual)
+            {
+                _bindSaveArmed = true;
+            }
             intent.Sends = 0;
             intent.Manual = false;
             if (!_lockBound)
@@ -1656,7 +1673,7 @@ public sealed partial class Slv3Hub : IDisposable
 
         if (_lastBindMs is { } bound && _nowMs() - bound < PostBindSaveCfgMs)
         {
-            SendSaveCfgLocked();
+            SendSaveCfgLocked("manual");
         }
     }
 
@@ -2016,9 +2033,10 @@ public sealed partial class Slv3Hub : IDisposable
         {
             _firstPeriodicSaveDone = true;
             _saveCfgDueMs = 0;
-            SendSaveCfgLocked();
+            SendSaveCfgLocked("periodic");
             return;
         }
+        RunBindSaveLocked(now);
         if (_saveCfgDueMs == 0 || now < _saveCfgDueMs)
         {
             return;
@@ -2029,17 +2047,87 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         _saveCfgDueMs = 0;
-        SendSaveCfgLocked();
+        SendSaveCfgLocked("config-change");
     }
 
-    private bool SendSaveCfgLocked()
+    private void RunBindSaveLocked(long now)
+    {
+        if (!_bindSaveArmed)
+        {
+            return;
+        }
+        if (_bindSaveEvalPoll != _devicePolls)
+        {
+            _bindSaveEvalPoll = _devicePolls;
+            _bindSaveStablePolls = AllOwnedStableLocked() ? _bindSaveStablePolls + 1 : 0;
+        }
+        if (_bindSaveStablePolls < BindSaveStablePolls
+            || (_lastBindSaveMs is { } last && now - last < BindSaveMinIntervalMs))
+        {
+            return;
+        }
+        _bindSaveArmed = false;
+        _bindSaveStablePolls = 0;
+        _lastBindSaveMs = now;
+        SendSaveCfgLocked("bind-save");
+    }
+
+    // Every owned chain in the list was heard this poll bound to our master at its target slot and channel,
+    // none has a bind or unbind in flight, and no chain's binding changed (or was misread) this poll.
+    private bool AllOwnedStableLocked()
+    {
+        if (_devicePolls - _lastBindingChangePoll < 1)
+        {
+            return false;
+        }
+        foreach (var intent in _intents.Values)
+        {
+            if (intent.Unbinding || intent.Sends > 0)
+            {
+                return false;
+            }
+        }
+        foreach (var (key, slot) in _owned)
+        {
+            if (_userUnbound.Contains(key) || !_knownChains.TryGetValue(key, out var chain))
+            {
+                continue;
+            }
+            var record = chain.Record;
+            if (chain.Poll != _devicePolls
+                || (_intents.TryGetValue(key, out var intent) && NeedsBind(intent, record)))
+            {
+                return false;
+            }
+            if (!IsBoundToUsLocked(record) || record.RxType != slot || record.Channel != _channel)
+            {
+                if (IsWiredOwned(key))
+                {
+                    continue;
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private bool SendSaveCfgLocked(string reason)
     {
         if (_tx is null)
         {
             return false;
         }
         _lastSaveMs = _nowMs();
-        return WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
+        var sent = WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
+        if (sent)
+        {
+            ServiceLog.Info($"[lianli-wireless] SaveCfg sent ({reason})");
+        }
+        else
+        {
+            ServiceLog.Warn($"[lianli-wireless] SaveCfg failed ({reason})");
+        }
+        return sent;
     }
 
     // Pages needed to hold recordCount records at RecordsPerPage each, >=1 and
@@ -2115,6 +2203,7 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     if (IsZeroedCopyOfKnownChainLocked(record.Mac))
                     {
+                        _lastBindingChangePoll = _devicePolls;
                         continue;
                     }
                     if (ConfirmNewChains)
@@ -2134,9 +2223,16 @@ public sealed partial class Slv3Hub : IDisposable
                         : $"{record.FanCount} fan(s), {record.Family}";
                     ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what}, {DescribeBinding(record, _masterMac)})");
                 }
-                else if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                else
                 {
-                    ServiceLog.Info(line);
+                    if (BindingChanged(known.Record, record))
+                    {
+                        _lastBindingChangePoll = _devicePolls;
+                    }
+                    if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                    {
+                        ServiceLog.Info(line);
+                    }
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, _blindTotalMs);
             }
@@ -3387,7 +3483,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 return SuspendSend.Down;
             }
-            return SendSaveCfgLocked() ? SuspendSend.Sent : SuspendSend.Failed;
+            return SendSaveCfgLocked("suspend") ? SuspendSend.Sent : SuspendSend.Failed;
         }
         finally
         {

@@ -521,12 +521,12 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void Unbind_and_automatic_rebinds_send_no_savecfg()
+    public void Unbind_sends_no_savecfg()
     {
         var clock = new ManualClock();
         var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
         hub.OwnedDevicesLoad = () => new Dictionary<string, int> { [FanKey] = 1 };
-        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
         Assert.True(hub.DriveTick());
         Assert.True(hub.DriveTick());
         Assert.True(hub.State.Fans[0].BoundToUs);
