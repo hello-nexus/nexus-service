@@ -44,7 +44,7 @@ public class ShaderOutputGainTests
         foreach (var key in ShaderLibrary.AllEffectKeys.Where(k => !ShaderLibrary.IsSensorEffect(k)).Distinct())
         {
             var body = BodyOf(key);
-            if (body.Contains("finalize(", StringComparison.Ordinal) || body.Contains("tonemap(", StringComparison.Ordinal))
+            if (body.Contains("finalize(", StringComparison.Ordinal) || body.Contains("finish(", StringComparison.Ordinal) || body.Contains("tonemap(", StringComparison.Ordinal))
             {
                 data.Add(key);
             }
@@ -123,7 +123,6 @@ public class ShaderOutputGainTests
     [InlineData("breathing")]
     [InlineData("clockfill")]
     [InlineData("aurora")]
-    [InlineData("sweepbrush")]
     public void DirectTonemapCallSitesApplyGain(string key)
     {
         var body = BodyOf(key);

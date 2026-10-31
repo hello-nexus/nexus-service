@@ -74,14 +74,6 @@ vec3 laneColor(float lane, float s, float q, float t, float wash) {
     return coat(cNew - STEP, cNew, hueMix, v);
 }
 
-// finalize() without its colorize blend: the wheel range alone decides hue.
-vec3 finish(vec3 col) {
-    float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
-    col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
-    col = (col - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
-    return gainOut(tonemap(max(col, 0.0)));
-}
-
 void main() {
     vec2 uv = uv01();
     // A negative speed mirrors the travel axis, so the brush paints the other way instead of unpainting.

@@ -42,17 +42,20 @@ public class DefaultShaderPresetTests
         var looks = Enumerable.Range(0, AnimateTemplateDefaults.SlotCount)
             .Select(s => AnimateTemplateDefaults.Slot(effect, s)!).ToList();
         // Colorize collapses the palette to one tint, so a vivid default keeps it off.
-        // Ball reads colorize as the color wheel width, so its presets narrow it on purpose.
+        // Wheel-arc effects read colorize as the arc width instead, so their presets narrow it on purpose.
         if (effect == "ball")
         {
             Assert.InRange(looks[0].Colorize, 0.5f, 0.9f);
             Assert.Contains(looks, l => l.Colorize < 0.001f);
             Assert.All(looks, l => Assert.InRange(l.Colorize, 0f, 0.9f));
         }
+        else if (WheelArcEffects.Contains(effect))
+        {
+            Assert.All(looks, l => Assert.InRange(l.Colorize, 0f, 0.95f));
+        }
         else
         {
-            // The wheel arc width is 1 - colorize: a preset is the full wheel (0) or a bounded arc.
-            Assert.All(looks, l => Assert.InRange(l.Colorize, 0f, 0.95f));
+            Assert.All(looks, l => Assert.Equal(0f, l.Colorize, 3));
         }
         Assert.All(looks, l => Assert.InRange(l.Saturation, 1f, 1.5f));
         // Every preset is its own look: no two share palette, speed and parameters.
@@ -63,6 +66,12 @@ public class DefaultShaderPresetTests
         var palettes = looks.Select(l => (System.Math.Round(l.Hue, 2), System.Math.Round(l.Colorize, 2))).Distinct().Count();
         Assert.Equal(looks.Count, palettes);
     }
+
+    private static readonly string[] WheelArcEffects =
+    {
+        "bubbles", "circuit", "cosmicdust", "ferrofluid", "flowfield", "hyperspace", "inkbloom", "jellyfish",
+        "lavafissure", "liquidchrome", "nebula", "sacredgeometry", "sandstorm", "starfield", "vapor", "voronoi", "wave",
+    };
 
     private static bool IsBase(string name) =>
         ShaderEffect.BaseParamNames.Contains(name) || name == "u_paletteMix";
