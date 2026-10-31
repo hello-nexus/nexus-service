@@ -2731,9 +2731,85 @@ public partial class Slv3HubTests
         Ticks(hub, BindSaveTicks * 2);
         Assert.Equal(Slv3Hub.BindSaveMaxPerWindow, SaveCfgFrames(tx).Count);
 
-        clock.AdvanceMs(Slv3Hub.BindSaveWindowMs);
+        // Exactly one window after the first save and not past the periodic save's first due time.
+        var elapsed = (Slv3Hub.BindSaveMaxPerWindow) * (Slv3Hub.BindSaveMinIntervalMs + 1);
+        clock.AdvanceMs(Slv3Hub.BindSaveWindowMs - elapsed);
         Ticks(hub, 2);
         Assert.Equal(Slv3Hub.BindSaveMaxPerWindow + 1, SaveCfgFrames(tx).Count);
+    }
+
+    [Fact]
+    public void A_failed_bind_save_send_stays_armed_keeps_the_config_change_save_and_retries_later()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, 3);
+        hub.SendRgbFrame(Convert.ToHexString(FanMac), new RgbColor[26], 100, 30, out _);
+        tx.FailSaveCfg = true;
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx)); // one failed attempt, no tight retry
+
+        clock.AdvanceMs(15_000);
+        Ticks(hub, 1);
+        Assert.Equal(2, SaveCfgFrames(tx).Count); // the config-change save was still due
+
+        tx.FailSaveCfg = false;
+        clock.AdvanceMs(Slv3Hub.BindSaveRetryMs);
+        Ticks(hub, 1);
+        Assert.Equal(3, SaveCfgFrames(tx).Count);
+
+        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+        Ticks(hub, BindSaveTicks);
+        Assert.Equal(3, SaveCfgFrames(tx).Count);
+    }
+
+    // Drives hub passes from inside every upload frame, on the sending thread that holds the hub lock.
+    private static void DriveFromInsideUpload(Slv3Hub hub, FakeTxTransport tx, List<byte[]> saveFramesSeen)
+    {
+        var inside = false;
+        tx.OnSend = frame =>
+        {
+            if (inside || frame.Length < 6 || frame[0] != Slv3Protocol.UsbSendRf || frame[5] != Slv3Protocol.RfRgbSync)
+            {
+                return;
+            }
+            inside = true;
+            Ticks(hub, 3);
+            inside = false;
+            saveFramesSeen.AddRange(SaveCfgFrames(tx));
+        };
+    }
+
+    [Fact]
+    public void The_bind_save_never_goes_out_between_an_upload_header_and_its_data()
+    {
+        var (hub, _, tx, _, _) = CreateRebindHub();
+        Ticks(hub, 4);
+        Assert.Empty(SaveCfgFrames(tx));
+        var seen = new List<byte[]>();
+        DriveFromInsideUpload(hub, tx, seen);
+
+        hub.SendRgbFrame(Convert.ToHexString(FanMac), new RgbColor[26], 100, 30, out _);
+        tx.OnSend = null;
+
+        Assert.Empty(seen);
+        Ticks(hub, 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public async Task The_bind_save_never_goes_out_during_a_window_upload_including_its_late_passes()
+    {
+        var (hub, _, tx, _, _) = CreateRebindHub();
+        Ticks(hub, 4);
+        var seen = new List<byte[]>();
+        DriveFromInsideUpload(hub, tx, seen);
+
+        Assert.True(await hub.SendRgbWindowAsync(Convert.ToHexString(FanMac), new byte[30 * 40 * 3], 40, 30, 53, 100));
+        tx.OnSend = null;
+
+        Assert.Empty(seen);
+        Ticks(hub, 2);
+        Assert.Single(SaveCfgFrames(tx));
     }
 
     // ── EnsureVideoMode ──
