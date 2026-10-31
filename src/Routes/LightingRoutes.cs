@@ -655,9 +655,9 @@ public static class LightingRoutes
             {
                 return Results.NotFound();
             }
-            l.DropCustomEffect(ShaderLibrary.CustomPrefix + id);
-            // Recents live in settings and every client reads them, so the entries go here, not in one client.
             var key = ShaderLibrary.CustomPrefix + id;
+            l.DropCustomEffect(key);
+            // Recents live in settings and every client reads them, so the entries go here, not in one client.
             var pruned = false;
             config.Update(s => pruned = Nexus.Service.Persistence.UiRecents.PruneEffect(s.Ui.RecentAnimations, key));
             if (pruned)
