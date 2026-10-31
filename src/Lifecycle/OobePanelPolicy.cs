@@ -55,6 +55,19 @@ internal static class OobePanelPolicy
         return true;
     }
 
+    /// <summary>
+    /// Setup processes started with the service token (nobody was signed in) are replaced once the
+    /// temporary setup account is on the console, since WebView2 does not run as SYSTEM.
+    /// </summary>
+    internal static bool ShouldReplaceServiceTokenLaunches(ConsoleLaunchPlan plan, int serviceTokenTracked)
+        => plan == ConsoleLaunchPlan.OobeTempUser && serviceTokenTracked > 0;
+
+    /// <summary>
+    /// Whether the panel overlay (a WebView2 host) is started for this plan. The service token is the
+    /// SYSTEM user, which WebView2 cannot run as, so with nobody signed in only the helper starts.
+    /// </summary>
+    internal static bool OverlayCanStart(ConsoleLaunchPlan plan) => plan != ConsoleLaunchPlan.OobeNoUser;
+
     /// <summary>A console user other than the OOBE temporary account.</summary>
     internal static bool IsRealUser(string user) => !string.IsNullOrEmpty(user) && !IsOobeTempAccount(user);
 

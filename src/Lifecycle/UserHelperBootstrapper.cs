@@ -80,6 +80,7 @@ internal static class UserHelperBootstrapper
         // delivers the logon on its control-handler thread, so hop off it
         // before touching WTS or schtasks.
         registry.Connected += conn => OobeSessionLaunch.ClearReaped(conn.SessionId);
+        OobeSessionLaunch.ServiceTokenLaunchesReplaced += () => _ = Task.Run(() => LaunchAndVerifyAsync("oobe-user"));
         WindowsServiceHost.SessionLogon += () => _ = Task.Run(() => LaunchAndVerifyAsync("logon"));
 
         // Cold boot: the service starts seconds after power-on, before the
@@ -197,6 +198,7 @@ internal static class UserHelperBootstrapper
             // Setup-session processes end before "already connected" is believed; HelperConnected
             // ignores a connection whose process was ended, whichever caller ended it.
             OobeSessionLaunch.ReapIfOobeOver();
+            OobeSessionLaunch.ReplaceServiceTokenLaunchesForTempUser();
             if (HelperConnected()) return;
             var tag = $"({trigger}, attempt {attempt}/{LaunchAttempts})";
 
@@ -208,7 +210,7 @@ internal static class UserHelperBootstrapper
                 var oobeExe = Path.Combine(AppContext.BaseDirectory, "Nexus.exe");
                 using var started = File.Exists(oobeExe)
                     ? OobeSessionLaunch.Start(oobeExe, HelperSpawnArg() + " " + OobeHelperArg, AppContext.BaseDirectory, "helper",
-                        allowServiceToken: plan == ConsoleLaunchPlan.OobeNoUser)
+                        plan)
                     : null;
                 if (started is not null)
                 {
