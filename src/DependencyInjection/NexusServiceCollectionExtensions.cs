@@ -2969,6 +2969,18 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.AddMonitoringEventTool>();
         services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.CalibrateFansTool>();
 
+        // Panel screen tools
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.ListPanelsTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.GetPanelTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.UpdatePanelLookTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.SetPanelLayoutTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.UpdatePanelWidgetTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.ListPanelPresetsTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.CreatePanelPresetTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.RenamePanelPresetTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.DeletePanelPresetTool>();
+        services.AddSingleton<Nexus.Service.Mcp.IMcpTool, Nexus.Service.Mcp.Tools.ActivatePanelPresetTool>();
+
         services.AddSingleton<Nexus.Service.Mcp.McpToolRegistry>();
         services.AddSingleton<Nexus.Service.Mcp.McpServerHost>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Mcp.McpServerHost>());

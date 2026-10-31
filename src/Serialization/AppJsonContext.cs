@@ -1606,6 +1606,12 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(McpScreenTimeResult))]
 [JsonSerializable(typeof(McpAddMonitoringEventResult))]
 [JsonSerializable(typeof(McpCalibrateFansResult))]
+[JsonSerializable(typeof(McpPanelListResult))]
+[JsonSerializable(typeof(McpPanelDetailResult))]
+[JsonSerializable(typeof(McpPanelLookResult))]
+[JsonSerializable(typeof(McpPanelLayoutResult))]
+[JsonSerializable(typeof(McpPanelWidgetResult))]
+[JsonSerializable(typeof(McpPanelPresetsResult))]
 
 // Local AI assistant (managed Ollama runtime + agentic query loop).
 [JsonSerializable(typeof(AssistantStatusResponse))]
