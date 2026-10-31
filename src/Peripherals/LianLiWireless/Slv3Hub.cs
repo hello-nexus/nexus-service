@@ -353,11 +353,15 @@ public sealed partial class Slv3Hub : IDisposable
     // A chain that flaps keeps resetting the run, and a sent save is followed by at least BindSaveMinIntervalMs of quiet.
     internal const int BindSaveStablePolls = 10;
     internal const long BindSaveMinIntervalMs = 120_000;
+    internal const int BindSaveMaxPerWindow = 3;
+    internal const long BindSaveWindowMs = 3_600_000;
     private bool _bindSaveArmed;
     private int _bindSaveStablePolls;
     private long _bindSaveEvalPoll;
     private long _lastBindingChangePoll;
-    private long? _lastBindSaveMs;
+    private long? _lastSaveSentMs;
+    private readonly Queue<long> _bindSaveTimesMs = new();
+    private bool _bindSaveCapLogged;
 
     // Sends a sequenced control frame (RF_Select / RF_RebootLcd) gets before it
     // is dropped without an echo (L-Connect selected / reboot_lcd counters).
@@ -2062,13 +2066,28 @@ public sealed partial class Slv3Hub : IDisposable
             _bindSaveStablePolls = AllOwnedStableLocked() ? _bindSaveStablePolls + 1 : 0;
         }
         if (_bindSaveStablePolls < BindSaveStablePolls
-            || (_lastBindSaveMs is { } last && now - last < BindSaveMinIntervalMs))
+            || (_lastSaveSentMs is { } last && now - last < BindSaveMinIntervalMs))
         {
             return;
         }
+        while (_bindSaveTimesMs.Count > 0 && now - _bindSaveTimesMs.Peek() >= BindSaveWindowMs)
+        {
+            _bindSaveTimesMs.Dequeue();
+        }
+        if (_bindSaveTimesMs.Count >= BindSaveMaxPerWindow)
+        {
+            if (!_bindSaveCapLogged)
+            {
+                _bindSaveCapLogged = true;
+                ServiceLog.Info("[lianli-wireless] bind-save deferred, hourly cap reached");
+            }
+            return;
+        }
+        _bindSaveCapLogged = false;
         _bindSaveArmed = false;
         _bindSaveStablePolls = 0;
-        _lastBindSaveMs = now;
+        _saveCfgDueMs = 0;
+        _bindSaveTimesMs.Enqueue(now);
         SendSaveCfgLocked("bind-save");
     }
 
@@ -2118,6 +2137,7 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
         _lastSaveMs = _nowMs();
+        _lastSaveSentMs = _lastSaveMs;
         var sent = WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
         if (sent)
         {

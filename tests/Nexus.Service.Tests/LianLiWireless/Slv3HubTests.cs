@@ -2607,6 +2607,135 @@ public partial class Slv3HubTests
         Assert.Equal(2, SaveCfgFrames(tx).Count);
     }
 
+    [Fact]
+    public void One_rebind_yields_one_savecfg_however_long_the_clock_runs()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, BindSaveTicks);
+        Assert.Single(SaveCfgFrames(tx));
+
+        for (var i = 0; i < 5; i++)
+        {
+            clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+            Ticks(hub, BindSaveTicks);
+        }
+
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_binding_change_on_any_chain_blocks_the_bind_save_even_when_no_owned_chain_is_involved()
+    {
+        var (hub, net, tx, _, _) = CreateRebindHub();
+        var stranger = new SimulatedFan { Mac = SecondFanMac, MasterMac = OtherMasterMac, RxType = 3 };
+        net.Fans.Add(stranger);
+        Ticks(hub, 3);
+
+        for (var i = 0; i < BindSaveTicks * 3; i++)
+        {
+            stranger.ReportedRx = i % 2 == 0 ? (byte)5 : (byte)3;
+            Assert.True(hub.DriveTick());
+        }
+        Assert.Empty(SaveCfgFrames(tx));
+
+        stranger.ReportedRx = 3;
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_zeroed_copy_of_a_known_chain_blocks_the_bind_save_while_it_is_reported()
+    {
+        var (hub, net, tx, _, _) = CreateRebindHub();
+        var phantomMac = (byte[])FanMac.Clone();
+        phantomMac[1] = phantomMac[2] = phantomMac[3] = 0;
+        var phantom = new SimulatedFan { Mac = phantomMac };
+        Ticks(hub, 3);
+        net.Fans.Add(phantom);
+
+        Ticks(hub, BindSaveTicks * 3);
+        Assert.Empty(SaveCfgFrames(tx));
+
+        net.Fans.Remove(phantom);
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_pending_unbind_blocks_the_armed_bind_save_and_one_save_follows_once_it_settles()
+    {
+        var (hub, _, tx, _, fan) = CreateRebindHub();
+        Ticks(hub, 3);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+
+        fan.IgnoresBind = true;
+        Assert.True(ManualUnbind(hub, Convert.ToHexString(FanMac)));
+        Ticks(hub, BindSaveTicks * 3);
+        Assert.Empty(SaveCfgFrames(tx));
+
+        fan.IgnoresBind = false;
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_bind_save_is_held_back_by_any_recent_savecfg_and_clears_the_pending_config_change_save()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        var mac = Convert.ToHexString(FanMac);
+        Ticks(hub, 3);
+        hub.SendRgbFrame(mac, new RgbColor[26], 100, 30, out _);
+        clock.AdvanceMs(15_000);
+        Ticks(hub, 1);
+        Assert.Single(SaveCfgFrames(tx)); // the debounced config-change save
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx)); // bind-save waits out the interval after it
+
+        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs);
+        Ticks(hub, 2);
+        Assert.Equal(2, SaveCfgFrames(tx).Count);
+    }
+
+    [Fact]
+    public void The_bind_save_replaces_a_pending_config_change_save()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, 3);
+        hub.SendRgbFrame(Convert.ToHexString(FanMac), new RgbColor[26], 100, 30, out _);
+        Ticks(hub, BindSaveTicks);
+        Assert.Single(SaveCfgFrames(tx));
+
+        clock.AdvanceMs(15_000);
+        Ticks(hub, 2);
+
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void Bind_saves_are_capped_per_hour_and_the_capped_one_fires_when_the_window_allows()
+    {
+        var (hub, net, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, BindSaveTicks);
+        for (var i = 1; i < Slv3Hub.BindSaveMaxPerWindow; i++)
+        {
+            clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+            net.Fans.Clear();
+            net.Fans.Add(new SimulatedFan { Mac = FanMac });
+            Ticks(hub, BindSaveTicks);
+        }
+        Assert.Equal(Slv3Hub.BindSaveMaxPerWindow, SaveCfgFrames(tx).Count);
+
+        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+        net.Fans.Clear();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Equal(Slv3Hub.BindSaveMaxPerWindow, SaveCfgFrames(tx).Count);
+
+        clock.AdvanceMs(Slv3Hub.BindSaveWindowMs);
+        Ticks(hub, 2);
+        Assert.Equal(Slv3Hub.BindSaveMaxPerWindow + 1, SaveCfgFrames(tx).Count);
+    }
+
     // ── EnsureVideoMode ──
 
     [Fact]
