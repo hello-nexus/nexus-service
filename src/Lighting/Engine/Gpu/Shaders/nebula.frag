@@ -1,8 +1,7 @@
 uniform float u_density; // hint_range(0.3, 2.0, 0.05) = 1.0  cloud thickness
 uniform float u_stars; // hint_range(0.0, 1.0, 0.02) = 0.6  star brightness
 uniform float u_depth; // hint_range(1.0, 6.0, 1.0) = 4.0  number of cloud layers
-uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
-#define tintedPalette(t) moodPalette((t), u_mood)
+#define tintedPalette(t) wheelColor(t)
 
 // Layered gas clouds over a colored sky. A slow gradient keeps every pixel
 // lit; drifting, domain-warped cloud layers each take their own slice of
@@ -37,7 +36,7 @@ void main() {
         col += tint * cloud * (0.50 + 0.10 * fi);
         col += tintedPalette(fi * 0.3 + 0.3) * core * 0.9;
     }
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finish(col), 1.0);
 }
 
 float outGain() { return 1.37; }

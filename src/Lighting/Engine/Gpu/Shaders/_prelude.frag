@@ -93,44 +93,19 @@ vec3 tintedPalette(float t) {
     return art ? artPalette(t) : rainbowPalette(t + u_hue);
 }
 
-// Restricted palettes for effects that offer a mood: 0 keeps the full spectrum
-// (and Hue), the rest walk a cyclic four-stop gradient so a preset can be warm,
-// cool, neon and so on without becoming a rainbow.
-vec3 moodPalette(float t, float mood) {
-    int m = int(floor(mood + 0.5));
-    if (m <= 0) {
-        return tintedPalette(t);
+// The color wheel as a palette: Hue is the middle of the arc and 1 - Colorize its
+// width, so a narrow arc is one tone and a full arc is the rainbow. k reflects at
+// 0 and 1 so a coordinate that runs past the ends sweeps back through the arc
+// instead of leaving it. Album-art stops, when on, replace it. Effects that take
+// their color from the wheel alone define tintedPalette as this and end with finish().
+vec3 wheelColor(float k) {
+    vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
+    if (u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0) {
+        return artPalette(k);
     }
-    vec3 s0, s1, s2, s3;
-    if (m == 1) {
-        s0 = vec3(1.0, 0.12, 0.05); s1 = vec3(1.0, 0.5, 0.0); s2 = vec3(1.0, 0.82, 0.12); s3 = vec3(0.95, 0.1, 0.35);
-    } else if (m == 2) {
-        s0 = vec3(0.05, 0.25, 0.95); s1 = vec3(0.0, 0.62, 0.95); s2 = vec3(0.0, 0.92, 0.8); s3 = vec3(0.55, 0.88, 1.0);
-    } else if (m == 3) {
-        s0 = vec3(1.0, 0.0, 0.7); s1 = vec3(0.5, 0.1, 1.0); s2 = vec3(0.0, 0.9, 1.0); s3 = vec3(0.5, 0.1, 1.0);
-    } else if (m == 4) {
-        s0 = vec3(0.45, 0.05, 0.75); s1 = vec3(1.0, 0.1, 0.4); s2 = vec3(1.0, 0.55, 0.05); s3 = vec3(1.0, 0.85, 0.2);
-    } else if (m == 6) {
-        s0 = vec3(1.0, 0.64, 0.08); s1 = vec3(1.0, 0.56, 0.16); s2 = vec3(0.9, 0.5, 0.04); s3 = vec3(1.0, 0.78, 0.45);
-    } else if (m >= 7) {
-        s0 = vec3(1.0, 0.4, 0.55); s1 = vec3(0.85, 0.15, 0.55); s2 = vec3(1.0, 0.7, 0.45); s3 = vec3(0.7, 0.2, 0.7);
-    } else {
-        s0 = vec3(0.0, 0.9, 0.4); s1 = vec3(0.0, 0.8, 0.8); s2 = vec3(0.4, 0.2, 1.0); s3 = vec3(0.6, 1.0, 0.2);
-    }
-    float x = fract(t) * 4.0;
-    float f = smoothstep(0.0, 1.0, fract(x));
-    int i = int(floor(x));
-    vec3 a = i == 0 ? s0 : (i == 1 ? s1 : (i == 2 ? s2 : s3));
-    vec3 b = i == 0 ? s1 : (i == 1 ? s2 : (i == 2 ? s3 : s0));
-    vec3 c = mix(a, b, f);
-    // Hue still rotates the mood's colors around the grey axis; no rotation is needed at zero.
-    if (abs(u_hue) < 0.0005) {
-        return c;
-    }
-    float ca = cos(u_hue * 6.28318);
-    float sa = sin(u_hue * 6.28318);
-    vec3 k = vec3(0.57735);
-    return c * ca + cross(k, c) * sa + k * dot(k, c) * (1.0 - ca);
+    float m = abs(fract(k * 0.5 + 0.5) * 2.0 - 1.0);
+    float span = 1.0 - clamp(u_colorize, 0.0, 1.0);
+    return hsv2rgb(vec3(u_hue + (m - 0.5) * span, 1.0, 1.0));
 }
 
 // 0..1 sweep across the frame along an axis rotated `deg` degrees, covering the
@@ -186,6 +161,14 @@ vec3 finalize(vec3 col) {
     blended = mix(vec3(bl), blended, clamp(u_saturation, 0.0, 4.0));
     blended = (blended - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
     return gainOut(tonemap(max(blended, 0.0)));
+}
+
+// finalize() without its colorize blend, for effects whose wheel arc alone decides hue.
+vec3 finish(vec3 col) {
+    float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
+    col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
+    col = (col - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
+    return gainOut(tonemap(max(col, 0.0)));
 }
 
 // Hash + value noise - fast, cheap, good enough for lighting.

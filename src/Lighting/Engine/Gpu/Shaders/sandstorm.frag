@@ -1,25 +1,7 @@
 uniform float u_wind; // hint_range(0.3, 3.0, 0.05) = 1.2  wind speed
 uniform float u_density; // hint_range(0.3, 2.5, 0.05) = 1.0  particle density
 uniform float u_gusts; // hint_range(0.1, 2.0, 0.05) = 0.8  gust frequency
-// Colors spread evenly across the color wheel range: hue is its middle and
-// 1 - colorize its width, so a narrow range is one tone and a full one is the rainbow.
-vec3 wheelColor(float k) {
-    vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
-    if (u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0) {
-        return artPalette(k);
-    }
-    float span = 1.0 - clamp(u_colorize, 0.0, 1.0);
-    return hsv2rgb(vec3(u_hue + (k - 0.5) * span, 1.0, 1.0));
-}
 #define tintedPalette(t) wheelColor(t)
-
-// finalize() without its colorize blend: the wheel range alone decides hue.
-vec3 finish(vec3 col) {
-    float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
-    col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
-    col = (col - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
-    return gainOut(tonemap(max(col, 0.0)));
-}
 
 mat2 rot2(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
 
@@ -30,7 +12,8 @@ mat2 rot2(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
 //      of parallel lines. Gives a much less mechanical look.
 //   2. Every layer gets a domain-warp offset so fbm features twist and
 //      fold as they advect - real sand doesn't flow as a uniform grid.
-//   3. Palette samples are spread across 0.05..0.82 of the color wheel range.
+//   3. Palette samples spread across the color wheel arc, so a full arc is
+//      rainbow and a narrow one is a single tone.
 void main() {
     vec2 uv = uv01();
     float t = mod(u_time * u_speed * u_wind * 0.5, 1000.0);

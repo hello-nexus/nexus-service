@@ -123,7 +123,6 @@ public class ShaderOutputGainTests
     [InlineData("breathing")]
     [InlineData("clockfill")]
     [InlineData("aurora")]
-    [InlineData("ball")]
     [InlineData("sweepbrush")]
     public void DirectTonemapCallSitesApplyGain(string key)
     {

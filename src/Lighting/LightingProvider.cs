@@ -1460,7 +1460,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "mandelbrot" => new(0.00f, 0.00f, 55f, 1.10f, 1.10f, 1f),
         "circuit" => new(0.40f, 0.50f, 60f, 1.20f, 1.10f, 1f),
         "bokeh" => new(0.55f, 0.20f, 55f, 1.15f, 1.05f, 1f),
-        "sandstorm" => new(0.10f, 0.92f, 50f, 1.20f, 1.10f, 1f),
+        "sandstorm" => new(0.07f, 0.55f, 50f, 1.20f, 1.10f, 1f),
         "dotmatrix" => new(0.00f, 0.00f, 55f, 1.20f, 1.10f, 1f),
         // Additional frag shaders.
         "bubbles" => new(0.55f, 0.15f, 40f, 1.15f, 1.10f, 1f),
@@ -1497,7 +1497,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "boxtunnel" => new(0.80f, 0.35f, 60f, 1.20f, 1.15f, 1f),
         "meshgradient" => new(0.00f, 0.00f, 45f, 1.00f, 1.00f, 1f),
         "tide" => new(0.58f, 0.40f, 50f, 1.05f, 1.00f, 1f),
-        "vapor" => new(0.48f, 0.53f, 45f, 0.95f, 1.05f, 1f),
+        "vapor" => new(0.60f, 0.45f, 45f, 0.95f, 1.05f, 1f),
         "satinflow" => new(0.88f, 0.30f, 50f, 1.15f, 1.10f, 1f),
         "ridgeline" => new(0.55f, 0.30f, 50f, 1.10f, 1.10f, 1f),
         "chevron" => new(0.08f, 0.45f, 60f, 1.20f, 1.10f, 1f),

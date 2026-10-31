@@ -49,27 +49,20 @@ public class DefaultShaderPresetTests
             Assert.Contains(looks, l => l.Colorize < 0.001f);
             Assert.All(looks, l => Assert.InRange(l.Colorize, 0f, 0.9f));
         }
-        else if (WheelRangeEffects.Contains(effect))
-        {
-            // These read colorize as the wheel range width, so every preset keeps a bounded range.
-            Assert.All(looks, l => Assert.InRange(l.Colorize, 0.4f, 0.95f));
-        }
         else
         {
-            Assert.All(looks, l => Assert.Equal(0f, l.Colorize, 3));
+            // The wheel arc width is 1 - colorize: a preset is the full wheel (0) or a bounded arc.
+            Assert.All(looks, l => Assert.InRange(l.Colorize, 0f, 0.95f));
         }
         Assert.All(looks, l => Assert.InRange(l.Saturation, 1f, 1.5f));
         // Every preset is its own look: no two share palette, speed and parameters.
         var signatures = looks.Select(l => string.Join("|", new object[] { System.Math.Round(l.Hue, 2), l.Speed }
             .Concat(l.Params.OrderBy(kv => kv.Key).Select(kv => (object)$"{kv.Key}={kv.Value}")))).Distinct().Count();
         Assert.Equal(looks.Count, signatures);
-        // Palette alone tells the presets apart: no two share both mood and hue.
-        // Wheel-range effects carry the palette in the wheel itself, so hue and range tell them apart.
-        var palettes = looks.Select(l => (l.Params.GetValueOrDefault("u_mood"), System.Math.Round(l.Hue, 2), System.Math.Round(l.Colorize, 2))).Distinct().Count();
+        // Palette alone tells the presets apart: no two share both wheel position and arc.
+        var palettes = looks.Select(l => (System.Math.Round(l.Hue, 2), System.Math.Round(l.Colorize, 2))).Distinct().Count();
         Assert.Equal(looks.Count, palettes);
     }
-
-    private static readonly string[] WheelRangeEffects = { "sandstorm", "vapor" };
 
     private static bool IsBase(string name) =>
         ShaderEffect.BaseParamNames.Contains(name) || name == "u_paletteMix";
