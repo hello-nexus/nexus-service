@@ -191,7 +191,7 @@ internal static class OobeSessionLaunch
         {
             s_tracked.Add((pid, startFileTime, tag == "helper", session, serviceToken));
             PersistLocked();
-            s_reaper ??= new Timer(_ => { ReplaceServiceTokenLaunchesForTempUser(); ReapIfOobeOver(); }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+            EnsureReaperLocked();
 #if WINDOWS
             if (!s_logonHooked)
             {
@@ -201,6 +201,11 @@ internal static class OobeSessionLaunch
 #endif
         }
         Console.WriteLine($"[oobe-session] started {tag} pid {pid}");
+    }
+
+    private static void EnsureReaperLocked()
+    {
+        s_reaper ??= new Timer(_ => { ReplaceServiceTokenLaunchesForTempUser(); ReapIfOobeOver(); }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
     }
 
     private static void Untrack(int pid)
@@ -312,9 +317,21 @@ internal static class OobeSessionLaunch
                 Console.WriteLine($"[oobe-session] plan={plan} for console user '{user}': ending {victims.Count} process(es) started with the service token so they restart with the user token");
             }
             var ended = 0;
-            foreach (var (pid, fileTime, _, _, _) in victims)
+            var survivors = new List<(int Pid, long StartFileTime, bool Helper, int Session, bool ServiceToken)>();
+            foreach (var victim in victims)
             {
-                if (Kill(pid, fileTime)) ended++;
+                if (Kill(victim.Pid, victim.StartFileTime)) ended++;
+                else if (StillRunning(victim.Pid, victim.StartFileTime)) survivors.Add(victim);
+            }
+            if (survivors.Count > 0)
+            {
+                // A process the swap failed to end stays tracked so a later tick or the reap can still end it.
+                lock (s_lock)
+                {
+                    s_tracked.AddRange(survivors);
+                    PersistLocked();
+                    EnsureReaperLocked();
+                }
             }
             try { ServiceTokenLaunchesReplaced?.Invoke(); }
             catch (Exception ex) { Console.Error.WriteLine($"[oobe-session] replace handler failed: {ex.Message}"); }
