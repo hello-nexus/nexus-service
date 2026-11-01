@@ -209,6 +209,9 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
         Run(source, "a fan write", () => source.DriveFanSpeed(channelId, clamped), gate => SupersedeRelease(gate, channelId));
     }
 
+    public bool ReleaseRestoresHardwareControl(string channelId) =>
+        Route(channelId).ReleaseRestoresHardwareControl(channelId);
+
     public void ReleaseFan(string channelId)
     {
         var source = Route(channelId);

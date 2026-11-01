@@ -63,6 +63,14 @@ public interface IFanControlProvider
     /// its Cooling.ManualSpeeds entry - the user's explicit per-fan choice.</summary>
     void ReleaseFan(string channelId);
 
+    /// <summary>
+    /// True when <see cref="ReleaseFan"/> on this channel genuinely hands it back to the board or
+    /// firmware (a wire write or a SuperIO default), so the thermal guard may take over a channel
+    /// that is on hardware control and give it back afterwards. False for providers whose release
+    /// only flips a software flag and leaves the last duty on the fan.
+    /// </summary>
+    bool ReleaseRestoresHardwareControl(string channelId) => false;
+
     /// <summary>Release all fans back to BIOS/automatic control. Preserves
     /// Cooling.ManualSpeeds: this runs on shutdown and profile switch, where
     /// the persisted intent must survive for CurveEngine's replay.</summary>

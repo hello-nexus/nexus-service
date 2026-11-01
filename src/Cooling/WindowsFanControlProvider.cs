@@ -196,6 +196,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         // No ManualSpeeds write - see interface doc.
     }
 
+    // WriteDefault returns the header to its SuperIO / driver default.
+    public bool ReleaseRestoresHardwareControl(string channelId) => true;
+
     public void ReleaseFan(string channelId)
     {
         if (IsLeasedForCalibration(channelId)) return;

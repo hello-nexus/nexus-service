@@ -135,6 +135,10 @@ public static class FanProfiles
     {
         var canonical = Canonicalize(profileName);
         var allChannels = fans.GetFanChannels();
+        // Channels not enumerated right now (a hub that is slow to connect, a dongle
+        // mid re-enumeration) keep every persisted assignment: only an explicit user
+        // action may drop one, never a preset apply that merely cannot see the fan.
+        var presentIds = allChannels.Select(c => c.Id).ToHashSet();
         var temps = fans.GetTemperatureSources();
         var inputSensor = PreferredInput(temps);
 
@@ -173,7 +177,17 @@ public static class FanProfiles
             // round-trip - Off clears the live ManualSpeeds entries below.
             if (s.Cooling.ActivePreset == "custom" && canonical != "custom")
             {
-                s.Cooling.CustomFanCurveAssignments = SnapshotMapping(s.Cooling.Curves, fanIds);
+                var exitSnapshot = SnapshotMapping(s.Cooling.Curves, uncontrolledIds);
+                // An absent fan that sat on a preset curve has no custom entry in the
+                // live curves; carry its previous snapshot entry forward.
+                foreach (var (fanId, curveId) in s.Cooling.CustomFanCurveAssignments ?? new Dictionary<string, string>())
+                {
+                    if (!presentIds.Contains(fanId) && !exitSnapshot.ContainsKey(fanId))
+                    {
+                        exitSnapshot[fanId] = curveId;
+                    }
+                }
+                s.Cooling.CustomFanCurveAssignments = exitSnapshot;
                 s.Cooling.CustomManualSpeeds = new Dictionary<string, int>(s.Cooling.ManualSpeeds);
             }
 
@@ -188,6 +202,13 @@ public static class FanProfiles
                         // Detach fans (not pinned channels) from non-preset curves so the
                         // preset curve owns them; a pinned channel on its own curve stays
                         // attached.
+                        // Absent outputs carry over from the preset curve that was active; coming from
+                        // Custom they can sit on any preset curve. Apply never put a default-pinned
+                        // channel on a preset curve, so whatever is there belongs there.
+                        var previousPreset = s.Cooling.ActivePreset is "silent" or "balanced" or "turbo" or "max"
+                            ? $"preset-{s.Cooling.ActivePreset}"
+                            : null;
+                        var carriedAbsent = new List<CurveOutputDocument>();
                         foreach (var curve in s.Cooling.Curves)
                         {
                             if (curve.Preset is null && curve.Id != presetCurve.Id)
@@ -198,7 +219,14 @@ public static class FanProfiles
                             {
                                 // Other preset curves (not the active one) keep only
                                 // pinned channels, so a fan pinned onto that preset stays
-                                // put when the user activates a different one.
+                                // put when the user activates a different one. An absent
+                                // fan moves with the switch instead of being dropped.
+                                if (previousPreset is null || curve.Id == previousPreset)
+                                {
+                                    carriedAbsent.AddRange(curve.Outputs.Where(o => !presentIds.Contains(o.Id)
+                                        && !uncontrolledIds.Contains(o.Id)
+                                        && !(s.Cooling.FanPinOverrides.TryGetValue(o.Id, out var pin) && pin)));
+                                }
                                 curve.Outputs.RemoveAll(o => !pinnedIds.Contains(o.Id));
                             }
                         }
@@ -206,10 +234,14 @@ public static class FanProfiles
                         // fan pinned while sitting on this preset) alongside every
                         // non-pinned channel, which this preset now claims.
                         var keepPinned = presetCurve.Outputs.Where(o => pinnedIds.Contains(o.Id)).ToList();
+                        var keepAbsent = presetCurve.Outputs.Where(o => !presentIds.Contains(o.Id)).Concat(carriedAbsent);
                         presetCurve.Outputs = channels
                             .Where(c => !pinnedIds.Contains(c.Id))
                             .Select(c => new CurveOutputDocument { Id = c.Id, Type = "Fan" })
                             .Concat(keepPinned)
+                            .Concat(keepAbsent)
+                            .GroupBy(o => o.Id)
+                            .Select(g => g.First())
                             .ToList();
                         s.Cooling.ActivePreset = canonical;
                         break;
@@ -222,23 +254,31 @@ public static class FanProfiles
                         var wasCustom = s.Cooling.ActivePreset == "custom" && !forceCustomRestore;
                         // Detach every preset curve, except pinned channels already
                         // sitting on one - a pinned channel must not move.
+                        // An absent fan stays on its preset curve unless the saved
+                        // mapping below re-homes it.
+                        var snapshot = s.Cooling.CustomFanCurveAssignments ?? new Dictionary<string, string>();
                         foreach (var curve in s.Cooling.Curves.Where(c => c.Preset is not null))
                         {
-                            curve.Outputs.RemoveAll(o => !pinnedIds.Contains(o.Id));
+                            curve.Outputs.RemoveAll(o => !pinnedIds.Contains(o.Id)
+                                && (presentIds.Contains(o.Id) || snapshot.ContainsKey(o.Id)));
                         }
-                        // Restore the saved custom mapping. Any fan missing from the
+                        // Restore the saved custom mapping. Any present fan missing from the
                         // snapshot stays unattached -> falls through to BIOS Control.
-                        var snapshot = s.Cooling.CustomFanCurveAssignments ?? new Dictionary<string, string>();
                         // First clear every non-preset curve's outputs for fans we know about,
                         // so we don't leave stale attachments from a prior state. Pinned
                         // channels are left alone.
                         foreach (var curve in s.Cooling.Curves.Where(c => c.Preset is null))
                         {
-                            curve.Outputs.RemoveAll(o => fanIds.Contains(o.Id) && !pinnedIds.Contains(o.Id));
+                            curve.Outputs.RemoveAll(o => !pinnedIds.Contains(o.Id)
+                                && (fanIds.Contains(o.Id) || (!presentIds.Contains(o.Id) && snapshot.ContainsKey(o.Id))));
                         }
                         foreach (var (fanId, curveId) in snapshot)
                         {
-                            if (!fanIds.Contains(fanId) || pinnedIds.Contains(fanId)) continue;
+                            // Present fans must be controlled (fanIds); an absent one
+                            // is attached anyway so it is driven the moment it appears.
+                            if (presentIds.Contains(fanId) ? !fanIds.Contains(fanId) : uncontrolledIds.Contains(fanId)) continue;
+                            if (pinnedIds.Contains(fanId)) continue;
+                            if (!presentIds.Contains(fanId) && s.Cooling.FanPinOverrides.TryGetValue(fanId, out var absentPin) && absentPin) continue;
                             var curve = s.Cooling.Curves.FirstOrDefault(c => c.Id == curveId && c.Preset is null);
                             if (curve is null) continue;
                             if (!curve.Outputs.Any(o => o.Id == fanId))
@@ -279,10 +319,11 @@ public static class FanProfiles
                 default:
                     {
                         // Off releases every channel to BIOS, pinned or not:
-                        // detach all fans from all curves.
+                        // detach all fans from all curves, absent ones included so a
+                        // late arrival is not driven by an old curve under an Off label.
                         foreach (var curve in s.Cooling.Curves)
                         {
-                            curve.Outputs.RemoveAll(o => fanIds.Contains(o.Id));
+                            curve.Outputs.RemoveAll(o => !uncontrolledIds.Contains(o.Id));
                         }
                         // The manual entries go with it: only the motherboard
                         // providers' ReleaseFan drops them, every hub provider
@@ -588,7 +629,7 @@ public static class FanProfiles
     /// non-preset (user) curve are recorded; fans on BIOS Control or driven
     /// by a preset curve produce no entry.
     /// </summary>
-    private static Dictionary<string, string> SnapshotMapping(List<CurveDocument> curves, HashSet<string> fanIds)
+    private static Dictionary<string, string> SnapshotMapping(List<CurveDocument> curves, HashSet<string>? exclude)
     {
         var map = new Dictionary<string, string>();
         foreach (var curve in curves)
@@ -596,7 +637,7 @@ public static class FanProfiles
             if (curve.Preset is not null) continue;
             foreach (var o in curve.Outputs)
             {
-                if (fanIds.Contains(o.Id))
+                if (exclude is null || !exclude.Contains(o.Id))
                 {
                     map[o.Id] = curve.Id;
                 }
@@ -606,8 +647,8 @@ public static class FanProfiles
     }
 
     /// <summary>Live fan-to-curve mapping, in <see cref="CoolingSettings.CustomFanCurveAssignments"/> format. Preset curves are excluded, so a machine sitting on Silent/Balanced/Turbo/Max captures an empty map.</summary>
-    public static Dictionary<string, string> CaptureFanCurveMapping(CoolingSettings cooling, HashSet<string> fanIds)
-        => SnapshotMapping(cooling.Curves, fanIds);
+    public static Dictionary<string, string> CaptureFanCurveMapping(CoolingSettings cooling)
+        => SnapshotMapping(cooling.Curves, null);
 
     private static CurveDocument EnsurePresetCurve(List<CurveDocument> curves, string presetName, TemperatureSource? inputSensor)
     {

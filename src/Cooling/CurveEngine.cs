@@ -102,6 +102,11 @@ public sealed class CurveEngine : BackgroundService
     // put back once the guard stops overriding them.
     private readonly HashSet<string> _guardOverriddenManual = new(StringComparer.Ordinal);
     private readonly HashSet<string> _guardDrivenOrphans = new(StringComparer.Ordinal);
+    // Hardware-control channels (no curve, no manual duty) the guard is driving; released when it clears.
+    private readonly HashSet<string> _guardDrivenHardware = new(StringComparer.Ordinal);
+    // Hardware channels that left mid-trip: released when they re-enumerate, or forgotten after a while.
+    private readonly Dictionary<string, long> _guardPendingRelease = new(StringComparer.Ordinal);
+    private const long PendingReleaseTtlMs = 10 * 60_000;
 
     public CurveEngine(
         IFanControlProvider fans,
@@ -235,6 +240,8 @@ public sealed class CurveEngine : BackgroundService
             ClearManualReplayed();
             _guardOverriddenManual.Clear();
             _guardDrivenOrphans.Clear();
+            _guardDrivenHardware.Clear();
+            _guardPendingRelease.Clear();
             return;
         }
 
@@ -262,13 +269,16 @@ public sealed class CurveEngine : BackgroundService
             ClearManualReplayed();
             _guardOverriddenManual.Clear();
             _guardDrivenOrphans.Clear();
+            _guardDrivenHardware.Clear();
+            _guardPendingRelease.Clear();
         }
 
         _step = "loading settings";
         var settings = _store.Load();
         if (settings.Cooling.Curves.Count == 0
             && settings.Cooling.ManualSpeeds.Count == 0
-            && settings.Cooling.UncontrolledFanChannels.Count == 0)
+            && settings.Cooling.UncontrolledFanChannels.Count == 0
+            && !IdleGuardWake(settings))
         {
             // Idle cooling config: skip the per-tick channel enumeration
             // (on Windows it costs an LHM update + re-discovery).
@@ -331,6 +341,12 @@ public sealed class CurveEngine : BackgroundService
         // Re-read: a replay or an import since the snapshot may have changed a duty,
         // and a restore from the stale copy would undo it.
         Isolated("guard manual pass", () => ApplyGuardToUnownedChannels(activePlan, CoolingSnapshots.ManualSpeeds(settings.Cooling), present, owned));
+
+        if (!_noWrites)
+        {
+            Isolated("guard hardware pass", () => ApplyGuardToHardwareChannels(
+                activePlan, present, owned, CoolingSnapshots.ManualSpeeds(settings.Cooling)));
+        }
 
         if (curves.Count == 0)
         {
@@ -511,6 +527,37 @@ public sealed class CurveEngine : BackgroundService
     }
 
     // ── Thermal guard ──
+
+    // An idle config still needs the guard when the CPU runs hot: every channel may be on
+    // hardware control. The temperature probe is rate limited so an idle, cool machine pays
+    // one read per interval and writes nothing.
+    private const long IdleProbeIntervalMs = 5000;
+    private long _idleProbeAtMs = long.MinValue / 2;
+
+    private bool IdleGuardWake(NexusSettings settings)
+    {
+        // Anything the guard still holds must be released, whatever the switch says now.
+        if (_guardDrivenHardware.Count > 0 || _guardPendingRelease.Count > 0)
+        {
+            return true;
+        }
+        if (!settings.Cooling.ThermalGuardEnabled || _noWrites)
+        {
+            return false;
+        }
+        var now = Clock();
+        var active = _guard.IdleNeedsGuard(Array.Empty<TemperatureSource>());
+        if (active)
+        {
+            return true;
+        }
+        if (now - _idleProbeAtMs < IdleProbeIntervalMs)
+        {
+            return false;
+        }
+        _idleProbeAtMs = now;
+        return _guard.IdleNeedsGuard(_fans.GetTemperatureSources());
+    }
 
     private void Isolated(string what, Action action)
     {
@@ -700,6 +747,83 @@ public sealed class CurveEngine : BackgroundService
                     SafeDrive(id, d);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Channels left on hardware control (no curve, no manual duty) whose provider genuinely hands
+    /// them back: while the guard is Tripped they are driven to full speed, and released once it
+    /// clears. The Floor ramp never touches them (a board curve may already be above the floor).
+    /// </summary>
+    private void ApplyGuardToHardwareChannels(
+        GuardPlan plan, HashSet<string> present, HashSet<string> owned, IReadOnlyDictionary<string, int> manual)
+    {
+        if (plan.Output.StopWriting)
+        {
+            return;
+        }
+        var nowMs = Clock();
+        var take = plan.Output.State == ThermalGuardStates.Tripped;
+        if (take)
+        {
+            foreach (var id in plan.Hardware)
+            {
+                if (!present.Contains(id) || owned.Contains(id) || manual.ContainsKey(id))
+                {
+                    continue;
+                }
+                _guardPendingRelease.Remove(id);
+                _guardDrivenHardware.Add(id);
+                if (TryReserveWrite(id, 100, nowMs))
+                {
+                    SafeDrive(id, 100);
+                }
+            }
+        }
+        foreach (var id in _guardDrivenHardware.ToList())
+        {
+            if (!present.Contains(id))
+            {
+                // Gone mid-trip: clear the provider's held duty now (a wireless hub would re-send it on
+                // rebind), and release again on return in case the hardware kept the last write.
+                _guardDrivenHardware.Remove(id);
+                ForgetWrite(id);
+                if (!owned.Contains(id) && !manual.ContainsKey(id))
+                {
+                    _fans.ReleaseFan(id);
+                }
+                _guardPendingRelease[id] = nowMs + PendingReleaseTtlMs;
+                continue;
+            }
+            if (take && plan.Hardware.Contains(id) && !owned.Contains(id) && !manual.ContainsKey(id))
+            {
+                continue;
+            }
+            _guardDrivenHardware.Remove(id);
+            ReleaseGuardHardware(id, owned, manual);
+        }
+        foreach (var (id, expiry) in _guardPendingRelease.ToList())
+        {
+            if (present.Contains(id))
+            {
+                _guardPendingRelease.Remove(id);
+                ReleaseGuardHardware(id, owned, manual);
+            }
+            else if (nowMs >= expiry)
+            {
+                _guardPendingRelease.Remove(id);
+            }
+        }
+    }
+
+    // A channel the user gave a manual duty or a curve in the meantime is theirs now: the release
+    // would also delete that manual duty on some providers, so only the dedup record is dropped.
+    private void ReleaseGuardHardware(string id, HashSet<string> owned, IReadOnlyDictionary<string, int> manual)
+    {
+        ForgetWrite(id);
+        if (!owned.Contains(id) && !manual.ContainsKey(id))
+        {
+            _fans.ReleaseFan(id);
         }
     }
 
@@ -1105,7 +1229,7 @@ public sealed class CurveEngine : BackgroundService
             {
                 // A manual channel the guard is overriding keeps its record, or the
                 // override would be rewritten every tick.
-                if (!owned.Contains(id) && !_guardOverriddenManual.Contains(id))
+                if (!owned.Contains(id) && !_guardOverriddenManual.Contains(id) && !_guardDrivenHardware.Contains(id))
                 {
                     (stale ??= new()).Add(id);
                 }
