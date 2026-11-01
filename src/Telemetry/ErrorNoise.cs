@@ -27,6 +27,9 @@ internal static class ErrorNoise
         return e is NullReferenceException && stack.Contains(LhmMemoryRetryFrame, StringComparison.Ordinal);
     }
 
+    internal static bool IsCutShortResponse(Exception ex) =>
+        ex is InvalidOperationException && ex.Message.StartsWith("Response Content-Length mismatch: too few bytes written", StringComparison.Ordinal);
+
     /// <summary>
     /// Kestrel logs at Error when a client leaves mid-response. A download cut short of its Content-Length counts only
     /// when the request's client had already aborted (<paramref name="clientAborted"/>), so a handler that truncates a
@@ -38,8 +41,7 @@ internal static class ErrorNoise
             return false;
         return ex switch
         {
-            InvalidOperationException => clientAborted
-                && ex.Message.StartsWith("Response Content-Length mismatch: too few bytes written", StringComparison.Ordinal),
+            InvalidOperationException => clientAborted && IsCutShortResponse(ex),
             System.IO.IOException => ex.Message.StartsWith("The encryption operation failed", StringComparison.Ordinal),
             _ => false,
         };

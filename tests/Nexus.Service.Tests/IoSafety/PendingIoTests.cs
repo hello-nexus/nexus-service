@@ -10,8 +10,10 @@ public class PendingIoTests
 {
     private sealed class Resource : IDisposable
     {
-        public bool Disposed;
-        public void Dispose() => Disposed = true;
+        private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Disposed => _disposed.Task.IsCompleted;
+        public Task WhenDisposed => _disposed.Task;
+        public void Dispose() => _disposed.TrySetResult();
     }
 
     [Fact]
@@ -96,10 +98,7 @@ public class PendingIoTests
         Assert.Equal(before + 1, PendingIo.StrandedCount);
 
         stuck.SetResult();
-        for (var i = 0; i < 200 && !resource.Disposed; i++)
-        {
-            await Task.Delay(10);
-        }
+        await resource.WhenDisposed.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(resource.Disposed);
         Assert.Equal(before, PendingIo.StrandedCount);

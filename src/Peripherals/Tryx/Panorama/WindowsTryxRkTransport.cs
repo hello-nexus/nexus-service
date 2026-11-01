@@ -77,7 +77,11 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
         // retirement (ERROR_OPERATION_ABORTED), the drain stopped, and the undrained
         // pipe reset the interface ~70s later - so reads are issued from a dedicated
         // thread that blocks on each completion and therefore never exits mid-read.
-        _drainThread = new Thread(() => DrainReads(_drainCts.Token))
+        _drainThread = new Thread(() =>
+        {
+            try { DrainReads(_drainCts.Token); }
+            finally { _drainDone.TrySetResult(); }
+        })
         {
             IsBackground = true,
             Name = "tryx-drain",
@@ -108,6 +112,8 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
     // How long a cancelled operation gets to finish before its stream is judged stuck.
     private const int IoSettleMs = 3000;
     private volatile Task? _stuckIo;
+    // Completes when the drain thread has left its read; the stream must outlive that read as well as any stuck write.
+    private readonly TaskCompletionSource _drainDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public void Write(ReadOnlySpan<byte> data)
     {
@@ -320,7 +326,9 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
         // Serialize against an in-flight Write so the stream can't close mid-write.
         lock (_writeLock)
         {
-            if (!PendingIo.Retire(_stream, drained && _stuckIo is null, _stuckIo))
+            // Released only once the stuck write (if any) and the drain thread's read have both finished.
+            var pending = drained && _stuckIo is null ? null : Task.WhenAll(_stuckIo ?? Task.CompletedTask, _drainDone.Task);
+            if (!PendingIo.Retire(_stream, pending is null, pending))
             {
                 ServiceLog.Warn($"[tryx] {PortName}: I/O still pending after cancel; stream left open instead of freed under it");
             }

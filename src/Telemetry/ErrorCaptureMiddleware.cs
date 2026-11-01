@@ -20,9 +20,12 @@ internal static class ErrorCaptureMiddleware
             {
                 throw;
             }
-            // Kestrel logs a cut-short response after this returns; the logger asks the ledger whether the client had left.
-            if (ctx.RequestAborted.IsCancellationRequested)
-                ClientAbortLedger.Note(ctx.TraceIdentifier);
+            finally
+            {
+                // Kestrel logs a cut-short response after this returns, thrown OCE included; the logger asks the ledger whether the client had left.
+                if (ctx.RequestAborted.IsCancellationRequested)
+                    ClientAbortLedger.Note(ctx.TraceIdentifier);
+            }
             // Only 500: several routes answer 502-504 by design while a device or upstream is unavailable.
             if (ctx.Response.StatusCode == StatusCodes.Status500InternalServerError && !ctx.RequestAborted.IsCancellationRequested)
                 reporter.ReportStatus(StatusCodes.Status500InternalServerError, RoutePattern(ctx));

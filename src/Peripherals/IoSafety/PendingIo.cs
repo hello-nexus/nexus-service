@@ -9,7 +9,7 @@ namespace Nexus.Service.Peripherals.IoSafety;
 internal static class PendingIo
 {
     private const int WarnAtCount = 16;
-    private static readonly ConcurrentQueue<IDisposable> Stranded = new();
+    private static readonly ConcurrentDictionary<IDisposable, byte> Stranded = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>Resources kept alive because an operation never finished; they live until the process exits.</summary>
     internal static int StrandedCount => Stranded.Count;
@@ -53,7 +53,7 @@ internal static class PendingIo
             resource.Dispose();
             return true;
         }
-        Stranded.Enqueue(resource);
+        Stranded[resource] = 0;
         var count = Stranded.Count;
         if (count >= WarnAtCount)
         {
@@ -65,19 +65,7 @@ internal static class PendingIo
 
     private static void Release(IDisposable resource)
     {
-        // The queue is only a root; take every entry out and put the others back.
-        var keep = new System.Collections.Generic.List<IDisposable>();
-        while (Stranded.TryDequeue(out var held))
-        {
-            if (!ReferenceEquals(held, resource))
-            {
-                keep.Add(held);
-            }
-        }
-        foreach (var held in keep)
-        {
-            Stranded.Enqueue(held);
-        }
+        Stranded.TryRemove(resource, out _);
         try
         {
             resource.Dispose();

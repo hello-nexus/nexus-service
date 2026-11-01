@@ -74,7 +74,7 @@ internal sealed class ErrorLoggerProvider : ILoggerProvider
                 return;
             }
             // A client that left mid-response: Kestrel logs the cut-short download and the dead-socket TLS write at Error.
-            if (ErrorNoise.IsKestrelClientDisconnect(_category, exception, ClientAbortLedger.Take(TraceIdOf(state))))
+            if (ErrorNoise.IsKestrelClientDisconnect(_category, exception, ErrorNoise.IsCutShortResponse(exception) && ClientAbortLedger.Take(TraceIdOf(state))))
             {
                 return;
             }
