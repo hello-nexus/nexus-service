@@ -517,6 +517,16 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
+        app.MapPost("/lighting/animate/simple", (AnimateSimpleBody body, ILightingProvider l, MultiplexHub hub, FeatureGates gates) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            l.SetAnimateSimple(body.Simple);
+            PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
         app.MapPost("/lighting/static/headless-start", (StaticHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!gates.Lighting)

@@ -171,6 +171,12 @@ public sealed class IdleDimStatus
     public int? OsScreenOffSeconds { get; set; }
 }
 
+/// <summary>POST body for /lighting/animate/simple.</summary>
+public class AnimateSimpleBody
+{
+    public bool Simple { get; set; }
+}
+
 /// <summary>GET response / POST body for /lighting/render-gpu. "auto" or a GPU
 /// model name (matches GpuReadout.Name). Restart-to-apply.</summary>
 public class RenderGpuBody
@@ -262,6 +268,8 @@ public class AnimateHeadlessStart
     /// slider release or explicit mode change, which also persists the state.
     /// </summary>
     public bool Persist { get; set; } = true;
+    /// <summary>True only from simple mode, where a sweep effect shows its whole pattern on every device. Absent or false maps the effect by layout position like any advanced effect.</summary>
+    public bool Simple { get; set; }
 }
 
 public class ShaderParam

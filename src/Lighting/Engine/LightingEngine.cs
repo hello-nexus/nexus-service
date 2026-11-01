@@ -235,13 +235,9 @@ public sealed partial class LightingEngine : IDisposable
     }
     private readonly Dictionary<string, PinRender> _pinRenders = new(StringComparer.Ordinal);
 
-    private static IReadOnlyDictionary<string, float>? ExtrasOf(IEffect? effect) => (effect as Gpu.ShaderEffect)?.ExtraParams;
     // Device id to the canvas it samples this tick; a null canvas means the
     // main one. Absent means no animate/mirror pin (or its source failed to render).
     private readonly Dictionary<string, CanvasBuffer?> _pinnedDevices = new(StringComparer.Ordinal);
-    // Devices pinned to a Simple-mode sweep: they read the whole canvas, as every
-    // device does globally while a sweep is the active effect.
-    private readonly HashSet<string> _pinFullFrame = new(StringComparer.Ordinal);
     private long _pinTick;
 
     // One assignment renders once into this scratch canvas and every device
@@ -1087,7 +1083,6 @@ public sealed partial class LightingEngine : IDisposable
     {
         var tracker = Pins;
         _pinnedDevices.Clear();
-        _pinFullFrame.Clear();
         if (tracker is null || !tracker.Any)
         {
             if (_pinRenders.Count > 0)
@@ -1116,14 +1111,11 @@ public sealed partial class LightingEngine : IDisposable
             {
                 continue;
             }
-            var sweepKey = key != MirrorPinKey && key != MediaPinKey && Gpu.ShaderLibrary.IsSweepEffect(key);
-            var sweep = sweepKey && Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(active));
             // Pinned to what is already running globally: share its canvas.
             var shared = key == MirrorPinKey ? ScreenEffectName : key == MediaPinKey ? MediaEffectName : key;
             if (string.Equals(activeName, shared, StringComparison.Ordinal))
             {
                 _pinnedDevices[dev.Id] = null;
-                if (sweep) _pinFullFrame.Add(dev.Id);
                 continue;
             }
             if (!_pinRenders.TryGetValue(key, out var render))
@@ -1163,7 +1155,6 @@ public sealed partial class LightingEngine : IDisposable
             if (render.Rendered)
             {
                 _pinnedDevices[dev.Id] = render.Canvas;
-                if (sweepKey && Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(render.Effect))) _pinFullFrame.Add(dev.Id);
             }
         }
         if (used < _pinRenders.Count)
@@ -1548,7 +1539,6 @@ public sealed partial class LightingEngine : IDisposable
     private bool _aheadImmediatePin;
     private readonly List<DeviceFrame[]> _aheadBatchShadows = new();
     private readonly List<Dictionary<string, CanvasBuffer?>> _aheadBatchPinned = new();
-    private readonly List<HashSet<string>> _aheadBatchFullFrame = new();
 
     private bool AheadAbandoned(AheadRequest req, IEffect effect) =>
         req.Abandoned || _studioOverlay is not null || req.PinSig != PinAheadSig(req.DeviceIds)
@@ -1656,7 +1646,7 @@ public sealed partial class LightingEngine : IDisposable
                     var shadow = _aheadBatchShadows[i];
                     RestoreAheadMaps(i);
                     _sampleCanvas = _aheadCanvas;
-                    SampleDevicesFromCanvas(shadow, pinned: _aheadPinned, pinFullFrame: _aheadPinFullFrame);
+                    SampleDevicesFromCanvas(shadow, pinned: _aheadPinned);
                     ApplyLedColorLocks(shadow);
                     foreach (var d in shadow)
                     {
@@ -1704,7 +1694,6 @@ public sealed partial class LightingEngine : IDisposable
         while (_aheadBatchPinned.Count <= i)
         {
             _aheadBatchPinned.Add(new Dictionary<string, CanvasBuffer?>(StringComparer.Ordinal));
-            _aheadBatchFullFrame.Add(new HashSet<string>(StringComparer.Ordinal));
         }
         _aheadBatchShadows.Add(shadow);
         var pinned = _aheadBatchPinned[i];
@@ -1713,9 +1702,6 @@ public sealed partial class LightingEngine : IDisposable
         {
             pinned[kv.Key] = kv.Value;
         }
-        var full = _aheadBatchFullFrame[i];
-        full.Clear();
-        full.UnionWith(_aheadPinFullFrame);
     }
 
     private void RestoreAheadMaps(int i)
@@ -1725,12 +1711,9 @@ public sealed partial class LightingEngine : IDisposable
         {
             _aheadPinned[kv.Key] = kv.Value;
         }
-        _aheadPinFullFrame.Clear();
-        _aheadPinFullFrame.UnionWith(_aheadBatchFullFrame[i]);
     }
 
     private readonly Dictionary<string, CanvasBuffer?> _aheadPinned = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _aheadPinFullFrame = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CanvasBuffer> _aheadPinCanvases = new(StringComparer.Ordinal);
     private readonly HashSet<string> _aheadPinRendered = new(StringComparer.Ordinal);
 
@@ -1743,11 +1726,10 @@ public sealed partial class LightingEngine : IDisposable
     /// </summary>
     private AheadPinKind ResolveAheadPin(
         DeviceFrame dev, Dictionary<string, Nexus.Service.Persistence.DevicePin> pins, IEffect active,
-        out string key, out IEffect? fx, out bool sweep)
+        out string key, out IEffect? fx)
     {
         key = "";
         fx = null;
-        sweep = false;
         if (!pins.TryGetValue(dev.Id, out var pin)
             || pin.Kind != Nexus.Service.Persistence.DevicePinKinds.Animate
             || string.IsNullOrEmpty(pin.Effect))
@@ -1755,7 +1737,6 @@ public sealed partial class LightingEngine : IDisposable
             return AheadPinKind.Base;
         }
         key = PinRenderKey(pin)!;
-        sweep = Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(string.Equals(active.Name, key, StringComparison.Ordinal) ? active : _pinRenders.GetValueOrDefault(key)?.Effect));
         if (string.Equals(active.Name, key, StringComparison.Ordinal))
         {
             return AheadPinKind.FollowActive;
@@ -1777,7 +1758,6 @@ public sealed partial class LightingEngine : IDisposable
     private bool RenderAheadPins(IEffect active, DeviceFrame[] shadow, long tickMs)
     {
         _aheadPinned.Clear();
-        _aheadPinFullFrame.Clear();
         _aheadPinRendered.Clear();
         var failed = false;
         var tracker = Pins;
@@ -1789,7 +1769,7 @@ public sealed partial class LightingEngine : IDisposable
         var pins = tracker.Snapshot();
         foreach (var dev in shadow)
         {
-            var kind = ResolveAheadPin(dev, pins, active, out var key, out var fx, out var sweep);
+            var kind = ResolveAheadPin(dev, pins, active, out var key, out var fx);
             if (kind == AheadPinKind.Base)
             {
                 continue;
@@ -1797,7 +1777,6 @@ public sealed partial class LightingEngine : IDisposable
             if (kind == AheadPinKind.FollowActive)
             {
                 _aheadPinned[dev.Id] = null;
-                if (sweep) _aheadPinFullFrame.Add(dev.Id);
                 continue;
             }
             if (!_aheadPinCanvases.TryGetValue(key, out var canvas))
@@ -1815,20 +1794,19 @@ public sealed partial class LightingEngine : IDisposable
                 failed |= fx is Gpu.ShaderEffect { HasFailed: true } or Gpu.ShaderEffect { IsRenderPending: true };
             }
             _aheadPinned[dev.Id] = canvas;
-            if (sweep) _aheadPinFullFrame.Add(dev.Id);
         }
         return failed;
     }
 
     private void SampleDevicesFromCanvas(
         DeviceFrame[] devices, bool honorPins = true,
-        Dictionary<string, CanvasBuffer?>? pinned = null, HashSet<string>? pinFullFrame = null)
+        Dictionary<string, CanvasBuffer?>? pinned = null)
     {
         var baseCanvas = _sampleCanvas;
         try
         {
             var pinMap = pinned ?? _pinnedDevices;
-            SampleDevicesCore(devices, baseCanvas, honorPins && pinMap.Count > 0, pinMap, pinFullFrame ?? _pinFullFrame);
+            SampleDevicesCore(devices, baseCanvas, honorPins && pinMap.Count > 0, pinMap);
         }
         finally
         {
@@ -1838,7 +1816,7 @@ public sealed partial class LightingEngine : IDisposable
 
     private void SampleDevicesCore(
         DeviceFrame[] devices, CanvasBuffer baseCanvas, bool honorPins,
-        Dictionary<string, CanvasBuffer?> pinMap, HashSet<string> pinFullFrame)
+        Dictionary<string, CanvasBuffer?> pinMap)
     {
         var cw = _sampleCanvas.Width;
         var ch = _sampleCanvas.Height;
@@ -1891,9 +1869,7 @@ public sealed partial class LightingEngine : IDisposable
             // unturned rect and turns with the whole frame.
             // A device on its own pin canvas follows that source alone: the
             // global sweep flag describes the main canvas, not this one.
-            var fullFrame = onPinCanvas
-                ? pinFullFrame.Contains(dev.Id)
-                : FullFrameSampling || (honorPins && pinFullFrame.Contains(dev.Id));
+            var fullFrame = !onPinCanvas && FullFrameSampling;
             // A full-frame device's cell is a slice of the whole canvas, so it
             // takes the plain cell mean instead of the spot. See SampleLedBox.
             var rectX = fullFrame ? 0f : dev.X;
