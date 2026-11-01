@@ -462,7 +462,7 @@ public static class CoolingRoutes
             {
                 return Results.BadRequest(new CreateCoolingPresetResponse { Error = true, Msg = $"Preset cap of {CoolingPresets.Cap} reached" });
             }
-            var created = CoolingPresets.Capture(Guid.NewGuid().ToString("n"), name, store, f);
+            var created = CoolingPresets.Capture(Guid.NewGuid().ToString("n"), name, store);
             store.Update(s =>
             {
                 s.Cooling.Presets.Add(created);
@@ -477,20 +477,19 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
-        app.MapPut("/cooling/presets/{id}", (string id, UpdateCoolingPresetBody body, IFanControlProvider f, IConfigStore store) =>
+        app.MapPut("/cooling/presets/{id}", (string id, UpdateCoolingPresetBody body, IConfigStore store) =>
         {
             if (store.Load().Cooling.Presets.Find(p => p.Id == id) is null)
             {
                 return Results.NotFound(new ApiResponse { Error = true, Msg = "Preset not found" });
             }
-            var fanIds = body.SaveCurrent ? CoolingPresets.FanIds(f) : null;
             store.Update(s =>
             {
                 var preset = s.Cooling.Presets.Find(p => p.Id == id);
                 if (preset is null) return;
                 var name = (body.Name ?? "").Trim();
                 if (name.Length > 0) preset.Name = name;
-                if (fanIds is not null) CoolingPresets.CaptureInto(preset, s.Cooling, fanIds);
+                if (body.SaveCurrent) CoolingPresets.CaptureInto(preset, s.Cooling);
             });
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();

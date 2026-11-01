@@ -202,6 +202,12 @@ public static class FanProfiles
                         // Detach fans (not pinned channels) from non-preset curves so the
                         // preset curve owns them; a pinned channel on its own curve stays
                         // attached.
+                        // Only the outputs of the preset that was active carry over, and only for a
+                        // channel that is not a pump, GPU or AIO fan (those are pinned by default and
+                        // Apply never put them on a preset curve).
+                        var previousPreset = s.Cooling.ActivePreset is "silent" or "balanced" or "turbo" or "max"
+                            ? $"preset-{s.Cooling.ActivePreset}"
+                            : null;
                         var carriedAbsent = new List<CurveOutputDocument>();
                         foreach (var curve in s.Cooling.Curves)
                         {
@@ -215,9 +221,13 @@ public static class FanProfiles
                                 // pinned channels, so a fan pinned onto that preset stays
                                 // put when the user activates a different one. An absent
                                 // fan moves with the switch instead of being dropped.
-                                carriedAbsent.AddRange(curve.Outputs.Where(o => !presentIds.Contains(o.Id)
-                                    && !uncontrolledIds.Contains(o.Id)
-                                    && !(s.Cooling.FanPinOverrides.TryGetValue(o.Id, out var pin) && pin)));
+                                if (curve.Id == previousPreset)
+                                {
+                                    carriedAbsent.AddRange(curve.Outputs.Where(o => !presentIds.Contains(o.Id)
+                                        && !uncontrolledIds.Contains(o.Id)
+                                        && !LooksPinnedByDefault(o.Id)
+                                        && !(s.Cooling.FanPinOverrides.TryGetValue(o.Id, out var pin) && pin)));
+                                }
                                 curve.Outputs.RemoveAll(o => !pinnedIds.Contains(o.Id));
                             }
                         }
@@ -310,10 +320,11 @@ public static class FanProfiles
                 default:
                     {
                         // Off releases every channel to BIOS, pinned or not:
-                        // detach all fans from all curves.
+                        // detach all fans from all curves, absent ones included so a
+                        // late arrival is not driven by an old curve under an Off label.
                         foreach (var curve in s.Cooling.Curves)
                         {
-                            curve.Outputs.RemoveAll(o => fanIds.Contains(o.Id));
+                            curve.Outputs.RemoveAll(o => !uncontrolledIds.Contains(o.Id));
                         }
                         // The manual entries go with it: only the motherboard
                         // providers' ReleaseFan drops them, every hub provider
@@ -619,6 +630,13 @@ public static class FanProfiles
     /// non-preset (user) curve are recorded; fans on BIOS Control or driven
     /// by a preset curve produce no entry.
     /// </summary>
+    // An absent channel's kind is not known, so the id decides: pumps, GPU fans and AIO fans are
+    // pinned by default and must never ride a preset curve.
+    private static bool LooksPinnedByDefault(string id) =>
+        id.Contains("pump", StringComparison.OrdinalIgnoreCase)
+        || id.Contains("/gpu", StringComparison.OrdinalIgnoreCase)
+        || id.Contains("aio", StringComparison.OrdinalIgnoreCase);
+
     private static Dictionary<string, string> SnapshotMapping(List<CurveDocument> curves, HashSet<string>? exclude)
     {
         var map = new Dictionary<string, string>();

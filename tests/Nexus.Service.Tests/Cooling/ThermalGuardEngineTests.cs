@@ -27,6 +27,8 @@ public class ThermalGuardEngineTests
         public readonly List<string> Released = new();
         public readonly List<TemperatureSource> ExtraSources = new();
         public int ReleaseAllCalls;
+        public bool Restores = true;
+        public bool ReleaseRestoresHardwareControl(string channelId) => Restores;
 
         public IReadOnlyList<FanChannel> GetFanChannels() => Channels;
         public Action? OnSources;
@@ -177,28 +179,145 @@ public class ThermalGuardEngineTests
         Assert.Contains("hw2", fans.Released);
     }
 
-    [Theory]
-    [InlineData(0, true)]
-    [InlineData(1800, false)]
-    public void Trip_ReportsFansNotRespondingOnlyWhenADrivenTachStaysAtZero(int rpm, bool expected)
+    private static (CurveEngine Engine, Fans Fans, InMemoryConfigStore Store, long[] Clock, ThermalGuardController Guard) BuildIdle(params string[] hardwareIds)
     {
         var fans = new Fans();
-        fans.Channels.Add(new FanChannel { Id = "hw", Mode = FanModes.Auto, Rpm = rpm });
+        foreach (var id in hardwareIds)
+        {
+            fans.Channels.Add(new FanChannel { Id = id, Mode = FanModes.Auto });
+        }
         var store = new InMemoryConfigStore();
         var clock = new long[] { 1_000_000 };
         var hub = new MultiplexHub();
         var guard = new ThermalGuardController(fans, store, hub);
         var engine = new CurveEngine(fans, store, hub, new FeatureGates(store), guard) { Clock = () => clock[0] };
+        return (engine, fans, store, clock, guard);
+    }
 
-        Trip(engine, fans, clock);
-        for (var i = 0; i < 70; i++)
+    private static void Hot(CurveEngine engine, long[] clock, int ticks)
+    {
+        for (var i = 0; i < ticks; i++)
         {
             clock[0] += 1000;
             engine.Tick();
         }
+    }
 
-        Assert.Equal("tripped", guard.GetState().State);
-        Assert.Equal(expected, guard.GetState().FansNotResponding);
+    [Fact]
+    public void FloorRamp_LeavesHardwareControlChannelsAlone()
+    {
+        var (engine, fans, _, clock, _) = BuildIdle("hw");
+        fans.CpuTemp = 85f;
+        Hot(engine, clock, 12);
+        Assert.DoesNotContain(fans.Driven, d => d.Id == "hw");
+        Assert.DoesNotContain("hw", fans.Released);
+    }
+
+    [Fact]
+    public void ProviderThatCannotHandBackIsNeverTakenOver()
+    {
+        var (engine, fans, _, clock, _) = BuildIdle("hw");
+        fans.Restores = false;
+        fans.CpuTemp = 99f;
+        Hot(engine, clock, 20);
+        Assert.DoesNotContain(fans.Driven, d => d.Id == "hw");
+    }
+
+    [Fact]
+    public void ManualDutyGivenDuringATrip_SurvivesTheRelease()
+    {
+        var (engine, fans, store, clock, _) = BuildIdle("hw");
+        fans.CpuTemp = 99f;
+        Hot(engine, clock, 20);
+        Assert.Equal(100, LastDuty(fans, "hw"));
+
+        store.Update(s => s.Cooling.ManualSpeeds["hw"] = 50);
+        fans.CpuTemp = 40f;
+        CoolDown(engine, clock);
+        Assert.DoesNotContain("hw", fans.Released);
+        Assert.Equal(50, store.Load().Cooling.ManualSpeeds["hw"]);
+    }
+
+    [Fact]
+    public void GuardDisabledMidTrip_OnAnIdleConfig_ReleasesTheChannels()
+    {
+        var (engine, fans, store, clock, _) = BuildIdle("hw");
+        fans.CpuTemp = 99f;
+        Hot(engine, clock, 20);
+        Assert.Equal(100, LastDuty(fans, "hw"));
+
+        store.Update(s => s.Cooling.ThermalGuardEnabled = false);
+        Hot(engine, clock, 2);
+        Assert.Contains("hw", fans.Released);
+    }
+
+    [Fact]
+    public void TrippedAtConstantMax_DoesNotWriteAHardwareChannelEveryTick()
+    {
+        var (engine, fans, _, clock, _) = BuildIdle("hw");
+        fans.CpuTemp = 99f;
+        Hot(engine, clock, 20);
+        var before = fans.Driven.Count(d => d.Id == "hw");
+        Assert.True(before >= 1);
+
+        Hot(engine, clock, 10);
+        Assert.Equal(before, fans.Driven.Count(d => d.Id == "hw"));
+    }
+
+    [Fact]
+    public void ChannelThatLeavesMidTrip_IsReleasedWhenItReturnsAfterTheGuardClears()
+    {
+        var (engine, fans, _, clock, _) = BuildIdle("hw");
+        fans.CpuTemp = 99f;
+        Hot(engine, clock, 20);
+        var hw = fans.Channels.Single();
+        fans.Channels.Clear();
+        fans.CpuTemp = 40f;
+        CoolDown(engine, clock);
+        Assert.DoesNotContain("hw", fans.Released);
+
+        fans.Channels.Add(hw);
+        Hot(engine, clock, 2);
+        Assert.Contains("hw", fans.Released);
+    }
+
+    private static ThermalGuardResponse TripWithRpm(Func<int, int> rpmAt, int hotTicks)
+    {
+        var (engine, fans, _, clock, guard) = BuildIdle("hw");
+        var fan = fans.Channels.Single();
+        fans.CpuTemp = 99f;
+        for (var i = 0; i < hotTicks; i++)
+        {
+            fan.Rpm = rpmAt(i);
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        return guard.GetState();
+    }
+
+    [Fact]
+    public void FansNotResponding_IsSetWhenADrivenFanThatSpunStopsForAWhile()
+    {
+        var state = TripWithRpm(i => i < 5 ? 1500 : 0, 90);
+        Assert.Equal("tripped", state.State);
+        Assert.True(state.FansNotResponding);
+    }
+
+    [Fact]
+    public void FansNotResponding_IsNotSetForAFanStillSpinningUp()
+    {
+        var state = TripWithRpm(i => i < 40 ? 0 : 1500, 60);
+        Assert.False(state.FansNotResponding);
+        var early = TripWithRpm(i => i < 5 ? 1500 : 0, 30);
+        Assert.False(early.FansNotResponding);
+    }
+
+    [Fact]
+    public void FansNotResponding_IsNotSetForAFanThatNeverReportsRpm()
+    {
+        var state = TripWithRpm(_ => 0, 120);
+        Assert.Equal("tripped", state.State);
+        Assert.False(state.FansNotResponding);
     }
 
     [Fact]

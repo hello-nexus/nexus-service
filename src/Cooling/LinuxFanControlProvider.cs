@@ -152,6 +152,9 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
     public void DriveFanSpeed(string channelId, int dutyPercent)
         => ApplyDuty(channelId, Math.Clamp(dutyPercent, 0, 100));
 
+    // ReleasePaths writes the pwm enable file back to automatic.
+    public bool ReleaseRestoresHardwareControl(string channelId) => true;
+
     public void ReleaseFan(string channelId)
     {
         var paths = ResolveFan(channelId);

@@ -63,7 +63,7 @@ public class CoolingPresetsTests : IDisposable
             s.Cooling.GlobalSpeedModifier = 1.25;
         });
 
-        var preset = CoolingPresets.Capture("p1", "Quiet night", _store, _fans);
+        var preset = CoolingPresets.Capture("p1", "Quiet night", _store);
 
         Assert.Equal("user-curve-a", preset.FanCurveAssignments["fan1"]);
         Assert.False(preset.FanCurveAssignments.ContainsKey("fan2"));
@@ -77,7 +77,7 @@ public class CoolingPresetsTests : IDisposable
     public void Capture_StoresNoCurveCopies_SoTheLibraryStaysShared()
     {
         SeedCustom();
-        var preset = CoolingPresets.Capture("p1", "A", _store, _fans);
+        var preset = CoolingPresets.Capture("p1", "A", _store);
 
         // Editing the curve after capture is visible through the preset,
         // because the preset only names the curve.
@@ -91,7 +91,7 @@ public class CoolingPresetsTests : IDisposable
     public void Activate_RestoresCurveAssignments()
     {
         SeedCustom();
-        var preset = CoolingPresets.Capture("p1", "A", _store, _fans);
+        var preset = CoolingPresets.Capture("p1", "A", _store);
         _store.Update(s => s.Cooling.Presets.Add(preset));
 
         // Move away: silent claims every fan.
@@ -118,11 +118,11 @@ public class CoolingPresetsTests : IDisposable
             s.Cooling.ActivePreset = "custom";
             s.Cooling.ManualSpeeds["fan1"] = 30;
         });
-        var quiet = CoolingPresets.Capture("p1", "Quiet", _store, _fans);
+        var quiet = CoolingPresets.Capture("p1", "Quiet", _store);
         _store.Update(s => s.Cooling.Presets.Add(quiet));
 
         _store.Update(s => s.Cooling.ManualSpeeds["fan1"] = 90);
-        var loud = CoolingPresets.Capture("p2", "Loud", _store, _fans);
+        var loud = CoolingPresets.Capture("p2", "Loud", _store);
         _store.Update(s => s.Cooling.Presets.Add(loud));
 
         _fans.SpeedSet.Clear();
@@ -136,7 +136,7 @@ public class CoolingPresetsTests : IDisposable
     public void Activate_AppliesTheSavedBuiltInMode()
     {
         _store.Update(s => s.Cooling.ActivePreset = "silent");
-        var preset = CoolingPresets.Capture("p1", "Silent night", _store, _fans);
+        var preset = CoolingPresets.Capture("p1", "Silent night", _store);
         _store.Update(s => s.Cooling.Presets.Add(preset));
 
         FanProfiles.Apply("turbo", _fans, _store);
@@ -157,7 +157,7 @@ public class CoolingPresetsTests : IDisposable
             s.Cooling.FanOffsets["fan1"] = 12;
             s.Cooling.GlobalSpeedModifier = 0.8;
         });
-        var preset = CoolingPresets.Capture("p1", "A", _store, _fans);
+        var preset = CoolingPresets.Capture("p1", "A", _store);
         _store.Update(s =>
         {
             s.Cooling.Presets.Add(preset);
@@ -188,11 +188,11 @@ public class CoolingPresetsTests : IDisposable
     public void CaptureInto_OverwritesTheSnapshotButKeepsIdAndName()
     {
         SeedCustom();
-        var preset = CoolingPresets.Capture("p1", "Original", _store, _fans);
+        var preset = CoolingPresets.Capture("p1", "Original", _store);
         _store.Update(s => s.Cooling.Presets.Add(preset));
 
         _store.Update(s => s.Cooling.ManualSpeeds["fan2"] = 55);
-        CoolingPresets.CaptureInto(preset, _store.Load().Cooling, CoolingPresets.FanIds(_fans));
+        CoolingPresets.CaptureInto(preset, _store.Load().Cooling);
 
         Assert.Equal("p1", preset.Id);
         Assert.Equal("Original", preset.Name);
