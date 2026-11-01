@@ -1,0 +1,63 @@
+using System.IO;
+using Nexus.Service.Telemetry;
+using Xunit;
+
+namespace Nexus.Service.Tests.Telemetry;
+
+public class ErrorNoiseTests
+{
+    private const string Kestrel = "Microsoft.AspNetCore.Server.Kestrel";
+
+    [Fact]
+    public void Serial_event_loop_teardown_is_library_noise()
+    {
+        var stack = "   at Interop.Kernel32.GetOverlappedResult(SafeFileHandle, NativeOverlapped*, Int32&, Boolean) + 0x4f\n" +
+                    "   at System.IO.Ports.SerialStream.EventLoopRunner.WaitForCommEvent() + 0x1c5";
+        Assert.True(ErrorNoise.IsLibraryTeardown(new ObjectDisposedException("SafeFileHandle"), stack));
+    }
+
+    [Fact]
+    public void Bundled_hardware_monitor_memory_retry_fault_is_library_noise()
+    {
+        var stack = "   at LibreHardwareMonitor.Hardware.Memory.MemoryGroup.<>c__DisplayClass17_0.<<StartRetryTask>b__0>d.MoveNext() + 0x92";
+        Assert.True(ErrorNoise.IsLibraryTeardown(new NullReferenceException(), stack));
+    }
+
+    [Fact]
+    public void The_same_exception_types_from_nexus_code_are_still_reported()
+    {
+        var stack = "   at Nexus.Service.Lighting.Rgb.OpenRgbProcessManager.<Start>b__0() + 0xf";
+        Assert.False(ErrorNoise.IsLibraryTeardown(new ObjectDisposedException("Process"), stack));
+        Assert.False(ErrorNoise.IsLibraryTeardown(new NullReferenceException(), stack));
+        Assert.False(ErrorNoise.IsLibraryTeardown(new ObjectDisposedException("Process"), null));
+    }
+
+    [Fact]
+    public void An_unobserved_task_with_one_foreign_inner_is_reported()
+    {
+        var mixed = new AggregateException(new ObjectDisposedException("x"), new IOException("y"));
+        Assert.False(ErrorNoise.IsUnobservedLibraryTeardown(mixed));
+    }
+
+    [Fact]
+    public void Kestrel_download_cut_short_by_the_client_is_noise()
+    {
+        var ex = new InvalidOperationException("Response Content-Length mismatch: too few bytes written (6946816 of 10338388).");
+        Assert.True(ErrorNoise.IsKestrelClientDisconnect(Kestrel, ex));
+        Assert.True(ErrorNoise.IsKestrelClientDisconnect(Kestrel + ".Http2", ex));
+    }
+
+    [Fact]
+    public void Kestrel_tls_write_to_a_closed_peer_is_noise()
+    {
+        Assert.True(ErrorNoise.IsKestrelClientDisconnect(Kestrel, new IOException("The encryption operation failed, see inner exception.")));
+    }
+
+    [Fact]
+    public void Other_kestrel_errors_and_other_categories_are_reported()
+    {
+        Assert.False(ErrorNoise.IsKestrelClientDisconnect(Kestrel, new InvalidOperationException("Response Content-Length mismatch: too many bytes written (5 of 3).")));
+        Assert.False(ErrorNoise.IsKestrelClientDisconnect(Kestrel, new IOException("disk full")));
+        Assert.False(ErrorNoise.IsKestrelClientDisconnect("Nexus.Service.Routes", new InvalidOperationException("Response Content-Length mismatch: too few bytes written (1 of 2).")));
+    }
+}

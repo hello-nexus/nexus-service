@@ -285,7 +285,10 @@ static void InstallErrorHooks(Nexus.Service.Telemetry.ErrorReporter reporter)
 {
     // Observation only: the exception is deliberately not marked observed, so runtime behavior is unchanged.
     TaskScheduler.UnobservedTaskException += (_, e) =>
-        reporter.Report(e.Exception, Nexus.Service.Telemetry.ErrorKinds.UnobservedTask, null);
+    {
+        if (!Nexus.Service.Telemetry.ErrorNoise.IsUnobservedLibraryTeardown(e.Exception))
+            reporter.Report(e.Exception, Nexus.Service.Telemetry.ErrorKinds.UnobservedTask, null);
+    };
 }
 
 static bool IsLoopbackPortFree(int port)
