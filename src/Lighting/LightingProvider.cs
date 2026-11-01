@@ -116,6 +116,8 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
         _engine.OnFrame += frame => _ = _hub.BroadcastBinaryAsync(frame);
         _engine.OnEffectChanged += ReconcileAudioCapture;
+        // Capture refused to start as root before login; retry once a session exists.
+        Nexus.Service.Platform.Linux.LinuxSession.SessionAdopted += ReconcileAudioCapture;
         // Any settings write can move a pinned effect's look, the pin set, or the mirrored screen.
         _store.OnChanged += RefreshPinnedLooks;
         RefreshPinnedLooks();

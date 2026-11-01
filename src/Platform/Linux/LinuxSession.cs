@@ -319,13 +319,16 @@ public static partial class LinuxSession
     /// session is wrong anyway. Pass-through when not a root daemon.
     /// </summary>
     public static (string File, List<string> Args) WrapSpawnAsSessionUser(string file, List<string> args)
+        => WrapAsUser(SessionUid, SessionGid, file, args);
+
+    private static (string File, List<string> Args) WrapAsUser(uint? uid, uint? gid, string file, List<string> args)
     {
-        if (SessionUid is null || SessionGid is null)
+        if (uid is null || gid is null)
             return (file, args);
         var wrapped = new List<string>
         {
-            "--reuid", SessionUid.Value.ToString(),
-            "--regid", SessionGid.Value.ToString(),
+            "--reuid", uid.Value.ToString(),
+            "--regid", gid.Value.ToString(),
             "--init-groups", "--", file,
         };
         wrapped.AddRange(args);
@@ -346,14 +349,7 @@ public static partial class LinuxSession
     {
         if (uid is null || gid is null)
             return isRootDaemon ? null : (file, args);
-        var wrapped = new List<string>
-        {
-            "--reuid", uid.Value.ToString(),
-            "--regid", gid.Value.ToString(),
-            "--init-groups", "--", file,
-        };
-        wrapped.AddRange(args);
-        return ("setpriv", wrapped);
+        return WrapAsUser(uid, gid, file, args);
     }
 
     private static string? Blank(string? value) => string.IsNullOrEmpty(value) ? null : value;
@@ -492,7 +488,9 @@ public static partial class LinuxSession
     /// </summary>
     public static void ConnectSerialized(Action connect)
     {
-        if (SessionUid is null || !OperatingSystem.IsLinux())
+        // IsRootDaemon is set before any session is adopted, so a spawn racing
+        // the adoption still waits on the gate.
+        if (!(IsRootDaemon || SessionUid is not null) || !OperatingSystem.IsLinux())
         {
             connect();
             return;

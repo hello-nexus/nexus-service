@@ -253,11 +253,19 @@ public static class ShellExecutor
     /// Returns "" without spawning when a root daemon has no adopted session.
     /// </summary>
     public static string RunAudio(string fileName, params string[] args)
-        => LinuxSession.WrapAudioClient(fileName, [.. args]) is { } w ? Run(w.File, [.. w.Args]) : string.Empty;
+        => RunAudio(LinuxSession.WrapAudioClient, fileName, args);
 
-    /// <summary>Exit-status variant of <see cref="RunAudio"/>; -1 when skipped.</summary>
+    /// <summary>Exit-status variant of <see cref="RunAudio(string, string[])"/>; -1 when skipped.</summary>
     public static int RunAudioExit(string fileName, int timeoutMs, params string[] args)
-        => LinuxSession.WrapAudioClient(fileName, [.. args]) is { } w ? RunExit(w.File, timeoutMs, [.. w.Args]) : -1;
+        => RunAudioExit(LinuxSession.WrapAudioClient, fileName, timeoutMs, args);
+
+    internal static string RunAudio(AudioWrap wrap, string fileName, string[] args)
+        => wrap(fileName, [.. args]) is { } w ? Run(w.File, [.. w.Args]) : string.Empty;
+
+    internal static int RunAudioExit(AudioWrap wrap, string fileName, int timeoutMs, string[] args)
+        => wrap(fileName, [.. args]) is { } w ? RunExit(w.File, timeoutMs, [.. w.Args]) : -1;
+
+    internal delegate (string File, List<string> Args)? AudioWrap(string file, List<string> args);
 
     // Serialized against ConnectAsSessionUser's temporary seteuid so a forked
     // child never inherits a half-dropped uid.

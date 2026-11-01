@@ -33,3 +33,24 @@ public class LinuxSessionAudioWrapTests
         Assert.Equal(["list", "sinks"], r.Value.Args);
     }
 }
+
+public class ShellExecutorAudioSkipTests
+{
+    [Fact]
+    public void RunAudio_WhenWrapSkips_ReturnsEmptyWithoutSpawning()
+    {
+        var called = false;
+        var result = Nexus.Service.Platform.ShellExecutor.RunAudio(
+            (f, a) => { called = true; return null; }, "wpctl", ["get-volume"]);
+
+        Assert.True(called);
+        Assert.Equal(string.Empty, result);
+    }
+
+    [Fact]
+    public void RunAudioExit_WhenWrapSkips_ReturnsMinusOne()
+    {
+        Assert.Equal(-1, Nexus.Service.Platform.ShellExecutor.RunAudioExit(
+            (f, a) => null, "pactl", 1000, ["list"]));
+    }
+}
