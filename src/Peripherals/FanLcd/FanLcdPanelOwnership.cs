@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 
 namespace Nexus.Service.Peripherals.FanLcd;
@@ -12,8 +13,10 @@ public sealed class FanLcdPanelOwnership
 {
     private readonly object _locksLock = new();
     private readonly Dictionary<string, object> _locks = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _owned = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, byte[]> _last = new(StringComparer.OrdinalIgnoreCase);
+    // The per-screen lock orders one screen's frames against its Set; screens run on different threads, so the
+    // shared tables themselves must tolerate concurrent writers.
+    private readonly ConcurrentDictionary<string, byte> _owned = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte[]> _last = new(StringComparer.OrdinalIgnoreCase);
 
     public void Set(string serial, bool owned)
     {
@@ -21,12 +24,12 @@ public sealed class FanLcdPanelOwnership
         {
             if (owned)
             {
-                _owned.Add(serial);
+                _owned[serial] = 0;
             }
             else
             {
-                _owned.Remove(serial);
-                _last.Remove(serial);
+                _owned.TryRemove(serial, out _);
+                _last.TryRemove(serial, out _);
             }
         }
     }
@@ -36,7 +39,7 @@ public sealed class FanLcdPanelOwnership
     {
         lock (LockFor(serial))
         {
-            return _owned.Contains(serial) && push();
+            return _owned.ContainsKey(serial) && push();
         }
     }
 
@@ -45,7 +48,7 @@ public sealed class FanLcdPanelOwnership
     {
         lock (LockFor(serial))
         {
-            if (!_owned.Contains(serial) || !push())
+            if (!_owned.ContainsKey(serial) || !push())
             {
                 return false;
             }
@@ -63,7 +66,7 @@ public sealed class FanLcdPanelOwnership
     {
         lock (LockFor(serial))
         {
-            return _owned.Contains(serial) && _last.TryGetValue(serial, out var jpeg) && push(jpeg);
+            return _owned.ContainsKey(serial) && _last.TryGetValue(serial, out var jpeg) && push(jpeg);
         }
     }
 
