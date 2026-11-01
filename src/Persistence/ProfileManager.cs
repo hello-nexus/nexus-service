@@ -471,6 +471,7 @@ public sealed partial class ProfileManager : IDisposable
                 Nexus.Service.Lighting.PinMigration.Apply(settings);
                 Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(settings);
                 Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(settings, _store.Load().UsbMonitorPanelPairs);
+                Nexus.Service.Lighting.AnimateSimpleMigration.ApplyProfile(settings, _store.Load().Ui.LightingDashboardMode);
                 return settings is null ? null : ProfileSharing.ExtractShareable(settings);
             }
             catch { return null; }
@@ -532,6 +533,7 @@ public sealed partial class ProfileManager : IDisposable
         Nexus.Service.Lighting.PinMigration.Apply(data);
         Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
         Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
+        Nexus.Service.Lighting.AnimateSimpleMigration.ApplyProfile(data, _store.Load().Ui.LightingDashboardMode);
         var trimmedName = string.IsNullOrWhiteSpace(name) ? "Imported" : name.Trim();
         bool reactivate;
         var panelsAdded = false;
@@ -687,6 +689,7 @@ public sealed partial class ProfileManager : IDisposable
                     Nexus.Service.Lighting.PinMigration.Apply(data);
                     Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
                     Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
+                    Nexus.Service.Lighting.AnimateSimpleMigration.ApplyProfile(data, _store.Load().Ui.LightingDashboardMode);
                     data.Auth = null;
                     data.PrimaryProfileId = null;
                     data.SharedCategories = new List<string>();
@@ -757,6 +760,7 @@ public sealed partial class ProfileManager : IDisposable
         Nexus.Service.Lighting.PinMigration.Apply(data);
         Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
         Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
+        Nexus.Service.Lighting.AnimateSimpleMigration.ApplyProfile(data, _store.Load().Ui.LightingDashboardMode);
         bool reactivate = false;
         var panelsAdded = false;
         NexusSettings? importedPanels = null;
@@ -1220,6 +1224,7 @@ public sealed partial class ProfileManager : IDisposable
             Nexus.Service.Lighting.PinMigration.Apply(data);
             Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(data);
             Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(data, _store.Load().UsbMonitorPanelPairs);
+            Nexus.Service.Lighting.AnimateSimpleMigration.ApplyProfile(data, _store.Load().Ui.LightingDashboardMode);
             return data;
         }
         catch
@@ -1264,6 +1269,7 @@ public sealed partial class ProfileManager : IDisposable
         // The file is rewritten stamped current, so its untouched categories must be shifted first.
         Nexus.Service.Lighting.SimplePatternMigration.ApplyProfile(target);
         Nexus.Service.Panel.UsbMonitorPanelMigration.ApplyProfile(target, _store.Load().UsbMonitorPanelPairs);
+        Nexus.Service.Lighting.AnimateSimpleMigration.ApplyProfile(target, _store.Load().Ui.LightingDashboardMode);
 
         foreach (var cat in categories)
         {

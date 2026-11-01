@@ -318,7 +318,19 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         SelectionMode = OperatingSystem.IsLinux() ? "system" : "app",
     };
 
+    // Every effect start and SetAnimateSimple read and write FullFrameSampling with the running
+    // effect; one at a time keeps the pair consistent with it.
+    private readonly object _animateGate = new();
+
     public void StartAnimate(AnimateHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartAnimateCore(body);
+        }
+    }
+
+    private void StartAnimateCore(AnimateHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
@@ -361,9 +373,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var extras = ParamsToDict(body.Params);
         var sensors = Nexus.Service.Persistence.SensorBinding.CopyMap(body.Sensors);
         var effectSpeed = name == "pulse" ? speed * 0.5f : speed;
-        // A sweep is meant to read end to end on every device at once, so the
-        // engine stops treating the canvas as a shared scene for these.
-        _engine.FullFrameSampling = ShaderLibrary.IsFullFrame(name, extras);
+        // Simple mode shows a sweep end to end on every device at once; the advanced
+        // Animation page maps it by layout position like any other effect.
+        _engine.FullFrameSampling = body.Simple && ShaderLibrary.IsFullFrame(name, extras);
 
         // Fast path: if the currently running effect is the same shader, just
         // update its uniforms in place. Creating a new ShaderEffect every
@@ -417,6 +429,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             s.Lighting.Sync = name;
             s.Lighting.Animate.Effect = name;
+            s.Lighting.Animate.Simple = body.Simple;
             // States holds only deltas from the effect's selected preset look:
             // merely activating an effect (the UI replays the resolved slot
             // verbatim) must not grow settings.json by a full dense state.
@@ -452,7 +465,45 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         });
     }
 
+    public void SetAnimateSimple(bool simple)
+    {
+        lock (_animateGate)
+        {
+            SetAnimateSimpleCore(simple);
+        }
+    }
+
+    private void SetAnimateSimpleCore(bool simple)
+    {
+        if (!_gates.Lighting)
+        {
+            return;
+        }
+        var lighting = _store.Load().Lighting;
+        if (!string.Equals(lighting.Sync, lighting.Animate.Effect, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (_engine.CurrentEffect is ShaderEffect cur)
+        {
+            _engine.FullFrameSampling = simple && ShaderLibrary.IsFullFrame(cur.Name, cur.ExtraParams);
+        }
+        _store.Update(s =>
+        {
+            s.Lighting.Animate.Simple = simple;
+            LightingPresetLooks.CaptureIntoActive(s);
+        });
+    }
+
     public void StartStatic(StaticHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartStaticCore(body);
+        }
+    }
+
+    private void StartStaticCore(StaticHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
@@ -956,6 +1007,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             Saturation = look.Saturation,
             Contrast = look.Contrast,
             Params = list,
+            Simple = a.Simple,
         });
     }
 
@@ -1687,6 +1739,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
     public void StartMusic(MusicHeadlessStart body)
     {
+        lock (_animateGate)
+        {
+            StartMusicCore(body);
+        }
+    }
+
+    private void StartMusicCore(MusicHeadlessStart body)
+    {
         if (!_gates.Lighting)
         {
             return;
@@ -1701,6 +1761,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     }
 
     public void StartScreen(ScreenHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartScreenCore(body);
+        }
+    }
+
+    private void StartScreenCore(ScreenHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
@@ -1815,14 +1883,19 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             return false;
         }
 
-        EnsureRgbActive();
-        _engine.SetEffect(new MediaFramesEffect(framesPath, item.Width, item.Height, item.Fps, _mediaPP));
-        _store.Update(s =>
+        // Reads frames.bin, so it is built before the gate is taken.
+        var effect = new MediaFramesEffect(framesPath, item.Width, item.Height, item.Fps, _mediaPP);
+        lock (_animateGate)
         {
-            s.Lighting.Sync = "media";
-            s.Lighting.LastMediaId = mediaId;
-            LightingPresetLooks.CaptureIntoActive(s);
-        });
+            EnsureRgbActive();
+            _engine.SetEffect(effect);
+            _store.Update(s =>
+            {
+                s.Lighting.Sync = "media";
+                s.Lighting.LastMediaId = mediaId;
+                LightingPresetLooks.CaptureIntoActive(s);
+            });
+        }
         return true;
     }
 
@@ -1854,6 +1927,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     }
 
     public void StartMediaIdle()
+    {
+        lock (_animateGate)
+        {
+            StartMediaIdleCore();
+        }
+    }
+
+    private void StartMediaIdleCore()
     {
         if (!_gates.Lighting)
         {

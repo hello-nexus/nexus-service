@@ -766,7 +766,7 @@ public class DevicePinEngineTests : IDisposable
     }
 
     [Fact]
-    public async Task A_device_pinned_to_a_sweep_reads_the_whole_canvas()
+    public async Task A_device_pinned_to_a_sweep_maps_by_layout_like_any_pin()
     {
         Assert.True(DevicePinTracker.IsAnimateEffect("rainbow"));
         var pins = new DevicePinTracker();
@@ -776,9 +776,9 @@ public class DevicePinEngineTests : IDisposable
         using var engine = Engine(pins, dev, (_, _) => new HalfAndHalf());
         engine.SetEffect(new Fill("green", 0, 255, 0));
 
-        var leds = await WaitFor(dev, l => l[2] > 200 || l[27] > 200);
-        Assert.Equal(255, leds[0]);        // first LED: red end
-        Assert.Equal(255, leds[9 * 3 + 2]); // last LED: blue end
+        var leds = await WaitFor(dev, l => l[0] == 255);
+        Assert.Equal(255, leds[0]);
+        Assert.Equal(0, leds[9 * 3 + 2]);
     }
 
     private sealed class Halves : IEffect

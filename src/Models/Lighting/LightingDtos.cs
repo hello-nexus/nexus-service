@@ -38,9 +38,6 @@ public class CurrentSyncResponse : ApiResponse
 
     /// <summary>True while a Shader Studio live session drives the LEDs. Sync and Paused then report the state before the session, which is what a client should keep and save.</summary>
     public bool StudioLive { get; set; }
-
-    /// <summary>True on an install upgraded from a version that had Game Sync, which is gone. Drives a one-release notice.</summary>
-    public bool GameSyncRemovedNotice { get; set; }
 }
 
 /// <summary>POST body for /lighting/pause. Freezes the active effect's rendered
@@ -174,6 +171,12 @@ public sealed class IdleDimStatus
     public int? OsScreenOffSeconds { get; set; }
 }
 
+/// <summary>POST body for /lighting/animate/simple.</summary>
+public class AnimateSimpleBody
+{
+    public bool Simple { get; set; }
+}
+
 /// <summary>GET response / POST body for /lighting/render-gpu. "auto" or a GPU
 /// model name (matches GpuReadout.Name). Restart-to-apply.</summary>
 public class RenderGpuBody
@@ -265,6 +268,8 @@ public class AnimateHeadlessStart
     /// slider release or explicit mode change, which also persists the state.
     /// </summary>
     public bool Persist { get; set; } = true;
+    /// <summary>True only from simple mode, where a sweep effect shows its whole pattern on every device. Absent or false maps the effect by layout position like any advanced effect.</summary>
+    public bool Simple { get; set; }
 }
 
 public class ShaderParam

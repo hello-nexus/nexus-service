@@ -56,37 +56,16 @@ public sealed class RemovedSyncModesTests : IDisposable
         Assert.Null(lighting.LayoutPresets[2].Look);
         Assert.Equal("stripes", lighting.Static.Effect);
         Assert.Equal("#112233", lighting.Static.Color);
-        Assert.True(store.Load().GameSyncRemovedNotice);
     }
 
     [Fact]
-    public void Migration_raises_the_notice_for_an_upgrade_that_never_used_game_sync()
-    {
-        File.WriteAllText(SettingsPath, """{ "schemaVersion": 22, "lighting": { "sync": "rainbow" } }""");
-
-        using var store = new JsonConfigStore(SettingsPath);
-
-        Assert.Equal("rainbow", store.Load().Lighting.Sync);
-        Assert.True(store.Load().GameSyncRemovedNotice);
-    }
-
-    [Fact]
-    public void A_fresh_install_has_no_notice()
-    {
-        using var store = new JsonConfigStore(SettingsPath);
-
-        Assert.False(store.Load().GameSyncRemovedNotice);
-    }
-
-    [Fact]
-    public void A_current_version_file_keeps_its_notice_and_still_drops_a_stray_game_sync_value()
+    public void A_current_version_file_still_drops_a_stray_game_sync_value()
     {
         File.WriteAllText(SettingsPath, $$"""{ "schemaVersion": {{NexusSettings.CurrentSchemaVersion}}, "lighting": { "sync": "gamesync" } }""");
 
         using var store = new JsonConfigStore(SettingsPath);
 
         Assert.Equal("static", store.Load().Lighting.Sync);
-        Assert.False(store.Load().GameSyncRemovedNotice);
     }
 
     [Fact]
@@ -101,7 +80,6 @@ public sealed class RemovedSyncModesTests : IDisposable
 
         using var reloaded = new JsonConfigStore(SettingsPath);
         Assert.Equal("static", reloaded.Load().Lighting.Sync);
-        Assert.True(reloaded.Load().GameSyncRemovedNotice);
     }
 
     [Fact]

@@ -31,9 +31,7 @@ public sealed class TryxPanoramaSerialTransport : ITryxPanoramaTransport
             DtrEnable = true,
             RtsEnable = true,
         };
-        _port.Open();
-        _port.DiscardInBuffer();
-        _port.DiscardOutBuffer();
+        Nexus.Service.Peripherals.IoSafety.SerialPortSafety.OpenAndClear(_port);
     }
 
     public bool IsOpen => !_disposed && _port.IsOpen;
@@ -57,7 +55,6 @@ public sealed class TryxPanoramaSerialTransport : ITryxPanoramaTransport
     {
         if (_disposed) return;
         _disposed = true;
-        try { if (_port.IsOpen) _port.Close(); } catch { /* best effort */ }
-        try { _port.Dispose(); } catch { /* best effort */ }
+        Nexus.Service.Peripherals.IoSafety.SerialPortSafety.Close(_port);
     }
 }

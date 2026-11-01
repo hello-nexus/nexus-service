@@ -85,6 +85,7 @@ public sealed class ApplyLightingScenarioTool : IMcpTool
             Contrast = look.Contrast,
             Sensors = look.Sensors,
             Persist = true,
+            Simple = AnimateTemplateDefaults.RunsAsSimple(lighting, scenario),
         };
         if (look.Params is not null)
         {
