@@ -232,7 +232,6 @@ public sealed partial class LightingEngine
         try
         {
             _aheadPinned.Clear();
-            _aheadPinFullFrame.Clear();
             foreach (var kv in pinned)
             {
                 _aheadPinned[kv.Key] = kv.Value is null ? null : PinCanvasFor(kv.Value);
@@ -254,7 +253,7 @@ public sealed partial class LightingEngine
                 }
                 var shadow = shadows[i];
                 _sampleCanvas = _aheadCanvas;
-                SampleDevicesFromCanvas(shadow, pinned: _aheadPinned, pinFullFrame: _aheadPinFullFrame);
+                SampleDevicesFromCanvas(shadow, pinned: _aheadPinned);
                 ApplyLedColorLocks(shadow);
                 sampled[i] = shadow;
             }

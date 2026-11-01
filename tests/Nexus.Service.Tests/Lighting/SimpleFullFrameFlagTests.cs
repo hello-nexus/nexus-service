@@ -137,4 +137,38 @@ public class SimpleFullFrameFlagTests : IDisposable
         LightingPresetLooks.Apply(target, look);
         Assert.True(target.Animate.Simple);
     }
+
+    [Theory]
+    [InlineData("simple", "rainbow", true)]
+    [InlineData("simple", "sharplines", true)]
+    [InlineData("simple", "plasma", false)]
+    [InlineData("advanced", "rainbow", false)]
+    [InlineData("advanced", "sharplines", false)]
+    public void An_upgrade_derives_the_flag_from_the_persisted_dashboard_mode(string mode, string effect, bool expected)
+    {
+        var path = Path.Combine(_tempDir, "upgrade.json");
+        File.WriteAllText(path, $$"""
+            { "schemaVersion": 29,
+              "ui": { "lightingDashboardMode": "{{mode}}" },
+              "lighting": { "sync": "{{effect}}", "animate": { "effect": "{{effect}}" },
+                "layoutPresets": [ { "id": "p1", "name": "P", "look": { "animateEffect": "{{effect}}" } } ] } }
+            """);
+        using var store = new JsonConfigStore(path);
+        var lighting = store.Load().Lighting;
+        Assert.Equal(expected, lighting.Animate.Simple);
+        Assert.Equal(expected, lighting.LayoutPresets[0].Look!.AnimateSimple);
+    }
+
+    [Theory]
+    [InlineData("rainbow", true, true)]
+    [InlineData("RAINBOW", true, true)]
+    [InlineData("sharplines", true, false)]
+    [InlineData("rainbow", false, false)]
+    public void A_replay_keeps_the_stored_flag_only_for_the_stored_effect(string effect, bool stored, bool expected)
+    {
+        var lighting = new LightingSettings();
+        lighting.Animate.Effect = effect == "sharplines" ? "rainbow" : effect.ToLowerInvariant();
+        lighting.Animate.Simple = stored;
+        Assert.Equal(expected, AnimateTemplateDefaults.SavedStart(lighting, effect.ToLowerInvariant()).Simple);
+    }
 }

@@ -441,6 +441,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         {
             Nexus.Service.Panel.UsbMonitorPanelMigration.Apply(doc);
         }
+        if (doc.SchemaVersion < 30)
+        {
+            Nexus.Service.Lighting.AnimateSimpleMigration.Apply(doc);
+        }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }
 
