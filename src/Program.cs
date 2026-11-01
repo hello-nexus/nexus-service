@@ -140,9 +140,13 @@ Nexus.Service.Lifecycle.BootTimer.Mark("after URL resolve");
 // macOS has no cross-process named mutex, so a running instance is found by its
 // port, before the log opens (a second boot rotates the live log away). The
 // launchd agent (KeepAlive) waits for the port instead of crash-looping on bind.
-if (OperatingSystem.IsMacOS() && !testHost && IsNexusServing(servicePort))
+// Linux has no guard at all and its systemd unit passes no --service, so every
+// Linux launch counts as the daemon: a second copy (a dev run beside the unit,
+// or a restart while the old process still serves) stands by instead of dying
+// on the bind, which Restart=on-failure would retry every few seconds.
+if ((OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()) && !testHost && IsNexusServing(servicePort))
 {
-    if (!serviceMode)
+    if (!serviceMode && OperatingSystem.IsMacOS())
     {
         Console.WriteLine("[nexus-service] already running, opening dashboard window");
         if (!suppressStartupWindow)
