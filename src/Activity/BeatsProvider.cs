@@ -123,7 +123,15 @@ public sealed class BeatsProvider : IBeatsProvider
         psi.ArgumentList.Add(Channels.ToString());
         psi.ArgumentList.Add("-");
 
-        _proc = Process.Start(psi) ?? throw new InvalidOperationException("ffmpeg Process.Start returned null");
+        // Root daemon: capture as the session user, never as root.
+        if (Nexus.Service.Platform.Linux.LinuxSession.WrapAudioClient(psi.FileName, [.. psi.ArgumentList]) is not { } wrapped)
+            throw new InvalidOperationException("no user session adopted yet");
+        psi.FileName = wrapped.File;
+        psi.ArgumentList.Clear();
+        foreach (var a in wrapped.Args)
+            psi.ArgumentList.Add(a);
+
+        _proc = ShellExecutor.Start(psi) ?? throw new InvalidOperationException("ffmpeg Process.Start returned null");
         FfmpegTracker.Track(_proc.Id);
 
         // Drain stderr so the pipe doesn't stall.

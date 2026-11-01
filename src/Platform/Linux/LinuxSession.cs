@@ -332,6 +332,30 @@ public static partial class LinuxSession
         return ("setpriv", wrapped);
     }
 
+    /// <summary>
+    /// Command for a user-session audio client (wpctl, pactl, ffmpeg pulse
+    /// capture), or null when it must not run: a root daemon with no adopted
+    /// session would reach the user's PipeWire/Pulse as root. Not a root
+    /// daemon: the command is returned unchanged.
+    /// </summary>
+    public static (string File, List<string> Args)? WrapAudioClient(string file, List<string> args)
+        => WrapAudioClient(IsRootDaemon, SessionUid, SessionGid, file, args);
+
+    internal static (string File, List<string> Args)? WrapAudioClient(
+        bool isRootDaemon, uint? uid, uint? gid, string file, List<string> args)
+    {
+        if (uid is null || gid is null)
+            return isRootDaemon ? null : (file, args);
+        var wrapped = new List<string>
+        {
+            "--reuid", uid.Value.ToString(),
+            "--regid", gid.Value.ToString(),
+            "--init-groups", "--", file,
+        };
+        wrapped.AddRange(args);
+        return ("setpriv", wrapped);
+    }
+
     private static string? Blank(string? value) => string.IsNullOrEmpty(value) ? null : value;
 
     /// <summary>WAYLAND_DISPLAY to export, or null to leave it unset. An x11 session

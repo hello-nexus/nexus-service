@@ -19,10 +19,10 @@ public sealed class LinuxAudioDeviceProvider : IAudioDeviceProvider
         if (!OperatingSystem.IsLinux()) return list;
         try
         {
-            var defaultSink = ShellExecutor.Run("pactl", "get-default-sink").Trim();
-            var defaultSource = ShellExecutor.Run("pactl", "get-default-source").Trim();
-            list.Outputs.AddRange(Parse(ShellExecutor.Run("pactl", "list", "sinks"), "output", defaultSink));
-            list.Inputs.AddRange(Parse(ShellExecutor.Run("pactl", "list", "sources"), "input", defaultSource));
+            var defaultSink = ShellExecutor.RunAudio("pactl", "get-default-sink").Trim();
+            var defaultSource = ShellExecutor.RunAudio("pactl", "get-default-source").Trim();
+            list.Outputs.AddRange(Parse(ShellExecutor.RunAudio("pactl", "list", "sinks"), "output", defaultSink));
+            list.Inputs.AddRange(Parse(ShellExecutor.RunAudio("pactl", "list", "sources"), "input", defaultSource));
         }
         catch (Exception ex)
         {
@@ -36,7 +36,7 @@ public sealed class LinuxAudioDeviceProvider : IAudioDeviceProvider
     public bool SetSpatial(string deviceId, string formatId) => false;
 
     private static bool Set(string verb, string id)
-        => OperatingSystem.IsLinux() && !string.IsNullOrEmpty(id) && ShellExecutor.RunExit("pactl", 3000, verb, id) == 0;
+        => OperatingSystem.IsLinux() && !string.IsNullOrEmpty(id) && ShellExecutor.RunAudioExit("pactl", 3000, verb, id) == 0;
 
     // Parse `pactl list sinks/sources` blocks: each device has a "Name:" line
     // (the stable id) and a "Description:" line (the friendly name).

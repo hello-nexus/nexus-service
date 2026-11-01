@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text;
 
+using Nexus.Service.Platform.Linux;
+
 namespace Nexus.Service.Platform;
 
 /// <summary>
@@ -22,7 +24,7 @@ public static class ShellExecutor
         try
         {
             var psi = BuildPsi(fileName, args);
-            using var proc = Process.Start(psi);
+            using var proc = Start(psi);
             if (proc is null)
                 return string.Empty;
 
@@ -54,7 +56,7 @@ public static class ShellExecutor
         try
         {
             var psi = BuildPsi(fileName, args);
-            using var proc = Process.Start(psi);
+            using var proc = Start(psi);
             if (proc is null)
                 return (string.Empty, false);
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
@@ -85,7 +87,7 @@ public static class ShellExecutor
         {
             var psi = BuildPsi(fileName, args);
             psi.RedirectStandardError = true;
-            using var proc = Process.Start(psi);
+            using var proc = Start(psi);
             if (proc is null)
                 return -1;
             var outTask = proc.StandardOutput.ReadToEndAsync();
@@ -114,7 +116,7 @@ public static class ShellExecutor
         try
         {
             var psi = BuildPsi(fileName, args);
-            using var proc = Process.Start(psi);
+            using var proc = Start(psi);
             if (proc is null)
                 return string.Empty;
 
@@ -142,7 +144,7 @@ public static class ShellExecutor
         try
         {
             var psi = BuildPsi(fileName, args);
-            using var proc = Process.Start(psi);
+            using var proc = Start(psi);
             if (proc is null)
                 return string.Empty;
 
@@ -178,7 +180,7 @@ public static class ShellExecutor
         {
             var psi = BuildPsi(fileName, args);
             psi.RedirectStandardInput = true;
-            using var proc = Process.Start(psi);
+            using var proc = Start(psi);
             if (proc is null)
                 return string.Empty;
 
@@ -213,7 +215,7 @@ public static class ShellExecutor
         {
             var psi = BuildPsi(fileName, args);
             psi.RedirectStandardInput = true;
-            using var proc = Process.Start(psi);
+            using var proc = Start(psi);
             if (proc is null)
                 return -1;
 
@@ -244,6 +246,26 @@ public static class ShellExecutor
             stderr = ex.Message;
             return -1;
         }
+    }
+
+    /// <summary>
+    /// Run a user-session audio client (wpctl, pactl) as the session user.
+    /// Returns "" without spawning when a root daemon has no adopted session.
+    /// </summary>
+    public static string RunAudio(string fileName, params string[] args)
+        => LinuxSession.WrapAudioClient(fileName, [.. args]) is { } w ? Run(w.File, [.. w.Args]) : string.Empty;
+
+    /// <summary>Exit-status variant of <see cref="RunAudio"/>; -1 when skipped.</summary>
+    public static int RunAudioExit(string fileName, int timeoutMs, params string[] args)
+        => LinuxSession.WrapAudioClient(fileName, [.. args]) is { } w ? RunExit(w.File, timeoutMs, [.. w.Args]) : -1;
+
+    // Serialized against ConnectAsSessionUser's temporary seteuid so a forked
+    // child never inherits a half-dropped uid.
+    internal static Process? Start(ProcessStartInfo psi)
+    {
+        Process? proc = null;
+        LinuxSession.ConnectSerialized(() => proc = Process.Start(psi));
+        return proc;
     }
 
     private static ProcessStartInfo BuildPsi(string fileName, string[] args)

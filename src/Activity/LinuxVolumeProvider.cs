@@ -94,7 +94,7 @@ public sealed class LinuxVolumeProvider : IVolumeProvider
         argv[0] = "LC_ALL=C";
         argv[1] = tool;
         Array.Copy(args, 0, argv, 2, args.Length);
-        return ShellExecutor.Run("env", argv);
+        return ShellExecutor.RunAudio("env", argv);
     }
 
     private static VolumeState WpctlState() => ParseWpctl(RunC("wpctl", "get-volume", WpctlSink));
