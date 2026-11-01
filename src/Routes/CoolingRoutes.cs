@@ -451,7 +451,7 @@ public static class CoolingRoutes
             };
         }).AllowPanel();
 
-        app.MapPost("/cooling/presets", (CreateCoolingPresetBody body, IFanControlProvider f, IConfigStore store) =>
+        app.MapPost("/cooling/presets", (CreateCoolingPresetBody body, IConfigStore store) =>
         {
             var name = (body.Name ?? "").Trim();
             if (name.Length == 0)

@@ -98,6 +98,7 @@ public sealed class ThermalGuardController
     private readonly Dictionary<string, RpmTrack> _rpm = new(StringComparer.Ordinal);
     // True while the guard drives fans and one of them has a tach that stays at zero (or writes are not landing).
     private bool _fansNotResponding;
+    private static readonly HashSet<string> EmptyIds = new(StringComparer.Ordinal);
     // When the guard started raising fans in the current spell; zero RPM counts only from then, after a spin-up grace.
     private long? _activeSinceMs;
     private readonly Dictionary<string, long> _lastTripAlertMs = new(StringComparer.Ordinal);
@@ -485,7 +486,8 @@ public sealed class ThermalGuardController
             var driving = output.FloorDuty > 0 && !output.StopWriting;
             _activeSinceMs = driving ? _activeSinceMs ?? nowMs : null;
             _fansNotResponding = driving
-                && (writesNotLanding || AnyDrivenFanSilent(nowMs, channels, eligible, hardware));
+                && (writesNotLanding || AnyDrivenFanSilent(nowMs, channels, eligible,
+                    output.State == ThermalGuardStates.Tripped ? hardware : EmptyIds));
         }
 
         if (plan.GpuBackup.Count > 0)

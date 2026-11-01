@@ -274,11 +274,50 @@ public class ThermalGuardEngineTests
         fans.Channels.Clear();
         fans.CpuTemp = 40f;
         CoolDown(engine, clock);
-        Assert.DoesNotContain("hw", fans.Released);
+        var releases = fans.Released.Count(r => r == "hw");
+        Assert.Equal(1, releases);
 
         fans.Channels.Add(hw);
         Hot(engine, clock, 2);
+        Assert.True(fans.Released.Count(r => r == "hw") > releases);
+    }
+
+    [Fact]
+    public void ChannelThatVanishesMidTrip_IsReleasedAtOnce_AndNotDrivenToMaxWhenItReturnsAfterTheGuardClears()
+    {
+        var (engine, fans, _, clock, _) = BuildIdle("hw");
+        fans.CpuTemp = 99f;
+        Hot(engine, clock, 20);
+        var hw = fans.Channels.Single();
+        fans.Channels.Clear();
+        Hot(engine, clock, 2);
         Assert.Contains("hw", fans.Released);
+
+        fans.CpuTemp = 40f;
+        clock[0] += 11 * 60_000;
+        CoolDown(engine, clock);
+        var driven = fans.Driven.Count;
+        fans.Channels.Add(hw);
+        Hot(engine, clock, 3);
+        Assert.Equal(driven, fans.Driven.Count);
+    }
+
+    [Fact]
+    public void FansNotResponding_IgnoresHardwareChannelsInTheFloorState()
+    {
+        var (engine, fans, store, clock, guard) = BuildIdle("hw");
+        store.Update(s => s.Cooling.Curves.Add(Flat("c", 10)));
+        fans.Channels.Add(new FanChannel { Id = "c", Rpm = 1500 });
+        fans.Channels.Single(c => c.Id == "hw").Rpm = 0;
+        fans.CpuTemp = 85f;
+        for (var i = 0; i < 90; i++)
+        {
+            fans.Channels.Single(c => c.Id == "hw").Rpm = i < 3 ? 1200 : 0;
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.Equal("floor", guard.GetState().State);
+        Assert.False(guard.GetState().FansNotResponding);
     }
 
     private static ThermalGuardResponse TripWithRpm(Func<int, int> rpmAt, int hotTicks)

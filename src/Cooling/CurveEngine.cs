@@ -782,24 +782,25 @@ public sealed class CurveEngine : BackgroundService
         }
         foreach (var id in _guardDrivenHardware.ToList())
         {
+            if (!present.Contains(id))
+            {
+                // Gone mid-trip: clear the provider's held duty now (a wireless hub would re-send it on
+                // rebind), and release again on return in case the hardware kept the last write.
+                _guardDrivenHardware.Remove(id);
+                ForgetWrite(id);
+                if (!owned.Contains(id) && !manual.ContainsKey(id))
+                {
+                    _fans.ReleaseFan(id);
+                }
+                _guardPendingRelease[id] = nowMs + PendingReleaseTtlMs;
+                continue;
+            }
             if (take && plan.Hardware.Contains(id) && !owned.Contains(id) && !manual.ContainsKey(id))
             {
-                if (!present.Contains(id))
-                {
-                    ForgetWrite(id);
-                }
                 continue;
             }
             _guardDrivenHardware.Remove(id);
-            if (present.Contains(id))
-            {
-                ReleaseGuardHardware(id, owned, manual);
-            }
-            else
-            {
-                ForgetWrite(id);
-                _guardPendingRelease[id] = nowMs + PendingReleaseTtlMs;
-            }
+            ReleaseGuardHardware(id, owned, manual);
         }
         foreach (var (id, expiry) in _guardPendingRelease.ToList())
         {

@@ -46,7 +46,12 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
     private readonly Dictionary<string, string> _tempInputPaths = new();
     private readonly HashSet<string> _warned = new();
 
-    private readonly record struct FanPaths(string PwmPath, string EnablePath, string? FanInputPath);
+    private readonly record struct FanPaths(string PwmPath, string EnablePath, string? FanInputPath, bool IsGpu = false);
+
+    // What the board had on a channel before Nexus first took it over (pwmN_enable, 5 on SmartFan IV
+    // boards, and pwmN), restored exactly on release instead of the generic automatic value.
+    private readonly Dictionary<string, string> _priorEnable = new();
+    private readonly Dictionary<string, string?> _priorPwm = new();
 
     public LinuxFanControlProvider(IConfigStore config, KrakenHub krakenHub)
         : this("/sys/class/hwmon", TimeSpan.FromMilliseconds(2500), config, () => krakenHub.ClaimedHwmonName) { }
@@ -87,6 +92,7 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
                 Name = name,
                 DutyPercent = (int)Math.Round(Math.Clamp(pwm, 0, 255) * 100.0 / 255.0),
                 Rpm = rpm,
+                IsGpu = paths.IsGpu,
                 Mode = curveBound.Contains(id)
                     ? FanModes.Curve
                     : (enabled == 1 ? FanModes.Manual : FanModes.Auto),
@@ -152,14 +158,45 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
     public void DriveFanSpeed(string channelId, int dutyPercent)
         => ApplyDuty(channelId, Math.Clamp(dutyPercent, 0, 100));
 
-    // ReleasePaths writes the pwm enable file back to automatic.
-    public bool ReleaseRestoresHardwareControl(string channelId) => true;
+    // True only while the exact prior board state is known or can be captured (the channel is not
+    // already in manual mode), so a release gives back what the board had and never a guess.
+    public bool ReleaseRestoresHardwareControl(string channelId)
+    {
+        lock (_lock)
+        {
+            if (_priorEnable.ContainsKey(channelId)) return true;
+        }
+        var paths = ResolveFan(channelId);
+        if (paths is null) return false;
+        var enable = LinuxSysfs.ReadInt(paths.Value.EnablePath);
+        return enable is not null && enable.Value != 1;
+    }
 
     public void ReleaseFan(string channelId)
     {
         var paths = ResolveFan(channelId);
-        if (paths is not null)
-            ReleasePaths(paths.Value);
+        if (paths is null)
+            return;
+        string? enable;
+        string? pwm = null;
+        lock (_lock)
+        {
+            _priorEnable.TryGetValue(channelId, out enable);
+            _priorPwm.TryGetValue(channelId, out pwm);
+            _priorEnable.Remove(channelId);
+            _priorPwm.Remove(channelId);
+        }
+        if (enable is not null)
+        {
+            if (LinuxSysfs.WriteText(paths.Value.EnablePath, enable))
+            {
+                if (enable != "1" || string.IsNullOrEmpty(pwm))
+                    return;
+                LinuxSysfs.WriteText(paths.Value.PwmPath, pwm);
+                return;
+            }
+        }
+        ReleasePaths(paths.Value);
     }
 
     private static void ReleasePaths(FanPaths paths)
@@ -301,6 +338,7 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
         if (paths is null)
             return;
         var raw = DutyToRaw(dutyPercent);
+        CapturePrior(channelId, paths.Value);
         if (!LinuxSysfs.WriteText(paths.Value.EnablePath, "1") ||
             !LinuxSysfs.WriteText(paths.Value.PwmPath, raw.ToString(CultureInfo.InvariantCulture)))
         {
@@ -308,6 +346,23 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
             return;
         }
         VerifyDuty(channelId, paths.Value, raw);
+    }
+
+    // First software write on a channel that the board still owned: remember its mode and duty.
+    private void CapturePrior(string channelId, FanPaths paths)
+    {
+        lock (_lock)
+        {
+            if (_priorEnable.ContainsKey(channelId)) return;
+        }
+        var enable = LinuxSysfs.ReadInt(paths.EnablePath);
+        if (enable is null || enable.Value == 1) return;
+        var pwm = LinuxSysfs.ReadText(paths.PwmPath)?.Trim();
+        lock (_lock)
+        {
+            _priorEnable[channelId] = enable.Value.ToString(CultureInfo.InvariantCulture);
+            _priorPwm[channelId] = pwm;
+        }
     }
 
     /// <summary>
@@ -376,7 +431,7 @@ public sealed class LinuxFanControlProvider : IFanControlProvider, ICoolingProvi
                 yield return (
                     $"linux-fan-{LinuxSysfs.ChipKey(dir, hwmonName)}-{n}",
                     name,
-                    new FanPaths(pwmPath, enablePath, File.Exists(fanInput) ? fanInput : null));
+                    new FanPaths(pwmPath, enablePath, File.Exists(fanInput) ? fanInput : null, CategoryFor(hwmonName) == "GPU"));
             }
         }
     }
