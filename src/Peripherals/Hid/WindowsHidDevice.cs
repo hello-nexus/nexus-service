@@ -18,11 +18,15 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
     private const int ERROR_IO_PENDING = 997;
     private const uint WAIT_OBJECT_0 = 0x0;
     private const uint WAIT_TIMEOUT = 0x102;
-    private const uint INFINITE = 0xFFFFFFFF;
 
     private const int WriteTimeoutMs = 1000;
 
     private IntPtr _handle;
+    // Every call into the handle runs inside the gate; Dispose cancels pending I/O and waits the gate empty before
+    // closing, since a handle or event closed under a pending overlapped call lets the kernel complete into freed memory.
+    private readonly Nexus.Service.Peripherals.IoSafety.IoGate _gate = new();
+    private const int DisposeDrainMs = 3000;
+    private int _disposedFlag;
     private readonly bool _overlapped;
     private readonly IntPtr _readEvent;  // manual-reset completion event; only set when overlapped
     private readonly IntPtr _writeEvent; // separate completion event for overlapped writes
@@ -66,12 +70,26 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
 
     public bool SetFeature(ReadOnlySpan<byte> report)
     {
+        if (!_gate.TryEnter()) return false;
+        try { return SetFeatureCore(report); }
+        finally { _gate.Exit(); }
+    }
+
+    private bool SetFeatureCore(ReadOnlySpan<byte> report)
+    {
         if (_handle == IntPtr.Zero) return false;
         var buf = HidReportPadding.Pad(report, _featureReportLen);
         return NativeApi.HidD_SetFeature(_handle, buf, (uint)buf.Length);
     }
 
     public bool GetFeature(Span<byte> buffer)
+    {
+        if (!_gate.TryEnter()) return false;
+        try { return GetFeatureCore(buffer); }
+        finally { _gate.Exit(); }
+    }
+
+    private bool GetFeatureCore(Span<byte> buffer)
     {
         if (_handle == IntPtr.Zero) return false;
         var buf = new byte[Math.Max(buffer.Length, _featureReportLen)];
@@ -86,6 +104,13 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
 
     /// <summary>Feature value caps via HidP_GetValueCaps; HIDP_VALUE_CAPS fields are read at their fixed offsets.</summary>
     public IReadOnlyList<HidValueCap>? ReadFeatureValueCaps()
+    {
+        if (!_gate.TryEnter()) return null;
+        try { return ReadFeatureValueCapsCore(); }
+        finally { _gate.Exit(); }
+    }
+
+    private IReadOnlyList<HidValueCap>? ReadFeatureValueCapsCore()
     {
         if (_handle == IntPtr.Zero) return null;
         if (!NativeApi.HidD_GetPreparsedData(_handle, out var preparsed)) return null;
@@ -123,6 +148,13 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
 
     public bool GetInputReport(Span<byte> buffer)
     {
+        if (!_gate.TryEnter()) return false;
+        try { return GetInputReportCore(buffer); }
+        finally { _gate.Exit(); }
+    }
+
+    private bool GetInputReportCore(Span<byte> buffer)
+    {
         if (_handle == IntPtr.Zero) return false;
         var buf = new byte[Math.Max(buffer.Length, _inputReportLen)];
         buf[0] = buffer[0]; // report id must be preset on input
@@ -135,6 +167,13 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
     }
 
     public bool Write(ReadOnlySpan<byte> report)
+    {
+        if (!_gate.TryEnter()) return false;
+        try { return WriteCore(report); }
+        finally { _gate.Exit(); }
+    }
+
+    private bool WriteCore(ReadOnlySpan<byte> report)
     {
         if (_handle == IntPtr.Zero) return false;
         var buf = HidReportPadding.Pad(report, _outputReportLen);
@@ -176,12 +215,26 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
 
     public bool SetOutputReport(ReadOnlySpan<byte> report)
     {
+        if (!_gate.TryEnter()) return false;
+        try { return SetOutputReportCore(report); }
+        finally { _gate.Exit(); }
+    }
+
+    private bool SetOutputReportCore(ReadOnlySpan<byte> report)
+    {
         if (_handle == IntPtr.Zero) return false;
         var buf = HidReportPadding.Pad(report, _outputReportLen);
         return NativeApi.HidD_SetOutputReport(_handle, buf, (uint)buf.Length);
     }
 
     public int Read(Span<byte> buffer, int timeoutMs)
+    {
+        if (!_gate.TryEnter()) return -1;
+        try { return ReadCore(buffer, timeoutMs); }
+        finally { _gate.Exit(); }
+    }
+
+    private int ReadCore(Span<byte> buffer, int timeoutMs)
     {
         if (_handle == IntPtr.Zero) return -1;
         return _overlapped ? ReadOverlapped(buffer, timeoutMs) : ReadBlocking(buffer);
@@ -203,7 +256,17 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
                 var err = Marshal.GetLastWin32Error();
                 if (err != ERROR_IO_PENDING) return -1; // immediate failure → device gone
 
-                var wait = NativeApi.WaitForSingleObject(_readEvent, timeoutMs < 0 ? INFINITE : (uint)timeoutMs);
+                // Sliced so a teardown that cancelled before this read was queued still ends the wait.
+                var remaining = timeoutMs < 0 ? int.MaxValue : timeoutMs;
+                uint wait;
+                do
+                {
+                    var slice = Math.Min(remaining, 250);
+                    wait = NativeApi.WaitForSingleObject(_readEvent, (uint)slice);
+                    if (wait != WAIT_TIMEOUT) break;
+                    if (remaining != int.MaxValue) remaining -= slice;
+                }
+                while (remaining > 0 && !_gate.Closing);
                 if (wait == WAIT_TIMEOUT)
                 {
                     // Nothing arrived in the window. Cancel and drain so the
@@ -244,6 +307,22 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposedFlag, 1) != 0) return;
+        var handle = _handle;
+        var drained = _gate.CloseAndDrain(() =>
+        {
+            // CancelIoEx reaches I/O issued by other threads, synchronous ones included (CancelIo covers only the caller's).
+            if (handle != IntPtr.Zero && handle != (IntPtr)(-1))
+            {
+                NativeApi.CancelIoEx(handle, IntPtr.Zero);
+            }
+        }, DisposeDrainMs);
+        if (!drained)
+        {
+            // A call is still inside the handle. Leaking it is safe; freeing it under that call is not.
+            Nexus.Service.Platform.ServiceLog.Warn($"[hid] {Path}: I/O still pending {DisposeDrainMs} ms after cancel; handle left open");
+            return;
+        }
         if (_handle != IntPtr.Zero && _handle != (IntPtr)(-1))
         {
             NativeApi.CloseHandle(_handle);
