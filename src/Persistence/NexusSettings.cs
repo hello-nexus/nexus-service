@@ -1614,10 +1614,6 @@ public sealed class DevicesSettings
     public bool KrakenLcdSleepWhenLocked { get; set; } = true;
     /// <summary>Service-internal: the Kraken backlight to return to after a lock darkened it. Set while dark, cleared once restored; never the user's brightness.</summary>
     public int? KrakenLcdLockRestore { get; set; }
-    /// <summary>LEGACY (pre-v6, per-card key). Read only by the one-time schema migration that moves entries into <see cref="DeviceLedOverrides"/>; empty afterward. Do not write.</summary>
-    public Dictionary<string, List<LedPositionOverride>> LedMapOverrides { get; set; } = new();
-    /// <summary>LEGACY (pre-v6, per-card key). Migration source for <see cref="DeviceAspectRatios"/>; empty afterward. Do not write.</summary>
-    public Dictionary<string, float> LedMapAspectRatios { get; set; } = new();
     /// <summary>
     /// User-defined zone partition per partitionable device, keyed by device id
     /// (keeb hub id, OpenRGB stable id). Absent key = the provider's default
@@ -1652,11 +1648,10 @@ public sealed class DevicesSettings
     public int StrimerGpuZones { get; set; } = Nexus.Service.Peripherals.Strimer.StrimerProtocol.GpuZoneCount;
     /// <summary>
     /// Per-LED user overrides keyed by device id, each local to a hardware
-    /// segment so they survive any re-partition. Replaces the per-card
-    /// <see cref="LedMapOverrides"/>.
+    /// segment so they survive any re-partition.
     /// </summary>
     public Dictionary<string, List<SegmentLedOverride>> DeviceLedOverrides { get; set; } = new();
-    /// <summary>Editor canvas aspect ratio per device id. Replaces the per-card <see cref="LedMapAspectRatios"/>.</summary>
+    /// <summary>Editor canvas aspect ratio per device id.</summary>
     public Dictionary<string, float> DeviceAspectRatios { get; set; } = new();
     public List<MotherboardLedChannel> MotherboardLeds { get; set; } = new();
     /// <summary>
@@ -1705,7 +1700,7 @@ public sealed class DevicesSettings
     /// Community / file mapping applied per device, keyed by lighting-device
     /// id. The full artifact is embedded so applied mappings keep working
     /// with the registry unreachable or gone. User deltas
-    /// (<see cref="LedMapOverrides"/>, <see cref="LedGroups"/>) layer on top.
+    /// (<see cref="DeviceLedOverrides"/>, <see cref="LedGroups"/>) layer on top.
     /// </summary>
     public Dictionary<string, Lighting.Mappings.AppliedMappingRef> AppliedMappings { get; set; } = new();
     /// <summary>
