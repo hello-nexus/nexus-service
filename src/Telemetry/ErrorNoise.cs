@@ -27,14 +27,19 @@ internal static class ErrorNoise
         return e is NullReferenceException && stack.Contains(LhmMemoryRetryFrame, StringComparison.Ordinal);
     }
 
-    /// <summary>Kestrel logs at Error when a client leaves mid-response: a download cut short of its Content-Length, or a TLS write to a connection the peer already closed.</summary>
-    internal static bool IsKestrelClientDisconnect(string category, Exception ex)
+    /// <summary>
+    /// Kestrel logs at Error when a client leaves mid-response. A download cut short of its Content-Length counts only
+    /// when the request's client had already aborted (<paramref name="clientAborted"/>), so a handler that truncates a
+    /// response still reports. A TLS write to a connection the peer already closed carries no request.
+    /// </summary>
+    internal static bool IsKestrelClientDisconnect(string category, Exception ex, bool clientAborted)
     {
         if (!category.StartsWith(KestrelCategory, StringComparison.Ordinal))
             return false;
         return ex switch
         {
-            InvalidOperationException => ex.Message.StartsWith("Response Content-Length mismatch: too few bytes written", StringComparison.Ordinal),
+            InvalidOperationException => clientAborted
+                && ex.Message.StartsWith("Response Content-Length mismatch: too few bytes written", StringComparison.Ordinal),
             System.IO.IOException => ex.Message.StartsWith("The encryption operation failed", StringComparison.Ordinal),
             _ => false,
         };

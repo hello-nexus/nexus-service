@@ -170,6 +170,8 @@ public sealed class DBusConnection : IDisposable
             {
                 _pending.Remove(serial);
             }
+            // The disconnect handler may have faulted this waiter first, in the window before it was removed.
+            _ = tcs.Task.Exception;
             throw;
         }
         using var timeout = new CancellationTokenSource(timeoutMs);

@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using NativeApi = Nexus.Service.Peripherals.Hid.WindowsHidEnumerator.Native;
 
 namespace Nexus.Service.Peripherals.Hid;
@@ -25,7 +26,7 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
     // Every call into the handle runs inside the gate; Dispose cancels pending I/O and waits the gate empty before
     // closing, since a handle or event closed under a pending overlapped call lets the kernel complete into freed memory.
     private readonly Nexus.Service.Peripherals.IoSafety.IoGate _gate = new();
-    private const int DisposeDrainMs = 3000;
+    private const int DisposeStallLogMs = 3000;
     private int _disposedFlag;
     private readonly bool _overlapped;
     private readonly IntPtr _readEvent;  // manual-reset completion event; only set when overlapped
@@ -305,24 +306,36 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
         return copy;
     }
 
+    // Never blocks: callers hold their own locks when they drop a device. CancelIoEx marks every pending
+    // request on the handle for cancellation, whichever thread issued it and synchronous ones included
+    // (lpOverlapped NULL); Microsoft documents that it does not wait and that some requests only end once
+    // the driver completes them. The handle and events are therefore closed by the last call to leave the
+    // gate, which is this call when none is inside.
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposedFlag, 1) != 0) return;
         var handle = _handle;
-        var drained = _gate.CloseAndDrain(() =>
+        _gate.Close(() =>
         {
-            // CancelIoEx reaches I/O issued by other threads, synchronous ones included (CancelIo covers only the caller's).
             if (handle != IntPtr.Zero && handle != (IntPtr)(-1))
             {
                 NativeApi.CancelIoEx(handle, IntPtr.Zero);
             }
-        }, DisposeDrainMs);
-        if (!drained)
+        }, CloseNative);
+        if (!_gate.Released)
         {
-            // A call is still inside the handle. Leaking it is safe; freeing it under that call is not.
-            Nexus.Service.Platform.ServiceLog.Warn($"[hid] {Path}: I/O still pending {DisposeDrainMs} ms after cancel; handle left open");
-            return;
+            _ = Task.Delay(DisposeStallLogMs).ContinueWith(_ =>
+            {
+                if (!_gate.Released)
+                {
+                    Nexus.Service.Platform.ServiceLog.Warn($"[hid] {Path}: a call is still inside the handle {DisposeStallLogMs} ms after cancel; it closes when that call returns");
+                }
+            }, TaskScheduler.Default);
         }
+    }
+
+    private void CloseNative()
+    {
         if (_handle != IntPtr.Zero && _handle != (IntPtr)(-1))
         {
             NativeApi.CloseHandle(_handle);

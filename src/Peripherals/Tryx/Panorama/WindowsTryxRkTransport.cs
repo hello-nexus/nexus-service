@@ -107,7 +107,7 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
     private const int WriteTimeoutMs = 2500;
     // How long a cancelled operation gets to finish before its stream is judged stuck.
     private const int IoSettleMs = 3000;
-    private volatile bool _ioStranded;
+    private volatile Task? _stuckIo;
 
     public void Write(ReadOnlySpan<byte> data)
     {
@@ -143,7 +143,7 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
             {
                 if (!PendingIo.CancelAndSettle(io, op, IoSettleMs))
                 {
-                    _ioStranded = true;
+                    _stuckIo = io;
                 }
                 throw new TimeoutException($"Tryx panel {what} did not complete within {WriteTimeoutMs} ms");
             }
@@ -320,7 +320,7 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
         // Serialize against an in-flight Write so the stream can't close mid-write.
         lock (_writeLock)
         {
-            if (!PendingIo.Retire(_stream, drained && !_ioStranded))
+            if (!PendingIo.Retire(_stream, drained && _stuckIo is null, _stuckIo))
             {
                 ServiceLog.Warn($"[tryx] {PortName}: I/O still pending after cancel; stream left open instead of freed under it");
             }

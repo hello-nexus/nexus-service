@@ -51,15 +51,23 @@ internal static class SerialPortSafety
     {
         try
         {
-            if (port.IsOpen)
+            // BaseStream refuses a port that already reports closed, but the loop task can outlive that report
+            // (the stream stops reporting open as soon as the loop ends). The stream object is still reachable
+            // through the port's own field then, so read it from there.
+            var stream = port.IsOpen ? port.BaseStream : InternalStreamOf(port);
+            if (stream is not null)
             {
-                var loop = LoopTaskOf(port.BaseStream);
+                var loop = LoopTaskOf(stream);
                 _ = loop.ContinueWith(static t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
             }
         }
         catch
         {
-            // Layout changed or the port already closed: ErrorNoise still filters this row.
+            // Layout changed: ErrorNoise still filters this row.
         }
     }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_internalSerialStream")]
+    [return: UnsafeAccessorType("System.IO.Ports.SerialStream, System.IO.Ports")]
+    private static extern ref object? InternalStreamOf(SerialPort port);
 }

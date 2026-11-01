@@ -1,20 +1,24 @@
 using System;
-using System.Diagnostics;
 using System.Threading;
 
 namespace Nexus.Service.Peripherals.IoSafety;
 
 /// <summary>
-/// Counts the I/O calls in flight on a native handle so teardown can cancel them and wait for each to finish
-/// before the handle, event or buffer behind it is freed. Closing a handle under a pending overlapped call
-/// leaves the kernel completing into memory the caller has already released.
+/// Counts the I/O calls in flight on a native handle so teardown can cancel them and free the handle, event or
+/// buffer only after the last one has left. Closing a handle under a pending overlapped call leaves the kernel
+/// completing into memory the caller has already released. Teardown never blocks: whichever of
+/// <see cref="Close"/> or the last <see cref="Exit"/> sees the gate closing and empty runs the release, once.
 /// </summary>
 public sealed class IoGate
 {
     private int _inFlight;
+    private int _released;
     private volatile bool _closing;
+    private Action? _release;
 
     public bool Closing => _closing;
+
+    public bool Released => Volatile.Read(ref _released) != 0;
 
     public int InFlight => Volatile.Read(ref _inFlight);
 
@@ -24,21 +28,27 @@ public sealed class IoGate
         Interlocked.Increment(ref _inFlight);
         if (_closing)
         {
-            Interlocked.Decrement(ref _inFlight);
+            Exit();
             return false;
         }
         return true;
     }
 
-    public void Exit() => Interlocked.Decrement(ref _inFlight);
+    public void Exit()
+    {
+        if (Interlocked.Decrement(ref _inFlight) == 0 && _closing)
+        {
+            Release();
+        }
+    }
 
     /// <summary>
-    /// Stops new entries, runs <paramref name="cancelPending"/> once so blocked calls return, then waits up to
-    /// <paramref name="timeoutMs"/> for the in-flight count to reach zero. False means a call is still inside the
-    /// handle: the caller must leak it rather than free it.
+    /// Stops new entries and runs <paramref name="cancelPending"/> once so blocked calls return. <paramref name="release"/>
+    /// runs when no call is inside the handle: now if none is, otherwise on the last exit. It never runs while a call is in flight.
     /// </summary>
-    public bool CloseAndDrain(Action cancelPending, int timeoutMs)
+    public void Close(Action cancelPending, Action release)
     {
+        _release = release;
         _closing = true;
         Thread.MemoryBarrier();
         try
@@ -47,25 +57,27 @@ public sealed class IoGate
         }
         catch
         {
-            // Best effort: the wait below decides whether the handle is safe to free.
+            // Best effort: the release below is gated on the in-flight count, not on the cancel.
         }
-        var sw = Stopwatch.StartNew();
-        var spin = new SpinWait();
-        while (Volatile.Read(ref _inFlight) > 0)
+        if (Volatile.Read(ref _inFlight) == 0)
         {
-            if (sw.ElapsedMilliseconds >= timeoutMs)
-            {
-                return false;
-            }
-            if (spin.NextSpinWillYield)
-            {
-                Thread.Sleep(1);
-            }
-            else
-            {
-                spin.SpinOnce();
-            }
+            Release();
         }
-        return true;
+    }
+
+    private void Release()
+    {
+        if (Interlocked.Exchange(ref _released, 1) != 0)
+        {
+            return;
+        }
+        try
+        {
+            _release?.Invoke();
+        }
+        catch
+        {
+            // Closing a native handle must never throw into an I/O thread.
+        }
     }
 }

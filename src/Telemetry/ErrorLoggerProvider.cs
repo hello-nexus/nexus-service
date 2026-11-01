@@ -43,6 +43,20 @@ internal sealed class ErrorLoggerProvider : ILoggerProvider
             catch { return false; }
         }
 
+        // Kestrel's request-scoped entries carry the request id as a structured value.
+        private static string? TraceIdOf<TState>(TState state)
+        {
+            if (state is System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<string, object?>> values)
+            {
+                foreach (var (key, value) in values)
+                {
+                    if (key == "TraceIdentifier")
+                        return value as string;
+                }
+            }
+            return null;
+        }
+
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Error;
@@ -60,7 +74,7 @@ internal sealed class ErrorLoggerProvider : ILoggerProvider
                 return;
             }
             // A client that left mid-response: Kestrel logs the cut-short download and the dead-socket TLS write at Error.
-            if (ErrorNoise.IsKestrelClientDisconnect(_category, exception))
+            if (ErrorNoise.IsKestrelClientDisconnect(_category, exception, ClientAbortLedger.Take(TraceIdOf(state))))
             {
                 return;
             }

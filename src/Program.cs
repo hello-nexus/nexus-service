@@ -140,13 +140,18 @@ Nexus.Service.Lifecycle.BootTimer.Mark("after URL resolve");
 // macOS has no cross-process named mutex, so a running instance is found by its
 // port, before the log opens (a second boot rotates the live log away). The
 // launchd agent (KeepAlive) waits for the port instead of crash-looping on bind.
-// Linux has no guard at all and its systemd unit passes no --service, so every
-// Linux launch counts as the daemon: a second copy (a dev run beside the unit,
-// or a restart while the old process still serves) stands by instead of dying
-// on the bind, which Restart=on-failure would retry every few seconds.
+// Linux has no guard either. Only a launch by the systemd unit stands by (systemd
+// sets INVOCATION_ID for every unit, and a desktop or terminal launch, including the
+// nexus:// handler, never has it): its Restart=on-failure would otherwise retry the
+// failed bind every few seconds. The OTA path cannot be caught in it: install.sh stops
+// the unit and waits for the old process to exit before it starts the new one, so no
+// Nexus is serving when the new instance probes. Any other launch finds the running
+// Nexus and hands off, as the macOS app does, instead of dying on the bind.
+var linuxUnitLaunch = OperatingSystem.IsLinux()
+    && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("INVOCATION_ID"));
 if ((OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()) && !testHost && IsNexusServing(servicePort))
 {
-    if (!serviceMode && OperatingSystem.IsMacOS())
+    if (!serviceMode && !linuxUnitLaunch)
     {
         Console.WriteLine("[nexus-service] already running, opening dashboard window");
         if (!suppressStartupWindow)
@@ -1135,7 +1140,8 @@ static void WaitForSiblingInstancesToExit()
             }
             catch
             {
-                // Exited, or not inspectable: nothing to wait for.
+                // Exited, or not inspectable (a root process's image path is unreadable from another user's
+                // process, which only the macOS agent or a systemd unit of the same user reaches): nothing to wait for.
             }
         }
     }

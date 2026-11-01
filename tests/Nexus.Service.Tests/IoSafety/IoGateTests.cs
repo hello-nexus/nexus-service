@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Peripherals.IoSafety;
@@ -10,63 +9,85 @@ namespace Nexus.Service.Tests.IoSafety;
 public class IoGateTests
 {
     [Fact]
-    public async Task Close_waits_for_a_call_in_flight_before_reporting_the_handle_free()
+    public void Close_with_no_call_in_flight_releases_at_once_after_cancelling()
     {
         var gate = new IoGate();
-        Assert.True(gate.TryEnter());
-        var cancelled = 0;
-        var released = new ManualResetEventSlim();
-        var call = Task.Run(() =>
-        {
-            // The blocked call returns only once teardown cancelled it, as a pending overlapped read does.
-            Assert.True(released.Wait(TimeSpan.FromSeconds(10)));
-            Thread.Sleep(100);
-            gate.Exit();
-        });
+        var order = new System.Collections.Generic.List<string>();
 
-        var drained = gate.CloseAndDrain(() => { Interlocked.Increment(ref cancelled); released.Set(); }, timeoutMs: 5000);
+        gate.Close(() => order.Add("cancel"), () => order.Add("release"));
 
-        Assert.True(drained);
-        Assert.Equal(1, cancelled);
-        Assert.Equal(0, gate.InFlight);
-        await call;
+        Assert.Equal(new[] { "cancel", "release" }, order);
+        Assert.True(gate.Released);
     }
 
     [Fact]
-    public void Close_reports_not_drained_when_a_call_never_leaves()
+    public void Close_does_not_block_and_the_last_exit_releases()
     {
         var gate = new IoGate();
         Assert.True(gate.TryEnter());
-        var sw = Stopwatch.StartNew();
+        Assert.True(gate.TryEnter());
+        var released = 0;
 
-        Assert.False(gate.CloseAndDrain(() => { }, timeoutMs: 200));
+        gate.Close(() => { }, () => Interlocked.Increment(ref released));
 
-        Assert.InRange(sw.ElapsedMilliseconds, 150, 5000);
-        Assert.Equal(1, gate.InFlight);
+        Assert.Equal(0, released);
+        Assert.False(gate.Released);
+        gate.Exit();
+        Assert.Equal(0, released);
+        gate.Exit();
+        Assert.Equal(1, released);
+        Assert.True(gate.Released);
     }
 
     [Fact]
-    public void No_call_enters_once_teardown_started()
+    public void No_call_enters_once_teardown_started_and_a_refused_entry_leaves_the_count_clean()
     {
         var gate = new IoGate();
-        Assert.True(gate.CloseAndDrain(() => { }, 100));
+        gate.Close(() => { }, () => { });
 
         Assert.False(gate.TryEnter());
         Assert.Equal(0, gate.InFlight);
     }
 
     [Fact]
-    public async Task Callers_racing_teardown_never_run_inside_a_freed_handle()
+    public async Task A_call_in_flight_at_close_defers_the_release_until_it_returns()
+    {
+        var gate = new IoGate();
+        var inCall = new Barrier(2);
+        var leave = new ManualResetEventSlim();
+        var released = new ManualResetEventSlim();
+        var call = Task.Run(() =>
+        {
+            Assert.True(gate.TryEnter());
+            inCall.SignalAndWait();
+            leave.Wait();
+            gate.Exit();
+        });
+        inCall.SignalAndWait();
+
+        gate.Close(() => { }, released.Set);
+        Assert.False(released.IsSet);
+        leave.Set();
+        await call;
+
+        Assert.True(released.Wait(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task Callers_racing_teardown_never_run_inside_a_released_handle()
     {
         var gate = new IoGate();
         var freed = false;
         var violations = 0;
+        var releases = 0;
+        var start = new Barrier(5);
         var callers = new Task[4];
         for (var c = 0; c < callers.Length; c++)
         {
             callers[c] = Task.Run(() =>
             {
-                for (var i = 0; i < 200_000; i++)
+                start.SignalAndWait();
+                for (var i = 0; i < 100_000; i++)
                 {
                     if (!gate.TryEnter())
                     {
@@ -86,12 +107,17 @@ public class IoGateTests
                 }
             });
         }
-        await Task.Delay(5);
+        start.SignalAndWait();
 
-        Assert.True(gate.CloseAndDrain(() => { }, 5000));
-        Volatile.Write(ref freed, true);
+        gate.Close(() => { }, () =>
+        {
+            Volatile.Write(ref freed, true);
+            Interlocked.Increment(ref releases);
+        });
         await Task.WhenAll(callers);
 
         Assert.Equal(0, violations);
+        Assert.Equal(1, releases);
+        Assert.True(gate.Released);
     }
 }

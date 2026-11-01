@@ -48,13 +48,60 @@ public class PendingIoTests
     }
 
     [Fact]
-    public async Task A_faulted_operation_counts_as_finished_and_its_fault_is_read()
+    public async Task A_stuck_operation_that_later_faults_leaves_no_unobserved_exception()
     {
-        using var op = new CancellationTokenSource();
-        var io = Task.FromException(new InvalidOperationException("device gone"));
+        var marker = "late-fault-" + Guid.NewGuid().ToString("N");
+        var seen = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            foreach (var inner in e.Exception.Flatten().InnerExceptions)
+            {
+                seen.Enqueue(inner.Message);
+            }
+        }
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            using var op = new CancellationTokenSource();
+            var never = new TaskCompletionSource();
+            Assert.False(PendingIo.CancelAndSettle(never.Task, op, settleMs: 50));
 
-        Assert.True(PendingIo.CancelAndSettle(io, op, 500));
-        await Task.Delay(50);
-        Assert.True(io.Exception is not null);
+            // The device returns an error only after the settle window, as a driver completing a cancelled IRP does.
+            never.SetException(new InvalidOperationException(marker));
+            never = null!;
+            for (var i = 0; i < 3; i++)
+            {
+                await Task.Delay(50);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobserved;
+        }
+
+        Assert.DoesNotContain(marker, seen);
+    }
+
+    [Fact]
+    public async Task A_stranded_resource_is_released_when_its_stuck_operation_finishes()
+    {
+        var stuck = new TaskCompletionSource();
+        var resource = new Resource();
+        var before = PendingIo.StrandedCount;
+
+        Assert.False(PendingIo.Retire(resource, noOperationPending: false, stuck.Task));
+        Assert.False(resource.Disposed);
+        Assert.Equal(before + 1, PendingIo.StrandedCount);
+
+        stuck.SetResult();
+        for (var i = 0; i < 200 && !resource.Disposed; i++)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.True(resource.Disposed);
+        Assert.Equal(before, PendingIo.StrandedCount);
     }
 }
