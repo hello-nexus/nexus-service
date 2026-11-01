@@ -59,7 +59,7 @@ internal static class PendingIo
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[io] {count} handles are held open by operations that never finished");
         }
-        stuckOperation?.ContinueWith(_ => Release(resource), CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+        stuckOperation?.ContinueWith(t => { _ = t.Exception; Release(resource); }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
         return false;
     }
 
