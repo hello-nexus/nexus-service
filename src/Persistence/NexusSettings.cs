@@ -2893,14 +2893,6 @@ public sealed class UpdateSettings
     /// on every restart.
     /// </summary>
     public string LastRunVersion { get; set; } = "";
-
-    /// <summary>
-    /// Pre-v7 field. Read during schema migration only; the v7 migration maps
-    /// true to UpdateMode "notify" and then this field is dropped on the next
-    /// write (WhenWritingNull).
-    /// </summary>
-    [System.Text.Json.Serialization.JsonPropertyName("autoUpdateDisabled")]
-    public bool? LegacyAutoUpdateDisabled { get; set; }
 }
 
 /// <summary>ROG Astral Power Detector settings; also the wire shape of the Astral state's settings. Limits are fixed, a ROG Equalizer cable raises them. Both shutdowns are off until the user turns them on.</summary>
