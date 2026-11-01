@@ -318,7 +318,19 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         SelectionMode = OperatingSystem.IsLinux() ? "system" : "app",
     };
 
+    // StartAnimate and SetAnimateSimple both write FullFrameSampling and the stored flag;
+    // one at a time keeps the pair consistent with the running effect.
+    private readonly object _animateGate = new();
+
     public void StartAnimate(AnimateHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartAnimateCore(body);
+        }
+    }
+
+    private void StartAnimateCore(AnimateHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
@@ -454,6 +466,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     }
 
     public void SetAnimateSimple(bool simple)
+    {
+        lock (_animateGate)
+        {
+            SetAnimateSimpleCore(simple);
+        }
+    }
+
+    private void SetAnimateSimpleCore(bool simple)
     {
         if (!_gates.Lighting)
         {

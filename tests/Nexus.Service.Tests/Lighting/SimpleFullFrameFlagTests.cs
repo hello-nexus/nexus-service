@@ -195,7 +195,7 @@ public class SimpleFullFrameFlagTests : IDisposable
         profile.Lighting.Animate.Effect = "rainbow";
         AnimateSimpleMigration.ApplyProfile(profile, rootMode);
         Assert.Equal(expected, profile.Lighting.Animate.Simple);
-        Assert.Equal(NexusSettings.CurrentSchemaVersion, profile.SchemaVersion);
+        Assert.Equal(version < AnimateSimpleMigration.SchemaVersion ? AnimateSimpleMigration.SchemaVersion : version, profile.SchemaVersion);
     }
 
     [Fact]
@@ -216,5 +216,27 @@ public class SimpleFullFrameFlagTests : IDisposable
         provider.SetAnimateSimple(false);
         Assert.False(engine.FullFrameSampling);
         Assert.False(_store.Load().Lighting.Animate.Simple);
+    }
+
+    [Fact]
+    public async Task Concurrent_starts_and_flag_updates_leave_the_engine_matching_the_stored_flag()
+    {
+        var (provider, engine) = NewProvider();
+        provider.StartAnimate(Body("plasma", simple: false));
+        var rng = new Random(7);
+        var ops = Enumerable.Range(0, 300).Select(_ => rng.Next(4)).ToArray();
+        await Task.WhenAll(ops.Select(op => Task.Run(() =>
+        {
+            switch (op)
+            {
+                case 0: provider.StartAnimate(Body("plasma", simple: false, persist: true)); break;
+                case 1: provider.StartAnimate(Body("rainbow", simple: true)); break;
+                case 2: provider.SetAnimateSimple(true); break;
+                default: provider.SetAnimateSimple(false); break;
+            }
+        })));
+        var stored = _store.Load().Lighting.Animate;
+        var running = (ShaderEffect)engine.CurrentEffect!;
+        Assert.Equal(stored.Simple && ShaderLibrary.IsFullFrame(running.Name, running.ExtraParams), engine.FullFrameSampling);
     }
 }
