@@ -22,6 +22,19 @@ public static class LightingRoutes
 
     private const int MaxSunLabelLength = 80;
 
+    // The response body is serialized after the handler returns, outside the store lock, while edits mutate these
+    // dictionaries in place. A copy taken under the lock is what the serializer then walks.
+    internal static T SnapshotUnderLock<T>(
+        Nexus.Service.Persistence.IConfigStore store,
+        Func<Nexus.Service.Persistence.NexusSettings, T> pick,
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> info)
+        where T : class, new()
+    {
+        byte[]? json = null;
+        store.Read(s => json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(pick(s), info));
+        return System.Text.Json.JsonSerializer.Deserialize(json!, info) ?? new T();
+    }
+
     private static Models.Lighting.GlobalBrightnessBody ToGlobalBrightnessBody(Nexus.Service.Persistence.NexusSettings settings) =>
         new() { Value = settings.Lighting.GlobalBrightness, MasterScalesDevices = settings.MasterScalesDevices };
 
@@ -87,9 +100,9 @@ public static class LightingRoutes
             return Results.Json(new Models.Lighting.LightingPauseResponse { Paused = l.IsPaused }, AppJsonContext.Default.LightingPauseResponse);
         }).AllowPanel();
         app.MapGet("/lighting/animate/settings", (Nexus.Service.Persistence.IConfigStore store) =>
-            store.Load().Lighting.Animate).AllowPanel();
+            SnapshotUnderLock(store, s => s.Lighting.Animate, AppJsonContext.Default.AnimateSettings)).AllowPanel();
         app.MapGet("/lighting/static/settings", (Nexus.Service.Persistence.IConfigStore store) =>
-            store.Load().Lighting.Static).AllowPanel();
+            SnapshotUnderLock(store, s => s.Lighting.Static, AppJsonContext.Default.StaticSettings)).AllowPanel();
         // Canonical default template bundles. The web keeps no copy of these
         // tables; it merges this over the sparse user deltas from
         // /lighting/animate/settings. Static per binary, so clients revalidate
