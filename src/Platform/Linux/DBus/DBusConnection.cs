@@ -159,7 +159,19 @@ public sealed class DBusConnection : IDisposable
         {
             _pending[serial] = tcs;
         }
-        SendMessage(msg);
+        try
+        {
+            SendMessage(msg);
+        }
+        catch
+        {
+            // Never awaited: left registered, the next disconnect would fault this waiter with nobody to observe it.
+            lock (_pending)
+            {
+                _pending.Remove(serial);
+            }
+            throw;
+        }
         using var timeout = new CancellationTokenSource(timeoutMs);
         using var reg = timeout.Token.Register(() => tcs.TrySetException(new TimeoutException($"{iface}.{member} timed out")));
         return await tcs.Task;
@@ -205,7 +217,13 @@ public sealed class DBusConnection : IDisposable
             }
             tcs.TrySetException(new TimeoutException($"signal {member} on {path} timed out"));
         });
-        _ = tcs.Task.ContinueWith(_ => cts.Dispose(), TaskScheduler.Default);
+        // Also reads the waiter's fault: a caller that stopped awaiting (cancelled, or superseded under the same key)
+        // would otherwise leave the disconnect or timeout exception unobserved.
+        _ = tcs.Task.ContinueWith(t =>
+        {
+            _ = t.Exception;
+            cts.Dispose();
+        }, TaskScheduler.Default);
         return tcs.Task;
     }
 
@@ -233,6 +251,17 @@ public sealed class DBusConnection : IDisposable
         lock (_sendLock)
         {
             stream.Write(bytes, 0, bytes.Length);
+        }
+    }
+
+    internal int PendingCallCount
+    {
+        get
+        {
+            lock (_pending)
+            {
+                return _pending.Count;
+            }
         }
     }
 
