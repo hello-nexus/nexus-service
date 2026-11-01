@@ -65,6 +65,10 @@ public static class AnimateTemplateDefaults
         return Slot(effect, slot);
     }
 
+    /// <summary>Whether a replay of <paramref name="effect"/> keeps the stored simple-mode flag: only the effect that flag was stored for, so the start does not overwrite it.</summary>
+    public static bool RunsAsSimple(LightingSettings lighting, string effect) =>
+        lighting.Animate.Simple && string.Equals(lighting.Animate.Effect, effect, System.StringComparison.OrdinalIgnoreCase);
+
     /// <summary>A start that replays what the effect last ran: its saved state, else its selected preset slot, else plain defaults. For callers that name only the effect, whose shader defaults are not any preset.</summary>
     public static Nexus.Service.Models.Lighting.AnimateHeadlessStart SavedStart(LightingSettings lighting, string effect)
     {
@@ -84,6 +88,7 @@ public static class AnimateTemplateDefaults
             Contrast = look.Contrast,
             Sensors = look.Sensors,
             Filter = "none",
+            Simple = RunsAsSimple(lighting, effect),
         };
         if (look.Params is not null)
         {

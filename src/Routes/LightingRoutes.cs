@@ -90,7 +90,7 @@ public static class LightingRoutes
     public static void MapLightingEndpoints(this WebApplication app)
     {
         app.MapPost("/lighting/stop", (ILightingProvider l, MultiplexHub hub) => { l.StopAll(); ResetEffectSignature(); PanelTopics.BroadcastLighting(hub); return ApiResponse.Ok(); }).AllowPanel();
-        app.MapGet("/lighting/current", (ILightingProvider l, Nexus.Service.Persistence.IConfigStore store) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused, StudioLive = l.StudioLiveActive, GameSyncRemovedNotice = store.Load().GameSyncRemovedNotice }).AllowPanel();
+        app.MapGet("/lighting/current", (ILightingProvider l) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused, StudioLive = l.StudioLiveActive }).AllowPanel();
         // Freeze/resume the active effect's rendered frame. No-op with no active
         // effect (engine not running); returns the resulting paused state either way.
         app.MapPost("/lighting/pause", (Models.Lighting.LightingPauseBody body, ILightingProvider l, MultiplexHub hub) =>
@@ -527,6 +527,16 @@ public static class LightingRoutes
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
             StartAndCapture(telemetry, store, "animate", body.Effect, null, () => l.StartAnimate(body));
+            PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+        app.MapPost("/lighting/animate/simple", (AnimateSimpleBody body, ILightingProvider l, MultiplexHub hub, FeatureGates gates) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            l.SetAnimateSimple(body.Simple);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
