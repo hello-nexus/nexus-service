@@ -1080,7 +1080,6 @@ public class JsonConfigStoreMigrationTests : IDisposable
         {
             var s = store.Load();
             Assert.Equal("angle", s.Lighting.RenderBackend);
-            Assert.True(s.GameSyncRemovedNotice);
             Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
         }
         finally

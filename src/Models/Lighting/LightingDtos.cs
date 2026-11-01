@@ -38,9 +38,6 @@ public class CurrentSyncResponse : ApiResponse
 
     /// <summary>True while a Shader Studio live session drives the LEDs. Sync and Paused then report the state before the session, which is what a client should keep and save.</summary>
     public bool StudioLive { get; set; }
-
-    /// <summary>True on an install upgraded from a version that had Game Sync, which is gone. Drives a one-release notice.</summary>
-    public bool GameSyncRemovedNotice { get; set; }
 }
 
 /// <summary>POST body for /lighting/pause. Freezes the active effect's rendered
