@@ -244,12 +244,15 @@ public class SimpleFullFrameFlagTests : IDisposable
     public void Setting_the_flag_after_a_static_start_leaves_full_frame_off()
     {
         var (provider, engine) = NewProvider();
-        provider.StartAnimate(Body("rainbow", simple: true));
+        provider.StartAnimate(Body("sharplines", simple: true));
         Assert.True(engine.FullFrameSampling);
 
         provider.StartStatic(new StaticHeadlessStart { Effect = "gradientlinear", Intensity = 1f, Saturation = 1f, Contrast = 1f });
         provider.SetAnimateSimple(true);
-
         Assert.False(engine.FullFrameSampling);
+
+        // Static owns the output: the sweep's stored flag is not rewritten either.
+        provider.SetAnimateSimple(false);
+        Assert.True(_store.Load().Lighting.Animate.Simple);
     }
 }

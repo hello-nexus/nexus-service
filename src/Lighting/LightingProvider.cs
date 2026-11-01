@@ -1868,14 +1868,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
     public bool StartMedia(string mediaId)
     {
-        lock (_animateGate)
-        {
-            return StartMediaCore(mediaId);
-        }
-    }
-
-    private bool StartMediaCore(string mediaId)
-    {
         if (!_gates.Lighting)
         {
             return false;
@@ -1891,26 +1883,23 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             return false;
         }
 
-        EnsureRgbActive();
-        _engine.SetEffect(new MediaFramesEffect(framesPath, item.Width, item.Height, item.Fps, _mediaPP));
-        _store.Update(s =>
+        // Reads frames.bin, so it is built before the gate is taken.
+        var effect = new MediaFramesEffect(framesPath, item.Width, item.Height, item.Fps, _mediaPP);
+        lock (_animateGate)
         {
-            s.Lighting.Sync = "media";
-            s.Lighting.LastMediaId = mediaId;
-            LightingPresetLooks.CaptureIntoActive(s);
-        });
+            EnsureRgbActive();
+            _engine.SetEffect(effect);
+            _store.Update(s =>
+            {
+                s.Lighting.Sync = "media";
+                s.Lighting.LastMediaId = mediaId;
+                LightingPresetLooks.CaptureIntoActive(s);
+            });
+        }
         return true;
     }
 
     public bool StartMedia(string mediaId, bool keepMode)
-    {
-        lock (_animateGate)
-        {
-            return StartMediaCore(mediaId, keepMode);
-        }
-    }
-
-    private bool StartMediaCore(string mediaId, bool keepMode)
     {
         if (!keepMode)
         {
