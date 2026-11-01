@@ -349,7 +349,7 @@ public sealed partial class Slv3Hub
                 if (deferred.ClearedAtMs < 0)
                 {
                     deferred.ClearedAtMs = nowMs;
-                    SendSaveCfgLocked();
+                    SendSaveCfgLocked("unbind-prep");
                     continue;
                 }
                 if (nowMs - deferred.ClearedAtMs < FlexLcdUnbindSaveMs)
@@ -357,7 +357,7 @@ public sealed partial class Slv3Hub
                     if (!deferred.SavedAgain && nowMs - deferred.ClearedAtMs >= FlexLcdUnbindSaveMs / 2)
                     {
                         deferred.SavedAgain = true;
-                        SendSaveCfgLocked();
+                        SendSaveCfgLocked("unbind-prep");
                     }
                     continue;
                 }

@@ -1,0 +1,2177 @@
+{
+ "schemaVersion": 28,
+ "theme": {
+  "language": "en",
+  "themeMode": "system",
+  "accentColor": "#0078D4",
+  "resolvedThemeMode": "dark",
+  "backgroundMode": "glass",
+  "accentSource": "system",
+  "customAccentColor": ""
+ },
+ "monitoring": {
+  "showMacStatusBarIcon": true,
+  "showWindowsTrayIcon": true,
+  "detailedCollapsed": [],
+  "eventsEnabled": true,
+  "fpsOverlayEnabled": true,
+  "eventKindsHidden": [],
+  "smartPollSeconds": {},
+  "smartPollDefaultSeconds": 30,
+  "smartPollPerDrive": false
+ },
+ "panel": {
+  "autoLaunch": true,
+  "reserveMonitor": true,
+  "alwaysOnTop": true,
+  "themeSyncWithDesktop": true,
+  "themeMode": "system",
+  "accentSyncWithDesktop": true,
+  "backgroundMode": "solid",
+  "backgroundEffect": "plasma",
+  "backgroundTemplate": 0,
+  "backgroundOpacity": 1,
+  "panelOpacity": 1,
+  "widgetOpacity": 0.7,
+  "widgetLabels": false,
+  "dashboardLayout": {
+   "layoutSchemaVersion": 2,
+   "surface": "desktop",
+   "pages": [
+    {
+     "id": "07190278-3213-4781-bcde-59d05e2cbfdd",
+     "widgets": [
+      {
+       "id": "fddafa07-e87a-4b72-8f96-2b75710188b2",
+       "type": "monitoring",
+       "size": "4x2",
+       "col": 0,
+       "row": 0,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false,
+       "config": {
+        "slotCount": 2,
+        "slot0_device": "cpu",
+        "slot0_sensor": "/amdcpu/0/clock/1",
+        "slot0_design": "text",
+        "slot1_device": "quick",
+        "slot1_sensor": "summary/memory-usage",
+        "slot1_design": "hbar",
+        "slot0_min": null,
+        "slot0_max": null,
+        "slot0_valueColorReverse": null,
+        "slotHero": false,
+        "slotSplit": null,
+        "micro_device": "cpu",
+        "micro_sensor0": "/amdcpu/0/load/2",
+        "micro_sensor1": "/amdcpu/0/load/3",
+        "micro_sensor2": "/amdcpu/0/load/4",
+        "micro_sensor3": "/amdcpu/0/load/5",
+        "micro_sensor4": "/amdcpu/0/load/6",
+        "micro_sensor5": "/amdcpu/0/load/7",
+        "micro_sensor6": "/amdcpu/0/load/8",
+        "micro_sensor7": "/amdcpu/0/load/9"
+       }
+      },
+      {
+       "id": "fb12c4fb-3763-4acc-a17c-2b304b5090ab",
+       "type": "cooling",
+       "size": "4x2",
+       "col": 0,
+       "row": 4,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "f6213666-e35a-4352-8bcf-cae2e145df14",
+       "type": "lighting",
+       "size": "4x2",
+       "col": 0,
+       "row": 2,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "9bda252c-17ae-4aad-a9d6-6ba1799e14f0",
+       "type": "diagnostics",
+       "size": "2x2",
+       "col": 4,
+       "row": 0,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "0cba13c3-dc01-406b-a454-a5f274b4699a",
+       "type": "weather",
+       "size": "2x2",
+       "col": 6,
+       "row": 0,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false,
+       "config": {
+        "location": {
+         "lat": 10.0,
+         "lon": 20.0,
+         "label": "Sampletown, US",
+         "cc": "US"
+        }
+       }
+      },
+      {
+       "id": "4a135c2c-22fd-4373-9ada-adfa3cbd0fd1",
+       "type": "build",
+       "size": "4x4",
+       "col": 4,
+       "row": 2,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "overlay": {
+  "migratedToPanels": true
+ },
+ "auth": {
+  "token": "scrubbed",
+  "panelPhoneSessions": [],
+  "remoteControlEnabled": true,
+  "relayEnabled": false,
+  "pairBroadcast": {
+   "mode": "always",
+   "untilUnixSeconds": 0
+  },
+  "cloudAccounts": [
+   {
+    "accountId": "scrubbed",
+    "email": "scrubbed",
+    "username": "scrubbed",
+    "avatarLarge": "scrubbed",
+    "avatarSmall": "scrubbed",
+    "isPrivate": false,
+    "emailVerified": true,
+    "refreshToken": "scrubbed",
+    "createdAt": "2026-07-14T17:27:18.468Z",
+    "lastSyncAt": "",
+    "profileSync": {}
+   }
+  ],
+  "activeCloudAccountId": "scrubbed"
+ },
+ "lighting": {
+  "sync": "static",
+  "brightnessScale": {},
+  "brightnessEnabled": false,
+  "globalBrightness": 1,
+  "brightnessSchedule": {
+   "enabled": true,
+   "points": [
+    {
+     "hour": 5,
+     "brightness": 10
+    },
+    {
+     "hour": 7,
+     "brightness": 30
+    },
+    {
+     "hour": 10,
+     "brightness": 100
+    },
+    {
+     "hour": 17,
+     "brightness": 100
+    },
+    {
+     "hour": 20,
+     "brightness": 30
+    },
+    {
+     "hour": 22,
+     "brightness": 10
+    }
+   ],
+   "sunShift": true
+  },
+  "idleDim": {
+   "enabled": false,
+   "timeoutSeconds": 0,
+   "level": 10
+  },
+  "speedScale": {},
+  "speedEnabled": false,
+  "frameRate": 60,
+  "scaleRatio": 1,
+  "deviceLayouts": {
+   "openrgb-s-0x00001000-2": {
+    "x": 392.74448,
+    "y": 156.15527,
+    "w": 372.23975,
+    "h": 295.57608,
+    "rotation": 0
+   }
+  },
+  "sceneView": {
+   "enabled": false,
+   "camera": {
+    "position": [
+     -281,
+     1236.3,
+     1790.5
+    ],
+    "target": [
+     387.6,
+     246.3,
+     -51.1
+    ],
+    "fov": 40
+   }
+  },
+  "freeRotationLayouts": true,
+  "deviceNames": {},
+  "deviceGroups": [],
+  "deviceStacks": [],
+  "devicePins": {},
+  "ledColorLocks": {},
+  "keyReactions": {},
+  "layoutPresets": [],
+  "lastMediaId": "",
+  "animate": {
+   "effect": "retropetals",
+   "states": {
+    "breathing": {
+     "speed": 40,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_aHue": 0.78,
+      "u_aSpan": 0.34,
+      "u_aSat": 1,
+      "u_aVal": 1,
+      "u_bHue": 0,
+      "u_bSpan": 0,
+      "u_bSat": 0,
+      "u_bVal": 1,
+      "u_sharpness": 0.3
+     }
+    },
+    "jellyfish": {
+     "speed": 100,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1.45,
+     "contrast": 1.1,
+     "params": {
+      "u_count": 4,
+      "u_glow": 1.3,
+      "u_mood": 2
+     }
+    },
+    "rainbow": {
+     "speed": 85,
+     "intensity": 1,
+     "hue": 0.08,
+     "colorize": 0.75,
+     "saturation": 1.1,
+     "contrast": 1.05,
+     "params": {
+      "u_density": 2.5,
+      "u_rotation": 0,
+      "u_aspect": 1,
+      "u_tempo": 0.15
+     }
+    }
+   },
+   "templates": {
+    "rainbow": {
+     "selected": 2,
+     "slots": [
+      null,
+      null,
+      {
+       "speed": 85,
+       "intensity": 1,
+       "hue": 0.08,
+       "colorize": 0.75,
+       "saturation": 1.1,
+       "contrast": 1.05,
+       "params": {
+        "u_density": 2.5,
+        "u_rotation": 0,
+        "u_aspect": 1,
+        "u_tempo": 0.15
+       }
+      }
+     ]
+    },
+    "breathing": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 40,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_aHue": 0.78,
+        "u_aSpan": 0.34,
+        "u_aSat": 1,
+        "u_aVal": 1,
+        "u_bHue": 0,
+        "u_bSpan": 0,
+        "u_bSat": 0,
+        "u_bVal": 1,
+        "u_sharpness": 0.3
+       }
+      }
+     ]
+    },
+    "watercolor": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 40,
+       "intensity": 1,
+       "hue": 0.5,
+       "colorize": 0.3,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.5
+       }
+      },
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.3
+       }
+      },
+      null,
+      {
+       "speed": 30,
+       "intensity": 1,
+       "hue": 0.62,
+       "colorize": 0.75,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.6
+       }
+      }
+     ]
+    },
+    "jellyfish": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1.45,
+       "contrast": 1.1,
+       "params": {
+        "u_count": 4,
+        "u_glow": 1.3,
+        "u_mood": 2
+       }
+      }
+     ]
+    }
+   }
+  },
+  "static": {
+   "effect": "gradientlinear",
+   "color": "#0000ff",
+   "states": {}
+  },
+  "staticColor": {
+   "r": 0,
+   "g": 0,
+   "b": 255
+  },
+  "musicReactive": true,
+  "audioOutputDeviceId": "",
+  "audioOutputDeviceName": "",
+  "audioOutputDeviceDirection": "",
+  "screenEffect": {
+   "hue": 0,
+   "colorize": 0,
+   "saturation": 1,
+   "contrast": 1,
+   "flipX": false,
+   "flipY": false,
+   "reactive": false,
+   "reactivity": 0.5,
+   "intensity": 0.5
+  },
+  "screenMonitor": "",
+  "mediaEffect": {
+   "hue": 0,
+   "colorize": 0,
+   "saturation": 1,
+   "contrast": 1,
+   "flipX": false,
+   "flipY": false,
+   "reactive": false,
+   "reactivity": 0.5,
+   "intensity": 0.5
+  },
+  "renderGpu": "auto",
+  "renderBackend": "angle",
+  "sleepBlackout": true,
+  "lockBlackout": true
+ },
+ "keeb": {
+  "rotaryLeft": "VolumeAdjustment",
+  "rotaryRight": "BrightnessAdjustment",
+  "gameMode": {
+   "altF4": false,
+   "altTab": false,
+   "shiftTab": false,
+   "windowsKey": false
+  },
+  "firmwareLighting": {
+   "animationMode": "Static",
+   "speed": "Standard",
+   "direction": "Forward",
+   "brightness": 100,
+   "keyReactive": false,
+   "keyReactiveMask": false,
+   "keyReactiveMode": "SingleKey",
+   "keyReactiveColor": {
+    "r": 0,
+    "g": 0,
+    "b": 0,
+    "a": 1
+   }
+  },
+  "macros": {},
+  "keyOverrides": [],
+  "pristineLayers": {}
+ },
+ "cooling": {
+  "globalSpeedModifier": 1,
+  "curves": [
+   {
+    "id": "preset-silent",
+    "name": "Silent",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": "CPU"
+    },
+    "outputs": [],
+    "linear": {
+     "responseTime": 3,
+     "minTemp": 45,
+     "maxTemp": 85,
+     "minSpeed": 20,
+     "maxSpeed": 80
+    },
+    "graph": {
+     "responseTime": 3,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 45,
+       "speed": 20
+      },
+      {
+       "temp": 55,
+       "speed": 26
+      },
+      {
+       "temp": 65,
+       "speed": 50
+      },
+      {
+       "temp": 75,
+       "speed": 74
+      },
+      {
+       "temp": 85,
+       "speed": 80
+      }
+     ]
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    },
+    "preset": "silent"
+   },
+   {
+    "id": "preset-balanced",
+    "name": "Balanced",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [
+     {
+      "id": "/lpc/it8696e/0/control/0",
+      "type": "Fan"
+     },
+     {
+      "id": "/lpc/it8696e/0/control/1",
+      "type": "Fan"
+     },
+     {
+      "id": "/lpc/it8696e/0/control/2",
+      "type": "Fan"
+     },
+     {
+      "id": "/lpc/it8696e/0/control/4",
+      "type": "Fan"
+     }
+    ],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 35,
+       "speed": 30
+      },
+      {
+       "temp": 45,
+       "speed": 36
+      },
+      {
+       "temp": 55,
+       "speed": 60
+      },
+      {
+       "temp": 65,
+       "speed": 84
+      },
+      {
+       "temp": 75,
+       "speed": 90
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    },
+    "preset": "balanced"
+   },
+   {
+    "id": "preset-turbo",
+    "name": "Turbo",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 0.5,
+     "minTemp": 30,
+     "maxTemp": 65,
+     "minSpeed": 50,
+     "maxSpeed": 100
+    },
+    "graph": {
+     "responseTime": 0.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 50
+      },
+      {
+       "temp": 39,
+       "speed": 55
+      },
+      {
+       "temp": 48,
+       "speed": 75
+      },
+      {
+       "temp": 56,
+       "speed": 95
+      },
+      {
+       "temp": 65,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    },
+    "preset": "turbo"
+   },
+   {
+    "id": "preset-max",
+    "name": "Max",
+    "type": "Flat",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 100
+    },
+    "linear": {
+     "responseTime": 0.5,
+     "minTemp": 20,
+     "maxTemp": 100,
+     "minSpeed": 100,
+     "maxSpeed": 100
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    },
+    "preset": "max"
+   }
+  ],
+  "curvesSeeded": true,
+  "fanNames": {},
+  "fanGroups": [],
+  "fanCalibrations": {},
+  "manualSpeeds": {},
+  "fanOffsets": {},
+  "fanPinOverrides": {},
+  "uncontrolledFanChannels": [],
+  "hubControlModes": {},
+  "fanRoles": {},
+  "activePreset": "balanced",
+  "customFanCurveAssignments": {},
+  "customManualSpeeds": {},
+  "presets": [],
+  "thermalGuardEnabled": true,
+  "curveLintWarnings": true,
+  "healDroppedManualSpeeds": {},
+  "healedChannels": [],
+  "lastThermalTrip": {
+   "atUtcMs": 1793368771611,
+   "peakC": 95.62500762939453,
+   "reason": "limit",
+   "escalated": false,
+   "endedAtUtcMs": 1793368848436
+  },
+  "gpuManualBackup": {}
+ },
+ "y70": {
+  "orientation": "Landscape",
+  "brightness": 80,
+  "screenOff": false,
+  "forceOrientation": true,
+  "compatibilityRendering": false,
+  "keepCursorOff": false
+ },
+ "qSeries": {
+  "orientation": "Portrait",
+  "brightness": 100,
+  "screenOff": false,
+  "sleepWithHost": true,
+  "sleepWhenLocked": true
+ },
+ "tryx": {
+  "overlayItems": [],
+  "overlayColor": "#ffffff",
+  "overlayAlign": "left",
+  "overlayOpacity": 100,
+  "overlayFont": "roboto-regular",
+  "overlaySize": 100,
+  "overlayDocked": false,
+  "currentMedia": "",
+  "currentMediaIsCustom": false,
+  "brightness": 100,
+  "installedCloudIds": [],
+  "slideshowEnabled": false,
+  "slideshowIntervalSec": 10,
+  "slideshowShuffle": false,
+  "slideshowFinishVideos": true,
+  "sleepWhenLocked": true
+ },
+ "devices": {
+  "glacialLcdUploadPacePercent": 0,
+  "glacialLcdNexusPanel": false,
+  "disabledLightingDevices": [],
+  "samplingModes": {},
+  "ddcDisabledDisplays": [],
+  "uncontrolledLightingDevices": [],
+  "nexusControlDisabled": [],
+  "nexusControlEnabled": [
+   "lianli-screen88"
+  ],
+  "betaLockWhitelisted": [],
+  "lightingDevicePrefs": {
+   "openrgb-s-0x00001000-2": {
+    "brightness": 100,
+    "hue": 0,
+    "saturation": 1,
+    "adjustRed": 1,
+    "adjustGreen": 1,
+    "adjustBlue": 1,
+    "adjustTemperature": 0,
+    "adjustSaturation": 1
+   },
+   "openrgb-s-0x00001000-1": {
+    "brightness": 100,
+    "hue": 0,
+    "saturation": 1,
+    "adjustRed": 1,
+    "adjustGreen": 1,
+    "adjustBlue": 1,
+    "adjustTemperature": 0,
+    "adjustSaturation": 1
+   },
+   "openrgb-s-0x00001000-0": {
+    "brightness": 100,
+    "hue": 0,
+    "saturation": 1,
+    "adjustRed": 1,
+    "adjustGreen": 1,
+    "adjustBlue": 1,
+    "adjustTemperature": 0,
+    "adjustSaturation": 1
+   }
+  },
+  "krakenFirmwareLighting": {},
+  "krakenLcdSleepWhenLocked": true,
+  "ledMapOverrides": {},
+  "ledMapAspectRatios": {},
+  "zonePartitions": {},
+  "portChains": {},
+  "lightingMaxRates": {
+   "openrgb-s-0x00001000": 20
+  },
+  "strimerGpuZones": 6,
+  "deviceLedOverrides": {},
+  "deviceAspectRatios": {},
+  "motherboardLeds": [],
+  "zoneLedCounts": {
+   "openrgb-s-0x00001000-0": 60,
+   "openrgb-s-0x00001000-1": 60
+  },
+  "cnvs": {
+   "playAnimation": true,
+   "playWhenPCOff": false
+  },
+  "lianLi": {
+   "port0Fans": 4,
+   "port1Fans": 4,
+   "port2Fans": 4,
+   "port3Fans": 4
+  },
+  "lianLiWireless": {
+   "screens": {},
+   "chains": {},
+   "aioScreens": {},
+   "ownedDevices": {},
+   "lockBoundDevices": true,
+   "flexZonesMigrated": [],
+   "flexLcd": {}
+  },
+  "lianLiLighting": {
+   "mode": "rainbowWave",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": [],
+   "merge": false,
+   "argbSync": false,
+   "ports": [],
+   "mergeOrder": []
+  },
+  "lianLiExtraHubs": {},
+  "lianLiHubKeys": [],
+  "tlLighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "scope": "all",
+   "colors": [],
+   "argbSync": false
+  },
+  "tlLcdScreens": {},
+  "flexUnits": {},
+  "flexLcdScreens": {},
+  "flexSyncEnabled": false,
+  "strimerLighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": [],
+   "argbSync": false
+  },
+  "galahad2Lighting": {
+   "mode": "canvas",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "innerColor": "#FFFFFF",
+   "outerColor": "#FFFFFF",
+   "colors": []
+  },
+  "glacialLcd": {
+   "userEdited": false,
+   "modeChosen": false,
+   "modePending": false,
+   "brightnessEdited": false,
+   "displayEdited": false,
+   "sleepEdited": false,
+   "displayOn": true,
+   "mode": "animated",
+   "staticAsset": 3,
+   "animatedAsset": 1,
+   "slotCount": 3,
+   "slots": [
+    {
+     "category": "cpu",
+     "sensor": "",
+     "label": "CPU"
+    },
+    {
+     "category": "cpu",
+     "sensor": "",
+     "label": "CPU Package"
+    },
+    {
+     "category": "gpu",
+     "sensor": "",
+     "label": "GPU"
+    }
+   ],
+   "brightness": 50,
+   "stayOnWhileAsleep": false
+  },
+  "deepCoolMystique": {
+   "modeEdited": false,
+   "readoutEdited": false,
+   "mediaEdited": false,
+   "sourceEdited": false,
+   "recordingEdited": false,
+   "deviceEdited": false,
+   "mode": "monitor",
+   "readout": "temperature",
+   "readoutStyle": "normal",
+   "auxArea": "coreData",
+   "switchSeconds": 3,
+   "animation": "split",
+   "mediaSource": "images",
+   "edgePicking": false,
+   "media": [],
+   "freed": [],
+   "gifSlot": "",
+   "gifOrder": [],
+   "gifPlace": 0,
+   "gifOrderUnsure": true,
+   "gifSlotUnsure": true,
+   "pictureSlot": "",
+   "shownPicture": "",
+   "shownGif": "",
+   "recordFrequency": true,
+   "recordTemperature": true,
+   "brightness": 70,
+   "gyroscope": false,
+   "rgbSync": false,
+   "cpuTemperature": {
+    "category": "",
+    "sensor": ""
+   },
+   "cpuFrequency": {
+    "category": "",
+    "sensor": ""
+   },
+   "cpuUsage": {
+    "category": "",
+    "sensor": ""
+   },
+   "ramUsage": {
+    "category": "",
+    "sensor": ""
+   },
+   "cpuFan": {
+    "category": "",
+    "sensor": ""
+   },
+   "pump": {
+    "category": "",
+    "sensor": ""
+   }
+  },
+  "asiahorseUmbra": {
+   "source": "nexus",
+   "lightOn": true,
+   "group": "sync",
+   "sync": {
+    "effect": "rainbow",
+    "values": {}
+   },
+   "merge": {
+    "effect": "rainbow",
+    "values": {}
+   },
+   "async": {},
+   "fanSyncMb": false
+  },
+  "hydroShift2Lighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": []
+  },
+  "hydroShift2Curve": {
+   "tilt": 0,
+   "slide": 0,
+   "recalibrating": false,
+   "screenMode": "nexus",
+   "screenSaverMinutes": 0,
+   "screenSaverBrightness": 50
+  },
+  "corsair": {
+   "sleepWhenLocked": true,
+   "lcdBrightness": 100,
+   "lcdRotation": 0
+  },
+  "nollie": {
+   "standalone": {}
+  },
+  "lightingComposition": {},
+  "appliedMappings": {},
+  "ledGroups": {},
+  "mappingAutoApplyDeclined": [],
+  "mappingKnownDevices": [
+   "openrgb-s-00000000000000000000000000000002",
+   "openrgb-s-0x00001000-0",
+   "openrgb-s-0x00001000-1",
+   "openrgb-s-0x00001000-2",
+   "openrgb-2",
+   "keeb:tkl-00000001:keys",
+   "keeb:tkl-00000001:underglow",
+   "openrgb-l-USB__0416_8050"
+  ],
+  "openRgbDetectorExclusions": {},
+  "openRgbPinnedIds": {
+   "NVIDIA GeForce RTX 5080 FE#0": "openrgb-2"
+  },
+  "openRgbGamepadDetectorsAllowed": [],
+  "openRgbManualDevices": {
+   "qmk": [],
+   "e131": []
+  }
+ },
+ "smartLights": {
+  "devices": [],
+  "brandEnabled": {}
+ },
+ "ui": {
+  "showConflictAlerts": true,
+  "autoKillConflictsAtStartup": true,
+  "conflictAutoKillExclusions": [
+   "nzxt-cam",
+   "msi-companion",
+   "msi-game-bar-tool",
+   "msi-super-charger",
+   "icue",
+   "tryx-kanali",
+   "zmatrices",
+   "elgato-stream-deck",
+   "evga-precision-x-server",
+   "deepcool"
+  ],
+  "notifyConflictLaunches": true,
+  "endConflictsOnLaunch": false,
+  "oemAppSeeded": false,
+  "pinnedSidebarApps": [
+   "monitoring",
+   "lighting",
+   "cooling",
+   "diagnostics",
+   "store",
+   "build"
+  ],
+  "sidebarCollapsed": true,
+  "lightingDashboardMode": "advanced",
+  "coolingDashboardMode": "advanced",
+  "dashboardAutoArrange": false,
+  "showUncontrolledDevices": true,
+  "lightingView3d": false,
+  "coolingView3d": false,
+  "hiddenSidebarDevices": [],
+  "recentStaticColors": [
+   "#ff4000"
+  ],
+  "recentAnimations": [
+   "retropetals",
+   "domainwarp",
+   "ball",
+   "gradientwave",
+   "clockfill",
+   "matrix",
+   "radar",
+   "sweepcomet",
+   "sweepliquid",
+   "dotmatrix",
+   "pulse",
+   "ripple",
+   "prismwave",
+   "ribbonflow",
+   "breathing",
+   "sweepcycle"
+  ]
+ },
+ "units": {
+  "monitoringTempUnit": "c",
+  "timeFormat": "system",
+  "numberFormat": "system",
+  "dateFormat": "system"
+ },
+ "screenTime": {
+  "trackingEnabled": true
+ },
+ "fps": {
+  "trackingEnabled": true
+ },
+ "focus": {
+  "modes": [
+   {
+    "id": "game",
+    "name": "Game Mode",
+    "icon": "gamepad",
+    "builtIn": true,
+    "trigger": "game",
+    "holdNotifications": true,
+    "holdBackgroundTraffic": true,
+    "turnPanelDisplaysOff": false,
+    "staticPanelBackgrounds": false,
+    "exitGraceSeconds": 3
+   },
+   {
+    "id": "streaming",
+    "name": "Streaming",
+    "icon": "broadcast",
+    "builtIn": true,
+    "trigger": "obs",
+    "holdNotifications": true,
+    "holdBackgroundTraffic": true,
+    "turnPanelDisplaysOff": false,
+    "staticPanelBackgrounds": false,
+    "exitGraceSeconds": 3
+   }
+  ]
+ },
+ "obs": {
+  "host": "127.0.0.1",
+  "port": 4455,
+  "password": ""
+ },
+ "audioMixer": {
+  "stickyLevels": true,
+  "levels": {},
+  "presets": [],
+  "outputOrder": [],
+  "inputOrder": []
+ },
+ "steam": {
+  "apiKey": "",
+  "steamId": ""
+ },
+ "discord": {
+  "clientId": "",
+  "clientSecret": "",
+  "richPresenceEnabled": false,
+  "richPresencePreset": ""
+ },
+ "homeAssistant": {
+  "url": "",
+  "token": "",
+  "enabled": true
+ },
+ "weather": {
+  "unit": "auto",
+  "locations": [
+   {
+    "lat": 10.0,
+    "lon": 20.0,
+    "label": "Sampletown, US",
+    "cc": "US"
+   }
+  ]
+ },
+ "telemetry": {
+  "collectAnonymousData": true,
+  "installId": "00000000000000000000000000000002",
+  "fleetInstallDelivered": true,
+  "fleetSpecsHash": "0000000000000000000000000000000000000000000000000000000000000002",
+  "profileSignature": "0000000000000000000000000000000000000000000000000000000000000002",
+  "profileSentAt": "2026-10-30T04:25:05.9566665+00:00",
+  "fleetRamBytes": 34359738368,
+  "fleetGpu": "AMD Radeon(TM) Graphics + NVIDIA GeForce RTX 5080",
+  "fleetGpuCards": [
+   {
+    "chip": "NVIDIA GeForce RTX 5080",
+    "maker": "NVIDIA",
+    "subsystemVendorId": "10de",
+    "subsystemDeviceId": "2095"
+   }
+  ],
+  "fleetRamModules": [
+   {
+    "manufacturer": "Crucial",
+    "manufacturerId": "0000",
+    "partNumber": "CP16G60C48U5.M8B2",
+    "capacityBytes": 17179869184,
+    "configuredSpeedMts": 5600,
+    "ratedSpeedMts": 5600,
+    "generation": "DDR5"
+   },
+   {
+    "manufacturer": "Crucial",
+    "manufacturerId": "0000",
+    "partNumber": "CP16G60C48U5.M8B2",
+    "capacityBytes": 17179869184,
+    "configuredSpeedMts": 5600,
+    "ratedSpeedMts": 5600,
+    "generation": "DDR5"
+   }
+  ],
+  "fleetRamModuleTotal": 2,
+  "fleetDrives": [
+   {
+    "model": "WDS200T1X0E-00AFY0",
+    "capacityBytes": 2000398934016,
+    "bus": "nvme",
+    "media": "ssd"
+   }
+  ],
+  "fleetRamReadAt": "2026-10-30T02:11:52.8811609+00:00",
+  "fleetDrivesReadAt": "2026-10-30T02:11:52.8811609+00:00",
+  "fleetY70Seen": false,
+  "fleetPendingConsentEvent": "",
+  "fleetPendingConsentSince": ""
+ },
+ "diagnostics": {
+  "thresholds": {
+   "cpuC": 90,
+   "gpuC": 85,
+   "storageC": 70,
+   "ramC": 60
+  },
+  "warningLingerMinutes": 0,
+  "notifications": {
+   "enabled": false,
+   "highTemp": true,
+   "storageHealth": true,
+   "cooling": true,
+   "memoryTest": true,
+   "systemDevices": true,
+   "gpuThrottle": true,
+   "cooldownMinutes": 60
+  },
+  "components": {
+   "cpu": true,
+   "gpu": true,
+   "storage": true,
+   "ram": true,
+   "cooling": true,
+   "system": true
+  },
+  "ignoredComponents": []
+ },
+ "features": {
+  "lighting": true,
+  "cooling": true,
+  "monitoring": true,
+  "diagnostics": true
+ },
+ "sentry": {
+  "armed": false
+ },
+ "panelDevices": {
+  "0eeZN60NLpX-": {
+   "id": "0eeZN60NLpX-",
+   "displayName": "FAK A001",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "monitor",
+    "pages": [
+     {
+      "id": "1789ddd0-3207-4beb-b143-40d5048a8657",
+      "widgets": [
+       {
+        "id": "90091419-2279-48b4-92c8-d1c2c8de9679",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slotCount": 2,
+         "slot0_device": "quick",
+         "slot0_sensor": "summary/cpu-usage",
+         "slot0_design": "sparkline",
+         "slot1_device": "quick",
+         "slot1_sensor": "summary/memory-usage",
+         "slot1_design": "halfgauge"
+        }
+       },
+       {
+        "id": "ccc17e7c-32cf-4fbc-8d31-e85e7dc66816",
+        "type": "calculator",
+        "size": "4x4",
+        "col": 4,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "a6dd32fb-5861-456c-8897-5ddc0f2049ac",
+        "type": "diagnostics",
+        "size": "2x2",
+        "col": 8,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "da0d9b67-7117-4b43-be6e-013675961cfd",
+        "type": "lighting",
+        "size": "4x2",
+        "col": 0,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       }
+      ]
+     }
+    ],
+    "activePageId": "1789ddd0-3207-4beb-b143-40d5048a8657"
+   },
+   "backdrop": "desktop",
+   "backgroundFrostLevel": 0,
+   "widgetOpacity": 0.53,
+   "widgetPadding": 100,
+   "textColorMode": "adaptive",
+   "themeSyncWithDesktop": true,
+   "accentSyncWithDesktop": true,
+   "firstSeenAt": 1793054952031,
+   "lastSeenAt": 1793326744737,
+   "capabilities": {
+    "surface": "monitor",
+    "touch": false,
+    "orientation": "Landscape",
+    "cssWidth": 1920,
+    "cssHeight": 1200,
+    "dpr": 1,
+    "dpi": 94.1
+   },
+   "displayId": "FAKA001-5-00000000-3-UID1002",
+   "displayFingerprint": {
+    "manufacturer": "FAK",
+    "product": "A001",
+    "serial": 100000001,
+    "serialText": "FAKEMON0001A"
+   },
+   "siblingDisplayIds": [
+    "NXS0001-1-00000000-0-UID256",
+    "FAKA001-5-00000000-3-UID1001"
+   ],
+   "reserveMonitor": false,
+   "keepCursorOff": false,
+   "alwaysOnTop": false,
+   "clickThrough": true,
+   "hosted": true,
+   "widgetSize": "small",
+   "kioskViewport": {
+    "cssWidth": 1920,
+    "cssHeight": 1152,
+    "dpr": 1
+   },
+   "enabled": false
+  },
+  "rCJnZZi1Mu2C": {
+   "id": "rCJnZZi1Mu2C",
+   "displayName": "FAK A001",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "monitor",
+    "pages": [
+     {
+      "id": "618e86ef-2c66-9d4e-c0bb-2ff0271ae9a4",
+      "widgets": [
+       {
+        "id": "3b30e088-a34b-5918-40fa-0c837fe0b408",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slotCount": 2,
+         "slot0_device": "quick",
+         "slot0_sensor": "summary/cpu-usage",
+         "slot0_design": "sparkline",
+         "slot1_device": "quick",
+         "slot1_sensor": "summary/memory-usage",
+         "slot1_design": "halfgauge"
+        }
+       },
+       {
+        "id": "08fc9b51-93cb-310c-af28-105203f57cd6",
+        "type": "build",
+        "size": "2x2",
+        "col": 4,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "687b3c4d-35f3-4993-80c0-5f7934aa418d",
+        "type": "lighting",
+        "size": "4x2",
+        "col": 6,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "6c85c9fc-977f-4632-b14d-e86065c50347",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 10,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slotCount": 2,
+         "slot0_device": "quick",
+         "slot0_sensor": "summary/cpu-usage",
+         "slot0_design": "sparkline",
+         "slot1_device": "quick",
+         "slot1_sensor": "summary/memory-usage",
+         "slot1_design": "halfgauge"
+        }
+       },
+       {
+        "id": "19a6dc9d-ef98-40e4-8b69-5282906e08fe",
+        "type": "lighting",
+        "size": "4x2",
+        "col": 14,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       }
+      ]
+     }
+    ],
+    "activePageId": "618e86ef-2c66-9d4e-c0bb-2ff0271ae9a4"
+   },
+   "firstSeenAt": 1793068790921,
+   "lastSeenAt": 1793203319624,
+   "capabilities": {
+    "surface": "monitor",
+    "touch": false,
+    "orientation": "Landscape",
+    "cssWidth": 1920,
+    "cssHeight": 1200,
+    "dpr": 1,
+    "dpi": 94.1
+   },
+   "displayId": "FAKA001-5-00000000-3-UID1001",
+   "displayFingerprint": {
+    "manufacturer": "FAK",
+    "product": "A001",
+    "serial": 100000002,
+    "serialText": "FAKEMON0002A"
+   },
+   "siblingDisplayIds": [
+    "NXS0001-1-00000000-0-UID256",
+    "FAKA001-5-00000000-3-UID1002"
+   ],
+   "widgetSize": "small",
+   "kioskViewport": {
+    "cssWidth": 1920,
+    "cssHeight": 1200,
+    "dpr": 1
+   },
+   "enabled": false
+  },
+  "NbFPHQFj74-5": {
+   "id": "NbFPHQFj74-5",
+   "displayName": "Lian Li Universal Screen 8.8",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "monitor",
+    "pages": [
+     {
+      "id": "6f190ca3-e7bc-4a7b-bef7-207921d589c1",
+      "widgets": [
+       {
+        "id": "4110c1dd-59c3-430b-b4b9-91a5596fbf53",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slot1_design": "caterpillar",
+         "slotCount": 5,
+         "slotHero": true,
+         "slotSplit": null,
+         "slot1_device": "cpu",
+         "slot1_sensor": "/amdcpu/0/clock/1",
+         "slot1_min": null,
+         "slot1_max": null,
+         "slot1_valueColorReverse": null
+        }
+       },
+       {
+        "id": "fc3fefc8-93fd-44a5-98d5-d9e327cb9554",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 4,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slot0_design": "waterLevel",
+         "slotCount": 5,
+         "slotHero": true,
+         "slotSplit": null,
+         "micro_device": "cpu",
+         "micro_sensor0": "/amdcpu/0/load/2",
+         "micro_sensor1": "/amdcpu/0/load/3",
+         "micro_sensor2": "/amdcpu/0/load/4",
+         "slot1_design": "heatmap"
+        }
+       }
+      ]
+     }
+    ],
+    "activePageId": "6f190ca3-e7bc-4a7b-bef7-207921d589c1"
+   },
+   "firstSeenAt": 1793202422364,
+   "lastSeenAt": 1793209035251,
+   "capabilities": {
+    "surface": "monitor",
+    "touch": false,
+    "cssWidth": 1920,
+    "cssHeight": 480,
+    "dpr": 1,
+    "dpi": 225,
+    "family": "lianli-screen88",
+    "supportsBrightness": true,
+    "supportsSecondaryMonitor": true,
+    "supportsPortrait": true,
+    "supportsRenderScale": true
+   },
+   "secondaryMonitor": false,
+   "widgetSize": "large"
+  },
+  "uVTLBBbObYO0": {
+   "id": "uVTLBBbObYO0",
+   "displayName": "NXS 0001",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "monitor",
+    "pages": [
+     {
+      "id": "b0199730-49a9-46d4-99c5-e0ef0b41aa21",
+      "widgets": [
+       {
+        "id": "fe75d574-8cf7-466d-b092-2d0e51e6dabd",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slotCount": 2,
+         "slot0_device": "quick",
+         "slot0_sensor": "summary/cpu-usage",
+         "slot0_design": "sparkline",
+         "slot1_device": "quick",
+         "slot1_sensor": "summary/memory-usage",
+         "slot1_design": "halfgauge"
+        }
+       },
+       {
+        "id": "14f81dc1-c2d6-4415-af72-4eddc4298d27",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 4,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slot1_design": "caterpillar",
+         "slot1_device": "cpu",
+         "slot1_sensor": "/amdcpu/0/clock/2",
+         "slot1_min": null,
+         "slot1_max": null,
+         "slot1_valueColorReverse": null
+        }
+       }
+      ]
+     }
+    ],
+    "activePageId": "b0199730-49a9-46d4-99c5-e0ef0b41aa21"
+   },
+   "firstSeenAt": 1793202478792,
+   "lastSeenAt": 1793206364460,
+   "capabilities": {
+    "surface": "monitor",
+    "touch": false,
+    "orientation": "Landscape",
+    "cssWidth": 1920,
+    "cssHeight": 480,
+    "dpr": 1,
+    "dpi": 225
+   },
+   "displayId": "NXS0001-1-00000000-0-UID256",
+   "displayFingerprint": {
+    "manufacturer": "NXS",
+    "product": "0001",
+    "serial": 1
+   },
+   "siblingDisplayIds": [
+    "FAKA001-5-00000000-3-UID1001",
+    "FAKA001-5-00000000-3-UID1002"
+   ],
+   "widgetSize": "large",
+   "kioskViewport": {
+    "cssWidth": 1920,
+    "cssHeight": 480,
+    "dpr": 1
+   },
+   "enabled": true
+  },
+  "QklSxwXackbj": {
+   "id": "QklSxwXackbj",
+   "displayName": "Lian Li Universal Screen 8.8",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "monitor",
+    "pages": [
+     {
+      "id": "9cb6d6e8-334c-4080-bb08-a9dc4fa16054",
+      "widgets": [
+       {
+        "id": "8d3b6587-efdc-4035-97d5-5403be39d8f8",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slotCount": 2,
+         "slot0_device": "quick",
+         "slot0_sensor": "summary/cpu-usage",
+         "slot0_design": "sparkline",
+         "slot1_device": "quick",
+         "slot1_sensor": "summary/memory-usage",
+         "slot1_design": "halfgauge"
+        }
+       },
+       {
+        "id": "f7620ce7-dc70-4272-89a2-7d24cc3da257",
+        "type": "lighting",
+        "size": "4x2",
+        "col": 0,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "5b336308-2d42-4a00-9880-bdfbc23ac55c",
+        "type": "cooling",
+        "size": "4x2",
+        "col": 4,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "a17718a5-1000-4582-99e5-40d435b7e0c7",
+        "type": "diagnostics",
+        "size": "2x2",
+        "col": 4,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "74c9a507-7c59-4b6c-988b-063e00be1ae9",
+        "type": "weather",
+        "size": "2x2",
+        "col": 6,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       }
+      ]
+     }
+    ]
+   },
+   "firstSeenAt": 1793253037528,
+   "lastSeenAt": 1793287913019,
+   "widgetSize": "small"
+  },
+  "3fNKMElAygLC": {
+   "id": "3fNKMElAygLC",
+   "displayName": "HYTE Y70 Touch 2.5K",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "y70",
+    "pages": [
+     {
+      "id": "acfb5a5d-6e95-4e17-9b0f-e9cfa1b51c49",
+      "widgets": [
+       {
+        "id": "2c078c0d-f179-4e7c-a901-79d081485c30",
+        "type": "clock",
+        "size": "4x2",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "c0ec3fd7-c8f6-49cf-8e0b-0ef7005db932",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 0,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slotCount": 2,
+         "slot0_device": "quick",
+         "slot0_sensor": "summary/cpu-usage",
+         "slot0_design": "sparkline",
+         "slot1_device": "quick",
+         "slot1_sensor": "summary/memory-usage",
+         "slot1_design": "halfgauge"
+        }
+       },
+       {
+        "id": "7ae515b0-6239-40f2-866b-d9ee7185b220",
+        "type": "lighting",
+        "size": "4x2",
+        "col": 0,
+        "row": 4,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "2bdf4e07-7906-4256-a54d-a01149cab849",
+        "type": "cooling",
+        "size": "4x2",
+        "col": 0,
+        "row": 6,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       }
+      ]
+     }
+    ]
+   },
+   "accentColor": "#0078D4",
+   "backdrop": "wallpaper",
+   "themeSyncWithDesktop": true,
+   "accentSyncWithDesktop": true,
+   "firstSeenAt": 1793253127517,
+   "lastSeenAt": 1793305865707,
+   "widgetSize": "large"
+  },
+  "54mTSSX-xH8M": {
+   "id": "54mTSSX-xH8M",
+   "displayName": "HYTE Q60",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "q60",
+    "pages": [
+     {
+      "id": "eca64c44-bc54-466a-86e8-9c50a9a7692d",
+      "widgets": [
+       {
+        "id": "75f5bd16-f9ca-4b69-926a-8cba453a8784",
+        "type": "clock",
+        "size": "2x4",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       }
+      ]
+     }
+    ]
+   },
+   "themeSyncWithDesktop": true,
+   "firstSeenAt": 1793295927827,
+   "lastSeenAt": 1793305849371,
+   "widgetSize": "large"
+  }
+ },
+ "astral": {
+  "alerts": true,
+  "equalizer": false,
+  "overcurrentShutdown": false,
+  "overcurrentSeconds": 60,
+  "countdownSeconds": 60,
+  "criticalShutdown": false
+ },
+ "astralLevelSense": {},
+ "streamedPanelFpsCap": 30,
+ "glacialLcdPictureHashes": {},
+ "autoPromotedPanelModels": [],
+ "autoInstalledApps": [],
+ "userRemovedApps": [],
+ "hostDisplayName": "",
+ "reportSystem": true,
+ "transferInboxPath": "",
+ "primaryProfileId": "c8e26c90",
+ "sharedCategories": [
+  "device",
+  "panels"
+ ],
+ "deviceCategorySeeded": true,
+ "panelsSharedByDefaultApplied": true,
+ "panelsCategorySeeded": true,
+ "hasPanelsData": false,
+ "keebBrightnessProfilesMigrated": true,
+ "update": {
+  "updateMode": "notify",
+  "updateChannel": "beta",
+  "lastDismissedUpdateVersion": "",
+  "lastRunVersion": "v99.0.0"
+ },
+ "startupDelaySeconds": 0,
+ "disableGpuMonitoring": false,
+ "readRamTemperatures": true,
+ "amdGpuLighting": false,
+ "onboardingCompleted": true,
+ "nexus2MigrationOffered": false,
+ "lightingOnboardingCompleted": true,
+ "maximizedCanvasDefaults": true,
+ "gameSyncRemovedNotice": false,
+ "featuresOnboardingCompleted": true,
+ "featuresReplayPending": false,
+ "panelSwipeOnboardingCompleted": false,
+ "deckDefaultPresetsSeeded": true,
+ "immersiveSwipeOnboardingCompleted": false,
+ "dashboardBannerDismissed": "",
+ "dismissedOnboardingHints": [
+  "cooling-calibrate",
+  "lighting-pin"
+ ],
+ "nexus2MigrationCompleted": false,
+ "fanControlImportOffered": true,
+ "fanControlImportCompleted": false,
+ "hotkeys": {
+  "bindings": [
+   {
+    "id": "builtin:toggle-window",
+    "combo": "Ctrl+Alt+n",
+    "enabled": true,
+    "target": {
+     "kind": "action",
+     "action": {
+      "type": "nexus",
+      "action": {
+       "op": "toggleWindow"
+      }
+     }
+    }
+   },
+   {
+    "id": "builtin:lighting-toggle",
+    "combo": "Ctrl+Alt+l",
+    "enabled": true,
+    "target": {
+     "kind": "action",
+     "action": {
+      "type": "nexus",
+      "action": {
+       "op": "lightingPowerToggle"
+      }
+     }
+    }
+   },
+   {
+    "id": "builtin:lighting-brightness-up",
+    "combo": "Ctrl+Alt+=",
+    "enabled": true,
+    "target": {
+     "kind": "action",
+     "action": {
+      "type": "nexus",
+      "action": {
+       "op": "lightingBrightnessStep",
+       "value": 0.1
+      }
+     }
+    }
+   },
+   {
+    "id": "builtin:lighting-brightness-down",
+    "combo": "Ctrl+Alt+-",
+    "enabled": true,
+    "target": {
+     "kind": "action",
+     "action": {
+      "type": "nexus",
+      "action": {
+       "op": "lightingBrightnessStep",
+       "value": -0.1
+      }
+     }
+    }
+   }
+  ],
+  "defaultsSeeded": true
+ },
+ "streamDeck": {
+  "decks": {},
+  "presets": [
+   {
+    "id": "default-essentials",
+    "name": "Essentials",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "volumeDown"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "volumeUp"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "screenshot"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "taskManager"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-essentials"
+   },
+   {
+    "id": "default-media",
+    "name": "Media",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaPrev"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaPlayPause"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaNext"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "muteToggle"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-media"
+   },
+   {
+    "id": "default-system",
+    "name": "System",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "power",
+          "action": "lock"
+         }
+        },
+        {
+         "action": {
+          "type": "power",
+          "action": "sleep"
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "screenRecord"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "openSettings"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-system"
+   }
+  ],
+  "instances": {},
+  "recentApps": [],
+  "recentAppsExcluded": []
+ },
+ "aiIntegration": {
+  "enabled": false,
+  "token": "",
+  "port": 9420,
+  "allowRemote": false,
+  "allowTelemetry": true,
+  "allowCooling": true,
+  "allowLighting": true,
+  "allowProfiles": true,
+  "allowHistory": true,
+  "assistantActiveModel": "",
+  "assistantRuntimePort": 0,
+  "useSystemOllama": false
+ }
+}

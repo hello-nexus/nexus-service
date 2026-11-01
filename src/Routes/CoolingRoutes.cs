@@ -470,7 +470,7 @@ public static class CoolingRoutes
             // With no preset active, fresh would discard the only copy of the live configuration.
             var fresh = body.Fresh && cooling.Presets.Exists(p => p.Id == cooling.ActivePresetId);
             var id = Guid.NewGuid().ToString("n");
-            var created = fresh ? CoolingPresets.CreateFresh(id, name) : CoolingPresets.Capture(id, name, store, f);
+            var created = fresh ? CoolingPresets.CreateFresh(id, name) : CoolingPresets.Capture(id, name, store);
             store.Update(s =>
             {
                 s.Cooling.Presets.Add(created);
@@ -491,20 +491,19 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
-        app.MapPut("/cooling/presets/{id}", (string id, UpdateCoolingPresetBody body, IFanControlProvider f, IConfigStore store) =>
+        app.MapPut("/cooling/presets/{id}", (string id, UpdateCoolingPresetBody body, IConfigStore store) =>
         {
             if (store.Load().Cooling.Presets.Find(p => p.Id == id) is null)
             {
                 return Results.NotFound(new ApiResponse { Error = true, Msg = "Preset not found" });
             }
-            var fanIds = body.SaveCurrent ? CoolingPresets.FanIds(f) : null;
             store.Update(s =>
             {
                 var preset = s.Cooling.Presets.Find(p => p.Id == id);
                 if (preset is null) return;
                 var name = (body.Name ?? "").Trim();
                 if (name.Length > 0) preset.Name = name;
-                if (fanIds is not null) CoolingPresets.CaptureInto(preset, s.Cooling, fanIds);
+                if (body.SaveCurrent) CoolingPresets.CaptureInto(preset, s.Cooling);
             });
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();

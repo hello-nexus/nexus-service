@@ -58,6 +58,8 @@ public sealed class ThermalGuardResponse : ApiResponse
     /// <summary>The user's limit in C, null = automatic.</summary>
     public double? LimitOverrideC { get; set; }
     public long? SinceUtcMs { get; set; }
+    /// <summary>True while the guard is driving fans and a fan with a tach stays at 0 RPM or its writes are not landing; the banner must not claim every fan runs at full speed.</summary>
+    public bool FansNotResponding { get; set; }
     /// <summary>True after repeated cooling-engine stalls: Nexus writes no fan until the latch clears.</summary>
     public bool WatchdogLatched { get; set; }
     /// <summary>True when the latch clears itself after steady ticks; false when only a restart or a guard toggle clears it.</summary>

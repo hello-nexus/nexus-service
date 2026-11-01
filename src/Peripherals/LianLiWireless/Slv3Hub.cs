@@ -348,6 +348,24 @@ public sealed partial class Slv3Hub : IDisposable
     private long _saveCfgDueMs;
     private long _lastConfigChangeMs;
 
+    // A rebind that converged arms one save, sent once every owned chain has sat at its target for
+    // BindSaveStablePolls consecutive polls with no binding change anywhere. Effect uploads do not touch it.
+    // A chain that flaps keeps resetting the run, and a sent save is followed by at least BindSaveMinIntervalMs of quiet.
+    internal const int BindSaveStablePolls = 10;
+    internal const long BindSaveMinIntervalMs = 120_000;
+    internal const int BindSaveMaxPerWindow = 3;
+    internal const long BindSaveWindowMs = 3_600_000;
+    internal const long BindSaveRetryMs = 30_000;
+    private long _bindSaveRetryAtMs;
+    private int _uploadsInFlight;
+    private bool _bindSaveArmed;
+    private int _bindSaveStablePolls;
+    private long _bindSaveEvalPoll;
+    private long _lastBindingChangePoll;
+    private long? _lastSaveSentMs;
+    private readonly Queue<long> _bindSaveTimesMs = new();
+    private bool _bindSaveCapLogged;
+
     // Sends a sequenced control frame (RF_Select / RF_RebootLcd) gets before it
     // is dropped without an echo (L-Connect selected / reboot_lcd counters).
     internal const int SequencedCommandBudget = 10;
@@ -585,6 +603,8 @@ public sealed partial class Slv3Hub : IDisposable
         _bothAbsentSinceMs = 0;
         _lastBindMs = null;
         _saveCfgDueMs = 0;
+        _bindSaveArmed = false;
+        _bindSaveStablePolls = 0;
         _videoModeActive = false;
         _videoModePreppedCount = 0;
     }
@@ -1425,6 +1445,10 @@ public sealed partial class Slv3Hub : IDisposable
     {
         if (!NeedsBind(intent, record))
         {
+            if (intent.Sends > 0 && !intent.Manual)
+            {
+                _bindSaveArmed = true;
+            }
             intent.Sends = 0;
             intent.Manual = false;
             if (!_lockBound)
@@ -1656,7 +1680,7 @@ public sealed partial class Slv3Hub : IDisposable
 
         if (_lastBindMs is { } bound && _nowMs() - bound < PostBindSaveCfgMs)
         {
-            SendSaveCfgLocked();
+            SendSaveCfgLocked("manual");
         }
     }
 
@@ -2016,9 +2040,10 @@ public sealed partial class Slv3Hub : IDisposable
         {
             _firstPeriodicSaveDone = true;
             _saveCfgDueMs = 0;
-            SendSaveCfgLocked();
+            SendSaveCfgLocked("periodic");
             return;
         }
+        RunBindSaveLocked(now);
         if (_saveCfgDueMs == 0 || now < _saveCfgDueMs)
         {
             return;
@@ -2029,17 +2054,110 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         _saveCfgDueMs = 0;
-        SendSaveCfgLocked();
+        SendSaveCfgLocked("config-change");
     }
 
-    private bool SendSaveCfgLocked()
+    private void RunBindSaveLocked(long now)
+    {
+        if (!_bindSaveArmed)
+        {
+            return;
+        }
+        if (_bindSaveEvalPoll != _devicePolls)
+        {
+            _bindSaveEvalPoll = _devicePolls;
+            _bindSaveStablePolls = AllOwnedStableLocked() ? _bindSaveStablePolls + 1 : 0;
+        }
+        // An upload between its header and its last data pass must not be split by a save.
+        if (_bindSaveStablePolls < BindSaveStablePolls
+            || _uploadsInFlight > 0
+            || now < _bindSaveRetryAtMs
+            || (_lastSaveSentMs is { } last && now - last < BindSaveMinIntervalMs))
+        {
+            return;
+        }
+        while (_bindSaveTimesMs.Count > 0 && now - _bindSaveTimesMs.Peek() >= BindSaveWindowMs)
+        {
+            _bindSaveTimesMs.Dequeue();
+        }
+        if (_bindSaveTimesMs.Count >= BindSaveMaxPerWindow)
+        {
+            if (!_bindSaveCapLogged)
+            {
+                _bindSaveCapLogged = true;
+                ServiceLog.Info("[lianli-wireless] bind-save deferred, hourly cap reached");
+            }
+            return;
+        }
+        if (!SendSaveCfgLocked("bind-save"))
+        {
+            _bindSaveRetryAtMs = now + BindSaveRetryMs;
+            return;
+        }
+        _bindSaveCapLogged = false;
+        _bindSaveArmed = false;
+        _bindSaveStablePolls = 0;
+        _saveCfgDueMs = 0;
+        _bindSaveTimesMs.Enqueue(now);
+    }
+
+    // Every owned chain in the list was heard this poll bound to our master at its target slot and channel,
+    // none has a bind or unbind in flight, and no chain's binding changed (or was misread) this poll.
+    private bool AllOwnedStableLocked()
+    {
+        if (_devicePolls - _lastBindingChangePoll < 1)
+        {
+            return false;
+        }
+        foreach (var intent in _intents.Values)
+        {
+            if (intent.Unbinding || intent.Sends > 0)
+            {
+                return false;
+            }
+        }
+        foreach (var (key, slot) in _owned)
+        {
+            if (_userUnbound.Contains(key) || !_knownChains.TryGetValue(key, out var chain))
+            {
+                continue;
+            }
+            var record = chain.Record;
+            if (chain.Poll != _devicePolls
+                || (_intents.TryGetValue(key, out var intent) && NeedsBind(intent, record)))
+            {
+                return false;
+            }
+            if (!IsBoundToUsLocked(record) || record.RxType != slot || record.Channel != _channel)
+            {
+                if (IsWiredOwned(key))
+                {
+                    continue;
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private bool SendSaveCfgLocked(string reason)
     {
         if (_tx is null)
         {
             return false;
         }
         _lastSaveMs = _nowMs();
-        return WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
+        var sent = WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
+        if (sent)
+        {
+            _lastSaveSentMs = _lastSaveMs;
+            ServiceLog.Info($"[lianli-wireless] SaveCfg sent ({reason})");
+        }
+        else
+        {
+            ServiceLog.Warn($"[lianli-wireless] SaveCfg failed ({reason})");
+        }
+        return sent;
     }
 
     // Pages needed to hold recordCount records at RecordsPerPage each, >=1 and
@@ -2115,6 +2233,7 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     if (IsZeroedCopyOfKnownChainLocked(record.Mac))
                     {
+                        _lastBindingChangePoll = _devicePolls;
                         continue;
                     }
                     if (ConfirmNewChains)
@@ -2134,9 +2253,16 @@ public sealed partial class Slv3Hub : IDisposable
                         : $"{record.FanCount} fan(s), {record.Family}";
                     ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what}, {DescribeBinding(record, _masterMac)})");
                 }
-                else if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                else
                 {
-                    ServiceLog.Info(line);
+                    if (BindingChanged(known.Record, record))
+                    {
+                        _lastBindingChangePoll = _devicePolls;
+                    }
+                    if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                    {
+                        ServiceLog.Info(line);
+                    }
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, _blindTotalMs);
             }
@@ -2983,63 +3109,71 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return false;
         }
-        lock (_lock)
+        BeginUpload();
+        try
         {
-            if (_tx is null)
+            lock (_lock)
             {
-                return false;
-            }
-            for (var i = 0; i < WindowHeaderRepeats; i++)
-            {
-                if (!SendRfPayloadLocked(channel, rxType, packets[0]))
+                if (_tx is null)
                 {
                     return false;
                 }
+                for (var i = 0; i < WindowHeaderRepeats; i++)
+                {
+                    if (!SendRfPayloadLocked(channel, rxType, packets[0]))
+                    {
+                        return false;
+                    }
+                }
+                for (var pass = 0; pass < WindowDataPasses; pass++)
+                {
+                    for (var p = 1; p < packets.Length; p++)
+                    {
+                        if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                NoteConfigChangedLocked();
             }
-            for (var pass = 0; pass < WindowDataPasses; pass++)
+            // The late passes' cost is booked at decision time so a concurrent
+            // upload's check already sees it; the passes themselves are not re-counted.
+            var lateCost = WindowLatePasses * (packets.Length - 1);
+            var latePasses = 0;
+            lock (_lock)
             {
+                if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
+                {
+                    latePasses = WindowLatePasses;
+                    var now = _nowMs();
+                    for (var i = 0; i < lateCost; i++)
+                    {
+                        _airSendsMs.Enqueue(now);
+                    }
+                }
+            }
+            // Late passes release the lock between packets so the device-list poll keeps running.
+            for (var pass = 0; pass < latePasses; pass++)
+            {
+                await Task.Delay(WindowLateGapMs).ConfigureAwait(false);
                 for (var p = 1; p < packets.Length; p++)
                 {
-                    if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                    lock (_lock)
                     {
-                        return false;
+                        if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
+                        {
+                            return false;
+                        }
                     }
                 }
             }
-            NoteConfigChangedLocked();
+            return true;
         }
-        // The late passes' cost is booked at decision time so a concurrent
-        // upload's check already sees it; the passes themselves are not re-counted.
-        var lateCost = WindowLatePasses * (packets.Length - 1);
-        var latePasses = 0;
-        lock (_lock)
+        finally
         {
-            if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
-            {
-                latePasses = WindowLatePasses;
-                var now = _nowMs();
-                for (var i = 0; i < lateCost; i++)
-                {
-                    _airSendsMs.Enqueue(now);
-                }
-            }
+            EndUpload();
         }
-        // Late passes release the lock between packets so the device-list poll keeps running.
-        for (var pass = 0; pass < latePasses; pass++)
-        {
-            await Task.Delay(WindowLateGapMs).ConfigureAwait(false);
-            for (var p = 1; p < packets.Length; p++)
-            {
-                lock (_lock)
-                {
-                    if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
     }
 
     // A chain can misparse effect-index bytes as a bind target and re-bind off
@@ -3121,6 +3255,36 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
 
+        BeginUpload();
+        try
+        {
+            return SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex);
+        }
+        finally
+        {
+            EndUpload();
+        }
+    }
+
+    private void BeginUpload()
+    {
+        lock (_lock)
+        {
+            _uploadsInFlight++;
+        }
+    }
+
+    private void EndUpload()
+    {
+        lock (_lock)
+        {
+            _uploadsInFlight--;
+        }
+    }
+
+    private bool SendRgbDataParts(byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex)
+    {
+        effectIndexHex = "";
         // The header gaps run with _lock RELEASED so the device-list poll keeps
         // running even with several chains streaming. The repeats are
         // identical, so a keepalive/poll frame slipping into a gap is harmless.
@@ -3387,7 +3551,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 return SuspendSend.Down;
             }
-            return SendSaveCfgLocked() ? SuspendSend.Sent : SuspendSend.Failed;
+            return SendSaveCfgLocked("suspend") ? SuspendSend.Sent : SuspendSend.Failed;
         }
         finally
         {

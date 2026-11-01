@@ -405,7 +405,8 @@ public static class Np50Protocol
         ArgumentNullException.ThrowIfNull(target);
         ExpectHeader(response, OpControl, "GetChannelInfo");
 
-        target.Devices.Clear();
+        // Built aside and swapped in whole: route and lighting readers enumerate Devices while the heartbeat parses.
+        var devices = new List<Np50FanDevice>();
         const int slotSize = 12;
         var maxSlots = response.Length / slotSize;
         for (var i = 0; i < maxSlots; i++)
@@ -452,8 +453,9 @@ public static class Np50Protocol
                 // byte is whatever the fan happens to wire there; only honor it for FP12.
                 Touching = typeByte == 0x03 && response[off + 11] == 0x00,
             };
-            target.Devices.Add(fan);
+            devices.Add(fan);
         }
+        target.Devices = devices;
     }
 
     /// <summary>Parse the 7-byte firmware-version response. Returns "Major.Minor.Build.Hw" or empty on a short read.</summary>

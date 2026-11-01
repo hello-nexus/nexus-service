@@ -22,8 +22,8 @@ public static class CoolingPresets
     public const int Cap = 10;
 
     /// <summary>Snapshot the live cooling configuration into a preset. Mirrors what the Custom mode's exit snapshot captures, plus offsets and the modifier.</summary>
-    public static CoolingPreset Capture(string id, string name, IConfigStore store, IFanControlProvider fans)
-        => Capture(id, name, store.Load().Cooling, FanIds(fans));
+    public static CoolingPreset Capture(string id, string name, IConfigStore store)
+        => Capture(id, name, store.Load().Cooling);
 
     /// <summary>A preset at clean-install cooling defaults: the install's built-in mode, no curve assignments, manual duties or offsets, and the install's speed modifier.</summary>
     public static CoolingPreset CreateFresh(string id, string name) => new()
@@ -34,15 +34,12 @@ public static class CoolingPresets
         GlobalSpeedModifier = InstallDefaults.Cooling.GlobalSpeedModifier,
     };
 
-    /// <summary>Read outside IConfigStore.Update: a fan read inside a mutator deadlocks against LhmComputer.Update.</summary>
-    public static HashSet<string> FanIds(IFanControlProvider fans) => fans.GetFanChannels().Select(c => c.Id).ToHashSet();
-
     /// <summary>Snapshot from settings the caller holds, so it can run inside IConfigStore.Update.</summary>
-    public static CoolingPreset Capture(string id, string name, CoolingSettings cooling, HashSet<string> fanIds) => new()
+    public static CoolingPreset Capture(string id, string name, CoolingSettings cooling) => new()
     {
         Id = id,
         Name = name,
-        FanCurveAssignments = FanProfiles.CaptureFanCurveMapping(cooling, fanIds),
+        FanCurveAssignments = FanProfiles.CaptureFanCurveMapping(cooling),
         ManualSpeeds = new Dictionary<string, int>(cooling.ManualSpeeds),
         FanOffsets = new Dictionary<string, int>(cooling.FanOffsets),
         GlobalSpeedModifier = cooling.GlobalSpeedModifier,
@@ -50,9 +47,9 @@ public static class CoolingPresets
     };
 
     /// <summary>Overwrite an existing preset with the given configuration, keeping its id and name.</summary>
-    public static void CaptureInto(CoolingPreset target, CoolingSettings cooling, HashSet<string> fanIds)
+    public static void CaptureInto(CoolingPreset target, CoolingSettings cooling)
     {
-        var captured = Capture(target.Id, target.Name, cooling, fanIds);
+        var captured = Capture(target.Id, target.Name, cooling);
         target.FanCurveAssignments = captured.FanCurveAssignments;
         target.ManualSpeeds = captured.ManualSpeeds;
         target.FanOffsets = captured.FanOffsets;

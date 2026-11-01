@@ -660,11 +660,14 @@ public sealed class OpenRgbController : IRgbController, INexusCoolingTransport, 
             else
             {
                 // A write parks only once the peer stops draining and the send buffer is full.
+                var pending = write.AsTask();
                 try
-                { await write.AsTask().WaitAsync(IoTimeout).ConfigureAwait(false); }
+                { await pending.WaitAsync(IoTimeout).ConfigureAwait(false); }
                 catch (TimeoutException)
                 {
                     timedOut = true;
+                    // Closing the socket faults the abandoned write; read that fault so it never surfaces as unobserved.
+                    _ = pending.ContinueWith(static t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
                     CloseSession(session);
                     throw new IOException($"OpenRGB write timed out after {IoTimeout.TotalSeconds:F0}s");
                 }

@@ -140,9 +140,17 @@ Nexus.Service.Lifecycle.BootTimer.Mark("after URL resolve");
 // macOS has no cross-process named mutex, so a running instance is found by its
 // port, before the log opens (a second boot rotates the live log away). The
 // launchd agent (KeepAlive) waits for the port instead of crash-looping on bind.
-if (OperatingSystem.IsMacOS() && !testHost && IsNexusServing(servicePort))
+// Linux has no guard either. Only a launch inside the nexus.service cgroup stands by (a
+// terminal or a nexus:// handler launched from a systemd user session inherits
+// INVOCATION_ID, but never runs in that cgroup): the unit's Restart=on-failure would
+// otherwise retry the failed bind every few seconds. The OTA path cannot be caught in
+// it: install.sh stops the unit and waits for the old process to exit before it starts
+// the new one, so no Nexus is serving when the new instance probes. Any other launch
+// finds the running Nexus and hands off, as the macOS app does, instead of dying on the bind.
+var linuxUnitLaunch = Nexus.Service.Lifecycle.SystemdUnit.CurrentProcessIsNexusUnit();
+if ((OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()) && !testHost && IsNexusServing(servicePort))
 {
-    if (!serviceMode)
+    if (!serviceMode && !linuxUnitLaunch)
     {
         Console.WriteLine("[nexus-service] already running, opening dashboard window");
         if (!suppressStartupWindow)
@@ -281,7 +289,10 @@ static void InstallErrorHooks(Nexus.Service.Telemetry.ErrorReporter reporter)
 {
     // Observation only: the exception is deliberately not marked observed, so runtime behavior is unchanged.
     TaskScheduler.UnobservedTaskException += (_, e) =>
-        reporter.Report(e.Exception, Nexus.Service.Telemetry.ErrorKinds.UnobservedTask, null);
+    {
+        if (!Nexus.Service.Telemetry.ErrorNoise.IsUnobservedLibraryTeardown(e.Exception))
+            reporter.Report(e.Exception, Nexus.Service.Telemetry.ErrorKinds.UnobservedTask, null);
+    };
 }
 
 static bool IsLoopbackPortFree(int port)
@@ -1128,7 +1139,8 @@ static void WaitForSiblingInstancesToExit()
             }
             catch
             {
-                // Exited, or not inspectable: nothing to wait for.
+                // Exited, or not inspectable (a root process's image path is unreadable from another user's
+                // process, which only the macOS agent or a systemd unit of the same user reaches): nothing to wait for.
             }
         }
     }

@@ -152,6 +152,9 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     public void DriveFanSpeed(string channelId, int dutyPercent) =>
         ApplyWrite(channelId, Math.Clamp(dutyPercent, 0, 100));
 
+    // A cleared port target makes the hub send the follow-motherboard PWM byte again; the AIO pump is left out.
+    public bool ReleaseRestoresHardwareControl(string channelId) => TryParsePort(channelId, out _, out _);
+
     public void ReleaseFan(string channelId)
     {
         if (TryParseSuffixed(channelId, PumpSuffix, out var aioMac))

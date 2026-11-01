@@ -257,6 +257,49 @@ public class OpenRgbControllerTimeoutTests
     }
 
     [Fact]
+    public async Task A_timed_out_write_leaves_no_unobserved_fault_behind()
+    {
+        var unobserved = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            foreach (var inner in e.Exception.Flatten().InnerExceptions)
+            {
+                unobserved.Enqueue(inner);
+            }
+        }
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            await using (var daemon = new FakeDaemon(answerHandshake: true, answerRequests: false, drainWrites: false))
+            await using (var controller = new OpenRgbController(port: daemon.Port))
+            {
+                Assert.True(await controller.TryConnectAsync());
+                var frame = new RgbColor[4096];
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                while (controller.IsConnected && sw.Elapsed < TimeSpan.FromSeconds(20))
+                {
+                    await controller.PushFrameAsync(0, frame);
+                }
+                Assert.False(controller.IsConnected);
+            }
+
+            // The abandoned write faults when the socket closes; give the finalizer every chance to report it.
+            for (var i = 0; i < 3; i++)
+            {
+                await Task.Delay(100);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobserved;
+        }
+
+        Assert.DoesNotContain(unobserved, e => e.Message.Contains("transport connection", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Quiesce_waits_for_the_ACK_of_every_frame_already_written()
     {
         await using var daemon = new FakeDaemon(answerHandshake: true, answerRequests: true) { HoldFrameAcks = true };
