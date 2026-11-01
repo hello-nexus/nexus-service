@@ -277,10 +277,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
     /// <summary>
     /// In-place schema migrations, applied once at load and persisted
-    /// immediately. v6: LED map overrides / aspect ratios move from per-card
-    /// keys into the device-scoped segment-local dicts (zones model).
-    /// v7: legacy autoUpdateDisabled bool mapped to UpdateMode string.
-    /// v8: any settings.json that already existed predates the first-run
+    /// immediately. v8: any settings.json that already existed predates the first-run
     /// welcome screen, so it is marked already-onboarded; only an install
     /// with no settings.json at all (Load's !File.Exists branch, which never
     /// calls Migrate) sees OnboardingCompleted default to false.
@@ -317,18 +314,6 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
-        if (doc.SchemaVersion < 6)
-        {
-            Nexus.Service.Lighting.Zones.LegacyLedOverrideMigration.Apply(doc);
-        }
-        if (doc.SchemaVersion < 7)
-        {
-            if (doc.Update.LegacyAutoUpdateDisabled == true)
-            {
-                doc.Update.UpdateMode = "notify";
-            }
-            doc.Update.LegacyAutoUpdateDisabled = null;
-        }
         if (doc.SchemaVersion < 8)
         {
             doc.OnboardingCompleted = true;

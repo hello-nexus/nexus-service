@@ -96,33 +96,6 @@ public class JsonConfigStoreMigrationTests : IDisposable
         Assert.False(overlay.MigratedToPanels);
     }
 
-    [Theory]
-    [InlineData(true, "notify")]
-    [InlineData(false, "always")]
-    public void Load_V6_MigratesLegacyAutoUpdateDisabled(bool legacyDisabled, string expectedMode)
-    {
-        var json = $$"""
-        {
-          "schemaVersion": 6,
-          "update": { "autoUpdateDisabled": {{(legacyDisabled ? "true" : "false")}}, "updateChannel": "production" }
-        }
-        """;
-        File.WriteAllText(_settingsPath, json);
-
-        var store = new JsonConfigStore(_settingsPath);
-        var s = store.Load();
-        try
-        {
-            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
-            Assert.Equal(expectedMode, s.Update.UpdateMode);
-            Assert.Null(s.Update.LegacyAutoUpdateDisabled);
-        }
-        finally
-        {
-            store.Dispose();
-        }
-    }
-
     [Fact]
     public void Load_V6_AbsentAutoUpdateDisabled_DefaultsToAlways()
     {

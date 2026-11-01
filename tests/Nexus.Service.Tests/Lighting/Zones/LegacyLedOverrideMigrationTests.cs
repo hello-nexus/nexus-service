@@ -178,65 +178,6 @@ public class LegacyLedOverrideMigrationTests : IDisposable
     // ── load-time migration through JsonConfigStore ──────────────────────
 
     [Fact]
-    public void Load_migrates_v5_settings_and_persists_v6()
-    {
-        var v5Json = """
-        {
-          "schemaVersion": 5,
-          "devices": {
-            "ledMapOverrides": {
-              "keeb:SER1:keys": [ { "ledIndex": 2, "u": 0.25, "v": 0.75, "disabled": false } ],
-              "openrgb-0-1": [ { "ledIndex": 5, "u": 0.5, "v": 0.5, "disabled": true } ],
-              "openrgb-s-XYZ": [ { "ledIndex": 1, "u": 0.9, "v": 0.1 } ]
-            },
-            "ledMapAspectRatios": { "openrgb-s-XYZ": 2.5 }
-          }
-        }
-        """;
-        File.WriteAllText(_settingsPath, v5Json);
-
-        var store = new JsonConfigStore(_settingsPath);
-        try
-        {
-            var s = store.Load();
-            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
-            Assert.Empty(s.Devices.LedMapOverrides);
-            Assert.Empty(s.Devices.LedMapAspectRatios);
-
-            var keeb = s.Devices.DeviceLedOverrides["keeb:SER1"];
-            Assert.Single(keeb);
-            Assert.Equal((0, 2), (keeb[0].Segment, keeb[0].LedIndex));
-
-            var mobo = s.Devices.DeviceLedOverrides["openrgb-0"];
-            Assert.Single(mobo);
-            Assert.Equal((1, 5), (mobo[0].Segment, mobo[0].LedIndex));
-            Assert.True(mobo[0].Disabled);
-
-            var single = s.Devices.DeviceLedOverrides["openrgb-s-XYZ"];
-            Assert.Equal((0, 1), (single[0].Segment, single[0].LedIndex));
-            Assert.Equal(2.5f, s.Devices.DeviceAspectRatios["openrgb-s-XYZ"]);
-        }
-        finally
-        {
-            store.Dispose();
-        }
-
-        // The migrated document was persisted: a fresh store sees v6 data
-        // without re-running the migration.
-        var second = new JsonConfigStore(_settingsPath);
-        try
-        {
-            var s2 = second.Load();
-            Assert.Equal(NexusSettings.CurrentSchemaVersion, s2.SchemaVersion);
-            Assert.Single(s2.Devices.DeviceLedOverrides["keeb:SER1"]);
-        }
-        finally
-        {
-            second.Dispose();
-        }
-    }
-
-    [Fact]
     public void Load_noops_on_current_schema()
     {
         File.WriteAllText(_settingsPath, $$"""
