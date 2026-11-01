@@ -38,6 +38,9 @@ public interface ILightingProvider
 
     void StartAnimate(AnimateHeadlessStart body);
 
+    /// <summary>Changes only whether the running animate effect shows its whole pattern on every device, and stores it. The look, including unsaved edits, is untouched.</summary>
+    void SetAnimateSimple(bool simple) { }
+
     /// <summary>Runs a catalog effect at speed 0 as a held still frame.</summary>
     void StartStatic(StaticHeadlessStart body);
     void StartMusic(MusicHeadlessStart body);

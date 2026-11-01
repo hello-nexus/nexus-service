@@ -453,6 +453,28 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         });
     }
 
+    public void SetAnimateSimple(bool simple)
+    {
+        if (!_gates.Lighting)
+        {
+            return;
+        }
+        var lighting = _store.Load().Lighting;
+        if (!string.Equals(lighting.Sync, lighting.Animate.Effect, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (_engine.CurrentEffect is ShaderEffect cur)
+        {
+            _engine.FullFrameSampling = simple && ShaderLibrary.IsFullFrame(cur.Name, cur.ExtraParams);
+        }
+        _store.Update(s =>
+        {
+            s.Lighting.Animate.Simple = simple;
+            LightingPresetLooks.CaptureIntoActive(s);
+        });
+    }
+
     public void StartStatic(StaticHeadlessStart body)
     {
         if (!_gates.Lighting)

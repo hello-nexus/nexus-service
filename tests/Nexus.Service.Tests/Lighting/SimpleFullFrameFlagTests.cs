@@ -167,8 +167,54 @@ public class SimpleFullFrameFlagTests : IDisposable
     public void A_replay_keeps_the_stored_flag_only_for_the_stored_effect(string effect, bool stored, bool expected)
     {
         var lighting = new LightingSettings();
-        lighting.Animate.Effect = effect == "sharplines" ? "rainbow" : effect.ToLowerInvariant();
+        lighting.Animate.Effect = "rainbow";
         lighting.Animate.Simple = stored;
-        Assert.Equal(expected, AnimateTemplateDefaults.SavedStart(lighting, effect.ToLowerInvariant()).Simple);
+        Assert.Equal(expected, AnimateTemplateDefaults.SavedStart(lighting, effect).Simple);
+    }
+
+    [Fact]
+    public void A_current_document_is_left_alone_by_the_migration()
+    {
+        var path = Path.Combine(_tempDir, "current.json");
+        File.WriteAllText(path, $$"""
+            { "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+              "ui": { "lightingDashboardMode": "advanced" },
+              "lighting": { "sync": "rainbow", "animate": { "effect": "rainbow", "simple": true } } }
+            """);
+        using var store = new JsonConfigStore(path);
+        Assert.True(store.Load().Lighting.Animate.Simple);
+    }
+
+    [Theory]
+    [InlineData(29, "simple", true)]
+    [InlineData(29, "advanced", false)]
+    [InlineData(30, "simple", false)]
+    public void A_profile_below_v30_takes_the_flag_from_the_root_dashboard_mode(int version, string rootMode, bool expected)
+    {
+        var profile = new NexusSettings { SchemaVersion = version };
+        profile.Lighting.Animate.Effect = "rainbow";
+        AnimateSimpleMigration.ApplyProfile(profile, rootMode);
+        Assert.Equal(expected, profile.Lighting.Animate.Simple);
+        Assert.Equal(NexusSettings.CurrentSchemaVersion, profile.SchemaVersion);
+    }
+
+    [Fact]
+    public void Setting_the_flag_on_a_running_effect_keeps_its_look_and_persists_only_the_flag()
+    {
+        var (provider, engine) = NewProvider();
+        provider.StartAnimate(Body("rainbow", simple: false));
+        var running = engine.CurrentEffect;
+        provider.StartAnimate(Body("rainbow", simple: false, persist: false));
+        var before = _store.Load().Lighting.Animate.States.Count;
+
+        provider.SetAnimateSimple(true);
+        Assert.True(engine.FullFrameSampling);
+        Assert.True(_store.Load().Lighting.Animate.Simple);
+        Assert.Same(running, engine.CurrentEffect);
+        Assert.Equal(before, _store.Load().Lighting.Animate.States.Count);
+
+        provider.SetAnimateSimple(false);
+        Assert.False(engine.FullFrameSampling);
+        Assert.False(_store.Load().Lighting.Animate.Simple);
     }
 }

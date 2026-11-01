@@ -174,6 +174,12 @@ public sealed class IdleDimStatus
     public int? OsScreenOffSeconds { get; set; }
 }
 
+/// <summary>POST body for /lighting/animate/simple.</summary>
+public class AnimateSimpleBody
+{
+    public bool Simple { get; set; }
+}
+
 /// <summary>GET response / POST body for /lighting/render-gpu. "auto" or a GPU
 /// model name (matches GpuReadout.Name). Restart-to-apply.</summary>
 public class RenderGpuBody

@@ -4,15 +4,32 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Lighting;
 
 /// <summary>
-/// The stored sweep predates the per-effect simple flag. Only an install on the simple
-/// dashboard ran its sweep full-frame, so the flag is derived from that persisted mode
-/// and the effect key; an advanced install keeps the layout mapping it always showed.
+/// Settings and profile files written before the per-effect simple flag stored none. The
+/// dashboard mode is the only record of how the user ran their sweep, so the flag is
+/// derived from it and the effect key; an advanced install is not given full-frame back.
 /// </summary>
 public static class AnimateSimpleMigration
 {
-    public static void Apply(NexusSettings doc)
+    public const int SchemaVersion = 30;
+
+    /// <summary>A settings document below v30, using its own persisted dashboard mode.</summary>
+    public static void Apply(NexusSettings doc) => Derive(doc, IsSimple(doc.Ui?.LightingDashboardMode));
+
+    /// <summary>A profile file or payload below v30. The dashboard mode lives at the settings root, not in a profile, so the caller passes it.</summary>
+    public static void ApplyProfile(NexusSettings? data, string? rootDashboardMode)
     {
-        var simple = string.Equals(doc.Ui?.LightingDashboardMode, "simple", System.StringComparison.Ordinal);
+        if (data is null || data.SchemaVersion >= SchemaVersion)
+        {
+            return;
+        }
+        Derive(data, IsSimple(rootDashboardMode));
+        data.SchemaVersion = SchemaVersion;
+    }
+
+    private static bool IsSimple(string? mode) => string.Equals(mode, "simple", System.StringComparison.Ordinal);
+
+    private static void Derive(NexusSettings doc, bool simple)
+    {
         if (doc.Lighting is not { } lighting)
         {
             return;
