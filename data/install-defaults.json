@@ -45,7 +45,7 @@
           },
           {
             "type": "build",
-            "size": "2x2",
+            "size": "4x2",
             "col": 4,
             "row": 0
           },
