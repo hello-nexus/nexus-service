@@ -235,12 +235,11 @@ public sealed partial class LightingEngine : IDisposable
     }
     private readonly Dictionary<string, PinRender> _pinRenders = new(StringComparer.Ordinal);
 
-    private static IReadOnlyDictionary<string, float>? ExtrasOf(IEffect? effect) => (effect as Gpu.ShaderEffect)?.ExtraParams;
     // Device id to the canvas it samples this tick; a null canvas means the
     // main one. Absent means no animate/mirror pin (or its source failed to render).
     private readonly Dictionary<string, CanvasBuffer?> _pinnedDevices = new(StringComparer.Ordinal);
-    // Devices pinned to a Simple-mode sweep: they read the whole canvas, as every
-    // device does globally while a sweep is the active effect.
+    // Devices that read the whole canvas despite a pin. Pins come from the advanced
+    // page and map by layout, so nothing fills it; kept for the sampler's signature.
     private readonly HashSet<string> _pinFullFrame = new(StringComparer.Ordinal);
     private long _pinTick;
 
@@ -1116,14 +1115,11 @@ public sealed partial class LightingEngine : IDisposable
             {
                 continue;
             }
-            var sweepKey = key != MirrorPinKey && key != MediaPinKey && Gpu.ShaderLibrary.IsSweepEffect(key);
-            var sweep = sweepKey && Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(active));
             // Pinned to what is already running globally: share its canvas.
             var shared = key == MirrorPinKey ? ScreenEffectName : key == MediaPinKey ? MediaEffectName : key;
             if (string.Equals(activeName, shared, StringComparison.Ordinal))
             {
                 _pinnedDevices[dev.Id] = null;
-                if (sweep) _pinFullFrame.Add(dev.Id);
                 continue;
             }
             if (!_pinRenders.TryGetValue(key, out var render))
@@ -1163,7 +1159,6 @@ public sealed partial class LightingEngine : IDisposable
             if (render.Rendered)
             {
                 _pinnedDevices[dev.Id] = render.Canvas;
-                if (sweepKey && Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(render.Effect))) _pinFullFrame.Add(dev.Id);
             }
         }
         if (used < _pinRenders.Count)
@@ -1743,11 +1738,10 @@ public sealed partial class LightingEngine : IDisposable
     /// </summary>
     private AheadPinKind ResolveAheadPin(
         DeviceFrame dev, Dictionary<string, Nexus.Service.Persistence.DevicePin> pins, IEffect active,
-        out string key, out IEffect? fx, out bool sweep)
+        out string key, out IEffect? fx)
     {
         key = "";
         fx = null;
-        sweep = false;
         if (!pins.TryGetValue(dev.Id, out var pin)
             || pin.Kind != Nexus.Service.Persistence.DevicePinKinds.Animate
             || string.IsNullOrEmpty(pin.Effect))
@@ -1755,7 +1749,6 @@ public sealed partial class LightingEngine : IDisposable
             return AheadPinKind.Base;
         }
         key = PinRenderKey(pin)!;
-        sweep = Gpu.ShaderLibrary.IsFullFrame(key, ExtrasOf(string.Equals(active.Name, key, StringComparison.Ordinal) ? active : _pinRenders.GetValueOrDefault(key)?.Effect));
         if (string.Equals(active.Name, key, StringComparison.Ordinal))
         {
             return AheadPinKind.FollowActive;
@@ -1789,7 +1782,7 @@ public sealed partial class LightingEngine : IDisposable
         var pins = tracker.Snapshot();
         foreach (var dev in shadow)
         {
-            var kind = ResolveAheadPin(dev, pins, active, out var key, out var fx, out var sweep);
+            var kind = ResolveAheadPin(dev, pins, active, out var key, out var fx);
             if (kind == AheadPinKind.Base)
             {
                 continue;
@@ -1797,7 +1790,6 @@ public sealed partial class LightingEngine : IDisposable
             if (kind == AheadPinKind.FollowActive)
             {
                 _aheadPinned[dev.Id] = null;
-                if (sweep) _aheadPinFullFrame.Add(dev.Id);
                 continue;
             }
             if (!_aheadPinCanvases.TryGetValue(key, out var canvas))
@@ -1815,7 +1807,6 @@ public sealed partial class LightingEngine : IDisposable
                 failed |= fx is Gpu.ShaderEffect { HasFailed: true } or Gpu.ShaderEffect { IsRenderPending: true };
             }
             _aheadPinned[dev.Id] = canvas;
-            if (sweep) _aheadPinFullFrame.Add(dev.Id);
         }
         return failed;
     }

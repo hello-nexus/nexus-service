@@ -1017,6 +1017,8 @@ public sealed class AnimateSettings
 {
     /// <summary>Key of the last-selected animate effect.</summary>
     public string Effect { get; set; } = InstallDefaults.Lighting.Animate.Effect;
+    /// <summary>Whether <see cref="Effect"/> was started from simple mode, so a restored sweep keeps sampling the whole canvas on every device.</summary>
+    public bool Simple { get; set; }
     /// <summary>Last-activated slider state keyed by effect name, sparse: an entry
     /// exists only when the look differs from the effect's resolved selected-slot
     /// look (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults.ResolveSelected"/>);
@@ -1167,6 +1169,8 @@ public sealed class LightingPresetLook
     public AnimateEffectState? StaticState { get; set; }
     /// <summary>Selected template slot, or -1 when the effect has no slots.</summary>
     public int AnimateSlot { get; set; } = -1;
+    /// <summary>Whether <see cref="AnimateEffect"/> runs as simple mode does, every device showing the whole pattern.</summary>
+    public bool AnimateSimple { get; set; }
     public int StaticSlot { get; set; } = -1;
     /// <summary>Master brightness cap, 0..1. Null on a look captured before this
     /// was part of a preset - activate then leaves the live level alone rather

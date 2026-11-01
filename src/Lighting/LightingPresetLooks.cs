@@ -31,6 +31,7 @@ public static class LightingPresetLooks
             AnimateState = Clone(Resolve(templates, lighting.Animate?.States, animate)),
             StaticState = Clone(Resolve(templates, lighting.Static?.States, still)),
             AnimateSlot = SelectedSlot(templates, animate),
+            AnimateSimple = lighting.Animate?.Simple ?? false,
             StaticSlot = SelectedSlot(templates, still),
             GlobalBrightness = lighting.GlobalBrightness,
             MusicReactive = lighting.MusicReactive,
@@ -75,6 +76,7 @@ public static class LightingPresetLooks
         {
             var animateEffect = SimplePatternMigration.Normalize(look.AnimateEffect);
             lighting.Animate.Effect = animateEffect;
+            lighting.Animate.Simple = look.AnimateSimple;
             SetSlot(lighting.Animate.Templates, animateEffect, look.AnimateSlot);
             WriteState(lighting, lighting.Animate.States, animateEffect, look.AnimateState);
         }

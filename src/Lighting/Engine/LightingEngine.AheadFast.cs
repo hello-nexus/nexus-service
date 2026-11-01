@@ -140,11 +140,7 @@ public sealed partial class LightingEngine
                     return FastWindow.NotUsed;
                 }
             }
-            var kind = ResolveAheadPin(dev, pins, effect, out var key, out var fx, out var sweep);
-            if (sweep)
-            {
-                return FastWindow.NotUsed;
-            }
+            var kind = ResolveAheadPin(dev, pins, effect, out var key, out var fx);
             switch (kind)
             {
                 case AheadPinKind.Base:

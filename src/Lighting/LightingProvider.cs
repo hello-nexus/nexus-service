@@ -361,9 +361,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var extras = ParamsToDict(body.Params);
         var sensors = Nexus.Service.Persistence.SensorBinding.CopyMap(body.Sensors);
         var effectSpeed = name == "pulse" ? speed * 0.5f : speed;
-        // A sweep is meant to read end to end on every device at once, so the
-        // engine stops treating the canvas as a shared scene for these.
-        _engine.FullFrameSampling = ShaderLibrary.IsFullFrame(name, extras);
+        // Simple mode shows a sweep end to end on every device at once; the advanced
+        // Animation page maps it by layout position like any other effect.
+        _engine.FullFrameSampling = body.Simple && ShaderLibrary.IsFullFrame(name, extras);
 
         // Fast path: if the currently running effect is the same shader, just
         // update its uniforms in place. Creating a new ShaderEffect every
@@ -417,6 +417,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             s.Lighting.Sync = name;
             s.Lighting.Animate.Effect = name;
+            s.Lighting.Animate.Simple = body.Simple;
             // States holds only deltas from the effect's selected preset look:
             // merely activating an effect (the UI replays the resolved slot
             // verbatim) must not grow settings.json by a full dense state.
@@ -956,6 +957,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             Saturation = look.Saturation,
             Contrast = look.Contrast,
             Params = list,
+            Simple = a.Simple,
         });
     }
 

@@ -265,6 +265,8 @@ public class AnimateHeadlessStart
     /// slider release or explicit mode change, which also persists the state.
     /// </summary>
     public bool Persist { get; set; } = true;
+    /// <summary>True only from simple mode, where a sweep effect shows its whole pattern on every device. Absent or false maps the effect by layout position like any advanced effect.</summary>
+    public bool Simple { get; set; }
 }
 
 public class ShaderParam
