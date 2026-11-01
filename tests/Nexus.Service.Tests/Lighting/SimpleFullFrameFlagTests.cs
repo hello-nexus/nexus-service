@@ -239,4 +239,17 @@ public class SimpleFullFrameFlagTests : IDisposable
         var running = (ShaderEffect)engine.CurrentEffect!;
         Assert.Equal(stored.Simple && ShaderLibrary.IsFullFrame(running.Name, running.ExtraParams), engine.FullFrameSampling);
     }
+
+    [Fact]
+    public void Setting_the_flag_after_a_static_start_leaves_full_frame_off()
+    {
+        var (provider, engine) = NewProvider();
+        provider.StartAnimate(Body("rainbow", simple: true));
+        Assert.True(engine.FullFrameSampling);
+
+        provider.StartStatic(new StaticHeadlessStart { Effect = "gradientlinear", Intensity = 1f, Saturation = 1f, Contrast = 1f });
+        provider.SetAnimateSimple(true);
+
+        Assert.False(engine.FullFrameSampling);
+    }
 }

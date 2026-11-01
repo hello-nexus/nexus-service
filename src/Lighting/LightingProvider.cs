@@ -318,8 +318,8 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         SelectionMode = OperatingSystem.IsLinux() ? "system" : "app",
     };
 
-    // StartAnimate and SetAnimateSimple both write FullFrameSampling and the stored flag;
-    // one at a time keeps the pair consistent with the running effect.
+    // Every effect start and SetAnimateSimple read and write FullFrameSampling with the running
+    // effect; one at a time keeps the pair consistent with it.
     private readonly object _animateGate = new();
 
     public void StartAnimate(AnimateHeadlessStart body)
@@ -496,6 +496,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     }
 
     public void StartStatic(StaticHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartStaticCore(body);
+        }
+    }
+
+    private void StartStaticCore(StaticHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
@@ -1731,6 +1739,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
     public void StartMusic(MusicHeadlessStart body)
     {
+        lock (_animateGate)
+        {
+            StartMusicCore(body);
+        }
+    }
+
+    private void StartMusicCore(MusicHeadlessStart body)
+    {
         if (!_gates.Lighting)
         {
             return;
@@ -1745,6 +1761,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     }
 
     public void StartScreen(ScreenHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartScreenCore(body);
+        }
+    }
+
+    private void StartScreenCore(ScreenHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
@@ -1844,6 +1868,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
     public bool StartMedia(string mediaId)
     {
+        lock (_animateGate)
+        {
+            return StartMediaCore(mediaId);
+        }
+    }
+
+    private bool StartMediaCore(string mediaId)
+    {
         if (!_gates.Lighting)
         {
             return false;
@@ -1872,6 +1904,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
     public bool StartMedia(string mediaId, bool keepMode)
     {
+        lock (_animateGate)
+        {
+            return StartMediaCore(mediaId, keepMode);
+        }
+    }
+
+    private bool StartMediaCore(string mediaId, bool keepMode)
+    {
         if (!keepMode)
         {
             return StartMedia(mediaId);
@@ -1898,6 +1938,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     }
 
     public void StartMediaIdle()
+    {
+        lock (_animateGate)
+        {
+            StartMediaIdleCore();
+        }
+    }
+
+    private void StartMediaIdleCore()
     {
         if (!_gates.Lighting)
         {
