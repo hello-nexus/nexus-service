@@ -102,6 +102,8 @@ public sealed class CurveEngine : BackgroundService
     // put back once the guard stops overriding them.
     private readonly HashSet<string> _guardOverriddenManual = new(StringComparer.Ordinal);
     private readonly HashSet<string> _guardDrivenOrphans = new(StringComparer.Ordinal);
+    // Hardware-control channels (no curve, no manual duty) the guard is driving; released when it clears.
+    private readonly HashSet<string> _guardDrivenHardware = new(StringComparer.Ordinal);
 
     public CurveEngine(
         IFanControlProvider fans,
@@ -235,6 +237,7 @@ public sealed class CurveEngine : BackgroundService
             ClearManualReplayed();
             _guardOverriddenManual.Clear();
             _guardDrivenOrphans.Clear();
+            _guardDrivenHardware.Clear();
             return;
         }
 
@@ -262,6 +265,7 @@ public sealed class CurveEngine : BackgroundService
             ClearManualReplayed();
             _guardOverriddenManual.Clear();
             _guardDrivenOrphans.Clear();
+            _guardDrivenHardware.Clear();
         }
 
         _step = "loading settings";
@@ -458,6 +462,10 @@ public sealed class CurveEngine : BackgroundService
         }
 
         Isolated("guard orphan pass", () => ApplyGuardToOrphanOutputs(activePlan, manualSnapshot, present, owned, drivenChannels));
+        if (!_noWrites)
+        {
+            Isolated("guard hardware pass", () => ApplyGuardToHardwareChannels(activePlan, present));
+        }
 
         // Broadcast to multiplexed WebSocket (only if topic has subscribers)
         if (_hub.TopicHasSubscribers("cooling-curves"))
@@ -699,6 +707,50 @@ public sealed class CurveEngine : BackgroundService
                 {
                     SafeDrive(id, d);
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Channels left on hardware control (no curve, no manual duty) that Nexus can still
+    /// drive: the guard raises them while it overrides and hands them back to the hardware
+    /// once it clears. Without this a BIOS-owned fan sits at whatever the board decides
+    /// while the CPU overheats and the trip notice claims full speed.
+    /// </summary>
+    private void ApplyGuardToHardwareChannels(GuardPlan plan, HashSet<string> present)
+    {
+        if (plan.Output.StopWriting)
+        {
+            return;
+        }
+        var floor = plan.Output.FloorDuty;
+        if (floor > 0)
+        {
+            var nowMs = Clock();
+            foreach (var id in plan.Hardware)
+            {
+                if (!present.Contains(id))
+                {
+                    continue;
+                }
+                _guardDrivenHardware.Add(id);
+                if (TryReserveWrite(id, floor, nowMs))
+                {
+                    SafeDrive(id, floor);
+                }
+            }
+        }
+        foreach (var id in _guardDrivenHardware.ToList())
+        {
+            if (floor > 0 && plan.Hardware.Contains(id) && present.Contains(id))
+            {
+                continue;
+            }
+            _guardDrivenHardware.Remove(id);
+            ForgetWrite(id);
+            if (present.Contains(id))
+            {
+                _fans.ReleaseFan(id);
             }
         }
     }

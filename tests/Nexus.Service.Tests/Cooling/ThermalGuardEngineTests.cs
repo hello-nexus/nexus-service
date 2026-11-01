@@ -127,6 +127,56 @@ public class ThermalGuardEngineTests
     private static int LastDuty(Fans fans, string id) => fans.Driven.Last(d => d.Id == id).Duty;
 
     [Fact]
+    public void Trip_DrivesAHardwareControlChannelToMax_ThenHandsItBackWhenTheGuardClears()
+    {
+        var (engine, fans, _, clock) = Build();
+        fans.Channels.Add(new FanChannel { Id = "hw", Name = "Wireless Fan", Mode = FanModes.Auto });
+        engine.Tick();
+        Assert.DoesNotContain(fans.Driven, d => d.Id == "hw");
+
+        Trip(engine, fans, clock);
+        Assert.Equal(100, LastDuty(fans, "hw"));
+        Assert.DoesNotContain("hw", fans.Released);
+
+        fans.CpuTemp = 40f;
+        CoolDown(engine, clock);
+        Assert.Contains("hw", fans.Released);
+    }
+
+    [Fact]
+    public void Trip_LeavesAnUncontrolledHardwareChannelAlone()
+    {
+        var (engine, fans, store, clock) = Build();
+        fans.Channels.Add(new FanChannel { Id = "hw", Name = "Wireless Fan", Mode = FanModes.Auto });
+        store.Update(s => s.Cooling.UncontrolledFanChannels.Add("hw"));
+        Trip(engine, fans, clock);
+        Assert.DoesNotContain(fans.Driven, d => d.Id == "hw");
+    }
+
+    [Fact]
+    public void ChannelThatEnumeratesAfterBootApply_StaysOnThePresetAndIsDriven()
+    {
+        var (engine, fans, store, clock) = Build();
+        store.Update(s => { s.Cooling.Curves.Clear(); s.Cooling.ManualSpeeds.Clear(); });
+        fans.Channels.Add(new FanChannel { Id = "w1", Name = "Wireless Fan 1" });
+        FanProfiles.Apply("turbo", fans, store);
+        Assert.Contains(store.Load().Cooling.Curves.Single(c => c.Preset == "turbo").Outputs, o => o.Id == "w1");
+
+        // Boot: the wireless chain is not enumerated yet when the restore re-applies the preset.
+        var wireless = fans.Channels.Single(c => c.Id == "w1");
+        fans.Channels.Remove(wireless);
+        FanProfiles.Apply("turbo", fans, store);
+        Assert.Contains(store.Load().Cooling.Curves.Single(c => c.Preset == "turbo").Outputs, o => o.Id == "w1");
+
+        fans.Channels.Add(wireless);
+        fans.CpuTemp = 50f;
+        clock[0] += 1000;
+        engine.Tick();
+        Assert.Contains(fans.Driven, d => d.Id == "w1");
+        Assert.Contains(store.Load().Cooling.Curves.Single(c => c.Preset == "turbo").Outputs, o => o.Id == "w1");
+    }
+
+    [Fact]
     public void BelowFloorBand_CurveDutiesAreUntouched()
     {
         var (engine, fans, _, _) = Build();

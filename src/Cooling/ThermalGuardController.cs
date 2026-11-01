@@ -22,6 +22,8 @@ public sealed class GuardPlan
     public ThermalGuardOutput Output { get; init; }
     /// <summary>CPU-side channels the guard may write: Nexus-driven, controlled, unlocked, not GPU.</summary>
     public HashSet<string> Eligible { get; init; } = new(StringComparer.Ordinal);
+    /// <summary>Channels on hardware control (no curve, no manual duty) that Nexus can still drive: the guard raises them too.</summary>
+    public HashSet<string> Hardware { get; init; } = new(StringComparer.Ordinal);
     /// <summary>GPU fans handed back to the driver: no writes.</summary>
     public HashSet<string> GpuBlocked { get; init; } = new(StringComparer.Ordinal);
     public HashSet<string> GpuForced { get; init; } = new(StringComparer.Ordinal);
@@ -431,6 +433,16 @@ public sealed class ThermalGuardController
                 eligible.Add(ch.Id);
             }
         }
+        var hardware = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var ch in channels)
+        {
+            if (!nexusDriven.Contains(ch.Id) && IsGuardWritable(ch, uncontrolled)
+                && !ch.ReadOnly && ch.Kind != FanKinds.Pump && ch.ControlBlocked is null
+                && ch.Classification != "Unresponsive")
+            {
+                hardware.Add(ch.Id);
+            }
+        }
         var writesNotLanding = WritesNotLanding(nowMs, channels, eligible);
 
         ThermalGuardOutput output;
@@ -441,7 +453,7 @@ public sealed class ThermalGuardController
             _guardTemp = guardTemp;
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
-            plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible);
+            plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible, hardware);
         }
 
         if (plan.GpuBackup.Count > 0)
@@ -548,9 +560,10 @@ public sealed class ThermalGuardController
         IReadOnlyList<TemperatureSource> sources,
         HashSet<string> nexusDriven,
         ThermalGuardOutput output,
-        HashSet<string> eligible)
+        HashSet<string> eligible,
+        HashSet<string> hardware)
     {
-        var plan = new GuardPlan { Output = output, Eligible = eligible };
+        var plan = new GuardPlan { Output = output, Eligible = eligible, Hardware = hardware };
         var backup = CoolingSnapshots.GpuManualBackup(cooling);
         _gpuInfo.Clear();
         var seen = new HashSet<string>(StringComparer.Ordinal);

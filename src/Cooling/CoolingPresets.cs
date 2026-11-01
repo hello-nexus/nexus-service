@@ -32,7 +32,7 @@ public static class CoolingPresets
     {
         Id = id,
         Name = name,
-        FanCurveAssignments = FanProfiles.CaptureFanCurveMapping(cooling, fanIds),
+        FanCurveAssignments = FanProfiles.CaptureFanCurveMapping(cooling),
         ManualSpeeds = new Dictionary<string, int>(cooling.ManualSpeeds),
         FanOffsets = new Dictionary<string, int>(cooling.FanOffsets),
         GlobalSpeedModifier = cooling.GlobalSpeedModifier,
