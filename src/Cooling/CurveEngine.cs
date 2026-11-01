@@ -272,7 +272,8 @@ public sealed class CurveEngine : BackgroundService
         var settings = _store.Load();
         if (settings.Cooling.Curves.Count == 0
             && settings.Cooling.ManualSpeeds.Count == 0
-            && settings.Cooling.UncontrolledFanChannels.Count == 0)
+            && settings.Cooling.UncontrolledFanChannels.Count == 0
+            && !IdleGuardWake(settings))
         {
             // Idle cooling config: skip the per-tick channel enumeration
             // (on Windows it costs an LHM update + re-discovery).
@@ -335,6 +336,11 @@ public sealed class CurveEngine : BackgroundService
         // Re-read: a replay or an import since the snapshot may have changed a duty,
         // and a restore from the stale copy would undo it.
         Isolated("guard manual pass", () => ApplyGuardToUnownedChannels(activePlan, CoolingSnapshots.ManualSpeeds(settings.Cooling), present, owned));
+
+        if (!_noWrites)
+        {
+            Isolated("guard hardware pass", () => ApplyGuardToHardwareChannels(activePlan, present));
+        }
 
         if (curves.Count == 0)
         {
@@ -462,10 +468,6 @@ public sealed class CurveEngine : BackgroundService
         }
 
         Isolated("guard orphan pass", () => ApplyGuardToOrphanOutputs(activePlan, manualSnapshot, present, owned, drivenChannels));
-        if (!_noWrites)
-        {
-            Isolated("guard hardware pass", () => ApplyGuardToHardwareChannels(activePlan, present));
-        }
 
         // Broadcast to multiplexed WebSocket (only if topic has subscribers)
         if (_hub.TopicHasSubscribers("cooling-curves"))
@@ -519,6 +521,36 @@ public sealed class CurveEngine : BackgroundService
     }
 
     // ── Thermal guard ──
+
+    // An idle config still needs the guard when the CPU runs hot: every channel may be on
+    // hardware control. The temperature probe is rate limited so an idle, cool machine pays
+    // one read per interval and writes nothing.
+    private const long IdleProbeIntervalMs = 5000;
+    private long _idleProbeAtMs = long.MinValue / 2;
+
+    private bool IdleGuardWake(NexusSettings settings)
+    {
+        if (!settings.Cooling.ThermalGuardEnabled || _noWrites)
+        {
+            return false;
+        }
+        if (_guardDrivenHardware.Count > 0)
+        {
+            return true;
+        }
+        var now = Clock();
+        var active = _guard.IdleNeedsGuard(Array.Empty<TemperatureSource>());
+        if (active)
+        {
+            return true;
+        }
+        if (now - _idleProbeAtMs < IdleProbeIntervalMs)
+        {
+            return false;
+        }
+        _idleProbeAtMs = now;
+        return _guard.IdleNeedsGuard(_fans.GetTemperatureSources());
+    }
 
     private void Isolated(string what, Action action)
     {

@@ -144,6 +144,64 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void IdleConfig_AllHardwareControl_TripDrivesChannelsToMax_ThenReleasesThem()
+    {
+        var (engine, fans, store, clock) = Build();
+        store.Update(s => { s.Cooling.Curves.Clear(); s.Cooling.ManualSpeeds.Clear(); });
+        fans.Channels.Clear();
+        fans.Channels.Add(new FanChannel { Id = "hw1", Mode = FanModes.Auto });
+        fans.Channels.Add(new FanChannel { Id = "hw2", Mode = FanModes.Auto });
+
+        fans.CpuTemp = 40f;
+        for (var i = 0; i < 3; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.Empty(fans.Driven);
+        Assert.Empty(fans.Released);
+
+        Trip(engine, fans, clock);
+        // The idle probe runs every few seconds, so the guard wakes up to one probe interval late.
+        for (var i = 0; i < 8; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.Equal(100, LastDuty(fans, "hw1"));
+        Assert.Equal(100, LastDuty(fans, "hw2"));
+
+        fans.CpuTemp = 40f;
+        CoolDown(engine, clock);
+        Assert.Contains("hw1", fans.Released);
+        Assert.Contains("hw2", fans.Released);
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1800, false)]
+    public void Trip_ReportsFansNotRespondingOnlyWhenADrivenTachStaysAtZero(int rpm, bool expected)
+    {
+        var fans = new Fans();
+        fans.Channels.Add(new FanChannel { Id = "hw", Mode = FanModes.Auto, Rpm = rpm });
+        var store = new InMemoryConfigStore();
+        var clock = new long[] { 1_000_000 };
+        var hub = new MultiplexHub();
+        var guard = new ThermalGuardController(fans, store, hub);
+        var engine = new CurveEngine(fans, store, hub, new FeatureGates(store), guard) { Clock = () => clock[0] };
+
+        Trip(engine, fans, clock);
+        for (var i = 0; i < 70; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+
+        Assert.Equal("tripped", guard.GetState().State);
+        Assert.Equal(expected, guard.GetState().FansNotResponding);
+    }
+
+    [Fact]
     public void Trip_LeavesAnUncontrolledHardwareChannelAlone()
     {
         var (engine, fans, store, clock) = Build();

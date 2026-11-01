@@ -96,6 +96,8 @@ public sealed class ThermalGuardController
     private readonly Dictionary<string, GpuThermalGuard> _gpus = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Name, double? Temp, double? Limit, string? Source)> _gpuInfo = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RpmTrack> _rpm = new(StringComparer.Ordinal);
+    // True while the guard drives fans and one of them has a tach that stays at zero (or writes are not landing).
+    private bool _fansNotResponding;
     private readonly Dictionary<string, long> _lastTripAlertMs = new(StringComparer.Ordinal);
     private readonly ThermalGuardThresholds _thresholds;
 
@@ -336,6 +338,26 @@ public sealed class ThermalGuardController
         Stand(ThermalGuardStates.Inactive);
     }
 
+    /// <summary>
+    /// Idle-config wake check: true while the guard is acting or the CPU is within the band where
+    /// it can start (the floor ramp and the cooling-loss gate both begin below the limit).
+    /// </summary>
+    public bool IdleNeedsGuard(IReadOnlyList<TemperatureSource> sources)
+    {
+        lock (_gate)
+        {
+            if (_publicState is ThermalGuardStates.Floor or ThermalGuardStates.Tripped or ThermalGuardStates.Escalated)
+            {
+                return true;
+            }
+            var temp = ThermalLimits.MaxPlausible(
+                sources.Where(s => s.Category == "CPU" && s.DeviceId is null && !ThermalLimits.IsDistanceToTjMax(s.Name))
+                    .Select(s => (double)s.Value));
+            var band = Math.Max(_thresholds.FloorStartBelowLimitC, _thresholds.CoolingLossGateBelowLimitC);
+            return temp is { } t && t >= _limit.LimitC - band;
+        }
+    }
+
     // The guard stops acting: reset the machine, publish the state, and close any open trip record.
     private void Stand(string state)
     {
@@ -454,6 +476,8 @@ public sealed class ThermalGuardController
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
             plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible, hardware);
+            _fansNotResponding = output.FloorDuty > 0 && !output.StopWriting
+                && (writesNotLanding || AnyDrivenFanSilent(nowMs, channels, eligible, hardware));
         }
 
         if (plan.GpuBackup.Count > 0)
@@ -511,6 +535,23 @@ public sealed class ThermalGuardController
             }
         }
         return qualifying > 0 && allLow;
+    }
+
+    // A driven fan with a tach that has read zero for a sustained spell is not running, whatever was commanded.
+    private bool AnyDrivenFanSilent(long nowMs, IReadOnlyList<FanChannel> channels, HashSet<string> eligible, HashSet<string> hardware)
+    {
+        foreach (var ch in channels)
+        {
+            if (ch.RpmUnavailable || ch.Kind == FanKinds.Pump || (!eligible.Contains(ch.Id) && !hardware.Contains(ch.Id)))
+            {
+                continue;
+            }
+            if (_rpm.TryGetValue(ch.Id, out var track) && ch.Rpm <= 0 && track.ZeroSinceMs is { } since && nowMs - since >= TachZeroSustainMs)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void ObserveRpm(RpmTrack track, int rpm, long nowMs)
@@ -1270,6 +1311,7 @@ public sealed class ThermalGuardController
                 response.LimitC = effective.LimitC;
                 response.LimitSource = effective.Source;
                 response.SinceUtcMs = _sinceUtcMs;
+                response.FansNotResponding = _fansNotResponding;
             }
             foreach (var kv in _gpuInfo)
             {
