@@ -187,6 +187,22 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         }
     }
 
+    // A port with a Nexus duty is not released: a cleared target sends the follow-motherboard byte,
+    // and a receiver with no header signal stops the fan. A held bind frame keeps its duty without
+    // keepalives (the hub sends nothing once settled), so the fan runs on at the last duty. A port
+    // with no target already follows the board and needs nothing. The AIO pump is released as usual.
+    public void ReleaseAllKeepingDrivenPorts()
+    {
+        if (!_hub.IsConnected) return;
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
+            {
+                _hub.SetPumpDuty(fan.Mac, null);
+            }
+        }
+    }
+
     // Neither RPM nor duty tracks a ramp reliably enough for a calibration
     // sweep to add value over the live telemetry already shown; matches the
     // wired hub / other first-party providers.

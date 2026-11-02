@@ -77,6 +77,26 @@ public interface IFanControlProvider
     void ReleaseAll();
 
     /// <summary>
+    /// <see cref="ReleaseAll"/> for the thermal guard escalation and for shutdown: a channel whose
+    /// release would stop the fan for want of a board signal (a Lian Li wireless port) keeps the duty
+    /// Nexus last gave it instead. Defaults to <see cref="ReleaseAll"/>.
+    /// </summary>
+    void ReleaseAllKeepingDrivenPorts() => ReleaseAll();
+
+    /// <summary>
+    /// Cooling mode: drives each channel to full speed without recording a manual duty. A channel
+    /// that fails does not stop the rest.
+    /// </summary>
+    void DriveFansToFull(IReadOnlyList<string> channelIds)
+    {
+        foreach (var id in channelIds)
+        {
+            try { DriveFanSpeed(id, 100); }
+            catch (Exception ex) { Console.Error.WriteLine($"[cooling] cooling-mode write to {id} failed: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>
     /// Calibrate the given fans by ramping duty 100%→0% and measuring RPM at
     /// each step. Empty fanIds = calibrate all discovered fans. Results are
     /// persisted to IConfigStore. Runs all fans in parallel.

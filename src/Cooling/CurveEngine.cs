@@ -92,7 +92,6 @@ public sealed class CurveEngine : BackgroundService
 
     // Set per tick while the watchdog has latched after repeated stalls: no fan is written.
     private bool _noWrites;
-    private bool _latchReleased;
 
     /// <summary>Millisecond clock for write gating and the guard; tests substitute it.</summary>
     internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
@@ -214,8 +213,10 @@ public sealed class CurveEngine : BackgroundService
         }
         try
         {
-            _fans.ReleaseAll();
-            Console.Error.WriteLine("[curve-engine] shutdown - all fans released to BIOS");
+            // A wireless port Nexus drives keeps its last duty: a release would send the follow-motherboard
+            // byte and a receiver with no header signal stops the fan.
+            _fans.ReleaseAllKeepingDrivenPorts();
+            Console.Error.WriteLine("[curve-engine] shutdown - fans released to BIOS; wireless ports keep their last duty");
         }
         catch { /* swallow */ }
     }
@@ -245,25 +246,15 @@ public sealed class CurveEngine : BackgroundService
             return;
         }
 
-        // The watchdog released every fan from its own thread while this loop was stalled:
+        // The watchdog drove cooling mode from its own thread while this loop was stalled:
         // forget what was written so every duty, unchanged ones included, is written again.
-        // After repeated stalls it latches instead and the BIOS keeps the fans.
+        // After repeated stalls it latches instead and cooling mode holds the fans until it clears.
         // Limit detection runs whether or not the guard is enabled, so the settings route can
         // trust what it reports.
         Isolated("guard limit detection", () => _guard.RefreshDetection(Clock()));
         _noWrites = _guard.WatchdogLatched;
-        if (_noWrites && !_latchReleased)
-        {
-            // The single writer hands the fans over once itself: a stalled tick may have
-            // written after the watchdog timer's release, leaving a stale Nexus duty.
-            Isolated("latch release", () => _fans.ReleaseAll());
-            _latchReleased = true;
-        }
-        else if (!_noWrites)
-        {
-            _latchReleased = false;
-        }
-        if (_guard.ConsumeWatchdogRelease() || _noWrites)
+        var watchdogDrove = _guard.ConsumeWatchdogRelease();
+        if (watchdogDrove || _noWrites)
         {
             lock (_lastWrite) { _lastWrite.Clear(); }
             ClearManualReplayed();
@@ -275,6 +266,23 @@ public sealed class CurveEngine : BackgroundService
 
         _step = "loading settings";
         var settings = _store.Load();
+        if (watchdogDrove)
+        {
+            // Channels the user left on hardware control went to full speed with the rest; the engine runs again, so they go back.
+            var driven = _guard.TakeWatchdogHardware();
+            if (driven.Count > 0)
+            {
+                Isolated("watchdog hardware release", () =>
+                {
+                    var heldOwned = CurveOwnedIds(CoolingSnapshots.Curves(settings.Cooling));
+                    var heldManual = CoolingSnapshots.ManualSpeeds(settings.Cooling);
+                    foreach (var id in driven)
+                    {
+                        ReleaseGuardHardware(id, heldOwned, heldManual);
+                    }
+                });
+            }
+        }
         if (settings.Cooling.Curves.Count == 0
             && settings.Cooling.ManualSpeeds.Count == 0
             && settings.Cooling.UncontrolledFanChannels.Count == 0
@@ -569,9 +577,9 @@ public sealed class CurveEngine : BackgroundService
     // A failed write leaves no dedup record, so the next tick retries it.
     private void SafeDrive(string channelId, int duty)
     {
-        if (_noWrites)
+        if (_noWrites || _guard.WatchdogLatched)
         {
-            // Nothing was written, so no record may claim it was.
+            // Cooling mode holds the fans; nothing was written, so no record may claim it was.
             ForgetWrite(channelId);
             return;
         }
@@ -633,9 +641,10 @@ public sealed class CurveEngine : BackgroundService
         if (plan.Output.ReleaseAllNow)
         {
             // Writes may not be landing: hand every fan to the BIOS and forget what we wrote.
-            _fans.ReleaseAll();
+            // Wireless ports Nexus drives keep their full-speed duty: a release would stop them.
+            _fans.ReleaseAllKeepingDrivenPorts();
             lock (_lastWrite) { _lastWrite.Clear(); }
-            Console.Error.WriteLine("[thermal-guard] still heating after the override: all fans released to BIOS");
+            Console.Error.WriteLine("[thermal-guard] still heating after the override: fans released to BIOS; wireless ports keep their duty");
         }
         if (plan.Output.TripEnded)
         {
