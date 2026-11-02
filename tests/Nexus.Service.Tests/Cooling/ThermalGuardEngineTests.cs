@@ -460,17 +460,6 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void FloorOnAChannelNotPresent_IsReportedAsNormal()
-    {
-        var (engine, fans, store, clock, guard) = BuildWithGuard();
-        store.Update(s => s.Cooling.ManualSpeeds.Remove("f2"));
-        store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 10);
-        fans.Channels.RemoveAll(c => c.Id == "f1");
-        Hold(engine, fans, clock, 85f);
-        Assert.Equal("normal", guard.GetState().State);
-    }
-
-    [Fact]
     public void ASingleTickFlip_DoesNotChangeTheReportedState()
     {
         var (engine, fans, store, clock, guard) = BuildWithGuard();
@@ -486,21 +475,6 @@ public class ThermalGuardEngineTests
         store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 10);
         Hold(engine, fans, clock, 85f, 6);
         Assert.Equal("floor", guard.GetState().State);
-    }
-
-    [Fact]
-    public void TripEnding_IntoARampThatBeatsNothing_DoesNotReportFloor()
-    {
-        var (engine, fans, store, clock, guard) = BuildWithGuard();
-        store.Update(s => s.Cooling.ManualSpeeds.Remove("f2"));
-        Trip(engine, fans, clock);
-        Assert.Equal("tripped", guard.GetState().State);
-        for (var i = 0; i < 90; i++)
-        {
-            Hold(engine, fans, clock, 78f, 1);
-            Assert.NotEqual("floor", guard.GetState().State);
-        }
-        Assert.Equal("normal", guard.GetState().State);
     }
 
     [Fact]

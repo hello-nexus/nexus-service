@@ -37,7 +37,7 @@ public sealed class GuardPlan
     public bool Overrides => Output.FloorDuty > 0 || GpuBlocked.Count > 0 || GpuForced.Count > 0;
 
     /// <summary>Final duty for a channel, or null when the guard forbids writing it.</summary>
-    public int? Apply(string channelId, int duty, bool written = true)
+    public int? Apply(string channelId, int duty)
     {
         if (GpuBlocked.Contains(channelId))
         {
@@ -51,7 +51,7 @@ public sealed class GuardPlan
         {
             return duty;
         }
-        if (written && Output.FloorDuty > duty)
+        if (Output.FloorDuty > duty)
         {
             _floorRaised = true;
         }
@@ -60,7 +60,7 @@ public sealed class GuardPlan
 
     private volatile bool _floorRaised;
 
-    /// <summary>True once the floor beat a written channel's own duty.</summary>
+    /// <summary>True once the floor beat a guarded channel's own duty.</summary>
     public bool FloorRaised => _floorRaised;
 }
 
