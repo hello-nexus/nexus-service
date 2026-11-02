@@ -372,7 +372,7 @@ public sealed class LogitechSpeakerService : BackgroundService
     // Detects the simulator starting or stopping; its settings stay apart from the saved ones.
     private void SyncSimulation()
     {
-        var active = _apo is ILogitechSpeakerSimulation { Active: true };
+        var active = IsSimulationActive();
         lock (_lock)
         {
             if (active == _simulated)
@@ -474,10 +474,11 @@ public sealed class LogitechSpeakerService : BackgroundService
         // The scan can wait on COM, so it runs outside _lock; one scan at a time.
         lock (_scanLock)
         {
-            IReadOnlyList<LogitechSpeakerEndpoint> found = Array.Empty<LogitechSpeakerEndpoint>();
             for (var attempt = 0; attempt < 3; attempt++)
             {
+                SyncSimulation();
                 int version;
+                bool simulated;
                 lock (_lock)
                 {
                     // A caller that waited on the scan lock shares the scan that finished meanwhile.
@@ -486,21 +487,27 @@ public sealed class LogitechSpeakerService : BackgroundService
                         return Pick(_endpoints);
                     }
                     version = _version;
+                    simulated = _simulated;
                 }
-                found = _apo.FindEndpoints();
+                var found = _apo.FindEndpoints();
                 lock (_lock)
                 {
-                    if (version == _version)
+                    // A simulator switch during the scan is an invalidation even before the route announces it.
+                    if (version == _version && simulated == IsSimulationActive())
                     {
                         _endpoints = found;
                         _endpointsAt = _time.GetUtcNow();
-                        break;
+                        return Pick(found);
                     }
                 }
             }
-            return Pick(found);
+            // Out of attempts: one scan under the current state, not cached.
+            SyncSimulation();
+            return Pick(_apo.FindEndpoints());
         }
     }
+
+    private bool IsSimulationActive() => _apo is ILogitechSpeakerSimulation { Active: true };
 
     // Caller holds _lock.
     private bool CacheStale() => _time.GetUtcNow() - _endpointsAt >= EndpointCacheTime;
