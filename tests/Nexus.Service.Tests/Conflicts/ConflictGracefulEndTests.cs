@@ -31,6 +31,8 @@ public class ConflictGracefulEndTests
         /// <summary>A service or helper process that outlives the app until a kill.</summary>
         public bool Leftover;
         public bool BackOffRunning;
+        /// <summary>How old the app already is when the end starts.</summary>
+        public long AppAgeAtStartMs = 60_000;
         public SessionEndOutcome Outcome = SessionEndOutcome.Delivered;
         public long NoWindowsUntil;
         public readonly List<long> Sends = new();
@@ -43,6 +45,7 @@ public class ConflictGracefulEndTests
             ExitsAt = exitsAt;
             End = new ConflictGracefulEnd(
                 _ => ExitsAt is { } e && Now >= e ? Array.Empty<int>() : new[] { 4242 },
+                _ => AppAgeAtStartMs + Now,
                 _ =>
                 {
                     Sends.Add(Now);
@@ -88,15 +91,27 @@ public class ConflictGracefulEndTests
     }
 
     [Fact]
-    public void The_request_is_repeated_while_the_app_stays_but_the_deadline_is_set_by_the_first_delivery()
+    public void A_delivered_request_is_not_repeated_to_an_app_past_its_startup()
     {
         var rig = new Rig(exitsAt: null);
 
         rig.End.End(Graceful);
 
-        Assert.True(rig.Sends.Count >= 3);
-        Assert.All(rig.Sends.Zip(rig.Sends.Skip(1)), p => Assert.True(p.Second - p.First >= Ms(ConflictGracefulEnd.Resend)));
+        Assert.Single(rig.Sends);
         Assert.InRange(Assert.Single(rig.Kills), Ms(ConflictGracefulEnd.Wait), Ms(ConflictGracefulEnd.Wait) + 1000);
+    }
+
+    [Fact]
+    public void A_delivered_request_is_repeated_while_the_app_is_still_starting()
+    {
+        var rig = new Rig(exitsAt: null) { AppAgeAtStartMs = 1000 };
+
+        rig.End.End(Graceful);
+
+        // Repeated every Resend until the app is past StartupWindow, then left alone.
+        Assert.InRange(rig.Sends.Count, 3, 8);
+        Assert.All(rig.Sends.Zip(rig.Sends.Skip(1)), p => Assert.True(p.Second - p.First >= Ms(ConflictGracefulEnd.Resend)));
+        Assert.True(rig.Sends.Last() + rig.AppAgeAtStartMs < Ms(ConflictGracefulEnd.StartupWindow) + Ms(ConflictGracefulEnd.Resend));
     }
 
     [Fact]
@@ -106,6 +121,7 @@ public class ConflictGracefulEndTests
         rig.Outcome = SessionEndOutcome.Delivered;
         var end = new ConflictGracefulEnd(
             _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
+            _ => 60_000 + rig.Now,
             _ =>
             {
                 rig.Sends.Add(rig.Now);
@@ -142,6 +158,7 @@ public class ConflictGracefulEndTests
         var rig = new Rig(exitsAt: null);
         var end = new ConflictGracefulEnd(
             _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
+            _ => 60_000 + rig.Now,
             _ =>
             {
                 rig.Sends.Add(rig.Now);

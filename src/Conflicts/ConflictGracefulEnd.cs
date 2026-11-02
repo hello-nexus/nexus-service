@@ -38,12 +38,16 @@ public sealed class ConflictGracefulEnd
     /// <summary>Upper bound while no request could be delivered yet: at boot the helper and the app's windows come up after the service.</summary>
     internal static readonly TimeSpan NotReachableWait = TimeSpan.FromSeconds(30);
 
-    /// <summary>The request is sent again this often while the app stays: one delivered during the app's startup is ignored (measured on iCUE), so a later one is the one that works.</summary>
+    /// <summary>Until a request is delivered it is sent again this often. During the app's startup it is also repeated after a delivery, since one delivered then can be ignored (measured on iCUE); past it a delivered request is not repeated, as a second one sent into a closing app can stall its exit (measured).</summary>
     internal static readonly TimeSpan Resend = TimeSpan.FromSeconds(3);
+
+    /// <summary>Process age under which a delivered request is repeated; longer than the startup handshake measured on iCUE.</summary>
+    internal static readonly TimeSpan StartupWindow = TimeSpan.FromSeconds(20);
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly Func<ConflictAppDefinition, IReadOnlyList<int>> _findPids;
+    private readonly Func<IReadOnlyList<int>, long> _ageMs;
     private readonly Func<IReadOnlyList<int>, SessionEndOutcome> _send;
     private readonly Func<ConflictAppDefinition, bool> _anyRunning;
     private readonly Func<ConflictAppDefinition, bool> _backOffRunning;
@@ -56,6 +60,7 @@ public sealed class ConflictGracefulEnd
     public ConflictGracefulEnd(IAppSessionEnder? ender, Action<string>? log = null)
         : this(
             def => ConflictKiller.FindGracefulProcessIds(def, ConflictSignerGate.Default),
+            ConflictKiller.YoungestAgeMs,
             pids => ender?.TrySend(pids) ?? SessionEndOutcome.HelperUnavailable,
             ConflictKiller.AnyProcessRunning,
             def => ConflictKiller.AnyBackOffOnlyRunning(def, ConflictSignerGate.Default),
@@ -69,6 +74,7 @@ public sealed class ConflictGracefulEnd
 
     internal ConflictGracefulEnd(
         Func<ConflictAppDefinition, IReadOnlyList<int>> findPids,
+        Func<IReadOnlyList<int>, long> ageMs,
         Func<IReadOnlyList<int>, SessionEndOutcome> send,
         Func<ConflictAppDefinition, bool> anyRunning,
         Func<ConflictAppDefinition, bool> backOffRunning,
@@ -79,6 +85,7 @@ public sealed class ConflictGracefulEnd
         bool canSend = true)
     {
         _findPids = findPids;
+        _ageMs = ageMs;
         _send = send;
         _anyRunning = anyRunning;
         _backOffRunning = backOffRunning;
@@ -127,7 +134,7 @@ public sealed class ConflictGracefulEnd
             }
             var now = _clockMs();
             if (now >= deadline) break;
-            if (now - lastSent >= (long)Resend.TotalMilliseconds)
+            if (now - lastSent >= (long)Resend.TotalMilliseconds && (!delivered || _ageMs(pids) < (long)StartupWindow.TotalMilliseconds))
             {
                 lastSent = now;
                 last = _send(pids);
