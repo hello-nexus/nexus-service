@@ -138,6 +138,22 @@ public static class OpenRgbDetectorExclusions
         return true;
     }
 
+    private static bool IsRenamed(string storedName, string liveName, IReadOnlyDictionary<string, string>? detectorMap)
+    {
+        if (detectorMap is null || storedName == liveName)
+        {
+            return false;
+        }
+        foreach (var live in detectorMap.Values)
+        {
+            if (live == storedName)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <param name="detectorMap">Device name -> detector name, from the
     /// daemon's detector-map.json. A missing entry falls back to the device
     /// name, which is what the denylist held before the map existed.</param>
@@ -210,10 +226,13 @@ public static class OpenRgbDetectorExclusions
                 }
                 if (exclusions.TryGetValue(baseId, out var existing))
                 {
-                    // Repair only ever rewrites a device name into a detector
-                    // name; rewriting an existing detector name would bounce
-                    // the subprocess every settle if two passes disagreed.
-                    if (existing.DetectorName != d.Name || detectorName == d.Name)
+                    // Repair rewrites a device name into a detector name, or a
+                    // detector name the fork no longer registers into the live one
+                    // (same StableId, old name absent from the live map). Rewriting
+                    // a name still in the map would bounce the subprocess every
+                    // settle if two passes disagreed.
+                    if (detectorName == d.Name
+                        || (existing.DetectorName != d.Name && !IsRenamed(existing.DetectorName, detectorName, detectorMap)))
                     {
                         continue;
                     }

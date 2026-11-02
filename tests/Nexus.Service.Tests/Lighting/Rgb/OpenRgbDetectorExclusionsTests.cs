@@ -327,6 +327,39 @@ public class OpenRgbDetectorExclusionsTests
     }
 
     [Fact]
+    public void A_renamed_detector_rewrites_the_stored_name_to_the_live_one()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Old DRAM Name" };
+        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map);
+
+        var add = Assert.Single(delta.Add);
+        Assert.Equal(Dimm().StableId, add.Key);
+        Assert.Equal("Corsair DRAM", add.Value.DetectorName);
+        Assert.Empty(delta.Remove);
+    }
+
+    [Fact]
+    public void An_old_name_still_present_in_the_live_map_is_not_rewritten()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Other Detector" };
+        var map = new Dictionary<string, string>
+        {
+            ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM",
+            ["Some Other Device"] = "Other Detector",
+        };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map);
+
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Fact]
     public void A_controlled_sibling_of_the_same_detector_blocks_the_exclusion()
     {
         // Denylisting "Corsair DRAM" would take the Dominator kit off the bus

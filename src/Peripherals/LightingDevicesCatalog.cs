@@ -172,9 +172,8 @@ public static class LightingDevicesCatalog
 
         // First-party devices Nexus drives natively lead the list with correct
         // model/category and a "nexus" source. The bundled OpenRGB fork registers
-        // some of the same hardware under its own controllers (the "HYTE Nexus"
-        // detector groups the THICC Q60 and Nexus Portal NP50 into one mislabeled
-        // row; LianLiController and CorsairICueLinkController cover exactly the Uni
+        // some of the same hardware under its own controllers (the HYTE
+        // THICC Q60, Nexus Portal NP50 and CNVS detectors; LianLiController and CorsairICueLinkController cover exactly the Uni
         // Fan/Strimer/Galahad and iCUE LINK hubs we now drive ourselves), so those
         // controllers are skipped to avoid duplicate, wrongly-typed rows.
         var result = new List<SupportedDeviceDto>(FirstPartyDevices.Count + file.Devices.Count);
