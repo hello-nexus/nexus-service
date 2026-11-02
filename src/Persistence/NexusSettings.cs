@@ -73,6 +73,8 @@ public sealed class NexusSettings
 
     /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
     public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();
+    /// <summary>Logitech speaker (G560) acoustics that live outside the speaker's audio effect: the subwoofer level Nexus set (sent again after the speaker reconnects), the EQ preset last chosen, and the user's own presets. The EQ, surround and channel volumes themselves stay in the effect's registry key, where G HUB keeps them too. NOT profile-scoped: it describes this PC's speaker.</summary>
+    public LogitechSpeakerSettings LogitechSpeaker { get; set; } = new();
 
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
@@ -2788,6 +2790,23 @@ public sealed class SentrySettings
 
     /// <summary>Epoch ms of the last alert the cloud accepted or rate-limited. Null until one has gone out. Drives the one-alert-per-hour cooldown.</summary>
     public long? LastAlertAt { get; set; }
+}
+
+/// <summary>See <see cref="NexusSettings.LogitechSpeaker"/>.</summary>
+public sealed class LogitechSpeakerSettings
+{
+    /// <summary>The subwoofer level (0-100) last set from Nexus; null until then, so a level set elsewhere is left alone.</summary>
+    public int? SubwooferLevel { get; set; }
+    /// <summary>The preset the current EQ bands came from; null once a band was moved by hand.</summary>
+    public string? EqPreset { get; set; }
+    public List<LogitechEqPreset> CustomPresets { get; set; } = new();
+}
+
+/// <summary>A named ten-band EQ, dB per band from 48 Hz to 16 kHz.</summary>
+public sealed class LogitechEqPreset
+{
+    public string Name { get; set; } = "";
+    public List<float> Bands { get; set; } = new();
 }
 
 /// <summary>Where a phone's Sentry alerts are pushed, as the phone's panel page registered it. Title and body are already translated; <c>{pc}</c> is filled at send time.</summary>
