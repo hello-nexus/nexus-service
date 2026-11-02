@@ -247,7 +247,7 @@ public sealed class SystemPreviewRoutesTests : IClassFixture<SystemPreviewAppFac
         var layout = Nexus.Service.Panel.PanelLayoutDefaults.ForSurface("desktop");
         var widgets = layout.Pages[0].Widgets;
 
-        Assert.Contains(widgets, w => w.Type == "build" && w.Size == "2x2" && w.Col == 4 && w.Row == 0);
+        Assert.Contains(widgets, w => w.Type == "build" && w.Size == "4x2" && w.Col == 4 && w.Row == 0);
         Assert.Contains(widgets, w => w.Type == "diagnostics" && w.Size == "2x2" && w.Col == 4 && w.Row == 2);
         Assert.Contains(widgets, w => w.Type == "weather" && w.Size == "2x2" && w.Col == 4 && w.Row == 4);
     }
