@@ -38,14 +38,11 @@ public sealed class ConflictGracefulEnd
     /// <summary>Upper bound while no request could be delivered yet: at boot the helper and the app's windows come up after the service.</summary>
     internal static readonly TimeSpan NotReachableWait = TimeSpan.FromSeconds(30);
 
-    /// <summary>Until a request is delivered it is sent again this often. A delivered request is not repeated: a second one sent into a closing app can stall its exit (measured).</summary>
+    /// <summary>A request is sent again this often until one is delivered, and, while the app is starting up, after that too.</summary>
     internal static readonly TimeSpan Resend = TimeSpan.FromSeconds(3);
 
-    /// <summary>Process age under which the app counts as starting up, longer than the startup handshake measured on iCUE.</summary>
-    internal static readonly TimeSpan StartupWindow = TimeSpan.FromSeconds(20);
-
-    /// <summary>Wait after a delivery to an app that is still starting up: its exit waits for the startup to finish, which stalled past 24 s on iCUE.</summary>
-    internal static readonly TimeSpan StartupWait = TimeSpan.FromSeconds(60);
+    /// <summary>Process age under which the app counts as starting up. A request delivered then is often ignored (measured on iCUE: not reacted to for 60 s), and one sent after it is reliable; a second request into an app already closing can stall its exit, so past this age exactly one is sent.</summary>
+    internal static readonly TimeSpan StartupWindow = TimeSpan.FromSeconds(25);
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
@@ -108,7 +105,7 @@ public sealed class ConflictGracefulEnd
         return new ConflictKiller.KillOutcome(before, _anyRunning(def));
     }
 
-    /// <summary>Blocks until the app exits or its deadline passes. The deadline is <see cref="NotReachableWait"/> from the start and, once a request is delivered, <see cref="Wait"/> from that moment (<see cref="StartupWait"/> for an app still starting up); a request every window refused (a higher-integrity app) ends the wait at once. Leftover processes and services are ended as soon as the app itself is gone.</summary>
+    /// <summary>Blocks until the app exits or its deadline passes. The deadline is <see cref="NotReachableWait"/> from the start and, once a request is delivered, <see cref="Wait"/> from that moment (from the end of <see cref="StartupWindow"/> for an app still starting up); a request every window refused (a higher-integrity app) ends the wait at once. Leftover processes and services are ended as soon as the app itself is gone.</summary>
     public void End(ConflictAppDefinition def)
     {
         if (_backOffRunning(def))
@@ -126,6 +123,7 @@ public sealed class ConflictGracefulEnd
         var lastSent = long.MinValue / 2;
         var last = SessionEndOutcome.HelperUnavailable;
         var delivered = false;
+        var sentPastStartup = false;
         while (true)
         {
             var pids = _findPids(def);
@@ -137,16 +135,27 @@ public sealed class ConflictGracefulEnd
             }
             var now = _clockMs();
             if (now >= deadline) break;
-            if (!delivered && now - lastSent >= (long)Resend.TotalMilliseconds)
+            if (now - lastSent >= (long)Resend.TotalMilliseconds)
             {
-                lastSent = now;
-                last = _send(pids);
-                if (last == SessionEndOutcome.Refused) break;
-                _log?.Invoke($"{def.DisplayName}: close request {last} after {now - start} ms");
-                if (last == SessionEndOutcome.Delivered)
+                var age = _ageMs(pids);
+                var starting = age < (long)StartupWindow.TotalMilliseconds;
+                if (!delivered || starting || !sentPastStartup)
                 {
-                    delivered = true;
-                    deadline = now + (long)(_ageMs(pids) < (long)StartupWindow.TotalMilliseconds ? StartupWait : Wait).TotalMilliseconds;
+                    lastSent = now;
+                    last = _send(pids);
+                    _log?.Invoke($"{def.DisplayName}: close request {last} after {now - start} ms (app age {age} ms)");
+                    if (last == SessionEndOutcome.Refused) break;
+                    if (last == SessionEndOutcome.Delivered)
+                    {
+                        sentPastStartup |= !starting;
+                        if (!delivered)
+                        {
+                            delivered = true;
+                            // An app still starting up is given until the window has passed and one more request had its chance, then the plain wait.
+                            var untilPast = starting ? (long)StartupWindow.TotalMilliseconds - age + (long)Resend.TotalMilliseconds : 0;
+                            deadline = now + untilPast + (long)Wait.TotalMilliseconds;
+                        }
+                    }
                 }
             }
             _sleepMs((int)PollInterval.TotalMilliseconds);

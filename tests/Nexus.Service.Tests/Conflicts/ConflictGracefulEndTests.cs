@@ -102,22 +102,40 @@ public class ConflictGracefulEndTests
     }
 
     [Fact]
-    public void An_app_still_starting_up_gets_the_long_wait_and_no_second_request()
+    public void An_app_still_starting_up_is_asked_again_until_a_request_lands_past_the_startup_window()
     {
         var rig = new Rig(exitsAt: null) { AppAgeAtStartMs = 1000 };
 
         rig.End.End(Graceful);
 
-        Assert.Single(rig.Sends);
-        Assert.InRange(Assert.Single(rig.Kills), Ms(ConflictGracefulEnd.StartupWait), Ms(ConflictGracefulEnd.StartupWait) + 1000);
+        // Every Resend through the window, plus one past it, then the plain wait before the kill.
+        Assert.True(rig.Sends.Count >= 8);
+        Assert.True(rig.Sends.Last() + rig.AppAgeAtStartMs >= Ms(ConflictGracefulEnd.StartupWindow));
+        Assert.All(rig.Sends.Zip(rig.Sends.Skip(1)), p => Assert.True(p.Second - p.First >= Ms(ConflictGracefulEnd.Resend)));
+        Assert.True(Assert.Single(rig.Kills) >= Ms(ConflictGracefulEnd.StartupWindow) - rig.AppAgeAtStartMs + Ms(ConflictGracefulEnd.Wait));
     }
 
     [Fact]
-    public void An_app_that_exits_late_in_its_startup_is_not_killed()
+    public void An_app_that_only_reacts_after_its_startup_is_not_killed()
     {
-        var rig = new Rig(exitsAt: 25_000) { AppAgeAtStartMs = 1000 };
+        var rig = new Rig(exitsAt: null) { AppAgeAtStartMs = 1000 };
+        var end = new ConflictGracefulEnd(
+            _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
+            _ => 1000 + rig.Now,
+            _ =>
+            {
+                rig.Sends.Add(rig.Now);
+                // A request sent while the app is still starting is delivered but ignored.
+                if (1000 + rig.Now >= Ms(ConflictGracefulEnd.StartupWindow)) rig.ExitsAt ??= rig.Now + 2000;
+                return SessionEndOutcome.Delivered;
+            },
+            _ => rig.ExitsAt is not { } e || rig.Now < e,
+            _ => false,
+            _ => rig.Kills.Add(rig.Now),
+            () => rig.Now,
+            ms => rig.Now += ms);
 
-        rig.End.End(Graceful);
+        end.End(Graceful);
 
         Assert.Empty(rig.Kills);
     }
