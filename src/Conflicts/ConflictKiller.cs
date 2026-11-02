@@ -94,6 +94,27 @@ public static class ConflictKiller
         return ids;
     }
 
+    /// <summary>Whether a process named in <see cref="ConflictAppDefinition.BackOffOnlyProcessNames"/> is running.</summary>
+    internal static bool AnyBackOffOnlyRunning(ConflictAppDefinition def, ConflictSignerGate gate)
+    {
+        foreach (var name in def.BackOffOnlyProcessNames)
+        {
+            try
+            {
+                var procs = Process.GetProcessesByName(name);
+                var any = false;
+                foreach (var p in procs)
+                {
+                    if (!any && gate.Matches(def, p.Id)) any = true;
+                    p.Dispose();
+                }
+                if (any) return true;
+            }
+            catch { /* an unreadable process list is not evidence of absence */ }
+        }
+        return false;
+    }
+
     /// <summary>Whether any process this catalog entry names is running (for a setting, whether it is still active); the oracle for whether a kill did anything.</summary>
     public static bool AnyProcessRunning(ConflictAppDefinition def) => AnyProcessRunning(def, ConflictSignerGate.Default);
 

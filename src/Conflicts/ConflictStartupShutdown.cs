@@ -80,13 +80,10 @@ public sealed class ConflictStartupShutdown : IHostedService
 
     public ConflictStartupShutdown(
         IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log,
-        Nexus.Service.Lifecycle.FeatureGates? gates = null, IAppSessionEnder? sessionEnder = null)
-        : this(store, watcher, log, GracefulKill(sessionEnder, log), ConflictKiller.AnyProcessRunning, null, gates, null)
+        Nexus.Service.Lifecycle.FeatureGates? gates = null, ConflictGracefulEnd? gracefulEnd = null)
+        : this(store, watcher, log, (gracefulEnd ?? new ConflictGracefulEnd(null)).End, ConflictKiller.AnyProcessRunning, null, gates, null)
     {
     }
-
-    private static Action<ConflictAppDefinition> GracefulKill(IAppSessionEnder? sessionEnder, ILogger<ConflictStartupShutdown> log) =>
-        new ConflictGracefulEnd(sessionEnder, message => log.LogInformation("Conflict shutdown: {Message}", message)).End;
 
     internal ConflictStartupShutdown(
         IConfigStore store,
@@ -228,11 +225,15 @@ public sealed class ConflictStartupShutdown : IHostedService
     /// <summary>Ends every detected app not on the whitelist (only <see cref="ConflictAppDefinition.AlwaysEnded"/> ones without <paramref name="sweep"/>) and not already tried under its current pid, then raises <see cref="AppsTerminated"/> for the ones confirmed gone.</summary>
     internal void EndRunningApps(bool sweep = true, bool throttleNotice = false)
     {
-        // The boot sweep and a logon-started window loop can overlap.
-        lock (_attempted) EndRunningAppsLocked(sweep, throttleNotice);
+        // The targets are picked under the lock; the ends run outside it, so a graceful wait
+        // does not hold up the other tick. A pid already in _attempted is never picked twice.
+        List<ConflictAppDefinition> targets;
+        lock (_attempted) targets = PickTargetsLocked(sweep, throttleNotice);
+        if (targets.Count == 0) return;
+        EndTargets(targets, throttleNotice);
     }
 
-    private void EndRunningAppsLocked(bool sweep, bool throttleNotice)
+    private List<ConflictAppDefinition> PickTargetsLocked(bool sweep, bool throttleNotice)
     {
         // The "before" set is captured up front, for every target, and the
         // outcome is read from it afterwards. Per-app Killed flags undercount:
@@ -271,8 +272,12 @@ public sealed class ConflictStartupShutdown : IHostedService
             try { AppSurvived?.Invoke(app); }
             catch (Exception ex) { _log.LogWarning(ex, "Conflict survivor notification failed."); }
         }
-        if (targets.Count == 0) return;
+        // Apps that end at once go first, so one that waits for a graceful close does not delay them.
+        return targets.OrderBy(d => d.GracefulProcessNames.Length > 0 ? 1 : 0).ToList();
+    }
 
+    private void EndTargets(List<ConflictAppDefinition> targets, bool throttleNotice)
+    {
         foreach (var def in targets)
         {
             try { _kill(def); }
@@ -320,9 +325,12 @@ public sealed class ConflictStartupShutdown : IHostedService
     private bool NoticeDue(string appId)
     {
         var now = _clockMs();
-        if (_lastNoticeMs.TryGetValue(appId, out var last) && now - last < (long)ConflictLaunchTracker.Cooldown.TotalMilliseconds) return false;
-        _lastNoticeMs[appId] = now;
-        return true;
+        lock (_lastNoticeMs)
+        {
+            if (_lastNoticeMs.TryGetValue(appId, out var last) && now - last < (long)ConflictLaunchTracker.Cooldown.TotalMilliseconds) return false;
+            _lastNoticeMs[appId] = now;
+            return true;
+        }
     }
 
     private static WindowsDynamicLightingState? DefaultDynamicLightingOff() =>

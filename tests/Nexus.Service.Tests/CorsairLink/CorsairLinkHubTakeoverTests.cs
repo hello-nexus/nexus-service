@@ -128,7 +128,7 @@ public class CorsairLinkHubTakeoverTests
 
     private static CorsairLinkHub NewHub(TakeoverHub device, Func<long>? clock = null)
     {
-        var hub = new CorsairLinkHub { ModeCycleWaitMs = 0 };
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         if (clock is not null) hub.NowMs = clock;
         hub.Attach(device);
         return hub;
@@ -331,4 +331,90 @@ public class CorsairLinkHubTakeoverTests
         Assert.False(sent);
         Assert.True(await init);
     }
+
+    // A real, non-zero dwell: the first hardware-mode command of the takeover signals that the lock is released.
+    private static (CorsairLinkHub Hub, TakeoverHub Device, ManualResetEventSlim InDwell) DwellingHub(int dwellMs)
+    {
+        var device = new TakeoverHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: dwellMs);
+        hub.Attach(device);
+        var inDwell = new ManualResetEventSlim();
+        var seen = 0;
+        device.OnCommand = c =>
+        {
+            if (c[0] == 0x01 && c[3] == CorsairLinkProtocol.ModeHardware && Interlocked.Increment(ref seen) == 1) inDwell.Set();
+        };
+        return (hub, device, inDwell);
+    }
+
+    [Fact]
+    public async Task A_detach_during_the_dwell_wakes_the_takeover_at_once()
+    {
+        var (hub, _, inDwell) = DwellingHub(20_000);
+        var init = Task.Run(hub.Initialize);
+        Assert.True(inDwell.Wait(5000));
+        var started = Environment.TickCount64;
+
+        hub.Detach(handBack: true);
+
+        Assert.False(await init);
+        Assert.True(Environment.TickCount64 - started < 5000);
+    }
+
+    [Fact]
+    public async Task A_retire_during_the_dwell_ends_the_takeover_and_refuses_every_later_one()
+    {
+        var (hub, _, inDwell) = DwellingHub(20_000);
+        var init = Task.Run(hub.Initialize);
+        Assert.True(inDwell.Wait(5000));
+
+        hub.Retire(handBack: true);
+
+        Assert.False(await init);
+        var later = new TakeoverHub();
+        hub.Attach(later);
+        Assert.False(hub.Initialize());
+        Assert.Empty(later.Commands);
+    }
+
+    [Fact]
+    public async Task Another_programs_traffic_during_the_dwell_stops_the_takeover_before_any_handle_is_closed()
+    {
+        var (hub, device, inDwell) = DwellingHub(300);
+        var init = Task.Run(hub.Initialize);
+        Assert.True(inDwell.Wait(5000));
+        device.Inject(0x0D);
+
+        Assert.False(await init);
+
+        Assert.True(hub.ForeignHostSeen);
+        Assert.Contains("dwell", hub.ForeignReplyHex);
+        // The sequence ends at the hardware mode command: no probe or close after the dwell.
+        Assert.Equal("HARD", Sequence(device).Last());
+    }
+
+    [Fact]
+    public void Two_hubs_take_over_and_hand_back_independently()
+    {
+        var first = new TakeoverHub();
+        var second = new TakeoverHub();
+        var hubA = new CorsairLinkHub(modeCycleWaitMs: 0);
+        var hubB = new CorsairLinkHub("corsair:B:", 2, modeCycleWaitMs: 0);
+        hubA.Attach(first);
+        hubB.Attach(second);
+
+        Assert.True(hubA.Initialize());
+        Assert.True(hubB.Initialize());
+        Assert.Equal(Sequence(first), Sequence(second));
+        var secondBefore = second.Commands.Count;
+
+        hubA.Detach(handBack: true);
+
+        Assert.Equal(CorsairLinkProtocol.ModeHardware, first.Mode);
+        Assert.Equal(CorsairLinkProtocol.ModeSoftware, second.Mode);
+        Assert.Equal(secondBefore, second.Commands.Count);
+        hubB.Detach(handBack: true);
+        Assert.Equal(CorsairLinkProtocol.ModeHardware, second.Mode);
+    }
 }
+

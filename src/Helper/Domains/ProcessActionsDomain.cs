@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text.Json;
@@ -86,30 +87,50 @@ public static class ProcessActionsCommands
     }
 
     /// <summary>Asks the helper to send the session-end messages to the top-level windows of <paramref name="pids"/>; the windows found and the ones that accepted, or null when no helper answered.</summary>
+    /// <summary>Per window: the end message is sent after the query, each up to 3 s, and a target may have a dozen windows.</summary>
+    private const int EndSessionTimeoutMs = 60_000;
+
+    [DllImport("kernel32.dll")]
+    private static extern bool ProcessIdToSessionId(uint processId, out uint sessionId);
+
+    private static int SessionOf(int pid) => ProcessIdToSessionId((uint)pid, out var sid) ? (int)sid : -1;
+
+    /// <summary>Asks the helper of each target's own session to send the session-end messages to the top-level windows of <paramref name="pids"/>; the windows found and accepted, or null when no helper answered.</summary>
     public static async Task<ProcessEndSessionResult?> EndSessionAsync(HelperRegistry r, int[] pids, CancellationToken ct = default)
     {
-        var conn = r.GetAny();
-        if (conn is null)
+        ProcessEndSessionResult? total = null;
+        foreach (var group in pids.GroupBy(SessionOf))
         {
-            return null;
-        }
+            var conn = group.Key >= 0 ? r.GetForSession(group.Key) : null;
+            if (conn is null)
+            {
+                continue;
+            }
 
-        var result = await conn.SendCommandAsync(
-            "process.endSession", new ProcessEndSessionRequest { Pids = pids },
-            AppJsonContext.Default.ProcessEndSessionRequest, timeoutMs: 8000, ct: ct).ConfigureAwait(false);
-        if (!result.Ok || result.Payload is null)
-        {
-            return null;
-        }
+            var result = await conn.SendCommandAsync(
+                "process.endSession", new ProcessEndSessionRequest { Pids = group.ToArray() },
+                AppJsonContext.Default.ProcessEndSessionRequest, timeoutMs: EndSessionTimeoutMs, ct: ct).ConfigureAwait(false);
+            if (!result.Ok || result.Payload is null)
+            {
+                continue;
+            }
 
-        try
-        {
-            return JsonSerializer.Deserialize(result.Payload.Value, AppJsonContext.Default.ProcessEndSessionResult);
+            try
+            {
+                var parsed = JsonSerializer.Deserialize(result.Payload.Value, AppJsonContext.Default.ProcessEndSessionResult);
+                if (parsed is null)
+                {
+                    continue;
+                }
+                total ??= new ProcessEndSessionResult();
+                total.Windows += parsed.Windows;
+                total.Accepted += parsed.Accepted;
+            }
+            catch
+            {
+            }
         }
-        catch
-        {
-            return null;
-        }
+        return total;
     }
 
     public static async Task<bool> ActivateWindowAsync(HelperRegistry r, int pid, CancellationToken ct = default)

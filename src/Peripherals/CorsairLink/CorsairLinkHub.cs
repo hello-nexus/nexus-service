@@ -58,10 +58,12 @@ public sealed class CorsairLinkHub : IDisposable
 
     /// <param name="idPrefix">"corsair:" keeps the single-hub ids; other hubs carry their serial.</param>
     /// <param name="number">1-based display number; 1 for the hub holding the unqualified ids.</param>
-    public CorsairLinkHub(string idPrefix = "corsair:", int number = 1)
+    /// <param name="modeCycleWaitMs">Hardware-mode dwell of the takeover cycle.</param>
+    public CorsairLinkHub(string idPrefix = "corsair:", int number = 1, int modeCycleWaitMs = CorsairLinkProtocol.ModeCycleWaitMs)
     {
         IdPrefix = idPrefix;
         Number = number;
+        ModeCycleWaitMs = modeCycleWaitMs;
     }
 
     /// <summary>The Nexus Control / device-row id every hub shares.</summary>
@@ -133,18 +135,19 @@ public sealed class CorsairLinkHub : IDisposable
 
     private bool TakeOwedReply(byte echo)
     {
-        if (echo == 0) return false;
-        lock (_lock)
+        lock (_lock) return TakeOwedLocked(echo);
+    }
+
+    private bool TakeOwedLocked(byte echo)
+    {
+        if (echo == 0 || _owedReplies[echo] <= 0) return false;
+        if (NowMs() - _owedSinceMs[echo] > OwedReplyMaxAgeMs)
         {
-            if (_owedReplies[echo] <= 0) return false;
-            if (NowMs() - _owedSinceMs[echo] > OwedReplyMaxAgeMs)
-            {
-                _owedReplies[echo] = 0;
-                return false;
-            }
-            _owedReplies[echo]--;
-            return true;
+            _owedReplies[echo] = 0;
+            return false;
         }
+        _owedReplies[echo]--;
+        return true;
     }
 
     private static string Hex(ReadOnlySpan<byte> bytes, int count)
@@ -180,11 +183,10 @@ public sealed class CorsairLinkHub : IDisposable
     /// <summary>Minimum time between two takeover mode cycles on this hub, so a failing connect does not repeat the dwell every retry.</summary>
     internal const long CycleMinIntervalMs = 60_000;
 
-    /// <summary>Production dwell of the takeover cycle; the test assembly zeroes it so connects do not wait.</summary>
-    internal static int DefaultModeCycleWaitMs = CorsairLinkProtocol.ModeCycleWaitMs;
+    internal int ModeCycleWaitMs { get; set; }
 
-    /// <summary>Hardware-mode dwell between the two software-mode commands of a takeover.</summary>
-    internal int ModeCycleWaitMs { get; set; } = DefaultModeCycleWaitMs;
+    // Set by the service-stop release: no later Attach or Initialize takes the hub again.
+    private bool _retired;
 
     private void TraceNote(string note)
     {
@@ -198,6 +200,11 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            if (_retired)
+            {
+                device.Dispose();
+                return;
+            }
             _device = device;
             ForeignHostSeen = false;
             ForeignReplyHex = "";
@@ -232,11 +239,21 @@ public sealed class CorsairLinkHub : IDisposable
             _softwareMode = false;
             _colorPrimed = false;
             _colorHandleOpen = false;
+            // Wakes a takeover waiting out the dwell.
+            Monitor.PulseAll(_lock);
         }
     }
 
+    /// <summary>Service stop: hands the hub back and refuses every later Attach and Initialize.</summary>
+    public void Retire(bool handBack)
+    {
+        lock (_lock) _retired = true;
+        Detach(handBack);
+    }
+
     // Close what Nexus opened, return the chain to firmware so the fans keep running on
-    // the hub's own curve, and read the mode back to confirm.
+    // the hub's own curve, and read the mode back to confirm. The leading mode read
+    // keeps the measured order of another host's hand-back.
     private void HandBackLocked()
     {
         _sequencing = true;
@@ -271,6 +288,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            if (_retired) return false;
             _trace = new System.Text.StringBuilder();
             _initializing = true;
             _sequencing = true;
@@ -321,8 +339,9 @@ public sealed class CorsairLinkHub : IDisposable
         }
         TraceNote($"fw={State.Firmware}");
 
-        // Hardware then software again returns the chain to a known state and lets the
-        // fans spool on firmware control; it also frees a hub a killed host left refusing.
+        // Hardware then software again lets the fans spool on firmware control and frees a
+        // hub a killed host left refusing. The 11 s dwell is the gap measured in a capture
+        // of another host's takeover.
         if (NowMs() - _lastCycleMs >= CycleMinIntervalMs)
         {
             _lastCycleMs = NowMs();
@@ -330,6 +349,8 @@ public sealed class CorsairLinkHub : IDisposable
             Transfer(CorsairLinkProtocol.CmdHardwareMode);
             WaitReleasingLockLocked(ModeCycleWaitMs);
             if (_device == null) return false;
+            // Nothing of ours is outstanding after the dwell, so any report in the queue is another program's: stop before closing a handle it may hold.
+            if (AbsorbDwellTrafficLocked()) return false;
             ReadModeLocked();
             CloseOpenHandlesLocked();
             Transfer(CorsairLinkProtocol.CmdSoftwareMode);
@@ -365,6 +386,24 @@ public sealed class CorsairLinkHub : IDisposable
     {
         if (ms <= 0) return;
         Monitor.Wait(_lock, ms);
+    }
+
+    // Reads whatever queued up during the dwell; a report that is not a late reply to a timed-out command of ours marks another program.
+    private bool AbsorbDwellTrafficLocked()
+    {
+        if (ForeignHostSeen) return true;
+        for (var i = 0; i < DrainReads; i++)
+        {
+            var n = _device?.Read(_readRaw, ResyncReadTimeoutMs) ?? 0;
+            if (n <= 0) return false;
+            var echo = _readRaw[1 + CorsairLinkProtocol.ResponseCommandOffset];
+            if (echo == 0 || TakeOwedLocked(echo)) continue;
+            ForeignHostSeen = true;
+            ForeignReplyHex = $"dwell echo={echo:x2} reply={Hex(_readRaw.AsSpan(1), TraceReplyBytes)}";
+            TraceNote($"foreign {ForeignReplyHex}");
+            return true;
+        }
+        return false;
     }
 
     // The mode property, or -1 when the reply is missing or not an answer to the read.
@@ -749,8 +788,9 @@ public sealed class CorsairLinkHub : IDisposable
     private void NoteEcho(byte sent)
     {
         var echo = _read[CorsairLinkProtocol.ResponseCommandOffset];
-        if (echo != 0 && echo != sent && _owedReplies[echo] > 0) _owedReplies[echo]--;
-        if (echo != 0 && echo != sent && !IsOwnCommand(echo))
+        var owed = echo != 0 && echo != sent && _owedReplies[echo] > 0;
+        if (owed) _owedReplies[echo]--;
+        if (echo != 0 && echo != sent && !owed && !IsOwnCommand(echo))
         {
             ForeignHostSeen = true;
             ForeignReplyHex = $"sent={sent:x2} echo={echo:x2} reply={Hex(_read, TraceReplyBytes)}";

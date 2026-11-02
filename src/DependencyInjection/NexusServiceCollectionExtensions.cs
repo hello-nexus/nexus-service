@@ -82,6 +82,10 @@ public static class NexusServiceCollectionExtensions
         // singleton the rest of the service reads, and as a singleton in its
         // own right so the Windows tray bootstrap can subscribe to its
         // AppsTerminated event.
+        // The one way a competing app is ended from the sweep, the dashboard and the notice: a graceful close first, a hard kill as the fallback.
+        services.AddSingleton(sp => new Nexus.Service.Conflicts.ConflictGracefulEnd(
+            sp.GetService<Nexus.Service.Conflicts.IAppSessionEnder>(),
+            message => Nexus.Service.Platform.ServiceLog.Info($"[conflicts] {message}")));
         services.AddSingleton<Nexus.Service.Conflicts.ConflictStartupShutdown>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Conflicts.ConflictStartupShutdown>());
         services.AddHostedService<Nexus.Service.Devices.VendorAppControlPause>();

@@ -91,7 +91,7 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
     public void ReleaseForShutdown()
     {
         _retired = true;
-        foreach (var hub in _hubs.All) hub.Detach(handBack: HandBack() && !hub.ForeignHostSeen);
+        foreach (var hub in _hubs.All) hub.Retire(handBack: HandBack() && !hub.ForeignHostSeen);
     }
 
     private static string Tag(CorsairLinkHub hub) => hub.Number == 1 ? "[corsair]" : $"[corsair hub {hub.Number}]";
@@ -269,6 +269,11 @@ public sealed class CorsairLinkConnectionWorker : BackgroundService
 
                 var listenStartMs = Environment.TickCount64;
                 var heardOther = hub.HearsOtherHost(device, ListenMs, out var heardHex, out var ownHex);
+                if (_retired)
+                {
+                    device.Dispose();
+                    return;
+                }
                 if (ownHex.Length > 0 && !ownEchoLogged)
                 {
                     ownEchoLogged = true;
