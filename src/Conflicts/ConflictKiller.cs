@@ -94,6 +94,22 @@ public static class ConflictKiller
         return ids;
     }
 
+    /// <summary>Age in ms of the youngest of <paramref name="pids"/>; long.MaxValue when none can be read.</summary>
+    internal static long YoungestAgeMs(IReadOnlyList<int> pids)
+    {
+        var youngest = long.MaxValue;
+        foreach (var pid in pids)
+        {
+            try
+            {
+                using var p = Process.GetProcessById(pid);
+                youngest = Math.Min(youngest, (long)(DateTime.Now - p.StartTime).TotalMilliseconds);
+            }
+            catch { }
+        }
+        return youngest;
+    }
+
     /// <summary>Whether a process named in <see cref="ConflictAppDefinition.BackOffOnlyProcessNames"/> is running.</summary>
     internal static bool AnyBackOffOnlyRunning(ConflictAppDefinition def, ConflictSignerGate gate)
     {
