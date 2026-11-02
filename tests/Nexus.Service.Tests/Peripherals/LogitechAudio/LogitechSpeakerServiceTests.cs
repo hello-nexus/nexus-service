@@ -174,7 +174,7 @@ public class LogitechSpeakerServiceTests
         _apo.SelectedEq = 0;
         var service = Service();
 
-        Assert.True(service.SetEq(null, null, "bass boost"));
+        Assert.True(service.SetEq(null, null, "bass boost").Ok);
 
         var write = Assert.Single(_apo.Writes);
         Assert.Equal(LogitechSpeakerProtocol.EqAdvanced, write.SelectedEq);
@@ -187,7 +187,7 @@ public class LogitechSpeakerServiceTests
     {
         _store.Settings.LogitechSpeaker.EqPreset = "Flat";
 
-        Assert.True(Service().SetEq(null, new float[] { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 }, null));
+        Assert.True(Service().SetEq(null, new float[] { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 }, null).Ok);
 
         Assert.Null(_store.Settings.LogitechSpeaker.EqPreset);
     }
@@ -196,7 +196,7 @@ public class LogitechSpeakerServiceTests
     public void State_NamesThePreset_OnlyWhileTheEffectStillHoldItsBands()
     {
         var service = Service();
-        Assert.True(service.SetEq(null, null, "Cinematic"));
+        Assert.True(service.SetEq(null, null, "Cinematic").Ok);
         Assert.Equal("Cinematic", service.GetState().Preset);
 
         _apo.Bands = new float[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -242,8 +242,8 @@ public class LogitechSpeakerServiceTests
         _bass.Sets.Clear();
 
         _apo.Active = true;
-        Assert.True(service.SetSubwoofer(90));
-        Assert.True(service.SavePreset("Sim", new float[10]));
+        Assert.True(service.SetSubwoofer(90).Ok);
+        Assert.True(service.SavePreset("Sim", new float[10]).Ok);
         Assert.Equal(40, _store.Settings.LogitechSpeaker.SubwooferLevel);
         Assert.Empty(_store.Settings.LogitechSpeaker.CustomPresets);
         Assert.True(service.GetState().Simulated);
@@ -253,15 +253,26 @@ public class LogitechSpeakerServiceTests
         _bass.Generation++;
         service.Tick();
 
-        Assert.Equal(new[] { 90 }, _bass.Sets);
+        Assert.Equal(new[] { 90, 40 }, _bass.Sets);
         Assert.DoesNotContain(service.GetState().Presets, p => p.Name == "Sim");
         Assert.False(service.GetState().Simulated);
     }
 
     [Fact]
+    public void Presets_AreHostSideData_AndWorkWithoutASpeaker()
+    {
+        _apo.Endpoints.Clear();
+        var service = Service();
+
+        Assert.True(service.SavePreset("Mine", new float[10]).Ok);
+        Assert.Contains(service.GetState().Presets, p => p.Name == "Mine");
+        Assert.True(service.DeletePreset("Mine").Ok);
+    }
+
+    [Fact]
     public void TurningTheEqOff_LeavesTheBandsAlone()
     {
-        Assert.True(Service().SetEq(false, null, null));
+        Assert.True(Service().SetEq(false, null, null).Ok);
 
         var write = Assert.Single(_apo.Writes);
         Assert.Equal(LogitechSpeakerProtocol.EqOff, write.SelectedEq);
@@ -273,8 +284,8 @@ public class LogitechSpeakerServiceTests
     {
         var service = Service();
 
-        Assert.False(service.SetEq(null, null, "nope"));
-        Assert.False(service.SetEq(null, new float[] { 1, 2, 3 }, null));
+        Assert.False(service.SetEq(null, null, "nope").Ok);
+        Assert.False(service.SetEq(null, new float[] { 1, 2, 3 }, null).Ok);
         Assert.Empty(_apo.Writes);
     }
 
@@ -283,16 +294,16 @@ public class LogitechSpeakerServiceTests
     {
         var service = Service();
 
-        Assert.True(service.SetSurround(true, "movie"));
+        Assert.True(service.SetSurround(true, "movie").Ok);
         Assert.Equal(LogitechSpeakerProtocol.SurroundDts, _apo.SelectedSurround);
         Assert.True(_apo.DtsOn);
         Assert.Equal(LogitechSpeakerProtocol.Rooms.Movie, _apo.DtsRoom);
 
-        Assert.True(service.SetSurround(false, null));
+        Assert.True(service.SetSurround(false, null).Ok);
         Assert.False(_apo.DtsOn);
         Assert.Null(_apo.Writes[^1].SelectedSurround);
 
-        Assert.False(service.SetSurround(null, "concert"));
+        Assert.False(service.SetSurround(null, "concert").Ok);
     }
 
     [Fact]
@@ -300,23 +311,23 @@ public class LogitechSpeakerServiceTests
     {
         var service = Service();
 
-        Assert.True(service.SetChannelGain(3, 1.5f));
+        Assert.True(service.SetChannelGain(3, 1.5f).Ok);
         Assert.Equal(new[] { 1f, 1f, 1f, 1.5f, 1f, 1f, 1f, 1f }, _apo.Gains);
 
-        Assert.True(service.SetChannelGain(0, 9f));
+        Assert.True(service.SetChannelGain(0, 9f).Ok);
         Assert.Equal(2f, _apo.Gains![0]);
 
-        Assert.True(service.SetChannelGain(null, 0f));
+        Assert.True(service.SetChannelGain(null, 0f).Ok);
         Assert.Equal(Enumerable.Repeat(1f, 8), _apo.Gains);
 
-        Assert.False(service.SetChannelGain(8, 1f));
+        Assert.False(service.SetChannelGain(8, 1f).Ok);
     }
 
     [Fact]
     public void Subwoofer_IsRememberedAndSentAgainAfterTheSpeakerReconnects()
     {
         var service = Service();
-        Assert.True(service.SetSubwoofer(60));
+        Assert.True(service.SetSubwoofer(60).Ok);
         Assert.Equal(60, _store.Settings.LogitechSpeaker.SubwooferLevel);
         Assert.Equal(new[] { 60 }, _bass.Sets);
 
@@ -360,7 +371,7 @@ public class LogitechSpeakerServiceTests
     {
         _bass.Present = false;
 
-        Assert.False(Service().SetSubwoofer(50));
+        Assert.False(Service().SetSubwoofer(50).Ok);
         Assert.Null(_store.Settings.LogitechSpeaker.SubwooferLevel);
     }
 
@@ -370,26 +381,26 @@ public class LogitechSpeakerServiceTests
         var service = Service();
         var bands = new float[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
 
-        Assert.False(service.SavePreset("Flat", bands));
-        Assert.False(service.SavePreset("  ", bands));
-        Assert.True(service.SavePreset(" Mine ", bands));
-        Assert.True(service.SavePreset("mine", new float[10]));
+        Assert.False(service.SavePreset("Flat", bands).Ok);
+        Assert.False(service.SavePreset("  ", bands).Ok);
+        Assert.True(service.SavePreset(" Mine ", bands).Ok);
+        Assert.True(service.SavePreset("mine", new float[10]).Ok);
 
         var mine = Assert.Single(_store.Settings.LogitechSpeaker.CustomPresets);
         Assert.Equal("mine", mine.Name);
-        Assert.True(service.SetEq(null, null, "MINE"));
+        Assert.True(service.SetEq(null, null, "MINE").Ok);
         Assert.Equal("MINE", _store.Settings.LogitechSpeaker.EqPreset);
 
-        Assert.True(service.DeletePreset("Mine"));
+        Assert.True(service.DeletePreset("Mine").Ok);
         Assert.Empty(_store.Settings.LogitechSpeaker.CustomPresets);
         Assert.Null(_store.Settings.LogitechSpeaker.EqPreset);
-        Assert.False(service.DeletePreset("Mine"));
+        Assert.False(service.DeletePreset("Mine").Ok);
     }
 
     [Fact]
     public void SavedPreset_IsClampedToTheSliderRange()
     {
-        Assert.True(Service().SavePreset("Loud", new float[] { 12, 0, 0, 0, 0, 0, 0, 0, 0, -40 }));
+        Assert.True(Service().SavePreset("Loud", new float[] { 12, 0, 0, 0, 0, 0, 0, 0, 0, -40 }).Ok);
 
         var bands = _store.Settings.LogitechSpeaker.CustomPresets[0].Bands;
         Assert.Equal(6f, bands[0]);
@@ -401,9 +412,9 @@ public class LogitechSpeakerServiceTests
     {
         var service = Service();
 
-        Assert.True(service.SetVolume(1.4f));
+        Assert.True(service.SetVolume(1.4f).Ok);
         Assert.Equal(1f, _apo.Volume);
-        Assert.True(service.TestChannel(2));
+        Assert.True(service.TestChannel(2).Ok);
         Assert.Equal(new[] { 2 }, _apo.Tests);
     }
 }

@@ -35,7 +35,6 @@ public sealed class LogitechSpeakerService : BackgroundService
     // Settings used while the dev-tools simulator is active, so nothing it does reaches the saved ones.
     private LogitechSpeakerSettings _simSettings = new();
     private bool _simulated;
-    private bool _resyncGeneration;
     // The subwoofer level as last read or set, per connection: pages poll the state every
     // few seconds and the speaker does not need a HID++ question each time.
     private int? _subwooferLevel;
@@ -94,13 +93,6 @@ public sealed class LogitechSpeakerService : BackgroundService
         lock (_bassLock)
         {
             var generation = _bass.Generation;
-            if (_resyncGeneration)
-            {
-                // The simulator just stopped: the real speaker keeps the level it has.
-                _resyncGeneration = false;
-                _restoredGeneration = generation;
-                return;
-            }
             if (generation == _restoredGeneration)
             {
                 return;
@@ -277,7 +269,6 @@ public sealed class LogitechSpeakerService : BackgroundService
             UpdateSettings(s => s.SubwooferLevel = clamped);
             var generation = _bass.Generation;
             _restoredGeneration = generation;
-            _resyncGeneration = false;
             lock (_lock)
             {
                 _subwooferLevel = clamped;
@@ -380,7 +371,6 @@ public sealed class LogitechSpeakerService : BackgroundService
             _simSettings = new LogitechSpeakerSettings();
             _subwooferLevel = null;
             _endpointsAt = DateTimeOffset.MinValue;
-            _resyncGeneration = !active;
         }
     }
 
@@ -461,14 +451,23 @@ public sealed class LogitechSpeakerService : BackgroundService
     private LogitechSpeakerEndpoint? Endpoint(bool fresh = false)
     {
         SyncSimulation();
+        bool stale;
         lock (_lock)
         {
-            var now = _time.GetUtcNow();
-            if (fresh || now - _endpointsAt >= EndpointCacheTime)
+            stale = fresh || _time.GetUtcNow() - _endpointsAt >= EndpointCacheTime;
+        }
+        if (stale)
+        {
+            // The scan can wait on COM, so it runs outside the lock.
+            var found = _apo.FindEndpoints();
+            lock (_lock)
             {
-                _endpoints = _apo.FindEndpoints();
-                _endpointsAt = now;
+                _endpoints = found;
+                _endpointsAt = _time.GetUtcNow();
             }
+        }
+        lock (_lock)
+        {
             return _endpoints.FirstOrDefault(e => e.IsDefault) ?? _endpoints.FirstOrDefault();
         }
     }
@@ -485,10 +484,10 @@ public enum SpeakerStatus
     Failed,
 }
 
-/// <summary>The outcome of a change; converts to true only for <see cref="SpeakerStatus.Ok"/>.</summary>
+/// <summary>The outcome of a change.</summary>
 public readonly record struct SpeakerResult(SpeakerStatus Status)
 {
     public static implicit operator SpeakerResult(SpeakerStatus status) => new(status);
 
-    public static implicit operator bool(SpeakerResult result) => result.Status == SpeakerStatus.Ok;
+    public bool Ok => Status == SpeakerStatus.Ok;
 }

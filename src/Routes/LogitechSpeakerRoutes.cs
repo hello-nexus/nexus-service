@@ -46,7 +46,7 @@ public static partial class DevicesRoutes
                 return SpeakerError("no Logitech speaker support on this platform", StatusCodes.Status404NotFound);
             }
             var result = body.Channel is { } channel ? speaker.TestChannel(channel) : SpeakerStatus.Invalid;
-            return result
+            return result.Ok
                 ? Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse)
                 : Failure(result.Status);
         });
@@ -62,7 +62,7 @@ public static partial class DevicesRoutes
             return SpeakerError("no Logitech speaker support on this platform", StatusCodes.Status404NotFound);
         }
         var result = change(speaker);
-        return result ? Results.Json(speaker.GetState(), AppJsonContext.Default.LogitechSpeakerStateDto) : Failure(result.Status);
+        return result.Ok ? Results.Json(speaker.GetState(), AppJsonContext.Default.LogitechSpeakerStateDto) : Failure(result.Status);
     }
 
     private static IResult Failure(SpeakerStatus status) => status switch
