@@ -138,10 +138,42 @@ public static class OpenRgbDetectorExclusions
         return true;
     }
 
+    /// <summary>
+    /// The daemon rewrites OpenRGB.json's detector keys to exactly the registered set at every
+    /// detection start (adds missing, drops unregistered), so after a rescan the keys are the
+    /// registered names. Null when the section is missing, empty or unreadable.
+    /// </summary>
+    public static HashSet<string>? LoadRegisteredDetectors(string configDir)
+    {
+        try
+        {
+            var path = System.IO.Path.Combine(configDir, "OpenRGB.json");
+            if (!System.IO.File.Exists(path))
+            {
+                return null;
+            }
+            if (System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText(path))?["Detectors"]?["detectors"] is not System.Text.Json.Nodes.JsonObject { Count: > 0 } map)
+            {
+                return null;
+            }
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var kv in map)
+            {
+                names.Add(kv.Key);
+            }
+            return names;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <param name="detectorMap">Device name -> detector name, from the
     /// daemon's detector-map.json. A missing entry falls back to the device
     /// name, which is what the denylist held before the map existed.</param>
-    public static Delta Compute(IReadOnlyList<RgbDevice> devices, NexusSettings settings, IReadOnlyDictionary<string, string>? detectorMap = null)
+    /// <param name="registeredDetectors">Detector names the running daemon registers, from <see cref="LoadRegisteredDetectors"/>. Null or empty means unknown.</param>
+    public static Delta Compute(IReadOnlyList<RgbDevice> devices, NexusSettings settings, IReadOnlyDictionary<string, string>? detectorMap = null, IReadOnlyCollection<string>? registeredDetectors = null)
     {
         var delta = new Delta();
         var exclusions = settings.Devices.OpenRgbDetectorExclusions;
@@ -210,14 +242,14 @@ public static class OpenRgbDetectorExclusions
                 }
                 if (exclusions.TryGetValue(baseId, out var existing))
                 {
-                    // Two rewrites. A device the fork renamed (stored DeviceName differs from the
-                    // live one, same StableId) takes the live names. Repair turns a device name
-                    // stored as the detector into the detector name. Anything else is left alone:
-                    // when two detectors can produce one device its name is stable, so the
-                    // exclusion cannot flip between them and bounce the subprocess every settle.
-                    var renamed = !string.IsNullOrEmpty(existing.DeviceName) && existing.DeviceName != d.Name;
+                    // Repair turns a device name stored as the detector into the detector name.
+                    // Heal swaps a stored detector the fork no longer registers for the live one.
+                    // An unknown registered set heals nothing.
                     var repair = existing.DetectorName == d.Name && detectorName != d.Name;
-                    if (!renamed && !repair)
+                    var heal = registeredDetectors is { Count: > 0 }
+                        && !registeredDetectors.Contains(existing.DetectorName)
+                        && existing.DetectorName != detectorName;
+                    if (!repair && !heal)
                     {
                         continue;
                     }
