@@ -51,8 +51,17 @@ public sealed class GuardPlan
         {
             return duty;
         }
+        if (Output.FloorDuty > duty)
+        {
+            _floorRaised = true;
+        }
         return Math.Max(duty, Output.FloorDuty);
     }
+
+    private volatile bool _floorRaised;
+
+    /// <summary>True once <see cref="Apply"/> has seen the floor beat the duty a guarded channel would otherwise get this tick.</summary>
+    public bool FloorRaised => _floorRaised;
 }
 
 /// <summary>
@@ -101,6 +110,10 @@ public sealed class ThermalGuardController
     private readonly ThermalGuardThresholds _thresholds;
 
     private string _publicState = ThermalGuardStates.Inactive;
+    // The plan of the tick in flight, and whether the last finished tick's floor beat a duty. Only the
+    // reported state reads the latter; the internal state, and every gate on it, still follows the floor ramp.
+    private GuardPlan? _tickPlan;
+    private bool _floorApplied;
     private double? _guardTemp;
     // What was detected, and the effective limit (the user's override applied when allowed).
     private ThermalLimit _detected = new(ThermalLimits.GenericDefaultC, ThermalLimitSources.Default);
@@ -215,6 +228,23 @@ public sealed class ThermalGuardController
     {
         _watchdog?.Dispose();
         _watchdog = null;
+    }
+
+    /// <summary>Called by the engine when a tick has written its duties: publishes whether this tick's floor beat any of them.</summary>
+    public void CommitFloorApplied()
+    {
+        bool flipped;
+        lock (_gate)
+        {
+            var applied = _tickPlan?.FloorRaised ?? false;
+            _tickPlan = null;
+            flipped = applied != _floorApplied && _publicState == ThermalGuardStates.Floor;
+            _floorApplied = applied;
+        }
+        if (flipped && _hub is not null)
+        {
+            PanelTopics.BroadcastCooling(_hub);
+        }
     }
 
     public void TickCompleted()
@@ -600,6 +630,7 @@ public sealed class ThermalGuardController
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
             plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible, hardware);
+            _tickPlan = plan;
             var driving = output.FloorDuty > 0;
             _activeSinceMs = driving ? _activeSinceMs ?? nowMs : null;
             _fansNotResponding = driving
@@ -1479,7 +1510,8 @@ public sealed class ThermalGuardController
             }
             else
             {
-                response.State = _publicState;
+                // A floor that beats no duty changes nothing on the fans, so it is not reported as one.
+                response.State = _publicState == ThermalGuardStates.Floor && !_floorApplied ? ThermalGuardStates.Normal : _publicState;
                 response.GuardTempC = _guardTemp;
                 response.LimitC = effective.LimitC;
                 response.LimitSource = effective.Source;

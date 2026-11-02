@@ -235,6 +235,18 @@ public sealed class CurveEngine : BackgroundService
 
     internal void Tick()
     {
+        try
+        {
+            TickCore();
+        }
+        finally
+        {
+            _guard.CommitFloorApplied();
+        }
+    }
+
+    private void TickCore()
+    {
         if (!_gates.Cooling)
         {
             _guard.NotifyCoolingOff();
