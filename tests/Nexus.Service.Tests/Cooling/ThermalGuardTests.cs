@@ -146,17 +146,17 @@ public class ThermalGuardTests
     }
 
     [Fact]
-    public void Escalation_FansNotRespondingTwentySecondsIntoTheTripAtTheLimit_ReleasesAllOnce()
+    public void Escalation_FansNotRespondingTwentySecondsIntoTheTripAtTheLimit_FlagsTheEscalationOnce()
     {
         var g = Tripped();
         var o = g.Step(25_000, 97, L, 100, 100, writesNotLanding: true);
         Assert.Equal(ThermalGuardStates.Escalated, o.State);
         Assert.True(o.ReleaseAllNow);
-        Assert.True(o.StopWriting);
+        Assert.Equal(100, o.FloorDuty);
 
         var again = g.Step(26_000, 98, L, 100, 100, writesNotLanding: true);
         Assert.False(again.ReleaseAllNow);
-        Assert.True(again.StopWriting);
+        Assert.Equal(100, again.FloorDuty);
     }
 
     [Fact]

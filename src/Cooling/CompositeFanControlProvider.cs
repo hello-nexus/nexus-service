@@ -285,6 +285,7 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
             return;
         }
         foreach (var source in sources)
+        {
             Attempt(source.GetType().Name, () => Run(source, "a release",
                 keepDrivenPorts ? source.ReleaseAllKeepingDrivenPorts : source.ReleaseAll,
                 gate =>
@@ -294,6 +295,7 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
                     if (!keepDrivenPorts) gate.ReleaseAllMissed = ReleaseAllKinds.Full;
                     else if (gate.ReleaseAllMissed == ReleaseAllKinds.None) gate.ReleaseAllMissed = ReleaseAllKinds.KeepingPorts;
                 }));
+        }
     }
 
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
@@ -447,7 +449,7 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
                     source.ReleaseAll();
                 else if (all == ReleaseAllKinds.KeepingPorts)
                     source.ReleaseAllKeepingDrivenPorts();
-                if (ids is not null)
+                if (ids is not null && all != ReleaseAllKinds.Full)
                 {
                     foreach (var id in ids) source.ReleaseFan(id);
                 }

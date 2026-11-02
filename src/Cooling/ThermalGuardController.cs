@@ -32,9 +32,9 @@ public sealed class GuardPlan
     /// <summary>Manual duties to persist before the engine releases the GPU fans.</summary>
     public Dictionary<string, int> GpuBackup { get; init; } = new(StringComparer.Ordinal);
 
-    public static readonly GuardPlan None = new() { Output = new ThermalGuardOutput(ThermalGuardStates.Off, 0, false, false, false, false, false, null) };
+    public static readonly GuardPlan None = new() { Output = new ThermalGuardOutput(ThermalGuardStates.Off, 0, false, false, false, false, null) };
 
-    public bool Overrides => Output.FloorDuty > 0 || Output.StopWriting || GpuBlocked.Count > 0 || GpuForced.Count > 0;
+    public bool Overrides => Output.FloorDuty > 0 || GpuBlocked.Count > 0 || GpuForced.Count > 0;
 
     /// <summary>Final duty for a channel, or null when the guard forbids writing it.</summary>
     public int? Apply(string channelId, int duty)
@@ -50,10 +50,6 @@ public sealed class GuardPlan
         if (!Eligible.Contains(channelId))
         {
             return duty;
-        }
-        if (Output.StopWriting)
-        {
-            return null;
         }
         return Math.Max(duty, Output.FloorDuty);
     }
@@ -556,11 +552,11 @@ public sealed class ThermalGuardController
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
             plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible, hardware);
-            var driving = output.FloorDuty > 0 && !output.StopWriting;
+            var driving = output.FloorDuty > 0;
             _activeSinceMs = driving ? _activeSinceMs ?? nowMs : null;
             _fansNotResponding = driving
                 && (writesNotLanding || AnyDrivenFanSilent(nowMs, channels, eligible,
-                    output.State == ThermalGuardStates.Tripped ? hardware : EmptyIds));
+                    output.State is ThermalGuardStates.Tripped or ThermalGuardStates.Escalated ? hardware : EmptyIds));
         }
 
         if (plan.GpuBackup.Count > 0)

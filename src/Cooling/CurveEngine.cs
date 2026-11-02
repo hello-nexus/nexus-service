@@ -640,11 +640,12 @@ public sealed class CurveEngine : BackgroundService
         }
         if (plan.Output.ReleaseAllNow)
         {
-            // Writes may not be landing: hand every fan to the BIOS and forget what we wrote.
-            // Wireless ports Nexus drives keep their full-speed duty: a release would stop them.
-            _fans.ReleaseAllKeepingDrivenPorts();
+            Console.Error.WriteLine("[thermal-guard] still heating after the override: cooling mode, every fan driven to full speed again");
+        }
+        if (plan.Output.State == ThermalGuardStates.Escalated)
+        {
+            // Writes may not be landing: forget them so each tick drives every fan again.
             lock (_lastWrite) { _lastWrite.Clear(); }
-            Console.Error.WriteLine("[thermal-guard] still heating after the override: fans released to BIOS; wireless ports keep their duty");
         }
         if (plan.Output.TripEnded)
         {
@@ -767,12 +768,8 @@ public sealed class CurveEngine : BackgroundService
     private void ApplyGuardToHardwareChannels(
         GuardPlan plan, HashSet<string> present, HashSet<string> owned, IReadOnlyDictionary<string, int> manual)
     {
-        if (plan.Output.StopWriting)
-        {
-            return;
-        }
         var nowMs = Clock();
-        var take = plan.Output.State == ThermalGuardStates.Tripped;
+        var take = plan.Output.State is ThermalGuardStates.Tripped or ThermalGuardStates.Escalated;
         if (take)
         {
             foreach (var id in plan.Hardware)
