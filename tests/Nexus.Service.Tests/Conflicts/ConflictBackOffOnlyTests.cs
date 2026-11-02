@@ -76,4 +76,23 @@ public class ConflictBackOffOnlyTests
 
         Assert.Equal(ended, killed.Count);
     }
+
+    [Fact]
+    public void An_app_skipped_for_a_running_installer_is_ended_once_the_installer_is_gone()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Ui.ConflictAutoKillExclusions = new List<string>());
+        var detector = new FakeDetector { Conflicts = new[] { new DetectedConflict { Id = "icue", DisplayName = "Corsair iCUE", Pid = 7 } } };
+        var killed = new List<string>();
+        var installer = true;
+        var shutdown = new ConflictStartupShutdown(store, detector, NullLogger<ConflictStartupShutdown>.Instance,
+            def => killed.Add(def.Id), _ => false, backOffRunning: _ => installer);
+
+        shutdown.EndRunningApps(sweep: true);
+        Assert.Empty(killed);
+
+        installer = false;
+        shutdown.EndRunningApps(sweep: true);
+        Assert.Equal(new[] { "icue" }, killed);
+    }
 }

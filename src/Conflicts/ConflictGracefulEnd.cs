@@ -20,7 +20,8 @@ public enum SessionEndOutcome
 /// <summary>Sends the session-end messages to the top-level windows of the given processes. Implemented over the user-session helper: the service runs in session 0 and cannot message windows in the user's session.</summary>
 public interface IAppSessionEnder
 {
-    SessionEndOutcome TrySend(IReadOnlyList<int> pids);
+    /// <param name="timeoutMs">How long the request may take; the caller's own deadline bounds it.</param>
+    SessionEndOutcome TrySend(IReadOnlyList<int> pids, int timeoutMs);
 }
 
 /// <summary>
@@ -41,14 +42,17 @@ public sealed class ConflictGracefulEnd
     /// <summary>A request is sent again this often until one is delivered, and, while the app is starting up, after that too.</summary>
     internal static readonly TimeSpan Resend = TimeSpan.FromSeconds(3);
 
-    /// <summary>Process age under which the app counts as starting up. A request delivered then is often ignored (measured on iCUE: not reacted to for 60 s), and one sent after it is reliable; a second request into an app already closing can stall its exit, so past this age exactly one is sent.</summary>
+    /// <summary>Process age under which the app counts as starting up. A request delivered then is often ignored (measured on iCUE), and one sent after it is reliable; a second request into an app already closing can stall its exit, so past this age exactly one is sent.</summary>
     internal static readonly TimeSpan StartupWindow = TimeSpan.FromSeconds(25);
+
+    /// <summary>Floor of the time a single request may take, whatever is left of the deadline.</summary>
+    private const long MinSendWaitMs = 2000;
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly Func<ConflictAppDefinition, IReadOnlyList<int>> _findPids;
     private readonly Func<IReadOnlyList<int>, long> _ageMs;
-    private readonly Func<IReadOnlyList<int>, SessionEndOutcome> _send;
+    private readonly Func<IReadOnlyList<int>, int, SessionEndOutcome> _send;
     private readonly Func<ConflictAppDefinition, bool> _anyRunning;
     private readonly Func<ConflictAppDefinition, bool> _backOffRunning;
     private readonly Action<ConflictAppDefinition> _hardKill;
@@ -61,7 +65,7 @@ public sealed class ConflictGracefulEnd
         : this(
             def => ConflictKiller.FindGracefulProcessIds(def, ConflictSignerGate.Default),
             ConflictKiller.YoungestAgeMs,
-            pids => ender?.TrySend(pids) ?? SessionEndOutcome.HelperUnavailable,
+            (pids, timeoutMs) => ender?.TrySend(pids, timeoutMs) ?? SessionEndOutcome.HelperUnavailable,
             ConflictKiller.AnyProcessRunning,
             def => ConflictKiller.AnyBackOffOnlyRunning(def, ConflictSignerGate.Default),
             def => ConflictKiller.Kill(def),
@@ -75,7 +79,7 @@ public sealed class ConflictGracefulEnd
     internal ConflictGracefulEnd(
         Func<ConflictAppDefinition, IReadOnlyList<int>> findPids,
         Func<IReadOnlyList<int>, long> ageMs,
-        Func<IReadOnlyList<int>, SessionEndOutcome> send,
+        Func<IReadOnlyList<int>, int, SessionEndOutcome> send,
         Func<ConflictAppDefinition, bool> anyRunning,
         Func<ConflictAppDefinition, bool> backOffRunning,
         Action<ConflictAppDefinition> hardKill,
@@ -94,6 +98,17 @@ public sealed class ConflictGracefulEnd
         _sleepMs = sleepMs;
         _log = log;
         _canSend = canSend;
+    }
+
+    // A broken helper pipe throws; that is the same as no helper, and the hard kill still follows.
+    private SessionEndOutcome Send(IReadOnlyList<int> pids, long timeoutMs)
+    {
+        try { return _send(pids, (int)Math.Min(timeoutMs, int.MaxValue)); }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"close request failed: {ex.Message}");
+            return SessionEndOutcome.HelperUnavailable;
+        }
     }
 
     /// <summary>Same outcome shape as <see cref="ConflictKiller.Kill(ConflictAppDefinition)"/>, for the end-task routes.</summary>
@@ -153,7 +168,7 @@ public sealed class ConflictGracefulEnd
                 var starting = age < (long)StartupWindow.TotalMilliseconds;
                 if (!delivered || starting || !sentPastStartup)
                 {
-                    last = _send(pids);
+                    last = Send(pids, Math.Max(MinSendWaitMs, deadline - now));
                     // The send itself can block for seconds on an app that is slow to answer messages, so the clock is read again after it.
                     now = _clockMs();
                     lastSent = now;

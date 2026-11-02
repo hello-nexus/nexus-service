@@ -39,9 +39,9 @@ public sealed class HelperAppSessionEnder : Nexus.Service.Conflicts.IAppSessionE
 
     public HelperAppSessionEnder(HelperRegistry registry) { _registry = registry; }
 
-    public Nexus.Service.Conflicts.SessionEndOutcome TrySend(System.Collections.Generic.IReadOnlyList<int> pids)
+    public Nexus.Service.Conflicts.SessionEndOutcome TrySend(System.Collections.Generic.IReadOnlyList<int> pids, int timeoutMs)
     {
-        var result = ProcessActionsCommands.EndSessionAsync(_registry, System.Linq.Enumerable.ToArray(pids))
+        var result = ProcessActionsCommands.EndSessionAsync(_registry, System.Linq.Enumerable.ToArray(pids), timeoutMs)
             .GetAwaiter().GetResult();
         if (result is null) return Nexus.Service.Conflicts.SessionEndOutcome.HelperUnavailable;
         if (result.Windows == 0) return Nexus.Service.Conflicts.SessionEndOutcome.NoWindows;

@@ -340,8 +340,8 @@ public sealed class CorsairLinkHub : IDisposable
         TraceNote($"fw={State.Firmware}");
 
         // Hardware then software again lets the fans spool on firmware control and frees a
-        // hub a killed host left refusing. The 11 s dwell is the gap measured in a capture
-        // of another host's takeover.
+        // hub a killed host left refusing. The dwell, ModeCycleWaitMs, is the gap measured in a
+        // capture of another host's takeover.
         if (NowMs() - _lastCycleMs >= CycleMinIntervalMs)
         {
             _lastCycleMs = NowMs();
@@ -396,6 +396,7 @@ public sealed class CorsairLinkHub : IDisposable
         {
             var n = _device?.Read(_readRaw, ResyncReadTimeoutMs) ?? 0;
             if (n <= 0) return false;
+            if (n <= 1 + CorsairLinkProtocol.ResponseCommandOffset) continue;
             var echo = _readRaw[1 + CorsairLinkProtocol.ResponseCommandOffset];
             if (echo == 0 || TakeOwedLocked(echo)) continue;
             ForeignHostSeen = true;

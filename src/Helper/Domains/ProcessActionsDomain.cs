@@ -86,17 +86,13 @@ public static class ProcessActionsCommands
         }
     }
 
-    /// <summary>Asks the helper to send the session-end messages to the top-level windows of <paramref name="pids"/>; the windows found and the ones that accepted, or null when no helper answered.</summary>
-    /// <summary>Per window: the end message is sent after the query, each up to 3 s, and a target may have a dozen windows.</summary>
-    private const int EndSessionTimeoutMs = 60_000;
-
     [DllImport("kernel32.dll")]
     private static extern bool ProcessIdToSessionId(uint processId, out uint sessionId);
 
     private static int SessionOf(int pid) => ProcessIdToSessionId((uint)pid, out var sid) ? (int)sid : -1;
 
     /// <summary>Asks the helper of each target's own session to send the session-end messages to the top-level windows of <paramref name="pids"/>; the windows found and accepted, or null when no helper answered.</summary>
-    public static async Task<ProcessEndSessionResult?> EndSessionAsync(HelperRegistry r, int[] pids, CancellationToken ct = default)
+    public static async Task<ProcessEndSessionResult?> EndSessionAsync(HelperRegistry r, int[] pids, int timeoutMs, CancellationToken ct = default)
     {
         ProcessEndSessionResult? total = null;
         foreach (var group in pids.GroupBy(SessionOf))
@@ -109,7 +105,7 @@ public static class ProcessActionsCommands
 
             var result = await conn.SendCommandAsync(
                 "process.endSession", new ProcessEndSessionRequest { Pids = group.ToArray() },
-                AppJsonContext.Default.ProcessEndSessionRequest, timeoutMs: EndSessionTimeoutMs, ct: ct).ConfigureAwait(false);
+                AppJsonContext.Default.ProcessEndSessionRequest, timeoutMs: timeoutMs, ct: ct).ConfigureAwait(false);
             if (!result.Ok || result.Payload is null)
             {
                 continue;
