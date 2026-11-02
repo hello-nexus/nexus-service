@@ -4,8 +4,8 @@ namespace Nexus.Service.Cooling;
 internal static class ThermalGuardNotices
 {
     public const string TripTitle = "CPU thermal guard tripped";
-    public const string LatchedTitle = "Cooling handed to the BIOS";
-    public const string LatchedText = "Nexus handed your fans to the BIOS because the cooling engine kept stalling.";
+    public const string LatchedTitle = "Cooling mode held";
+    public const string LatchedText = "The cooling engine kept stalling, so Nexus is holding your fans at full speed.";
     public const string HealedTitle = "Cooling config repaired";
 
     public static string TripText(double peakC, string reason)

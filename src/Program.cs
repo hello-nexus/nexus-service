@@ -1013,7 +1013,7 @@ static void FastServiceShutdown(WebApplication app)
                 // Cooling off (or undecided) forbids any fan write, shutdown included, except the one release a switch-off queued.
                 if (sp.GetService<Nexus.Service.Lifecycle.FeatureGates>()?.Cooling ?? true)
                 {
-                    sp.GetService<IFanControlProvider>()?.ReleaseAll();
+                    sp.GetService<IFanControlProvider>()?.ReleaseAllKeepingDrivenPorts();
                 }
                 else
                 {

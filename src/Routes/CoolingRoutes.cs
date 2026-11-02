@@ -114,6 +114,17 @@ public static class CoolingRoutes
             return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
         });
 
+        // Ends full-speed cooling mode (watchdog latch, trip or escalation). 200 with Error set and no state when nothing is active.
+        app.MapPost("/cooling/guard/restore", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var (result, error) = guard.RestoreCurves();
+            return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
+        });
+
         app.MapPost("/cooling/curves/lint", (SetCurvesBody body, ThermalGuardController guard) =>
             guard.Lint(body));
 
