@@ -327,32 +327,52 @@ public class OpenRgbDetectorExclusionsTests
     }
 
     [Fact]
-    public void A_renamed_detector_rewrites_the_stored_name_to_the_live_one()
+    public void A_device_the_fork_renamed_takes_the_live_device_and_detector_names()
     {
+        // The Chakram shape: the live device and its detector share one name.
+        var chakram = Dimm();
+        chakram.Name = "ASUS ROG Chakram X USB";
         var settings = new NexusSettings();
-        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
-        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Old DRAM Name" };
-        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM" };
+        settings.Devices.UncontrolledLightingDevices.Add(chakram.StableId);
+        settings.Devices.OpenRgbDetectorExclusions[chakram.StableId] = new OpenRgbDetectorExclusion
+        {
+            DetectorName = "Asus ROG Chakram X USB",
+            DeviceName = "Asus ROG Chakram X USB",
+        };
+        var map = new Dictionary<string, string> { ["ASUS ROG Chakram X USB"] = "ASUS ROG Chakram X USB" };
 
-        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map);
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { chakram }, settings, map);
 
         var add = Assert.Single(delta.Add);
-        Assert.Equal(Dimm().StableId, add.Key);
-        Assert.Equal("Corsair DRAM", add.Value.DetectorName);
+        Assert.Equal(chakram.StableId, add.Key);
+        Assert.Equal("ASUS ROG Chakram X USB", add.Value.DetectorName);
+        Assert.Equal("ASUS ROG Chakram X USB", add.Value.DeviceName);
         Assert.Empty(delta.Remove);
     }
 
     [Fact]
-    public void An_old_name_still_present_in_the_live_map_is_not_rewritten()
+    public void A_renamed_device_with_a_distinct_detector_takes_the_resolved_detector()
     {
         var settings = new NexusSettings();
         settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
-        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Other Detector" };
-        var map = new Dictionary<string, string>
-        {
-            ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM",
-            ["Some Other Device"] = "Other Detector",
-        };
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Corsair DRAM", DeviceName = "Old DIMM Name" };
+        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM V2" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map);
+
+        var add = Assert.Single(delta.Add);
+        Assert.Equal("Corsair DRAM V2", add.Value.DetectorName);
+        Assert.Equal("Corsair Vengeance RGB DDR5", add.Value.DeviceName);
+    }
+
+    [Fact]
+    public void Two_detectors_producing_one_device_never_flip_the_stored_detector()
+    {
+        // Same StableId and device name, stored under X while Y produces the device now.
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Detector X", DeviceName = "Corsair Vengeance RGB DDR5" };
+        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Detector Y" };
 
         var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map);
 
