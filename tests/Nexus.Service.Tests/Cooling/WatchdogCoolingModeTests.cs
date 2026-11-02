@@ -96,7 +96,7 @@ public class WatchdogCoolingModeTests
     }
 
     [Fact]
-    public void Shutdown_AndGuardEscalationRelease_KeepDrivenWirelessPortsOnTheirDuty()
+    public void Shutdown_KeepsDrivenWirelessPortsOnTheirDutyWhenTheHeaderIsNotMeasured()
     {
         var rig = Build();
         ArmAtEightyFiveC(rig);
@@ -138,6 +138,23 @@ public class WatchdogCoolingModeTests
 
         provider.ReleaseAll();
         Assert.Null(hub.GetPortDuty(Mac, 0));
+    }
+
+    [Theory]
+    [InlineData(null, 55)]
+    [InlineData(0, 55)]
+    [InlineData(35, null)]
+    public void KeepingPortsRelease_SendsFollowMotherboardOnlyWhenTheHeaderMeasuresAboveZero(int? headerPercent, int? expected)
+    {
+        var (hub, _, _) = Slv3TestHub.CreateConnected();
+        hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 2 } };
+        hub.State.MotherboardPwmPercent = headerPercent;
+        var provider = new Slv3CoolingProvider(hub);
+        provider.DriveFanSpeed(Port(0), 55);
+
+        provider.ReleaseAllKeepingDrivenPorts();
+
+        Assert.Equal(expected, hub.GetPortDuty(Mac, 0));
     }
 
     [Fact]

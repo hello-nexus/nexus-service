@@ -187,18 +187,25 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         }
     }
 
-    // A port with a Nexus duty is not released: a cleared target sends the follow-motherboard byte,
-    // and a receiver with no header signal stops the fan. A held bind frame keeps its duty without
-    // keepalives (the hub sends nothing once settled), so the fan runs on at the last duty. A port
-    // with no target already follows the board and needs nothing. The AIO pump is released as usual.
+    // Shutdown hand-back. A measured header duty of 0 cannot tell a missing cable from a real 0, and a
+    // receiver with no header signal stops a port on the follow-motherboard byte, so ports Nexus drives
+    // go back to the header only when it measures above zero; otherwise they keep the last duty (a bind
+    // frame holds it without keepalives). A port with no target already follows the board. The AIO pump is released as usual.
     public void ReleaseAllKeepingDrivenPorts()
     {
         if (!_hub.IsConnected) return;
+        var headerLive = _hub.State.MotherboardPwmPercent is > 0;
         foreach (var fan in _hub.State.Fans)
         {
             if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
             {
                 _hub.SetPumpDuty(fan.Mac, null);
+                continue;
+            }
+            if (!headerLive || !HasFanPorts(fan)) continue;
+            for (var port = 0; port < EffectivePortCount(fan); port++)
+            {
+                _hub.SetPortDuty(fan.Mac, port, null);
             }
         }
     }
