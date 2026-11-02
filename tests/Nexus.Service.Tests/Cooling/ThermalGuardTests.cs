@@ -160,6 +160,46 @@ public class ThermalGuardTests
     }
 
     [Fact]
+    public void Restore_EndsATrip_AndSuppressesANewOneUntilTheCpuIsBelowTheFloorStartBand()
+    {
+        var g = Tripped();
+        Assert.True(g.Restore());
+        Assert.NotEqual(ThermalGuardStates.Tripped, g.State);
+
+        // Still hot for a long spell: the floor keeps raising, no trip starts.
+        var t = 30_000L;
+        for (; t < 120_000; t += 1000)
+        {
+            var o = g.Step(t, 99, L, 100, 80);
+            Assert.False(o.TripStarted);
+            Assert.NotEqual(ThermalGuardStates.Tripped, g.State);
+            Assert.Equal(100, o.FloorDuty);
+        }
+
+        // Cool below limit minus the band, then hot again: the guard is armed and trips.
+        var below = L - ThermalGuardThresholds.Default.FloorStartBelowLimitC - 5;
+        g.Step(t, below, L, 100, 80);
+        t += 1000;
+        var tripped = false;
+        for (var i = 0; i < 30 && !tripped; i++, t += 1000)
+        {
+            tripped = g.Step(t, L + 4, L, 100, 80).TripStarted;
+        }
+        Assert.True(tripped);
+    }
+
+    [Fact]
+    public void Restore_EndsAnEscalation_AndIsANoOpWhenNothingIsTripped()
+    {
+        var g = Tripped();
+        g.Step(25_000, 97, L, 100, 100, writesNotLanding: true);
+        Assert.Equal(ThermalGuardStates.Escalated, g.State);
+        Assert.True(g.Restore());
+        Assert.NotEqual(ThermalGuardStates.Escalated, g.State);
+        Assert.False(g.Restore());
+    }
+
+    [Fact]
     public void Escalation_NeverOnRisingTemperatureAlone()
     {
         var g = Tripped();

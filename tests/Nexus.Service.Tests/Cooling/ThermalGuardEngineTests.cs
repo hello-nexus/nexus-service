@@ -2079,6 +2079,128 @@ public class ThermalGuardEngineTests
         Assert.Equal(100, LastDuty(fans, "hw1"));
     }
 
+    [Fact]
+    public void RestoreFromALatch_ClearsItLikeAToggle_RewritesEveryDutyAndHandsHardwareBackOnce()
+    {
+        var (_, fans, store, _) = Build();
+        fans.Channels.Add(new FanChannel { Id = "hw1", Name = "Board fan" });
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 89f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Assert.True(guard.WatchdogLatched);
+        Assert.True(guard.GetState().RestoreAvailable);
+        e.Tick();
+        var before = fans.Released.Count(x => x == "hw1");
+        var curves = store.Load().Cooling.Curves[0].Flat!.Speed;
+        var manual = store.Load().Cooling.ManualSpeeds["f2"];
+
+        var (result, error) = guard.RestoreCurves();
+        fans.Driven.Clear();
+        mono[0] += 1000;
+        guard.TickCompleted();
+        e.Tick();
+        e.Tick();
+
+        Assert.Null(error);
+        Assert.False(result!.RestoreAvailable);
+        Assert.False(guard.WatchdogLatched);
+        Assert.Equal(56, LastDuty(fans, "f1"));
+        Assert.Equal(56, LastDuty(fans, "f2"));
+        Assert.Equal(before + 1, fans.Released.Count(x => x == "hw1"));
+        Assert.Equal(curves, store.Load().Cooling.Curves[0].Flat!.Speed);
+        Assert.Equal(manual, store.Load().Cooling.ManualSpeeds["f2"]);
+
+        // Detection stays armed: a new stall fires again.
+        fans.Driven.Clear();
+        guard.WatchdogCheck(mono[0] + 31_000);
+        Assert.Equal(100, LastDuty(fans, "f1"));
+    }
+
+    [Fact]
+    public void RestoreFromATrip_StopsTheOverride_HandsHardwareBackOnce_AndDoesNotRetripAtOnce()
+    {
+        var (_, fans, store, _) = Build();
+        fans.Channels.Add(new FanChannel { Id = "hw1", Name = "Board fan" });
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        Trip(e, fans, mono);
+        Assert.Equal(ThermalGuardStates.Tripped, guard.GetState().State);
+        Assert.True(guard.GetState().RestoreAvailable);
+        var released = fans.Released.Count(x => x == "hw1");
+
+        var (_, error) = guard.RestoreCurves();
+        Assert.Null(error);
+        for (var i = 0; i < 40; i++)
+        {
+            mono[0] += 1000;
+            guard.TickCompleted();
+            e.Tick();
+        }
+
+        var state = guard.GetState();
+        Assert.NotEqual(ThermalGuardStates.Tripped, state.State);
+        Assert.False(state.RestoreAvailable);
+        Assert.Equal(released + 1, fans.Released.Count(x => x == "hw1"));
+
+        // Cooled below the band, then hot again: re-armed.
+        fans.CpuTemp = 40f;
+        for (var i = 0; i < 5; i++)
+        {
+            mono[0] += 1000;
+            guard.TickCompleted();
+            e.Tick();
+        }
+        fans.CpuTemp = 99f;
+        for (var i = 0; i < 20; i++)
+        {
+            mono[0] += 1000;
+            guard.TickCompleted();
+            e.Tick();
+        }
+        Assert.Equal(ThermalGuardStates.Tripped, guard.GetState().State);
+    }
+
+    [Fact]
+    public void RestoreFromAnEscalation_StopsTheReassertion_AndReleasesNothing()
+    {
+        var (_, fans, store, _) = Build();
+        var (engine, guard, clock) = WatchdogRig(fans, store);
+        LearnRpm(engine, fans, clock, 1000);
+        Trip(engine, fans, clock);
+        fans.Channels[0].Rpm = 100;
+        fans.Channels[1].Rpm = 100;
+        clock[0] += 21_000;
+        engine.Tick();
+        Assert.Equal(ThermalGuardStates.Escalated, guard.GetState().State);
+
+        var (_, error) = guard.RestoreCurves();
+        Assert.Null(error);
+        fans.CpuTemp = 70f;
+        clock[0] += 1000;
+        engine.Tick();
+        fans.Driven.Clear();
+        clock[0] += 6000;
+        engine.Tick();
+
+        Assert.NotEqual(ThermalGuardStates.Escalated, guard.GetState().State);
+        Assert.DoesNotContain(fans.Driven, d => d.Duty == 100);
+        Assert.Equal(0, fans.ReleaseAllCalls);
+    }
+
+    [Fact]
+    public void RestoreWithNothingActive_ReportsAnErrorAndChangesNothing()
+    {
+        var (_, fans, store, _) = Build();
+        var guard = new ThermalGuardController(fans, store);
+
+        var (result, error) = guard.RestoreCurves();
+
+        Assert.Null(result);
+        Assert.False(string.IsNullOrEmpty(error));
+        Assert.False(guard.GetState().RestoreAvailable);
+    }
+
     private sealed class FlakySensors : ISensorProvider
     {
         public int ModelCalls;

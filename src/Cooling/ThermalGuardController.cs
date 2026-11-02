@@ -1351,6 +1351,48 @@ public sealed class ThermalGuardController
         return (GetState(), null);
     }
 
+    /// <summary>
+    /// The user ends full-speed cooling mode: a watchdog latch clears as a guard toggle clears it, and an
+    /// active trip or escalation stops, with no new trip until the CPU is below the floor-start band.
+    /// The engine rewrites every duty and hands driven hardware channels back on its next tick. No saved setting changes.
+    /// </summary>
+    public (ThermalGuardResponse? Result, string? Error) RestoreCurves()
+    {
+        var what = new List<string>();
+        double? temp;
+        lock (_gate)
+        {
+            temp = _guardTemp;
+            if (_watchdogLatched)
+            {
+                _watchdogLatched = false;
+                _watchdogResumed = false;
+                _watchdogFires.Clear();
+                _coolingAsserted.Clear();
+                _watchdogPending = true;
+                what.Add("watchdog latch");
+            }
+            if (_cpu.Restore())
+            {
+                _watchdogPending = true;
+                _watchdogHardware.UnionWith(_coolingHardware);
+                SetPublicState(ThermalGuardStates.Normal, null);
+                what.Add("thermal guard override");
+            }
+        }
+        if (what.Count == 0)
+        {
+            return (null, "Nothing to restore.");
+        }
+        Console.Error.WriteLine($"[thermal-guard] user restored fan curves ({string.Join(" and ", what)} ended) at {(temp is { } t ? $"{t:0.#} C" : "unknown temperature")}");
+        CloseOpenTrip();
+        if (_hub is not null)
+        {
+            PanelTopics.BroadcastCooling(_hub);
+        }
+        return (GetState(), null);
+    }
+
     public ThermalGuardResponse SetEnabled(bool enabled)
     {
         _store.Update(s => s.Cooling.ThermalGuardEnabled = enabled);
@@ -1388,6 +1430,7 @@ public sealed class ThermalGuardController
         };
         lock (_gate)
         {
+            response.RestoreAvailable = _watchdogLatched || _cpu.State is ThermalGuardStates.Tripped or ThermalGuardStates.Escalated;
             response.DetectedLimitC = _detected.LimitC;
             response.DetectedLimitSource = _detected.Source;
             var effective = EffectiveFor(_overrideC);
