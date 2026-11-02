@@ -225,6 +225,34 @@ public class ConflictGracefulEndTests
     }
 
     [Fact]
+    public void A_launcher_up_before_the_app_process_is_waited_for_not_killed()
+    {
+        // The app's own process appears 8 s in, then closes on the request.
+        var rig = new Rig(exitsAt: null) { Leftover = true };
+        long appUpAt = 8000;
+        var end = new ConflictGracefulEnd(
+            _ => rig.Now >= appUpAt && (rig.ExitsAt is not { } e || rig.Now < e) ? new[] { 7 } : Array.Empty<int>(),
+            _ => 60_000,
+            _ =>
+            {
+                rig.Sends.Add(rig.Now);
+                rig.ExitsAt ??= rig.Now + 2000;
+                return SessionEndOutcome.Delivered;
+            },
+            _ => true,
+            _ => false,
+            _ => rig.Kills.Add(rig.Now),
+            () => rig.Now,
+            ms => rig.Now += ms);
+
+        end.End(Graceful);
+
+        Assert.All(rig.Sends, t => Assert.True(t >= appUpAt));
+        // The launcher left over is ended only once the app has closed.
+        Assert.All(rig.Kills, t => Assert.True(t >= appUpAt));
+    }
+
+    [Fact]
     public void While_an_installer_runs_nothing_is_sent_and_nothing_is_ended()
     {
         var rig = new Rig(exitsAt: null) { BackOffRunning = true };

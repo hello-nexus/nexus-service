@@ -124,17 +124,29 @@ public sealed class ConflictGracefulEnd
         var last = SessionEndOutcome.HelperUnavailable;
         var delivered = false;
         var sentPastStartup = false;
+        // The app's own process has been seen; its absence after that means it closed.
+        var seen = false;
         while (true)
         {
             var pids = _findPids(def);
-            if (pids.Count == 0)
+            var now = _clockMs();
+            if (pids.Count > 0)
             {
-                _log?.Invoke($"{def.DisplayName} closed after {_clockMs() - start} ms");
+                seen = true;
+            }
+            else if (seen || !_anyRunning(def))
+            {
+                _log?.Invoke($"{def.DisplayName} closed after {now - start} ms");
                 if (_anyRunning(def)) _hardKill(def);
                 return;
             }
-            var now = _clockMs();
             if (now >= deadline) break;
+            if (pids.Count == 0)
+            {
+                // Only the launcher or a service is up so far: the app's own process is still coming.
+                _sleepMs((int)PollInterval.TotalMilliseconds);
+                continue;
+            }
             if (now - lastSent >= (long)Resend.TotalMilliseconds)
             {
                 var age = _ageMs(pids);
