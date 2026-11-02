@@ -84,6 +84,8 @@ public sealed class ThermalGuard
     private long? _hotSinceMs;
     private long? _belowSinceMs;
     private bool _suppressed;
+    private long? _suppressedSinceMs;
+    private const long SuppressionMaxMs = 10 * 60_000;
     private long _tripAtMs;
     private string? _tripReason;
 
@@ -110,12 +112,14 @@ public sealed class ThermalGuard
         _hotSinceMs = null;
         _belowSinceMs = null;
         _suppressed = false;
+        _suppressedSinceMs = null;
         PeakC = 0;
     }
 
     /// <summary>
     /// Ends an active trip or escalation at the user's request. No new trip or escalation can start
-    /// until the CPU drops below the floor-start band; the floor ramp keeps working. False when not tripped.
+    /// until the CPU drops below the floor-start band or ten minutes pass, and only a limit trip is held back:
+    /// cooling loss still trips. The floor ramp keeps working. False when not tripped.
     /// </summary>
     public bool Restore()
     {
@@ -125,6 +129,7 @@ public sealed class ThermalGuard
         }
         _state = ThermalGuardStates.Normal;
         _suppressed = true;
+        _suppressedSinceMs = null;
         _belowSinceMs = null;
         _hotSinceMs = null;
         _history.Clear();
@@ -196,34 +201,36 @@ public sealed class ThermalGuard
 
         Record(nowMs, smooth);
 
-        if (_suppressed && temp < limitC - _t.FloorStartBelowLimitC)
+        if (_suppressed)
         {
-            _suppressed = false;
+            _suppressedSinceMs ??= nowMs;
+            if (temp < limitC - _t.FloorStartBelowLimitC || nowMs - _suppressedSinceMs.Value >= SuppressionMaxMs)
+            {
+                _suppressed = false;
+                _suppressedSinceMs = null;
+            }
         }
         string? reason = null;
         if (_suppressed)
         {
             _hotSinceMs = null;
         }
+        else if (temp >= limitC)
+        {
+            _hotSinceMs ??= nowMs;
+            if (nowMs - _hotSinceMs.Value >= _t.LimitSustainMs)
+            {
+                reason = ThermalTripReasons.Limit;
+            }
+        }
         else
         {
-            if (temp >= limitC)
-            {
-                _hotSinceMs ??= nowMs;
-                if (nowMs - _hotSinceMs.Value >= _t.LimitSustainMs)
-                {
-                    reason = ThermalTripReasons.Limit;
-                }
-            }
-            else
-            {
-                _hotSinceMs = null;
-            }
-
-            reason ??= CoolingLossDetected(nowMs, smooth, limitC, cpuLoadPercent, maxCpuCoolingDutyPercent)
-                ? ThermalTripReasons.CoolingLoss
-                : null;
+            _hotSinceMs = null;
         }
+
+        reason ??= CoolingLossDetected(nowMs, smooth, limitC, cpuLoadPercent, maxCpuCoolingDutyPercent)
+            ? ThermalTripReasons.CoolingLoss
+            : null;
 
         if (reason is not null)
         {

@@ -1975,7 +1975,7 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void CoolingSwitchedOffWhileTheEngineIsStalled_GetsNoCoolingModeWrites()
+    public void CoolingSwitchedOff_GetsNoCoolingModeWrites_EvenFromADirectDrive()
     {
         var (_, fans, store, _) = Build();
         var (e, guard, mono) = WatchdogRig(fans, store);
@@ -1985,7 +1985,7 @@ public class ThermalGuardEngineTests
         store.Update(s => s.Features.Cooling = false);
         fans.Driven.Clear();
 
-        guard.WatchdogCheck(mono[0] + 11_000);
+        guard.DriveCoolingMode(requireLatch: false);
 
         Assert.Empty(fans.Driven);
     }
@@ -2176,16 +2176,40 @@ public class ThermalGuardEngineTests
 
         var (_, error) = guard.RestoreCurves();
         Assert.Null(error);
-        fans.CpuTemp = 70f;
-        clock[0] += 1000;
-        engine.Tick();
-        fans.Driven.Clear();
-        clock[0] += 6000;
-        engine.Tick();
-
+        // Still hot, inside the band below the limit: the override stays off.
+        fans.CpuTemp = 88f;
+        for (var i = 0; i < 60; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
         Assert.NotEqual(ThermalGuardStates.Escalated, guard.GetState().State);
-        Assert.DoesNotContain(fans.Driven, d => d.Duty == 100);
+        Assert.NotEqual(ThermalGuardStates.Tripped, guard.GetState().State);
         Assert.Equal(0, fans.ReleaseAllCalls);
+
+        // At the limit the trip would normally fire again; suppression holds it back.
+        fans.CpuTemp = 96f;
+        for (var i = 0; i < 30; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.NotEqual(ThermalGuardStates.Tripped, guard.GetState().State);
+
+        // Cooled below the band: re-armed.
+        fans.CpuTemp = 40f;
+        for (var i = 0; i < 5; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        fans.CpuTemp = 99f;
+        for (var i = 0; i < 20; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+        Assert.Equal(ThermalGuardStates.Tripped, guard.GetState().State);
     }
 
     [Fact]

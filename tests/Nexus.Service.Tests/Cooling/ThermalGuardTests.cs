@@ -189,6 +189,57 @@ public class ThermalGuardTests
     }
 
     [Fact]
+    public void Restore_SuppressionExpiresAfterTenMinutesEvenWhileTheCpuStaysInTheBand()
+    {
+        var g = Tripped();
+        Assert.True(g.Restore());
+        var inBand = L - ThermalGuardThresholds.Default.FloorStartBelowLimitC + 2;
+
+        var t = 30_000L;
+        for (; t < 30_000 + 9 * 60_000; t += 1000)
+        {
+            g.Step(t, inBand, L, 100, 80);
+        }
+        // Inside the ten minutes a hot reading still does not trip.
+        for (var i = 0; i < 30; i++, t += 1000)
+        {
+            Assert.False(g.Step(t, L + 4, L, 100, 80).TripStarted);
+        }
+        for (var i = 0; i < 90; i++, t += 1000)
+        {
+            g.Step(t, inBand, L, 100, 80);
+        }
+
+        var tripped = false;
+        for (var i = 0; i < 30 && !tripped; i++, t += 1000)
+        {
+            tripped = g.Step(t, L + 4, L, 100, 80).TripStarted;
+        }
+        Assert.True(tripped);
+    }
+
+    [Fact]
+    public void Restore_CoolingLossStillTripsDuringTheSuppression()
+    {
+        var g = Tripped();
+        Assert.True(g.Restore());
+
+        ThermalGuardOutput? tripped = null;
+        for (var s = 0; s <= 300 && tripped is null; s++)
+        {
+            var temp = 81 + 3.0 * s / 60;
+            var o = g.Step(30_000 + s * 1000L, temp, L, 2, 0);
+            if (o.TripStarted)
+            {
+                tripped = o;
+            }
+        }
+
+        Assert.NotNull(tripped);
+        Assert.Equal(ThermalTripReasons.CoolingLoss, tripped!.Value.TripReason);
+    }
+
+    [Fact]
     public void Restore_EndsAnEscalation_AndIsANoOpWhenNothingIsTripped()
     {
         var g = Tripped();

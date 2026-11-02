@@ -129,6 +129,9 @@ public sealed class ThermalGuardController
     private bool _watchdogArmed;
     private bool _watchdogFired;
     private bool _watchdogPending;
+    private bool _restoreHandback;
+    // Mirrors the Cooling feature switch for the watchdog thread, which must not wait on the settings lock.
+    private volatile bool _coolingEnabled = true;
     private Timer? _watchdog;
     // Cooling mode targets: the channels a trip drives to full speed (Nexus-driven plus hardware-control
     // ones), refreshed by every evaluation and swapped whole. The watchdog thread cannot ask the stalled
@@ -161,6 +164,8 @@ public sealed class ThermalGuardController
         _cpu = new ThermalGuard(_thresholds);
         _overrideC = store.Load().Cooling.ThermalGuardLimitOverrideC;
         _detectionResolved = sensors is null;
+        _coolingEnabled = store.Load().Features.Cooling;
+        store.OnChanged += () => _coolingEnabled = _store.Load().Features.Cooling;
         // A trip record still open at construction belongs to a previous run that never closed it.
         CloseOpenTrip();
     }
@@ -331,7 +336,7 @@ public sealed class ThermalGuardController
     /// <summary>Drives every cooling-mode channel not yet driven this spell to full speed, the way a trip does. Never hands a fan to hardware control.</summary>
     internal void DriveCoolingMode(bool requireLatch)
     {
-        if (!_store.Load().Features.Cooling)
+        if (!_coolingEnabled)
         {
             return;
         }
@@ -344,13 +349,6 @@ public sealed class ThermalGuardController
                 return;
             }
             ids = _coolingIds.Where(id => _coolingAsserted.Add(id)).ToArray();
-            foreach (var id in ids)
-            {
-                if (_coolingHardware.Contains(id))
-                {
-                    _watchdogHardware.Add(id);
-                }
-            }
         }
         if (ids.Length == 0)
         {
@@ -358,6 +356,46 @@ public sealed class ThermalGuardController
         }
         try { _fans.DriveFansToFull(ids); }
         catch (Exception ex) { Console.Error.WriteLine($"[thermal-guard] cooling-mode write failed: {ex.Message}"); }
+        List<string>? stale = null;
+        lock (_gate)
+        {
+            // Recorded only after the write, and only while cooling mode still holds: a restore or resume in between ended it.
+            var ended = requireLatch && !(_watchdogArmed && _watchdogLatched);
+            foreach (var id in ids)
+            {
+                if (!_coolingHardware.Contains(id))
+                {
+                    continue;
+                }
+                if (ended)
+                {
+                    (stale ??= new List<string>()).Add(id);
+                }
+                else
+                {
+                    _watchdogHardware.Add(id);
+                }
+            }
+        }
+        if (stale is not null)
+        {
+            foreach (var id in stale)
+            {
+                try { _fans.ReleaseFan(id); }
+                catch (Exception ex) { Console.Error.WriteLine($"[thermal-guard] handing {id} back failed: {ex.Message}"); }
+            }
+        }
+    }
+
+    /// <summary>True once after a user restore ended a trip: the engine hands back the hardware channels the guard was driving.</summary>
+    public bool ConsumeRestoreHandback()
+    {
+        lock (_gate)
+        {
+            var pending = _restoreHandback;
+            _restoreHandback = false;
+            return pending;
+        }
     }
 
     /// <summary>Hardware-control channels the watchdog drove, once the engine owns the fans again; empty while latched.</summary>
@@ -1375,7 +1413,7 @@ public sealed class ThermalGuardController
             if (_cpu.Restore())
             {
                 _watchdogPending = true;
-                _watchdogHardware.UnionWith(_coolingHardware);
+                _restoreHandback = true;
                 SetPublicState(ThermalGuardStates.Normal, null);
                 what.Add("thermal guard override");
             }

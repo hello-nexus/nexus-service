@@ -256,6 +256,8 @@ public sealed class CurveEngine : BackgroundService
         Isolated("guard limit detection", () => _guard.RefreshDetection(Clock()));
         _noWrites = _guard.WatchdogLatched;
         var watchdogDrove = _guard.ConsumeWatchdogRelease();
+        // A user restore ended a trip: the hardware channels the guard was driving go back to hardware once.
+        var guardHeld = _guard.ConsumeRestoreHandback() ? _guardDrivenHardware.ToList() : new List<string>();
         if (watchdogDrove || _noWrites)
         {
             lock (_lastWrite) { _lastWrite.Clear(); }
@@ -269,7 +271,7 @@ public sealed class CurveEngine : BackgroundService
         _step = "loading settings";
         var settings = _store.Load();
         // Channels the user left on hardware control went to full speed with the rest; once the engine runs they go back.
-        var watchdogHardware = watchdogDrove ? _guard.TakeWatchdogHardware() : Array.Empty<string>();
+        var watchdogHardware = (watchdogDrove ? _guard.TakeWatchdogHardware() : Array.Empty<string>()).Union(guardHeld).ToList();
         void ReleaseWatchdogHardware()
         {
             if (watchdogHardware.Count == 0)
