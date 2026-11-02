@@ -17,6 +17,8 @@ public sealed class ProcessOpenLocationRequest { public string ExePath { get; se
 public sealed class ProcessOpenLocationResult { public bool Ok { get; set; } }
 public sealed class ProcessActivateWindowRequest { public int Pid { get; set; } }
 public sealed class ProcessActivateWindowResult { public bool Ok { get; set; } }
+public sealed class ProcessEndSessionRequest { public int[] Pids { get; set; } = Array.Empty<int>(); }
+public sealed class ProcessEndSessionResult { public int Windows { get; set; } public int Accepted { get; set; } }
 
 /// <summary>
 /// Service-side outbound facade for the monitoring sidebar's process kill and
@@ -83,6 +85,33 @@ public static class ProcessActionsCommands
         }
     }
 
+    /// <summary>Asks the helper to send the session-end messages to the top-level windows of <paramref name="pids"/>; the windows found and the ones that accepted, or null when no helper answered.</summary>
+    public static async Task<ProcessEndSessionResult?> EndSessionAsync(HelperRegistry r, int[] pids, CancellationToken ct = default)
+    {
+        var conn = r.GetAny();
+        if (conn is null)
+        {
+            return null;
+        }
+
+        var result = await conn.SendCommandAsync(
+            "process.endSession", new ProcessEndSessionRequest { Pids = pids },
+            AppJsonContext.Default.ProcessEndSessionRequest, timeoutMs: 8000, ct: ct).ConfigureAwait(false);
+        if (!result.Ok || result.Payload is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize(result.Payload.Value, AppJsonContext.Default.ProcessEndSessionResult);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public static async Task<bool> ActivateWindowAsync(HelperRegistry r, int pid, CancellationToken ct = default)
     {
         var conn = r.GetAny();
@@ -137,6 +166,21 @@ public sealed class ProcessActionsHandler
             return Reply(env, new ProcessOpenLocationResult { Ok = ok }, AppJsonContext.Default.ProcessOpenLocationResult);
         });
 
+        registry.Register("process.endSession", (env, _) =>
+        {
+            var pids = ReadEndSessionReq(env).Pids;
+            var windows = 0;
+            var accepted = 0;
+            foreach (var pid in pids)
+            {
+                if (pid <= 0 || IsRefusedPid(pid)) continue;
+                var (found, took) = SessionEnd.SendToProcess(pid);
+                windows += found;
+                accepted += took;
+            }
+            return Reply(env, new ProcessEndSessionResult { Windows = windows, Accepted = accepted }, AppJsonContext.Default.ProcessEndSessionResult);
+        });
+
         registry.Register("process.activateWindow", (env, _) =>
         {
             var pid = ReadActivateWindowReq(env).Pid;
@@ -171,6 +215,24 @@ public sealed class ProcessActionsHandler
         EnumWindows(proc, IntPtr.Zero);
         return found;
     }
+
+    private static bool IsRefusedPid(int pid)
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetProcessById(pid);
+            return ProcessActionGuards.ShouldRefuseKill(p.ProcessName);
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private static ProcessEndSessionRequest ReadEndSessionReq(HelperEnvelope env)
+        => env.Payload is null
+            ? new ProcessEndSessionRequest()
+            : JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ProcessEndSessionRequest) ?? new ProcessEndSessionRequest();
 
     private static ProcessKillRequest ReadKillReq(HelperEnvelope env)
         => env.Payload is null
