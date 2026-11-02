@@ -88,13 +88,15 @@ public class ConflictGracefulEndTests
     }
 
     [Fact]
-    public void A_delivered_request_is_not_sent_again()
+    public void The_request_is_repeated_while_the_app_stays_but_the_deadline_is_set_by_the_first_delivery()
     {
         var rig = new Rig(exitsAt: null);
 
         rig.End.End(Graceful);
 
-        Assert.Single(rig.Sends);
+        Assert.True(rig.Sends.Count >= 3);
+        Assert.All(rig.Sends.Zip(rig.Sends.Skip(1)), p => Assert.True(p.Second - p.First >= Ms(ConflictGracefulEnd.Resend)));
+        Assert.InRange(Assert.Single(rig.Kills), Ms(ConflictGracefulEnd.Wait), Ms(ConflictGracefulEnd.Wait) + 1000);
     }
 
     [Fact]

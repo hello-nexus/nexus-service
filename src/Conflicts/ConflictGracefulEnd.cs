@@ -38,7 +38,7 @@ public sealed class ConflictGracefulEnd
     /// <summary>Upper bound while no request could be delivered yet: at boot the helper and the app's windows come up after the service.</summary>
     internal static readonly TimeSpan NotReachableWait = TimeSpan.FromSeconds(30);
 
-    /// <summary>Until a request is delivered it is sent again this often, so an app too early in its startup to have windows still gets one.</summary>
+    /// <summary>The request is sent again this often while the app stays: one delivered during the app's startup is ignored (measured on iCUE), so a later one is the one that works.</summary>
     internal static readonly TimeSpan Resend = TimeSpan.FromSeconds(3);
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
@@ -127,12 +127,12 @@ public sealed class ConflictGracefulEnd
             }
             var now = _clockMs();
             if (now >= deadline) break;
-            if (!delivered && now - lastSent >= (long)Resend.TotalMilliseconds)
+            if (now - lastSent >= (long)Resend.TotalMilliseconds)
             {
                 lastSent = now;
                 last = _send(pids);
                 if (last == SessionEndOutcome.Refused) break;
-                if (last == SessionEndOutcome.Delivered)
+                if (last == SessionEndOutcome.Delivered && !delivered)
                 {
                     delivered = true;
                     deadline = now + (long)Wait.TotalMilliseconds;
