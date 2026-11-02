@@ -77,9 +77,8 @@ public interface IFanControlProvider
     void ReleaseAll();
 
     /// <summary>
-    /// <see cref="ReleaseAll"/> for the thermal guard escalation and for shutdown: a channel whose
-    /// release would stop the fan for want of a board signal (a Lian Li wireless port) keeps the duty
-    /// Nexus last gave it instead. Defaults to <see cref="ReleaseAll"/>.
+    /// <see cref="ReleaseAll"/> for shutdown: a channel whose release would stop the fan for want of a
+    /// board signal (a Lian Li wireless port) keeps the duty Nexus last gave it. Defaults to <see cref="ReleaseAll"/>.
     /// </summary>
     void ReleaseAllKeepingDrivenPorts() => ReleaseAll();
 

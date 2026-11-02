@@ -1297,7 +1297,7 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
-    public void Escalated_WhenFansThatReportedRpmStayFarBelowTheirBest_ReassertsFullSpeedEveryTickAndReleasesNothing()
+    public void Escalated_WhenFansThatReportedRpmStayFarBelowTheirBest_ReassertsFullSpeedPeriodicallyAndReleasesNothing()
     {
         var (engine, fans, _, clock) = Build();
         LearnRpm(engine, fans, clock, 1000);
@@ -1315,8 +1315,12 @@ public class ThermalGuardEngineTests
         Assert.True(fans.Driven.Count > writes);
         Assert.Equal(100, LastDuty(fans, "f1"));
         Assert.Equal(100, LastDuty(fans, "f2"));
+        // Re-asserted on a slower cadence than the tick, so per-write USB hubs are not hit every second.
         var again = fans.Driven.Count;
         clock[0] += 1000;
+        engine.Tick();
+        Assert.Equal(again, fans.Driven.Count);
+        clock[0] += 5000;
         engine.Tick();
         Assert.True(fans.Driven.Count > again);
     }
@@ -1907,10 +1911,10 @@ public class ThermalGuardEngineTests
         Stall(fans, e, guard, mono);
         Assert.True(guard.WatchdogLatched);
         e.Tick();
-        var releasedWhileLatched = fans.Released.Count;
+        var releasedWhileLatched = fans.Released.Count(x => x == "hw1");
         SteadyTicks(e, guard, mono, ThermalGuardController.WatchdogResumeMs - 2000);
         // Latched: the hardware channel stays driven.
-        Assert.Equal(releasedWhileLatched, fans.Released.Count);
+        Assert.Equal(releasedWhileLatched, fans.Released.Count(x => x == "hw1"));
 
         SteadyTicks(e, guard, mono, 3000);
         Assert.False(guard.WatchdogLatched);
@@ -1920,7 +1924,9 @@ public class ThermalGuardEngineTests
         // Back to the curve and manual duties, raised only by the guard's floor at this temperature.
         Assert.Equal(56, LastDuty(fans, "f1"));
         Assert.Equal(56, LastDuty(fans, "f2"));
-        Assert.Contains("hw1", fans.Released);
+        Assert.Equal(releasedWhileLatched + 1, fans.Released.Count(x => x == "hw1"));
+        e.Tick();
+        Assert.Equal(releasedWhileLatched + 1, fans.Released.Count(x => x == "hw1"));
         Assert.Equal(0, fans.ReleaseAllCalls);
     }
 
@@ -1941,6 +1947,136 @@ public class ThermalGuardEngineTests
         Assert.Equal(100, LastDuty(fans, "hw1"));
         Assert.Empty(fans.Released);
         Assert.Equal(0, fans.ReleaseAllCalls);
+    }
+
+    [Fact]
+    public void TogglingTheGuardOffDuringALatch_HandsHardwareChannelsBackExactlyOnce()
+    {
+        var (_, fans, store, _) = Build();
+        fans.Channels.Add(new FanChannel { Id = "hw1", Name = "Board fan" });
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 89f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Assert.True(guard.WatchdogLatched);
+        e.Tick();
+        var before = fans.Released.Count(x => x == "hw1");
+
+        guard.SetEnabled(false);
+        for (var i = 0; i < 3; i++)
+        {
+            mono[0] += 1000;
+            guard.TickCompleted();
+            e.Tick();
+        }
+
+        Assert.Equal(before + 1, fans.Released.Count(x => x == "hw1"));
+    }
+
+    [Fact]
+    public void CoolingSwitchedOffWhileTheEngineIsStalled_GetsNoCoolingModeWrites()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 85f;
+        e.Tick();
+        guard.TickCompleted();
+        store.Update(s => s.Features.Cooling = false);
+        fans.Driven.Clear();
+
+        guard.WatchdogCheck(mono[0] + 11_000);
+
+        Assert.Empty(fans.Driven);
+    }
+
+    [Fact]
+    public void ACoolingOffThenOnWithAPendingWatchdogRelease_HandsHardwareChannelsBackOnce()
+    {
+        var (_, fans, store, _) = Build();
+        fans.Channels.Add(new FanChannel { Id = "hw1", Name = "Board fan" });
+        var mono = new long[] { 1_000 };
+        var guard = new ThermalGuardController(fans, store) { MonotonicMs = () => mono[0] };
+        var e = new CurveEngine(fans, store, new MultiplexHub(), new FeatureGates(store), guard) { Clock = () => mono[0] };
+        store.Update(s => s.FeaturesOnboardingCompleted = true);
+        fans.CpuTemp = 85f;
+        e.Tick();
+        guard.TickCompleted();
+        guard.WatchdogCheck(mono[0] + 11_000);
+        store.Update(s => s.Features.Cooling = false);
+        mono[0] += 1000;
+        e.Tick();
+        Assert.DoesNotContain("hw1", fans.Released);
+
+        store.Update(s => s.Features.Cooling = true);
+        mono[0] += 1000;
+        e.Tick();
+        mono[0] += 1000;
+        e.Tick();
+
+        Assert.Single(fans.Released, x => x == "hw1");
+    }
+
+    [Fact]
+    public void ThePollAfterTheLatchEnded_DrivesNothing()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 89f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        SteadyTicks(e, guard, mono, ThermalGuardController.WatchdogResumeMs + 2000);
+        Assert.False(guard.WatchdogLatched);
+        fans.Driven.Clear();
+
+        guard.DriveCoolingMode(requireLatch: true);
+
+        Assert.Empty(fans.Driven);
+        Assert.Empty(guard.TakeWatchdogHardware());
+    }
+
+    [Fact]
+    public void AChannelThatDropsAndReturnsDuringALatch_IsDrivenAgain()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 89f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        var f2 = fans.Channels.Single(c => c.Id == "f2");
+
+        fans.Channels.Remove(f2);
+        mono[0] += 1000;
+        guard.TickCompleted();
+        e.Tick();
+        fans.Channels.Add(f2);
+        mono[0] += 1000;
+        guard.TickCompleted();
+        e.Tick();
+        fans.Driven.Clear();
+        guard.WatchdogCheck(mono[0] + 2_000);
+
+        Assert.Equal(100, LastDuty(fans, "f2"));
+    }
+
+    [Fact]
+    public void AWatchdogFireWhileTheGuardIsTripped_DoesNotReleaseTheChannelsTheGuardIsDriving()
+    {
+        var (_, fans, store, _) = Build();
+        fans.Channels.Add(new FanChannel { Id = "hw1", Name = "Board fan" });
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        Trip(e, fans, mono);
+        Assert.Equal(100, LastDuty(fans, "hw1"));
+
+        guard.WatchdogCheck(mono[0]);
+        mono[0] += 1000;
+        guard.TickCompleted();
+        e.Tick();
+
+        Assert.DoesNotContain("hw1", fans.Released);
+        Assert.Equal(100, LastDuty(fans, "hw1"));
     }
 
     private sealed class FlakySensors : ISensorProvider

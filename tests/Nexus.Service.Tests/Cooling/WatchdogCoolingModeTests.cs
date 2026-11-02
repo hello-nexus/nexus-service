@@ -125,50 +125,73 @@ public class WatchdogCoolingModeTests
     [Fact]
     public void KeepingPortsRelease_StillReleasesThePumpOfAnAio()
     {
-        var (hub, _, _) = Slv3TestHub.CreateConnected();
-        hub.State.Fans = new[]
-        {
-            new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 2 },
-        };
+        var (hub, net, _) = Slv3TestHub.CreateConnected();
+        var aioMac = new byte[] { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01 };
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = aioMac, MasterMac = net.MasterMac, RxType = 1, DevType = 11, FanCount = 0 });
+        Assert.True(hub.DriveTick());
+        var aioHex = Convert.ToHexString(aioMac);
         var provider = new Slv3CoolingProvider(hub);
-        ((IFanControlProvider)provider).DriveFansToFull(new[] { Port(0) });
+        provider.DriveFanSpeed($"lianli-wireless:{aioHex}:pump", 70);
+        Assert.Equal(70, hub.GetPumpDuty(aioHex));
 
         provider.ReleaseAllKeepingDrivenPorts();
-        Assert.Equal(100, hub.GetPortDuty(Mac, 0));
 
-        provider.ReleaseAll();
-        Assert.Null(hub.GetPortDuty(Mac, 0));
+        Assert.Null(hub.GetPumpDuty(aioHex));
     }
 
     [Theory]
-    [InlineData(null, 55)]
-    [InlineData(0, 55)]
-    [InlineData(35, null)]
-    public void KeepingPortsRelease_SendsFollowMotherboardOnlyWhenTheHeaderMeasuresAboveZero(int? headerPercent, int? expected)
+    [InlineData(null, 55, 66)]
+    [InlineData(0, 55, 66)]
+    [InlineData(35, null, null)]
+    public void KeepingPortsRelease_SendsFollowMotherboardOnlyWhenTheHeaderMeasuresAboveZero(int? headerPercent, int? expected0, int? expected1)
     {
         var (hub, _, _) = Slv3TestHub.CreateConnected();
         hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 2 } };
         hub.State.MotherboardPwmPercent = headerPercent;
         var provider = new Slv3CoolingProvider(hub);
         provider.DriveFanSpeed(Port(0), 55);
+        provider.DriveFanSpeed(Port(1), 66);
 
         provider.ReleaseAllKeepingDrivenPorts();
 
-        Assert.Equal(expected, hub.GetPortDuty(Mac, 0));
+        Assert.Equal(expected0, hub.GetPortDuty(Mac, 0));
+        Assert.Equal(expected1, hub.GetPortDuty(Mac, 1));
     }
 
     [Fact]
-    public void ADrivenPortWithAReleasedPeer_OnlyTheDrivenOneKeepsItsDuty()
+    public void APortTheUserAlreadyReleased_StaysOnTheBoardWhileItsDrivenPeerKeepsItsDuty()
     {
         var (hub, _, _) = Slv3TestHub.CreateConnected();
         hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, FanCount = 2 } };
         var provider = new Slv3CoolingProvider(hub);
         provider.DriveFanSpeed(Port(0), 55);
+        provider.DriveFanSpeed(Port(1), 66);
+        provider.ReleaseFan(Port(1));
 
         provider.ReleaseAllKeepingDrivenPorts();
 
         Assert.Equal(55, hub.GetPortDuty(Mac, 0));
         Assert.Null(hub.GetPortDuty(Mac, 1));
+    }
+
+    [Fact]
+    public void TheCompositeSkipsAChannelTheUserHandedToTheBoard_WhenDrivingCoolingMode()
+    {
+        var extra = new HangingDriveFans();
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.UncontrolledFanChannels.Add("ext:fan1"));
+        var noPorts = new NoPorts();
+        var composite = new CompositeFanControlProvider(
+            new BoardFans(),
+            new Np50CoolingProvider(new Np50Hub(noPorts, _ => null!)),
+            new MiniHubCoolingProvider(new MiniHubHub(noPorts, _ => null!)),
+            new PluginProviderRegistry(),
+            store,
+            new CompositeFanControlProvider.FanSource(id => id.StartsWith("ext:", StringComparison.Ordinal), extra));
+
+        composite.DriveFansToFull(new[] { "ext:fan0", "ext:fan1" });
+
+        lock (extra.Driven) Assert.Equal(new[] { ("ext:fan0", 100) }, extra.Driven);
     }
 
     // ── composite stall isolation ──

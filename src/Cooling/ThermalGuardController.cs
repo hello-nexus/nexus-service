@@ -270,7 +270,7 @@ public sealed class ThermalGuardController
         }
         if (holdLatched)
         {
-            DriveCoolingMode();
+            DriveCoolingMode(requireLatch: true);
             return;
         }
         lock (_gate)
@@ -309,7 +309,7 @@ public sealed class ThermalGuardController
         try { step = engineStep?.Invoke() ?? "unknown"; }
         catch { step = "unknown"; }
         Console.Error.WriteLine($"[thermal-guard] curve engine stalled for {stalled / 1000} s at: {step}; entering cooling mode: fans driven to full speed");
-        DriveCoolingMode();
+        DriveCoolingMode(requireLatch: false);
         // Only now may the engine re-drive: it can never run ahead of a cooling-mode write still in flight.
         lock (_gate) { _watchdogPending = true; }
         if (latchedNow)
@@ -329,11 +329,20 @@ public sealed class ThermalGuardController
     }
 
     /// <summary>Drives every cooling-mode channel not yet driven this spell to full speed, the way a trip does. Never hands a fan to hardware control.</summary>
-    private void DriveCoolingMode()
+    internal void DriveCoolingMode(bool requireLatch)
     {
+        if (!_store.Load().Features.Cooling)
+        {
+            return;
+        }
         string[] ids;
         lock (_gate)
         {
+            // The poll chose to hold in an earlier lock; a toggle or a resume since then ended cooling mode.
+            if (requireLatch && !(_watchdogArmed && _watchdogLatched))
+            {
+                return;
+            }
             ids = _coolingIds.Where(id => _coolingAsserted.Add(id)).ToArray();
             foreach (var id in ids)
             {
@@ -548,6 +557,7 @@ public sealed class ThermalGuardController
             _watchdogArmed = true;
             _guardTemp = guardTemp;
             _coolingIds = eligible.Concat(hardware).ToArray();
+            _coolingAsserted.IntersectWith(_coolingIds);
             _coolingHardware = hardware;
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);

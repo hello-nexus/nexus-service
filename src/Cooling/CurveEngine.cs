@@ -92,6 +92,8 @@ public sealed class CurveEngine : BackgroundService
 
     // Set per tick while the watchdog has latched after repeated stalls: no fan is written.
     private bool _noWrites;
+    private long? _escalatedReassertMs;
+    private const long EscalatedReassertIntervalMs = 5000;
 
     /// <summary>Millisecond clock for write gating and the guard; tests substitute it.</summary>
     internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
@@ -266,22 +268,23 @@ public sealed class CurveEngine : BackgroundService
 
         _step = "loading settings";
         var settings = _store.Load();
-        if (watchdogDrove)
+        // Channels the user left on hardware control went to full speed with the rest; once the engine runs they go back.
+        var watchdogHardware = watchdogDrove ? _guard.TakeWatchdogHardware() : Array.Empty<string>();
+        void ReleaseWatchdogHardware()
         {
-            // Channels the user left on hardware control went to full speed with the rest; the engine runs again, so they go back.
-            var driven = _guard.TakeWatchdogHardware();
-            if (driven.Count > 0)
+            if (watchdogHardware.Count == 0)
             {
-                Isolated("watchdog hardware release", () =>
-                {
-                    var heldOwned = CurveOwnedIds(CoolingSnapshots.Curves(settings.Cooling));
-                    var heldManual = CoolingSnapshots.ManualSpeeds(settings.Cooling);
-                    foreach (var id in driven)
-                    {
-                        ReleaseGuardHardware(id, heldOwned, heldManual);
-                    }
-                });
+                return;
             }
+            Isolated("watchdog hardware release", () =>
+            {
+                var heldOwned = CurveOwnedIds(CoolingSnapshots.Curves(settings.Cooling));
+                var heldManual = CoolingSnapshots.ManualSpeeds(settings.Cooling);
+                foreach (var id in watchdogHardware)
+                {
+                    ReleaseGuardHardware(id, heldOwned, heldManual);
+                }
+            });
         }
         if (settings.Cooling.Curves.Count == 0
             && settings.Cooling.ManualSpeeds.Count == 0
@@ -290,6 +293,7 @@ public sealed class CurveEngine : BackgroundService
         {
             // Idle cooling config: skip the per-tick channel enumeration
             // (on Windows it costs an LHM update + re-discovery).
+            ReleaseWatchdogHardware();
             _guard.NotifyIdle();
             ForgetWritesNotOwned(null);
             return;
@@ -337,6 +341,11 @@ public sealed class CurveEngine : BackgroundService
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[thermal-guard] evaluation failed: {ex.Message}");
+        }
+        // A guard that is driving takes these channels itself and hands them back when its trip ends.
+        if (plan.Output.State is not (ThermalGuardStates.Tripped or ThermalGuardStates.Escalated))
+        {
+            ReleaseWatchdogHardware();
         }
         var activePlan = plan;
         Isolated("guard side effects", () => ApplyPlanSideEffects(activePlan));
@@ -644,8 +653,17 @@ public sealed class CurveEngine : BackgroundService
         }
         if (plan.Output.State == ThermalGuardStates.Escalated)
         {
-            // Writes may not be landing: forget them so each tick drives every fan again.
-            lock (_lastWrite) { _lastWrite.Clear(); }
+            // Writes may not be landing: forget them so every fan is driven again, spaced for per-write USB hubs.
+            var now = Clock();
+            if (_escalatedReassertMs is not { } last || now - last >= EscalatedReassertIntervalMs)
+            {
+                _escalatedReassertMs = now;
+                lock (_lastWrite) { _lastWrite.Clear(); }
+            }
+        }
+        else
+        {
+            _escalatedReassertMs = null;
         }
         if (plan.Output.TripEnded)
         {
