@@ -153,8 +153,10 @@ public sealed class ConflictGracefulEnd
                 var starting = age < (long)StartupWindow.TotalMilliseconds;
                 if (!delivered || starting || !sentPastStartup)
                 {
-                    lastSent = now;
                     last = _send(pids);
+                    // The send itself can block for seconds on an app that is slow to answer messages, so the clock is read again after it.
+                    now = _clockMs();
+                    lastSent = now;
                     _log?.Invoke($"{def.DisplayName}: close request {last} after {now - start} ms (app age {age} ms)");
                     if (last == SessionEndOutcome.Refused) break;
                     if (last == SessionEndOutcome.Delivered)
