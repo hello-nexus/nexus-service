@@ -25,7 +25,8 @@ public static class NativeDetectorClaims
     /// <param name="Detectors">REGISTER_*_DETECTOR names in nexus-rgb/openrgb-headless, verbatim.</param>
     /// <param name="Handlers">Device-control handler ids; the detector is held off unless one is on and no native driver exists on this OS.</param>
     /// <param name="NotOnMac">True where the native stack does not exist on macOS, so the detector is on there while control is on.</param>
-    public sealed record Claim(string Key, string[] Detectors, string[] Handlers, bool NotOnMac = false);
+    /// <param name="Legacy">Names an older bundle registered. Never held, only released, so a stale false in an old config is cleared.</param>
+    public sealed record Claim(string Key, string[] Detectors, string[] Handlers, bool NotOnMac = false, string[]? Legacy = null);
 
     public static readonly IReadOnlyList<Claim> All = new Claim[]
     {
@@ -51,8 +52,8 @@ public static class NativeDetectorClaims
             new[] { "nollie" }),
         new(Kraken, new[] { "NZXT Kraken 2024 ELITE Series RGB", "NZXT Kraken X3 Series", "NZXT Kraken X3 Series RGB" }, new[] { "nzxt-kraken" }),
         new(StreamDeck, new[] { "Elgato Stream Deck MK.2" }, new[] { "streamdeck" }),
-        // The legacy "HYTE Nexus" stays so the cleanup pass can clear an old config's stale false. macOS has no native discovery for either device.
-        new(HyteNexus, new[] { "HYTE Nexus", "HYTE THICC Q60", "HYTE Nexus Portal NP50" }, new[] { "np50", "qseries" }, NotOnMac: true),
+        // The older single "HYTE Nexus" detector is Legacy: the current daemon drops it as unregistered, so it is only released. macOS has no native discovery for either device.
+        new(HyteNexus, new[] { "HYTE THICC Q60", "HYTE Nexus Portal NP50" }, new[] { "np50", "qseries" }, NotOnMac: true, Legacy: new[] { "HYTE Nexus" }),
     };
 
     /// <summary>
@@ -71,6 +72,10 @@ public static class NativeDetectorClaims
         foreach (var claim in All)
         {
             all.AddRange(claim.Detectors);
+            if (claim.Legacy is not null)
+            {
+                all.AddRange(claim.Legacy);
+            }
         }
         return all;
     }
