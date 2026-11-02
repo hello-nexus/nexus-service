@@ -38,11 +38,14 @@ public sealed class ConflictGracefulEnd
     /// <summary>Upper bound while no request could be delivered yet: at boot the helper and the app's windows come up after the service.</summary>
     internal static readonly TimeSpan NotReachableWait = TimeSpan.FromSeconds(30);
 
-    /// <summary>Until a request is delivered it is sent again this often. During the app's startup it is also repeated after a delivery, since one delivered then can be ignored (measured on iCUE); past it a delivered request is not repeated, as a second one sent into a closing app can stall its exit (measured).</summary>
+    /// <summary>Until a request is delivered it is sent again this often. A delivered request is not repeated: a second one sent into a closing app can stall its exit (measured).</summary>
     internal static readonly TimeSpan Resend = TimeSpan.FromSeconds(3);
 
-    /// <summary>Process age under which a delivered request is repeated; longer than the startup handshake measured on iCUE.</summary>
+    /// <summary>Process age under which the app counts as starting up, longer than the startup handshake measured on iCUE.</summary>
     internal static readonly TimeSpan StartupWindow = TimeSpan.FromSeconds(20);
+
+    /// <summary>Wait after a delivery to an app that is still starting up: its exit waits for the startup to finish, which stalled past 24 s on iCUE.</summary>
+    internal static readonly TimeSpan StartupWait = TimeSpan.FromSeconds(60);
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
@@ -105,7 +108,7 @@ public sealed class ConflictGracefulEnd
         return new ConflictKiller.KillOutcome(before, _anyRunning(def));
     }
 
-    /// <summary>Blocks until the app exits or its deadline passes. The deadline is <see cref="NotReachableWait"/> from the start and, once a request is delivered, <see cref="Wait"/> from that moment; a request every window refused (a higher-integrity app) ends the wait at once. Leftover processes and services are ended as soon as the app itself is gone.</summary>
+    /// <summary>Blocks until the app exits or its deadline passes. The deadline is <see cref="NotReachableWait"/> from the start and, once a request is delivered, <see cref="Wait"/> from that moment (<see cref="StartupWait"/> for an app still starting up); a request every window refused (a higher-integrity app) ends the wait at once. Leftover processes and services are ended as soon as the app itself is gone.</summary>
     public void End(ConflictAppDefinition def)
     {
         if (_backOffRunning(def))
@@ -134,15 +137,16 @@ public sealed class ConflictGracefulEnd
             }
             var now = _clockMs();
             if (now >= deadline) break;
-            if (now - lastSent >= (long)Resend.TotalMilliseconds && (!delivered || _ageMs(pids) < (long)StartupWindow.TotalMilliseconds))
+            if (!delivered && now - lastSent >= (long)Resend.TotalMilliseconds)
             {
                 lastSent = now;
                 last = _send(pids);
                 if (last == SessionEndOutcome.Refused) break;
-                if (last == SessionEndOutcome.Delivered && !delivered)
+                _log?.Invoke($"{def.DisplayName}: close request {last} after {now - start} ms");
+                if (last == SessionEndOutcome.Delivered)
                 {
                     delivered = true;
-                    deadline = now + (long)Wait.TotalMilliseconds;
+                    deadline = now + (long)(_ageMs(pids) < (long)StartupWindow.TotalMilliseconds ? StartupWait : Wait).TotalMilliseconds;
                 }
             }
             _sleepMs((int)PollInterval.TotalMilliseconds);

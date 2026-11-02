@@ -102,16 +102,24 @@ public class ConflictGracefulEndTests
     }
 
     [Fact]
-    public void A_delivered_request_is_repeated_while_the_app_is_still_starting()
+    public void An_app_still_starting_up_gets_the_long_wait_and_no_second_request()
     {
         var rig = new Rig(exitsAt: null) { AppAgeAtStartMs = 1000 };
 
         rig.End.End(Graceful);
 
-        // Repeated every Resend until the app is past StartupWindow, then left alone.
-        Assert.InRange(rig.Sends.Count, 3, 8);
-        Assert.All(rig.Sends.Zip(rig.Sends.Skip(1)), p => Assert.True(p.Second - p.First >= Ms(ConflictGracefulEnd.Resend)));
-        Assert.True(rig.Sends.Last() + rig.AppAgeAtStartMs < Ms(ConflictGracefulEnd.StartupWindow) + Ms(ConflictGracefulEnd.Resend));
+        Assert.Single(rig.Sends);
+        Assert.InRange(Assert.Single(rig.Kills), Ms(ConflictGracefulEnd.StartupWait), Ms(ConflictGracefulEnd.StartupWait) + 1000);
+    }
+
+    [Fact]
+    public void An_app_that_exits_late_in_its_startup_is_not_killed()
+    {
+        var rig = new Rig(exitsAt: 25_000) { AppAgeAtStartMs = 1000 };
+
+        rig.End.End(Graceful);
+
+        Assert.Empty(rig.Kills);
     }
 
     [Fact]
