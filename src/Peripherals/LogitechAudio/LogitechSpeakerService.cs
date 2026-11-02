@@ -31,6 +31,9 @@ public sealed class LogitechSpeakerService : BackgroundService
     private DateTimeOffset _endpointsAt = DateTimeOffset.MinValue;
     // Serializes the subwoofer conversations (reconnect resend vs a user change) and guards _restoredGeneration.
     private readonly object _bassLock = new();
+    // Serializes output scans; _version moves on every invalidation so a scan that raced one is not cached.
+    private readonly object _scanLock = new();
+    private int _version;
     private int _restoredGeneration;
     // Settings used while the dev-tools simulator is active, so nothing it does reaches the saved ones.
     private LogitechSpeakerSettings _simSettings = new();
@@ -59,6 +62,7 @@ public sealed class LogitechSpeakerService : BackgroundService
         lock (_lock)
         {
             _endpointsAt = DateTimeOffset.MinValue;
+            _version++;
         }
     }
 
@@ -284,15 +288,23 @@ public sealed class LogitechSpeakerService : BackgroundService
         {
             return null;
         }
-        lock (_lock)
+        lock (_bassLock)
         {
             var generation = _bass.Generation;
-            if (_subwooferLevel is null || _subwooferGeneration != generation)
+            lock (_lock)
             {
-                _subwooferLevel = _bass.GetLevel();
+                if (_subwooferLevel is not null && _subwooferGeneration == generation)
+                {
+                    return _subwooferLevel;
+                }
+            }
+            var level = _bass.GetLevel();
+            lock (_lock)
+            {
+                _subwooferLevel = level;
                 _subwooferGeneration = generation;
             }
-            return _subwooferLevel;
+            return level;
         }
     }
 
@@ -371,6 +383,7 @@ public sealed class LogitechSpeakerService : BackgroundService
             _simSettings = new LogitechSpeakerSettings();
             _subwooferLevel = null;
             _endpointsAt = DateTimeOffset.MinValue;
+            _version++;
         }
     }
 
@@ -451,26 +464,49 @@ public sealed class LogitechSpeakerService : BackgroundService
     private LogitechSpeakerEndpoint? Endpoint(bool fresh = false)
     {
         SyncSimulation();
-        bool stale;
         lock (_lock)
         {
-            stale = fresh || _time.GetUtcNow() - _endpointsAt >= EndpointCacheTime;
-        }
-        if (stale)
-        {
-            // The scan can wait on COM, so it runs outside the lock.
-            var found = _apo.FindEndpoints();
-            lock (_lock)
+            if (!fresh && !CacheStale())
             {
-                _endpoints = found;
-                _endpointsAt = _time.GetUtcNow();
+                return Pick(_endpoints);
             }
         }
-        lock (_lock)
+        // The scan can wait on COM, so it runs outside _lock; one scan at a time.
+        lock (_scanLock)
         {
-            return _endpoints.FirstOrDefault(e => e.IsDefault) ?? _endpoints.FirstOrDefault();
+            IReadOnlyList<LogitechSpeakerEndpoint> found = Array.Empty<LogitechSpeakerEndpoint>();
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                int version;
+                lock (_lock)
+                {
+                    // A caller that waited on the scan lock shares the scan that finished meanwhile.
+                    if (attempt == 0 && !fresh && !CacheStale())
+                    {
+                        return Pick(_endpoints);
+                    }
+                    version = _version;
+                }
+                found = _apo.FindEndpoints();
+                lock (_lock)
+                {
+                    if (version == _version)
+                    {
+                        _endpoints = found;
+                        _endpointsAt = _time.GetUtcNow();
+                        break;
+                    }
+                }
+            }
+            return Pick(found);
         }
     }
+
+    // Caller holds _lock.
+    private bool CacheStale() => _time.GetUtcNow() - _endpointsAt >= EndpointCacheTime;
+
+    private static LogitechSpeakerEndpoint? Pick(IReadOnlyList<LogitechSpeakerEndpoint> endpoints) =>
+        endpoints.FirstOrDefault(e => e.IsDefault) ?? endpoints.FirstOrDefault();
 }
 
 public enum SpeakerStatus

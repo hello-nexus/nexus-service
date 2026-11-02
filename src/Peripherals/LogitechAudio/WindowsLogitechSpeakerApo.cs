@@ -421,7 +421,7 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
             var stop = (delegate* unmanaged[Stdcall]<IntPtr, int>)Slot(client, 11);
             if (start(client) >= 0)
             {
-                // Padding 0 means the engine consumed every frame; the stream latency is what is still on its way to the speaker.
+                // Padding 0 means the engine consumed every frame; the stream latency covers the engine's own buffering, not the effect, USB or DAC path, so a short margin follows.
                 var getPadding = (delegate* unmanaged[Stdcall]<IntPtr, uint*, int>)Slot(client, 6);
                 var deadline = Environment.TickCount64 + frames * 1000L / rate + 500;
                 uint padding;

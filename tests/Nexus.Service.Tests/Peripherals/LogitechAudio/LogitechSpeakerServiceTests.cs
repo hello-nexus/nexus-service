@@ -27,7 +27,18 @@ public class LogitechSpeakerServiceTests
         public float Volume { get; set; } = 0.7f;
         public List<int> Tests { get; } = new();
 
-        public IReadOnlyList<LogitechSpeakerEndpoint> FindEndpoints() => Endpoints;
+        public int FindCalls { get; set; }
+        public Action? OnFind { get; set; }
+
+        public IReadOnlyList<LogitechSpeakerEndpoint> FindEndpoints()
+        {
+            FindCalls++;
+            var snapshot = Endpoints.ToList();
+            var hook = OnFind;
+            OnFind = null;
+            hook?.Invoke();
+            return snapshot;
+        }
 
         public LogitechSpeakerApoValues Read(string endpointId) => new()
         {
@@ -234,7 +245,7 @@ public class LogitechSpeakerServiceTests
     }
 
     [Fact]
-    public void Simulation_KeepsItsSettingsOutOfTheSavedOnes_AndLeavesTheRealSpeakerAloneOnStop()
+    public void Simulation_KeepsItsSettingsOutOfTheSaved_AndAReconnectAfterStopResendsTheSavedLevel()
     {
         _store.Settings.LogitechSpeaker.SubwooferLevel = 40;
         var service = Service();
@@ -267,6 +278,23 @@ public class LogitechSpeakerServiceTests
         Assert.True(service.SavePreset("Mine", new float[10]).Ok);
         Assert.Contains(service.GetState().Presets, p => p.Name == "Mine");
         Assert.True(service.DeletePreset("Mine").Ok);
+    }
+
+    [Fact]
+    public void AnInvalidationDuringAScan_DiscardsThatScan()
+    {
+        var service = Service();
+        _apo.OnFind = () =>
+        {
+            _apo.Endpoints.Clear();
+            _apo.Endpoints.Add(new("b", "Second", "G560X"));
+            service.ForgetEndpoints();
+        };
+
+        Assert.Equal("G560X", service.PresentModel());
+        Assert.Equal(2, _apo.FindCalls);
+        Assert.Equal("G560X", service.PresentModel());
+        Assert.Equal(2, _apo.FindCalls);
     }
 
     [Fact]
