@@ -111,7 +111,12 @@ public class LogitechSpeakerServiceTests
     private readonly FakeBass _bass = new();
     private readonly Store _store = new();
 
-    private LogitechSpeakerService Service() => new(_apo, _bass, _store, TimeProvider.System);
+    private sealed class FixedTime : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
+    }
+
+    private LogitechSpeakerService Service() => new(_apo, _bass, _store, new FixedTime());
 
     [Fact]
     public void PresentModel_IsTheSpeakerWithTheEffect_OrNull()
@@ -294,6 +299,22 @@ public class LogitechSpeakerServiceTests
         Assert.Equal("G560X", service.PresentModel());
         Assert.Equal(2, _apo.FindCalls);
         Assert.Equal("G560X", service.PresentModel());
+        Assert.Equal(2, _apo.FindCalls);
+    }
+
+    [Fact]
+    public void ASimulatorStartingDuringAScan_NeverLeavesTheRealOutputInTheCache()
+    {
+        var service = Service();
+        _apo.OnFind = () =>
+        {
+            _apo.Active = true;
+            _apo.Endpoints.Clear();
+            _apo.Endpoints.Add(new("sim", "Simulated", "SIM"));
+        };
+
+        Assert.Equal("SIM", service.PresentModel());
+        Assert.Equal("SIM", service.PresentModel());
         Assert.Equal(2, _apo.FindCalls);
     }
 
