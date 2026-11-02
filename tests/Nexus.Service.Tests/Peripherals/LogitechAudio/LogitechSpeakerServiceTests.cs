@@ -13,8 +13,9 @@ public class LogitechSpeakerServiceTests
 {
     private const string EndpointId = "{0.0.0.00000000}.{0a97e697-f9f4-4c5f-bf45-682666fe96b2}";
 
-    private sealed class FakeApo : ILogitechSpeakerApo
+    private sealed class FakeApo : ILogitechSpeakerApo, ILogitechSpeakerSimulation
     {
+        public bool Active { get; set; }
         public List<LogitechSpeakerEndpoint> Endpoints { get; } = new() { new(EndpointId, "Logitech G560 Gaming Speaker", "G560") };
         public int? SelectedEq { get; set; } = 1;
         public float[]? Bands { get; set; } = { 4, 3, 2, 0, -4, -3, -3, 1, 2, 4 };
@@ -201,6 +202,60 @@ public class LogitechSpeakerServiceTests
         _apo.Bands = new float[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
         Assert.Null(service.GetState().Preset);
+    }
+
+    [Fact]
+    public void SeveralOutputs_PreferTheDefaultOne()
+    {
+        _apo.Endpoints.Clear();
+        _apo.Endpoints.Add(new("a", "First", "G560"));
+        _apo.Endpoints.Add(new("b", "Second", "G560X", true));
+
+        Assert.Equal("G560X", Service().PresentModel());
+    }
+
+    [Fact]
+    public void Failures_NameWhyTheChangeWasRefused()
+    {
+        var service = Service();
+
+        Assert.Equal(SpeakerStatus.Invalid, service.SetEq(null, new float[] { 1 }, null).Status);
+        Assert.Equal(SpeakerStatus.NotFound, service.SetEq(null, null, "nope").Status);
+        Assert.Equal(SpeakerStatus.Invalid, service.SetSurround(null, "attic").Status);
+        Assert.Equal(SpeakerStatus.Invalid, service.SetChannelGain(8, 1).Status);
+        Assert.Equal(SpeakerStatus.Invalid, service.TestChannel(-1).Status);
+        Assert.Equal(SpeakerStatus.NotFound, service.DeletePreset("nope").Status);
+        Assert.Equal(SpeakerStatus.Invalid, service.SavePreset("Flat", new float[10]).Status);
+
+        _bass.Present = false;
+        Assert.Equal(SpeakerStatus.NotFound, service.SetSubwoofer(5).Status);
+        _apo.Endpoints.Clear();
+        Assert.Equal(SpeakerStatus.NotFound, service.SetVolume(0.5f).Status);
+    }
+
+    [Fact]
+    public void Simulation_KeepsItsSettingsOutOfTheSavedOnes_AndLeavesTheRealSpeakerAloneOnStop()
+    {
+        _store.Settings.LogitechSpeaker.SubwooferLevel = 40;
+        var service = Service();
+        service.Tick();
+        _bass.Sets.Clear();
+
+        _apo.Active = true;
+        Assert.True(service.SetSubwoofer(90));
+        Assert.True(service.SavePreset("Sim", new float[10]));
+        Assert.Equal(40, _store.Settings.LogitechSpeaker.SubwooferLevel);
+        Assert.Empty(_store.Settings.LogitechSpeaker.CustomPresets);
+        Assert.True(service.GetState().Simulated);
+        Assert.Contains(service.GetState().Presets, p => p.Name == "Sim");
+
+        _apo.Active = false;
+        _bass.Generation++;
+        service.Tick();
+
+        Assert.Equal(new[] { 90 }, _bass.Sets);
+        Assert.DoesNotContain(service.GetState().Presets, p => p.Name == "Sim");
+        Assert.False(service.GetState().Simulated);
     }
 
     [Fact]

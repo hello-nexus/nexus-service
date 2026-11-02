@@ -29,7 +29,13 @@ public sealed class LogitechSpeakerService : BackgroundService
     private readonly object _lock = new();
     private IReadOnlyList<LogitechSpeakerEndpoint> _endpoints = Array.Empty<LogitechSpeakerEndpoint>();
     private DateTimeOffset _endpointsAt = DateTimeOffset.MinValue;
+    // Serializes the subwoofer conversations (reconnect resend vs a user change) and guards _restoredGeneration.
+    private readonly object _bassLock = new();
     private int _restoredGeneration;
+    // Settings used while the dev-tools simulator is active, so nothing it does reaches the saved ones.
+    private LogitechSpeakerSettings _simSettings = new();
+    private bool _simulated;
+    private bool _resyncGeneration;
     // The subwoofer level as last read or set, per connection: pages poll the state every
     // few seconds and the speaker does not need a HID++ question each time.
     private int? _subwooferLevel;
@@ -80,35 +86,47 @@ public sealed class LogitechSpeakerService : BackgroundService
     /// <summary>Sends the subwoofer level again once the speaker is back after a drop (or at start).</summary>
     internal void Tick()
     {
+        SyncSimulation();
         if (!_bass.IsPresent())
         {
             return;
         }
-        var generation = _bass.Generation;
-        if (generation == _restoredGeneration)
+        lock (_bassLock)
         {
-            return;
-        }
-        var level = _store.Load().LogitechSpeaker.SubwooferLevel;
-        if (level is null)
-        {
-            _restoredGeneration = generation;
-            return;
-        }
-        if (_bass.SetLevel(level.Value))
-        {
-            _restoredGeneration = generation;
-            lock (_lock)
+            var generation = _bass.Generation;
+            if (_resyncGeneration)
             {
-                _subwooferLevel = level;
-                _subwooferGeneration = generation;
+                // The simulator just stopped: the real speaker keeps the level it has.
+                _resyncGeneration = false;
+                _restoredGeneration = generation;
+                return;
             }
-            ServiceLog.Info($"[logitech-speaker] subwoofer level {level} sent to the speaker");
+            if (generation == _restoredGeneration)
+            {
+                return;
+            }
+            var level = ReadSettings(s => s.SubwooferLevel);
+            if (level is null)
+            {
+                _restoredGeneration = generation;
+                return;
+            }
+            if (_bass.SetLevel(level.Value))
+            {
+                _restoredGeneration = generation;
+                lock (_lock)
+                {
+                    _subwooferLevel = level;
+                    _subwooferGeneration = generation;
+                }
+                ServiceLog.Info($"[logitech-speaker] subwoofer level {level} sent to the speaker");
+            }
         }
     }
 
     public LogitechSpeakerStateDto GetState()
     {
+        SyncSimulation();
         var state = new LogitechSpeakerStateDto
         {
             BandHz = LogitechSpeakerProtocol.BandHz.ToList(),
@@ -127,16 +145,15 @@ public sealed class LogitechSpeakerService : BackgroundService
         }
 
         var values = _apo.Read(endpoint.Id);
-        var settings = _store.Load().LogitechSpeaker;
         state.Present = true;
-        state.Simulated = _apo is ILogitechSpeakerSimulation { Active: true };
+        state.Simulated = _simulated;
         state.Name = endpoint.Name;
         state.Model = endpoint.Model;
         state.Volume = _apo.GetVolume(endpoint.Id);
         state.SubwooferLevel = SubwooferLevel();
         state.EqEnabled = values.SelectedEq == LogitechSpeakerProtocol.EqAdvanced;
         state.Bands = (values.AdvancedBands ?? new float[LogitechSpeakerProtocol.BandCount]).ToList();
-        state.Preset = PresetMatching(settings.EqPreset, state.Bands);
+        state.Preset = PresetMatching(ReadSettings(s => s.EqPreset), state.Bands);
         state.SurroundEnabled = values.DtsOn == true;
         state.Room = values.DtsRoom == LogitechSpeakerProtocol.Rooms.Movie ? "movie" : "gaming";
         state.ChannelGains = (values.ChannelGains ?? Enumerable.Repeat(1f, LogitechSpeakerProtocol.ChannelCount).ToArray()).ToList();
@@ -148,19 +165,19 @@ public sealed class LogitechSpeakerService : BackgroundService
     /// or from the preset named <paramref name="preset"/>. Bands set by hand clear the
     /// preset name, as G HUB's do.
     /// </summary>
-    public bool SetEq(bool? enabled, IReadOnlyList<float>? bands, string? preset)
+    public SpeakerResult SetEq(bool? enabled, IReadOnlyList<float>? bands, string? preset)
     {
         var endpoint = Endpoint(fresh: true);
         if (endpoint is null)
         {
-            return false;
+            return SpeakerStatus.NotFound;
         }
         float[]? newBands = null;
         if (bands is not null)
         {
             if (bands.Count != LogitechSpeakerProtocol.BandCount)
             {
-                return false;
+                return SpeakerStatus.Invalid;
             }
             newBands = bands.ToArray();
         }
@@ -169,7 +186,7 @@ public sealed class LogitechSpeakerService : BackgroundService
             newBands = FindPreset(preset);
             if (newBands is null)
             {
-                return false;
+                return SpeakerStatus.NotFound;
             }
         }
 
@@ -182,22 +199,22 @@ public sealed class LogitechSpeakerService : BackgroundService
         };
         if (!_apo.Write(endpoint.Id, change))
         {
-            return false;
+            return SpeakerStatus.Failed;
         }
         if (newBands is not null)
         {
-            _store.Update(s => s.LogitechSpeaker.EqPreset = bands is null ? preset : null);
+            UpdateSettings(s => s.EqPreset = bands is null ? preset : null);
         }
-        return true;
+        return SpeakerStatus.Ok;
     }
 
     /// <summary>DTS surround on or off, and its room (gaming or movie).</summary>
-    public bool SetSurround(bool? enabled, string? room)
+    public SpeakerResult SetSurround(bool? enabled, string? room)
     {
         var endpoint = Endpoint(fresh: true);
         if (endpoint is null)
         {
-            return false;
+            return SpeakerStatus.NotFound;
         }
         int? roomModel = room switch
         {
@@ -208,23 +225,27 @@ public sealed class LogitechSpeakerService : BackgroundService
         };
         if (roomModel == -1)
         {
-            return false;
+            return SpeakerStatus.Invalid;
         }
         return _apo.Write(endpoint.Id, new LogitechSpeakerApoChange
         {
             SelectedSurround = enabled == true ? LogitechSpeakerProtocol.SurroundDts : null,
             DtsOn = enabled,
             DtsRoom = roomModel,
-        });
+        }) ? SpeakerStatus.Ok : SpeakerStatus.Failed;
     }
 
     /// <summary>One channel's gain (<see cref="LogitechSpeakerProtocol.Channels"/> index), or all of them back to 1 when <paramref name="channel"/> is null.</summary>
-    public bool SetChannelGain(int? channel, float gain)
+    public SpeakerResult SetChannelGain(int? channel, float gain)
     {
         var endpoint = Endpoint(fresh: true);
-        if (endpoint is null || channel is < 0 or >= LogitechSpeakerProtocol.ChannelCount || !float.IsFinite(gain))
+        if (endpoint is null)
         {
-            return false;
+            return SpeakerStatus.NotFound;
+        }
+        if (channel is < 0 or >= LogitechSpeakerProtocol.ChannelCount || !float.IsFinite(gain))
+        {
+            return SpeakerStatus.Invalid;
         }
         float[] gains;
         if (channel is null)
@@ -236,24 +257,34 @@ public sealed class LogitechSpeakerService : BackgroundService
             gains = _apo.Read(endpoint.Id).ChannelGains ?? Enumerable.Repeat(1f, LogitechSpeakerProtocol.ChannelCount).ToArray();
             gains[channel.Value] = Math.Clamp(gain, LogitechSpeakerProtocol.ChannelMinGain, LogitechSpeakerProtocol.ChannelMaxGain);
         }
-        return _apo.Write(endpoint.Id, new LogitechSpeakerApoChange { ChannelGains = gains });
+        return _apo.Write(endpoint.Id, new LogitechSpeakerApoChange { ChannelGains = gains }) ? SpeakerStatus.Ok : SpeakerStatus.Failed;
     }
 
-    public bool SetSubwoofer(int level)
+    public SpeakerResult SetSubwoofer(int level)
     {
+        SyncSimulation();
         var clamped = Math.Clamp(level, 0, 100);
-        if (!_bass.IsPresent() || !_bass.SetLevel(clamped))
+        lock (_bassLock)
         {
-            return false;
+            if (!_bass.IsPresent())
+            {
+                return SpeakerStatus.NotFound;
+            }
+            if (!_bass.SetLevel(clamped))
+            {
+                return SpeakerStatus.Failed;
+            }
+            UpdateSettings(s => s.SubwooferLevel = clamped);
+            var generation = _bass.Generation;
+            _restoredGeneration = generation;
+            _resyncGeneration = false;
+            lock (_lock)
+            {
+                _subwooferLevel = clamped;
+                _subwooferGeneration = generation;
+            }
         }
-        _store.Update(s => s.LogitechSpeaker.SubwooferLevel = clamped);
-        _restoredGeneration = _bass.Generation;
-        lock (_lock)
-        {
-            _subwooferLevel = clamped;
-            _subwooferGeneration = _bass.Generation;
-        }
-        return true;
+        return SpeakerStatus.Ok;
     }
 
     private int? SubwooferLevel()
@@ -274,49 +305,112 @@ public sealed class LogitechSpeakerService : BackgroundService
         }
     }
 
-    public bool SetVolume(float level)
+    public SpeakerResult SetVolume(float level)
     {
         var endpoint = Endpoint(fresh: true);
-        return endpoint is not null && float.IsFinite(level) && _apo.SetVolume(endpoint.Id, Math.Clamp(level, 0f, 1f));
+        if (endpoint is null)
+        {
+            return SpeakerStatus.NotFound;
+        }
+        if (!float.IsFinite(level))
+        {
+            return SpeakerStatus.Invalid;
+        }
+        return _apo.SetVolume(endpoint.Id, Math.Clamp(level, 0f, 1f)) ? SpeakerStatus.Ok : SpeakerStatus.Failed;
     }
 
-    public bool TestChannel(int channel)
+    public SpeakerResult TestChannel(int channel)
     {
         var endpoint = Endpoint(fresh: true);
-        return endpoint is not null && _apo.PlayTestSound(endpoint.Id, channel);
+        if (endpoint is null)
+        {
+            return SpeakerStatus.NotFound;
+        }
+        if (channel is < 0 or >= LogitechSpeakerProtocol.ChannelCount)
+        {
+            return SpeakerStatus.Invalid;
+        }
+        return _apo.PlayTestSound(endpoint.Id, channel) ? SpeakerStatus.Ok : SpeakerStatus.Failed;
     }
 
     /// <summary>Saves (or replaces) one of the user's presets. Built-in names are taken.</summary>
-    public bool SavePreset(string name, IReadOnlyList<float> bands)
+    public SpeakerResult SavePreset(string name, IReadOnlyList<float> bands)
     {
         var trimmed = name.Trim();
         if (trimmed.Length is 0 or > 40 || bands.Count != LogitechSpeakerProtocol.BandCount || bands.Any(b => !float.IsFinite(b))
             || LogitechSpeakerProtocol.BuiltInPresets.Any(p => string.Equals(p.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
         {
-            return false;
+            return SpeakerStatus.Invalid;
         }
         var clamped = bands.Select(b => Math.Clamp(b, LogitechSpeakerProtocol.BandMinDb, LogitechSpeakerProtocol.BandMaxDb)).ToList();
-        _store.Update(s =>
+        UpdateSettings(s =>
         {
-            var presets = s.LogitechSpeaker.CustomPresets;
+            var presets = s.CustomPresets;
             presets.RemoveAll(p => string.Equals(p.Name, trimmed, StringComparison.OrdinalIgnoreCase));
             presets.Add(new LogitechEqPreset { Name = trimmed, Bands = clamped });
         });
-        return true;
+        return SpeakerStatus.Ok;
     }
 
-    public bool DeletePreset(string name)
+    public SpeakerResult DeletePreset(string name)
     {
         var removed = false;
-        _store.Update(s =>
+        UpdateSettings(s =>
         {
-            removed = s.LogitechSpeaker.CustomPresets.RemoveAll(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)) > 0;
-            if (removed && string.Equals(s.LogitechSpeaker.EqPreset, name, StringComparison.OrdinalIgnoreCase))
+            removed = s.CustomPresets.RemoveAll(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)) > 0;
+            if (removed && string.Equals(s.EqPreset, name, StringComparison.OrdinalIgnoreCase))
             {
-                s.LogitechSpeaker.EqPreset = null;
+                s.EqPreset = null;
             }
         });
-        return removed;
+        return removed ? SpeakerStatus.Ok : SpeakerStatus.NotFound;
+    }
+
+    // Detects the simulator starting or stopping; its settings stay apart from the saved ones.
+    private void SyncSimulation()
+    {
+        var active = _apo is ILogitechSpeakerSimulation { Active: true };
+        lock (_lock)
+        {
+            if (active == _simulated)
+            {
+                return;
+            }
+            _simulated = active;
+            _simSettings = new LogitechSpeakerSettings();
+            _subwooferLevel = null;
+            _endpointsAt = DateTimeOffset.MinValue;
+            _resyncGeneration = !active;
+        }
+    }
+
+    private T ReadSettings<T>(Func<LogitechSpeakerSettings, T> read)
+    {
+        SyncSimulation();
+        lock (_lock)
+        {
+            if (_simulated)
+            {
+                return read(_simSettings);
+            }
+        }
+        T result = default!;
+        _store.Read(s => result = read(s.LogitechSpeaker));
+        return result;
+    }
+
+    private void UpdateSettings(Action<LogitechSpeakerSettings> change)
+    {
+        SyncSimulation();
+        lock (_lock)
+        {
+            if (_simulated)
+            {
+                change(_simSettings);
+                return;
+            }
+        }
+        _store.Update(s => change(s.LogitechSpeaker));
     }
 
     private List<LogitechEqPresetDto> Presets()
@@ -324,9 +418,10 @@ public sealed class LogitechSpeakerService : BackgroundService
         var list = LogitechSpeakerProtocol.BuiltInPresets
             .Select(p => new LogitechEqPresetDto { Name = p.Name, Bands = p.Bands.ToList(), BuiltIn = true })
             .ToList();
-        list.AddRange(_store.Load().LogitechSpeaker.CustomPresets
+        list.AddRange(ReadSettings(s => s.CustomPresets
             .Where(p => p.Bands.Count == LogitechSpeakerProtocol.BandCount)
-            .Select(p => new LogitechEqPresetDto { Name = p.Name, Bands = p.Bands.ToList() }));
+            .Select(p => new LogitechEqPresetDto { Name = p.Name, Bands = p.Bands.ToList() })
+            .ToList()));
         return list;
     }
 
@@ -356,15 +451,16 @@ public sealed class LogitechSpeakerService : BackgroundService
                 return bands.ToArray();
             }
         }
-        var custom = _store.Load().LogitechSpeaker.CustomPresets
-            .FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase) && p.Bands.Count == LogitechSpeakerProtocol.BandCount);
-        return custom?.Bands.ToArray();
+        return ReadSettings(s => s.CustomPresets
+            .FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase) && p.Bands.Count == LogitechSpeakerProtocol.BandCount)
+            ?.Bands.ToArray());
     }
 
-    // The speaker's output: the first by id, so the pick is stable. Presence checks run
-    // every few seconds, so the registry scan is cached briefly.
+    // The default output when it carries the effect, else the first by id. Presence checks
+    // run every few seconds, so the registry scan is cached briefly.
     private LogitechSpeakerEndpoint? Endpoint(bool fresh = false)
     {
+        SyncSimulation();
         lock (_lock)
         {
             var now = _time.GetUtcNow();
@@ -373,7 +469,26 @@ public sealed class LogitechSpeakerService : BackgroundService
                 _endpoints = _apo.FindEndpoints();
                 _endpointsAt = now;
             }
-            return _endpoints.FirstOrDefault();
+            return _endpoints.FirstOrDefault(e => e.IsDefault) ?? _endpoints.FirstOrDefault();
         }
     }
+}
+
+public enum SpeakerStatus
+{
+    Ok,
+    /// <summary>The request itself is malformed.</summary>
+    Invalid,
+    /// <summary>No speaker, or no such preset.</summary>
+    NotFound,
+    /// <summary>The speaker or its effect did not take a valid change.</summary>
+    Failed,
+}
+
+/// <summary>The outcome of a change; converts to true only for <see cref="SpeakerStatus.Ok"/>.</summary>
+public readonly record struct SpeakerResult(SpeakerStatus Status)
+{
+    public static implicit operator SpeakerResult(SpeakerStatus status) => new(status);
+
+    public static implicit operator bool(SpeakerResult result) => result.Status == SpeakerStatus.Ok;
 }

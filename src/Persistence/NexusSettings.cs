@@ -73,7 +73,7 @@ public sealed class NexusSettings
 
     /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
     public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();
-    /// <summary>Logitech speaker (G560) acoustics that live outside the speaker's audio effect: the subwoofer level Nexus set (sent again after the speaker reconnects), the EQ preset last chosen, and the user's own presets. The EQ, surround and channel volumes themselves stay in the effect's registry key, where G HUB keeps them too. NOT profile-scoped: it describes this PC's speaker.</summary>
+    /// <summary>Logitech speaker (G560) settings kept outside the speaker's audio effect. NOT profile-scoped: it describes this PC's speaker.</summary>
     public LogitechSpeakerSettings LogitechSpeaker { get; set; } = new();
 
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
@@ -2806,7 +2806,7 @@ public sealed class LogitechSpeakerSettings
     public List<LogitechEqPreset> CustomPresets { get; set; } = new();
 }
 
-/// <summary>A named ten-band EQ, dB per band from 48 Hz to 16 kHz.</summary>
+/// <summary>A named ten-band EQ, dB per band.</summary>
 public sealed class LogitechEqPreset
 {
     public string Name { get; set; } = "";
