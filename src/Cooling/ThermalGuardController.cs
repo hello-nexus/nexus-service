@@ -37,7 +37,7 @@ public sealed class GuardPlan
     public bool Overrides => Output.FloorDuty > 0 || GpuBlocked.Count > 0 || GpuForced.Count > 0;
 
     /// <summary>Final duty for a channel, or null when the guard forbids writing it.</summary>
-    public int? Apply(string channelId, int duty)
+    public int? Apply(string channelId, int duty, bool written = true)
     {
         if (GpuBlocked.Contains(channelId))
         {
@@ -51,7 +51,7 @@ public sealed class GuardPlan
         {
             return duty;
         }
-        if (Output.FloorDuty > duty)
+        if (written && Output.FloorDuty > duty)
         {
             _floorRaised = true;
         }
@@ -60,7 +60,7 @@ public sealed class GuardPlan
 
     private volatile bool _floorRaised;
 
-    /// <summary>True once <see cref="Apply"/> has seen the floor beat the duty a guarded channel would otherwise get this tick.</summary>
+    /// <summary>True once the floor beat a written channel's own duty.</summary>
     public bool FloorRaised => _floorRaised;
 }
 
@@ -110,10 +110,12 @@ public sealed class ThermalGuardController
     private readonly ThermalGuardThresholds _thresholds;
 
     private string _publicState = ThermalGuardStates.Inactive;
-    // The plan of the tick in flight, and whether the last finished tick's floor beat a duty. Only the
-    // reported state reads the latter; the internal state, and every gate on it, still follows the floor ramp.
+    // Reported-state only: gates read _publicState, which follows the ramp.
+    private const int FloorReportDebounceTicks = 3;
     private GuardPlan? _tickPlan;
     private bool _floorApplied;
+    private int _floorStreak;
+    private long? _floorReportedSinceMs;
     private double? _guardTemp;
     // What was detected, and the effective limit (the user's override applied when allowed).
     private ThermalLimit _detected = new(ThermalLimits.GenericDefaultC, ThermalLimitSources.Default);
@@ -230,16 +232,25 @@ public sealed class ThermalGuardController
         _watchdog = null;
     }
 
-    /// <summary>Called by the engine when a tick has written its duties: publishes whether this tick's floor beat any of them.</summary>
+    /// <summary>End of tick: debounces whether the floor beat a written duty.</summary>
     public void CommitFloorApplied()
     {
-        bool flipped;
+        var flipped = false;
         lock (_gate)
         {
-            var applied = _tickPlan?.FloorRaised ?? false;
+            var raised = _tickPlan?.FloorRaised ?? false;
             _tickPlan = null;
-            flipped = applied != _floorApplied && _publicState == ThermalGuardStates.Floor;
-            _floorApplied = applied;
+            if (_publicState != ThermalGuardStates.Floor || raised == _floorApplied)
+            {
+                _floorStreak = 0;
+            }
+            else if (++_floorStreak >= FloorReportDebounceTicks)
+            {
+                _floorApplied = raised;
+                _floorStreak = 0;
+                _floorReportedSinceMs = _utcNowMs();
+                flipped = true;
+            }
         }
         if (flipped && _hub is not null)
         {
@@ -1042,6 +1053,9 @@ public sealed class ThermalGuardController
         }
         var previous = _publicState;
         _publicState = state;
+        _floorApplied = false;
+        _floorStreak = 0;
+        _floorReportedSinceMs = null;
         _sinceUtcMs = startedUtcMs ?? _utcNowMs();
         Console.Error.WriteLine($"[thermal-guard] {previous} -> {state} (temp {_guardTemp?.ToString("0.#", CultureInfo.InvariantCulture) ?? "n/a"} C, limit {_limit.LimitC:0.#} C {_limit.Source})");
         if (_hub is not null)
@@ -1510,12 +1524,14 @@ public sealed class ThermalGuardController
             }
             else
             {
-                // A floor that beats no duty changes nothing on the fans, so it is not reported as one.
+                // A floor that beats no duty is reported as normal.
                 response.State = _publicState == ThermalGuardStates.Floor && !_floorApplied ? ThermalGuardStates.Normal : _publicState;
                 response.GuardTempC = _guardTemp;
                 response.LimitC = effective.LimitC;
                 response.LimitSource = effective.Source;
-                response.SinceUtcMs = _sinceUtcMs;
+                response.SinceUtcMs = _publicState == ThermalGuardStates.Floor
+                    ? _floorReportedSinceMs ?? _sinceUtcMs
+                    : _sinceUtcMs;
                 response.FansNotResponding = _fansNotResponding;
             }
             foreach (var kv in _gpuInfo)

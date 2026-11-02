@@ -458,7 +458,7 @@ public sealed class CurveEngine : BackgroundService
                     var appliedSpeed = CoolingSafety.ClampDuty((int)Math.Round(smoothedSpeed) + offset);
                     // The guard's floor / override is the last word on a guarded channel's
                     // duty; null means it forbids writing the channel this tick.
-                    var guarded = plan.Apply(output.Id, appliedSpeed);
+                    var guarded = plan.Apply(output.Id, appliedSpeed, present.Contains(output.Id));
                     if (guarded is int g)
                     {
                         appliedSpeed = g;
