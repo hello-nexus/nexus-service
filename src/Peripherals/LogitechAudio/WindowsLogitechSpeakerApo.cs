@@ -81,7 +81,8 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
             return Array.Empty<LogitechSpeakerEndpoint>();
         }
         found.Sort((a, b) => string.CompareOrdinal(a.Id, b.Id));
-        var defaultId = RunOnComThread(DefaultRenderId, "", "default output");
+        // The default only breaks a tie between several outputs.
+        var defaultId = found.Count > 1 ? RunOnComThread(DefaultRenderId, "", "default output") : "";
         return found.ConvertAll(e => new LogitechSpeakerEndpoint(e.Id, e.Name, e.Model, string.Equals(e.Id, defaultId, StringComparison.OrdinalIgnoreCase)));
     }
 
@@ -420,7 +421,7 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
             var stop = (delegate* unmanaged[Stdcall]<IntPtr, int>)Slot(client, 11);
             if (start(client) >= 0)
             {
-                // The buffer drains in real time; padding 0 means every frame was played.
+                // Padding 0 means the engine consumed every frame; the stream latency is what is still on its way to the speaker.
                 var getPadding = (delegate* unmanaged[Stdcall]<IntPtr, uint*, int>)Slot(client, 6);
                 var deadline = Environment.TickCount64 + frames * 1000L / rate + 500;
                 uint padding;
@@ -429,6 +430,12 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
                     Thread.Sleep(20);
                 }
                 while (getPadding(client, &padding) >= 0 && padding > 0 && Environment.TickCount64 < deadline);
+                var getLatency = (delegate* unmanaged[Stdcall]<IntPtr, long*, int>)Slot(client, 5);
+                long latency;
+                if (getLatency(client, &latency) >= 0)
+                {
+                    Thread.Sleep((int)Math.Clamp(latency / 10_000, 0, 1000) + 100);
+                }
                 stop(client);
             }
         }
