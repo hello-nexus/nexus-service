@@ -132,6 +132,7 @@ public sealed class ThermalGuardController
     private bool _restoreHandback;
     // Mirrors the Cooling feature switch for the watchdog thread, which must not wait on the settings lock.
     private volatile bool _coolingEnabled = true;
+    private readonly object _coolingFlagLock = new();
     private Timer? _watchdog;
     // Cooling mode targets: the channels a trip drives to full speed (Nexus-driven plus hardware-control
     // ones), refreshed by every evaluation and swapped whole. The watchdog thread cannot ask the stalled
@@ -165,7 +166,10 @@ public sealed class ThermalGuardController
         _overrideC = store.Load().Cooling.ThermalGuardLimitOverrideC;
         _detectionResolved = sensors is null;
         _coolingEnabled = store.Load().Features.Cooling;
-        store.OnChanged += () => _coolingEnabled = _store.Load().Features.Cooling;
+        store.OnChanged += () =>
+        {
+            lock (_coolingFlagLock) { _coolingEnabled = _store.Load().Features.Cooling; }
+        };
         // A trip record still open at construction belongs to a previous run that never closed it.
         CloseOpenTrip();
     }
@@ -356,45 +360,41 @@ public sealed class ThermalGuardController
         }
         try { _fans.DriveFansToFull(ids); }
         catch (Exception ex) { Console.Error.WriteLine($"[thermal-guard] cooling-mode write failed: {ex.Message}"); }
-        List<string>? stale = null;
         lock (_gate)
         {
-            // Recorded only after the write, and only while cooling mode still holds: a restore or resume in between ended it.
-            var ended = requireLatch && !(_watchdogArmed && _watchdogLatched);
+            // Recorded only after the write. The engine hands the channels back on its own thread, and a
+            // write that landed after a restore or resume still gets the engine's full rewrite.
             foreach (var id in ids)
             {
-                if (!_coolingHardware.Contains(id))
-                {
-                    continue;
-                }
-                if (ended)
-                {
-                    (stale ??= new List<string>()).Add(id);
-                }
-                else
+                if (_coolingHardware.Contains(id))
                 {
                     _watchdogHardware.Add(id);
                 }
             }
-        }
-        if (stale is not null)
-        {
-            foreach (var id in stale)
-            {
-                try { _fans.ReleaseFan(id); }
-                catch (Exception ex) { Console.Error.WriteLine($"[thermal-guard] handing {id} back failed: {ex.Message}"); }
-            }
+            _watchdogPending = true;
         }
     }
 
-    /// <summary>True once after a user restore ended a trip: the engine hands back the hardware channels the guard was driving.</summary>
-    public bool ConsumeRestoreHandback()
+    /// <summary>
+    /// One atomic read of what the watchdog and a user restore left for the engine: whether to rewrite every duty,
+    /// whether a trip was ended by the user (the engine hands back the channels the guard drove), and the
+    /// hardware channels the watchdog drove (empty while latched).
+    /// </summary>
+    public (bool Rewrite, bool RestoredTrip, IReadOnlyList<string> WatchdogHardware) ConsumeWatchdogOutcome()
     {
         lock (_gate)
         {
-            var pending = _restoreHandback;
+            var rewrite = _watchdogPending;
+            _watchdogPending = false;
+            var restored = _restoreHandback;
             _restoreHandback = false;
-            return pending;
+            IReadOnlyList<string> hardware = Array.Empty<string>();
+            if (rewrite && !_watchdogLatched && _watchdogHardware.Count > 0)
+            {
+                hardware = _watchdogHardware.ToArray();
+                _watchdogHardware.Clear();
+            }
+            return (rewrite, restored, hardware);
         }
     }
 

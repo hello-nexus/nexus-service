@@ -2225,6 +2225,52 @@ public class ThermalGuardEngineTests
         Assert.False(guard.GetState().RestoreAvailable);
     }
 
+    [Fact]
+    public void ALateCoolingModeWriteAfterARestore_IsFollowedByAFullRewrite()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 89f;
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        Stall(fans, e, guard, mono);
+        guard.RestoreCurves();
+        mono[0] += 1000;
+        guard.TickCompleted();
+        e.Tick();
+        Assert.Equal(56, LastDuty(fans, "f1"));
+
+        // A poll that chose its ids before the restore lands its write after the engine's rewrite.
+        guard.DriveCoolingMode(requireLatch: false);
+        Assert.Equal(100, LastDuty(fans, "f1"));
+        mono[0] += 1000;
+        guard.TickCompleted();
+        e.Tick();
+
+        Assert.Equal(56, LastDuty(fans, "f1"));
+    }
+
+    [Fact]
+    public void TheWatchdogOutcome_IsConsumedAtomically_AndOnlyOnce()
+    {
+        var (_, fans, store, _) = Build();
+        fans.Channels.Add(new FanChannel { Id = "hw1", Name = "Board fan" });
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        fans.CpuTemp = 85f;
+        e.Tick();
+        guard.TickCompleted();
+        guard.WatchdogCheck(mono[0] + 11_000);
+
+        var first = guard.ConsumeWatchdogOutcome();
+        var second = guard.ConsumeWatchdogOutcome();
+
+        Assert.True(first.Rewrite);
+        Assert.Equal(new[] { "hw1" }, first.WatchdogHardware);
+        Assert.False(second.Rewrite);
+        Assert.Empty(second.WatchdogHardware);
+        Assert.False(second.RestoredTrip);
+    }
+
     private sealed class FlakySensors : ISensorProvider
     {
         public int ModelCalls;
