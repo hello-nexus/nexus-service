@@ -70,6 +70,9 @@ public sealed class ConflictAppDefinition
     /// <summary>Substrings (case-insensitive) one of which the process's exe identity must contain for a name hit to count: the Authenticode signer subject, or the file's company name when unsigned. Empty keeps the name-only match. See <see cref="ConflictSignerGate"/>.</summary>
     public string[] Signers { get; init; } = Array.Empty<string>();
 
+    /// <summary>Process names that count as the app running, so Nexus control backs off, but are never ended: an installer or updater whose interruption leaves the app half installed. Listed apart from <see cref="ProcessNames"/> because every end path walks that list.</summary>
+    public string[] BackOffOnlyProcessNames { get; init; } = Array.Empty<string>();
+
     /// <summary>Process names whose top-level windows are sent the session-end messages before this app is hard-killed; the app closes itself and hands the hardware back. Empty means a hard kill straight away.</summary>
     public string[] GracefulProcessNames { get; init; } = Array.Empty<string>();
 
@@ -396,6 +399,7 @@ public static class ConflictAppCatalog
             },
             Signers = new[] { "Corsair" },
             GracefulProcessNames = new[] { "iCUE" },
+            BackOffOnlyProcessNames = new[] { "iCUE5 Initial Installer", "iCUE5 Main Installer" },
             WindowsServiceNames = new[] { "CorsairDeviceListerService" },
             // The Run value alone is NOT evidence iCUE starts: "iCUE Launcher.exe
             // --autorun" runs either way and then honours iCUE's own setting.

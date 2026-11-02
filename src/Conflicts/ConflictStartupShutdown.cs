@@ -254,7 +254,7 @@ public sealed class ConflictStartupShutdown : IHostedService
         foreach (var detected in detectedNow)
         {
             var def = ConflictWatcher.FindById(detected.Id);
-            if (def is null) continue;
+            if (def is null || detected.BackOffOnly) continue;
             if (!def.AlwaysEnded && (!sweep || excluded.Contains(detected.Id))) continue;
             var key = $"{detected.Id}:{detected.Pid}";
             if (throttleNotice) _endTriedAtMs.TryAdd(key, now);
