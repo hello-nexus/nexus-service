@@ -61,6 +61,7 @@ public sealed class ConflictStartupShutdown : IHostedService
     private readonly ILogger<ConflictStartupShutdown> _log;
     private readonly Action<ConflictAppDefinition> _kill;
     private readonly Func<ConflictAppDefinition, bool> _stillRunning;
+    private readonly Func<ConflictAppDefinition, bool> _backOffRunning;
     private readonly Func<long> _clockMs;
     private readonly Nexus.Service.Lifecycle.FeatureGates _gates;
     private readonly Func<WindowsDynamicLightingState?> _dynamicLightingOff;
@@ -93,8 +94,10 @@ public sealed class ConflictStartupShutdown : IHostedService
         Func<ConflictAppDefinition, bool> stillRunning,
         Func<long>? clockMs = null,
         Nexus.Service.Lifecycle.FeatureGates? gates = null,
-        Func<WindowsDynamicLightingState?>? dynamicLightingOff = null)
+        Func<WindowsDynamicLightingState?>? dynamicLightingOff = null,
+        Func<ConflictAppDefinition, bool>? backOffRunning = null)
     {
+        _backOffRunning = backOffRunning ?? (def => ConflictKiller.AnyBackOffOnlyRunning(def, ConflictSignerGate.Default));
         _dynamicLightingOff = dynamicLightingOff ?? DefaultDynamicLightingOff;
         _gates = gates ?? Nexus.Service.Lifecycle.FeatureGates.AllEnabled;
         _store = store;
@@ -257,6 +260,8 @@ public sealed class ConflictStartupShutdown : IHostedService
             var def = ConflictWatcher.FindById(detected.Id);
             if (def is null || detected.BackOffOnly) continue;
             if (!def.AlwaysEnded && (!sweep || excluded.Contains(detected.Id))) continue;
+            // Not marked as tried: the app is ended once the installer is gone.
+            if (def.BackOffOnlyProcessNames.Length > 0 && _backOffRunning(def)) continue;
             var key = $"{detected.Id}:{detected.Pid}";
             if (throttleNotice) _endTriedAtMs.TryAdd(key, now);
             if (!_attempted.Add(key))

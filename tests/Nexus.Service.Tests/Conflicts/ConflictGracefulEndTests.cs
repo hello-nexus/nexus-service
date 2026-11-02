@@ -46,7 +46,7 @@ public class ConflictGracefulEndTests
             End = new ConflictGracefulEnd(
                 _ => ExitsAt is { } e && Now >= e ? Array.Empty<int>() : new[] { 4242 },
                 _ => AppAgeAtStartMs + Now,
-                _ =>
+                (_, _) =>
                 {
                     Sends.Add(Now);
                     return Now < NoWindowsUntil ? SessionEndOutcome.NoWindows : Outcome;
@@ -122,7 +122,7 @@ public class ConflictGracefulEndTests
         var end = new ConflictGracefulEnd(
             _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
             _ => 1000 + rig.Now,
-            _ =>
+            (_, _) =>
             {
                 rig.Sends.Add(rig.Now);
                 // A request sent while the app is still starting is delivered but ignored.
@@ -148,7 +148,7 @@ public class ConflictGracefulEndTests
         var end = new ConflictGracefulEnd(
             _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
             _ => 60_000 + rig.Now,
-            _ =>
+            (_, _) =>
             {
                 rig.Sends.Add(rig.Now);
                 if (rig.Now < rig.NoWindowsUntil) return SessionEndOutcome.NoWindows;
@@ -185,7 +185,7 @@ public class ConflictGracefulEndTests
         var end = new ConflictGracefulEnd(
             _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
             _ => 60_000 + rig.Now,
-            _ =>
+            (_, _) =>
             {
                 rig.Sends.Add(rig.Now);
                 if (rig.Now < 12_000) return SessionEndOutcome.HelperUnavailable;
@@ -233,7 +233,7 @@ public class ConflictGracefulEndTests
         var end = new ConflictGracefulEnd(
             _ => rig.Now >= appUpAt && (rig.ExitsAt is not { } e || rig.Now < e) ? new[] { 7 } : Array.Empty<int>(),
             _ => 60_000,
-            _ =>
+            (_, _) =>
             {
                 rig.Sends.Add(rig.Now);
                 rig.ExitsAt ??= rig.Now + 2000;
@@ -250,6 +250,55 @@ public class ConflictGracefulEndTests
         Assert.All(rig.Sends, t => Assert.True(t >= appUpAt));
         // The launcher left over is ended only once the app has closed.
         Assert.All(rig.Kills, t => Assert.True(t >= appUpAt));
+    }
+
+    [Fact]
+    public void A_send_that_throws_counts_as_no_helper_and_the_hard_kill_still_follows()
+    {
+        var rig = new Rig(exitsAt: null);
+        var end = new ConflictGracefulEnd(
+            _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
+            _ => 60_000,
+            (_, _) => throw new System.IO.IOException("pipe closed"),
+            _ => rig.ExitsAt is not { } e || rig.Now < e,
+            _ => false,
+            _ => rig.Kills.Add(rig.Now),
+            () => rig.Now,
+            ms => rig.Now += ms,
+            rig.Log.Add);
+
+        end.End(Graceful);
+
+        Assert.InRange(Assert.Single(rig.Kills), Ms(ConflictGracefulEnd.NotReachableWait), Ms(ConflictGracefulEnd.NotReachableWait) + 1000);
+        Assert.Contains(rig.Log, l => l.Contains("pipe closed"));
+    }
+
+    [Fact]
+    public void Each_send_is_given_no_more_than_what_is_left_of_the_deadline()
+    {
+        var rig = new Rig(exitsAt: null);
+        var timeouts = new List<int>();
+        var end = new ConflictGracefulEnd(
+            _ => new[] { 7 },
+            _ => 60_000,
+            (_, timeoutMs) =>
+            {
+                timeouts.Add(timeoutMs);
+                rig.Now += timeoutMs;
+                return SessionEndOutcome.HelperUnavailable;
+            },
+            _ => true,
+            _ => false,
+            _ => rig.Kills.Add(rig.Now),
+            () => rig.Now,
+            ms => rig.Now += ms);
+
+        end.End(Graceful);
+
+        Assert.Equal((int)Ms(ConflictGracefulEnd.NotReachableWait), timeouts[0]);
+        Assert.True(timeouts.Count >= 1);
+        // Even when every send uses its whole allowance, the kill comes at the deadline, not a send later.
+        Assert.True(Assert.Single(rig.Kills) <= Ms(ConflictGracefulEnd.NotReachableWait) + 2500);
     }
 
     [Fact]
