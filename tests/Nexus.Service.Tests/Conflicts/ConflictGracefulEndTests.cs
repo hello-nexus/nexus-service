@@ -26,7 +26,11 @@ public class ConflictGracefulEndTests
     private sealed class Rig
     {
         public long Now;
+        /// <summary>When the app's own process exits; null means it never does.</summary>
         public long? ExitsAt;
+        /// <summary>A service or helper process that outlives the app until a kill.</summary>
+        public bool Leftover;
+        public bool BackOffRunning;
         public SessionEndOutcome Outcome = SessionEndOutcome.Delivered;
         public long NoWindowsUntil;
         public readonly List<long> Sends = new();
@@ -34,25 +38,28 @@ public class ConflictGracefulEndTests
         public readonly List<string> Log = new();
         public readonly ConflictGracefulEnd End;
 
-        public Rig(long? exitsAt)
+        public Rig(long? exitsAt, bool canSend = true)
         {
             ExitsAt = exitsAt;
             End = new ConflictGracefulEnd(
-                _ => new[] { 4242 },
-                pids =>
+                _ => ExitsAt is { } e && Now >= e ? Array.Empty<int>() : new[] { 4242 },
+                _ =>
                 {
                     Sends.Add(Now);
                     return Now < NoWindowsUntil ? SessionEndOutcome.NoWindows : Outcome;
                 },
-                _ => ExitsAt is not { } e || Now < e,
+                _ => (ExitsAt is not { } e || Now < e) || Leftover,
+                _ => BackOffRunning,
                 _ =>
                 {
                     Kills.Add(Now);
                     ExitsAt = Now;
+                    Leftover = false;
                 },
                 () => Now,
                 ms => Now += ms,
-                Log.Add);
+                Log.Add,
+                canSend);
         }
     }
 
@@ -77,28 +84,27 @@ public class ConflictGracefulEndTests
 
         rig.End.End(Graceful);
 
-        var kill = Assert.Single(rig.Kills);
-        Assert.InRange(kill, Ms(ConflictGracefulEnd.Wait), Ms(ConflictGracefulEnd.Wait) + 1000);
+        Assert.InRange(Assert.Single(rig.Kills), Ms(ConflictGracefulEnd.Wait), Ms(ConflictGracefulEnd.Wait) + 1000);
     }
 
     [Fact]
-    public void The_request_is_repeated_while_the_app_stays()
+    public void A_delivered_request_is_not_sent_again()
     {
         var rig = new Rig(exitsAt: null);
 
         rig.End.End(Graceful);
 
-        Assert.True(rig.Sends.Count >= 3);
-        Assert.All(rig.Sends.Zip(rig.Sends.Skip(1)), p => Assert.True(p.Second - p.First >= Ms(ConflictGracefulEnd.Resend)));
+        Assert.Single(rig.Sends);
     }
 
     [Fact]
-    public void An_app_still_starting_is_asked_again_and_not_killed_early()
+    public void An_app_with_no_windows_yet_is_asked_again_and_not_killed_early()
     {
-        var rig = new Rig(exitsAt: null) { NoWindowsUntil = 4000 };
+        var rig = new Rig(exitsAt: null) { NoWindowsUntil = 7000 };
+        rig.Outcome = SessionEndOutcome.Delivered;
         var end = new ConflictGracefulEnd(
-            _ => new[] { 7 },
-            pids =>
+            _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
+            _ =>
             {
                 rig.Sends.Add(rig.Now);
                 if (rig.Now < rig.NoWindowsUntil) return SessionEndOutcome.NoWindows;
@@ -106,6 +112,7 @@ public class ConflictGracefulEndTests
                 return SessionEndOutcome.Delivered;
             },
             _ => rig.ExitsAt is not { } e || rig.Now < e,
+            _ => false,
             _ => rig.Kills.Add(rig.Now),
             () => rig.Now,
             ms => rig.Now += ms);
@@ -113,7 +120,7 @@ public class ConflictGracefulEndTests
         end.End(Graceful);
 
         Assert.Empty(rig.Kills);
-        Assert.True(rig.Sends.Count >= 2);
+        Assert.True(rig.Sends.Count >= 3);
     }
 
     [Fact]
@@ -130,10 +137,10 @@ public class ConflictGracefulEndTests
     [Fact]
     public void A_helper_that_comes_up_late_still_gets_its_request_delivered()
     {
-        var rig = new Rig(exitsAt: null) { Outcome = SessionEndOutcome.Delivered };
+        var rig = new Rig(exitsAt: null);
         var end = new ConflictGracefulEnd(
-            _ => new[] { 7 },
-            pids =>
+            _ => rig.ExitsAt is { } e && rig.Now >= e ? Array.Empty<int>() : new[] { 7 },
+            _ =>
             {
                 rig.Sends.Add(rig.Now);
                 if (rig.Now < 12_000) return SessionEndOutcome.HelperUnavailable;
@@ -141,6 +148,7 @@ public class ConflictGracefulEndTests
                 return SessionEndOutcome.Delivered;
             },
             _ => rig.ExitsAt is not { } e || rig.Now < e,
+            _ => false,
             _ => rig.Kills.Add(rig.Now),
             () => rig.Now,
             ms => rig.Now += ms);
@@ -157,6 +165,40 @@ public class ConflictGracefulEndTests
 
         rig.End.End(Graceful);
 
+        Assert.Equal(new long[] { 0 }, rig.Kills);
+    }
+
+    [Fact]
+    public void Leftover_services_are_ended_the_moment_the_app_itself_is_gone()
+    {
+        var rig = new Rig(exitsAt: 2000) { Leftover = true };
+
+        rig.End.End(Graceful);
+
+        // The app exits at 2000 ms; the leftover is ended right then, not after the wait.
+        Assert.InRange(Assert.Single(rig.Kills), 2000, 2500);
+    }
+
+    [Fact]
+    public void While_an_installer_runs_nothing_is_sent_and_nothing_is_ended()
+    {
+        var rig = new Rig(exitsAt: null) { BackOffRunning = true };
+
+        rig.End.End(Graceful);
+        rig.End.End(Plain);
+
+        Assert.Empty(rig.Sends);
+        Assert.Empty(rig.Kills);
+    }
+
+    [Fact]
+    public void Without_a_way_to_send_the_app_is_killed_at_once()
+    {
+        var rig = new Rig(exitsAt: null, canSend: false);
+
+        rig.End.End(Graceful);
+
+        Assert.Empty(rig.Sends);
         Assert.Equal(new long[] { 0 }, rig.Kills);
     }
 
@@ -180,6 +222,18 @@ public class ConflictGracefulEndTests
 
         Assert.Empty(rig.Sends);
         Assert.Empty(rig.Kills);
+    }
+
+    [Fact]
+    public void The_outcome_reports_running_before_and_after()
+    {
+        var rig = new Rig(exitsAt: 3000);
+
+        var outcome = rig.End.EndWithOutcome(Graceful);
+
+        Assert.True(outcome.RunningBefore);
+        Assert.False(outcome.RunningAfter);
+        Assert.True(outcome.Killed);
     }
 
     [Fact]

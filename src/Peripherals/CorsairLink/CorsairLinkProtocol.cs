@@ -68,7 +68,7 @@ public static class CorsairLinkProtocol
     public const byte ModeSoftware = 0x02;
     /// <summary>Handles 0..2 are the ones a previous host can leave open.</summary>
     public const int TakeoverHandleCount = 3;
-    /// <summary>Hardware-mode dwell of the takeover cycle; the fans re-spool on firmware control meanwhile.</summary>
+    /// <summary>Hardware-mode dwell of the takeover cycle, as measured between the hardware and the second software mode command in a capture of another host's takeover.</summary>
     public const int ModeCycleWaitMs = 11_000;
     /// <summary>Reads of the mode property, spaced <see cref="ModeVerifyStepMs"/>, before a mode change counts as not applied.</summary>
     public const int ModeVerifyTries = 10;

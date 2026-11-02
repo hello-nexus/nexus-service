@@ -13,7 +13,7 @@ public class CorsairLinkMultiHubTests
 
     private static CorsairLinkHub HubWithFan(string prefix, int number)
     {
-        var hub = new CorsairLinkHub(prefix, number);
+        var hub = new CorsairLinkHub(prefix, number, modeCycleWaitMs: 0);
         hub.State.IsConnected = true;
         hub.State.Devices = new[]
         {

@@ -20,10 +20,11 @@ internal static class SessionEnd
     private const uint EndSessionCloseApp = 0x1;
     private const uint SmtoAbortIfHung = 0x2;
     private const uint SendTimeoutMs = 3000;
+    private const int ErrorAccessDenied = 5;
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
-    /// <summary>Windows found for <paramref name="pid"/> and how many accepted the end message; a window of a process running at a higher integrity level refuses it. The query goes to every window first and the end message to every window after it, whatever the query answered: the measured iCUE exit needs both, in that order.</summary>
+    /// <summary>Windows found for <paramref name="pid"/> and how many took the end message. The query goes to every window, then the end message to every window whatever the query answered, as iCUE's measured exit needs.</summary>
     public static (int Windows, int Accepted) SendToProcess(int pid)
     {
         var windows = new List<IntPtr>();
@@ -40,15 +41,14 @@ internal static class SessionEnd
             SendMessageTimeout(hwnd, WmQueryEndSession, IntPtr.Zero, (IntPtr)EndSessionCloseApp, SmtoAbortIfHung, SendTimeoutMs, out _);
         }
         var accepted = 0;
-        var lastError = 0;
         foreach (var hwnd in windows)
         {
-            if (SendMessageTimeout(hwnd, WmEndSession, (IntPtr)1, (IntPtr)EndSessionCloseApp, SmtoAbortIfHung, SendTimeoutMs, out _) != IntPtr.Zero) accepted++;
-            else lastError = Marshal.GetLastWin32Error();
-        }
-        if (accepted < windows.Count)
-        {
-            Nexus.Service.Platform.ServiceLog.Info($"[conflicts] session-end pid={pid}: {accepted} of {windows.Count} windows accepted (last error {lastError})");
+            // A timeout or a destroyed window still counts as delivered: only access denied (a higher-integrity target) is a refusal.
+            if (SendMessageTimeout(hwnd, WmEndSession, (IntPtr)1, (IntPtr)EndSessionCloseApp, SmtoAbortIfHung, SendTimeoutMs, out _) != IntPtr.Zero
+                || Marshal.GetLastWin32Error() != ErrorAccessDenied)
+            {
+                accepted++;
+            }
         }
         return (windows.Count, accepted);
     }

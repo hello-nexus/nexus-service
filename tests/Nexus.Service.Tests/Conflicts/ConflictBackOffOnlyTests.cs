@@ -12,7 +12,7 @@ namespace Nexus.Service.Tests.Conflicts;
 
 public class ConflictBackOffOnlyTests
 {
-    private const string Installer = "iCUE5 Main Installer";
+    private const string Installer = "Install iCUE";
 
     private static ConflictWatcher Watcher(Dictionary<string, List<(int Pid, string? Path)>> processes)
     {
@@ -46,8 +46,8 @@ public class ConflictBackOffOnlyTests
     {
         var icue = ConflictAppCatalog.All.Single(a => a.Id == "icue");
 
-        Assert.Contains("iCUE5 Initial Installer", icue.BackOffOnlyProcessNames);
-        Assert.Contains("iCUE5 Main Installer", icue.BackOffOnlyProcessNames);
+        Assert.Contains("Install iCUE", icue.BackOffOnlyProcessNames);
+        Assert.Contains("icue-uninstaller", icue.BackOffOnlyProcessNames);
         Assert.All(icue.BackOffOnlyProcessNames, n => Assert.DoesNotContain(n, icue.ProcessNames));
         Assert.All(icue.BackOffOnlyProcessNames, n => Assert.DoesNotContain(n, icue.GracefulProcessNames));
     }

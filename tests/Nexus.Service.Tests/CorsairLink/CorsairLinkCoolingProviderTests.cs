@@ -11,7 +11,7 @@ public class CorsairLinkCoolingProviderTests
 {
     private static CorsairLinkCoolingProvider ProviderWith(CorsairLinkClass cls, int type)
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         hub.State.IsConnected = true;
         hub.State.Devices = new[]
         {

@@ -25,10 +25,10 @@ public interface IAppSessionEnder
 
 /// <summary>
 /// Ends a catalog app by asking it to close first: session-end messages to its
-/// <see cref="ConflictAppDefinition.GracefulProcessNames"/> windows, repeated while it
-/// is still starting up, then a hard kill only if it is still running after
-/// <see cref="Wait"/>. An app that closes itself releases its hardware cleanly; a hard
-/// kill leaves the hardware in whatever state the app left it.
+/// <see cref="ConflictAppDefinition.GracefulProcessNames"/> windows, then a hard kill of
+/// what is left. An app that closes itself releases its hardware cleanly; a hard kill
+/// leaves the hardware as the app left it. Never runs while a
+/// <see cref="ConflictAppDefinition.BackOffOnlyProcessNames"/> process is alive.
 /// </summary>
 public sealed class ConflictGracefulEnd
 {
@@ -38,53 +38,75 @@ public sealed class ConflictGracefulEnd
     /// <summary>Upper bound while no request could be delivered yet: at boot the helper and the app's windows come up after the service.</summary>
     internal static readonly TimeSpan NotReachableWait = TimeSpan.FromSeconds(30);
 
-    /// <summary>The messages are sent again this often, so an app that was too early in its startup to hear the first one gets another.</summary>
+    /// <summary>Until a request is delivered it is sent again this often, so an app too early in its startup to have windows still gets one.</summary>
     internal static readonly TimeSpan Resend = TimeSpan.FromSeconds(3);
 
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly Func<ConflictAppDefinition, IReadOnlyList<int>> _findPids;
     private readonly Func<IReadOnlyList<int>, SessionEndOutcome> _send;
-    private readonly Func<ConflictAppDefinition, bool> _stillRunning;
+    private readonly Func<ConflictAppDefinition, bool> _anyRunning;
+    private readonly Func<ConflictAppDefinition, bool> _backOffRunning;
     private readonly Action<ConflictAppDefinition> _hardKill;
     private readonly Func<long> _clockMs;
     private readonly Action<int> _sleepMs;
     private readonly Action<string>? _log;
+    private readonly bool _canSend;
 
     public ConflictGracefulEnd(IAppSessionEnder? ender, Action<string>? log = null)
         : this(
             def => ConflictKiller.FindGracefulProcessIds(def, ConflictSignerGate.Default),
             pids => ender?.TrySend(pids) ?? SessionEndOutcome.HelperUnavailable,
             ConflictKiller.AnyProcessRunning,
+            def => ConflictKiller.AnyBackOffOnlyRunning(def, ConflictSignerGate.Default),
             def => ConflictKiller.Kill(def),
             () => Environment.TickCount64,
             ms => Thread.Sleep(ms),
-            log)
+            log,
+            canSend: ender is not null)
     {
     }
 
     internal ConflictGracefulEnd(
         Func<ConflictAppDefinition, IReadOnlyList<int>> findPids,
         Func<IReadOnlyList<int>, SessionEndOutcome> send,
-        Func<ConflictAppDefinition, bool> stillRunning,
+        Func<ConflictAppDefinition, bool> anyRunning,
+        Func<ConflictAppDefinition, bool> backOffRunning,
         Action<ConflictAppDefinition> hardKill,
         Func<long> clockMs,
         Action<int> sleepMs,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        bool canSend = true)
     {
         _findPids = findPids;
         _send = send;
-        _stillRunning = stillRunning;
+        _anyRunning = anyRunning;
+        _backOffRunning = backOffRunning;
         _hardKill = hardKill;
         _clockMs = clockMs;
         _sleepMs = sleepMs;
         _log = log;
+        _canSend = canSend;
     }
 
-    /// <summary>Blocks until the app exits or its deadline passes, then hard-kills what remains. The deadline is <see cref="NotReachableWait"/> from the start and, once a request is delivered, <see cref="Wait"/> from that moment; a refused request (a higher-integrity app) ends the wait at once.</summary>
+    /// <summary>Same outcome shape as <see cref="ConflictKiller.Kill(ConflictAppDefinition)"/>, for the end-task routes.</summary>
+    public ConflictKiller.KillOutcome EndWithOutcome(ConflictAppDefinition def)
+    {
+        if (def.IsSetting) return ConflictKiller.Kill(def);
+        var before = _anyRunning(def);
+        End(def);
+        return new ConflictKiller.KillOutcome(before, _anyRunning(def));
+    }
+
+    /// <summary>Blocks until the app exits or its deadline passes. The deadline is <see cref="NotReachableWait"/> from the start and, once a request is delivered, <see cref="Wait"/> from that moment; a request every window refused (a higher-integrity app) ends the wait at once. Leftover processes and services are ended as soon as the app itself is gone.</summary>
     public void End(ConflictAppDefinition def)
     {
-        if (def.GracefulProcessNames.Length == 0)
+        if (_backOffRunning(def))
+        {
+            _log?.Invoke($"{def.DisplayName}: an installer is running; not ending it");
+            return;
+        }
+        if (def.GracefulProcessNames.Length == 0 || !_canSend)
         {
             _hardKill(def);
             return;
@@ -96,26 +118,24 @@ public sealed class ConflictGracefulEnd
         var delivered = false;
         while (true)
         {
-            if (!_stillRunning(def))
+            var pids = _findPids(def);
+            if (pids.Count == 0)
             {
                 _log?.Invoke($"{def.DisplayName} closed after {_clockMs() - start} ms");
+                if (_anyRunning(def)) _hardKill(def);
                 return;
             }
             var now = _clockMs();
             if (now >= deadline) break;
-            if (now - lastSent >= (long)Resend.TotalMilliseconds)
+            if (!delivered && now - lastSent >= (long)Resend.TotalMilliseconds)
             {
                 lastSent = now;
-                var pids = _findPids(def);
-                if (pids.Count > 0)
+                last = _send(pids);
+                if (last == SessionEndOutcome.Refused) break;
+                if (last == SessionEndOutcome.Delivered)
                 {
-                    last = _send(pids);
-                    if (last == SessionEndOutcome.Refused) break;
-                    if (last == SessionEndOutcome.Delivered && !delivered)
-                    {
-                        delivered = true;
-                        deadline = now + (long)Wait.TotalMilliseconds;
-                    }
+                    delivered = true;
+                    deadline = now + (long)Wait.TotalMilliseconds;
                 }
             }
             _sleepMs((int)PollInterval.TotalMilliseconds);

@@ -160,7 +160,7 @@ public class CorsairLinkHubHandleTests
     {
         var device = new FakeLinkHub();
         leftBehind?.Invoke(device);
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         hub.Attach(device);
         Assert.True(hub.Initialize());
         return (hub, device);
@@ -320,7 +320,7 @@ public class CorsairLinkHubHandleTests
     public void A_late_reply_to_the_firmware_read_is_not_another_program()
     {
         var device = new FakeLinkHub { TimedOutReads = 1 };
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         hub.Attach(device);
 
         hub.Initialize();
@@ -345,7 +345,7 @@ public class CorsairLinkHubHandleTests
     [Fact]
     public void Initialize_records_each_step_and_its_traffic()
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         hub.Attach(new FakeLinkHub());
 
         Assert.True(hub.Initialize());
@@ -362,7 +362,7 @@ public class CorsairLinkHubHandleTests
     {
         var device = new FakeLinkHub();
         device.InjectReply(0x0B);
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         hub.Attach(device);
 
         Assert.False(hub.Initialize());
@@ -375,7 +375,7 @@ public class CorsairLinkHubHandleTests
     [Fact]
     public void HearsOtherHost_is_true_only_when_a_report_arrives_unprompted()
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         var busy = new FakeLinkHub();
         busy.InjectReply(0x08);
 
@@ -390,7 +390,7 @@ public class CorsairLinkHubHandleTests
     // A command whose read timed out leaves its reply owed to this hub object.
     private static CorsairLinkHub HubOwedFirmwareReply(Func<long>? now = null)
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         if (now != null) hub.NowMs = now;
         hub.Attach(new FakeLinkHub { TimedOutReads = 1000 });
         Assert.False(hub.Initialize());
@@ -401,7 +401,7 @@ public class CorsairLinkHubHandleTests
     [Fact]
     public void A_matching_command_byte_with_no_timed_out_read_is_another_program()
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         hub.Attach(new FakeLinkHub());
         Assert.True(hub.Initialize());
         hub.Detach();
@@ -464,7 +464,7 @@ public class CorsairLinkHubHandleTests
     public void Repeated_timeouts_on_one_command_do_not_keep_it_owed_past_the_bound_from_the_first()
     {
         var now = 1_000_000L;
-        var hub = new CorsairLinkHub { NowMs = () => now };
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0) { NowMs = () => now };
         hub.Attach(new FakeLinkHub { TimedOutReads = 1000 });
         Assert.False(hub.Initialize());
         hub.Detach(handBack: false);
@@ -498,7 +498,7 @@ public class CorsairLinkHubHandleTests
     {
         string Trace(byte rpmLo)
         {
-            var hub = new CorsairLinkHub();
+            var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
             hub.Attach(new FakeLinkHub { RpmLo = rpmLo });
             Assert.True(hub.Initialize());
             return hub.LastInitTrace;
@@ -604,7 +604,7 @@ public class CorsairLinkHubHandleTests
     [Fact]
     public void RequestRedetect_needs_a_connected_hub()
     {
-        Assert.False(new CorsairLinkHub().RequestRedetect());
+        Assert.False(new CorsairLinkHub(modeCycleWaitMs: 0).RequestRedetect());
 
         var (hub, _) = Connected();
         Assert.True(hub.RequestRedetect());
