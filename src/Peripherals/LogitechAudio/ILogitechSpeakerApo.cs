@@ -2,8 +2,8 @@ using System.Collections.Generic;
 
 namespace Nexus.Service.Peripherals.LogitechAudio;
 
-/// <summary>An active audio output that carries Logitech's speaker effect (a G560 and its kin). Whether it is the default output is per user and unknown to the SYSTEM service, so it is not tracked.</summary>
-public sealed record LogitechSpeakerEndpoint(string Id, string Name, string Model);
+/// <summary>An active audio output that carries Logitech's speaker effect (a G560 and its kin). IsDefault is the default render endpoint as the service process sees it, used only to pick among several.</summary>
+public sealed record LogitechSpeakerEndpoint(string Id, string Name, string Model, bool IsDefault = false);
 
 /// <summary>What the speaker effect reads from its registry key; null where the key has no (valid) value.</summary>
 public sealed class LogitechSpeakerApoValues

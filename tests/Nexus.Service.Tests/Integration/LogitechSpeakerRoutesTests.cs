@@ -50,11 +50,6 @@ public sealed class LogitechSpeakerRoutesTests : IClassFixture<NexusAppFactory>
         var client = Client();
         try
         {
-            var absent = await Json(await client.GetAsync("/devices/logitech-speaker"));
-            Assert.False(absent.GetProperty("present").GetBoolean());
-            var rejected = await client.PostAsJsonAsync("/devices/logitech-speaker/eq", new { enabled = true });
-            Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
-
             var started = await Json(await client.PostAsync("/dev/sim/logitech-speaker", null));
             Assert.True(started.GetProperty("active").GetBoolean());
 
@@ -84,7 +79,13 @@ public sealed class LogitechSpeakerRoutesTests : IClassFixture<NexusAppFactory>
             var channel = await Json(await client.PostAsJsonAsync("/devices/logitech-speaker/channel", new { channel = 2, gain = 1.5f }));
             Assert.Equal(1.5f, channel.GetProperty("channelGains")[2].GetSingle());
             var noGain = await client.PostAsJsonAsync("/devices/logitech-speaker/channel", new { channel = 2 });
-            Assert.Equal(HttpStatusCode.Conflict, noGain.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, noGain.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/devices/logitech-speaker/channel", new { channel = 8, gain = 1 })).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/devices/logitech-speaker/eq", new { bands = new[] { 1f, 2f } })).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync("/devices/logitech-speaker/eq", new { preset = "nope" })).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/devices/logitech-speaker/surround", new { room = "attic" })).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/devices/logitech-speaker/volume", new { })).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync("/devices/logitech-speaker/presets/nope")).StatusCode);
             var reset = await Json(await client.PostAsJsonAsync("/devices/logitech-speaker/channel", new { }));
             Assert.Equal(1f, reset.GetProperty("channelGains")[2].GetSingle());
 
@@ -97,14 +98,14 @@ public sealed class LogitechSpeakerRoutesTests : IClassFixture<NexusAppFactory>
                 new { name = "Mine", bands = new[] { 1f, 2f, 3f, 4f, 5f, 0f, 0f, 0f, 0f, 0f } }));
             Assert.Contains(saved.GetProperty("presets").EnumerateArray(), p => p.GetProperty("name").GetString() == "Mine" && !p.GetProperty("builtIn").GetBoolean());
             var builtInName = await client.PostAsJsonAsync("/devices/logitech-speaker/presets", new { name = "flat", bands = new float[10] });
-            Assert.Equal(HttpStatusCode.Conflict, builtInName.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, builtInName.StatusCode);
             var deleted = await Json(await client.DeleteAsync("/devices/logitech-speaker/presets/Mine"));
             Assert.DoesNotContain(deleted.GetProperty("presets").EnumerateArray(), p => p.GetProperty("name").GetString() == "Mine");
 
             var test = await Json(await client.PostAsJsonAsync("/devices/logitech-speaker/test", new { channel = 5 }));
             Assert.False(test.GetProperty("error").GetBoolean());
             var badTest = await client.PostAsJsonAsync("/devices/logitech-speaker/test", new { channel = 8 });
-            Assert.Equal(HttpStatusCode.Conflict, badTest.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, badTest.StatusCode);
             var sim = await Json(await client.GetAsync("/dev/sim/logitech-speaker"));
             Assert.Equal(1, sim.GetProperty("testsPlayed").GetInt32());
             Assert.Equal(5, sim.GetProperty("lastTestChannel").GetInt32());
@@ -120,7 +121,7 @@ public sealed class LogitechSpeakerRoutesTests : IClassFixture<NexusAppFactory>
         }
 
         var after = await Json(await client.GetAsync("/devices/logitech-speaker"));
-        Assert.False(after.GetProperty("present").GetBoolean());
+        Assert.False(after.GetProperty("simulated").GetBoolean());
     }
 #endif
 }

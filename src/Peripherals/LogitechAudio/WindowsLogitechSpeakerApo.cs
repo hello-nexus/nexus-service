@@ -81,7 +81,8 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
             return Array.Empty<LogitechSpeakerEndpoint>();
         }
         found.Sort((a, b) => string.CompareOrdinal(a.Id, b.Id));
-        return found.ConvertAll(e => new LogitechSpeakerEndpoint(e.Id, e.Name, e.Model));
+        var defaultId = RunOnComThread(DefaultRenderId, "", "default output");
+        return found.ConvertAll(e => new LogitechSpeakerEndpoint(e.Id, e.Name, e.Model, string.Equals(e.Id, defaultId, StringComparison.OrdinalIgnoreCase)));
     }
 
     private static bool IsSpeakerApo(object? value) =>
@@ -193,9 +194,9 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
         }
         _ = Task.Run(() =>
         {
+            var initialized = CoInitializeEx(IntPtr.Zero, 0) >= 0;
             try
             {
-                CoInitializeEx(IntPtr.Zero, 0);
                 PlayTestSoundOnThisThread(endpointId, channel);
             }
             catch (Exception ex)
@@ -204,6 +205,10 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
             }
             finally
             {
+                if (initialized)
+                {
+                    CoUninitialize();
+                }
                 Interlocked.Decrement(ref _testSounds);
             }
         });
@@ -211,6 +216,37 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
     }
 
     // ── COM work, on the COM thread ──
+
+    private static string DefaultRenderId()
+    {
+        var enumerator = CreateEnumerator();
+        if (enumerator == IntPtr.Zero)
+        {
+            return "";
+        }
+        try
+        {
+            var getDefault = (delegate* unmanaged[Stdcall]<IntPtr, int, int, IntPtr*, int>)Slot(enumerator, 4);
+            IntPtr device;
+            if (getDefault(enumerator, 0 /* eRender */, 0 /* eConsole */, &device) < 0 || device == IntPtr.Zero)
+            {
+                return "";
+            }
+            try
+            {
+                var getId = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr*, int>)Slot(device, 5);
+                IntPtr text;
+                if (getId(device, &text) < 0 || text == IntPtr.Zero)
+                {
+                    return "";
+                }
+                try { return Marshal.PtrToStringUni(text) ?? ""; }
+                finally { CoTaskMemFree(text); }
+            }
+            finally { Release(device); }
+        }
+        finally { Release(enumerator); }
+    }
 
     // Each write of a watched property raises IMMNotificationClient::OnPropertyValueChanged
     // in the effect, which maps the key to "reload this setting". G HUB leaves them VT_UI4 0.
@@ -384,7 +420,15 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
             var stop = (delegate* unmanaged[Stdcall]<IntPtr, int>)Slot(client, 11);
             if (start(client) >= 0)
             {
-                Thread.Sleep((int)(frames * 1000L / rate) + 250);
+                // The buffer drains in real time; padding 0 means every frame was played.
+                var getPadding = (delegate* unmanaged[Stdcall]<IntPtr, uint*, int>)Slot(client, 6);
+                var deadline = Environment.TickCount64 + frames * 1000L / rate + 500;
+                uint padding;
+                do
+                {
+                    Thread.Sleep(20);
+                }
+                while (getPadding(client, &padding) >= 0 && padding > 0 && Environment.TickCount64 < deadline);
                 stop(client);
             }
         }
@@ -507,6 +551,9 @@ public sealed unsafe class WindowsLogitechSpeakerApo : ILogitechSpeakerApo, IDis
 
     [DllImport("ole32.dll", ExactSpelling = true)]
     private static extern int CoInitializeEx(IntPtr reserved, uint flags);
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    private static extern void CoUninitialize();
 
     [DllImport("ole32.dll", ExactSpelling = true)]
     private static extern void CoTaskMemFree(IntPtr ptr);

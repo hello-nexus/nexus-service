@@ -25,41 +25,52 @@ public static partial class DevicesRoutes
             SpeakerChange(sp, s => s.SetSurround(body.Enabled, body.Room)));
 
         app.MapPost("/devices/logitech-speaker/channel", (LogitechSpeakerChannelRequest body, IServiceProvider sp) =>
-            SpeakerChange(sp, s => (body.Channel is null || body.Gain is not null) && s.SetChannelGain(body.Channel, body.Gain ?? 1)));
+            SpeakerChange(sp, s => body.Channel is not null && body.Gain is null ? SpeakerStatus.Invalid : s.SetChannelGain(body.Channel, body.Gain ?? 1)));
 
         app.MapPost("/devices/logitech-speaker/volume", (LogitechSpeakerLevelRequest body, IServiceProvider sp) =>
-            SpeakerChange(sp, s => body.Level is { } level && s.SetVolume(level)));
+            SpeakerChange(sp, s => body.Level is { } level ? s.SetVolume(level) : SpeakerStatus.Invalid));
 
         app.MapPost("/devices/logitech-speaker/subwoofer", (LogitechSpeakerLevelRequest body, IServiceProvider sp) =>
-            SpeakerChange(sp, s => body.Level is { } level && s.SetSubwoofer((int)Math.Round(level))));
+            SpeakerChange(sp, s => body.Level is { } level && float.IsFinite(level) ? s.SetSubwoofer((int)Math.Round(level)) : SpeakerStatus.Invalid));
 
         app.MapPost("/devices/logitech-speaker/presets", (LogitechSpeakerPresetRequest body, IServiceProvider sp) =>
-            SpeakerChange(sp, s => body.Name is { } name && body.Bands is { } bands && s.SavePreset(name, bands)));
+            SpeakerChange(sp, s => body.Name is { } name && body.Bands is { } bands ? s.SavePreset(name, bands) : SpeakerStatus.Invalid));
 
         app.MapDelete("/devices/logitech-speaker/presets/{name}", (string name, IServiceProvider sp) =>
             SpeakerChange(sp, s => s.DeletePreset(name)));
 
         app.MapPost("/devices/logitech-speaker/test", (LogitechSpeakerTestRequest body, IServiceProvider sp) =>
-            Speaker(sp) is { } speaker && body.Channel is { } channel && speaker.TestChannel(channel)
+        {
+            if (Speaker(sp) is not { } speaker)
+            {
+                return SpeakerError("no Logitech speaker support on this platform", StatusCodes.Status404NotFound);
+            }
+            var result = body.Channel is { } channel ? speaker.TestChannel(channel) : SpeakerStatus.Invalid;
+            return result
                 ? Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse)
-                : SpeakerError("the speaker did not play the test sound", StatusCodes.Status409Conflict));
+                : Failure(result.Status);
+        });
     }
 
     // The speaker service runs on Windows only.
     private static LogitechSpeakerService? Speaker(IServiceProvider sp) => sp.GetService<LogitechSpeakerService>();
 
-    private static IResult SpeakerChange(IServiceProvider sp, Func<LogitechSpeakerService, bool> change)
+    private static IResult SpeakerChange(IServiceProvider sp, Func<LogitechSpeakerService, SpeakerResult> change)
     {
         if (Speaker(sp) is not { } speaker)
         {
             return SpeakerError("no Logitech speaker support on this platform", StatusCodes.Status404NotFound);
         }
-        if (!change(speaker))
-        {
-            return SpeakerError("the speaker did not take the change", StatusCodes.Status409Conflict);
-        }
-        return Results.Json(speaker.GetState(), AppJsonContext.Default.LogitechSpeakerStateDto);
+        var result = change(speaker);
+        return result ? Results.Json(speaker.GetState(), AppJsonContext.Default.LogitechSpeakerStateDto) : Failure(result.Status);
     }
+
+    private static IResult Failure(SpeakerStatus status) => status switch
+    {
+        SpeakerStatus.Invalid => SpeakerError("the request is not valid for the speaker", StatusCodes.Status400BadRequest),
+        SpeakerStatus.NotFound => SpeakerError("no such speaker or preset", StatusCodes.Status404NotFound),
+        _ => SpeakerError("the speaker did not take the change", StatusCodes.Status409Conflict),
+    };
 
     private static IResult SpeakerError(string message, int status) =>
         Results.Json(ApiResponse.Fail(message), AppJsonContext.Default.ApiResponse, statusCode: status);
