@@ -45,6 +45,19 @@ public sealed class LogitechSpeakerRoutesTests : IClassFixture<NexusAppFactory>
 
 #if DEV_TOOLS
     [Fact]
+    public async Task Presets_save_and_delete_without_a_speaker()
+    {
+        var client = Client();
+        var saved = await Json(await client.PostAsJsonAsync("/devices/logitech-speaker/presets", new { name = "Hostside", bands = new float[10] }));
+        Assert.Contains(saved.GetProperty("presets").EnumerateArray(), p => p.GetProperty("name").GetString() == "Hostside");
+        var deleted = await Json(await client.DeleteAsync("/devices/logitech-speaker/presets/Hostside"));
+        Assert.DoesNotContain(deleted.GetProperty("presets").EnumerateArray(), p => p.GetProperty("name").GetString() == "Hostside");
+#if !WINDOWS
+        Assert.False(deleted.GetProperty("present").GetBoolean());
+#endif
+    }
+
+    [Fact]
     public async Task The_sim_speaker_flows_through_state_and_every_change_route()
     {
         var client = Client();
