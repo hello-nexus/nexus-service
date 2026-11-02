@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.Hardware.Storage;
+using Nexus.Service.Conflicts;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Lifecycle;
@@ -130,6 +131,16 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             // boot. Capped in the gate; no-op on unarmed hosts.
             await PawnIoBootGate.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
 
+            var wait = default(SuperIoOpenPolicy.WaitResult);
+            try
+            {
+                if (!_testHost) wait = await WaitForConflictShutdownAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[lhm] conflict wait failed: {ex.Message}");
+            }
+
             var sw = Stopwatch.StartNew();
             try
             {
@@ -137,6 +148,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 {
                     _computer.Open();
                     Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
+                    ReopenSuperIoIfDead(wait);
                 }
             }
             catch (Exception ex)
@@ -156,6 +168,88 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     }
 
     public Computer Instance => _computer;
+
+    private static bool HolderRunning(string id) =>
+        ConflictWatcher.FindById(id) is { } def && ConflictKiller.AnyProcessRunning(def);
+
+    private IReadOnlyList<string> WatchedHolders()
+    {
+        var settings = _config.Load();
+        return SuperIoOpenPolicy.HoldersToWaitFor(
+            ConflictStartupShutdown.SweepAllowed(settings), settings.Ui.ConflictAutoKillExclusions);
+    }
+
+    // Open() reads the Super I/O once; with an ASUS service alive at that moment its HWM window answers 0xFF for the whole process.
+    private async Task<SuperIoOpenPolicy.WaitResult> WaitForConflictShutdownAsync()
+    {
+        var sw = Stopwatch.StartNew();
+        var result = await SuperIoOpenPolicy.WaitAsync(
+            WatchedHolders(), HolderRunning, Task.Delay, () => sw.ElapsedMilliseconds).ConfigureAwait(false);
+        if (result.SawHolders)
+        {
+            Console.WriteLine($"[lhm] waited {sw.ElapsedMilliseconds}ms for ASUS services to close before opening{(result.TimedOut ? " (timed out)" : string.Empty)}");
+        }
+        return result;
+    }
+
+    // Runs inside the open task, before it completes, so no consumer has touched the motherboard hardware yet.
+    private void ReopenSuperIoIfDead(SuperIoOpenPolicy.WaitResult wait)
+    {
+        try
+        {
+            if (!wait.SawHolders || !SuperIoWindowDead()) return;
+            var holdersNow = WatchedHolders().Any(HolderRunning);
+            if (!SuperIoOpenPolicy.ShouldReopen(wait, windowDead: true, holdersNow))
+            {
+                ServiceLog.Warn("[lhm] superio dead window, ASUS services still running so not reopening");
+                return;
+            }
+            ServiceLog.Warn("[lhm] superio dead window, reopening");
+            lock (_updateLock)
+            {
+                _computer.IsMotherboardEnabled = false;
+                _computer.IsMotherboardEnabled = true;
+            }
+            var chips = SuperIoChips().Count();
+            var stillDead = SuperIoWindowDead();
+            ServiceLog.Warn(chips == 0
+                ? "[lhm] superio reopen result: no Super I/O chip found"
+                : stillDead ? "[lhm] superio reopen result: still dead" : "[lhm] superio reopen result: recovered");
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lhm] superio reopen failed: {ex.Message}");
+        }
+    }
+
+    private bool SuperIoWindowDead()
+    {
+        foreach (var chip in SuperIoChips())
+        {
+            chip.Update();
+            var temps = new List<float?>();
+            var fans = new List<float?>();
+            foreach (var sensor in chip.Sensors)
+            {
+                if (sensor.SensorType == SensorType.Temperature) temps.Add(sensor.Value);
+                else if (sensor.SensorType == SensorType.Fan) fans.Add(sensor.Value);
+            }
+            if (SuperIoOpenPolicy.IsDeadWindow(temps, fans)) return true;
+        }
+        return false;
+    }
+
+    private IEnumerable<IHardware> SuperIoChips()
+    {
+        foreach (var hw in _computer.Hardware)
+        {
+            if (hw.HardwareType != HardwareType.Motherboard) continue;
+            foreach (var sub in hw.SubHardware)
+            {
+                if (sub.HardwareType == HardwareType.SuperIO) yield return sub;
+            }
+        }
+    }
 
     private void OnControlGateChanged(string handlerId, bool enabled)
     {
