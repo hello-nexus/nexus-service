@@ -182,11 +182,11 @@ public sealed class SystemPreviewRoutesTests : IClassFixture<SystemPreviewAppFac
     public async Task A_cased_preview_is_not_served_once_the_case_is_cleared_and_a_no_case_one_is_not_served_for_a_case()
     {
         var client = Desktop();
-        await client.PutAsync("/system/preview?caseId=case-a", Body(Png()));
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync("/system/preview?caseId=case-a", Body(Png()))).StatusCode);
         _factory.Services.GetRequiredService<MachineCaseStore>().Save(null, pending: false);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/system/preview")).StatusCode);
 
-        await client.PutAsync("/system/preview", Body(Png(48)));
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync("/system/preview", Body(Png(48)))).StatusCode);
         _factory.Services.GetRequiredService<MachineCaseStore>().Save("case-a", pending: false);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/system/preview")).StatusCode);
     }
