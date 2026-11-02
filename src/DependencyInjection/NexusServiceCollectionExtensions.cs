@@ -2330,6 +2330,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IShortcutsProvider, HelperShortcutsProxy>();
         services.AddSingleton<IProcessIconProvider, HelperProcessIconProxy>();
         services.AddSingleton<IProcessActionsProvider, HelperProcessActionsProxy>();
+        services.AddSingleton<Nexus.Service.Conflicts.IAppSessionEnder, HelperAppSessionEnder>();
         services.AddSingleton<IMediaProvider, WindowsMediaProvider>();
         services.AddSingleton<IVolumeProvider, WindowsVolumeProvider>();
         services.AddSingleton<Nexus.Service.Platform.Radios.IRadioProvider, Nexus.Service.Platform.Radios.WindowsRadioProvider>();

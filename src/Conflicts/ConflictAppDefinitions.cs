@@ -70,6 +70,9 @@ public sealed class ConflictAppDefinition
     /// <summary>Substrings (case-insensitive) one of which the process's exe identity must contain for a name hit to count: the Authenticode signer subject, or the file's company name when unsigned. Empty keeps the name-only match. See <see cref="ConflictSignerGate"/>.</summary>
     public string[] Signers { get; init; } = Array.Empty<string>();
 
+    /// <summary>Process names whose top-level windows are sent the session-end messages before this app is hard-killed; the app closes itself and hands the hardware back. Empty means a hard kill straight away.</summary>
+    public string[] GracefulProcessNames { get; init; } = Array.Empty<string>();
+
     /// <summary>Windows service names to stop, in order, when ending this app - for apps whose background service holds the hardware. Empty for most.</summary>
     public string[] WindowsServiceNames { get; init; } = Array.Empty<string>();
 
@@ -392,6 +395,7 @@ public static class ConflictAppCatalog
                 "CorsairDeviceControlService", "CueLLAccessService", "CorsairService",
             },
             Signers = new[] { "Corsair" },
+            GracefulProcessNames = new[] { "iCUE" },
             WindowsServiceNames = new[] { "CorsairDeviceListerService" },
             // The Run value alone is NOT evidence iCUE starts: "iCUE Launcher.exe
             // --autorun" runs either way and then honours iCUE's own setting.

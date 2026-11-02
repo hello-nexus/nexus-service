@@ -75,6 +75,25 @@ public static class ConflictKiller
         return new KillOutcome(runningBefore, AnyProcessRunning(def, gate));
     }
 
+    /// <summary>Pids of the running processes named in <see cref="ConflictAppDefinition.GracefulProcessNames"/> that pass the signer gate.</summary>
+    internal static IReadOnlyList<int> FindGracefulProcessIds(ConflictAppDefinition def, ConflictSignerGate gate)
+    {
+        var ids = new List<int>();
+        foreach (var name in def.GracefulProcessNames)
+        {
+            Process[] found;
+            try { found = Process.GetProcessesByName(name); }
+            catch { continue; }
+            foreach (var p in found)
+            {
+                try { if (gate.Matches(def, p.Id)) ids.Add(p.Id); }
+                catch { }
+                finally { p.Dispose(); }
+            }
+        }
+        return ids;
+    }
+
     /// <summary>Whether any process this catalog entry names is running (for a setting, whether it is still active); the oracle for whether a kill did anything.</summary>
     public static bool AnyProcessRunning(ConflictAppDefinition def) => AnyProcessRunning(def, ConflictSignerGate.Default);
 

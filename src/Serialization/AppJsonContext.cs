@@ -1082,6 +1082,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessOpenLocationResult))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessActivateWindowRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessActivateWindowResult))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessEndSessionRequest))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessEndSessionResult))]
 // Native file/folder picker (IFileOpenDialog runs in the user-session helper)
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.FileDialogRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.FileDialogResult))]

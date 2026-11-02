@@ -79,10 +79,14 @@ public sealed class ConflictStartupShutdown : IHostedService
     private int _watching;
 
     public ConflictStartupShutdown(
-        IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log, Nexus.Service.Lifecycle.FeatureGates? gates = null)
-        : this(store, watcher, log, def => ConflictKiller.Kill(def), ConflictKiller.AnyProcessRunning, null, gates, null)
+        IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log,
+        Nexus.Service.Lifecycle.FeatureGates? gates = null, IAppSessionEnder? sessionEnder = null)
+        : this(store, watcher, log, GracefulKill(sessionEnder, log), ConflictKiller.AnyProcessRunning, null, gates, null)
     {
     }
+
+    private static Action<ConflictAppDefinition> GracefulKill(IAppSessionEnder? sessionEnder, ILogger<ConflictStartupShutdown> log) =>
+        new ConflictGracefulEnd(sessionEnder, message => log.LogInformation("Conflict shutdown: {Message}", message)).End;
 
     internal ConflictStartupShutdown(
         IConfigStore store,
