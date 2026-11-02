@@ -12,6 +12,7 @@ internal static class OpenRgbAmdGpuI2cDetectors
 {
     internal static readonly string[] Names =
     {
+        "ASRock Radeon RX 7900 XT Phantom Gaming 20GB OC",
         "ASRock Radeon RX 7900 XTX Phantom Gaming",
         "ASRock Radeon RX 7900 XTX Taichi 24GB OC",
         "ASRock Radeon RX 9060 XT Steel Legend",

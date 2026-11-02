@@ -51,8 +51,8 @@ public static class NativeDetectorClaims
             new[] { "nollie" }),
         new(Kraken, new[] { "NZXT Kraken 2024 ELITE Series RGB", "NZXT Kraken X3 Series", "NZXT Kraken X3 Series RGB" }, new[] { "nzxt-kraken" }),
         new(StreamDeck, new[] { "Elgato Stream Deck MK.2" }, new[] { "streamdeck" }),
-        // One detector covers the THICC Q60 and the NP50; macOS has no native discovery for either.
-        new(HyteNexus, new[] { "HYTE Nexus" }, new[] { "np50", "qseries" }, NotOnMac: true),
+        // Older bundles register one "HYTE Nexus" detector for the THICC Q60 and the NP50; newer ones register a serial detector per device. Both generations stay listed so either bundle is held off. macOS has no native discovery for either.
+        new(HyteNexus, new[] { "HYTE Nexus", "HYTE THICC Q60", "HYTE Nexus Portal NP50" }, new[] { "np50", "qseries" }, NotOnMac: true),
     };
 
     /// <summary>

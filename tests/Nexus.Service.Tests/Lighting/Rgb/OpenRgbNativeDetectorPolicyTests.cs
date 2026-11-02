@@ -72,6 +72,22 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
         Assert.Contains("HYTE Nexus", Resolve(_ => false, macOS: true));
     }
 
+    [Theory]
+    [InlineData("HYTE Nexus")]
+    [InlineData("HYTE THICC Q60")]
+    [InlineData("HYTE Nexus Portal NP50")]
+    public void Every_hyte_nexus_detector_generation_is_held_off_then_released_in_the_openrgb_config(string detector)
+    {
+        Assert.Contains(detector, Resolve(h => h == "qseries", macOS: false));
+        Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), null, new[] { detector });
+        Assert.True(IsOff(Map(), detector));
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), null, Array.Empty<string>());
+        Assert.False(Map().ContainsKey(detector));
+    }
+
     [Fact]
     public void The_original_uni_hub_detector_is_never_claimed()
     {
