@@ -50,7 +50,7 @@ public static class DashboardPresets
         fresh &= panel.DashboardPresets.Exists(p => p.Id == panel.DashboardActivePresetId);
         CaptureActive(panel);
         if (fresh)
-            panel.DashboardLayout = PanelLayoutDefaults.ForSurface("desktop");
+            panel.DashboardLayout = PanelLayoutDefaults.ForSurface(PanelSurfaces.Desktop);
         var preset = new DashboardPreset { Id = NewId(), Name = name, Layout = PanelPresets.CloneLayout(panel.DashboardLayout) };
         panel.DashboardPresets.Add(preset);
         panel.DashboardActivePresetId = preset.Id;

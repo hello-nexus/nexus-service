@@ -516,7 +516,6 @@ public static partial class DevicesRoutes
                     Id = id,
                     Name = body.Name,
                     Layouts = DeepCopyLayouts(s.Lighting.DeviceLayouts),
-                    // Fresh: the clean-install look, no pins, no per-device color prefs. Layouts, scene view and power lists stay as they are.
                     Look = Nexus.Service.Lighting.LightingPresetLooks.Capture(
                         fresh ? new Nexus.Service.Persistence.LightingSettings() : s.Lighting),
                     SceneView = CopySceneView(s.Lighting.SceneView),
@@ -524,6 +523,11 @@ public static partial class DevicesRoutes
                 CaptureDeviceSlices(s, created);
                 if (fresh)
                 {
+                    // Unsaved pins and prefs live only in the settings, so the outgoing preset takes them before the reset.
+                    CaptureDeviceSlices(s, s.Lighting.LayoutPresets.Find(p => p.Id == s.Lighting.ActiveLayoutPresetId)!);
+                    // A fresh LightingSettings has no template bundles, which captures slot -1 and would keep the user's selected slot.
+                    created.Look!.AnimateSlot = 0;
+                    created.Look.StaticSlot = 0;
                     created.DevicePins = new();
                     // Color order is a wiring correction, so it survives the reset.
                     created.DevicePrefs = new();
@@ -551,7 +555,13 @@ public static partial class DevicesRoutes
             }
             if (fresh)
             {
-                ActivateLayoutPreset(created!.Id, store, hub, lightingProvider, lighting, bridge, smart, engine);
+                if (!ActivateLayoutPreset(created!.Id, store, hub, lightingProvider, lighting, bridge, smart, engine))
+                {
+                    return Results.Json(
+                        ApiResponse.Fail("Layout preset not found"),
+                        Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
+                        statusCode: 404);
+                }
             }
             return Results.Json(
                 new CreateLayoutPresetResponse { Preset = ToDto(created!), ActiveId = created!.Id },

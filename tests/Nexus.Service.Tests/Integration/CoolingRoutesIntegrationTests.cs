@@ -378,6 +378,9 @@ public sealed class CoolingRoutesIntegrationTests
             Assert.Empty(preset.FanOffsets);
             Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.GlobalSpeedModifier, preset.GlobalSpeedModifier);
             Assert.Equal(preset.Id, cooling.ActivePresetId);
+            var old = cooling.Presets.Single(p => p.Id == "old");
+            Assert.Equal(60, old.ManualSpeeds["fan1"]);
+            Assert.Equal(9, old.FanOffsets["fan1"]);
             // Activation replayed the defaults onto the live state.
             Assert.Equal(Nexus.Service.Defaults.InstallDefaults.Cooling.ActivePreset, cooling.ActivePreset);
             Assert.Empty(cooling.FanOffsets);

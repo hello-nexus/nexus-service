@@ -131,6 +131,26 @@ public sealed class LayoutPresetRoutesTests : IClassFixture<StubDeviceHostFactor
         Assert.Empty(stored.Lighting.DevicePins);
         Assert.Empty(stored.Devices.LightingDevicePrefs);
         Assert.Equal(5, stored.Lighting.DeviceLayouts["dev-1"].X);
+        // The outgoing preset kept the unsaved pins and prefs.
+        var old = stored.Lighting.LayoutPresets.Single(p => p.Id == "old");
+        Assert.Contains("dev-1", old.DevicePins!.Keys);
+        Assert.Equal(30, old.DevicePrefs!["dev-1"].Brightness);
+    }
+
+    [Fact]
+    public async Task Create_fresh_selects_slot_zero_of_the_default_effect()
+    {
+        SeedCustomLook();
+        SeedActivePreset();
+        var effect = Nexus.Service.Defaults.InstallDefaults.Lighting.Animate.Effect;
+        Store.Update(s => s.Lighting.Animate.Templates[effect] = new AnimateEffectTemplates { Selected = 2 });
+
+        await _client.PostAsync("/devices/lighting-devices/layout-presets", Json("""{"name":"Clean","fresh":true}"""));
+
+        var stored = Store.Load();
+        var preset = Assert.Single(stored.Lighting.LayoutPresets, p => p.Id != "old");
+        Assert.Equal(0, preset.Look!.AnimateSlot);
+        Assert.Equal(0, stored.Lighting.Animate.Templates[effect].Selected);
     }
 
     [Fact]

@@ -484,13 +484,24 @@ public static class CoolingRoutes
             var created = fresh ? CoolingPresets.CreateFresh(id, name) : CoolingPresets.Capture(id, name, store);
             store.Update(s =>
             {
+                if (fresh && s.Cooling.Presets.Find(p => p.Id == s.Cooling.ActivePresetId) is { } outgoing)
+                {
+                    CoolingPresets.CaptureInto(outgoing, s.Cooling);
+                }
                 s.Cooling.Presets.Add(created);
-                s.Cooling.ActivePresetId = created.Id;
+                // Fresh leaves the active id to Activate, which sets it once the defaults are applied.
+                if (!fresh)
+                {
+                    s.Cooling.ActivePresetId = created.Id;
+                }
             });
             if (fresh)
             {
                 // The live fans still follow the old configuration; replay the defaults so the active preset matches them.
-                CoolingPresets.Activate(created.Id, store, f);
+                if (!CoolingPresets.Activate(created.Id, store, f))
+                {
+                    return Results.NotFound(new ApiResponse { Error = true, Msg = "Preset not found" });
+                }
                 PanelTopics.BroadcastCooling(hub);
             }
             return Results.Ok(new CreateCoolingPresetResponse { Preset = ToPresetDto(created), ActiveId = created.Id });
