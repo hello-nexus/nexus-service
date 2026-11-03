@@ -5,7 +5,7 @@ namespace Nexus.Service.Peripherals.Hyte.Y70Display;
 
 /// <summary>
 /// Linux Y70 display discovery: finds <c>/dev/ttyACM*</c> ports whose USB parent
-/// is VID 0x3402 / PID 0x0C00 (Touch), 0x0C01 (Infinite) or 0x0C02 (Truly),
+/// is VID 0x3402 / PID 0x0C00 (Touch), 0x0C01 (Infinite), 0x0C02 (Truly) or 0x0C06 (GT),
 /// tagging each with its variant. Counterpart to
 /// <see cref="WindowsY70DisplayPortDiscovery"/>.
 /// </summary>

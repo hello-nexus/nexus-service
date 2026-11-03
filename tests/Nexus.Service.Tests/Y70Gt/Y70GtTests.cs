@@ -22,22 +22,6 @@ public class Y70GtTests
     }
 
     [Theory]
-    [InlineData(@"MONITOR\RTK2234\{4d36e96e}\0001", "y70-gt")]
-    [InlineData(@"MONITOR\rtk2234\{4d36e96e}\0001", "y70-gt")]
-    [InlineData(@"MONITOR\RTK1234\{4d36e96e}\0001", "")]
-    [InlineData("", "")]
-    public void Edid_fragment_maps_to_the_gt_variant(string hardwareId, string expected)
-    {
-        Assert.Equal(expected, Y70DisplayProtocol.GtVariantForHardwareId(hardwareId));
-    }
-
-    [Fact]
-    public void Gt_edid_is_a_y70_display()
-    {
-        Assert.Contains("RTK2234", Y70DisplayProtocol.DdcPanelHardwareNames);
-    }
-
-    [Theory]
     [InlineData(0, 4, 0)]
     [InlineData(6, 4, 6)]
     [InlineData(7, 3, 6)]
@@ -52,7 +36,7 @@ public class Y70GtTests
     }
 
     [Fact]
-    public void Backlight_wire_order_visits_every_cell_of_the_5x7_grid_once()
+    public void Backlight_wire_order_visits_every_cell_of_the_grid_once()
     {
         var order = Y70DisplayProtocol.BacklightWireOrder;
         Assert.Equal(35, order.Length);

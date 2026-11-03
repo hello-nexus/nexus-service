@@ -36,20 +36,11 @@ public static class Y70DisplayProtocol
 
     /// <summary>
     /// Y70 GT: serial controller (backlight over FF EE, display over DDC/CI like
-    /// Truly) with no host-updatable firmware, so it has no bundle and no
-    /// <see cref="ProductIdForVariant"/> entry.
+    /// Truly). The legacy app registers OTA for it (product key 0C0600DD, PIDBytes
+    /// product byte 0x03), but Nexus does no firmware for this panel, so it has no
+    /// bundle and no <see cref="ProductIdForVariant"/> entry.
     /// </summary>
     public const string VariantGt = "y70-gt";
-
-    /// <summary>EDID/PnP fragment of the Y70 GT panel; also listed in <see cref="DdcPanelHardwareNames"/>.</summary>
-    public const string GtHardwareFragment = "RTK2234";
-
-    /// <summary>Variant key when this monitor hardware id is the Y70 GT panel, or empty.</summary>
-    public static string GtVariantForHardwareId(string rawHardwareId)
-        => !string.IsNullOrEmpty(rawHardwareId)
-           && rawHardwareId.IndexOf(GtHardwareFragment, StringComparison.OrdinalIgnoreCase) >= 0
-            ? VariantGt
-            : "";
 
     /// <summary>
     /// Variant labels for the DDC-only panels (UI/diagnostics). Not
@@ -156,7 +147,7 @@ public static class Y70DisplayProtocol
 
     private const byte OpLighting = 0xEE;
 
-    /// <summary>Backlight grid: 5 columns (X) by 7 rows (Y).</summary>
+    /// <summary>Backlight grid dimensions: columns along X, rows along Y.</summary>
     public const int BacklightColumns = 5;
     public const int BacklightRows = 7;
     public const int BacklightLedCount = BacklightColumns * BacklightRows;

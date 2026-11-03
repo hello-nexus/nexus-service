@@ -257,6 +257,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
             hub, new HardwarePresence(new EmptyUsbEnumerator()), new DeviceControlGate(config),
             new FakeY70Provider(), lighting: lighting);
 
+        Assert.True(hub.EnsureConnected());
         worker.Tick();
         Assert.True(hub.HasBacklight);
         Assert.Equal(1, changes);

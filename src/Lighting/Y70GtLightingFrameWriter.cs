@@ -11,7 +11,7 @@ namespace Nexus.Service.Lighting;
 
 /// <summary>
 /// Pushes per-frame engine output to the Y70 GT backlight. Same pattern as
-/// <see cref="QSeriesLightingFrameWriter"/>: own 30 Hz timer so a disabled card
+/// <see cref="QSeriesLightingFrameWriter"/>: own frame-rate timer so a disabled card
 /// still receives blank frames, with brightness / disabled / identify taken
 /// from the shared settings store.
 /// </summary>
