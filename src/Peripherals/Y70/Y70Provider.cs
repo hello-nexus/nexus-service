@@ -214,7 +214,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     /// no-op there, so a connected hub alone must not select serial. The
     /// original Touch takes the hybrid path instead. The Y70 GT's serial port
     /// carries only the backlight stream, and its display controls are DDC/CI
-    /// (reference Y80TouchDevice subclasses Y70TouchDdcciDeviceBase).
+    /// (the reference GT device subclasses Y70TouchDdcciDeviceBase).
     /// </summary>
     private bool SerialTransportSelected =>
         _hub.IsConnected
