@@ -16,7 +16,8 @@ public sealed class LinuxY70DisplayPortDiscovery : IY70DisplayPortDiscovery
                 Y70DisplayProtocol.VendorId,
                 Y70DisplayProtocol.Y70TouchProductId,
                 Y70DisplayProtocol.Y70InfiniteProductId,
-                Y70DisplayProtocol.Y70TrulyProductId)
+                Y70DisplayProtocol.Y70TrulyProductId,
+                Y70DisplayProtocol.Y70GtProductId)
             .Select(m => new Y70DisplayPort
             {
                 PortName = m.PortName,

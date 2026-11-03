@@ -23,6 +23,7 @@ public static class Y70DisplayProtocol
     public const int Y70TouchProductId = 0x0C00;
     public const int Y70InfiniteProductId = 0x0C01;
     public const int Y70TrulyProductId = 0x0C02;
+    public const int Y70GtProductId = 0x0C06;
 
     /// <summary>
     /// Firmware-catalog keys (bundled-.hex directory names). Deliberately none
@@ -32,6 +33,23 @@ public static class Y70DisplayProtocol
     public const string VariantTouch = "y70-touch";
     public const string VariantInfinite = "y70-infinite";
     public const string VariantTruly = "y70-truly";
+
+    /// <summary>
+    /// Y70 GT: serial controller (backlight over FF EE, display over DDC/CI like
+    /// Truly) with no host-updatable firmware, so it has no bundle and no
+    /// <see cref="ProductIdForVariant"/> entry.
+    /// </summary>
+    public const string VariantGt = "y70-gt";
+
+    /// <summary>EDID/PnP fragment of the Y70 GT panel; also listed in <see cref="DdcPanelHardwareNames"/>.</summary>
+    public const string GtHardwareFragment = "RTK2234";
+
+    /// <summary>Variant key when this monitor hardware id is the Y70 GT panel, or empty.</summary>
+    public static string GtVariantForHardwareId(string rawHardwareId)
+        => !string.IsNullOrEmpty(rawHardwareId)
+           && rawHardwareId.IndexOf(GtHardwareFragment, StringComparison.OrdinalIgnoreCase) >= 0
+            ? VariantGt
+            : "";
 
     /// <summary>
     /// Variant labels for the DDC-only panels (UI/diagnostics). Not
@@ -134,6 +152,59 @@ public static class Y70DisplayProtocol
     /// </summary>
     public const int FirmwareVersionResponseLength = 7;
 
+    // ── Y70 GT backlight ──
+
+    private const byte OpLighting = 0xEE;
+
+    /// <summary>Backlight grid: 5 columns (X) by 7 rows (Y).</summary>
+    public const int BacklightColumns = 5;
+    public const int BacklightRows = 7;
+    public const int BacklightLedCount = BacklightColumns * BacklightRows;
+
+    /// <summary>Streaming frame header, followed by one GRB triple per LED.</summary>
+    public static readonly byte[] BacklightHeader = { Frame0, OpLighting, 0x01, 0x01, 0x00, 0x00, 0x00 };
+
+    /// <summary>
+    /// Wire order of the backlight as (column, row) pairs: columns walked right
+    /// to left, even columns top to bottom and odd columns bottom to top
+    /// (serpentine). Index i of a streamed frame is this array's i-th cell.
+    /// </summary>
+    public static readonly (int Column, int Row)[] BacklightWireOrder = BuildBacklightWireOrder();
+
+    private static (int Column, int Row)[] BuildBacklightWireOrder()
+    {
+        var order = new (int, int)[BacklightLedCount];
+        var n = 0;
+        for (var x = BacklightColumns - 1; x >= 0; x--)
+        {
+            for (var y = 0; y < BacklightRows; y++)
+            {
+                order[n++] = (x, x % 2 == 0 ? y : BacklightRows - 1 - y);
+            }
+        }
+        return order;
+    }
+
+    /// <summary>
+    /// Backlight streaming frame from RGB triples in wire order (missing LEDs
+    /// stay dark): the header, then G, R, B per LED.
+    /// </summary>
+    public static byte[] BuildBacklightStream(ReadOnlySpan<byte> rgb)
+    {
+        var frame = new byte[BacklightHeader.Length + BacklightLedCount * 3];
+        BacklightHeader.CopyTo(frame, 0);
+        var leds = Math.Min(BacklightLedCount, rgb.Length / 3);
+        for (var i = 0; i < leds; i++)
+        {
+            var src = i * 3;
+            var dst = BacklightHeader.Length + src;
+            frame[dst] = rgb[src + 1];
+            frame[dst + 1] = rgb[src];
+            frame[dst + 2] = rgb[src + 2];
+        }
+        return frame;
+    }
+
     // ── Builders ──
 
     public static byte[] BuildGetFirmwareVersion() => new byte[] { Frame0, OpControl, SubGetFirmwareVersion };
@@ -189,6 +260,7 @@ public static class Y70DisplayProtocol
         Y70TouchProductId => VariantTouch,
         Y70InfiniteProductId => VariantInfinite,
         Y70TrulyProductId => VariantTruly,
+        Y70GtProductId => VariantGt,
         _ => "",
     };
 

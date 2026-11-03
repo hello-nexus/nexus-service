@@ -945,6 +945,17 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.QSeriesLightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.QSeriesLightingFrameWriter>());
 
+        // Y70 GT backlight: Y70DisplayHub owns the panel's serial port, so this
+        // provider surfaces the 5x7 matrix card (only while the connected variant
+        // is the GT) and the writer streams 30 Hz frames through the hub.
+        services.AddSingleton<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Y70GtLightingFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingFrameWriter>());
+
         // Keeb TKL lighting: KeebHub owns the keyboard's vendor HID interface
         // (OpenRGB's "HYTE Keeb TKL" detector is disabled), this provider
         // surfaces the keys + underglow zones, and the writer streams 30 Hz
@@ -1747,6 +1758,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShiftLcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -1777,6 +1789,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShiftLcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),

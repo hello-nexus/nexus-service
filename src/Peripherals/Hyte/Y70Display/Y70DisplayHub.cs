@@ -173,6 +173,34 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
         }
     }
 
+    /// <summary>True when the connected panel is the Y70 GT, the only variant with a backlight to stream.</summary>
+    public bool HasBacklight => IsConnected && Variant == Y70DisplayProtocol.VariantGt;
+
+    /// <summary>
+    /// Stream one backlight frame (RGB triples in wire order). Shares the port
+    /// lock with the heartbeat's version query so frames and replies never
+    /// interleave. No reply is returned.
+    /// </summary>
+    public bool WriteBacklight(ReadOnlySpan<byte> rgb)
+    {
+        lock (_lock)
+        {
+            if (!HasBacklight) return false;
+            var transport = _transport!;
+            try
+            {
+                transport.Write(Y70DisplayProtocol.BuildBacklightStream(rgb));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[y70-display] backlight write failed: {ex.GetType().Name}: {ex.Message}");
+                Disconnect();
+                return false;
+            }
+        }
+    }
+
     /// <summary>Read the controller's current screen-on flag + brightness (FF CC 02).</summary>
     public bool TryReadScreenInfo(out bool screenOn, out int brightness)
     {

@@ -23,6 +23,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private readonly DeviceControlGate _gate;
     private readonly IY70Provider _y70;
     private readonly Y70CaseAssigner? _caseAssigner;
+    private readonly Nexus.Service.Lighting.Y70GtLightingDeviceProvider? _lighting;
     private bool _wasDetected;
     private bool _caseHandled;
     private int _caseAbsentTicks;
@@ -38,8 +39,9 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private int _absentTicks;
     private const int DetectDropTicks = 3;
 
-    public Y70DisplayHeartbeatWorker(Y70DisplayHub hub, HardwarePresence presence, DeviceControlGate gate, IY70Provider y70, Y70CaseAssigner? caseAssigner = null)
+    public Y70DisplayHeartbeatWorker(Y70DisplayHub hub, HardwarePresence presence, DeviceControlGate gate, IY70Provider y70, Y70CaseAssigner? caseAssigner = null, Nexus.Service.Lighting.Y70GtLightingDeviceProvider? lighting = null)
     {
+        _lighting = lighting;
         _caseAssigner = caseAssigner;
         _hub = hub;
         _presence = presence;
@@ -124,7 +126,8 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
                 Y70DisplayProtocol.VendorId,
                 Y70DisplayProtocol.Y70TouchProductId,
                 Y70DisplayProtocol.Y70InfiniteProductId,
-                Y70DisplayProtocol.Y70TrulyProductId))
+                Y70DisplayProtocol.Y70TrulyProductId,
+                Y70DisplayProtocol.Y70GtProductId))
         {
             return;
         }
@@ -135,5 +138,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         {
             _hub.PollFirmwareVersion();
         }
+        // Debounced inside the provider: only a connect/disconnect edge rebuilds the frame map.
+        _lighting?.OnHubStateUpdated();
     }
 }
