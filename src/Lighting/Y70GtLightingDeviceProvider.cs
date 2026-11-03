@@ -13,7 +13,7 @@ namespace Nexus.Service.Lighting;
 /// <summary>
 /// Surfaces the HYTE Y70 GT backlight as one standalone matrix card. The
 /// panel's serial controller is owned by <see cref="Y70DisplayHub"/> (OpenRGB
-/// does not drive it), so this provider hands the engine a 5x7 frame whose
+/// does not drive it), so this provider hands the engine a matrix frame whose
 /// per-LED UVs follow the wire order, and <see cref="Y70GtLightingFrameWriter"/>
 /// streams it. Every other Y70 variant yields no card.
 /// </summary>
@@ -25,7 +25,7 @@ public sealed class Y70GtLightingDeviceProvider :
     private readonly Y70DisplayHub _hub;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
-    private string _lastSignature = "";
+    private string _lastSignature = "disconnected";
 
     public Y70GtLightingDeviceProvider(Y70DisplayHub hub, IConfigStore store, Np50IdentifyTracker identify)
     {
@@ -128,7 +128,7 @@ public sealed class Y70GtLightingDeviceProvider :
         pref.Saturation = saturation;
     });
 
-    // The LED count is fixed by the 5x7 grid.
+    // The LED count is fixed by the grid.
     public void SetZoneLedCount(string id, int count)
     {
         _ = id; _ = count;
@@ -202,7 +202,7 @@ public sealed class Y70GtLightingDeviceProvider :
         return new[] { _frame };
     }
 
-    /// <summary>Per-LED canvas position for the card's wire order, so effects land on the physical cell of the 5x7 grid rather than along a linear index.</summary>
+    /// <summary>Per-LED canvas position for the card's wire order, so effects land on the physical cell of the grid rather than along a linear index.</summary>
     internal static (float[] u, float[] v) BuildLedUv()
     {
         var order = Y70DisplayProtocol.BacklightWireOrder;

@@ -84,6 +84,14 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
 
     public void Tick()
     {
+        // Every path, including the early returns, nudges the lighting provider so a
+        // replugged panel re-fires its devices-changed edge; the provider debounces.
+        try { TickCore(); }
+        finally { _lighting?.OnHubStateUpdated(); }
+    }
+
+    private void TickCore()
+    {
         // Read before the gate: the panel kiosk is a display surface, not
         // device control, so it must still open when Nexus Control is off.
         Detected = _y70.IsConnected();
@@ -138,7 +146,5 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         {
             _hub.PollFirmwareVersion();
         }
-        // Debounced inside the provider: only a connect/disconnect edge rebuilds the frame map.
-        _lighting?.OnHubStateUpdated();
     }
 }
