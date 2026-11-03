@@ -428,8 +428,10 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
         foreach (var def in ConflictAppCatalog.All)
         {
             DetectedConflict? best = null;
-            foreach (var procName in def.ProcessNames)
+            // An ended-able process always wins over a back-off-only one, so the sweep still sees the app.
+            foreach (var procName in def.ProcessNames.Concat(def.BackOffOnlyProcessNames))
             {
+                var backOffOnly = Array.IndexOf(def.BackOffOnlyProcessNames, procName) >= 0;
                 if (!byName.TryGetValue(procName, out var hits))
                     continue;
 
@@ -445,7 +447,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
 
                     // Keep the lowest pid as canonical for the catalog id so
                     // the SPA shows a deterministic value across renders.
-                    if (best is null || hit.Pid < best.Pid)
+                    if (best is null || (best.BackOffOnly && !backOffOnly) || (best.BackOffOnly == backOffOnly && hit.Pid < best.Pid))
                     {
                         best = new DetectedConflict
                         {
@@ -454,6 +456,7 @@ public sealed class ConflictWatcher : BackgroundService, IConflictDetector
                             Category = def.Category,
                             ProcessName = procName,
                             Pid = hit.Pid,
+                            BackOffOnly = backOffOnly,
                             DeviceOverlapKnown = ConflictDeviceOwnership.DeviceOverlapKnown(def),
                             ClaimsAllRgb = def.ClaimsAllRgb,
                         };

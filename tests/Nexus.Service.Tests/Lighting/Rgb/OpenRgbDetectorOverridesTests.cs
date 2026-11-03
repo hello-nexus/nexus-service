@@ -57,8 +57,11 @@ public class OpenRgbDetectorOverridesTests : IDisposable
     [Fact]
     public void Hyte_nexus_detector_disabled_only_where_the_devices_are_driven_natively()
     {
-        Assert.Contains("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
-        Assert.DoesNotContain("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
+        foreach (var detector in new[] { "HYTE THICC Q60", "HYTE Nexus Portal NP50" })
+        {
+            Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+            Assert.DoesNotContain(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
+        }
         Assert.Contains("HYTE Keeb TKL", OpenRgbProcessManager.BuildDisabledDetectors(macOS: true));
     }
 

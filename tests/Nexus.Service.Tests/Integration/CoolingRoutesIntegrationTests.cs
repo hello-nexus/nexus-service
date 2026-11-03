@@ -126,6 +126,24 @@ public sealed class CoolingRoutesIntegrationTests
     }
 
     [Fact]
+    public async Task GuardRestore_WithNothingActive_Returns200WithAnErrorAndRestoreAvailableIsFalse()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var state = JsonDocument.Parse(await (await client.GetAsync("/cooling/guard")).Content.ReadAsStringAsync());
+            Assert.False(state.RootElement.GetProperty("restoreAvailable").GetBoolean());
+
+            var res = await client.PostAsync("/cooling/guard/restore", null);
+
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            Assert.True(doc.RootElement.GetProperty("error").GetBoolean());
+            Assert.False(string.IsNullOrEmpty(doc.RootElement.GetProperty("msg").GetString()));
+        }
+    }
+
+    [Fact]
     public async Task SetRole_UnknownChannel_Returns400()
     {
         var (factory, client) = Boot();

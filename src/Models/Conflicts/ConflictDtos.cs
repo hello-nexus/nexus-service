@@ -15,6 +15,9 @@ public sealed class DetectedConflict
     public string ProcessName { get; set; } = "";
     public int Pid { get; set; }
 
+    /// <summary>Only a process that must never be ended (an installer) is running: Nexus backs off but the sweep leaves it alone.</summary>
+    public bool BackOffOnly { get; set; }
+
     /// <summary>
     /// True when the app maps to devices (a universal RGB claim, a vendor string, or a curated handler), so the
     /// SPA can decide whether it competes with a device Nexus controls. False leaves that undecidable and the

@@ -61,6 +61,7 @@ public sealed class ConflictStartupShutdown : IHostedService
     private readonly ILogger<ConflictStartupShutdown> _log;
     private readonly Action<ConflictAppDefinition> _kill;
     private readonly Func<ConflictAppDefinition, bool> _stillRunning;
+    private readonly Func<ConflictAppDefinition, bool> _backOffRunning;
     private readonly Func<long> _clockMs;
     private readonly Nexus.Service.Lifecycle.FeatureGates _gates;
     private readonly Func<WindowsDynamicLightingState?> _dynamicLightingOff;
@@ -79,8 +80,9 @@ public sealed class ConflictStartupShutdown : IHostedService
     private int _watching;
 
     public ConflictStartupShutdown(
-        IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log, Nexus.Service.Lifecycle.FeatureGates? gates = null)
-        : this(store, watcher, log, def => ConflictKiller.Kill(def), ConflictKiller.AnyProcessRunning, null, gates, null)
+        IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log,
+        Nexus.Service.Lifecycle.FeatureGates? gates = null, ConflictGracefulEnd? gracefulEnd = null)
+        : this(store, watcher, log, (gracefulEnd ?? new ConflictGracefulEnd(null)).End, ConflictKiller.AnyProcessRunning, null, gates, null)
     {
     }
 
@@ -92,8 +94,10 @@ public sealed class ConflictStartupShutdown : IHostedService
         Func<ConflictAppDefinition, bool> stillRunning,
         Func<long>? clockMs = null,
         Nexus.Service.Lifecycle.FeatureGates? gates = null,
-        Func<WindowsDynamicLightingState?>? dynamicLightingOff = null)
+        Func<WindowsDynamicLightingState?>? dynamicLightingOff = null,
+        Func<ConflictAppDefinition, bool>? backOffRunning = null)
     {
+        _backOffRunning = backOffRunning ?? (def => ConflictKiller.AnyBackOffOnlyRunning(def, ConflictSignerGate.Default));
         _dynamicLightingOff = dynamicLightingOff ?? DefaultDynamicLightingOff;
         _gates = gates ?? Nexus.Service.Lifecycle.FeatureGates.AllEnabled;
         _store = store;
@@ -224,11 +228,15 @@ public sealed class ConflictStartupShutdown : IHostedService
     /// <summary>Ends every detected app not on the whitelist (only <see cref="ConflictAppDefinition.AlwaysEnded"/> ones without <paramref name="sweep"/>) and not already tried under its current pid, then raises <see cref="AppsTerminated"/> for the ones confirmed gone.</summary>
     internal void EndRunningApps(bool sweep = true, bool throttleNotice = false)
     {
-        // The boot sweep and a logon-started window loop can overlap.
-        lock (_attempted) EndRunningAppsLocked(sweep, throttleNotice);
+        // The targets are picked under the lock; the ends run outside it, so a graceful wait
+        // does not hold up the other tick. A pid already in _attempted is never picked twice.
+        List<ConflictAppDefinition> targets;
+        lock (_attempted) targets = PickTargetsLocked(sweep, throttleNotice);
+        if (targets.Count == 0) return;
+        EndTargets(targets, throttleNotice);
     }
 
-    private void EndRunningAppsLocked(bool sweep, bool throttleNotice)
+    private List<ConflictAppDefinition> PickTargetsLocked(bool sweep, bool throttleNotice)
     {
         // The "before" set is captured up front, for every target, and the
         // outcome is read from it afterwards. Per-app Killed flags undercount:
@@ -250,8 +258,10 @@ public sealed class ConflictStartupShutdown : IHostedService
         foreach (var detected in detectedNow)
         {
             var def = ConflictWatcher.FindById(detected.Id);
-            if (def is null) continue;
+            if (def is null || detected.BackOffOnly) continue;
             if (!def.AlwaysEnded && (!sweep || excluded.Contains(detected.Id))) continue;
+            // Not marked as tried: the app is ended once the installer is gone.
+            if (def.BackOffOnlyProcessNames.Length > 0 && _backOffRunning(def)) continue;
             var key = $"{detected.Id}:{detected.Pid}";
             if (throttleNotice) _endTriedAtMs.TryAdd(key, now);
             if (!_attempted.Add(key))
@@ -267,8 +277,12 @@ public sealed class ConflictStartupShutdown : IHostedService
             try { AppSurvived?.Invoke(app); }
             catch (Exception ex) { _log.LogWarning(ex, "Conflict survivor notification failed."); }
         }
-        if (targets.Count == 0) return;
+        // Apps that end at once go first, so one that waits for a graceful close does not delay them.
+        return targets.OrderBy(d => d.GracefulProcessNames.Length > 0 ? 1 : 0).ToList();
+    }
 
+    private void EndTargets(List<ConflictAppDefinition> targets, bool throttleNotice)
+    {
         foreach (var def in targets)
         {
             try { _kill(def); }
@@ -316,9 +330,12 @@ public sealed class ConflictStartupShutdown : IHostedService
     private bool NoticeDue(string appId)
     {
         var now = _clockMs();
-        if (_lastNoticeMs.TryGetValue(appId, out var last) && now - last < (long)ConflictLaunchTracker.Cooldown.TotalMilliseconds) return false;
-        _lastNoticeMs[appId] = now;
-        return true;
+        lock (_lastNoticeMs)
+        {
+            if (_lastNoticeMs.TryGetValue(appId, out var last) && now - last < (long)ConflictLaunchTracker.Cooldown.TotalMilliseconds) return false;
+            _lastNoticeMs[appId] = now;
+            return true;
+        }
     }
 
     private static WindowsDynamicLightingState? DefaultDynamicLightingOff() =>

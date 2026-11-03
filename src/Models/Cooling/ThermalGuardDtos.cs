@@ -64,6 +64,8 @@ public sealed class ThermalGuardResponse : ApiResponse
     public bool WatchdogLatched { get; set; }
     /// <summary>True when the latch clears itself after steady ticks; false when only a restart or a guard toggle clears it.</summary>
     public bool WatchdogResumes { get; set; } = true;
+    /// <summary>True while full-speed cooling mode is active (watchdog latch, guard trip or escalation) and POST /cooling/guard/restore would end it.</summary>
+    public bool RestoreAvailable { get; set; }
     /// <summary>Whether the cooling page flags fans that can stop while the CPU is hot.</summary>
     public bool LintWarnings { get; set; } = true;
     /// <summary>Fans in the saved config that can stop while the CPU is hot; empty while LintWarnings is off.</summary>

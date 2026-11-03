@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using Nexus.Service.Lighting.Rgb;
 using Nexus.Service.Persistence;
 
@@ -324,6 +327,108 @@ public class OpenRgbDetectorExclusionsTests
         var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, new Dictionary<string, string>());
 
         Assert.True(delta.IsEmpty);
+    }
+
+    private static RgbDevice Chakram()
+    {
+        var d = Dimm();
+        d.Name = "ASUS ROG Chakram X USB";
+        return d;
+    }
+
+    private static NexusSettings ChakramSettings(string deviceName)
+    {
+        var chakram = Chakram();
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(chakram.StableId);
+        settings.Devices.OpenRgbDetectorExclusions[chakram.StableId] = new OpenRgbDetectorExclusion
+        {
+            DetectorName = "Asus ROG Chakram X USB",
+            DeviceName = deviceName,
+        };
+        return settings;
+    }
+
+    private static readonly Dictionary<string, string> ChakramMap = new() { ["ASUS ROG Chakram X USB"] = "ASUS ROG Chakram X USB" };
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Asus ROG Chakram X USB")]
+    public void A_stored_detector_the_fork_no_longer_registers_takes_the_live_names(string storedDeviceName)
+    {
+        var registered = new HashSet<string> { "ASUS ROG Chakram X USB", "Other Detector" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Chakram() }, ChakramSettings(storedDeviceName), ChakramMap, registered);
+
+        var add = Assert.Single(delta.Add);
+        Assert.Equal(Chakram().StableId, add.Key);
+        Assert.Equal("ASUS ROG Chakram X USB", add.Value.DetectorName);
+        Assert.Equal("ASUS ROG Chakram X USB", add.Value.DeviceName);
+        Assert.Empty(delta.Remove);
+    }
+
+    [Fact]
+    public void Two_registered_detectors_for_one_device_never_flip_the_stored_detector()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Detector X", DeviceName = "Corsair Vengeance RGB DDR5" };
+        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Detector Y" };
+        var registered = new HashSet<string> { "Detector X", "Detector Y" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map, registered);
+
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Fact]
+    public void A_swap_at_the_same_location_keeps_the_exclusion_while_its_detector_is_registered()
+    {
+        var settings = new NexusSettings();
+        settings.Devices.UncontrolledLightingDevices.Add(Dimm().StableId);
+        settings.Devices.OpenRgbDetectorExclusions[Dimm().StableId] = new OpenRgbDetectorExclusion { DetectorName = "Old Hardware Detector", DeviceName = "Old Hardware" };
+        var map = new Dictionary<string, string> { ["Corsair Vengeance RGB DDR5"] = "Corsair DRAM" };
+        var registered = new HashSet<string> { "Old Hardware Detector", "Corsair DRAM" };
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Dimm() }, settings, map, registered);
+
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void An_unknown_registered_set_heals_nothing(bool empty)
+    {
+        IReadOnlyCollection<string>? registered = empty ? new HashSet<string>() : null;
+
+        var delta = OpenRgbDetectorExclusions.Compute(new[] { Chakram() }, ChakramSettings(""), ChakramMap, registered);
+
+        Assert.True(delta.IsEmpty);
+    }
+
+    [Fact]
+    public void Registered_detectors_are_the_keys_of_the_openrgb_config_detectors_section()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "nexus-regdet-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            Assert.Null(OpenRgbDetectorExclusions.LoadRegisteredDetectors(dir));
+
+            File.WriteAllText(Path.Combine(dir, "OpenRGB.json"), """{"Detectors":{"detectors":{}}}""");
+            Assert.Null(OpenRgbDetectorExclusions.LoadRegisteredDetectors(dir));
+
+            File.WriteAllText(Path.Combine(dir, "OpenRGB.json"), """{"Detectors":{"detectors":{"A":true,"B":false}}}""");
+            Assert.Equal(new[] { "A", "B" }, OpenRgbDetectorExclusions.LoadRegisteredDetectors(dir)!.OrderBy(x => x));
+
+            File.WriteAllText(Path.Combine(dir, "OpenRGB.json"), "{ torn");
+            Assert.Null(OpenRgbDetectorExclusions.LoadRegisteredDetectors(dir));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]

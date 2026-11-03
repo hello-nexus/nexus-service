@@ -216,12 +216,52 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
     {
         var source = Route(channelId);
         Run(source, "a fan release", () => source.ReleaseFan(channelId),
-            gate => (gate.ReleasesMissed ??= new HashSet<string>(StringComparer.Ordinal)).Add(channelId));
+            gate =>
+            {
+                gate.FullDriveMissed?.Remove(channelId);
+                (gate.ReleasesMissed ??= new HashSet<string>(StringComparer.Ordinal)).Add(channelId);
+            });
     }
 
     // Every provider is attempted: one that throws must not leave the others holding a
     // Nexus duty. The first failure is logged and nothing is rethrown.
-    public void ReleaseAll()
+    public void ReleaseAll() => ReleaseEverything(keepDrivenPorts: false);
+
+    public void ReleaseAllKeepingDrivenPorts() => ReleaseEverything(keepDrivenPorts: true);
+
+    // Cooling mode. Hubs and USB coolers are written first, each off-thread under CallBudget, so a
+    // stalled motherboard path (whose calls run on this thread) can never keep them waiting.
+    public void DriveFansToFull(IReadOnlyList<string> channelIds)
+    {
+        var bySource = new Dictionary<IFanControlProvider, List<string>>();
+        foreach (var id in channelIds)
+        {
+            if (IsUncontrolled(id)) continue;
+            var source = Route(id);
+            if (!bySource.TryGetValue(source, out var ids)) bySource[source] = ids = new List<string>();
+            ids.Add(id);
+        }
+        foreach (var (source, ids) in bySource)
+        {
+            if (ReferenceEquals(source, _motherboard)) continue;
+            try
+            {
+                Run(source, "a cooling-mode write", () => source.DriveFansToFull(ids),
+                    gate => (gate.FullDriveMissed ??= new HashSet<string>(StringComparer.Ordinal)).UnionWith(ids));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[cooling] cooling-mode write to {source.GetType().Name} failed: {ex.Message}");
+            }
+        }
+        if (bySource.TryGetValue(_motherboard, out var boardIds))
+        {
+            try { _motherboard.DriveFansToFull(boardIds); }
+            catch (Exception ex) { Console.Error.WriteLine($"[cooling] cooling-mode write to the motherboard fans failed: {ex.Message}"); }
+        }
+    }
+
+    private void ReleaseEverything(bool keepDrivenPorts)
     {
         var failureLogged = false;
         void Attempt(string what, Action release)
@@ -236,7 +276,7 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
                 }
             }
         }
-        Attempt("the motherboard fans", _motherboard.ReleaseAll);
+        Attempt("the motherboard fans", keepDrivenPorts ? _motherboard.ReleaseAllKeepingDrivenPorts : _motherboard.ReleaseAll);
         List<IFanControlProvider> sources;
         try { sources = GatedSources().ToList(); }
         catch (Exception ex)
@@ -245,7 +285,17 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
             return;
         }
         foreach (var source in sources)
-            Attempt(source.GetType().Name, () => Run(source, "a release", source.ReleaseAll, gate => gate.ReleaseAllMissed = true));
+        {
+            Attempt(source.GetType().Name, () => Run(source, "a release",
+                keepDrivenPorts ? source.ReleaseAllKeepingDrivenPorts : source.ReleaseAll,
+                gate =>
+                {
+                    gate.FullDriveMissed = null;
+                    // A full release already skipped is the stronger intent.
+                    if (!keepDrivenPorts) gate.ReleaseAllMissed = ReleaseAllKinds.Full;
+                    else if (gate.ReleaseAllMissed == ReleaseAllKinds.None) gate.ReleaseAllMissed = ReleaseAllKinds.KeepingPorts;
+                }));
+        }
     }
 
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
@@ -304,12 +354,19 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
         public readonly object Lock = new();
         public int Overruns;
         public bool Replaying;
-        public bool ReleaseAllMissed;
+        public ReleaseAllKinds ReleaseAllMissed;
         public HashSet<string>? ReleasesMissed;
+        public HashSet<string>? FullDriveMissed;
     }
 
+    private enum ReleaseAllKinds { None, KeepingPorts, Full }
+
     // A write skipped after a skipped release is the later intent; the engine re-drives it on recovery.
-    private static void SupersedeRelease(SourceGate gate, string channelId) => gate.ReleasesMissed?.Remove(channelId);
+    private static void SupersedeRelease(SourceGate gate, string channelId)
+    {
+        gate.ReleasesMissed?.Remove(channelId);
+        gate.FullDriveMissed?.Remove(channelId);
+    }
 
     private IEnumerable<IFanControlProvider> GatedSources()
     {
@@ -369,15 +426,18 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
         Console.Error.WriteLine($"[cooling] {name} answered again after {(Environment.TickCount64 - startedMs) / 1000.0:0.0} s");
         while (true)
         {
-            bool all;
+            ReleaseAllKinds all;
             HashSet<string>? ids;
+            HashSet<string>? full;
             lock (gate.Lock)
             {
                 all = gate.ReleaseAllMissed;
                 ids = gate.ReleasesMissed;
-                gate.ReleaseAllMissed = false;
+                full = gate.FullDriveMissed;
+                gate.ReleaseAllMissed = ReleaseAllKinds.None;
                 gate.ReleasesMissed = null;
-                if (!all && ids is null)
+                gate.FullDriveMissed = null;
+                if (all == ReleaseAllKinds.None && ids is null && full is null)
                 {
                     gate.Replaying = false;
                     return;
@@ -385,14 +445,20 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
             }
             try
             {
-                if (all)
+                if (all == ReleaseAllKinds.Full)
                     source.ReleaseAll();
-                else
-                    foreach (var id in ids!) source.ReleaseFan(id);
+                else if (all == ReleaseAllKinds.KeepingPorts)
+                    source.ReleaseAllKeepingDrivenPorts();
+                if (ids is not null && all != ReleaseAllKinds.Full)
+                {
+                    foreach (var id in ids) source.ReleaseFan(id);
+                }
+                if (full is not null)
+                    source.DriveFansToFull(full.ToList());
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[cooling] {name} missed release replay failed: {ex.Message}");
+                Console.Error.WriteLine($"[cooling] {name} missed replay failed: {ex.Message}");
             }
         }
     }

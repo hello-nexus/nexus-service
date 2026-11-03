@@ -58,6 +58,21 @@ public static class CorsairLinkProtocol
     public static ReadOnlySpan<byte> CmdGetFirmware => new byte[] { 0x02, 0x13 };
     public static ReadOnlySpan<byte> CmdSoftwareMode => new byte[] { 0x01, 0x03, 0x00, 0x02 };
     public static ReadOnlySpan<byte> CmdHardwareMode => new byte[] { 0x01, 0x03, 0x00, 0x01 };
+    // Takeover and hand-back housekeeping: 02 03 00 reads the current mode (payload
+    // ModeHardware or ModeSoftware), 09 <h> probes handle h (status 00 = open, 03 = not
+    // open), 05 01 <h> closes it.
+    public static ReadOnlySpan<byte> CmdGetMode => new byte[] { 0x02, 0x03, 0x00 };
+    public static ReadOnlySpan<byte> CmdProbeHandle => new byte[] { 0x09 };
+    public static ReadOnlySpan<byte> CmdCloseHandle => new byte[] { 0x05, 0x01 };
+    public const byte ModeHardware = 0x01;
+    public const byte ModeSoftware = 0x02;
+    /// <summary>Handles 0..2 are the ones a previous host can leave open.</summary>
+    public const int TakeoverHandleCount = 3;
+    /// <summary>Hardware-mode dwell of the takeover cycle, as measured between the hardware and the second software mode command in a capture of another host's takeover.</summary>
+    public const int ModeCycleWaitMs = 11_000;
+    /// <summary>Reads of the mode property, spaced <see cref="ModeVerifyStepMs"/>, before a mode change counts as not applied.</summary>
+    public const int ModeVerifyTries = 10;
+    public const int ModeVerifyStepMs = 50;
     public static ReadOnlySpan<byte> CmdOpenEndpoint => new byte[] { 0x0D, 0x01 };
     public static ReadOnlySpan<byte> CmdOpenColorEndpoint => new byte[] { 0x0D, 0x00 };
     public static ReadOnlySpan<byte> CmdCloseEndpoint => new byte[] { 0x05, 0x01, 0x01 };
@@ -104,9 +119,6 @@ public static class CorsairLinkProtocol
 
     /// <summary>Re-reads to drain stale queued responses until the data-type matches.</summary>
     public const int ReadResyncTries = 5;
-
-    /// <summary>Firmware needs this settle after entering software mode before any other command.</summary>
-    public const int SoftwareModeSettleMs = 500;
 
     /// <summary>A daisy-chained device discovered by <see cref="ParseDevices"/>.</summary>
     public readonly struct DiscoveredDevice

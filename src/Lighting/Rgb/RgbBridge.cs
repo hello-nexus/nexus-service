@@ -1876,8 +1876,9 @@ public sealed class RgbBridge : IDisposable
         {
             // Reloaded per reconcile: the daemon rewrites the map whenever its
             // device list changes, including after this pass started.
-            var detectorMap = OpenRgbDetectorMap.Load(OpenRgbProcessManager.ResolveConfigDir());
-            delta = OpenRgbDetectorExclusions.Compute(settledList, settingsSnapshot, detectorMap);
+            var configDir = OpenRgbProcessManager.ResolveConfigDir();
+            var detectorMap = OpenRgbDetectorMap.Load(configDir);
+            delta = OpenRgbDetectorExclusions.Compute(settledList, settingsSnapshot, detectorMap, OpenRgbDetectorExclusions.LoadRegisteredDetectors(configDir));
         }
         catch (Exception ex)
         {

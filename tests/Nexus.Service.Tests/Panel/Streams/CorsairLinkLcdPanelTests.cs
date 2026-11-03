@@ -16,7 +16,7 @@ public class CorsairLinkLcdPanelTests
     [Fact]
     public void Discover_reports_nothing_until_hub_and_lcd_are_both_up()
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         var (lcd, _) = AttachLcd();
         var hubs = new CorsairLinkHubs();
         hubs.Add(hub);
@@ -35,7 +35,7 @@ public class CorsairLinkLcdPanelTests
     [Fact]
     public void Discover_offers_a_480_round_panel_keyed_by_the_lcd_serial()
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         hub.State.IsConnected = true;
         hub.State.HasLcd = true;
         var (lcd, _) = AttachLcd();

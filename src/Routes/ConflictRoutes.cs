@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 using Nexus.Service.Auth;
 using Nexus.Service.Conflicts;
 using Nexus.Service.Models.Conflicts;
@@ -188,7 +189,7 @@ public static class ConflictRoutes
         // caller-supplied process/service name - the SPA only sends a catalog
         // id, and we resolve it to the names we have already vetted in
         // ConflictAppCatalog.
-        app.MapPost("/conflicts/kill", (KillConflictBody body, ConflictWatcher watcher, HttpContext http) =>
+        app.MapPost("/conflicts/kill", async (KillConflictBody body, ConflictWatcher watcher, ConflictGracefulEnd ender, HttpContext http) =>
         {
             var def = ConflictWatcher.FindById(body?.Id ?? "");
             // The setting entry writes the console user's registry, so it is loopback only like /conflicts/dynamic-lighting.
@@ -205,7 +206,13 @@ public static class ConflictRoutes
             // Measured, not inferred: ProcessKiller.Kill reports that it FOUND
             // processes, its own Kill being swallowed, and StopService counts an
             // already-stopped service as success.
-            var outcome = ConflictKiller.Kill(def);
+            if (!def.IsSetting && ConflictKiller.AnyBackOffOnlyRunning(def, ConflictSignerGate.Default))
+            {
+                return Results.Ok(new KillConflictResponse { Error = true, Msg = "An installer is running" });
+            }
+
+            // A graceful close can wait seconds, so it runs off the request thread.
+            var outcome = await Task.Run(() => ender.EndWithOutcome(def));
             ServiceLog.Info($"[conflicts] end task: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
             // The list is rescanned now so a surface refetching after the write sees the new state, not the last scan's.
             if (def.IsSetting) watcher.PillarsChanged();

@@ -152,7 +152,6 @@ public sealed class SystemPreviewRoutesTests : IClassFixture<SystemPreviewAppFac
     }
 
     [Theory]
-    [InlineData("")]
     [InlineData("?caseId=")]
     [InlineData("?caseId=has%20space")]
     [InlineData("?caseId=a%2Fb")]
@@ -161,6 +160,35 @@ public sealed class SystemPreviewRoutesTests : IClassFixture<SystemPreviewAppFac
         var res = await Desktop().PutAsync("/system/preview" + query, Body(Png()));
 
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_preview_with_no_case_round_trips_while_no_case_is_set_and_goes_away_when_one_is_chosen()
+    {
+        var client = Desktop();
+        _factory.Services.GetRequiredService<MachineCaseStore>().Save(null, pending: false);
+        var png = Png(40);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync("/system/preview", Body(png))).StatusCode);
+        var get = await client.GetAsync("/system/preview");
+        Assert.Equal(HttpStatusCode.OK, get.StatusCode);
+        Assert.Equal(png, await get.Content.ReadAsByteArrayAsync());
+
+        _factory.Services.GetRequiredService<MachineCaseStore>().Save("case-a", pending: false);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/system/preview")).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_cased_preview_is_not_served_once_the_case_is_cleared_and_a_no_case_one_is_not_served_for_a_case()
+    {
+        var client = Desktop();
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync("/system/preview?caseId=case-a", Body(Png()))).StatusCode);
+        _factory.Services.GetRequiredService<MachineCaseStore>().Save(null, pending: false);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/system/preview")).StatusCode);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync("/system/preview", Body(Png(48)))).StatusCode);
+        _factory.Services.GetRequiredService<MachineCaseStore>().Save("case-a", pending: false);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/system/preview")).StatusCode);
     }
 
     [Fact]
@@ -219,7 +247,7 @@ public sealed class SystemPreviewRoutesTests : IClassFixture<SystemPreviewAppFac
         var layout = Nexus.Service.Panel.PanelLayoutDefaults.ForSurface("desktop");
         var widgets = layout.Pages[0].Widgets;
 
-        Assert.Contains(widgets, w => w.Type == "build" && w.Size == "2x2" && w.Col == 4 && w.Row == 0);
+        Assert.Contains(widgets, w => w.Type == "build" && w.Size == "4x2" && w.Col == 4 && w.Row == 0);
         Assert.Contains(widgets, w => w.Type == "diagnostics" && w.Size == "2x2" && w.Col == 4 && w.Row == 2);
         Assert.Contains(widgets, w => w.Type == "weather" && w.Size == "2x2" && w.Col == 4 && w.Row == 4);
     }
