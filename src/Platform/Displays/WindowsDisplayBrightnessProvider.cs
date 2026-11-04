@@ -249,8 +249,8 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                 // Only a successful probe is cached. A failure is transient far
                 // more often than it is real - a monitor still waking, bus
                 // contention - and caching it would pin the display to "no
-                // brightness control" until the attached set changes, where
-                // before the next poll simply retried.
+                // brightness control" until the attached set changes. Failures are
+                // tracked separately in _negativeProbes, which throttles re-probing.
                 if (dto.IsDdcCapable)
                 {
                     StoreCaps(dto);
