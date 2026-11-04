@@ -82,6 +82,26 @@ public class SupportBundleReviewTests : IDisposable
         Assert.Equal(expected, new BundleRedactor(Array.Empty<string>(), "pc-1").Apply(input));
     }
 
+    [Theory]
+    [InlineData("C:/Users/John Smith/AppData", "C:/Users/<user>/AppData")]
+    [InlineData("GET /api/users/42/profile", "GET /api/users/42/profile")]
+    [InlineData("https://example.com/users/settings", "https://example.com/users/settings")]
+    [InlineData("/Volumes/Macintosh HD/Users/bob/x", "/Volumes/Macintosh HD/Users/<user>/x")]
+    public void Forward_slash_users_paths_keep_spaces_on_drive_forms_and_routes_are_left_alone(string input, string expected)
+    {
+        Assert.Equal(expected, new BundleRedactor(Array.Empty<string>(), "pc-1").Apply(input));
+    }
+
+    [Theory]
+    [InlineData(@"AzureAD\Owner logged in", @"AzureAD\<user> logged in")]
+    [InlineData(@"MicrosoftAccount\Owner", @"MicrosoftAccount\<user>")]
+    [InlineData(@"WORKGROUP\Owner", @"WORKGROUP\<user>")]
+    [InlineData(@"Chrome\Owner Data", @"Chrome\Owner Data")]
+    public void Fixed_logon_domains_carry_word_like_account_names(string input, string expected)
+    {
+        Assert.Equal(expected, new BundleRedactor(Array.Empty<string>(), "TITAN", null, new[] { "Owner" }).Apply(input));
+    }
+
     [Fact]
     public void Brand_like_account_names_do_not_corrupt_diagnostics()
     {

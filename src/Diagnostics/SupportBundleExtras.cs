@@ -29,7 +29,8 @@ public sealed class BundleRedactor
     {
         var hosts = new[] { machineName }.Concat(otherHostNames ?? Array.Empty<string>())
             .Where(h => h.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(h => h.Length).ToList();
-        var hostAlternation = string.Join("|", hosts.Select(Regex.Escape));
+        // AzureAD\\name and MicrosoftAccount\\name are how Windows prints Entra and Microsoft-account logons; WORKGROUP is the default domain of an unjoined PC.
+        var hostAlternation = string.Join("|", hosts.Select(Regex.Escape).Concat(new[] { "AzureAD", "MicrosoftAccount", "WORKGROUP" }));
         foreach (var account in (accountNames ?? Array.Empty<string>()).Where(a => a.Length >= 3).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             foreach (var name in new[] { account, JsonEncodedText.Encode(account).ToString() }.Distinct())
@@ -47,7 +48,7 @@ public sealed class BundleRedactor
                 // matches only where a logon is printed, in its real case: after "as " or "user=", as an identity JSON value, or as HOST\name for a known host.
                 _rules.Add((new Regex(@"(?<= as )" + escaped + @"(?![\w\-])|(?<=user=)" + escaped + @"(?![\w\-])"
                     + @"|(?<=""(?i:user|userName|username|account|accountName|owner|login|logonUser)""\s*:\s*"")" + escaped + @"(?="")"
-                    + (hosts.Count > 0 ? @"|(?<=(?<![\w.\-])(?i:" + hostAlternation + @")\\{1,2})" + escaped + @"(?![\w\-\\/])" : ""),
+                    + @"|(?<=(?<![\w.\-])(?i:" + hostAlternation + @")\\{1,2})" + escaped + @"(?![\w\-\\/])",
                     RegexOptions.CultureInvariant), "<user>"));
             }
         }
@@ -278,8 +279,8 @@ public static class SupportBundleExtras
 
     internal static readonly string[] MacLaunchdLogPaths = { LaunchdStdoutPath, LaunchdStderrPath };
 
-    /// <summary>The root system unit installer/linux/install.sh installs; LinuxStartupProvider.UnitName is the same string, but that file is Linux-only.</summary>
-    internal const string JournalUnitName = "nexus.service";
+    /// <summary>The root system unit installer/linux/install.sh installs.</summary>
+    internal const string JournalUnitName = Lifecycle.SystemdUnit.NexusUnitName;
 
     /// <summary>The adopted session user's home on a Linux root daemon; null elsewhere (LinuxSession is compiled only into Linux builds).</summary>
     internal static string? LinuxSessionHome()
