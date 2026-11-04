@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Nexus.Service.Models.Sensors;
+using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Deck;
 
@@ -88,47 +89,49 @@ internal static partial class DeckMonitoringFormat
 
     /// <summary>
     /// Value text for a resolved sensor, mirroring formatSensorValue: a
-    /// Celsius temperature converts to Fahrenheit (keeping the source
-    /// string's decimal precision) when tempUnit is "f", auto-scales a
+    /// Celsius temperature converts to Fahrenheit when tempUnit is "f",
+    /// every per-type decimal count comes from <see cref="MonitoringDecimals"/> (wholeNumbers
+    /// is the monitoringWholeNumbers preference), auto-scales a
     /// byte-based Units reading along the B/KB/MB/GB/TB/PB ladder (mirroring
     /// formatScaledDataValue), or falls back to the service's own formatted
     /// string for any other unit (percent, clock, RPM, ...). The result is
     /// then re-separated to numberFormat, mirroring localizeNumbers.
     /// </summary>
-    internal static string ResolveValueText(HardwareSensor sensor, string? tempUnit, string? numberFormat)
+    internal static string ResolveValueText(HardwareSensor sensor, string? tempUnit, string? numberFormat, bool wholeNumbers = false)
     {
         if (string.Equals(tempUnit, "f", StringComparison.OrdinalIgnoreCase) && IsCelsiusUnit(sensor.Units))
         {
-            var decimals = CountFractionDigits(sensor.Formatted);
             var fahrenheit = sensor.Value * 9f / 5f + 32f;
-            return LocalizeNumbers($"{Fixed(fahrenheit, decimals)} °F", numberFormat);
+            var number = MonitoringDecimals.FormatNumber(fahrenheit, "Temperature", wholeNumbers);
+            if (number is not null)
+            {
+                return LocalizeNumbers($"{number} °F", numberFormat);
+            }
         }
-        return LocalizeNumbers(FormatScaledDataValue(sensor.Value, sensor.Units) ?? sensor.Formatted, numberFormat);
+        if (FormatScaledDataValue(sensor.Value, sensor.Units) is { } scaled)
+        {
+            return LocalizeNumbers(scaled, numberFormat);
+        }
+        return LocalizeNumbers(ApplyDecimals(sensor, wholeNumbers), numberFormat);
+    }
+
+    /// <summary>
+    /// Swaps the number in the provider's formatted string for the shared per-type rule's
+    /// text, keeping the provider's own spacing and unit. Types the rule does not cover, or a
+    /// formatted string with no number, pass through unchanged.
+    /// </summary>
+    private static string ApplyDecimals(HardwareSensor sensor, bool wholeNumbers)
+    {
+        var number = MonitoringDecimals.FormatNumber(sensor.Value, sensor.Type, wholeNumbers);
+        var match = NumberTokenRegex().Match(sensor.Formatted);
+        return number is null || !match.Success
+            ? sensor.Formatted
+            : string.Concat(sensor.Formatted.AsSpan(0, match.Index), number, sensor.Formatted.AsSpan(match.Index + match.Length));
     }
 
     /// <summary>Mirrors isCelsiusUnit: strips a degree sign and trims before the case-insensitive "C" compare.</summary>
     private static bool IsCelsiusUnit(string units) =>
         string.Equals(units.Replace("°", "").Trim(), "C", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>Mirrors formatted.match(/\.(\d+)/) digit-count: the source string's own decimal precision, or 0 when it has none.</summary>
-    private static int CountFractionDigits(string formatted)
-    {
-        var dot = formatted.IndexOf('.');
-        if (dot < 0)
-        {
-            return 0;
-        }
-        var count = 0;
-        for (var i = dot + 1; i < formatted.Length && char.IsDigit(formatted[i]); i++)
-        {
-            count++;
-        }
-        return count;
-    }
-
-    // Away-from-zero matches JS toFixed; banker's rounding would diverge on ties.
-    private static string Fixed(float value, int decimals) =>
-        Math.Round((double)value, decimals, MidpointRounding.AwayFromZero).ToString("F" + decimals, CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Mirrors localizeNumbers's separator swap for the "comma" number format

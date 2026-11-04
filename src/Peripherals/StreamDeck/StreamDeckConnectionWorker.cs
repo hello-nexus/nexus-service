@@ -2144,6 +2144,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         var settings = snapshot.StreamDeck;
         var tempUnit = snapshot.Units.MonitoringTempUnit;
         var numberFormat = snapshot.Units.NumberFormat;
+        var wholeNumbers = snapshot.Units.MonitoringWholeNumbers == true;
         var visible = new List<MonitoringKeyRef>();
 
         foreach (var surface in _surfaces.Values)
@@ -2228,7 +2229,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         for (var i = 0; i < pushCount; i++)
         {
             var idx = (_monitoringRoundRobinCursor + i) % visible.Count;
-            PushMonitoringKey(visible[idx], sampled[idx], tempUnit, numberFormat);
+            PushMonitoringKey(visible[idx], sampled[idx], tempUnit, numberFormat, wholeNumbers);
         }
         _monitoringRoundRobinCursor = (_monitoringRoundRobinCursor + pushCount) % visible.Count;
     }
@@ -2346,7 +2347,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     /// web side. Shared by the pass-1 placeholder (sensor null) and the real
     /// render.
     /// </summary>
-    private MonitoringTileInput BuildMonitoringTileInput(MonitoringKeyRef key, HardwareSensor? sensor, string tempUnit, string numberFormat)
+    private MonitoringTileInput BuildMonitoringTileInput(MonitoringKeyRef key, HardwareSensor? sensor, string tempUnit, string numberFormat, bool wholeNumbers)
     {
         var action = key.Slot.Action!;
         string name;
@@ -2372,7 +2373,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
                 historyForRender.Add(MathF.Round(sample, 1));
             }
             name = DeckMonitoringFormat.ResolveLabel(action.Category, sensor.Name);
-            valueText = DeckMonitoringFormat.ResolveValueText(sensor, tempUnit, numberFormat);
+            valueText = DeckMonitoringFormat.ResolveValueText(sensor, tempUnit, numberFormat, wholeNumbers);
             sensorType = sensor.Type;
         }
 
@@ -2436,13 +2437,13 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     /// the same placeholder frame on streamdeckTiles when subscribed, since
     /// it is what the hardware shows during pass 1 of a navigation.
     /// </summary>
-    private void PushMonitoringPlaceholder(MonitoringKeyRef key, string tempUnit, string numberFormat)
+    private void PushMonitoringPlaceholder(MonitoringKeyRef key, string tempUnit, string numberFormat, bool wholeNumbers)
     {
         if (IsKeyHeld(key.Surface.Serial, key.KeyIndex))
         {
             return;
         }
-        var input = BuildMonitoringTileInput(key, sensor: null, tempUnit, numberFormat);
+        var input = BuildMonitoringTileInput(key, sensor: null, tempUnit, numberFormat, wholeNumbers);
         var (rendered, wireBytes) = RenderMonitoringTile(input, key.Surface.Model, key.Orientation);
         using (rendered)
         {
@@ -2479,14 +2480,14 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
     /// same pixels; ForceMonitoringKeyRefresh drops the last-pushed HID hash
     /// on release so the next tick repaints it regardless.
     /// </summary>
-    private void PushMonitoringKey(MonitoringKeyRef key, HardwareSensor? sensor, string tempUnit, string numberFormat)
+    private void PushMonitoringKey(MonitoringKeyRef key, HardwareSensor? sensor, string tempUnit, string numberFormat, bool wholeNumbers)
     {
         if (IsKeyHeld(key.Surface.Serial, key.KeyIndex))
         {
             return;
         }
 
-        var input = BuildMonitoringTileInput(key, sensor, tempUnit, numberFormat);
+        var input = BuildMonitoringTileInput(key, sensor, tempUnit, numberFormat, wholeNumbers);
         var (rendered, wireBytes) = RenderMonitoringTile(input, key.Surface.Model, key.Orientation);
         using (rendered)
         {
@@ -2699,6 +2700,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         var settings = snapshot.StreamDeck;
         var tempUnit = snapshot.Units.MonitoringTempUnit;
         var numberFormat = snapshot.Units.NumberFormat;
+        var wholeNumbers = snapshot.Units.MonitoringWholeNumbers == true;
         settings.Decks.TryGetValue(surface.Serial, out var deck);
         var config = DeckInstanceResolver.ResolveFittedConfig(
             settings, DeckInstanceResolver.PhysicalInstanceId(surface.Serial), surface.Model.Columns, surface.Model.Rows, DeckTargetKind.Physical);
@@ -2756,7 +2758,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
                 var keyRef = new MonitoringKeyRef(surface, key, BuildMonitoringKey(surface.Serial, page, slotPath), slot, deck?.Orientation ?? 0, page, slotPath);
                 if (effectiveViewChanged)
                 {
-                    PushMonitoringPlaceholder(keyRef, tempUnit, numberFormat);
+                    PushMonitoringPlaceholder(keyRef, tempUnit, numberFormat, wholeNumbers);
                 }
                 monitoringKeys.Add(keyRef);
                 continue;
@@ -2804,7 +2806,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         foreach (var keyRef in monitoringKeys)
         {
             var sensor = SampleMonitoringHistory(keyRef, sources);
-            PushMonitoringKey(keyRef, sensor, tempUnit, numberFormat);
+            PushMonitoringKey(keyRef, sensor, tempUnit, numberFormat, wholeNumbers);
             _monitoringPaintedThisTick.Add(keyRef.HistoryKey);
         }
 

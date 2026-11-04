@@ -648,6 +648,9 @@ public sealed class MacSensorProvider : ISensorProvider, IDisposable
             "Data" or "SmallData" => $"{value:F2} {units}",
             "Clock" or "Frequency" => $"{value:F0} {units}",
             "Temperature" => $"{value:F1} {units}",
+            // Same dp and spaced unit as the LHM path (LibreHardwareSensorProvider.FormatValue).
+            "Voltage" or "Current" => $"{value:F3} {units}",
+            "Power" => $"{value:F1} {units}",
             _ => value > 0 ? $"{value:F0}" : "",
         };
         return new HardwareSensor

@@ -133,7 +133,7 @@ public sealed class GlacialLcdWorker : BackgroundService
         var screen = new GlacialLcdScreen(
             hid,
             ReadSettings,
-            (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index, GlacialLcdSensors.Gather(_sensors, slot.Category ?? "", _fps, FanHeaderNames)),
+            (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index, GlacialLcdSensors.Gather(_sensors, slot.Category ?? "", _fps, FanHeaderNames), _store.Load().Units.MonitoringWholeNumbers == true),
             _confirmed,
             Seed,
             message => Log(message, error: false),

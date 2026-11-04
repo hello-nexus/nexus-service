@@ -1659,7 +1659,7 @@ public sealed class TryxPanoramaHub : IDisposable
         var sensor = device == "fps"
             ? FindById(_fps.GetComponent().Sensors, sensorId)
             : SensorSnapshotResolver.Resolve(_sensors, device, sensorId, sources);
-        return sensor is null ? "--" : FormatSensorValue(sensor);
+        return sensor is null ? "--" : FormatSensorValue(sensor, _configStore.Load().Units.MonitoringWholeNumbers == true);
     }
 
     private static HardwareSensor? FindById(IReadOnlyList<HardwareSensor> sensors, string id)
@@ -1681,21 +1681,29 @@ public sealed class TryxPanoramaHub : IDisposable
     // units, not interchangeable formatting of the same magnitude. Framerate/FrameTime
     // come from IFpsProvider, not LHM; the web Tryx overlay picker formats "fps"
     // sensors identically, so these two cases must match it exactly.
-    private static string FormatSensorValue(HardwareSensor sensor) => sensor.Type switch
+    internal static string FormatSensorValue(HardwareSensor sensor, bool wholeNumbers = false)
     {
-        "Temperature" => $"{(int)Math.Round(sensor.Value)}°C",
-        "Load" => $"{(int)Math.Round(sensor.Value)}%",
-        "Clock" or "Frequency" => $"{(int)Math.Round(sensor.Value)}MHz",
-        "Voltage" => $"{sensor.Value.ToString("0.00", CultureInfo.InvariantCulture)}V",
-        "Data" => $"{sensor.Value.ToString("0.0", CultureInfo.InvariantCulture)}GB",
-        "SmallData" => $"{(int)Math.Round(sensor.Value)}MB",
-        "Power" => $"{(int)Math.Round(sensor.Value)}W",
-        "Fan" => $"{(int)Math.Round(sensor.Value)}RPM",
-        "Throughput" or "Rate" => FormatThroughput(sensor.Value),
-        "Framerate" => $"{(int)Math.Round(sensor.Value)}fps",
-        "FrameTime" => $"{sensor.Value.ToString("0.0", CultureInfo.InvariantCulture)}ms",
-        _ => sensor.Value.ToString(CultureInfo.InvariantCulture),
-    };
+        var number = MonitoringDecimals.FormatNumber(sensor.Value, sensor.Type, wholeNumbers)
+            ?? sensor.Value.ToString(CultureInfo.InvariantCulture);
+        return sensor.Type switch
+        {
+            "Temperature" => $"{number}°C",
+            "Load" or "Control" or "Level" => $"{number}%",
+            "Clock" or "Frequency" => $"{number}MHz",
+            "Voltage" => $"{number}V",
+            "Current" => $"{number}A",
+            "Data" => $"{sensor.Value.ToString("0.0", CultureInfo.InvariantCulture)}GB",
+            "SmallData" => $"{(int)Math.Round(sensor.Value)}MB",
+            "Power" => $"{number}W",
+            "Flow" => $"{number}L/h",
+            "Noise" => $"{number}dBA",
+            "Fan" => $"{number}RPM",
+            "Throughput" or "Rate" => FormatThroughput(sensor.Value),
+            "Framerate" => $"{number}fps",
+            "FrameTime" => $"{number}ms",
+            _ => sensor.Value.ToString(CultureInfo.InvariantCulture),
+        };
+    }
 
     // LHM Throughput sensors (network up/down) report bytes/sec; appending "MB/s" to the raw
     // value misreads it by orders of magnitude. Scale to the largest fitting unit, matching the

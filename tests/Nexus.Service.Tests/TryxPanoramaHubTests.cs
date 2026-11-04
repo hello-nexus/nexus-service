@@ -401,18 +401,18 @@ public class TryxPanoramaHubTests
         hub.SetOverlay(overlay);
 
         var expected = TryxRkProtocol.BuildOverlay(
-            new[] { new TryxOverlayLine("CPU Temp", "0°C") },
+            new[] { new TryxOverlayLine("CPU Temp", "0.0°C") },
             new[] { (0.03, 0.10) }, colorRgb: 0xFFFFFF, fontName: "monospace", sizePercent: 50, align: "right");
 
         Assert.Equal(expected, Assert.Single(recording.Writes));
     }
 
     [Theory]
-    [InlineData("Temperature", 45f, "45°C")]
-    [InlineData("Load", 18f, "18%")]
+    [InlineData("Temperature", 45f, "45.0°C")]
+    [InlineData("Load", 18f, "18.0%")]
     [InlineData("Clock", 4713f, "4713MHz")]
-    [InlineData("Frequency", 2400f, "2400MHz")]
-    [InlineData("Power", 65f, "65W")]
+    [InlineData("Frequency", 2400f, "2400.0MHz")]
+    [InlineData("Power", 65f, "65.0W")]
     [InlineData("Fan", 1200f, "1200RPM")]
     [InlineData("Framerate", 60f, "60fps")]
     [InlineData("FrameTime", 16.7f, "16.7ms")]
@@ -437,7 +437,7 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
-    public void SetOverlay_formats_voltage_to_two_decimals()
+    public void SetOverlay_formats_voltage_to_three_decimals()
     {
         var recording = new RecordingTransport();
         var sensors = new StubSensors { CpuSensors = [MakeSensor("VCore", "Voltage", 1.2f)] };
@@ -450,7 +450,7 @@ public class TryxPanoramaHubTests
             Items = [new TryxOverlaySensorItem { SensorId = "test/VCore", Device = "cpu", Label = "Stat" }],
         });
 
-        Assert.Contains("1.20V", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
+        Assert.Contains("1.200V", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
     }
 
     [Fact]
@@ -560,7 +560,7 @@ public class TryxPanoramaHubTests
     {
         var sensors = new StubSensors { CpuSensors = [MakeSensor("CPU Total", "Load", 37f)] };
 
-        Assert.Contains("37%", OverlayText(sensors, null, "quick", "summary/cpu-usage"));
+        Assert.Contains("37.0%", OverlayText(sensors, null, "quick", "summary/cpu-usage"));
     }
 
     [Fact]
@@ -599,7 +599,7 @@ public class TryxPanoramaHubTests
             Items = [new TryxOverlaySensorItem { SensorId = "test/Temp", Device = "storage", Label = "Stat" }],
         });
 
-        Assert.Contains("40°C", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
+        Assert.Contains("40.0°C", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
     }
 
     [Fact]
@@ -679,7 +679,7 @@ public class TryxPanoramaHubTests
             Items = [new TryxOverlaySensorItem { SensorId = "test/Core", Device = "gpu", Label = "Stat" }],
         });
 
-        Assert.Contains("70°C", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
+        Assert.Contains("70.0°C", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
     }
 
     // ── Task 4: fps overlay sensor + demand coordination ──
