@@ -140,7 +140,21 @@ public sealed class StreamSession
             _enqueued++;
             _queue.Enqueue(frame);
             if (_queue.Count > _maxQueuedFrames)
-                TrimToNewestIdrLocked();
+            {
+                // A raw frame stands alone, so the newest replaces the waiting one: a drop, not a resync.
+                if (Info.Profile.Codec == StreamCodec.RawBgra)
+                {
+                    while (_queue.Count > _maxQueuedFrames)
+                    {
+                        _queue.Dequeue().Release();
+                        _dropped++;
+                    }
+                }
+                else
+                {
+                    TrimToNewestIdrLocked();
+                }
+            }
         }
         _arrived.Set();
     }

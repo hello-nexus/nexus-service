@@ -108,8 +108,8 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
         }
         bool sent = (_pictures % ZMatricesProtocol.DiscardedPictureInterval != 0 || SendPicture(pipe))
             && SendPicture(pipe);
-        // The copy for the next discarded slot goes out behind this picture, so it never delays the
-        // frame that follows it.
+        // The copy for the next discarded slot runs in the idle gap after this frame, not in front
+        // of the next one.
         if (sent && _pictures % ZMatricesProtocol.DiscardedPictureInterval == 0)
         {
             sent = SendPicture(pipe);

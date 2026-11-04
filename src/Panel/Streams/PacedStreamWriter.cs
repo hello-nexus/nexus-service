@@ -85,9 +85,9 @@ public sealed class PacedStreamWriter : IDisposable
             // One tick per batch: fps stays the frame rate on the wire while
             // batched frames share a single write (and round trip).
             var interval = Stopwatch.Frequency * _batchFrames / _fps;
-            if (_session.Info.Profile.Codec == StreamCodec.RawBgra)
+            if (_session.Info.Profile.Codec == StreamCodec.RawBgra && _batchFrames == 1)
             {
-                RunOnArrival(interval);
+                RunOnArrival();
                 return;
             }
             var deadline = Stopwatch.GetTimestamp() + interval;
@@ -133,13 +133,12 @@ public sealed class PacedStreamWriter : IDisposable
     }
 
     // A raw framebuffer panel shows a frame the moment it lands, so a fixed tick only adds the
-    // wait for the next tick on top of the render. A frame goes out as it arrives, with
-    // half the frame period as the floor between sends. The capture's own pacing keeps the
-    // average at the profile's rate, so the floor only guards against a burst; a full period
-    // would hold an early frame back until a newer one replaced it and thin the stream.
-    private void RunOnArrival(long interval)
+    // wait for the next tick on top of the render. A frame goes out as it arrives; a token
+    // bucket lets a short burst through (a frame landing early after a capture gap) and keeps
+    // the long-run rate at or below the assignment's, which may sit under the profile's.
+    private void RunOnArrival()
     {
-        long nextAllowed = 0;
+        var bucket = new SendRateBucket(_fps, 2, Stopwatch.Frequency);
         while (!_disposed)
         {
             IStreamedPanelTransport? transport;
@@ -155,12 +154,14 @@ public sealed class PacedStreamWriter : IDisposable
                 continue;
             }
             // Waiting before the dequeue lets a newer frame take the place of the one that arrived.
-            WaitUntil(nextAllowed);
             var now = Stopwatch.GetTimestamp();
+            var wait = bucket.WaitTicks(now);
+            if (wait > 0) WaitUntil(now + wait);
+            now = Stopwatch.GetTimestamp();
             LogStatsIfDue(now);
             var frames = _session.DequeueForTick();
             if (frames.Count == 0) continue;
-            nextAllowed = now + interval / 2;
+            bucket.Consume(now);
             try
             {
                 SendTick(transport, frames);

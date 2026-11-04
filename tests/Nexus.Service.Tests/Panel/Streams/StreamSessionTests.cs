@@ -279,6 +279,8 @@ public sealed class StreamSessionTests
         var stats = session.StatsSnapshot();
         Assert.Equal(3, stats.Enqueued);
         Assert.Equal(2, stats.Dropped);
+        // A replaced raw frame is a drop; trims stays the count of resyncs.
+        Assert.Equal(0, stats.Trims);
         Assert.Equal(2, pool.Returned);
     }
 
