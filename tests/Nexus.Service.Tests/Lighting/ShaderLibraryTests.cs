@@ -157,5 +157,8 @@ public class ShaderLibraryTests
         var src = ShaderLibrary.Get("plasma");
         Assert.Contains("float outGain() { return 1.4; }", src);
         Assert.Contains("tintedPalette(v + t * 0.05)", src);
+        // Relaxed palette contrast, then bright hues lowered in value rather than grayed.
+        Assert.Contains("col = col * 0.88 + 0.06;", src);
+        Assert.Contains("col *= 1.0 - 0.12 * smoothstep(0.45, 0.8, pl);", src);
     }
 }
