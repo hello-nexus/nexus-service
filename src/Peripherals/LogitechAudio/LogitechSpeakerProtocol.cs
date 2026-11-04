@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Nexus.Service.Peripherals.LogitechAudio;
 
@@ -128,7 +129,7 @@ public static class LogitechSpeakerProtocol
     /// The presets G HUB ships for the G560 (its device_presets.json, dB per band, <see cref="BandHz"/> order).
     /// Apart from Communications they only cut, unlike the general presets G HUB has for other devices.
     /// </summary>
-    public static readonly IReadOnlyList<(string Name, float[] Bands)> BuiltInPresets = new (string, float[])[]
+    private static readonly (string Name, float[] Bands)[] GHubPresets =
     {
         ("Bass Boost", new float[] { 0, 0, 0, 0, 0, -3, -4, -5, -6, -6 }),
         ("Cinematic", new float[] { -3, -4, -5, -6, -6, -5, -6, 0, 0, 0 }),
@@ -137,6 +138,36 @@ public static class LogitechSpeakerProtocol
         ("First Person Shooter (FPS)", new float[] { 0, 0, -6, -5, -3, -2, -3, -3, -5, -6 }),
         ("Multiplayer Online Battle Arena (MOBA)", new float[] { 0, -10, -11, 0, -2, -5, -3, -17, -3, 0 }),
     };
+
+    // Stock curves, whole dB per band in BandHz order. Boosts are capped at BandMaxDb, so a
+    // strong boost is shaped by cutting the opposite end.
+    private static readonly (string Name, float[] Bands)[] StockPresets =
+    {
+        ("Acoustic", new float[] { 3, 3, 2, 0, 1, 1, 2, 3, 3, 2 }),
+        ("Bass reducer", new float[] { -6, -5, -4, -2, 0, 0, 0, 0, 0, 0 }),
+        ("Classical", new float[] { 3, 3, 2, 2, -1, -1, 0, 2, 3, 3 }),
+        ("Dance", new float[] { 6, 5, 2, 0, 0, -3, -4, -3, 0, 0 }),
+        ("Deep", new float[] { 3, 3, 2, 1, 0, -1, -3, -5, -7, -9 }),
+        ("Electronic", new float[] { 4, 3, 0, -3, -2, 2, 0, 1, 4, 5 }),
+        ("Hip-hop", new float[] { 5, 4, 1, 3, -1, -1, 1, -1, 2, 3 }),
+        ("Jazz", new float[] { 3, 2, 1, 2, -2, -2, 0, 1, 2, 3 }),
+        ("Latin", new float[] { 4, 2, 0, 0, -2, -2, -2, 0, 3, 4 }),
+        ("Loudness", new float[] { 6, 5, 2, 0, -2, -2, 0, 1, 4, 5 }),
+        ("Lounge", new float[] { -3, -2, 0, 1, 2, 2, 1, 0, -2, -3 }),
+        ("Piano", new float[] { 0, 0, 0, -1, -1, 1, 3, 3, 2, 2 }),
+        ("Pop", new float[] { -2, -1, 0, 2, 4, 4, 2, 0, -1, -2 }),
+        ("R&B", new float[] { 5, 4, 3, 1, -2, -2, 1, 2, 2, 3 }),
+        ("Rock", new float[] { 4, 3, 2, 0, -2, -2, 0, 2, 3, 4 }),
+        ("Small speakers", new float[] { -12, -10, -7, -4, -1, 0, 0, 0, 0, 0 }),
+        ("Spoken word", new float[] { -10, -8, -4, -1, 2, 4, 4, 3, 0, -4 }),
+        ("Treble booster", new float[] { 0, 0, 0, 0, 0, 0, 2, 4, 5, 6 }),
+        ("Treble reducer", new float[] { 0, 0, 0, 0, 0, 0, -2, -4, -6, -8 }),
+        ("Vocal booster", new float[] { -3, -3, -2, 0, 3, 5, 5, 3, 0, -2 }),
+    };
+
+    /// <summary>G HUB's G560 presets and the stock ones, alphabetical; names are unique case-insensitively.</summary>
+    public static readonly IReadOnlyList<(string Name, float[] Bands)> BuiltInPresets =
+        GHubPresets.Concat(StockPresets).OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToArray();
 }
 
 /// <summary>

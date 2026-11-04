@@ -318,6 +318,24 @@ public class LogitechSpeakerServiceTests
         Assert.Equal(2, _apo.FindCalls);
     }
 
+    [Theory]
+    [InlineData("Rock")]
+    [InlineData("rock")]
+    [InlineData("Treble booster")]
+    [InlineData("Flat")]
+    public void CustomPreset_CannotTakeABuiltInName(string name)
+    {
+        Assert.Equal(SpeakerStatus.Invalid, Service().SavePreset(name, new float[10]).Status);
+    }
+
+    [Fact]
+    public void StockPreset_AppliesThroughTheSameNamePath()
+    {
+        Assert.True(Service().SetEq(null, null, "jazz").Ok);
+
+        Assert.Equal(LogitechSpeakerProtocol.BuiltInPresets.First(p => p.Name == "Jazz").Bands, Assert.Single(_apo.Writes).AdvancedBands);
+    }
+
     [Fact]
     public void TurningTheEqOff_LeavesTheBandsAlone()
     {
