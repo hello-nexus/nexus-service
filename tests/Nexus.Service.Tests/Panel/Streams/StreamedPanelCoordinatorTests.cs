@@ -1059,6 +1059,29 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void Preview_holds_until_the_persisted_write_with_no_expiry()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
+
+        coordinator.PreviewBrightness(panelId, 60);
+        Advance(coordinator, 600_000);
+        coordinator.ApplyBrightness(panelId);
+
+        Assert.Equal(60, transport.Applied);
+    }
+
+    [Fact]
+    public void Lock_fade_starts_from_the_live_preview_not_the_stored_level()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
+        coordinator.PreviewBrightness(panelId, 80);
+
+        _lock.Set(true);
+
+        Assert.Equal(80, transport.LastApplied);
+    }
+
+    [Fact]
     public void Preview_does_not_light_a_panel_the_lock_has_darkened()
     {
         var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
