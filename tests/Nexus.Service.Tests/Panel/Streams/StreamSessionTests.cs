@@ -248,6 +248,61 @@ public sealed class StreamSessionTests
         Assert.Equal(pool.Rented, pool.Returned);
     }
 
+    private static StreamSession NewRawSession() => new(
+        "session-raw",
+        new StreamedPanelDeviceInfo
+        {
+            Serial = "raw_test",
+            Profile = new StreamedPanelProfile
+            {
+                Kind = "test",
+                DisplayName = "Test",
+                Surface = "monitor",
+                CssWidth = 8,
+                CssHeight = 8,
+                Fps = 60,
+                Codec = StreamCodec.RawBgra,
+            },
+        },
+        "panel-raw");
+
+    [Fact]
+    public void Raw_session_keeps_only_the_newest_frame_and_counts_the_drop()
+    {
+        var pool = new CountingPool();
+        var session = NewRawSession();
+        session.Enqueue(Pooled(pool, idr: true));
+        session.Enqueue(Pooled(pool, idr: true));
+        session.Enqueue(Pooled(pool, idr: true));
+
+        Assert.Equal(1, session.QueueDepthForTest);
+        var stats = session.StatsSnapshot();
+        Assert.Equal(3, stats.Enqueued);
+        Assert.Equal(2, stats.Dropped);
+        Assert.Equal(2, pool.Returned);
+    }
+
+    [Fact]
+    public void WaitForFrame_returns_on_arrival_and_times_out_when_idle()
+    {
+        var session = NewRawSession();
+        Assert.False(session.WaitForFrame(5));
+
+        session.Enqueue(Frame(idr: true));
+
+        Assert.True(session.WaitForFrame(0));
+        Assert.False(session.WaitForFrame(5));
+    }
+
+    [Fact]
+    public void Closing_a_session_wakes_a_waiting_writer()
+    {
+        var session = NewRawSession();
+        session.Close();
+
+        Assert.True(session.WaitForFrame(0));
+    }
+
     [Fact]
     public void Dequeued_frames_are_not_released_by_the_session()
     {

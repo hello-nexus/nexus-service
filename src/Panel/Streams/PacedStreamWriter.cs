@@ -85,6 +85,11 @@ public sealed class PacedStreamWriter : IDisposable
             // One tick per batch: fps stays the frame rate on the wire while
             // batched frames share a single write (and round trip).
             var interval = Stopwatch.Frequency * _batchFrames / _fps;
+            if (_session.Info.Profile.Codec == StreamCodec.RawBgra)
+            {
+                RunOnArrival(interval);
+                return;
+            }
             var deadline = Stopwatch.GetTimestamp() + interval;
             while (!_disposed)
             {
@@ -99,19 +104,7 @@ public sealed class PacedStreamWriter : IDisposable
 
                 WaitUntil(deadline);
                 var now = Stopwatch.GetTimestamp();
-                if (_lastStatsLogTicks == 0) _lastStatsLogTicks = now;
-                if (now - _lastStatsLogTicks > Stopwatch.Frequency * 30)
-                {
-                    var stats = _session.StatsSnapshot();
-                    var secs = (now - _lastStatsLogTicks) / (double)Stopwatch.Frequency;
-                    ServiceLog.Info(
-                        $"[streamed-panel] stats serial={_session.Info.Serial} in={(stats.Enqueued - _lastStats.Enqueued) / secs:F1}fps " +
-                        $"out={(stats.Sent - _lastStats.Sent) / secs:F1}fps depth={stats.Depth} " +
-                        $"dropped={stats.Dropped - _lastStats.Dropped} trims={stats.Trims - _lastStats.Trims} " +
-                        $"maxInGap={stats.MaxIngestGapMs}ms");
-                    _lastStats = stats;
-                    _lastStatsLogTicks = now;
-                }
+                LogStatsIfDue(now);
                 // A late tick (blocked write, empty stretch) must not bank
                 // debt that later bursts the wire; re-anchor instead. What
                 // the re-anchor leaves queued drains through the pacing
@@ -137,6 +130,59 @@ public sealed class PacedStreamWriter : IDisposable
         {
             if (OperatingSystem.IsWindows()) TimeEndPeriod(1);
         }
+    }
+
+    // A raw framebuffer panel shows a frame the moment it lands, so a fixed tick only adds the
+    // wait for the next tick on top of the render. A frame goes out as it arrives, with the
+    // frame period as the floor between sends so the profile's rate is still the ceiling.
+    private void RunOnArrival(long interval)
+    {
+        long nextAllowed = 0;
+        while (!_disposed)
+        {
+            IStreamedPanelTransport? transport;
+            lock (_transportLock) transport = _transport;
+            if (transport is null || !transport.IsOpen)
+            {
+                _wake.WaitOne(100);
+                continue;
+            }
+            if (!_session.WaitForFrame(50))
+            {
+                LogStatsIfDue(Stopwatch.GetTimestamp());
+                continue;
+            }
+            // Waiting before the dequeue lets a newer frame take the place of the one that arrived.
+            WaitUntil(nextAllowed);
+            var now = Stopwatch.GetTimestamp();
+            LogStatsIfDue(now);
+            var frames = _session.DequeueForTick();
+            if (frames.Count == 0) continue;
+            nextAllowed = now + interval;
+            try
+            {
+                SendTick(transport, frames);
+            }
+            finally
+            {
+                foreach (var frame in frames) frame.Release();
+            }
+        }
+    }
+
+    private void LogStatsIfDue(long now)
+    {
+        if (_lastStatsLogTicks == 0) _lastStatsLogTicks = now;
+        if (now - _lastStatsLogTicks <= Stopwatch.Frequency * 30) return;
+        var stats = _session.StatsSnapshot();
+        var secs = (now - _lastStatsLogTicks) / (double)Stopwatch.Frequency;
+        ServiceLog.Info(
+            $"[streamed-panel] stats serial={_session.Info.Serial} in={(stats.Enqueued - _lastStats.Enqueued) / secs:F1}fps " +
+            $"out={(stats.Sent - _lastStats.Sent) / secs:F1}fps depth={stats.Depth} " +
+            $"dropped={stats.Dropped - _lastStats.Dropped} trims={stats.Trims - _lastStats.Trims} " +
+            $"maxInGap={stats.MaxIngestGapMs}ms");
+        _lastStats = stats;
+        _lastStatsLogTicks = now;
     }
 
     private void SendTick(IStreamedPanelTransport transport, IReadOnlyList<StreamFrame> frames)

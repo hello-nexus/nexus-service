@@ -34,6 +34,7 @@ public sealed class StreamSession
     private long _lastIngestTicks;
     private long _bindGeneration;
     private IDisposable? _section;
+    private readonly System.Threading.ManualResetEventSlim _arrived = new(false);
 
     public StreamSession(string sessionId, StreamedPanelDeviceInfo info, string panelDeviceId)
     {
@@ -44,10 +45,10 @@ public sealed class StreamSession
         // Enough queue to absorb a transport blip while resuming near-live;
         // when even the newest GOP exceeds it, resync from the next IDR.
         // Raw frames are every one a keyframe and megabytes each, and the device
-        // is the ceiling: queueing them buys nothing but latency, so hold a single
-        // frame of slack and let the trim keep the newest.
+        // is the ceiling: a queued raw frame only adds latency, so the newest
+        // frame replaces the one waiting.
         _maxQueuedFrames = info.Profile.Codec == StreamCodec.RawBgra
-            ? 2
+            ? 1
             : Math.Max(30, info.Profile.Fps * 2);
     }
 
@@ -141,6 +142,19 @@ public sealed class StreamSession
             if (_queue.Count > _maxQueuedFrames)
                 TrimToNewestIdrLocked();
         }
+        _arrived.Set();
+    }
+
+    /// <summary>
+    /// Blocks until a frame was queued since the last wait (or the session closed), so a raw
+    /// writer can send on arrival instead of on a fixed tick. A true result is a hint: the
+    /// caller still dequeues, which says whether anything is there.
+    /// </summary>
+    public bool WaitForFrame(int timeoutMs)
+    {
+        if (!_arrived.Wait(timeoutMs)) return false;
+        _arrived.Reset();
+        return true;
     }
 
     /// <summary>
@@ -210,6 +224,7 @@ public sealed class StreamSession
             section = _section;
             _section = null;
         }
+        _arrived.Set();
         // Outside the lock: disposing joins the reader thread, which may be inside Enqueue.
         section?.Dispose();
     }
