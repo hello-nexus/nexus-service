@@ -7,13 +7,13 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>One ZMatrices glass on the shared picture protocol, at the size it is streamed.</summary>
-public sealed record ZMatricesModel(string HandlerId, string Name, int ProductId, int Width, int Height, double? Dpi, string Category = "cooler")
+public sealed record ZMatricesModel(string HandlerId, string Name, int ProductId, int Width, int Height, double? Dpi, int Fps, string Category = "cooler")
 {
     /// <summary>Streams at half the glass resolution; the firmware upscales to fill it.</summary>
-    public static readonly ZMatricesModel GlacierMatrix = new("zmatrices-lcd", "Aftershock Glacier Matrix LCD", 0x0026, 1120, 540, null);
+    public static readonly ZMatricesModel GlacierMatrix = new("zmatrices-lcd", "Aftershock Glacier Matrix LCD", 0x0026, 1120, 540, null, 44);
 
     /// <summary>Bar panel streamed at its native resolution.</summary>
-    public static readonly ZMatricesModel MaxE87 = new("zmatrices-max-e87", "ZMatrices MAX E87", 0x0032, 1280, 440, 218, "light");
+    public static readonly ZMatricesModel MaxE87 = new("zmatrices-max-e87", "ZMatrices MAX E87", 0x0032, 1280, 440, 218, 60, "light");
 }
 
 /// <summary>ZMatrices LCDs (see <see cref="ZMatricesProtocol"/>).</summary>
@@ -41,8 +41,8 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
     public IReadOnlyList<int> ProductIds { get; }
     public string Surface => Models.Panel.PanelSurfaces.LcdWide;
     public double? Dpi => _model.Dpi;
-    /// <summary>The Glacier Matrix glass's measured ceiling; the MAX E87 shares it unmeasured.</summary>
-    public int Fps => 44;
+    /// <summary>The glass's refresh rate; the Glacier Matrix swaps frames at a measured ceiling below the bar panel's.</summary>
+    public int Fps => _model.Fps;
     public byte WritePipeId => ZMatricesProtocol.PicturePipe;
 
     public byte ReadPipeId => ZMatricesProtocol.InputPipe;

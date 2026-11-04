@@ -239,6 +239,16 @@ public class BulkPanelDriverTests
         Assert.True(driver.SendFrame(pipe, null, Frame(1280, 440)));
     }
 
+    [Theory]
+    [InlineData(false, 44)]
+    [InlineData(true, 60)]
+    public void ZMatrices_streams_at_its_own_glass_rate(bool maxE87, int fps)
+    {
+        var driver = new ZMatricesPanelDriver(maxE87 ? ZMatricesModel.MaxE87 : ZMatricesModel.GlacierMatrix);
+
+        Assert.Equal(fps, driver.Fps);
+    }
+
     [Fact]
     public void ZMatrices_connect_sends_picture_mode_on_the_command_pipe()
     {
