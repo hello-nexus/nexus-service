@@ -63,7 +63,7 @@ public sealed record StreamedPanelProfile
     public double Dpr { get; init; } = 1.0;
     public int Fps { get; init; } = 60;
 
-    /// <summary>Panels longer than this on either side render at a lower resolution unless their record asks for high resolution.</summary>
+    /// <summary>Panels longer than this on either side can render at a lower resolution when their record asks for high performance.</summary>
     public const int RenderScaleMinSide = 1000;
 
     public const int PerformanceMinShortSide = 320;
