@@ -579,7 +579,7 @@ public sealed class PanelPhonePairingService
         lock (_lock)
         {
             _pairTokens[pairToken] = expiry;
-            // The consume's prune dropped the used salts; a restored token must not forget them.
+            // Consuming left the salts to a later prune; hand them back so a restored token still refuses replays.
             if (salts is not null)
                 _seenRelaySalts[pairToken] = salts;
         }
@@ -596,7 +596,7 @@ public sealed class PanelPhonePairingService
         lock (_lock)
         {
             // A dead or empty token is never keyed.
-            if (!_pairTokens.ContainsKey(pairToken))
+            if (!_pairTokens.TryGetValue(pairToken, out var liveUntil) || liveUntil <= DateTime.UtcNow)
                 return false;
             // The cap bounds memory; a relay burning it only refuses its own channels.
             if (!_seenRelaySalts.TryGetValue(pairToken, out var set))
