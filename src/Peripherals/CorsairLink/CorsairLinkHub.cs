@@ -331,14 +331,16 @@ public sealed class CorsairLinkHub : IDisposable
         _softwareMode = true;
 
         // A timed-out reply arrives late and would answer the firmware read, shifting every later reply by one.
-        for (var i = 0; softwareN <= 0 && i < 2 && _owedReplies[CorsairLinkProtocol.CmdSoftwareMode[0]] > 0; i++)
+        for (var i = 0; softwareN <= 0 && i < 2 && !ForeignHostSeen && _owedReplies[CorsairLinkProtocol.CmdSoftwareMode[0]] > 0; i++)
         {
             if (ReadStrippedLocked(ReadTimeoutMs) <= 0) break;
-            TraceNote("drained late software-mode reply");
+            if (_read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdSoftwareMode[0]) TraceNote("drained late software-mode reply");
         }
 
         TraceNote("step=firmware");
         var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
+        // A stray reply answered the read; the firmware major gates the port mapping, so ask once more.
+        if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] != CorsairLinkProtocol.CmdGetFirmware[0]) fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
         if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdGetFirmware[0])
         {
             State.Firmware = $"{_read[4]}.{_read[5]}.{_read[6] | (_read[7] << 8)}";
