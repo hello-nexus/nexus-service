@@ -357,8 +357,9 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        // Live slider step: puts the level on the backlight and nothing else (no record write, no
-        // broadcast), so a drag stays cheap. The drag's final value goes through the record POST.
+        // Live slider step: puts the level on the backlight with no record write or broadcast, so a
+        // drag stays cheap. The record POST commits the final value; a drag nobody finishes is
+        // written to the record by the coordinator's idle sweep.
         app.MapPost("/panel/devices/{id}/backlight-preview", (string id, PanelDevicePatch body, PanelDeviceRegistry registry, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
             var record = registry.Get(id);
@@ -388,14 +389,14 @@ public static class PanelRoutes
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
             var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
-            var updated = registry.Patch(id, body);
+            var updated = body.LcdBrightness.HasValue
+                ? streams.CommitBrightness(id, () => registry.Patch(id, body))
+                : registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
             // Registry mutations go through _store.Update -> OnChanged ->
             // ProfileManager.MarkDirty, so a look edit reaches the active
             // profile's Panels data on the next flush with no explicit pulse.
-            if (body.LcdBrightness.HasValue)
-                streams.ClearBrightnessPreview(updated.Id);
             if (body.SecondaryMonitor.HasValue)
             {
                 streams.ApplySecondaryMonitor(updated.Id);

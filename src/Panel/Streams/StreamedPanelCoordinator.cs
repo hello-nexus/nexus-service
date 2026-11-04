@@ -605,18 +605,52 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         ApplyBrightness(panelDeviceId);
     }
 
+    // Serializes the sweep's record write against a commit. Taken before the registry's own
+    // lock; nothing on the store side may take it.
+    private readonly object _previewGate = new();
+    internal Action? TestHookBeforePreviewPersist { get; set; }
+
+    /// <summary>
+    /// Runs a record write that carries a backlight level: the live preview is dropped with it,
+    /// so a sweep can never overwrite the committed level, then the level is applied.
+    /// </summary>
+    public T CommitBrightness<T>(string panelDeviceId, Func<T> write)
+    {
+        T result;
+        lock (_previewGate)
+        {
+            result = write();
+            _previews.TryRemove(panelDeviceId, out _);
+        }
+        ApplyBrightness(panelDeviceId);
+        return result;
+    }
+
     // A preview nobody refreshed was still chosen by the user: it becomes the record's level, so
     // the record and the display agree and the lock path reads the record as it always has.
     private void SweepLapsedPreviews()
     {
         foreach (var entry in _previews.ToArray())
         {
-            if (_nowMs() - entry.Value.AtMs < PreviewIdleMs
-                || !_previews.TryRemove(entry))
+            lock (_previewGate)
             {
-                continue;
+                if (_nowMs() - entry.Value.AtMs < PreviewIdleMs
+                    || !_previews.TryGetValue(entry.Key, out var current) || current != entry.Value)
+                {
+                    continue;
+                }
+                try
+                {
+                    TestHookBeforePreviewPersist?.Invoke();
+                    _registry.Patch(entry.Key, new PanelDevicePatch { LcdBrightness = entry.Value.Percent });
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Warn($"[streamed-panel] persisting a lapsed backlight preview for {entry.Key} failed: {ex.GetType().Name}: {ex.Message}");
+                    continue;
+                }
+                _previews.TryRemove(entry);
             }
-            _registry.Patch(entry.Key, new PanelDevicePatch { LcdBrightness = entry.Value.Percent });
             _notifyPanelChanged?.Invoke(entry.Key);
             ApplyBrightness(entry.Key);
         }

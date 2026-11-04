@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Devices;
 using Nexus.Service.Lighting;
@@ -1108,6 +1109,50 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
 
         Assert.Equal(20, _registry.Get(panelId)!.LcdBrightness);
         Assert.Equal(20, transport.Applied);
+    }
+
+    [Fact]
+    public async Task A_commit_racing_the_sweep_ends_at_the_committed_value()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        coordinator.PreviewBrightness(panelId, 55);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+
+        using var inWrite = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var commit = Task.Run(() => coordinator.CommitBrightness(panelId, () =>
+        {
+            inWrite.Set();
+            release.Wait();
+            return _registry.Patch(panelId, new PanelDevicePatch { LcdBrightness = 20 });
+        }));
+        inWrite.Wait();
+        var sweep = Task.Run(() => coordinator.TickOnce());
+        release.Set();
+        await commit;
+        await sweep;
+
+        Assert.Equal(20, _registry.Get(panelId)!.LcdBrightness);
+        Assert.Equal(20, transport.Applied);
+    }
+
+    [Fact]
+    public void A_failed_persist_keeps_the_preview_for_the_next_sweep()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        coordinator.PreviewBrightness(panelId, 55);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+        coordinator.TestHookBeforePreviewPersist = () => throw new InvalidOperationException("store fault");
+
+        coordinator.TickOnce();
+
+        Assert.Null(_registry.Get(panelId)!.LcdBrightness);
+        Assert.Equal(55, transport.Applied);
+
+        coordinator.TestHookBeforePreviewPersist = null;
+        coordinator.TickOnce();
+
+        Assert.Equal(55, _registry.Get(panelId)!.LcdBrightness);
     }
 
     [Fact]
