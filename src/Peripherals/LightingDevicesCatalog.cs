@@ -244,6 +244,7 @@ public static class LightingDevicesCatalog
         Native("HYTE",    "Y70 Touch",              "case",     "0x3402", "0x0C00", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C01", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C02", screen: true, rgb: false),
+        Native("HYTE",    "Y70 GT",                 "case",     "0x3402", "0x0C06", screen: true),
         Native("HYTE",    "Y70 Touch GW",           "case",     "-",      "-",      screen: true, rgb: false),
         Native("HYTE",    "Y70 Ina Touch",          "case",     "-",      "-",      screen: true, rgb: false),
 

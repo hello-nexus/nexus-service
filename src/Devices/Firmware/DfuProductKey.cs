@@ -59,6 +59,7 @@ public static class DfuProductKey
         if (cnvs != "cnvs") return new(cnvs, "cnvs", "HYTE CNVS", "controller");
 
         var y70 = Y70DisplayProtocol.VariantForProductId(productId);
+        if (y70 == Y70DisplayProtocol.VariantGt) return null;
         if (y70 == Y70DisplayProtocol.VariantTouch) return new(y70, "y70", "HYTE Y70 Touch", "display");
         if (y70 != "") return new(y70, "y70", "HYTE Y70 Touch Infinite", "display");
 
