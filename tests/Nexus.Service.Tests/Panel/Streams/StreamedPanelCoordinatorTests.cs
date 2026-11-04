@@ -1137,6 +1137,34 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task A_sweep_in_progress_does_not_overwrite_a_commit_that_follows()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        coordinator.PreviewBrightness(panelId, 55);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+
+        using var parked = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        coordinator.TestHookBeforePreviewPersist = () =>
+        {
+            parked.Set();
+            release.Wait();
+        };
+        var sweep = Task.Run(() => coordinator.TickOnce());
+        parked.Wait();
+        var commit = Task.Run(() => coordinator.CommitBrightness(panelId, () =>
+            _registry.Patch(panelId, new PanelDevicePatch { LcdBrightness = 20 })));
+        // Gated, the commit cannot finish while the sweep is parked; ungated it would finish here.
+        await Task.WhenAny(commit, Task.Delay(500));
+        release.Set();
+        await sweep;
+        await commit;
+
+        Assert.Equal(20, _registry.Get(panelId)!.LcdBrightness);
+        Assert.Equal(20, transport.Applied);
+    }
+
+    [Fact]
     public void A_failed_persist_keeps_the_preview_for_the_next_sweep()
     {
         var (coordinator, panelId, transport) = DimmablePanel(stored: null);

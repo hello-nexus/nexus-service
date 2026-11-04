@@ -571,9 +571,12 @@ public static class PanelRoutes
             try
             {
                 ResetPersonalization(registry, bgLibrary, id);
-                registry.ResetHardwareSettings(id);
+                var streams = sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>();
+                if (streams is null)
+                    registry.ResetHardwareSettings(id);
+                else
+                    streams.CommitBrightness(id, () => registry.ResetHardwareSettings(id));
                 registry.Patch(id, new PanelDevicePatch { RestrictedMode = false });
-                sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ClearBrightnessPreview(id);
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }
@@ -591,10 +594,12 @@ public static class PanelRoutes
         {
             if (!HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
-            var record = registry.ResetHardwareSettings(id);
+            var resetStreams = sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>();
+            var record = resetStreams is null
+                ? registry.ResetHardwareSettings(id)
+                : resetStreams.CommitBrightness(id, () => registry.ResetHardwareSettings(id));
             if (record is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
-            sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ClearBrightnessPreview(id);
             sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
 
             var surface = record.Capabilities?.Surface;
