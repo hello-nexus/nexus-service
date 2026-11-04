@@ -28,6 +28,9 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     // cached Current: a brightness change made on the monitor's own OSD is not
     // noticed until the next topology change, while every change made through
     // Nexus updates the cache on the way past.
+    // A display that keeps failing its probe is not cached above (the failure is usually
+    // transient); this stops it being re-probed on every poll once it has failed repeatedly.
+    private readonly DdcNegativeProbeCache _negativeProbes = new();
     private readonly object _capsGate = new();
     private string _capsSignature = "";
     private readonly Dictionary<string, DisplayDto> _capsCache = new(StringComparer.Ordinal);
@@ -191,6 +194,13 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                     continue;
                 }
 
+                // Failed repeatedly already: report unsupported without another transaction.
+                if (_negativeProbes.ShouldSkip(dto.Id))
+                {
+                    results.Add(dto);
+                    continue;
+                }
+
                 // Try to open physical monitors and check brightness support via
                 // the same control path used for writes. DDC/CI VCP 0x10 is the
                 // canonical luminance feature; GetMonitorBrightness is only a
@@ -233,7 +243,15 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                 // contention - and caching it would pin the display to "no
                 // brightness control" until the attached set changes, where
                 // before the next poll simply retried.
-                if (dto.IsDdcCapable) StoreCaps(dto);
+                if (dto.IsDdcCapable)
+                {
+                    StoreCaps(dto);
+                    _negativeProbes.RecordSuccess(dto.Id);
+                }
+                else
+                {
+                    _negativeProbes.RecordFailure(dto.Id);
+                }
                 results.Add(dto);
             }
         }
@@ -454,6 +472,7 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             }
             _capsSignature = signature;
             _capsCache.Clear();
+            _negativeProbes.Clear();
         }
     }
 
