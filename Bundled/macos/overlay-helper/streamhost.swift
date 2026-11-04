@@ -280,7 +280,7 @@ final class StreamPanelHost: NSObject, WKNavigationDelegate, SCStreamOutput, SCS
 
     /// A dropped touch stream must not leave the page holding a press.
     private func releasePointer() {
-        guard activePointer != nil else { return }
+        guard !closed, activePointer != nil else { return }
         activePointer = nil
         sendMouse(.leftMouseUp, lastPointerAt)
     }
@@ -623,6 +623,8 @@ final class TouchConnection: NSObject, URLSessionDataDelegate {
     private var pending = Data()
     private var cancelled = false
     private var gone = false
+    private var failures = 0
+    private static let maxReconnectDelay: TimeInterval = 30
 
     init(port: Int, sessionId: String, token: String) {
         var c = URLComponents()
@@ -656,12 +658,14 @@ final class TouchConnection: NSObject, URLSessionDataDelegate {
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status != 200 {
-            // A session the service no longer knows (404) or a refused token is not retried; reconcile re-creates the host.
-            gone = true
+            // Only a session the service no longer knows is terminal; reconcile re-creates the host. Anything else backs off and retries.
+            if status == 404 { gone = true }
+            failures += 1
             streamLog("touch stream refused: HTTP \(status)")
             completionHandler(.cancel)
             return
         }
+        failures = 0
         completionHandler(.allow)
     }
 
@@ -681,6 +685,7 @@ final class TouchConnection: NSObject, URLSessionDataDelegate {
         if self.session === session { self.session = nil }
         onDrop?()
         if cancelled || gone { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.reconnectDelay) { [weak self] in self?.open() }
+        let delay = min(Self.reconnectDelay * pow(2, Double(max(0, failures - 1))), Self.maxReconnectDelay)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.open() }
     }
 }

@@ -7,13 +7,13 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>One ZMatrices glass on the shared picture protocol, at the size it is streamed.</summary>
-public sealed record ZMatricesModel(string HandlerId, string Name, int ProductId, int Width, int Height, double? Dpi)
+public sealed record ZMatricesModel(string HandlerId, string Name, int ProductId, int Width, int Height, double? Dpi, string Category = "cooler")
 {
-    /// <summary>Half the 2240x1080 glass; the firmware upscales to fill it.</summary>
+    /// <summary>Streams at half the glass resolution; the firmware upscales to fill it.</summary>
     public static readonly ZMatricesModel GlacierMatrix = new("zmatrices-lcd", "Aftershock Glacier Matrix LCD", 0x0026, 1120, 540, null);
 
-    /// <summary>6.2-inch bar at its native resolution.</summary>
-    public static readonly ZMatricesModel MaxE87 = new("zmatrices-max-e87", "ZMatrices MAX E87", 0x0032, 1280, 440, 218);
+    /// <summary>Bar panel streamed at its native resolution.</summary>
+    public static readonly ZMatricesModel MaxE87 = new("zmatrices-max-e87", "ZMatrices MAX E87", 0x0032, 1280, 440, 218, "light");
 }
 
 /// <summary>ZMatrices LCDs (see <see cref="ZMatricesProtocol"/>).</summary>
@@ -36,6 +36,7 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
     public ZMatricesModel Model => _model;
     public string HandlerId => _model.HandlerId;
     public string Name => _model.Name;
+    public string Category => _model.Category;
     public int VendorId => 0x38C1;
     public IReadOnlyList<int> ProductIds { get; }
     public string Surface => Models.Panel.PanelSurfaces.LcdWide;

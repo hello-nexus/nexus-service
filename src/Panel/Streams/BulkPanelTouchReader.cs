@@ -24,6 +24,10 @@ internal sealed class BulkPanelTouchReader : IDisposable
     private readonly Func<TouchContactTracker.Injection, bool> _sink;
     private readonly CancellationTokenSource _cts;
     private readonly Thread _thread;
+    // Thread exit and Dispose must both happen before the linked source can be released.
+    private int _releasesLeft = 2;
+    private int _started;
+    private int _disposed;
 
     public BulkPanelTouchReader(BulkPanelHub hub, int width, int height, Func<(bool Flip180, bool Mirror)> orientation, Func<TouchContactTracker.Injection, bool> sink, string name, CancellationToken stop = default)
     {
@@ -37,17 +41,47 @@ internal sealed class BulkPanelTouchReader : IDisposable
         _thread = new Thread(RunGuarded) { IsBackground = true, Name = $"{name}-{hub.Driver.HandlerId}" };
     }
 
-    public void Start() => _thread.Start();
+    public void Start()
+    {
+        if (Volatile.Read(ref _disposed) == 0 && Interlocked.Exchange(ref _started, 1) == 0)
+        {
+            _thread.Start();
+        }
+    }
+
+    private void Release()
+    {
+        if (Interlocked.Decrement(ref _releasesLeft) == 0)
+        {
+            _cts.Dispose();
+        }
+    }
 
     private void RunGuarded()
     {
         try
         {
-            Run();
+            // A stalled read in a disposed reader holds the slot, so a successor never splits a report with it.
+            _hub.InputReaderGate.Wait(_cts.Token);
+            try
+            {
+                Run();
+            }
+            finally
+            {
+                _hub.InputReaderGate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
             ServiceLog.Error($"[{_hub.Driver.HandlerId}] touch reader stopped: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            Release();
         }
     }
 
@@ -132,10 +166,19 @@ internal sealed class BulkPanelTouchReader : IDisposable
     /// <summary>Stops the thread; contacts still down are released through the sink first.</summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) == 1)
+        {
+            return;
+        }
         _cts.Cancel();
-        if (_thread.IsAlive)
+        if (Interlocked.CompareExchange(ref _started, 1, 0) == 0)
+        {
+            Release();
+        }
+        else if (_thread.IsAlive)
         {
             _thread.Join(JoinMs);
         }
+        Release();
     }
 }

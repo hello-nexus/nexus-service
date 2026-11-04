@@ -13,7 +13,7 @@ public static class ZMatricesProtocol
     public const byte CommandPipe = 0x04;
     public const byte PicturePipe = 0x02;
 
-    /// <summary>Touch reports; the Glacier Matrix also sends a 1 Hz ASCII status token. Interrupt on the MAX E87.</summary>
+    /// <summary>Touch reports; the Glacier Matrix also sends a periodic ASCII status token. Interrupt endpoint on the MAX E87.</summary>
     public const byte InputPipe = 0x81;
 
     public const int PacketSize = 512;

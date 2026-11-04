@@ -23,7 +23,7 @@ public interface IPanelTouchDecoder
 public readonly record struct ZMatricesTouchReport(byte TrackId, TouchPhase Phase, ushort X, ushort Y, ushort SpanX, ushort SpanY);
 
 /// <summary>
-/// Touch reports on EP 0x81, interleaved with a 1 Hz ASCII status token. Two layouts, both
+/// Touch reports on the input endpoint, interleaved with a periodic ASCII status token. Two layouts, both
 /// opening with 0xAE and carrying big-endian coordinates:
 /// v1, 11 bytes: AE track event w h x y.
 /// v2, 16 bytes: AE 5A 02 event track _ w h x y _ xor, where xor covers bytes 0-14.

@@ -102,6 +102,9 @@ public interface IBulkPanelDriver
     /// <summary>The glass reports touch on <see cref="ReadPipeId"/>; elsewhere that pipe carries command replies.</summary>
     bool HasTouch => false;
 
+    /// <summary>Device-list category of this panel's row.</summary>
+    string Category => "cooler";
+
     /// <summary>A fresh decoder for the touch pipe; required when <see cref="HasTouch"/> is true.</summary>
     IPanelTouchDecoder? CreateTouchDecoder() => null;
 

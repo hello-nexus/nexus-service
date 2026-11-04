@@ -194,10 +194,10 @@ public sealed unsafe class WindowsBulkUsbPipe : IBulkUsbPipe
                 {
                     Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, pipeId);
                     bool settled = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out var moved, wait: true);
-                    // A timed-out read is a quiet panel, not a broken one.
+                    // A timed-out read is a quiet panel, not a broken one; a report that landed in the abort window still counts.
                     if (!write)
                     {
-                        return 0;
+                        return moved > 0 ? (int)moved : 0;
                     }
                     return settled || moved > 0 ? (int)moved : -1;
                 }
