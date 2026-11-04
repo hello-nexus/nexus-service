@@ -36,9 +36,8 @@ public static class Y70DisplayProtocol
 
     /// <summary>
     /// Y70 GT: serial controller (backlight over FF EE, display over DDC/CI like
-    /// Truly). The legacy app registers OTA for it (product key 0C0600DD, PIDBytes
-    /// product byte 0x03), but Nexus does no firmware for this panel, so it has no
-    /// bundle and no <see cref="ProductIdForVariant"/> entry.
+    /// Truly). Nexus does no firmware for this panel, so it has no bundle and no
+    /// <see cref="ProductIdForVariant"/> entry.
     /// </summary>
     public const string VariantGt = "y70-gt";
 
