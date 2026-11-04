@@ -1104,6 +1104,34 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void A_lapsed_preview_is_put_back_by_the_tick_on_an_idle_feed()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        transport.Applied = 70;
+
+        coordinator.PreviewBrightness(panelId, 55);
+        Assert.Equal(55, transport.Applied);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+        coordinator.TickOnce();
+
+        Assert.Equal(70, transport.Applied);
+    }
+
+    [Fact]
+    public void Lock_after_a_lapsed_preview_remembers_the_level_from_before_it()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        transport.Applied = 70;
+        coordinator.PreviewBrightness(panelId, 55);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+
+        _lock.Set(true);
+        Advance(coordinator, 2000);
+
+        Assert.Equal(70, _registry.Get(panelId)!.LockRestoreBrightness);
+    }
+
+    [Fact]
     public void Lock_does_not_keep_a_previewed_level_as_the_restore_level()
     {
         var (coordinator, panelId, _) = DimmablePanel(stored: null);

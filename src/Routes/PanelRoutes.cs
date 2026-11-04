@@ -674,12 +674,13 @@ public static class PanelRoutes
                 : Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         });
 
-        app.MapDelete("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRemover remover, TokenService tokens) =>
+        app.MapDelete("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRemover remover, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
             if (!HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
             if (!remover.Remove(id))
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            streams.ClearBrightnessPreview(id);
             return Results.Ok(ApiResponse.Ok("removed"));
         });
     }
