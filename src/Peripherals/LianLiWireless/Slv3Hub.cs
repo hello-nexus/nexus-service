@@ -2252,6 +2252,7 @@ public sealed partial class Slv3Hub : IDisposable
                         : record.IsHydroShift ? $"HydroShift II dev_type {record.DevType}, {record.FanCount} fan(s)"
                         : $"{record.FanCount} fan(s), {record.Family}";
                     ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what}, {DescribeBinding(record, _masterMac)})");
+                    Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Note(Slv3LightingDeviceProvider.DeviceIdFor(key), "lianli-wireless", Nexus.Service.Diagnostics.DeviceEventKind.Connect);
                 }
                 else
                 {
@@ -2343,6 +2344,8 @@ public sealed partial class Slv3Hub : IDisposable
             foreach (var key in gone)
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
+                var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
+                Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _unboundHere.Remove(key);

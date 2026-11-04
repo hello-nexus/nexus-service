@@ -148,6 +148,7 @@ public static class DiagnosticsHealthRoutes
             PnpProblemScanner pnp,
             Nexus.Service.Persistence.IConfigStore store,
             Nexus.Service.Conflicts.IConflictDetector conflicts,
+            IEnumerable<Nexus.Service.Devices.IDeviceHandler> handlers,
             IServiceProvider sp) =>
         {
             var bridge = sp.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>();
@@ -159,7 +160,7 @@ public static class DiagnosticsHealthRoutes
                 DevTools = true,
 #endif
                 Os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-                MachineName = Environment.MachineName,
+                MachineName = "<pc>",
                 ExportedAtUtc = DateTime.UtcNow.ToString("O"),
                 ServiceUptimeSeconds = (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalSeconds,
                 ConflictsRunning = conflicts.GetConflicts().Select(c => c.IsSetting ? $"{c.Id} (Windows setting)" : $"{c.Id} (pid {c.Pid})").ToList(),
@@ -170,7 +171,22 @@ public static class DiagnosticsHealthRoutes
                 LightingDevices = bridge?.Devices.Select(d => $"[{d.Index}] {d.Name} leds={d.LedCount}").ToList() ?? new(),
                 OpenRgbDaemonRunning = daemon?.IsRunning ?? false,
                 OpenRgbDaemonUptimeSeconds = daemon?.Uptime.TotalSeconds ?? 0,
+                NexusEnvironment = SupportBundleExtras.NexusEnvironment(Environment.GetEnvironmentVariables()),
+                OverrideFiles = SupportBundleExtras.OverrideFiles(
+                    new[] { Path.Combine(ServiceLog.LogsDirectory, Nexus.Service.Helper.HelperPollerDiagnostics.DisableFileName) },
+                    Nexus.Service.Persistence.NexusDataPaths.NexusRoot()),
+                VendorSoftware = VendorSoftwareProbe.Collect(
+                    conflicts.GetConflicts().Select(c => c.Id).ToHashSet(),
+                    id => sp.GetService<Nexus.Service.Conflicts.IConflictAppInstallProbe>()?.IsInstalled(id) ?? false),
             };
+            var identity = SupportBundleExtras.CollectIdentity(
+                Environment.UserName,
+                OperatingSystem.IsWindows() ? Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles() : Array.Empty<string>(),
+                SupportBundleExtras.ConsoleUser(),
+                SupportBundleExtras.LinuxSessionHome(),
+                OperatingSystem.IsLinux() ? SupportBundleExtras.SubdirectoriesOrEmpty("/home") : OperatingSystem.IsMacOS() ? SupportBundleExtras.SubdirectoriesOrEmpty("/Users") : Array.Empty<string>(),
+                Environment.MachineName,
+                SupportBundleExtras.TryDnsHostName());
             // A failing fan provider must not cost the user the rest of the bundle.
             List<Nexus.Service.Models.Cooling.FanChannel>? fanChannels = null;
             try
@@ -187,21 +203,43 @@ public static class DiagnosticsHealthRoutes
                 UserLogDirectories = OperatingSystem.IsWindows()
                     ? SupportBundleBuilder.UserLogDirectoriesFor(Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles())
                     : Array.Empty<(string, string)>(),
+                InstallerLogDirectories = OperatingSystem.IsWindows()
+                    ? SupportBundleBuilder.ProfileSubdirectoriesFor(Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles(), "AppData", "Local", "Temp")
+                    : Array.Empty<(string, string)>(),
+                InstallerSystemDirectories = OperatingSystem.IsWindows()
+                    ? SupportBundleExtras.WindowsSystemTempDirectories(Environment.GetEnvironmentVariable("SystemRoot"))
+                    : Array.Empty<string>(),
+                SplashLogDirectories = OperatingSystem.IsWindows()
+                    ? SupportBundleBuilder.ProfileSubdirectoriesFor(Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles(), "AppData", "Local", "Nexus", "updater")
+                    : Array.Empty<(string, string)>(),
+                LaunchdLogPaths = OperatingSystem.IsMacOS()
+                    ? SupportBundleExtras.TrustedLaunchdLogs(SupportBundleExtras.MacLaunchdLogPaths, (exe, args) => Nexus.Service.Platform.ShellExecutor.Run(exe, args))
+                    : Array.Empty<string>(),
+                JournalText = OperatingSystem.IsLinux()
+                    ? SupportBundleExtras.ReadJournal(args => Nexus.Service.Platform.ShellExecutor.Run("journalctl", SupportBundleExtras.JournalTimeoutMs, args))
+                    : "",
                 UpdatesDirectory = Nexus.Service.Update.UpdateDownloader.StagingDir,
                 OpenRgbConfigDirectory = Nexus.Service.Lighting.Rgb.OpenRgbProcessManager.ResolveConfigDir(),
                 Settings = store.Load(),
                 Info = info,
                 StartupSnapshot = SupportBundleBuilder.ReadStartupSnapshot(),
                 Health = healthModel.BuildRealHealth(),
-                Incidents = BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false, includeSimulated: false),
+                Incidents = SupportBundleExtras.FilterCrashes(
+                    BuildIncidentsResponse(events, steamCache, MaxIncidentDays, group: false, includeSimulated: false),
+                    VendorSoftwareProbe.ProcessNames()),
                 Smart = smart.Snapshot(),
                 Memory = BuildMemoryResponse(memDiag),
                 Gpu = BuildGpuResponse(gpu, events),
                 Cooling = cooling.Snapshot(),
                 Fans = fanChannels,
                 System = BuildSystemResponse(pnp, events),
+                UsbTopology = UsbTopology.Collect((vid, pid) => SupportBundleExtras.IsKnownUsbId(handlers, vid, pid)),
+                UserNames = identity.UserNames,
+                AccountNames = identity.AccountNames,
+                OtherHostNames = identity.HostNames,
+                MachineName = Environment.MachineName,
             });
-            var fileName = $"nexus-support-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
+            var fileName = $"nexus-support-{DateTime.Now:yyyyMMdd-HHmmss}.zip";
             return Results.File(zipBytes, "application/zip", fileName);
         }).LocalhostOnly();
 
