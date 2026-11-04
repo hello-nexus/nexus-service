@@ -1924,12 +1924,6 @@ public sealed class RgbBridge : IDisposable
         Redetect("detector-exclusions", detectorsChanged: true);
     }
 
-    /// <summary>True when this device's bytes differ from the last push, or the
-    /// heartbeat is due (never for <paramref name="saveOnly"/>: its writes hit
-    /// device memory, so only changed bytes push). Records what it approves as the new baseline.
-    /// Compares as bytes: RgbColor has no IEquatable, so Span.SequenceEqual over
-    /// the structs themselves would fall back to reflective ValueType.Equals and
-    /// cost more than the push it saves.</summary>
     /// <summary>Drops the dedup baseline so the next frame always pushes, e.g. when a device re-enters control.</summary>
     internal void ForgetBaseline(int physIdx)
     {
@@ -1937,6 +1931,12 @@ public sealed class RgbBridge : IDisposable
         _lastPushTicks.TryRemove(physIdx, out _);
     }
 
+    /// <summary>True when this device's bytes differ from the last push, or the
+    /// heartbeat is due (never for <paramref name="saveOnly"/>: its writes hit
+    /// device memory, so only changed bytes push). Records what it approves as the new baseline.
+    /// Compares as bytes: RgbColor has no IEquatable, so Span.SequenceEqual over
+    /// the structs themselves would fall back to reflective ValueType.Equals and
+    /// cost more than the push it saves.</summary>
     internal bool ShouldPush(int physIdx, RgbColor[] buf, int capHz = 0, long? nowMs = null, bool saveOnly = false)
     {
         var now = nowMs ?? Environment.TickCount64;

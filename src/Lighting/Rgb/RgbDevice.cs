@@ -74,8 +74,10 @@ public sealed class RgbDevice
         }
     }
 
-    /// <summary>Write cap in Hz this device runs at until the user picks one, or null.</summary>
+    /// <summary>Default write cap in Hz for the EVision keyboard family.</summary>
     public const int EVisionDefaultCapHz = 2;
+
+    /// <summary>Write cap in Hz this device runs at until the user picks one, or null.</summary>
     public int? DefaultMaxRateHz => IsSaveOnly && IsEVisionKeyboard ? EVisionDefaultCapHz : null;
 
     /// <summary>The EVision keyboard controller family: per-LED writes blank the keys while it reloads from memory.</summary>
