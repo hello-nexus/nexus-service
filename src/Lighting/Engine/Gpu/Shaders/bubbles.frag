@@ -137,7 +137,7 @@ void main() {
         col += vec3(1.0, 0.98, 0.94) * (arc1 * 1.3 + arc2 * 0.5) * edgeFade;
     }
 
-    // Fine particles rising through the water: one hashed cell per layer, no loop.
+    // Fine particles rising through the water: one hashed cell per layer, no loop; most cells stay empty and the rest are jittered so no grid shows.
     // Each column rises at its own rate, a multiple of 1/64 row per clock unit, and the
     // row id repeats every 16 rows, so the riseClock wrap lands on identical rows.
     float aspect = u_resolution.x / u_resolution.y;
@@ -155,12 +155,12 @@ void main() {
         float h2 = hash21(vec2(rowId * 1.7 + 3.0, colId + fl * 11.0));
         float h3 = hash21(vec2(colId * 0.9 + 7.0, rowId * 2.3 + fl));
         // Drifts a little sideways inside its cell; size and opacity vary per particle.
-        float cx = 0.5 + (h2 - 0.5) * 0.4 + 0.15 * sin(t * (0.5 + h3) + h1 * 6.28);
-        vec2 d = vec2((fract(gx) - cx) * aspect * rows / cols, fract(py) - 0.5 - (h3 - 0.5) * 0.4);
+        float cx = 0.5 + (h2 - 0.5) * 0.5 + 0.12 * sin(t * (0.5 + h3) + h1 * 6.28);
+        vec2 d = vec2((fract(gx) - cx) * aspect * rows / cols, fract(py) - 0.5 - (h3 - 0.5) * 0.5);
         float r = 0.07 + 0.07 * h3;
         float dot2 = dot(d, d);
-        if (h1 > 0.45 && dot2 < r * r * 6.0) {
-            float glow = exp(-dot2 / (r * r)) * (0.4 + 0.6 * h2);
+        if (h1 > 0.82 && dot2 < r * r * 6.0) {
+            float glow = exp(-dot2 / (r * r)) * (0.3 + 0.7 * fract(h1 * 37.0 + h3));
             float vis = smoothstep(0.0, 0.1, uv.y) * smoothstep(1.0, 0.9, uv.y);
             col += (tintedPalette(0.3 + h1 * 0.4) * 0.55 + vec3(0.45)) * glow * vis * 0.55;
         }
