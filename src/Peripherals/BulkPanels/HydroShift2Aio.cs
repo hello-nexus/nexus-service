@@ -32,6 +32,12 @@ public sealed class HydroShift2Aio : BackgroundService
     private const int RingRetryMs = 5000;
     private const int RingRetryMaxMs = 40_000;
 
+    /// <summary>
+    /// At a cold boot the firmware draws its coolant overlay after the connect-time wipe, so the
+    /// wipe is sent once more this long after the unit is first read.
+    /// </summary>
+    internal const int ConnectRewipeMs = 5000;
+
     private readonly BulkPanelHub _hub;
     private readonly HydroShift2LcdDriver _driver;
     private readonly Func<string?, bool> _wirelessOwns;
@@ -58,6 +64,8 @@ public sealed class HydroShift2Aio : BackgroundService
     private bool _wasAvailable;
     private bool _driving;
     private volatile bool _overlayClear;
+    private bool _rewipeArmed = true;
+    private long _rewipeAt;
 
     /// <summary>Whether the glass showed the AIO's own screen at the last check; null until a reading after connect names the unit.</summary>
     private bool? _ownScreen;
@@ -177,6 +185,8 @@ public sealed class HydroShift2Aio : BackgroundService
             _ringRetryMs = 0;
             _wirelessHeld = false;
             _overlayClear = false;
+            _rewipeArmed = true;
+            _rewipeAt = 0;
             _ownScreen = null;
             // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
             lock (_lock)
@@ -212,6 +222,11 @@ public sealed class HydroShift2Aio : BackgroundService
         if (Params is { } current)
         {
             var own = ShowsOwnScreen;
+            if (_rewipeArmed)
+            {
+                _rewipeArmed = false;
+                _rewipeAt = now + ConnectRewipeMs;
+            }
             if (own != _ownScreen)
             {
                 // Nexus widgets taking the glass back wipe the AIO's screen; after a connect the handshake already did.
@@ -222,12 +237,17 @@ public sealed class HydroShift2Aio : BackgroundService
                 _ownScreen = own;
                 RaiseScreenOwnerChanged(current.Mac, own);
             }
-            if (_overlayClear)
+            var rewipe = _rewipeAt != 0 && now >= _rewipeAt;
+            if (rewipe)
+            {
+                _rewipeAt = 0;
+            }
+            if (_overlayClear || rewipe)
             {
                 _overlayClear = false;
-                if (!own)
+                if (!own && !_hub.Exchange(pipe => _driver.ClearOverlay(pipe), false))
                 {
-                    _hub.Exchange(pipe => _driver.ClearOverlay(pipe), false);
+                    ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] overlay wipe unanswered");
                 }
             }
         }

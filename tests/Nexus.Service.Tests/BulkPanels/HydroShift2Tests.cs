@@ -570,6 +570,29 @@ public class HydroShift2Tests
     }
 
     [Fact]
+    public void The_overlay_is_wiped_again_once_after_the_first_reading_for_a_cold_boot()
+    {
+        var (aio, pipe) = Attached(_ => false);
+        aio.Tick(1_000);
+        aio.Tick(1_000 + HydroShift2Aio.ConnectRewipeMs - 1);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+
+        aio.Tick(1_000 + HydroShift2Aio.ConnectRewipeMs);
+        aio.Tick(30_000);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
+    public void The_cold_boot_wipe_is_skipped_while_the_unit_shows_its_own_screen()
+    {
+        var (aio, pipe) = Attached(_ => true, _ => false);
+        aio.Tick(1_000);
+        aio.Tick(30_000);
+
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+    }
+
+    [Fact]
     public void A_switch_acknowledged_before_the_first_reading_is_wiped_once_the_unit_is_read()
     {
         var (aio, pipe) = Attached(_ => true);
