@@ -64,6 +64,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
 
                 _hub.Attach(device);
                 bool started = false;
+                string detachCause = "unknown";
                 try
                 {
                     if (_hub.Connect())
@@ -71,6 +72,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                         started = true;
                         connectFailureLogged = false;
                         ServiceLog.Info($"[nzxt-fan-controller] connected: {_hub.Fans.Length} fan channel(s)");
+                        detachCause = "service stopping";
                         while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(NzxtFanControllerHub.DeviceId))
                         {
                             if (_hub.Poll())
@@ -79,8 +81,13 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                             }
                             else if (_hub.Lost)
                             {
+                                detachCause = DescribeLoss();
                                 break;
                             }
+                        }
+                        if (detachCause == "service stopping" && !stoppingToken.IsCancellationRequested && !_gate.IsEnabled(NzxtFanControllerHub.DeviceId))
+                        {
+                            detachCause = "gate turned off";
                         }
                     }
                     else
@@ -98,7 +105,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                     _hub.Detach();
                     if (started)
                     {
-                        ServiceLog.Info("[nzxt-fan-controller] disconnected");
+                        ServiceLog.Info($"[nzxt-fan-controller] disconnected: {detachCause}; {_hub.DescribeSilence()}");
                     }
                 }
             }
@@ -112,6 +119,15 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                 await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
             }
         }
+    }
+
+    private string DescribeLoss()
+    {
+        if (!_presence.UsbPresent(NzxtFanControllerProtocol.VendorId, NzxtFanControllerProtocol.ProductIds))
+        {
+            return "usb device absent";
+        }
+        return _hub.LastReadFailed ? "hid read error" : "lost by silence";
     }
 
     private IHidDevice? FindAndOpen()
