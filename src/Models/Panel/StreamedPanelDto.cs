@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace Nexus.Service.Models.Panel;
 
@@ -20,6 +21,15 @@ public sealed class StreamAssignmentDto
 
     /// <summary>"h264" (default) or "rawBgra"; picks the overlay's frame sink.</summary>
     public string Codec { get; set; } = "h264";
+
+    /// <summary>Base name of the Global shared-memory section the overlay may write raw frames into: it appends its writer nonce (the X-Nexus-Frame-Writer ingest header) and the service creates that section when the ingest binds; null keeps HTTP ingest only.</summary>
+    public string? FrameSection { get; set; }
+
+    /// <summary>Bytes one frame may occupy in <see cref="FrameSection"/>.</summary>
+    public int FrameSectionBytes { get; set; }
+
+    /// <summary>The glass reports touch: the host reads GET /panel/streams/{sessionId}/touch and injects it into the page.</summary>
+    public bool Touch { get; set; }
 }
 
 public sealed class StreamAssignmentsResponse

@@ -11,6 +11,8 @@ namespace Nexus.Service.Helper;
 /// build per hypothesis. Every poller runs by default; naming one in
 /// NEXUS_HELPER_DISABLE makes its tick a no-op (the object is still
 /// constructed, so the request handlers that depend on it keep working).
+/// The one exception is <see cref="WindowSetEager"/>, an option rather than a
+/// disable, listed in <see cref="Options"/>.
 ///
 /// Also raises the slow-pass log line: a tick that exceeds
 /// <see cref="SlowPassMs"/> reports its duration, which is the measurement
@@ -33,6 +35,25 @@ public static class HelperPollerDiagnostics
     public const string LockInput = "lockinput";
 
     public static readonly string[] Known = { WindowSet, ScreenTime, Audio, Watchdog, LockInput };
+
+    // Each sub-switch except WindowSetEager turns off exactly one piece of the
+    // window-set pass while the rest keeps running, so a field bisect can name
+    // the costly call.
+    public const string WindowSetHooks = "windowset-hooks";
+    public const string WindowSetDwm = "windowset-dwm";
+    public const string WindowSetFallback = "windowset-fallback";
+    public const string WindowSetTrickle = "windowset-trickle";
+    public const string WindowSetEnum = "windowset-enum";
+
+    /// <summary>Not a disable: restores the original read order (every cheap
+    /// attribute read for every window) so the lazy order can be A/B tested.</summary>
+    public const string WindowSetEager = "windowset-eager";
+
+    public static readonly string[] SubSwitches = { WindowSetHooks, WindowSetDwm, WindowSetFallback, WindowSetTrickle, WindowSetEnum, WindowSetEager };
+
+    /// <summary>Recognized names that enable behavior instead of disabling a
+    /// piece; the startup line reports them apart from the disables.</summary>
+    public static readonly string[] Options = { WindowSetEager };
 
     /// <summary>
     /// A tick slower than this is worth a log line. Set at the rough floor of
@@ -124,8 +145,15 @@ public static class HelperPollerDiagnostics
             s_fromEnv = pinned.Count > 0;
             s_disabled = s_fromEnv ? pinned : ReadFile(filePath);
             s_nextCheckTicks = Environment.TickCount64 + (long)RecheckInterval.TotalMilliseconds;
+            Interlocked.Increment(ref s_changeCount);
         }
     }
+
+    private static int s_changeCount;
+
+    /// <summary>Bumped whenever the effective switch set changes (including the
+    /// initial Configure), so a consumer can restart its own per-change window.</summary>
+    public static int ChangeCount => Volatile.Read(ref s_changeCount);
 
     public static bool IsDisabled(string poller)
     {
@@ -150,6 +178,7 @@ public static class HelperPollerDiagnostics
             var next = ReadFile(s_filePath);
             if (next.SetEquals(s_disabled)) return;
             s_disabled = next;
+            Interlocked.Increment(ref s_changeCount);
             Log?.Invoke(FormatStartupLine(next));
         }
     }
@@ -180,10 +209,17 @@ public static class HelperPollerDiagnostics
         if (disabled.Count == 0) return "[helper-perf] all pollers enabled";
 
         var recognized = new List<string>();
+        var options = new List<string>();
         var unrecognized = new List<string>();
         foreach (var name in disabled)
         {
+            if (Array.Exists(Options, k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                options.Add(name);
+                continue;
+            }
             (Array.Exists(Known, k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase))
+                || Array.Exists(SubSwitches, k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase))
                 ? recognized
                 : unrecognized).Add(name);
         }
@@ -191,15 +227,19 @@ public static class HelperPollerDiagnostics
         var line = recognized.Count > 0
             ? $"[helper-perf] disabled: {string.Join(",", recognized)}"
             : "[helper-perf] all pollers enabled";
+        if (options.Count > 0)
+        {
+            line += $" (option on: {string.Join(",", options)})";
+        }
         if (unrecognized.Count > 0)
         {
-            line += $" (unrecognized, ignored: {string.Join(",", unrecognized)}; known: {string.Join(",", Known)})";
+            line += $" (unrecognized, ignored: {string.Join(",", unrecognized)}; known: {string.Join(",", Known)}; sub-switches: {string.Join(",", SubSwitches)})";
         }
         return line;
     }
 
-    public static string FormatSlowPass(string poller, double elapsedMs, int items) =>
-        $"[helper-perf] {poller} pass={elapsedMs:F1}ms items={items}";
+    public static string FormatSlowPass(string poller, double elapsedMs, int items, string? detail = null) =>
+        $"[helper-perf] {poller} pass={elapsedMs:F1}ms items={items}" + (detail is null ? "" : " " + detail);
 
     /// <summary>
     /// Rate-limited slow-pass line. Returns false when this poller already
@@ -207,7 +247,7 @@ public static class HelperPollerDiagnostics
     /// occurrence is counted and reported on the next line that does emit.
     /// Callers on several poller threads, so the gate is locked.
     /// </summary>
-    public static bool TryFormatSlowPass(string poller, double elapsedMs, int items, out string line)
+    public static bool TryFormatSlowPass(string poller, double elapsedMs, int items, out string line, string? detail = null)
     {
         int suppressed;
         lock (s_gate)
@@ -224,7 +264,7 @@ public static class HelperPollerDiagnostics
             s_slowPassGate[poller] = (now + (long)SlowPassLogInterval.TotalMilliseconds, 0);
         }
 
-        line = FormatSlowPass(poller, elapsedMs, items);
+        line = FormatSlowPass(poller, elapsedMs, items, detail);
         if (suppressed > 0) line += $" (+{suppressed} more in the last {SlowPassLogInterval.TotalSeconds:F0}s)";
         return true;
     }

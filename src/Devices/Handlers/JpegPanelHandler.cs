@@ -16,6 +16,8 @@ public sealed class JpegPanelHandler : IDeviceHandler
 {
     private readonly JpegPanelHub _hub;
 
+    public JpegPanelHub Hub => _hub;
+
     public JpegPanelHandler(JpegPanelHub hub)
     {
         _hub = hub;

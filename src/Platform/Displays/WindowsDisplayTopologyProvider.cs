@@ -64,6 +64,7 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
                         IsInternal = isInternal,
                         IsTouch = touchMonitors.Contains(hMonitor),
                         RawHardwareId = WindowsDisplayIdentity.ReadMonitorDeviceId(info.szDevice),
+                        AdapterName = WindowsDisplayIdentity.ReadAdapterString(info.szDevice),
                     };
 
                     // Native mode pixels: the registry-backed current mode is

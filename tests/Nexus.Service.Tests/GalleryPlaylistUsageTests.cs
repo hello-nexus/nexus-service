@@ -28,14 +28,12 @@ public sealed class GalleryPlaylistUsageTests
         s.Panel.DashboardLayout = Layout(Gallery("pl-a"), Gallery("pl-a"), Gallery("pl-b"), Gallery(null));
         s.PanelDevices["y70"] = new PanelDeviceRecord { Id = "y70", DisplayName = "Y70 Touch", Layout = Layout(Gallery("pl-a")) };
         s.PanelDevices["edge"] = new PanelDeviceRecord { Id = "edge", DisplayName = "Xeneon Edge", Layout = Layout(Gallery("pl-b")) };
-        s.Overlay.Layout.Add(new OverlayWidgetDto { Id = "o1", Type = "gallery", Config = Plays("pl-a") });
 
         var uses = GalleryPlaylistUsage.Find(s, "pl-a");
 
-        Assert.Equal(3, uses.Count);
+        Assert.Equal(2, uses.Count);
         Assert.Equal((GalleryPlaylistUseSurfaces.Dashboard, "", 2), (uses[0].Surface, uses[0].Name, uses[0].Count));
         Assert.Equal((GalleryPlaylistUseSurfaces.Panel, "Y70 Touch", 1), (uses[1].Surface, uses[1].Name, uses[1].Count));
-        Assert.Equal((GalleryPlaylistUseSurfaces.Desktop, "", 1), (uses[2].Surface, uses[2].Name, uses[2].Count));
     }
 
     [Fact]

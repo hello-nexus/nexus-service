@@ -295,7 +295,7 @@ public sealed class DisplayTopologyRoutesTests
     }
 
     [Fact]
-    public async Task Reserve_monitor_patch_flows_into_assignments()
+    public async Task Primary_display_assignment_forces_the_guards_off_and_stamps_desktop_defaults()
     {
         DisplayTopologyService.HostingSupportedOverrideForTests = true;
         try
@@ -307,22 +307,20 @@ public sealed class DisplayTopologyRoutesTests
                 using var doc = JsonDocument.Parse(await promote.Content.ReadAsStringAsync());
                 var recordId = doc.RootElement.GetProperty("id").GetString();
 
-                // Default: reserved.
-                using (var assignments = JsonDocument.Parse(await client.GetStringAsync("/displays/assignments")))
-                {
-                    Assert.True(assignments.RootElement.GetProperty("assignments")[0]
-                        .GetProperty("reserveMonitor").GetBoolean());
-                }
-
+                // The fake topology's only monitor is primary: guards read off whatever the record holds.
                 var patch = await client.PostAsync($"/panel/devices/{recordId}",
-                    Json("{\"reserveMonitor\":false}"));
+                    Json("{\"reserveMonitor\":true,\"keepCursorOff\":true}"));
                 Assert.True(patch.IsSuccessStatusCode);
 
-                using (var assignments = JsonDocument.Parse(await client.GetStringAsync("/displays/assignments")))
-                {
-                    Assert.False(assignments.RootElement.GetProperty("assignments")[0]
-                        .GetProperty("reserveMonitor").GetBoolean());
-                }
+                using var assignments = JsonDocument.Parse(await client.GetStringAsync("/displays/assignments"));
+                var entry = assignments.RootElement.GetProperty("assignments")[0];
+                Assert.True(entry.GetProperty("isPrimary").GetBoolean());
+                Assert.False(entry.GetProperty("reserveMonitor").GetBoolean());
+                Assert.False(entry.GetProperty("keepCursorOff").GetBoolean());
+                Assert.False(entry.GetProperty("alwaysOnTop").GetBoolean());
+                var seeThrough = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
+                Assert.Equal(seeThrough, entry.GetProperty("clickThrough").GetBoolean());
+                Assert.Equal(seeThrough ? "desktop" : "", entry.GetProperty("backdrop").GetString());
             }
         }
         finally

@@ -166,6 +166,21 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Preferences_POST_drops_a_client_resolvedThemeMode_but_keeps_themeMode()
+    {
+        var client = AuthedClient();
+        _factory.Services.GetRequiredService<IConfigStore>().Update(s => s.Theme.ResolvedThemeMode = "light");
+
+        var postRes = await client.PostAsJsonAsync("/preferences",
+            new { theme = new { themeMode = "system", resolvedThemeMode = "dark" } });
+        Assert.Equal(HttpStatusCode.OK, postRes.StatusCode);
+
+        var theme = (await (await client.GetAsync("/preferences")).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("theme");
+        Assert.Equal("light", theme.GetProperty("resolvedThemeMode").GetString());
+        Assert.Equal("system", theme.GetProperty("themeMode").GetString());
+    }
+
+    [Fact]
     public async Task Preferences_disable_gpu_monitoring_defaults_false_and_round_trips()
     {
         var client = AuthedClient();

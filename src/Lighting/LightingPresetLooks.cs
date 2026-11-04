@@ -31,6 +31,7 @@ public static class LightingPresetLooks
             AnimateState = Clone(Resolve(templates, lighting.Animate?.States, animate)),
             StaticState = Clone(Resolve(templates, lighting.Static?.States, still)),
             AnimateSlot = SelectedSlot(templates, animate),
+            AnimateSimple = lighting.Animate?.Simple ?? false,
             StaticSlot = SelectedSlot(templates, still),
             GlobalBrightness = lighting.GlobalBrightness,
             MusicReactive = lighting.MusicReactive,
@@ -60,7 +61,7 @@ public static class LightingPresetLooks
     /// <summary>Restore a captured selection. The caller engages the engine after.</summary>
     public static void Apply(LightingSettings lighting, LightingPresetLook look)
     {
-        lighting.Sync = RemovedSyncModes.Normalize(look.Sync);
+        lighting.Sync = SimplePatternMigration.Normalize(RemovedSyncModes.Normalize(look.Sync));
         // A non-finite level propagates through RgbBridge.OnFrame and zeroes
         // every LED, the same hazard POST /lighting/global-brightness guards.
         if (look.GlobalBrightness is { } brightness && float.IsFinite(brightness))
@@ -73,9 +74,11 @@ public static class LightingPresetLooks
         }
         if (!string.IsNullOrEmpty(look.AnimateEffect))
         {
-            lighting.Animate.Effect = look.AnimateEffect;
-            SetSlot(lighting.Animate.Templates, look.AnimateEffect, look.AnimateSlot);
-            WriteState(lighting, lighting.Animate.States, look.AnimateEffect, look.AnimateState);
+            var animateEffect = SimplePatternMigration.Normalize(look.AnimateEffect);
+            lighting.Animate.Effect = animateEffect;
+            lighting.Animate.Simple = look.AnimateSimple;
+            SetSlot(lighting.Animate.Templates, animateEffect, look.AnimateSlot);
+            WriteState(lighting, lighting.Animate.States, animateEffect, look.AnimateState);
         }
         lighting.Static.Color = StaticColorHex.TryParse(look.StaticColor, out _, out _, out _) ? look.StaticColor : null;
         if (!string.IsNullOrEmpty(look.StaticEffect))

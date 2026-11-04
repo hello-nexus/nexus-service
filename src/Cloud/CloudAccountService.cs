@@ -25,7 +25,12 @@ public sealed class CloudActionResult
     public string? ErrorEmail { get; init; }
     public bool Offline { get; init; }
 
+    /// <summary>What a profile import did with a PC setup in the backup; null when it carried none.</summary>
+    public string? PcSetup { get; init; }
+
     public static CloudActionResult Ok() => new() { Success = true, StatusCode = 200 };
+
+    public static CloudActionResult Ok(string? pcSetup) => new() { Success = true, StatusCode = 200, PcSetup = pcSetup };
 
     public static CloudActionResult Fail(string code, string message, int statusCode = 400) =>
         new() { Success = false, StatusCode = statusCode, ErrorCode = code, ErrorMessage = message };

@@ -90,14 +90,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         // dot + Cooling view restoration can tell curve-driven fans apart from
         // user-set bias speeds. _softwareControlled alone cannot distinguish
         // them because the engine's DriveFanSpeed path adds to that set too.
-        var curveOutputs = new HashSet<string>();
-        foreach (var c in settings.Cooling.Curves)
-        {
-            foreach (var o in c.Outputs)
-            {
-                curveOutputs.Add(o.Id);
-            }
-        }
+        var curveOutputs = CurveModes.BoundFanIds(_config);
         var result = new List<FanChannel>(mappings.Count);
 
         foreach (var m in mappings)
@@ -202,6 +195,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         _softwareControlled.Add(channelId);
         // No ManualSpeeds write - see interface doc.
     }
+
+    // WriteDefault returns the header to its SuperIO / driver default.
+    public bool ReleaseRestoresHardwareControl(string channelId) => true;
 
     public void ReleaseFan(string channelId)
     {

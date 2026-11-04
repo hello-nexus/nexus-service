@@ -85,6 +85,8 @@ public sealed class RelayConnectionService : BackgroundService
     private readonly IHttpClientFactory? _httpFactory;
 
     private readonly object _gate = new();
+
+    private readonly object _reconcileGate = new();
     private readonly Dictionary<string, HostLink> _links = new(StringComparer.Ordinal);
     private CancellationToken _serviceCt = CancellationToken.None;
     private bool _started;
@@ -233,6 +235,15 @@ public sealed class RelayConnectionService : BackgroundService
     /// brand-new session's runtime link appears on the same pass.
     /// </summary>
     private void Reconcile()
+    {
+        // Passes run on pool threads; an older pass applying its stale desired set after a newer one would drop the newer link and nothing would bring it back.
+        lock (_reconcileGate)
+        {
+            ReconcileCore();
+        }
+    }
+
+    private void ReconcileCore()
     {
         if (!_started)
             return;

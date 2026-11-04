@@ -22,6 +22,22 @@ public static class LightingRoutes
 
     private const int MaxSunLabelLength = 80;
 
+    // The response body is serialized after the handler returns, outside the store lock, while edits mutate these
+    // dictionaries in place. A copy taken under the lock is what the serializer then walks.
+    internal static T SnapshotUnderLock<T>(
+        Nexus.Service.Persistence.IConfigStore store,
+        Func<Nexus.Service.Persistence.NexusSettings, T> pick,
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> info)
+        where T : class, new()
+    {
+        byte[]? json = null;
+        store.Read(s => json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(pick(s), info));
+        return System.Text.Json.JsonSerializer.Deserialize(json!, info) ?? new T();
+    }
+
+    private static Models.Lighting.GlobalBrightnessBody ToGlobalBrightnessBody(Nexus.Service.Persistence.NexusSettings settings) =>
+        new() { Value = settings.Lighting.GlobalBrightness, MasterScalesDevices = settings.MasterScalesDevices };
+
     private static Models.Lighting.BrightnessScheduleBody BuildBrightnessScheduleBody(
         Nexus.Service.Persistence.BrightnessSchedule schedule, Nexus.Service.Lighting.Sun.SunLocationResolver resolver, bool forceResolve = false)
     {
@@ -74,7 +90,7 @@ public static class LightingRoutes
     public static void MapLightingEndpoints(this WebApplication app)
     {
         app.MapPost("/lighting/stop", (ILightingProvider l, MultiplexHub hub) => { l.StopAll(); ResetEffectSignature(); PanelTopics.BroadcastLighting(hub); return ApiResponse.Ok(); }).AllowPanel();
-        app.MapGet("/lighting/current", (ILightingProvider l, Nexus.Service.Persistence.IConfigStore store) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused, StudioLive = l.StudioLiveActive, GameSyncRemovedNotice = store.Load().GameSyncRemovedNotice }).AllowPanel();
+        app.MapGet("/lighting/current", (ILightingProvider l) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused, StudioLive = l.StudioLiveActive }).AllowPanel();
         // Freeze/resume the active effect's rendered frame. No-op with no active
         // effect (engine not running); returns the resulting paused state either way.
         app.MapPost("/lighting/pause", (Models.Lighting.LightingPauseBody body, ILightingProvider l, MultiplexHub hub) =>
@@ -84,9 +100,9 @@ public static class LightingRoutes
             return Results.Json(new Models.Lighting.LightingPauseResponse { Paused = l.IsPaused }, AppJsonContext.Default.LightingPauseResponse);
         }).AllowPanel();
         app.MapGet("/lighting/animate/settings", (Nexus.Service.Persistence.IConfigStore store) =>
-            store.Load().Lighting.Animate).AllowPanel();
+            SnapshotUnderLock(store, s => s.Lighting.Animate, AppJsonContext.Default.AnimateSettings)).AllowPanel();
         app.MapGet("/lighting/static/settings", (Nexus.Service.Persistence.IConfigStore store) =>
-            store.Load().Lighting.Static).AllowPanel();
+            SnapshotUnderLock(store, s => s.Lighting.Static, AppJsonContext.Default.StaticSettings)).AllowPanel();
         // Canonical default template bundles. The web keeps no copy of these
         // tables; it merges this over the sparse user deltas from
         // /lighting/animate/settings. Static per binary, so clients revalidate
@@ -278,24 +294,31 @@ public static class LightingRoutes
                 GpuSoftwareForced = gpu is { Available: true, IsWarp: true } && GpuBackend.SoftwareForced,
             };
         }).AllowPanel();
-        // Master brightness slider: caps every LED channel before it leaves the
-        // RGB bridge (a device never renders brighter than master). Read live by
+        // Master brightness slider: joined to each device's brightness before an LED
+        // leaves the RGB bridge, as a cap or (masterScalesDevices) a multiplier. Read live by
         // RgbBridge.OnFrame, so a POST takes effect on the next frame push
         // without restarting any effect.
         app.MapGet("/lighting/global-brightness", (Nexus.Service.Persistence.IConfigStore store) =>
-            new Models.Lighting.GlobalBrightnessBody { Value = store.Load().Lighting.GlobalBrightness }).AllowPanel();
+            ToGlobalBrightnessBody(store.Load())).AllowPanel();
         app.MapPost("/lighting/global-brightness", (Models.Lighting.GlobalBrightnessBody body,
             Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
         {
             // Math.Clamp(NaN, ...) returns NaN, which would propagate through
             // RgbBridge.OnFrame and zero every LED. Treat a non-finite payload
-            // as "no change requested" - fall back to the documented default.
-            var safe = float.IsFinite(body.Value) ? body.Value : 1.0f;
-            var clamped = Math.Clamp(safe, 0f, 1f);
+            // as "no change requested".
+            float? clamped = body.Value is { } v && float.IsFinite(v) ? Math.Clamp(v, 0f, 1f) : null;
+            var scales = body.MasterScalesDevices;
             store.Update(s =>
             {
-                s.Lighting.GlobalBrightness = clamped;
-                Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
+                if (scales is { } on)
+                {
+                    s.MasterScalesDevices = on;
+                }
+                if (clamped is { } level)
+                {
+                    s.Lighting.GlobalBrightness = level;
+                    Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
+                }
             });
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
@@ -507,6 +530,16 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
+        app.MapPost("/lighting/animate/simple", (AnimateSimpleBody body, ILightingProvider l, MultiplexHub hub, FeatureGates gates) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            l.SetAnimateSimple(body.Simple);
+            PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
         app.MapPost("/lighting/static/headless-start", (StaticHeadlessStart body, ILightingProvider l, MultiplexHub hub, FeatureGates gates, Nexus.Service.Telemetry.ITelemetry telemetry, Nexus.Service.Persistence.IConfigStore store) =>
         {
             if (!gates.Lighting)
@@ -635,7 +668,7 @@ public static class LightingRoutes
         });
         app.MapDelete("/lighting/custom-effects/{id}", (string id,
             Nexus.Service.Lighting.CustomEffects.CustomEffectStore custom,
-            ILightingProvider l, MultiplexHub hub) =>
+            ILightingProvider l, MultiplexHub hub, Nexus.Service.Persistence.IConfigStore config) =>
         {
             if (!custom.EnsureAvailable())
             {
@@ -645,7 +678,22 @@ public static class LightingRoutes
             {
                 return Results.NotFound();
             }
-            l.DropCustomEffect(ShaderLibrary.CustomPrefix + id);
+            var key = ShaderLibrary.CustomPrefix + id;
+            l.DropCustomEffect(key);
+            // Recents live in settings and every client reads them, so the entries go here, not in one client.
+            var pruned = false;
+            config.Update(s =>
+            {
+                if (Nexus.Service.Persistence.UiRecents.PruneEffect(s.Ui.RecentAnimations, key) is { } kept)
+                {
+                    s.Ui.RecentAnimations = kept;
+                    pruned = true;
+                }
+            });
+            if (pruned)
+            {
+                PanelTopics.BroadcastPrefs(hub);
+            }
             PanelTopics.BroadcastLighting(hub);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });

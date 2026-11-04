@@ -28,6 +28,7 @@ public sealed class VendorAppControlPause : BackgroundService
         TryRefresh();
         // A device choice re-checks at once rather than on the next poll.
         _gate.Changed += (_, _) => TryRefresh();
+        _gate.HoldSourceChanged += TryRefresh;
     }
 
     /// <summary>Scans only while the user has a device on whose competing app is whitelisted.</summary>
@@ -37,9 +38,12 @@ public sealed class VendorAppControlPause : BackgroundService
         var paused = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var handler in DeviceControlPolicy.HandlersWithConflictApp())
         {
-            if (!_gate.IsChosenOn(handler)) continue;
+            // A device kept only by a secondary monitor yields to its app like a chosen-on one.
+            var heldForMonitor = !_gate.IsChosenOn(handler) && _gate.KeepsDeviceClaimed?.Invoke(handler) == true;
+            if (!_gate.IsChosenOn(handler) && !heldForMonitor) continue;
             var appId = DeviceControlPolicy.ConflictAppFor(handler)!;
-            var yields = DeviceControlPolicy.YieldsToRunningApp(handler)
+            var yields = heldForMonitor
+                || DeviceControlPolicy.YieldsToRunningApp(handler)
                 || whitelist.Contains(appId, StringComparer.OrdinalIgnoreCase);
             if (!yields) continue;
             if (_detector.IsAppRunning(appId)) paused[handler] = appId;

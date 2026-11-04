@@ -91,7 +91,7 @@ public class LinuxPanelKioskHostTests
 
     // The root daemon adopts the session user's HOME after start, so a value
     // cached at type-init would send every kiosk profile to /root.
-    [Fact]
+    [NonWindowsFact]
     public void ProfileDir_ReadsHomeAtCallTime()
     {
         var prev = Environment.GetEnvironmentVariable("HOME");

@@ -21,7 +21,7 @@
     "backgroundEffect": "plasma",
     "backgroundTemplate": 0,
     "backgroundOpacity": 1.0,
-    "widgetOpacity": 0.7,
+    "widgetOpacity": 1.0,
     "widgetLabels": false,
     "layouts": {
       "desktop": {
@@ -44,8 +44,8 @@
             }
           },
           {
-            "type": "diagnostics",
-            "size": "2x2",
+            "type": "build",
+            "size": "4x2",
             "col": 4,
             "row": 0
           },
@@ -56,15 +56,21 @@
             "row": 2
           },
           {
-            "type": "weather",
+            "type": "cooling",
+            "size": "4x2",
+            "col": 0,
+            "row": 4
+          },
+          {
+            "type": "diagnostics",
             "size": "2x2",
             "col": 4,
             "row": 2
           },
           {
-            "type": "cooling",
-            "size": "4x2",
-            "col": 0,
+            "type": "weather",
+            "size": "2x2",
+            "col": 4,
             "row": 4
           }
         ]
@@ -96,7 +102,7 @@
           },
           {
             "type": "lighting",
-            "size": "4x2",
+            "size": "4x4",
             "col": 0,
             "row": 4
           },
@@ -104,7 +110,7 @@
             "type": "cooling",
             "size": "4x2",
             "col": 0,
-            "row": 6
+            "row": 8
           }
         ]
       },
@@ -186,16 +192,8 @@
     }
   },
 
-  "overlay": {
-    "enabled": false,
-    "alwaysOnTop": false,
-    "scale": 100,
-    "opacity": 1.0,
-    "monitor": -1
-  },
-
   "lighting": {
-    "sync": "sweeprainbow",
+    "sync": "rainbow",
     "brightnessEnabled": false,
     "speedEnabled": false,
     "frameRate": 60,
@@ -204,7 +202,7 @@
     "sleepBlackout": true,
     "staticColor": { "r": 255, "g": 0, "b": 0 },
     "animate": {
-      "effect": "sweeprainbow",
+      "effect": "rainbow",
       "state": {
         "speed": 50,
         "intensity": 1.0,
@@ -253,7 +251,7 @@
     "globalSpeedModifier": 1.0,
     "activePreset": "off",
     "presets": {
-      "silent":      { "responseTime": 3.0, "minTemp": 45, "maxTemp": 85, "minSpeed": 20, "maxSpeed": 70  },
+      "silent":      { "responseTime": 3.0, "minTemp": 45, "maxTemp": 85, "minSpeed": 20, "maxSpeed": 80  },
       "balanced":    { "responseTime": 1.5, "minTemp": 35, "maxTemp": 75, "minSpeed": 30, "maxSpeed": 90  },
       "turbo":       { "responseTime": 0.5, "minTemp": 30, "maxTemp": 65, "minSpeed": 50, "maxSpeed": 100 },
       "max":         { "responseTime": 0.5, "minTemp": 20, "maxTemp": 100, "minSpeed": 100, "maxSpeed": 100 }

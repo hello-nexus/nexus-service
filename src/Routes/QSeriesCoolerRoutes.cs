@@ -72,7 +72,7 @@ public static partial class DevicesRoutes
                 return Results.Conflict(ApiResponse.Fail("Q-series cooler not connected"));
             var a = hub.TryReadFirmwareAnimation();
             if (a is null)
-                return Results.Problem("Failed to read firmware animation from Q-series cooler.");
+                return FirmwareReadBusy("Failed to read firmware animation from Q-series cooler.");
             return Results.Ok(new QSeriesFirmwareAnimationResponse
             {
                 Supported = hub.SupportsFirmwareAnimation,

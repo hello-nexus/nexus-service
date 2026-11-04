@@ -69,11 +69,35 @@ public static class DevSimRoutes
             return Results.Json(Describe(sim), AppJsonContext.Default.DevSimEventsResponse);
         });
 
+        MapAstralSim(app);
+
+        // PUT /dev/restricted?on=true forces system/session restricted:true until PUT ?on=false or restart.
+        app.MapPut("/dev/restricted", (bool on, Nexus.Service.Lifecycle.RestrictedModePublisher restricted) =>
+        {
+            Nexus.Service.Lifecycle.RestrictedModePublisher.DevForce = on;
+            restricted.Publish();
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+
         app.MapPost("/dev/sim/clear", (DevSimEvents sim) =>
         {
             sim.Clear();
             return Results.Json(Describe(sim), AppJsonContext.Default.DevSimEventsResponse);
         });
+    }
+
+    /// <summary>Simulated Astral card; each change refreshes the Devices list so the entry appears and goes at once.</summary>
+    private static void MapAstralSim(WebApplication app)
+    {
+        IResult Reply(AstralSimDto dto, IServiceProvider sp)
+        {
+            sp.GetService<DeviceBroadcaster>()?.BroadcastNow();
+            return Results.Json(dto, AppJsonContext.Default.AstralSimDto);
+        }
+
+        app.MapGet("/dev/sim/astral", (AstralSim sim) => Results.Json(sim.Get(), AppJsonContext.Default.AstralSimDto));
+        app.MapPost("/dev/sim/astral", (AstralSimRequest? body, AstralSim sim, IServiceProvider sp) => Reply(sim.Set(body ?? new AstralSimRequest()), sp));
+        app.MapDelete("/dev/sim/astral", (AstralSim sim, IServiceProvider sp) => Reply(sim.Stop(), sp));
     }
 
     internal static DevSimEventsResponse Describe(DevSimEvents sim) => new()

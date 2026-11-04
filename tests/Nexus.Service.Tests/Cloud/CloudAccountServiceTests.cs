@@ -42,7 +42,7 @@ public sealed class CloudAccountServiceTests
         Assert.Equal("acct-1", accountId);
         Assert.Equal("acct-1", svc.ActiveAccountId);
         var rec = Assert.Single(store.Load().Auth!.CloudAccounts);
-        Assert.Equal("refresh-1", rec.RefreshToken);
+        Assert.Equal("refresh-1", Nexus.Service.Security.SecretProtector.Unprotect(rec.RefreshToken));
         Assert.Equal("nicola", rec.Username);
     }
 
@@ -129,7 +129,7 @@ public sealed class CloudAccountServiceTests
         // The rotated refresh token is durable (in the store) - the sole source
         // of truth a restart would read, independent of the in-memory access-
         // token cache this same call also populated.
-        Assert.Equal("new-refresh", store.Load().Auth!.CloudAccounts[0].RefreshToken);
+        Assert.Equal("new-refresh", Nexus.Service.Security.SecretProtector.Unprotect(store.Load().Auth!.CloudAccounts[0].RefreshToken));
 
         // A second GetValidAccessTokenAsync call must hit the in-memory cache,
         // not the network - proving the cache was populated (after the persist

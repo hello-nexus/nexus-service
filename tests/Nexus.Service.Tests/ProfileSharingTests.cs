@@ -22,6 +22,36 @@ public class ProfileSharingTests
     }
 
     [Fact]
+    public void WriteCategory_Theme_never_touches_the_live_hosts_theme()
+    {
+        var live = new NexusSettings();
+        live.Theme.ResolvedThemeMode = "light";
+        var file = new NexusSettings();
+
+        ProfileSharing.WriteCategory(file, live, ProfileSharing.Theme);
+
+        Assert.Equal("light", live.Theme.ResolvedThemeMode);
+    }
+
+    [Fact]
+    public void Theme_apply_and_reset_keep_the_targets_host_theme()
+    {
+        var source = new NexusSettings();
+        source.Theme.ThemeMode = "dark";
+        source.Theme.ResolvedThemeMode = "dark";
+        var target = new NexusSettings();
+        target.Theme.ResolvedThemeMode = "light";
+
+        ProfileSharing.ApplyCategory(target, source, ProfileSharing.Theme);
+        Assert.Equal("dark", target.Theme.ThemeMode);
+        Assert.Equal("light", target.Theme.ResolvedThemeMode);
+
+        ProfileSharing.ResetCategory(target, ProfileSharing.Theme);
+        Assert.Equal("system", target.Theme.ThemeMode);
+        Assert.Equal("light", target.Theme.ResolvedThemeMode);
+    }
+
+    [Fact]
     public void ApplyCategory_Dashboard_CarriesAndResetsTheDashboardGaugeGradient()
     {
         var source = new NexusSettings();
@@ -67,6 +97,21 @@ public class ProfileSharingTests
 
         ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
         Assert.Equal(new[] { "curated:keeb" }, target.Ui.HiddenSidebarDevices);
+    }
+
+    [Fact]
+    public void Dashboard_LeavesTheRecentLightingListsAlone()
+    {
+        var source = new NexusSettings();
+        var target = new NexusSettings();
+        target.Ui.RecentStaticColors = new List<string> { "#FF8800" };
+        target.Ui.RecentAnimations = new List<string> { "fire" };
+
+        ProfileSharing.ApplyCategory(target, source, ProfileSharing.Dashboard);
+        ProfileSharing.ResetCategory(target, ProfileSharing.Dashboard);
+
+        Assert.Equal(new[] { "#FF8800" }, target.Ui.RecentStaticColors);
+        Assert.Equal(new[] { "fire" }, target.Ui.RecentAnimations);
     }
 
     [Fact]

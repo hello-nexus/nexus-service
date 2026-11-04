@@ -13,6 +13,8 @@ public sealed class BulkPanelHandler : IDeviceHandler
 {
     private readonly BulkPanelHub _hub;
 
+    public BulkPanelHub Hub => _hub;
+
     public BulkPanelHandler(BulkPanelHub hub)
     {
         _hub = hub;
@@ -23,7 +25,7 @@ public sealed class BulkPanelHandler : IDeviceHandler
 
     public string Id => _hub.Driver.HandlerId;
     public string Name => _hub.Driver.Name;
-    public string Category => "cooler";
+    public string Category => _hub.Driver.Category;
 
     public IReadOnlyList<UsbId> Identifiers { get; }
 
@@ -48,7 +50,7 @@ public sealed class BulkPanelHandler : IDeviceHandler
     /// </summary>
     public string? GetWarning(IReadOnlyList<UsbDeviceEntry> detectedDevices)
     {
-        if (_hub.IsConnected || !IsConnected(detectedDevices))
+        if (_hub.IsConnected || !_hub.OpenFailed || !IsConnected(detectedDevices))
         {
             return null;
         }

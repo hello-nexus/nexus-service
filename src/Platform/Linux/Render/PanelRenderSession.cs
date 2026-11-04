@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,10 +12,17 @@ public sealed class PanelRenderSession : IDisposable
 {
     public const int MaxFps = 60;
 
+    // Panel transports re-encode, so a near-lossless capture keeps the double-compression loss low.
+    internal const int JpegQuality = 90;
+
     private readonly CdpPipeClient _cdp;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _frameReady = new(0, 1);
-    private string? _latestFrame;
+    private sealed record PendingFrame(string Data, int Ack);
+    private PendingFrame? _latestFrame;
+    // Chromium sends the next screencast frame only once earlier ones are acked; with one frame in
+    // flight and the ack sent when the paced loop takes a frame, the capture rate follows Fps.
+    private readonly ConcurrentQueue<int> _owedAcks = new();
     private readonly TaskCompletionSource _loaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private const int LoadWaitMs = 10_000;
@@ -52,7 +60,9 @@ public sealed class PanelRenderSession : IDisposable
     public long FramesDelivered => Interlocked.Read(ref _framesDelivered);
     private long _framesDelivered;
 
-    public bool Faulted { get; private set; }
+    public bool Faulted => Volatile.Read(ref _faulted) != 0;
+    private int _faulted;
+    private void MarkFaulted() => Volatile.Write(ref _faulted, 1);
 
     public async Task StartAsync(CancellationToken ct)
     {
@@ -92,15 +102,39 @@ public sealed class PanelRenderSession : IDisposable
         catch (TimeoutException)
         {
         }
-        await Send("Page.startScreencast", w =>
+        void WriteScreencast(Utf8JsonWriter w, bool limitInFlight)
         {
-            w.WriteString("format", "png");
+            w.WriteString("format", "jpeg");
+            w.WriteNumber("quality", JpegQuality);
             w.WriteNumber("maxWidth", PixelWidth);
             w.WriteNumber("maxHeight", PixelHeight);
             w.WriteNumber("everyNthFrame", 1);
-        }, ct).ConfigureAwait(false);
+            if (limitInFlight)
+            {
+                // Chromium defaults to several frames in flight, which would capture and encode above the cap.
+                w.WriteNumber("maxFramesInFlight", 1);
+            }
+        }
+        try
+        {
+            await Send("Page.startScreencast", w => WriteScreencast(w, true), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not (OperationCanceledException or IOException or TimeoutException))
+        {
+            // A Chromium without the parameter may reject the call.
+            ServiceLog.Info($"[panel-render] session {SessionId}: screencast rejected maxFramesInFlight ({ex.GetType().Name}); retrying without it");
+            await Send("Page.startScreencast", w => WriteScreencast(w, false), ct).ConfigureAwait(false);
+        }
 
         _pump = Task.Run(() => PumpAsync(_cts.Token));
+    }
+
+    private void Ack(int frame)
+    {
+        if (_cdpSession is not null && !_cdp.IsClosed && Volatile.Read(ref _disposed) == 0)
+        {
+            _cdp.Post("Page.screencastFrameAck", w => w.WriteNumber("sessionId", frame), _cdpSession);
+        }
     }
 
     private Task<JsonElement> Send(string method, Action<Utf8JsonWriter>? writeParams, CancellationToken ct) =>
@@ -115,20 +149,24 @@ public sealed class PanelRenderSession : IDisposable
                 && parameters.TryGetProperty("sessionId", out var detached)
                 && string.Equals(detached.GetString(), _cdpSession, StringComparison.Ordinal))
             {
-                Faulted = true;
+                MarkFaulted();
             }
             return;
         }
         switch (method)
         {
             case "Page.screencastFrame":
-                if (parameters.TryGetProperty("sessionId", out var frameId) && frameId.TryGetInt32(out var ack))
+                if (!parameters.TryGetProperty("sessionId", out var frameId) || !frameId.TryGetInt32(out var ack))
                 {
-                    _cdp.Post("Page.screencastFrameAck", w => w.WriteNumber("sessionId", ack), _cdpSession);
+                    break;
                 }
                 if (parameters.TryGetProperty("data", out var data) && data.GetString() is { } base64)
                 {
-                    Volatile.Write(ref _latestFrame, base64);
+                    var superseded = Interlocked.Exchange(ref _latestFrame, new PendingFrame(base64, ack));
+                    if (superseded is not null)
+                    {
+                        _owedAcks.Enqueue(superseded.Ack);
+                    }
                     if (_frameReady.CurrentCount == 0)
                     {
                         try
@@ -140,12 +178,16 @@ public sealed class PanelRenderSession : IDisposable
                         }
                     }
                 }
+                else
+                {
+                    Ack(ack);
+                }
                 break;
             case "Page.loadEventFired":
                 _loaded.TrySetResult();
                 break;
             case "Inspector.targetCrashed":
-                Faulted = true;
+                MarkFaulted();
                 break;
         }
     }
@@ -159,10 +201,17 @@ public sealed class PanelRenderSession : IDisposable
             {
                 await _frameReady.WaitAsync(ct).ConfigureAwait(false);
                 var started = Environment.TickCount64;
-                var base64 = Interlocked.Exchange(ref _latestFrame, null);
-                if (base64 is not null)
+                var pending = Interlocked.Exchange(ref _latestFrame, null);
+                // Acked on take, so Chromium's next capture overlaps the pacing delay; the pump
+                // still takes one frame per period, which is what bounds the capture rate.
+                while (_owedAcks.TryDequeue(out var owed))
                 {
-                    var frame = DecodeToBgra(base64, PixelWidth, PixelHeight);
+                    Ack(owed);
+                }
+                if (pending is not null)
+                {
+                    Ack(pending.Ack);
+                    var frame = DecodeToBgra(pending.Data, PixelWidth, PixelHeight);
                     if (frame is not null)
                     {
                         FrameSink?.Invoke(frame);
@@ -178,6 +227,11 @@ public sealed class PanelRenderSession : IDisposable
         }
         catch (OperationCanceledException)
         {
+        }
+        catch (Exception ex)
+        {
+            MarkFaulted();
+            ServiceLog.Warn($"[panel-render] session {SessionId} pump failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

@@ -276,6 +276,15 @@ public class Galahad2LightingTests
     }
 
     [Fact]
+    public void BuildColorBytes_applies_the_color_order_per_ring_without_trims()
+    {
+        var mode = Galahad2LightingModes.Find("staticColor")!;
+        var ls   = new Galahad2LightingSettings { InnerColor = "#102030", OuterColor = "#405060" };
+        var bytes = Galahad2LightingFrameWriter.BuildColorBytes(ls, mode, "GRB", "BGR");
+        Assert.Equal(new byte[] { 0x20, 0x10, 0x30, 0x60, 0x50, 0x40 }, bytes);
+    }
+
+    [Fact]
     public void BuildColorBytes_non_static_mode_uses_Colors_list()
     {
         var mode = Galahad2LightingModes.Find("breathingColor")!;

@@ -47,6 +47,54 @@ public static class WindowClassification
             && (hasTitle || titleBlockedByUipi);
     }
 
+    /// <summary>The per-window attribute reads IsCountableWindow's first terms
+    /// need. Each method is one Win32 call in the poller; an implementation
+    /// may cache, and PreClassify calls each at most once.</summary>
+    public interface IWindowReads
+    {
+        bool IsVisible();
+        IntPtr Owner();
+        bool IsToolWindow();
+        bool HasOnScreenBounds();
+    }
+
+    public enum PreResult
+    {
+        Rejected,
+        Accepted,
+        /// <summary>Survived the cheap terms; the cloak and title terms decide.</summary>
+        NeedsCloakAndTitle,
+    }
+
+    /// <summary>
+    /// Same outcome as IsCountableWindow for every input, reading attributes
+    /// in the cheapest-rejecting order and skipping any read whose value cannot
+    /// change the result: an invisible non-foreground window is rejected on
+    /// IsWindowVisible alone, and the foreground window never reads visibility
+    /// or style. Rejected and Accepted are final; NeedsCloakAndTitle means
+    /// IsCountableWindow must still be evaluated with the cloak and title terms.
+    /// </summary>
+    public static PreResult PreClassify<T>(ref T reads, bool isForegroundWindow) where T : struct, IWindowReads
+    {
+        if (!isForegroundWindow && !reads.IsVisible())
+        {
+            return PreResult.Rejected;
+        }
+        if (reads.Owner() != IntPtr.Zero)
+        {
+            return PreResult.Rejected;
+        }
+        if (!isForegroundWindow && reads.IsToolWindow())
+        {
+            return PreResult.Rejected;
+        }
+        if (!reads.HasOnScreenBounds())
+        {
+            return PreResult.Rejected;
+        }
+        return isForegroundWindow ? PreResult.Accepted : PreResult.NeedsCloakAndTitle;
+    }
+
     /// <summary>True when the window rect has positive area and overlaps the
     /// virtual screen (the bounding box of every monitor) - excludes
     /// zero-size and fully off-screen windows.</summary>

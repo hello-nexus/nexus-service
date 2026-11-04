@@ -53,6 +53,7 @@ public sealed class ScreenTimePoller : IDisposable
     {
         if (HelperPollerDiagnostics.IsDisabled(HelperPollerDiagnostics.ScreenTime)) return;
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        var identityRead = false;
         try
         {
             // Pipe reconnect: the helper-side cached focus survives across
@@ -70,15 +71,29 @@ public sealed class ScreenTimePoller : IDisposable
             GetWindowThreadProcessId(hwnd, out var pid);
             if (pid == 0) return;
 
-            string appName;
-            try
+            int currentPid;
+            lock (_lock) { currentPid = _currentPid; }
+            if ((int)pid == currentPid)
             {
-                using var proc = Process.GetProcessById((int)pid);
-                appName = proc.ProcessName;
+                ApplyFocus("", (int)pid, null, 0, 0, null);
+                return;
             }
-            catch { return; }
 
+            identityRead = true;
             var exePath = TryGetExePath(pid);
+            var appName = exePath is null ? "" : ScreenTimeProcessName.ProcessNameFromPath(exePath);
+            if (appName.Length == 0)
+            {
+                // Path unreadable: Process.ProcessName also resolves names the
+                // image-path query cannot, at the cost of a process snapshot.
+                try
+                {
+                    using var proc = Process.GetProcessById((int)pid);
+                    appName = proc.ProcessName;
+                }
+                catch { return; }
+            }
+
             var (winW, winH, monitorDevice) = ReadWindowGeometry(hwnd);
 
             ApplyFocus(appName, (int)pid, exePath, winW, winH, monitorDevice);
@@ -89,7 +104,8 @@ public sealed class ScreenTimePoller : IDisposable
             sw.Stop();
             if (sw.ElapsedMilliseconds >= HelperPollerDiagnostics.SlowPassMs
                 && HelperPollerDiagnostics.TryFormatSlowPass(
-                    HelperPollerDiagnostics.ScreenTime, sw.Elapsed.TotalMilliseconds, 1, out var slow))
+                    HelperPollerDiagnostics.ScreenTime, sw.Elapsed.TotalMilliseconds, 1, out var slow,
+                    identityRead ? "identity read" : "same pid, no reads"))
             {
                 Nexus.Service.Platform.HelperLog.Write(slow);
             }
@@ -133,6 +149,8 @@ public sealed class ScreenTimePoller : IDisposable
 
     private void ApplyFocus(string appName, int pid, string? exePath, int winW, int winH, string? monitorDevice)
     {
+        // appName, exePath, winW, winH and monitorDevice are read only when the pid
+        // changed: Poll's same-pid fast path passes placeholders.
         FireMode mode;
         string priorApp = "";
         long priorStart = 0;
@@ -247,7 +265,7 @@ public sealed class ScreenTimePoller : IDisposable
     // path of an elevated or EAC-protected title this helper cannot otherwise
     // introspect. Null on failure rather than throwing - denial is expected
     // for some titles, not exceptional.
-    private static string? TryGetExePath(uint pid)
+    internal static string? TryGetExePath(uint pid)
     {
         var handle = OpenProcess(ProcessQueryLimitedInformation, false, pid);
         if (handle == IntPtr.Zero) return null;

@@ -49,6 +49,7 @@ public sealed class PanelPhonePairingService
 
     private readonly IConfigStore _store;
     private readonly MultiplexHub _hub;
+    private readonly Nexus.Service.Telemetry.ITelemetry? _telemetry;
     private readonly object _lock = new();
     private readonly Dictionary<string, DateTime> _pairTokens = new(StringComparer.Ordinal);
 
@@ -93,10 +94,11 @@ public sealed class PanelPhonePairingService
     /// </summary>
     public string MachineName => ResolveMachineName();
 
-    public PanelPhonePairingService(IConfigStore store, MultiplexHub hub)
+    public PanelPhonePairingService(IConfigStore store, MultiplexHub hub, Nexus.Service.Telemetry.ITelemetry? telemetry = null)
     {
         _store = store;
         _hub = hub;
+        _telemetry = telemetry;
 
         // Retain the currently-pending pair request so a dashboard that
         // connects mid-handshake (e.g. one opened from the tray pairing
@@ -417,19 +419,25 @@ public sealed class PanelPhonePairingService
         public static ClaimResult Fail(string error) => new(false, "", "", "", error, false, "", "", 0);
     }
 
+    /// <summary>True while a session is still inside its own idle limit (long for HTTPS-claimed, short for plain HTTP).</summary>
+    internal static bool IsSessionLive(PanelPhoneSessionToken session, long nowMs)
+    {
+        var lastSeen = session.LastSeenAt > 0 ? session.LastSeenAt : session.CreatedAt;
+        var idleLimit = session.ClaimedOverHttps ? SessionIdleMs : HttpSessionIdleMs;
+        return lastSeen > 0 && nowMs - lastSeen <= idleLimit;
+    }
+
     private bool AlreadyPaired(string deviceId, string fingerprint)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var sessions = _store.Load().Auth?.PanelPhoneSessions;
+        var sessions = SnapshotSessionList();
         if (sessions is null)
         {
             return false;
         }
         foreach (var session in sessions)
         {
-            var lastSeen = session.LastSeenAt > 0 ? session.LastSeenAt : session.CreatedAt;
-            var idleLimit = session.ClaimedOverHttps ? SessionIdleMs : HttpSessionIdleMs;
-            if (lastSeen <= 0 || now - lastSeen > idleLimit)
+            if (!IsSessionLive(session, now))
             {
                 continue;
             }
@@ -629,6 +637,8 @@ public sealed class PanelPhonePairingService
             NormalizeSessionList(s.Auth.PanelPhoneSessions, now);
         });
 
+        _telemetry?.Capture(Nexus.Service.Telemetry.TelemetryEvents.PairCompleted, ("transport", overRelay ? "relay" : "lan"));
+
         return new ClaimResult(
             Ok: true,
             SessionToken: sessionToken,
@@ -679,7 +689,7 @@ public sealed class PanelPhonePairingService
     /// <summary>Display label for a paired session, used to attribute phone→PC transfers. Empty when the id is unknown.</summary>
     public string GetSessionDisplayName(string id)
     {
-        var s = _store.Load().Auth?.PanelPhoneSessions?.FirstOrDefault(t => t.Id == id);
+        var s = SnapshotSessionList()?.FirstOrDefault(t => t.Id == id);
         return s is null ? "" : DescribeSession(s).DisplayName;
     }
 
@@ -835,7 +845,7 @@ public sealed class PanelPhonePairingService
     /// <summary>Every registered push target, one per distinct token, in session order.</summary>
     public IReadOnlyList<PanelPhonePushTarget> GetPushTargets()
     {
-        var sessions = _store.Load().Auth?.PanelPhoneSessions;
+        var sessions = SnapshotSessionList();
         if (sessions is null)
             return Array.Empty<PanelPhonePushTarget>();
 
@@ -1012,7 +1022,7 @@ public sealed class PanelPhonePairingService
         var hash = HashToken(token);
         var provided = Encoding.UTF8.GetBytes(hash);
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var sessions = _store.Load().Auth?.PanelPhoneSessions;
+        var sessions = SnapshotSessionList();
         if (sessions is null)
             return false;
 
@@ -1106,16 +1116,30 @@ public sealed class PanelPhonePairingService
         });
     }
 
+    /// <summary>Copy of the live session list taken under the store lock, so callers can enumerate while Update mutates it. Only the list is copied: the elements are the live session objects. Null when the store has no auth section.</summary>
+    private List<PanelPhoneSessionToken>? SnapshotSessionList()
+    {
+        List<PanelPhoneSessionToken>? copy = null;
+        _store.Read(s => copy = s.Auth?.PanelPhoneSessions?.ToList());
+        return copy;
+    }
+
     private List<PanelPhoneSessionToken> GetNormalizedSessionSnapshot(long now)
     {
-        var sessions = _store.Load().Auth?.PanelPhoneSessions;
-        if (sessions is null)
-            return new List<PanelPhoneSessionToken>();
+        // The live list is mutated under the store lock by Update; enumerate it under the
+        // same lock via Read so a concurrent pair or revoke cannot invalidate the enumerator.
+        List<PanelPhoneSessionToken>? clean = null;
+        _store.Read(s =>
+        {
+            var sessions = s.Auth?.PanelPhoneSessions;
+            if (sessions is null)
+                clean = new List<PanelPhoneSessionToken>();
+            else if (!NeedsSessionNormalization(sessions, now))
+                clean = sessions.Select(CloneSession).ToList();
+        });
 
-        var needsUpdate = NeedsSessionNormalization(sessions, now);
-
-        if (!needsUpdate)
-            return sessions.Select(CloneSession).ToList();
+        if (clean is not null)
+            return clean;
 
         var snapshot = new List<PanelPhoneSessionToken>();
         _store.Update(s =>
@@ -1891,6 +1915,9 @@ public sealed class PanelPhonePairingService
             });
             NormalizeSessionList(s.Auth.PanelPhoneSessions, nowMs);
         });
+
+        // The approved pair-code claim is always a LAN HTTPS one.
+        _telemetry?.Capture(Nexus.Service.Telemetry.TelemetryEvents.PairCompleted, ("transport", "lan"));
 
         return (sessionToken, NormalizeMachineName(MachineName));
     }

@@ -63,6 +63,8 @@ internal sealed class FakeHueBridge : IAsyncDisposable
     {
         using var rsa = RSA.Create(2048);
         var req = new CertificateRequest("CN=127.0.0.1", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        return req.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+        using var ephemeral = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+        // SChannel cannot use an ephemeral in-memory key for a TLS server; a PFX round trip gives it a usable one.
+        return X509CertificateLoader.LoadPkcs12(ephemeral.Export(X509ContentType.Pfx), null);
     }
 }

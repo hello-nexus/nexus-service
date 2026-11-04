@@ -50,17 +50,40 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
         File.Exists(Path.Combine(_packageDir, "NexusVirtualDisplay.inf"))
         && File.Exists(Path.Combine(_packageDir, "NexusVirtualDisplayHost.exe"));
 
-    public IVirtualMonitor? Create(int width, int height, CancellationToken ct, out string failureState)
+    // Only one monitor exists system-wide, so one claim covers the adapter.
+    private readonly VirtualDisplayClaim _claim = new();
+
+    public event Action? OwnedDisplayClaimed
+    {
+        add => _claim.Claimed += value;
+        remove => _claim.Claimed -= value;
+    }
+
+    public double? OwnedDisplayDpi(string adapterName) =>
+        string.Equals(adapterName, AdapterName, StringComparison.OrdinalIgnoreCase) ? _claim.Dpi : null;
+
+    public bool OwnsAdapter(string adapterName) =>
+        _claim.Active && string.Equals(adapterName, AdapterName, StringComparison.OrdinalIgnoreCase);
+
+    public IVirtualMonitor? Create(int width, int height, double? dpi, CancellationToken ct, out string failureState)
     {
         lock (_gate)
         {
-            return CreateLocked(width, height, ct, out failureState);
+            return CreateLocked(width, height, dpi, ct, out failureState);
         }
     }
 
-    private IVirtualMonitor? CreateLocked(int width, int height, CancellationToken ct, out string failureState)
+    private IVirtualMonitor? CreateLocked(int width, int height, double? dpi, CancellationToken ct, out string failureState)
     {
         failureState = SecondaryMonitorStates.Failed;
+        // The driver exposes one monitor from one device instance, so a second start would only
+        // collide with the live one (SwDeviceCreate ERROR_ALREADY_EXISTS) and its cleanup would
+        // set the shared stop event that the live monitor's host waits on.
+        if (_claim.Active)
+        {
+            failureState = SecondaryMonitorStates.InUse;
+            return null;
+        }
         var inf = Path.Combine(_packageDir, "NexusVirtualDisplay.inf");
         var host = Path.Combine(_packageDir, "NexusVirtualDisplayHost.exe");
         if (!IsAvailable || !EnsureDriver(inf))
@@ -111,7 +134,9 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
                     map = MemoryMappedFile.OpenExisting(FrameSection.SectionName, MemoryMappedFileRights.Read);
                     var ready = EventWaitHandle.OpenExisting(FrameSection.ReadyName);
                     ServiceLog.Info($"[virtual-monitor] {width}x{height} up in {sw.ElapsedMilliseconds} ms");
-                    return new Monitor(this, new FrameSection(map, ready, width, height), stop, process, _helpers);
+                    var monitor = new Monitor(this, new FrameSection(map, ready, width, height), stop, process, _helpers);
+                    _claim.Set(monitor, dpi);
+                    return monitor;
                 }
                 catch (Exception ex) when (ex is FileNotFoundException or WaitHandleCannotBeOpenedException)
                 {
@@ -139,7 +164,7 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
         return null;
     }
 
-    private void StopMonitor(EventWaitHandle stop, Process process)
+    private void StopMonitor(object owner, EventWaitHandle stop, Process process)
     {
         lock (_gate)
         {
@@ -149,6 +174,8 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
             {
                 Thread.Sleep(100);
             }
+            // Cleared before the gate opens so a waiting start is not refused as in use.
+            _claim.Clear(owner);
         }
     }
 
@@ -479,7 +506,7 @@ public sealed class NexusVirtualMonitorHost : IVirtualMonitorHost
                 return;
             }
             _frames.Dispose();
-            _owner.StopMonitor(_stop, _process);
+            _owner.StopMonitor(this, _stop, _process);
             ServiceLog.Info("[virtual-monitor] removed");
         }
     }

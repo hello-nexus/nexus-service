@@ -21,6 +21,17 @@ public class ExperimentalBetaLockTests : IDisposable
 
     public void Dispose() => DeviceControlPolicy.ExperimentalUnlocked = true;
 
+    [Fact]
+    public void A_secondary_monitor_never_holds_experimental_hardware_on_a_stable_build()
+    {
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-beta-hold-" + Guid.NewGuid().ToString("N") + ".json");
+        using var store = new JsonConfigStore(path);
+        var gate = new DeviceControlGate(store) { KeepsDeviceClaimed = _ => true };
+
+        Assert.False(gate.IsClaimed("lianli-screen88"));
+        try { System.IO.File.Delete(path); } catch { }
+    }
+
     [Theory]
     [InlineData("lianli")]
     [InlineData("lianli2")]
@@ -38,6 +49,7 @@ public class ExperimentalBetaLockTests : IDisposable
     [InlineData("smbus-dram")]
     [InlineData("asus-ryujin-lcd")]
     [InlineData("asus-glacial-lcd")]
+    [InlineData("deepcool-mystique")]
     public void RequiresBeta_FirstPartyOrStableHandler_IsFalse(string handlerId)
     {
         Assert.False(DeviceControlPolicy.RequiresBeta(handlerId));

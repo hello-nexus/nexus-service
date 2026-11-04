@@ -1,0 +1,168 @@
+using System.Diagnostics;
+using Nexus.Service.Platform;
+
+namespace Nexus.Service.Fonts;
+
+/// <summary>
+/// Installed font family names of the host OS, cached in memory. Any failure or unsupported OS
+/// yields an empty list. Callers opt in with <see cref="Load"/>; <see cref="Peek"/> never enumerates.
+/// </summary>
+public sealed class SystemFontCatalog
+{
+    public static SystemFontCatalog Shared { get; } = new(EnumerateNative);
+
+    private static readonly TimeSpan SuccessTtl = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(30);
+
+    private readonly Func<IReadOnlyList<string>> _enumerate;
+    private readonly Func<DateTime> _utcNow;
+    private readonly object _gate = new();
+    private IReadOnlyList<string> _cached = [];
+    private IReadOnlyList<string> _lastGood = [];
+    private DateTime _validUntilUtc = DateTime.MinValue;
+    private bool _loaded;
+
+    public SystemFontCatalog(Func<IReadOnlyList<string>> enumerate, Func<DateTime>? utcNow = null)
+    {
+        _enumerate = enumerate;
+        _utcNow = utcNow ?? (() => DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// A non-empty result is cached for a while (the console user's fonts can appear later); an
+    /// empty or failed one is retried after a short backoff so a request storm cannot re-enumerate.
+    /// </summary>
+    public IReadOnlyList<string> Families
+    {
+        get
+        {
+            lock (_gate)
+            {
+                var now = _utcNow();
+                if (now < _validUntilUtc)
+                {
+                    return _cached;
+                }
+                var result = _enumerate();
+                _cached = result;
+                if (result.Count > 0)
+                {
+                    _lastGood = result;
+                }
+                _validUntilUtc = now + (result.Count > 0 ? SuccessTtl : FailureBackoff);
+                return result;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Enumerates (within the cache rules) and, once a load produced fonts, marks the catalog loaded
+    /// until the process exits. A failed load leaves it unloaded so the next call retries.
+    /// </summary>
+    public IReadOnlyList<string> Load()
+    {
+        var families = Families;
+        lock (_gate)
+        {
+            if (families.Count > 0)
+            {
+                _loaded = true;
+            }
+            return families.Count > 0 ? families : _lastGood;
+        }
+    }
+
+    /// <summary>
+    /// Never enumerates. After a load it returns the last non-empty list even past the TTL or a failed refresh, so reopening a
+    /// window cannot trigger a scan; a new <see cref="Load"/> refreshes it.
+    /// </summary>
+    public (IReadOnlyList<string> Families, bool Loaded) Peek()
+    {
+        lock (_gate)
+        {
+            return _loaded ? (_lastGood, true) : ([], false);
+        }
+    }
+
+    private static IReadOnlyList<string> EnumerateNative()
+    {
+        try
+        {
+#if WINDOWS
+            return Clean(WindowsFontEnumerator.Enumerate(), '@');
+#elif MACOS
+            return Clean(MacFontEnumerator.Enumerate(), '.');
+#elif LINUX
+            return Clean(ParseFcList(RunFcList()), null);
+#else
+            return [];
+#endif
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[system-fonts] enumeration failed: {ex.Message}");
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Trims, drops empty names, names starting with <paramref name="hiddenPrefix"/> and names
+    /// too long to store as a panel font, then de-duplicates and sorts case-insensitively.
+    /// </summary>
+    public static IReadOnlyList<string> Clean(IEnumerable<string?> names, char? hiddenPrefix)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+        foreach (var raw in names)
+        {
+            var name = raw?.Trim();
+            if (string.IsNullOrEmpty(name) || (hiddenPrefix is char p && name[0] == p))
+            {
+                continue;
+            }
+            if (!Nexus.Service.Panel.PanelFontValue.IsValidFamily(name))
+            {
+                continue;
+            }
+            if (seen.Add(name))
+            {
+                result.Add(name);
+            }
+        }
+        result.Sort(StringComparer.OrdinalIgnoreCase);
+        return result;
+    }
+
+    /// <summary>Each <c>fc-list : family</c> line may list comma-separated aliases; the first is the family.</summary>
+    public static IEnumerable<string> ParseFcList(string output)
+    {
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var comma = line.IndexOf(',');
+            yield return comma >= 0 ? line[..comma] : line;
+        }
+    }
+
+#if LINUX
+    private static string RunFcList()
+    {
+        var psi = new ProcessStartInfo("fc-list", ": family")
+        {
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        using var proc = Process.Start(psi);
+        if (proc is null)
+        {
+            return string.Empty;
+        }
+        var output = proc.StandardOutput.ReadToEndAsync();
+        if (!proc.WaitForExit(5000))
+        {
+            try { proc.Kill(); } catch { }
+            return string.Empty;
+        }
+        return output.GetAwaiter().GetResult();
+    }
+#endif
+}

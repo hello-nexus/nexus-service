@@ -313,6 +313,22 @@ public sealed class CustomEffectRoutesTests : IClassFixture<CustomEffectAppFacto
     }
 
     [Fact]
+    public async Task Delete_prunes_the_effects_recents_and_keeps_the_others()
+    {
+        var id = CustomFrags.NewId();
+        var key = "custom:" + id;
+        var http = Desktop();
+        await http.PutAsync(Url(id), Body("n", "", CustomFrags.Frag()));
+        var config = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+        config.Update(s => s.Ui.RecentAnimations = new List<string> { key + "@2", "fire@1", key });
+
+        var del = await http.DeleteAsync(Url(id));
+
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+        Assert.Equal(new[] { "fire@1" }, config.Load().Ui.RecentAnimations);
+    }
+
+    [Fact]
     public async Task Headless_start_runs_a_custom_key_and_an_unknown_id_still_starts()
     {
         var id = CustomFrags.NewId();

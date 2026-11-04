@@ -4,7 +4,7 @@ using Nexus.Service.Peripherals.LianLiFlex;
 
 namespace Nexus.Service.Devices.Handlers;
 
-/// <summary>Lian Li TL LCD Flex and SL-INF LCD Flex fans: receivers and screens behind one hub each.</summary>
+/// <summary>Lian Li TL LCD Flex, SL-INF LCD Flex and P28 V2 fans: receivers, and screens where the fan has one, behind one hub each.</summary>
 public sealed class LianLiFlexHandler : IDeviceHandler
 {
     private readonly FlexHub _hub;
@@ -16,6 +16,7 @@ public sealed class LianLiFlexHandler : IDeviceHandler
         {
             new UsbId(FlexProtocol.ReceiverVendorId, FlexProtocol.TlReceiverProductId),
             new UsbId(FlexProtocol.ReceiverVendorId, FlexProtocol.SlInfReceiverProductId),
+            new UsbId(FlexProtocol.ReceiverVendorId, FlexProtocol.P28ReceiverProductId),
             new UsbId(FlexProtocol.ScreenVendorId, FlexProtocol.TlScreenProductId),
             new UsbId(FlexProtocol.ScreenVendorId, FlexProtocol.SlInfScreenProductId),
         };
@@ -23,7 +24,14 @@ public sealed class LianLiFlexHandler : IDeviceHandler
 
     public string Id => "lianli-flex";
 
-    public string Name => "Lian Li LCD Flex Fans";
+    public string Name
+    {
+        get
+        {
+            var units = _hub.Units;
+            return units.Length > 0 && units.All(u => u.Family == FlexFamily.P28V2) ? "Lian Li P28 V2" : "Lian Li LCD Flex Fans";
+        }
+    }
 
     public string Category => "cooler";
 

@@ -15,6 +15,9 @@ public sealed class DetectedConflict
     public string ProcessName { get; set; } = "";
     public int Pid { get; set; }
 
+    /// <summary>Only a process that must never be ended (an installer) is running: Nexus backs off but the sweep leaves it alone.</summary>
+    public bool BackOffOnly { get; set; }
+
     /// <summary>
     /// True when the app maps to devices (a universal RGB claim, a vendor string, or a curated handler), so the
     /// SPA can decide whether it competes with a device Nexus controls. False leaves that undecidable and the
@@ -24,6 +27,9 @@ public sealed class DetectedConflict
 
     /// <summary>True for a universal RGB app, which competes for every RGB device Nexus controls whatever its vendor.</summary>
     public bool ClaimsAllRgb { get; set; }
+
+    /// <summary>True for an OS setting (Windows Dynamic Lighting): it is turned off rather than ended as a task, and carries no process.</summary>
+    public bool IsSetting { get; set; }
 }
 
 /// <summary>One enabled autostart entry of a conflicting app, as the UI names it back on disable.</summary>

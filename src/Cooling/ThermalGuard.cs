@@ -26,7 +26,6 @@ public readonly record struct ThermalGuardOutput(
     string State,
     int FloorDuty,
     bool ForceMax,
-    bool StopWriting,
     bool ReleaseAllNow,
     bool TripStarted,
     bool TripEnded,
@@ -46,10 +45,9 @@ public sealed record ThermalGuardThresholds
     public double FloorStartBelowLimitC { get; init; } = 15;
     /// <summary>Floor duty reached at the limit itself; a curve already at or above it is never touched.</summary>
     public double FloorAtLimitPercent { get; init; } = 60;
-    /// <summary>The floor reaches full duty this far above the limit.</summary>
+    /// <summary>The floor reaches full duty this far above the limit; only reachable in the window before the limit trip fires.</summary>
     public double FloorFullAboveLimitC { get; init; } = 3;
-    /// <summary>The CPU cannot hold its own limit: trip when this far above it for <see cref="LimitSustainMs"/>.</summary>
-    public double LimitTripAboveLimitC { get; init; } = 3;
+    /// <summary>The CPU cannot hold its own limit: trip when at or above it for this long.</summary>
     public long LimitSustainMs { get; init; } = 5000;
     public long CoolingLossWindowMs { get; init; } = 180_000;
     public double CoolingLossRiseCPerMin { get; init; } = 2.0;
@@ -85,6 +83,9 @@ public sealed class ThermalGuard
     private string _state = ThermalGuardStates.Inactive;
     private long? _hotSinceMs;
     private long? _belowSinceMs;
+    private bool _suppressed;
+    private long? _suppressedSinceMs;
+    private const long SuppressionMaxMs = 10 * 60_000;
     private long _tripAtMs;
     private string? _tripReason;
 
@@ -110,7 +111,29 @@ public sealed class ThermalGuard
         _state = ThermalGuardStates.Inactive;
         _hotSinceMs = null;
         _belowSinceMs = null;
+        _suppressed = false;
+        _suppressedSinceMs = null;
         PeakC = 0;
+    }
+
+    /// <summary>
+    /// Ends an active trip or escalation at the user's request. No new trip or escalation can start
+    /// until the CPU drops below the floor-start band or ten minutes pass, and only a limit trip is held back:
+    /// cooling loss still trips. The floor ramp keeps working. False when not tripped.
+    /// </summary>
+    public bool Restore()
+    {
+        if (!IsTripped)
+        {
+            return false;
+        }
+        _state = ThermalGuardStates.Normal;
+        _suppressed = true;
+        _suppressedSinceMs = null;
+        _belowSinceMs = null;
+        _hotSinceMs = null;
+        _history.Clear();
+        return true;
     }
 
     public static int FloorFor(double tempC, double limitC) => FloorFor(tempC, limitC, ThermalGuardThresholds.Default);
@@ -163,10 +186,11 @@ public sealed class ThermalGuard
             return Output(false, false, false, 0);
         }
 
-        // After a long pause in the readings the release timer starts over: it cannot count time nobody observed.
+        // After a long pause in the readings the release and trip timers start over: they cannot count time nobody observed.
         if (_lastStepMs is { } last && nowMs - last > GapResetSpacings * SampleSpacingMs)
         {
             _belowSinceMs = null;
+            _hotSinceMs = null;
         }
         _lastStepMs = nowMs;
         var smooth = Smooth(nowMs, temp);
@@ -177,8 +201,21 @@ public sealed class ThermalGuard
 
         Record(nowMs, smooth);
 
+        if (_suppressed)
+        {
+            _suppressedSinceMs ??= nowMs;
+            if (temp < limitC - _t.FloorStartBelowLimitC || nowMs - _suppressedSinceMs.Value >= SuppressionMaxMs)
+            {
+                _suppressed = false;
+                _suppressedSinceMs = null;
+            }
+        }
         string? reason = null;
-        if (temp >= limitC + _t.LimitTripAboveLimitC)
+        if (_suppressed)
+        {
+            _hotSinceMs = null;
+        }
+        else if (temp >= limitC)
         {
             _hotSinceMs ??= nowMs;
             if (nowMs - _hotSinceMs.Value >= _t.LimitSustainMs)
@@ -252,7 +289,6 @@ public sealed class ThermalGuard
             _state,
             tripped ? 100 : floor,
             ForceMax: _state == ThermalGuardStates.Tripped,
-            StopWriting: _state == ThermalGuardStates.Escalated,
             ReleaseAllNow: releaseAllNow,
             TripStarted: tripStarted,
             TripEnded: tripEnded,

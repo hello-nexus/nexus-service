@@ -224,12 +224,38 @@ public class BulkPanelDriverTests
     // ── ZMatrices: mode command on its own pipe, then framed JPEGs ──
 
     [Fact]
+    public void ZMatrices_max_e87_streams_its_native_geometry_on_the_shared_protocol()
+    {
+        var driver = new ZMatricesPanelDriver(ZMatricesModel.MaxE87);
+        var pipe = new FakeBulkPipe();
+
+        Assert.Equal((1280, 440), driver.Connect(pipe, null));
+        Assert.Equal("zmatrices-max-e87", driver.HandlerId);
+        Assert.Equal(new[] { 0x0032 }, driver.ProductIds);
+        Assert.Equal(0x38C1, driver.VendorId);
+        Assert.True(driver.HasTouch);
+        Assert.Equal(ZMatricesProtocol.InputPipe, driver.ReadPipeId);
+        Assert.Equal(ZMatricesProtocol.CommandPipe, Assert.Single(pipe.PipeWrites).Item1);
+        Assert.True(driver.SendFrame(pipe, null, Frame(1280, 440)));
+    }
+
+    [Theory]
+    [InlineData(false, 44)]
+    [InlineData(true, 60)]
+    public void ZMatrices_streams_at_its_own_glass_rate(bool maxE87, int fps)
+    {
+        var driver = new ZMatricesPanelDriver(maxE87 ? ZMatricesModel.MaxE87 : ZMatricesModel.GlacierMatrix);
+
+        Assert.Equal(fps, driver.Fps);
+    }
+
+    [Fact]
     public void ZMatrices_connect_sends_picture_mode_on_the_command_pipe()
     {
         var driver = new ZMatricesPanelDriver();
         var pipe = new FakeBulkPipe();
 
-        Assert.Equal((ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height), driver.Connect(pipe, null));
+        Assert.Equal((ZMatricesModel.GlacierMatrix.Width, ZMatricesModel.GlacierMatrix.Height), driver.Connect(pipe, null));
 
         var (pipeId, command) = Assert.Single(pipe.PipeWrites);
         Assert.Equal(ZMatricesProtocol.CommandPipe, pipeId);
@@ -244,7 +270,7 @@ public class BulkPanelDriverTests
         var pipe = new FakeBulkPipe();
         driver.Connect(pipe, null);
 
-        Assert.True(driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height)));
+        Assert.True(driver.SendFrame(pipe, null, Frame(ZMatricesModel.GlacierMatrix.Width, ZMatricesModel.GlacierMatrix.Height)));
 
         var (start, trans, finish) = (pipe.Writes[^3], pipe.Writes[^2], pipe.Writes[^1]);
         Assert.Equal("Start"u8.ToArray(), start[0..5]);
@@ -261,7 +287,7 @@ public class BulkPanelDriverTests
         var driver = new ZMatricesPanelDriver();
         var pipe = new FakeBulkPipe();
         driver.Connect(pipe, null);
-        driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height));
+        driver.SendFrame(pipe, null, Frame(ZMatricesModel.GlacierMatrix.Width, ZMatricesModel.GlacierMatrix.Height));
         var sent = pipe.Writes.TakeLast(3).ToList();
         pipe.Writes.Clear();
 
@@ -279,7 +305,7 @@ public class BulkPanelDriverTests
 
         for (int i = 0; i < 12; i++)
         {
-            driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height, (byte)(i * 20)));
+            driver.SendFrame(pipe, null, Frame(ZMatricesModel.GlacierMatrix.Width, ZMatricesModel.GlacierMatrix.Height, (byte)(i * 20)));
         }
 
         var pictures = pipe.Writes.Chunk(3).ToList();
@@ -295,14 +321,14 @@ public class BulkPanelDriverTests
         var driver = new ZMatricesPanelDriver();
         var pipe = new FakeBulkPipe();
         driver.Connect(pipe, null);
-        driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height));
+        driver.SendFrame(pipe, null, Frame(ZMatricesModel.GlacierMatrix.Width, ZMatricesModel.GlacierMatrix.Height));
         pipe.FailWrites = true;
-        Assert.False(driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height)));
+        Assert.False(driver.SendFrame(pipe, null, Frame(ZMatricesModel.GlacierMatrix.Width, ZMatricesModel.GlacierMatrix.Height)));
         pipe.FailWrites = false;
         pipe.Writes.Clear();
         pipe.PipeWrites.Clear();
 
-        Assert.True(driver.SendFrame(pipe, null, Frame(ZMatricesPanelDriver.Width, ZMatricesPanelDriver.Height)));
+        Assert.True(driver.SendFrame(pipe, null, Frame(ZMatricesModel.GlacierMatrix.Width, ZMatricesModel.GlacierMatrix.Height)));
 
         var (pipeId, command) = Assert.Single(pipe.PipeWrites);
         Assert.Equal(ZMatricesProtocol.CommandPipe, pipeId);
@@ -347,7 +373,7 @@ public class BulkPanelDriverTests
         IBulkPanelDriver[] drivers =
         {
             new ThermalrightPanelDriver(), new RyujinPanelDriver(), new UniversalScreen88Driver(),
-            new ZMatricesPanelDriver(), new HydroShift2LcdDriver(), new HydroShift2CurveLcdDriver(),
+            new ZMatricesPanelDriver(), new ZMatricesPanelDriver(ZMatricesModel.MaxE87), new HydroShift2LcdDriver(), new HydroShift2CurveLcdDriver(),
         };
 
         Assert.All(drivers, d =>

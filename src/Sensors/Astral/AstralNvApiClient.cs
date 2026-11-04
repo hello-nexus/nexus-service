@@ -182,7 +182,18 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
         return _getPciIdentifiers!(handle, out _, out subSystemId, out _, out _) == NvStatus.Ok;
     }
 
-    public bool TryReadAstralBlock(int adapterIndex, out byte[] block)
+    private readonly byte[] _telemetryBuffer = new byte[AstralTelemetryParser.BlockSize];
+    private readonly byte[] _gSensorBuffer = new byte[AstralGSensorParser.BlockSize];
+    private readonly byte[] _telemetryRegister = { AstralRegisterAddress };
+    private readonly byte[] _gSensorRegister = { AstralGSensorParser.RegisterAddress };
+
+    public bool TryReadAstralBlock(int adapterIndex, out byte[] block) =>
+        TryReadRegisters(adapterIndex, AstralRegisterAddress, AstralTelemetryParser.BlockSize, out block);
+
+    public bool TryReadGSensorBlock(int adapterIndex, out byte[] block) =>
+        TryReadRegisters(adapterIndex, AstralGSensorParser.RegisterAddress, AstralGSensorParser.BlockSize, out block);
+
+    private bool TryReadRegisters(int adapterIndex, byte register, int size, out byte[] block)
     {
         block = Array.Empty<byte>();
         if (!TryGetHandle(adapterIndex, out var handle))
@@ -190,8 +201,10 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
             return false;
         }
 
-        var buffer = new byte[AstralTelemetryParser.BlockSize];
-        var regAddress = new byte[] { AstralRegisterAddress };
+        // Reused: the owner reads one block at a time and finishes with it before the next read.
+        var buffer = register == AstralRegisterAddress ? _telemetryBuffer : _gSensorBuffer;
+        var regAddress = register == AstralRegisterAddress ? _telemetryRegister : _gSensorRegister;
+        Array.Clear(buffer);
         NvStatus status;
 
         unsafe
@@ -208,7 +221,7 @@ internal sealed class AstralNvApiClient : IAstralNvApiClient
                     I2CRegAddress = (IntPtr)pRegAddr,
                     RegAddrSize = 1,
                     Data = (IntPtr)pData,
-                    Size = AstralTelemetryParser.BlockSize,
+                    Size = (uint)size,
                     I2CSpeed = I2CSpeedDeprecated,
                     I2CSpeedKhz = NvI2CSpeed.Speed100Khz,
                     PortId = 1,

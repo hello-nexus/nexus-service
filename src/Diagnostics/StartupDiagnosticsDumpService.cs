@@ -113,7 +113,7 @@ public sealed class StartupDiagnosticsDumpService : BackgroundService
             Emit($"conflicts ({installed.Count} installed, {running.Count} running):");
             foreach (var def in ConflictAppCatalog.All)
             {
-                if (!installed.Contains(def.Id, StringComparer.OrdinalIgnoreCase)) continue;
+                if (def.IsSetting || !installed.Contains(def.Id, StringComparer.OrdinalIgnoreCase)) continue;
                 var live = running.FirstOrDefault(c => string.Equals(c.Id, def.Id, StringComparison.OrdinalIgnoreCase));
                 var state = live is null ? "installed" : $"running pid={live.Pid}";
                 Emit($"  - [{def.Category}] {def.DisplayName} id={def.Id} {state}");
@@ -121,9 +121,10 @@ public sealed class StartupDiagnosticsDumpService : BackgroundService
             // A portable build registers no service, so it only ever shows up here.
             foreach (var c in running)
             {
-                if (installed.Contains(c.Id, StringComparer.OrdinalIgnoreCase)) continue;
+                if (c.IsSetting || installed.Contains(c.Id, StringComparer.OrdinalIgnoreCase)) continue;
                 Emit($"  - [{c.Category}] {c.DisplayName} id={c.Id} running pid={c.Pid} (no service)");
             }
+            Emit($"  - windows dynamic lighting: {WindowsDynamicLighting.Describe()}");
         }
         catch (Exception ex) { Emit($"conflicts read failed: {ex.Message}"); }
 

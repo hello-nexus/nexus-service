@@ -290,7 +290,7 @@ public sealed class MonitoringEventCollector : BackgroundService
     {
         if (_useWindowedProcesses)
         {
-            return ExtractWindowedAppNames(procs).Select(n => new AppCandidate(n, null)).ToList();
+            return ExtractWindowedAppNames(procs, Environment.ProcessId, IsOwnNexusImage).Select(n => new AppCandidate(n, null)).ToList();
         }
 
         if (nowUtc - _lastDetectedPollUtc < DetectedAppPollInterval)
@@ -301,7 +301,7 @@ public sealed class MonitoringEventCollector : BackgroundService
 
         try
         {
-            return DetectedAppCandidates(_appDetection.GetDetected());
+            return DetectedAppCandidates(_appDetection.GetDetected(), Environment.ProcessId);
         }
         catch (Exception ex)
         {
@@ -313,16 +313,21 @@ public sealed class MonitoringEventCollector : BackgroundService
     /// <summary>Detected entries to candidates, one per distinct name (a
     /// multi-process app lists several entries sharing a display name), Id
     /// parsed as the pid the platform provider records.</summary>
-    internal static List<AppCandidate> DetectedAppCandidates(IReadOnlyList<Detected> detected)
+    internal static List<AppCandidate> DetectedAppCandidates(IReadOnlyList<Detected> detected, int selfPid)
     {
         var byName = new Dictionary<string, AppCandidate>(StringComparer.OrdinalIgnoreCase);
         foreach (var app in detected)
         {
-            if (string.IsNullOrWhiteSpace(app.Name) || byName.ContainsKey(app.Name))
+            if (string.IsNullOrWhiteSpace(app.Name) || IsNexusProcess(app.Name) || byName.ContainsKey(app.Name))
             {
                 continue;
             }
-            byName[app.Name] = new AppCandidate(app.Name, int.TryParse(app.Id, out var pid) ? pid : null);
+            int? pid = int.TryParse(app.Id, out var parsed) ? parsed : null;
+            if (pid == selfPid)
+            {
+                continue;
+            }
+            byName[app.Name] = new AppCandidate(app.Name, pid);
         }
         return byName.Values.ToList();
     }
@@ -332,8 +337,53 @@ public sealed class MonitoringEventCollector : BackgroundService
     /// ProcessAggregation.GroupByName - the same isApp notion
     /// MonitoringBroadcaster.BuildProcessFrame uses - rather than
     /// re-deriving it.</summary>
-    internal static IReadOnlyList<string> ExtractWindowedAppNames(IReadOnlyList<ProcessInfo> procs) =>
-        ProcessAggregation.GroupByName(procs).Where(kv => kv.Value.HasWindow).Select(kv => kv.Key).ToList();
+    internal static IReadOnlyList<string> ExtractWindowedAppNames(IReadOnlyList<ProcessInfo> procs, int selfPid, Func<int, bool> isOwnNexusImage) =>
+        ProcessAggregation.GroupByName(procs.Where(p => p.Pid != selfPid && !(p.HasWindow && IsNexusExeName(p.Name) && isOwnNexusImage(p.Pid))).ToList()).Where(kv => kv.Value.HasWindow && !IsNexusProcess(kv.Key)).Select(kv => kv.Key).ToList();
+
+    // Our own service is matched by pid; only uniquely named exes are matched
+    // by name, since other products ship a Nexus.exe.
+    // msedgewebview2 is deliberately absent (shared with other apps).
+    private static readonly HashSet<string> NexusProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "nexus-overlay", "nexus-overlay-helper", "OpenRGB-headless", "NexusUpdater",
+    };
+
+    // The user-session helper is Nexus.exe under another pid and can show an unowned file dialog.
+    // Only the image path tells it from another product's Nexus.exe, so it is read for Nexus-named windowed processes alone.
+    private static bool IsNexusExeName(string name) =>
+        string.Equals(name.Trim(), "Nexus", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name.Trim(), "Nexus.exe", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsOwnNexusImage(int pid)
+    {
+#if WINDOWS
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var image = OwnNexusExe.ImagePathOf(pid);
+                return OwnNexusExe.IsOwn(image, OwnNexusExe.Known()) || OwnNexusExe.HasOurPayload(image);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+#endif
+        return false;
+    }
+
+    /// <summary>True for a process Nexus ships; its windows appearing (the
+    /// dashboard opening) are not user apps opening.</summary>
+    internal static bool IsNexusProcess(string name)
+    {
+        var trimmed = name.Trim();
+        if (trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[..^4];
+        }
+        return NexusProcessNames.Contains(trimmed);
+    }
 
     /// <summary>Pure set diff: names in current not present in previous.</summary>
     internal static List<string> DiffNewApps(HashSet<string> previous, IReadOnlyList<string> current) =>

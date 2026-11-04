@@ -40,6 +40,12 @@ public sealed record JpegPanelModel(
     /// <summary>The panel's backlight is host-settable, so its record carries a brightness.</summary>
     public bool SupportsBrightness => Handshake is IJpegPanelBrightness;
 
+    /// <summary>
+    /// When above zero, the stream re-sends the last frame after this long without a new one:
+    /// the firmware falls back to its stored image seconds after frames stop, and a static page renders none.
+    /// </summary>
+    public int RepeatLastFrameMs { get; init; }
+
     /// <summary>Documented frame rate for the model; the profile's ceiling.</summary>
     public int Fps { get; init; } = 30;
 
@@ -126,7 +132,10 @@ public sealed record JpegPanelModel(
         ReportLength: 1024,
         HeaderStyle: JpegPanelHeaderStyle.CorsairChunked,
         Selector: 0x40,
-        Surface: Models.Panel.PanelSurfaces.LcdSquare);
+        Surface: Models.Panel.PanelSurfaces.LcdSquare)
+    {
+        RepeatLastFrameMs = 1000,
+    };
 
     /// <summary>
     /// Nautilus LCD Cap. Frames are the same chunked JPEG as the XC7 with selector 0, but

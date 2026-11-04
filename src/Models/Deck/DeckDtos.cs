@@ -47,6 +47,8 @@ public sealed class CreateDeckPresetRequest
     public DeckConfig? Deck { get; set; }
     public string? TemplateId { get; set; }
     public string? CopyOfPresetId { get; set; }
+    /// <summary>Create the clean-install Essentials deck on the Cols x Rows grid; exclusive with Deck / TemplateId / CopyOfPresetId.</summary>
+    public bool Fresh { get; set; }
 }
 
 /// <summary>One .nexus-deck template before per-request installed-app resolution (see <see cref="DeckPresetCatalog"/>).</summary>

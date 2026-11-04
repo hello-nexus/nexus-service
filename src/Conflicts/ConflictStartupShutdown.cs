@@ -18,8 +18,11 @@ namespace Nexus.Service.Conflicts;
 /// <see cref="SweepAllowed"/>).
 ///
 /// Windows' own Dynamic Lighting rides along under the same switch: it is the
-/// one conflict that cannot be ended, only turned off, and only while the
-/// Lighting pillar is on.
+/// one conflict that cannot be ended, only turned off, only while the Lighting
+/// pillar is on, and never when it is on the whitelist. It is turned off at
+/// service start and again at each session logon, and while it is detected as a
+/// conflict (setting on with a LampArray present) it follows the same launch
+/// window and end-on-launch rules as an app.
 ///
 /// Driven off the watcher's detected set rather than walking the whole
 /// catalog: the watcher already filters out our own bundled OpenRGB child by
@@ -58,8 +61,10 @@ public sealed class ConflictStartupShutdown : IHostedService
     private readonly ILogger<ConflictStartupShutdown> _log;
     private readonly Action<ConflictAppDefinition> _kill;
     private readonly Func<ConflictAppDefinition, bool> _stillRunning;
+    private readonly Func<ConflictAppDefinition, bool> _backOffRunning;
     private readonly Func<long> _clockMs;
     private readonly Nexus.Service.Lifecycle.FeatureGates _gates;
+    private readonly Func<WindowsDynamicLightingState?> _dynamicLightingOff;
     private readonly CancellationTokenSource _stopping = new();
 
     // id:pid pairs already ended (or tried) and still detected, so a kill that
@@ -75,8 +80,9 @@ public sealed class ConflictStartupShutdown : IHostedService
     private int _watching;
 
     public ConflictStartupShutdown(
-        IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log, Nexus.Service.Lifecycle.FeatureGates? gates = null)
-        : this(store, watcher, log, def => ConflictKiller.Kill(def), ConflictKiller.AnyProcessRunning, null, gates)
+        IConfigStore store, IConflictDetector watcher, ILogger<ConflictStartupShutdown> log,
+        Nexus.Service.Lifecycle.FeatureGates? gates = null, ConflictGracefulEnd? gracefulEnd = null)
+        : this(store, watcher, log, (gracefulEnd ?? new ConflictGracefulEnd(null)).End, ConflictKiller.AnyProcessRunning, null, gates, null)
     {
     }
 
@@ -87,8 +93,12 @@ public sealed class ConflictStartupShutdown : IHostedService
         Action<ConflictAppDefinition> kill,
         Func<ConflictAppDefinition, bool> stillRunning,
         Func<long>? clockMs = null,
-        Nexus.Service.Lifecycle.FeatureGates? gates = null)
+        Nexus.Service.Lifecycle.FeatureGates? gates = null,
+        Func<WindowsDynamicLightingState?>? dynamicLightingOff = null,
+        Func<ConflictAppDefinition, bool>? backOffRunning = null)
     {
+        _backOffRunning = backOffRunning ?? (def => ConflictKiller.AnyBackOffOnlyRunning(def, ConflictSignerGate.Default));
+        _dynamicLightingOff = dynamicLightingOff ?? DefaultDynamicLightingOff;
         _gates = gates ?? Nexus.Service.Lifecycle.FeatureGates.AllEnabled;
         _store = store;
         _watcher = watcher;
@@ -141,7 +151,7 @@ public sealed class ConflictStartupShutdown : IHostedService
             try
             {
                 var sweep = _sweepWindow && SweepAllowed(_store.Load());
-                if (sweep && _gates.Lighting) TurnOffWindowsDynamicLighting();
+                if (sweep) TurnOffWindowsDynamicLighting("start");
                 EndRunningApps(sweep);
             }
             catch (Exception ex) { _log.LogWarning(ex, "Startup conflict shutdown swept nothing; enumeration failed."); }
@@ -171,9 +181,12 @@ public sealed class ConflictStartupShutdown : IHostedService
         if (EndOnLaunchAllowed(_store.Load())) EndRunningApps(throttleNotice: true);
     }
 
-    private void OnSessionLogon()
+    internal void OnSessionLogon()
     {
         OpenLaunchKillWindow();
+        // At boot there may have been no console user to write for, and a
+        // logon is also when Windows may re-enable the setting.
+        if (_sweepWindow) _ = Task.Run(() => TurnOffWindowsDynamicLighting("logon"));
         _ = WatchLaunchKillWindowAsync();
     }
 
@@ -215,14 +228,16 @@ public sealed class ConflictStartupShutdown : IHostedService
     /// <summary>Ends every detected app not on the whitelist (only <see cref="ConflictAppDefinition.AlwaysEnded"/> ones without <paramref name="sweep"/>) and not already tried under its current pid, then raises <see cref="AppsTerminated"/> for the ones confirmed gone.</summary>
     internal void EndRunningApps(bool sweep = true, bool throttleNotice = false)
     {
-        // The boot sweep and a logon-started window loop can overlap.
-        lock (_attempted) EndRunningAppsLocked(sweep, throttleNotice);
+        // The targets are picked under the lock; the ends run outside it, so a graceful wait
+        // does not hold up the other tick. A pid already in _attempted is never picked twice.
+        List<ConflictAppDefinition> targets;
+        lock (_attempted) targets = PickTargetsLocked(sweep, throttleNotice);
+        if (targets.Count == 0) return;
+        EndTargets(targets, throttleNotice);
     }
 
-    private void EndRunningAppsLocked(bool sweep, bool throttleNotice)
+    private List<ConflictAppDefinition> PickTargetsLocked(bool sweep, bool throttleNotice)
     {
-        var excluded = new HashSet<string>(_store.Load().Ui.ConflictAutoKillExclusions, StringComparer.OrdinalIgnoreCase);
-
         // The "before" set is captured up front, for every target, and the
         // outcome is read from it afterwards. Per-app Killed flags undercount:
         // ProcessKiller tree-kills, and a vendor launcher can own another
@@ -231,6 +246,8 @@ public sealed class ConflictStartupShutdown : IHostedService
         // turn comes, reports "not running before me", and drops out of the
         // notification the user sees.
         var detectedNow = _watcher.GetConflicts();
+        // Read after the scan, which can take a while: a whitelist change landing during it (the user switching Dynamic Lighting on) must be honored.
+        var excluded = new HashSet<string>(_store.Load().Ui.ConflictAutoKillExclusions, StringComparer.OrdinalIgnoreCase);
         var current = new HashSet<string>(detectedNow.Select(d => $"{d.Id}:{d.Pid}"), StringComparer.OrdinalIgnoreCase);
         // Forget pids that are gone, so a self-restarting app cannot grow the sets without bound.
         _attempted.IntersectWith(current);
@@ -241,8 +258,10 @@ public sealed class ConflictStartupShutdown : IHostedService
         foreach (var detected in detectedNow)
         {
             var def = ConflictWatcher.FindById(detected.Id);
-            if (def is null) continue;
+            if (def is null || detected.BackOffOnly) continue;
             if (!def.AlwaysEnded && (!sweep || excluded.Contains(detected.Id))) continue;
+            // Not marked as tried: the app is ended once the installer is gone.
+            if (def.BackOffOnlyProcessNames.Length > 0 && _backOffRunning(def)) continue;
             var key = $"{detected.Id}:{detected.Pid}";
             if (throttleNotice) _endTriedAtMs.TryAdd(key, now);
             if (!_attempted.Add(key))
@@ -258,8 +277,12 @@ public sealed class ConflictStartupShutdown : IHostedService
             try { AppSurvived?.Invoke(app); }
             catch (Exception ex) { _log.LogWarning(ex, "Conflict survivor notification failed."); }
         }
-        if (targets.Count == 0) return;
+        // Apps that end at once go first, so one that waits for a graceful close does not delay them.
+        return targets.OrderBy(d => d.GracefulProcessNames.Length > 0 ? 1 : 0).ToList();
+    }
 
+    private void EndTargets(List<ConflictAppDefinition> targets, bool throttleNotice)
+    {
         foreach (var def in targets)
         {
             try { _kill(def); }
@@ -307,23 +330,61 @@ public sealed class ConflictStartupShutdown : IHostedService
     private bool NoticeDue(string appId)
     {
         var now = _clockMs();
-        if (_lastNoticeMs.TryGetValue(appId, out var last) && now - last < (long)ConflictLaunchTracker.Cooldown.TotalMilliseconds) return false;
-        _lastNoticeMs[appId] = now;
-        return true;
+        lock (_lastNoticeMs)
+        {
+            if (_lastNoticeMs.TryGetValue(appId, out var last) && now - last < (long)ConflictLaunchTracker.Cooldown.TotalMilliseconds) return false;
+            _lastNoticeMs[appId] = now;
+            return true;
+        }
     }
 
-    /// <summary>Unconditional: gating on a device being present would race HID enumeration at boot, and this sweep never runs twice.</summary>
-    private void TurnOffWindowsDynamicLighting()
+    private static WindowsDynamicLightingState? DefaultDynamicLightingOff() =>
+        WindowsDynamicLighting.IsSupported() ? WindowsDynamicLighting.Write(enabled: false, countDevices: false) : null;
+
+    /// <summary>
+    /// What to log after the write, from the state re-read afterwards: a success
+    /// only when that read says off. An unavailable key (no console user, or a
+    /// PC without the Lighting key) is nothing to turn off and not a warning;
+    /// only a value still on after the write is.
+    /// </summary>
+    internal static (bool SwitchedOff, bool Warn, string Message) DescribeDynamicLightingOff(WindowsDynamicLightingState after, string trigger)
     {
-        if (!WindowsDynamicLighting.IsSupported()) return;
+        if (!after.Available)
+        {
+            return (false, false, $"Windows Dynamic Lighting has nothing to turn off ({trigger}): no console user, or no Lighting key.");
+        }
+        if (after.Enabled)
+        {
+            return (false, true, $"could not switch Windows Dynamic Lighting off ({trigger}): the value is still on after the write (key not writable, or Windows set it back).");
+        }
+        return (true, false, $"switched Windows Dynamic Lighting off ({trigger}).");
+    }
+
+    /// <summary>
+    /// Runs at service start and at each session logon, behind the sweep gates
+    /// and the whitelist. Unconditional on a LampArray being present: gating on
+    /// a device would race HID enumeration at boot.
+    /// </summary>
+    internal void TurnOffWindowsDynamicLighting(string trigger)
+    {
         try
         {
-            WindowsDynamicLighting.Write(enabled: false);
-            _log.LogInformation("Startup conflict shutdown: switched Windows Dynamic Lighting off.");
+            var settings = _store.Load();
+            if (!SweepAllowed(settings) || !_gates.Lighting) return;
+            if (settings.Ui.ConflictAutoKillExclusions.Exists(
+                id => string.Equals(id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+            var after = _dynamicLightingOff();
+            if (after is null) return;
+            var (_, warn, message) = DescribeDynamicLightingOff(after, trigger);
+            if (warn) _log.LogWarning("Startup conflict shutdown: {Message}", message);
+            else _log.LogInformation("Startup conflict shutdown: {Message}", message);
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "Startup conflict shutdown could not switch Windows Dynamic Lighting off.");
+            _log.LogWarning(ex, "Startup conflict shutdown could not switch Windows Dynamic Lighting off ({Trigger}).", trigger);
         }
     }
 

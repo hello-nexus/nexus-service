@@ -58,6 +58,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
     private volatile bool _disposed;
+    private readonly bool _testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1";
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
 
     // Hard cap of one hardware walk per second. Measured from the walk's START,
@@ -85,8 +86,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // RAM-usage sensors and skips the DIMM path.
         var startup = SpdReadPolicy.Decide(_gate.IsEnabled(SmbusDramHandler.HandlerId), config.Load().ReadRamTemperatures, currentlyActive: false);
         _settingSeen = config.Load().ReadRamTemperatures;
-        var spdDisabled = !startup.Wanted;
-        _spdActive = startup.Wanted;
+        // The integration-test host builds the real graph; it must never probe
+        // the SMBus or open the hardware tree beside the installed service.
+        var spdDisabled = !startup.Wanted || _testHost;
+        _spdActive = startup.Wanted && !_testHost;
         if (spdDisabled)
         {
             DriverManager.Driver = NoSpdDriver.Instance;
@@ -130,8 +133,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             var sw = Stopwatch.StartNew();
             try
             {
-                _computer.Open();
-                Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
+                if (!_testHost)
+                {
+                    _computer.Open();
+                    Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
+                }
             }
             catch (Exception ex)
             {
@@ -179,6 +185,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     /// <summary>Rebuilds the memory group live: IsMemoryEnabled removes and re-adds it on an open Computer, and the driver seated at that moment decides whether the new group probes SPD.</summary>
     private void ApplySpdGate()
     {
+        if (_testHost)
+        {
+            return;
+        }
         try
         {
             SpdDecision decision;

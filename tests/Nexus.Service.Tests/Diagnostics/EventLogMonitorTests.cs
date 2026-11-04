@@ -14,8 +14,15 @@ public class EventLogMonitorTests
 
         await monitor.ResetAndBackfillAsync();
 
-        Assert.Empty(monitor.Snapshot(30));
-        Assert.Empty(monitor.CountsSince(TimeSpan.FromDays(30)));
+        // Windows backfills from the host's real event log, so only the
+        // other platforms start from an empty store.
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Empty(monitor.Snapshot(30));
+            Assert.Empty(monitor.CountsSince(TimeSpan.FromDays(30)));
+        }
+        Assert.NotNull(monitor.Snapshot(30));
+        Assert.NotNull(monitor.CountsSince(TimeSpan.FromDays(30)));
     }
 
     [Fact]
@@ -30,12 +37,12 @@ public class EventLogMonitorTests
 
         var stale = monitor.TryAddIncident(BuildIncident("stale"), staleGeneration);
         Assert.False(stale);
-        Assert.Empty(monitor.Snapshot(30));
+        Assert.DoesNotContain(monitor.Snapshot(30), i => i.Id == "stale");
 
         var currentGeneration = staleGeneration + 1;
         var fresh = monitor.TryAddIncident(BuildIncident("fresh"), currentGeneration);
         Assert.True(fresh);
-        Assert.Single(monitor.Snapshot(30));
+        Assert.Single(monitor.Snapshot(30), i => i.Id == "fresh");
     }
 
     private static DiagnosticIncident BuildIncident(string id) => new()

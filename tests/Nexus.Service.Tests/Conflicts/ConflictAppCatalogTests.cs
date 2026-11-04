@@ -25,4 +25,15 @@ public class ConflictAppCatalogTests
     {
         Assert.NotNull(ConflictWatcher.FindById("ELGATO-STREAM-DECK"));
     }
+
+    [Fact]
+    public void DeepCool_matches_the_app_and_its_service_and_competes_for_the_Mystique()
+    {
+        var def = ConflictWatcher.FindById("deepcool")!;
+
+        Assert.Equal(new[] { "DeepCool", "deep_service" }, def.ProcessNames);
+        Assert.Equal(new[] { "deepcool-mystique" }, def.DisplayHandlers);
+        Assert.Equal(new[] { "deep_service" }, def.WindowsServiceNames);
+        Assert.Equal("deepcool", Nexus.Service.Devices.DeviceControlPolicy.ConflictAppFor("deepcool-mystique"));
+    }
 }

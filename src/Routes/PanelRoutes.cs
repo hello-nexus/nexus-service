@@ -13,6 +13,21 @@ namespace Nexus.Service.Routes;
 
 public static class PanelRoutes
 {
+    /// <summary>
+    /// Stamps displayAttached on display-bound records. The virtual monitor a USB device owns reads as
+    /// detached, so a leftover panel record on it never gets a sidebar entry next to the device's own.
+    /// </summary>
+    internal static void MarkDisplayAttached(IEnumerable<PanelDeviceRecord> devices, HashSet<string>? attached, string ownedDisplayId)
+    {
+        foreach (var device in devices)
+        {
+            if (string.IsNullOrEmpty(device.DisplayId)) continue;
+            device.DisplayAttached = ownedDisplayId.Length > 0 && device.DisplayId == ownedDisplayId
+                ? false
+                : attached?.Contains(device.DisplayId);
+        }
+    }
+
     public static void MapPanelEndpoints(this WebApplication app)
     {
         app.MapGet("/panel/status", (PanelKioskLauncher launcher, MultiplexHub hub) =>
@@ -289,7 +304,7 @@ public static class PanelRoutes
                     if (streamed.Contains(device.Id))
                         device.Streamed = true;
                     if (monitors.TryGetValue(device.Id, out var monitorState))
-                        device.SecondaryMonitorState = monitorState;
+                        ApplyMonitorState(device, monitorState, streams);
                 }
             }
             // displayAttached is response-only state for display-bound records
@@ -298,12 +313,11 @@ public static class PanelRoutes
             // showing the panel rather than flickering it away.
             if (devices.Any(d => !string.IsNullOrEmpty(d.DisplayId)))
             {
-                var attached = topology.GetAttachedIds();
+                MarkDisplayAttached(devices, topology.GetAttachedIds(), topology.OwnedVirtualDisplayId());
                 foreach (var device in devices)
                 {
-                    if (string.IsNullOrEmpty(device.DisplayId)) continue;
-                    device.DisplayAttached = attached?.Contains(device.DisplayId);
-                    device.Warning = touchRouting.WarningFor(device.DisplayId);
+                    if (!string.IsNullOrEmpty(device.DisplayId))
+                        device.Warning = touchRouting.WarningFor(device.DisplayId);
                 }
             }
             return Results.Json(
@@ -318,7 +332,7 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
-        app.MapGet("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRegistry registry, IServiceProvider sp) =>
+        app.MapGet("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRegistry registry, IServiceProvider sp, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
             var record = registry.Get(id);
             if (record is null)
@@ -338,6 +352,8 @@ public static class PanelRoutes
                     record.Id);
             }
             registry.Touch(id);
+            if (streams.SecondaryMonitorStates().TryGetValue(id, out var monitorState))
+                ApplyMonitorState(record, monitorState, streams);
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
@@ -352,6 +368,12 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
+            if (body.RestrictedMode.HasValue && !HasServiceToken(ctx, tokens))
+                return Results.Json(ApiResponse.Fail("restricted_mode_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
+            if (body.Font is not null && !Nexus.Service.Panel.PanelFontValue.TryNormalize(body.Font, out _))
+            {
+                return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
             var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
             var updated = registry.Patch(id, body);
             if (updated is null)
@@ -362,8 +384,11 @@ public static class PanelRoutes
             if (body.LcdBrightness.HasValue)
                 streams.ApplyBrightness(updated.Id);
             if (body.SecondaryMonitor.HasValue)
+            {
                 streams.ApplySecondaryMonitor(updated.Id);
-            if (body.HighResolution.HasValue)
+                streams.Wake();
+            }
+            if (body.HighResolution.HasValue || body.FpsCap.HasValue)
                 streams.Wake();
             BroadcastDeviceChanged(hub, id);
             if (body.Layout is not null)
@@ -381,16 +406,18 @@ public static class PanelRoutes
             return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
         });
 
-        app.MapPost("/panel/devices/{id}/presets", (string id, PanelPresetNameBody body, PanelDeviceRegistry registry) =>
+        app.MapPost("/panel/devices/{id}/presets", (string id, PanelPresetNameBody body, PanelDeviceRegistry registry, MultiplexHub hub) =>
         {
             var name = (body.Name ?? "").Trim();
             if (name.Length == 0)
                 return Results.BadRequest(ApiResponse.Fail("preset name required"));
-            var presets = registry.CreatePreset(id, name, out var capped);
+            var presets = registry.CreatePreset(id, name, out var capped, body.Fresh);
             if (capped)
                 return Results.BadRequest(ApiResponse.Fail($"Preset cap of {PanelPresets.Cap} reached"));
             if (presets is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            if (body.Fresh)
+                BroadcastDeviceChanged(hub, id);
             return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
         });
 
@@ -500,7 +527,7 @@ public static class PanelRoutes
         // brightness/orientation/screen + panel auto-launch, Q-series
         // brightness/orientation/screen/sleep-with-host, Xeneon Edge DDC
         // picture values - plus the record's monitor behavior
-        // (ReserveMonitor/AutoOrient/KeepCursorOff). Personalization is untouched.
+        // (ReserveMonitor/AutoOrient/KeepCursorOff/AlwaysOnTop). Personalization is untouched.
         // Factory reset: everything the user configured for this panel, plus the
         // panel's own software. Composes the personalization reset above and the
         // hardware reset below with an APK uninstall + reinstall, matching what
@@ -531,6 +558,7 @@ public static class PanelRoutes
             {
                 ResetPersonalization(registry, bgLibrary, id);
                 registry.ResetHardwareSettings(id);
+                registry.Patch(id, new PanelDevicePatch { RestrictedMode = false });
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }
@@ -636,6 +664,13 @@ public static class PanelRoutes
                 return Results.NotFound(ApiResponse.Fail("device not found"));
             return Results.Ok(ApiResponse.Ok("removed"));
         });
+    }
+
+    private static void ApplyMonitorState(PanelDeviceRecord device, string state, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams)
+    {
+        device.SecondaryMonitorState = state;
+        if (state == Nexus.Service.Panel.Streams.SecondaryMonitorStates.InUse)
+            device.SecondaryMonitorHolder = streams.MonitorOwner()?.Name;
     }
 
     private static void BroadcastDeviceChanged(MultiplexHub hub, string deviceId)

@@ -41,12 +41,14 @@ void main() {
     // two extra taps, reusing the centre sample.
     // perf: 3 finite-diff noise taps were 5-octave fbm (12 vnoise); the micro
     // texture is a subtle ripple -> fbm3 (3 octaves) keeps the look, ~40% off each.
-    float eps = 0.003;
-    float nC = fbm3(p * 2.0 + tw * 0.1);
-    h += (nC - 0.5) * 0.5;
-    float nX = fbm3((p + vec2(eps, 0.0)) * 2.0 + tw * 0.1);
-    float nY = fbm3((p + vec2(0.0, eps)) * 2.0 + tw * 0.1);
-    gradH += vec2(nX - nC, nY - nC) / eps * 0.5;
+    // A wide difference step and a gentle weight keep the noise slope from showing
+    // its lattice as pixel-sized blocks and glints at LED and thumbnail resolution.
+    float eps = 0.02;
+    float nC = fbm3(p * 1.2 + tw * 0.1);
+    h += (nC - 0.5) * 0.3;
+    float nX = fbm3((p + vec2(eps, 0.0)) * 1.2 + tw * 0.1);
+    float nY = fbm3((p + vec2(0.0, eps)) * 1.2 + tw * 0.1);
+    gradH += vec2(nX - nC, nY - nC) / eps * 0.12;
 
     vec3 n = normalize(vec3(-gradH, 1.0));
 
@@ -65,3 +67,5 @@ void main() {
 
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.46; }

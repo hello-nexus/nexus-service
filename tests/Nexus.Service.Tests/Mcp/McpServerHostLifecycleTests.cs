@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -78,6 +80,143 @@ public sealed class McpServerHostLifecycleTests : IDisposable
 
         using var clientAfterStop = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         await Assert.ThrowsAsync<HttpRequestException>(() => clientAfterStop.GetAsync($"http://127.0.0.1:{boundPort}/mcp"));
+    }
+
+    // Physical Ethernet or Wi-Fi only: tunnel, VPN and virtual-bridge adapters
+    // may not route back to this host.
+    private static IPAddress? NonLoopbackLocalIPv4() =>
+        System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n => n.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up
+                && (n.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Ethernet
+                    || n.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211))
+            .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+            .Select(u => u.Address)
+            .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork
+                && !IPAddress.IsLoopback(a)
+                && !(a.GetAddressBytes()[0] == 169 && a.GetAddressBytes()[1] == 254));
+
+    private static async Task<HttpResponseMessage?> TryGetAsync(string url)
+    {
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        try
+        {
+            return await client.GetAsync(url);
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+        catch (TaskCanceledException)
+        {
+            return null;
+        }
+    }
+
+    [Fact]
+    public async Task Default_binds_loopback_only()
+    {
+        var (store, host) = NewHost();
+        store.Update(s =>
+        {
+            s.AiIntegration.Enabled = true;
+            s.AiIntegration.Token = "some-token";
+            s.AiIntegration.Port = 0;
+        });
+
+        await host.ApplyConfiguredStateAsync();
+
+        Assert.True(host.Running);
+        Assert.False(host.BoundRemote);
+        var lan = NonLoopbackLocalIPv4();
+        if (lan is not null)
+        {
+            Assert.Null(await TryGetAsync($"http://{lan}:{host.BoundPort}/mcp"));
+        }
+    }
+
+    [Fact]
+    public async Task Allow_remote_binds_all_interfaces_and_still_requires_the_token()
+    {
+        var (store, host) = NewHost();
+        store.Update(s =>
+        {
+            s.AiIntegration.Enabled = true;
+            s.AiIntegration.Token = "some-token";
+            s.AiIntegration.Port = 0;
+            s.AiIntegration.AllowRemote = true;
+        });
+
+        await host.ApplyConfiguredStateAsync();
+
+        Assert.True(host.Running);
+        Assert.True(host.BoundRemote);
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var loopbackUrl = $"http://127.0.0.1:{host.BoundPort}/mcp";
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, (await client.GetAsync(loopbackUrl)).StatusCode);
+        var unauth = await client.PostAsync(loopbackUrl, new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.Unauthorized, unauth.StatusCode);
+
+        // The LAN address is only asserted when this machine can reach itself on it.
+        var lan = NonLoopbackLocalIPv4();
+        if (lan is not null && await TryGetAsync($"http://{lan}:{host.BoundPort}/mcp") is { } lanRes)
+        {
+            Assert.Equal(HttpStatusCode.MethodNotAllowed, lanRes.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task Allow_remote_fails_loudly_when_another_process_holds_loopback_on_the_port()
+    {
+        using var squatter = new TcpListener(IPAddress.Loopback, 0);
+        squatter.Start();
+        var takenPort = ((IPEndPoint)squatter.LocalEndpoint).Port;
+
+        var (store, host) = NewHost();
+        store.Update(s =>
+        {
+            s.AiIntegration.Enabled = true;
+            s.AiIntegration.Token = "some-token";
+            s.AiIntegration.Port = takenPort;
+            s.AiIntegration.AllowRemote = true;
+        });
+
+        await host.ApplyConfiguredStateAsync();
+
+        Assert.False(host.Running);
+        Assert.False(host.BoundRemote);
+        Assert.Contains("already in use", host.LastError);
+    }
+
+    [Fact]
+    public async Task Allow_remote_fails_loudly_when_another_process_holds_ipv6_loopback_on_the_port()
+    {
+        TcpListener squatter;
+        try
+        {
+            squatter = new TcpListener(IPAddress.IPv6Loopback, 0);
+            squatter.Start();
+        }
+        catch (SocketException)
+        {
+            return;
+        }
+        using (squatter)
+        {
+            var takenPort = ((IPEndPoint)squatter.LocalEndpoint).Port;
+            var (store, host) = NewHost();
+            store.Update(s =>
+            {
+                s.AiIntegration.Enabled = true;
+                s.AiIntegration.Token = "some-token";
+                s.AiIntegration.Port = takenPort;
+                s.AiIntegration.AllowRemote = true;
+            });
+
+            await host.ApplyConfiguredStateAsync();
+
+            Assert.False(host.Running);
+            Assert.Contains("already in use", host.LastError);
+        }
     }
 
     [Fact]

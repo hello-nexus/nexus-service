@@ -49,5 +49,8 @@ public sealed class ClientErrorBody
     public string? Message { get; set; }
     public string? Stack { get; set; }
     public string? Context { get; set; }
+
+    /// <summary>Kind "app" only: "appId@version surface path", for the local service log line.</summary>
+    public string? App { get; set; }
     public int Count { get; set; } = 1;
 }

@@ -62,6 +62,40 @@ public sealed class ErrorReportingIntegrationTests : IClassFixture<NexusAppFacto
         Assert.Equal(before + 1, reporter.PendingCount);
     }
 
+    private static string AppItem(string kind, string marker) =>
+        "{\"errors\":[{\"kind\":\"" + kind + "\",\"fingerprint\":\"" + marker + "\",\"type\":\"com.test.app:TypeError\",\"message\":\"probe-" + marker + "\\nWRN forged\",\"app\":\"com.test.app@1.2.3 panel worker-error\",\"count\":1}]}";
+
+    // The process-wide log ring keeps 30 lines and other tests write to it, so retry with a fresh marker instead of trusting one read.
+    private async Task<bool> AppErrorLineReaches(string kind)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var marker = "fp-" + Guid.NewGuid().ToString("N");
+            Assert.Equal(StatusCodes.Status204NoContent, await PostClientErrors(AppItem(kind, marker)));
+            if (Nexus.Service.Platform.ServiceLog.RecentLines().Contains("[app-error] com.test.app@1.2.3 panel worker-error: probe-" + marker + " WRN forged"))
+                return true;
+        }
+        return false;
+    }
+
+    [Fact]
+    public async Task Client_errors_uploads_the_app_kind_and_logs_a_wrn_line()
+    {
+        var reporter = _factory.Services.GetRequiredService<ErrorReporter>();
+        var before = reporter.PendingCount;
+        Assert.True(await AppErrorLineReaches("app"));
+        Assert.True(reporter.PendingCount > before);
+    }
+
+    [Fact]
+    public async Task Client_errors_logs_the_app_log_kind_without_uploading_it()
+    {
+        var reporter = _factory.Services.GetRequiredService<ErrorReporter>();
+        var before = reporter.PendingCount;
+        Assert.True(await AppErrorLineReaches("app-log"));
+        Assert.Equal(before, reporter.PendingCount);
+    }
+
     [Fact]
     public async Task Client_errors_skips_null_elements_instead_of_failing()
         => Assert.Equal(StatusCodes.Status204NoContent, await PostClientErrors("{\"errors\":[null]}"));

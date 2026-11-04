@@ -29,6 +29,13 @@ public interface IRgbController : IAsyncDisposable
 
     Task DisconnectAsync();
 
+    /// <summary>
+    /// Returns once every frame already sent has been processed by the daemon, or
+    /// <paramref name="budget"/> elapses. Call after pushes stop and before killing
+    /// the daemon, so it is not killed mid-write to a device bus. Never throws.
+    /// </summary>
+    Task QuiesceAsync(TimeSpan budget) => Task.CompletedTask;
+
     /// <summary>Controller addresses in list order; touches no controller, so a controller stuck on its bus cannot stall it.</summary>
     Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default);
 

@@ -21,4 +21,7 @@ internal interface IAstralNvApiClient
     /// controller, I2C NAK); `block` is then empty.
     /// </summary>
     bool TryReadAstralBlock(int adapterIndex, out byte[] block);
+
+    /// <summary>Reads the G-sensor block (AstralGSensorParser.BlockSize bytes). False on any NVAPI error.</summary>
+    bool TryReadGSensorBlock(int adapterIndex, out byte[] block);
 }

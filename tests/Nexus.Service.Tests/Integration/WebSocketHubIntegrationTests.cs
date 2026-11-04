@@ -50,7 +50,8 @@ public sealed class WebSocketHubIntegrationTests : IClassFixture<NexusAppFactory
         Assert.Equal(0, Hub.ClientCount);
         var ws = await ConnectAsync(ct);
         await WaitFor(() => Hub.ClientCount == 1, "client connected");
-        Assert.Equal(1, firstClient); // OnFirstClient fires on 0 -> 1
+        // The hub registers the client before it raises the event, so the count can lead the hook.
+        await WaitFor(() => Volatile.Read(ref firstClient) == 1, "OnFirstClient fired"); // 0 -> 1
 
         var frame = new byte[] { 1, 2, 3, 4, 5 };
         await Hub.BroadcastBinaryAsync(frame);
@@ -64,6 +65,6 @@ public sealed class WebSocketHubIntegrationTests : IClassFixture<NexusAppFactory
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", ct);
         ws.Dispose();
         await WaitFor(() => Hub.ClientCount == 0, "client removed");
-        Assert.Equal(1, allGone); // OnAllClientsGone fires on 1 -> 0
+        await WaitFor(() => Volatile.Read(ref allGone) == 1, "OnAllClientsGone fired"); // 1 -> 0
     }
 }

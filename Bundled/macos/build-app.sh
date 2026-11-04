@@ -31,10 +31,8 @@ cp "$STAGING/Nexus" "$APP/Contents/MacOS/"
 # attributes Screen Recording permission to the Nexus bundle.
 bash "$SCRIPT_DIR/audio-helper/build-helper.sh" "$APP/Contents/MacOS"
 
-# Build and copy the Swift overlay-helper sidecar - per-screen transparent
-# borderless NSWindow + WKWebView for the floating desktop widgets. The
-# service spawns this when the user pins a widget; killed when the last
-# widget is unpinned.
+# Build and copy the Swift overlay-helper sidecar - the borderless NSWindow +
+# WKWebView panel kiosks. The service spawns it while a panel is hosted.
 bash "$SCRIPT_DIR/overlay-helper/build-helper.sh" "$APP/Contents/MacOS"
 
 # Camera: the helper (VideoToolbox decode + CMIO sink feed), the activation

@@ -21,7 +21,7 @@ public sealed class LinuxOverlayHost : IOverlayHost
     public bool IsRunning => _kiosks.Y70Running;
 
     /// <summary>Reconcile spawns the Y70 kiosk only while one is attached and
-    /// AutoLaunch is on, so a widget-driven Start() with no Y70 is a no-op.</summary>
+    /// AutoLaunch is on, so Start() with no Y70 is a no-op.</summary>
     public bool Start()
     {
         _kiosks.Reconcile();
@@ -30,7 +30,6 @@ public sealed class LinuxOverlayHost : IOverlayHost
 
     public void Stop() => _kiosks.CloseY70();
 
-    public void SetAlwaysOnTop(bool value) { }
 
     public void NotifyDisplayAssignmentsChanged() => _kiosks.Reconcile();
 }

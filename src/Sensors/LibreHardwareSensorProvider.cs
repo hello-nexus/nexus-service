@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using Nexus.Service.Models.Sensors;
+using Nexus.Service.Platform;
 using Nexus.Service.Sensors.Astral;
 using LibreHardwareMonitor.Hardware;
 
@@ -22,18 +23,23 @@ namespace Nexus.Service.Sensors;
 /// On non-Windows platforms this class should never be instantiated - the
 /// factory in Program.cs gates on RuntimeInformation.IsOSPlatform.
 /// </summary>
-public sealed class LibreHardwareSensorProvider : ISensorProvider
+public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 {
     private readonly LhmComputer _lhm;
-    private readonly AstralGpuSupplement _astral = new(new AstralNvApiClient());
+    private readonly AstralGpuSupplement _astral;
+    private readonly AstralMonitor? _astralMonitor;
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
 
-    public LibreHardwareSensorProvider(LhmComputer lhm)
+    public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null)
     {
         _lhm = lhm;
+        _astralMonitor = astral;
+        _astral = new AstralGpuSupplement(new AstralNvApiClient(), astral);
     }
+
+    public void Dispose() => _astral.Dispose();
 
     public void BeforeSmartRead() => _lhm.BeforeSmartRead();
 
@@ -129,7 +135,9 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
     public IReadOnlyList<GpuCard> GetGpuCards()
     {
         var gpus = GetGpus();
-        return GpuBoardPartners.Resolve(gpus.Select(g => g.Name).ToList(), BoardsOfThisMachine(gpus));
+        var cards = GpuBoardPartners.Resolve(gpus.Select(g => g.Name).ToList(), BoardsOfThisMachine(gpus));
+        // Resolve returns one card per GPU in order; the chip ids come from the matched DXGI adapter, integrated GPUs included.
+        return cards.Select((c, i) => c with { VendorId = gpus[i].PciVendorId, DeviceId = gpus[i].PciDeviceId }).ToList();
     }
 
     private static IReadOnlyList<GpuBoard> BoardsOfThisMachine(IReadOnlyList<GpuReadout> gpus) =>
@@ -166,7 +174,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
             // draw a proportional gauge without juggling sibling lookups.
             float vramTotalMb = hw.Sensors
                 .Where(s => s.SensorType == SensorType.Data && s.Name.Contains("Total", StringComparison.OrdinalIgnoreCase))
-                .Select(s => LhmDataSensors.BytesToMb(SensorValueSanitizer.Sanitize(s.Value ?? 0f)))
+                .Select(s => LhmDataSensors.BytesToMb(HeldValue(s)))
                 .FirstOrDefault();
             if (vramTotalMb > 0)
             {
@@ -192,6 +200,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
             });
         }
         GpuAdapterLuids.Attach(result, rawNames);
+        _astralMonitor?.AppendSimulatedGpus(result);
         return result;
     }
 
@@ -227,11 +236,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
             // sensors self-describing.
             float used = hw.Sensors
                 .Where(s => s.SensorType == SensorType.Data && s.Name.Contains("Used", StringComparison.OrdinalIgnoreCase))
-                .Select(s => LhmDataSensors.BytesToGb(SensorValueSanitizer.Sanitize(s.Value ?? 0f)))
+                .Select(s => LhmDataSensors.BytesToGb(HeldValue(s)))
                 .FirstOrDefault();
             float avail = hw.Sensors
                 .Where(s => s.SensorType == SensorType.Data && s.Name.Contains("Available", StringComparison.OrdinalIgnoreCase))
-                .Select(s => LhmDataSensors.BytesToGb(SensorValueSanitizer.Sanitize(s.Value ?? 0f)))
+                .Select(s => LhmDataSensors.BytesToGb(HeldValue(s)))
                 .FirstOrDefault();
             float total = used + avail;
             if (total > 0)
@@ -486,11 +495,27 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider
         return _lhm.Instance.Hardware.Where(h => types.Contains(h.HardwareType));
     }
 
+    private static readonly SensorHoldLast Hold = new();
+
+    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), s.Value, Environment.TickCount64, out _);
+
     private static List<HardwareSensor> MapSensors(IHardware hw)
     {
+        var isGpu = hw.HardwareType is HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel;
         return hw.Sensors.Select(s =>
         {
-            var value = SensorValueSanitizer.Sanitize(s.Value ?? 0f);
+            var now = Environment.TickCount64;
+            var key = s.Identifier.ToString();
+            var value = Hold.Resolve(key, s.Value, now, out var missed);
+            if (missed && isGpu)
+            {
+                var hwKey = hw.Identifier.ToString();
+                var count = Hold.NoteMiss(hwKey, now);
+                if (count > 0)
+                {
+                    ServiceLog.Warn($"[lhm] GPU {hwKey} sensor {key} read null or non-finite, {count} null read(s) across its sensors since last log");
+                }
+            }
             var min = SensorValueSanitizer.Sanitize(s.Min ?? 0f);
             var max = SensorValueSanitizer.Sanitize(s.Max ?? 0f);
             if (s.SensorType == SensorType.Data)

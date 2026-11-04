@@ -112,6 +112,21 @@ public sealed class SystemCaseRoutesTests : IClassFixture<SystemCaseAppFactory>
         Assert.Null(new MachineCaseStore(_factory.CasePath).Load().CaseId);
     }
 
+    [Fact]
+    public async Task Get_flags_a_detection_assigned_case_and_a_pick_clears_the_flag()
+    {
+        var client = Desktop();
+        _factory.Services.GetRequiredService<MachineCaseStore>().Save("case-auto", pending: false, MachineCaseOrigin.Auto);
+
+        var auto = await Body(await client.GetAsync("/system/case"));
+        Assert.Equal("case-auto", auto.GetProperty("caseId").GetString());
+        Assert.True(auto.GetProperty("auto").GetBoolean());
+
+        await client.PutAsync("/system/case", Json("""{"caseId":"case-mine"}"""));
+
+        Assert.False((await Body(await client.GetAsync("/system/case"))).GetProperty("auto").GetBoolean());
+    }
+
     [Theory]
     [InlineData("""{"caseId":""}""")]
     [InlineData("""{"caseId":"has space"}""")]

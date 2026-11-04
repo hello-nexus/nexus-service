@@ -497,7 +497,7 @@ public class TryxPanoramaHubTests
         var recording = new RecordingTransport();
         // LHM Throughput sensors report bytes/sec; ~12 MB/s (12_000_000 B/s) must render as
         // "11.4MB/s", not the raw "12000000.0MB/s" the overlay showed before.
-        var nics = new List<HardwareComponent> { new() { Sensors = [MakeSensor("Download", "Throughput", 12_000_000f)] } };
+        var nics = new List<HardwareComponent> { new() { Sensors = [MakeSensor("Download Speed", "Throughput", 12_000_000f)] } };
         var sensors = new StubSensors { Nics = nics };
         var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, sensors: sensors);
         hub.EnsureConnected();
@@ -505,12 +505,80 @@ public class TryxPanoramaHubTests
 
         hub.SetOverlay(new TryxOverlayConfig
         {
-            Items = [new TryxOverlaySensorItem { SensorId = "test/Download", Device = "network", Label = "Stat" }],
+            Items = [new TryxOverlaySensorItem { SensorId = "network-in", Device = "network", Label = "Stat" }],
         });
 
         var text = Encoding.UTF8.GetString(Assert.Single(recording.Writes));
         Assert.Contains("11.4MB/s", text);
         Assert.DoesNotContain("12000000", text);
+    }
+
+    private static string OverlayText(StubSensors sensors, IFpsProvider? fps, string device, string sensorId)
+    {
+        var recording = new RecordingTransport();
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, sensors: sensors, fps: fps);
+        hub.EnsureConnected();
+        recording.Writes.Clear();
+        hub.SetOverlay(new TryxOverlayConfig
+        {
+            Items = [new TryxOverlaySensorItem { SensorId = sensorId, Device = device, Label = "Stat" }],
+        });
+        return Encoding.UTF8.GetString(Assert.Single(recording.Writes));
+    }
+
+    // Two NICs: the aggregate sums them, mirroring the editor preview's NIC aggregate.
+    [Theory]
+    [InlineData("network-total", "11.4MB/s")]
+    [InlineData("network-in", "9.5MB/s")]
+    [InlineData("network-out", "1.9MB/s")]
+    [InlineData("network-out-missing", "--")]
+    public void SetOverlay_resolves_the_network_aggregate_ids_with_rate_formatting(string sensorId, string expected)
+    {
+        var nics = new List<HardwareComponent>
+        {
+            new() { Sensors = [MakeSensor("Download Speed", "Throughput", 5_000_000f), MakeSensor("Upload Speed", "Throughput", 1_000_000f)] },
+            new() { Sensors = [MakeSensor("Download Speed", "Throughput", 5_000_000f), MakeSensor("Upload Speed", "Throughput", 1_000_000f)] },
+        };
+
+        var text = OverlayText(new StubSensors { Nics = nics }, null, "network", sensorId);
+
+        Assert.Contains(expected, text);
+    }
+
+    [Theory]
+    [InlineData(512f, "512B/s")]
+    [InlineData(2048f, "2.0KB/s")]
+    public void SetOverlay_formats_aggregate_rates_below_a_megabyte(float bytesPerSec, string expected)
+    {
+        var nics = new List<HardwareComponent> { new() { Sensors = [MakeSensor("Download Speed", "Throughput", bytesPerSec)] } };
+
+        Assert.Contains(expected, OverlayText(new StubSensors { Nics = nics }, null, "network", "network-total"));
+    }
+
+    [Fact]
+    public void SetOverlay_resolves_a_quick_summary_sensor()
+    {
+        var sensors = new StubSensors { CpuSensors = [MakeSensor("CPU Total", "Load", 37f)] };
+
+        Assert.Contains("37%", OverlayText(sensors, null, "quick", "summary/cpu-usage"));
+    }
+
+    [Fact]
+    public void SetOverlay_resolves_a_motherboard_sensor()
+    {
+        var sensors = new StubSensors { MotherboardSensors = [MakeSensor("Fan #1", "Fan", 1450f)] };
+
+        Assert.Contains("1450RPM", OverlayText(sensors, null, "motherboard", "test/Fan #1"));
+    }
+
+    [Theory]
+    [InlineData("fps/current", "Framerate", 144f, "144fps")]
+    [InlineData("fps/frame-time", "FrameTime", 6.9f, "6.9ms")]
+    public void SetOverlay_resolves_fps_sensors(string id, string type, float value, string expected)
+    {
+        var fps = new FakeFpsProvider { Sensors = [MakeIdSensor(id, type, value)] };
+
+        Assert.Contains(expected, OverlayText(new StubSensors(), fps, "fps", id));
     }
 
     [Fact]

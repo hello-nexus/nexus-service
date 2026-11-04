@@ -24,6 +24,7 @@ public static class ConflictKiller
 
     internal static KillOutcome Kill(ConflictAppDefinition def, ConflictSignerGate gate)
     {
+        if (def.IsSetting) return TurnOffSetting(def);
         var runningBefore = AnyProcessRunning(def, gate);
 
         // Services first: these entries exist because the service restarts
@@ -74,11 +75,90 @@ public static class ConflictKiller
         return new KillOutcome(runningBefore, AnyProcessRunning(def, gate));
     }
 
-    /// <summary>Whether any process this catalog entry names is running; the oracle for whether a kill did anything.</summary>
+    /// <summary>Pids of the running processes named in <see cref="ConflictAppDefinition.GracefulProcessNames"/> that pass the signer gate.</summary>
+    internal static IReadOnlyList<int> FindGracefulProcessIds(ConflictAppDefinition def, ConflictSignerGate gate)
+    {
+        var ids = new List<int>();
+        foreach (var name in def.GracefulProcessNames)
+        {
+            Process[] found;
+            try { found = Process.GetProcessesByName(name); }
+            catch { continue; }
+            foreach (var p in found)
+            {
+                try { if (gate.Matches(def, p.Id)) ids.Add(p.Id); }
+                catch { }
+                finally { p.Dispose(); }
+            }
+        }
+        return ids;
+    }
+
+    /// <summary>Age in ms of the youngest of <paramref name="pids"/>; long.MaxValue when none can be read.</summary>
+    internal static long YoungestAgeMs(IReadOnlyList<int> pids)
+    {
+        var youngest = long.MaxValue;
+        foreach (var pid in pids)
+        {
+            try
+            {
+                using var p = Process.GetProcessById(pid);
+                youngest = Math.Min(youngest, (long)(DateTime.Now - p.StartTime).TotalMilliseconds);
+            }
+            catch { }
+        }
+        return youngest;
+    }
+
+    /// <summary>Whether a process named in <see cref="ConflictAppDefinition.BackOffOnlyProcessNames"/> is running.</summary>
+    internal static bool AnyBackOffOnlyRunning(ConflictAppDefinition def, ConflictSignerGate gate)
+    {
+        foreach (var name in def.BackOffOnlyProcessNames)
+        {
+            try
+            {
+                var procs = Process.GetProcessesByName(name);
+                var any = false;
+                foreach (var p in procs)
+                {
+                    if (!any && gate.Matches(def, p.Id)) any = true;
+                    p.Dispose();
+                }
+                if (any) return true;
+            }
+            catch { /* an unreadable process list is not evidence of absence */ }
+        }
+        return false;
+    }
+
+    /// <summary>Whether any process this catalog entry names is running (for a setting, whether it is still active); the oracle for whether a kill did anything.</summary>
     public static bool AnyProcessRunning(ConflictAppDefinition def) => AnyProcessRunning(def, ConflictSignerGate.Default);
+
+    /// <summary>The setting entries: "running" is the setting being active, "ending" is writing it off and trusting only the re-read.</summary>
+    private static KillOutcome TurnOffSetting(ConflictAppDefinition def)
+    {
+        if (!string.Equals(def.Id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)
+            || !WindowsDynamicLighting.IsSupported())
+        {
+            return new KillOutcome(false, false);
+        }
+        // Registry only: the caller already established a LampArray is present, and no HID walk is needed to turn it off.
+        var beforeState = WindowsDynamicLighting.ReadEnabled();
+        var before = beforeState.Available && beforeState.Enabled;
+        // Only Available and Enabled matter after the write, so it skips the second HID walk.
+        var after = WindowsDynamicLighting.Write(enabled: false, countDevices: false);
+        // An unreadable key after the write proves nothing, so it counts as still on.
+        return new KillOutcome(before, after.Enabled || !after.Available);
+    }
 
     internal static bool AnyProcessRunning(ConflictAppDefinition def, ConflictSignerGate gate)
     {
+        if (def.IsSetting)
+        {
+            return string.Equals(def.Id, WindowsDynamicLighting.ConflictId, StringComparison.OrdinalIgnoreCase)
+                && WindowsDynamicLighting.IsSupported()
+                && WindowsDynamicLighting.ReadEnabled() is { Available: true, Enabled: true };
+        }
         foreach (var name in def.ProcessNames)
         {
             try

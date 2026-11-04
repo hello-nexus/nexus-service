@@ -73,7 +73,13 @@ public sealed class PacedStreamWriter : IDisposable
         // Windows rounds Thread.Sleep to the ~15ms scheduler quantum by
         // default, which jitters the tick visibly; request finer timer
         // resolution while this thread lives.
-        if (OperatingSystem.IsWindows()) TimeBeginPeriod(1);
+        if (OperatingSystem.IsWindows())
+        {
+            TimeBeginPeriod(1);
+            // Only a raw-BGRA writer does the JPEG encode on this thread; an H.264 writer just forwards bytes.
+            if (_session.Info.Profile.Codec == StreamCodec.RawBgra)
+                Nexus.Service.Platform.Windows.PerformanceCoreHint.ApplyToCurrentThread();
+        }
         try
         {
             // One tick per batch: fps stays the frame rate on the wire while

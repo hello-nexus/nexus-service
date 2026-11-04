@@ -361,7 +361,7 @@ public class FleetEventServiceTests
         Assert.Equal("GPU B", store.Load().Telemetry.FleetGpu);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public async Task Zero_ram_with_nothing_persisted_sends_nothing_and_stores_nothing()
     {
         var store = OptedInStore();
@@ -387,7 +387,7 @@ public class FleetEventServiceTests
         Assert.Equal(persisted, store.Load().Telemetry.FleetRamBytes);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public async Task Real_ram_change_sends_once()
     {
         var store = OptedInStore();
@@ -838,7 +838,7 @@ public class FleetEventServiceTests
     }
 
     [Fact]
-    public async Task DeliverConsentTransitionAsync_opt_out_does_not_resend_to_posthog_on_a_retry()
+    public async Task DeliverConsentTransitionAsync_opt_out_does_not_resend_to_sinks_on_a_retry()
     {
         var store = new InMemoryConfigStore();
         store.Update(s =>
@@ -855,7 +855,7 @@ public class FleetEventServiceTests
         await svc.DeliverConsentTransitionAsync(TelemetryEvents.OptOut, CancellationToken.None);
 
         Assert.Equal(2, transport.Sent.Count); // nexus-api retried both times
-        Assert.Single(sink.Received); // PostHog attempted only once for this pending type
+        Assert.Single(sink.Received); // sinks attempted only once for this pending type
         Assert.Equal(TelemetryEvents.OptOut, store.Load().Telemetry.FleetPendingConsentEvent); // still pending
     }
 

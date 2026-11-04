@@ -70,6 +70,12 @@ public sealed class ConflictAppDefinition
     /// <summary>Substrings (case-insensitive) one of which the process's exe identity must contain for a name hit to count: the Authenticode signer subject, or the file's company name when unsigned. Empty keeps the name-only match. See <see cref="ConflictSignerGate"/>.</summary>
     public string[] Signers { get; init; } = Array.Empty<string>();
 
+    /// <summary>Process names that count as the app running, so Nexus backs off, but are never ended: an installer whose interruption leaves the app half installed. Apart from <see cref="ProcessNames"/> because every end path walks that list.</summary>
+    public string[] BackOffOnlyProcessNames { get; init; } = Array.Empty<string>();
+
+    /// <summary>Process names whose top-level windows are sent the session-end messages before this app is hard-killed; the app closes itself and hands the hardware back. Empty means a hard kill straight away.</summary>
+    public string[] GracefulProcessNames { get; init; } = Array.Empty<string>();
+
     /// <summary>Windows service names to stop, in order, when ending this app - for apps whose background service holds the hardware. Empty for most.</summary>
     public string[] WindowsServiceNames { get; init; } = Array.Empty<string>();
 
@@ -87,6 +93,9 @@ public sealed class ConflictAppDefinition
 
     /// <summary>Ended at every service start and launch window whatever the whitelist, the startup switch or onboarding say: Nexus 3 never runs alongside it.</summary>
     public bool AlwaysEnded { get; init; }
+
+    /// <summary>An OS setting rather than a process: detected by reading it, "ended" by turning it off, and it has no process or service names.</summary>
+    public bool IsSetting { get; init; }
 }
 
 public static class ConflictAppCatalog
@@ -120,6 +129,17 @@ public static class ConflictAppCatalog
             // through; it survives an uninstall, so it must be stopped
             // alongside the two processes for the conflict to fully clear.
             WindowsServiceNames = new[] { "HYTEIO" },
+        },
+
+        // ── Windows itself ─────────────────────────────────────────────────
+        // Detected from the setting plus a present LampArray, not from a
+        // process. Category lighting: it competes only while Lighting is on.
+        new()
+        {
+            Id = WindowsDynamicLighting.ConflictId,
+            IsSetting = true,
+            DisplayName = "Windows Dynamic Lighting",
+            Category = "lighting",
         },
 
         // ── NZXT ────────────────────────────────────────────────────────────
@@ -378,6 +398,8 @@ public static class ConflictAppCatalog
                 "CorsairDeviceControlService", "CueLLAccessService", "CorsairService",
             },
             Signers = new[] { "Corsair" },
+            GracefulProcessNames = new[] { "iCUE" },
+            BackOffOnlyProcessNames = new[] { "Install iCUE", "icue-uninstaller" },
             WindowsServiceNames = new[] { "CorsairDeviceListerService" },
             // The Run value alone is NOT evidence iCUE starts: "iCUE Launcher.exe
             // --autorun" runs either way and then honours iCUE's own setting.
@@ -488,14 +510,29 @@ public static class ConflictAppCatalog
         // ── ZMatrices ──────────────────────────────────────────────────────
         new()
         {
-            // Cooler LCD app (Electron, C:\Program Files\ZMatrices); its sender process
-            // holds the panel's WinUSB handle Nexus drives directly.
+            // LCD app (Electron, C:\Program Files\ZMatrices); its sender process holds the
+            // WinUSB handle of every ZMatrices glass Nexus drives directly.
             Id = "zmatrices",
             DefaultWhitelisted = true,
             DisplayName = "ZMatrices",
             Category = "cooling",
-            DisplayHandlers = new[] { "zmatrices-lcd" },
+            DisplayHandlers = new[] { "zmatrices-lcd", "zmatrices-max-e87" },
             ProcessNames = new[] { "ZMatrices", "zmUsbSendJpg" },
+        },
+
+        // ── DeepCool ───────────────────────────────────────────────────────
+        new()
+        {
+            // DeepCool app (C:\DeepCool). Its deep_service helper
+            // (resources\service\x64) keeps running after the app closes.
+            Id = "deepcool",
+            DefaultWhitelisted = true,
+            DisplayName = "DeepCool",
+            Category = "cooling",
+            DisplayHandlers = new[] { "deepcool-mystique" },
+            ProcessNames = new[] { "DeepCool", "deep_service" },
+            // Unconfirmed as an SCM service; a missing one stops as NotFound and the process is still ended.
+            WindowsServiceNames = new[] { "deep_service" },
         },
 
         // ── Elgato ─────────────────────────────────────────────────────────

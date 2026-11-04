@@ -227,7 +227,7 @@ public class UsageTelemetryTests
     }
 
     [Fact]
-    public async Task A_throwing_posthog_sink_does_not_stop_the_usage_mirror()
+    public async Task A_throwing_sink_does_not_stop_the_usage_mirror()
     {
         var store = Store(true);
         var client = new TelemetryClient(store);
@@ -241,7 +241,7 @@ public class UsageTelemetryTests
     }
 
     [Fact]
-    public async Task A_posthog_send_cancelled_by_the_stop_timeout_does_not_lose_the_batch_for_the_usage_sink()
+    public async Task A_sink_send_cancelled_by_the_stop_timeout_does_not_lose_the_batch_for_the_usage_sink()
     {
         var store = Store(true);
         var client = new TelemetryClient(store);
@@ -376,7 +376,7 @@ public class UsageTelemetryTests
     }
 
     [Fact]
-    public async Task Profile_refresh_reaches_the_usage_sink_but_not_posthog()
+    public async Task Profile_refresh_reaches_the_usage_sink_as_a_profile_event()
     {
         var refresh = Ev(TelemetryEvents.ProfileRefresh, null, ("cpu", "Ryzen"), ("os_build", "Windows 11"), ("widget_count", 2));
         var usage = new UsageTelemetrySink(true);
@@ -384,42 +384,5 @@ public class UsageTelemetryTests
         var e = Assert.Single(usage.Take(10));
         Assert.Equal("profile", e.Name);
         Assert.Equal(new[] { "os_build", "widget_count" }, e.Props.Select(p => p.Key));
-
-        var handler = new CapturingHandler();
-        var posthog = new PostHogSink(new SingleClientFactory(handler), new PostHogOptions { ProjectApiKey = "k" });
-        await posthog.SendAsync("id", new[] { refresh }, CancellationToken.None);
-        Assert.Empty(handler.Bodies);
-    }
-
-    [Fact]
-    public async Task PostHog_sink_drops_app_started_but_sends_the_rest()
-    {
-        var handler = new CapturingHandler();
-        var sink = new PostHogSink(new SingleClientFactory(handler), new PostHogOptions { ProjectApiKey = "k" });
-
-        await sink.SendAsync("id", new[] { Ev(TelemetryEvents.AppStarted), Ev("fan_curve_applied") }, CancellationToken.None);
-        await sink.SendAsync("id", new[] { Ev(TelemetryEvents.AppStarted) }, CancellationToken.None);
-
-        var body = Assert.Single(handler.Bodies);
-        Assert.Contains("fan_curve_applied", body);
-        Assert.DoesNotContain("app_started", body);
-    }
-
-    private sealed class CapturingHandler : System.Net.Http.HttpMessageHandler
-    {
-        public List<string> Bodies { get; } = new();
-
-        protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken ct)
-        {
-            Bodies.Add(request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct));
-            return new System.Net.Http.HttpResponseMessage(HttpStatusCode.OK);
-        }
-    }
-
-    private sealed class SingleClientFactory : System.Net.Http.IHttpClientFactory
-    {
-        private readonly System.Net.Http.HttpMessageHandler _handler;
-        public SingleClientFactory(System.Net.Http.HttpMessageHandler handler) => _handler = handler;
-        public System.Net.Http.HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
     }
 }

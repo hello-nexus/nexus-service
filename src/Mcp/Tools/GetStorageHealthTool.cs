@@ -12,11 +12,11 @@ namespace Nexus.Service.Mcp.Tools;
 /// <summary>Read-only diagnostics tool: per-drive SMART health backing GET /diagnostics/smart.</summary>
 public sealed class GetStorageHealthTool : IMcpTool
 {
-    private readonly SmartHealthMonitor _smart;
+    private readonly ISmartHealthSource _smart;
 
     private readonly Nexus.Service.Lifecycle.FeatureGates _gates;
 
-    public GetStorageHealthTool(SmartHealthMonitor smart, Nexus.Service.Lifecycle.FeatureGates? gates = null)
+    public GetStorageHealthTool(ISmartHealthSource smart, Nexus.Service.Lifecycle.FeatureGates? gates = null)
     {
         _smart = smart;
         _gates = gates ?? Nexus.Service.Lifecycle.FeatureGates.AllEnabled;

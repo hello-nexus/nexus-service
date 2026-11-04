@@ -61,6 +61,7 @@ public static class OpenRgbProtocol
         // Nexus extension of the bundled daemon (see NexusCoolingProtocol); an upstream daemon ACKs these as unsupported.
         NexusCoolingGetStatus = 40000,
         NexusCoolingSetDuties = 40001,
+        NexusWriteHealth = 40002,
     }
 
     /// <summary>

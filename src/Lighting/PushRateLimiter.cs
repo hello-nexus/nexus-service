@@ -5,7 +5,7 @@ namespace Nexus.Service.Lighting;
 /// <summary>User-selectable per-device update caps. Null means no cap.</summary>
 public static class DeviceRateCap
 {
-    public static readonly int[] AllowedHz = { 30, 20, 15, 10, 5, 1 };
+    public static readonly int[] AllowedHz = { 30, 25, 20, 15, 10, 5, 1 };
 
     public static bool IsValid(int? hz) => hz is null || Array.IndexOf(AllowedHz, hz.Value) >= 0;
 }

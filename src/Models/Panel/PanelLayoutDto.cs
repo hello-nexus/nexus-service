@@ -114,6 +114,9 @@ public sealed class PanelWidgetDto
 
     public bool IsImmersive { get; set; }
 
+    /// <summary>Per-widget lock: the surface blocks drag and resize until unlocked. Null = unlocked.</summary>
+    public bool? Locked { get; set; }
+
     /// <summary>
     /// Per-instance widget config. Values are raw JSON - widget code reads
     /// scalars directly (string / number / bool) or structured shapes (arrays,

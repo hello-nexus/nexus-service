@@ -64,7 +64,7 @@ public sealed class DiagnosticsHealthModel
     // started before that window but still overlaps it is not truncated.
     private static readonly TimeSpan TempEpisodeLookback = TimeSpan.FromHours(48);
 
-    private readonly SmartHealthMonitor _smart;
+    private readonly ISmartHealthSource _smart;
     private readonly CoolingStallDetector _cooling;
     private readonly GpuHealthMonitor _gpu;
     private readonly EventLogMonitor _events;
@@ -85,7 +85,7 @@ public sealed class DiagnosticsHealthModel
     private IReadOnlyList<string> _cachedIgnored = Array.Empty<string>();
 
     public DiagnosticsHealthModel(
-        SmartHealthMonitor smart,
+        ISmartHealthSource smart,
         CoolingStallDetector cooling,
         GpuHealthMonitor gpu,
         EventLogMonitor events,

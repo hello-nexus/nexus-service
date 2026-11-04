@@ -170,6 +170,13 @@ internal static class WindowsSpecsParsers
         return new string(chars);
     }
 
+    /// <summary>The EDID product code (a model id, not the serial) as four uppercase hex digits, "" when too short.</summary>
+    public static string EdidProductCode(byte[]? edid)
+    {
+        if (edid is null || edid.Length < 12) return "";
+        return (edid[10] | (edid[11] << 8)).ToString("X4", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     /// <summary>The first <c>USB\*\serial</c> id; the case-insensitive suffix match keeps a serial from matching another devnode.</summary>
     public static string? PickUsbInstanceId(IEnumerable<string> instanceIds, string serial)
     {

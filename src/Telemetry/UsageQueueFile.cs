@@ -61,7 +61,7 @@ internal static class UsageQueueFile
                 foreach (var p in e.Props)
                 {
                     w.WritePropertyName(p.Key);
-                    PostHogSink.WriteValue(w, p.Value);
+                    UsageTelemetrySink.WriteValue(w, p.Value);
                 }
                 w.WriteEndObject();
                 w.WriteEndObject();

@@ -101,6 +101,7 @@ public static class LocalStoreListing
                 ["hasPage"] = m.Page,
                 ["requiresTouch"] = manifest["requires_touch"] is JsonValue t && t.TryGetValue<bool>(out var touch) && touch,
                 ["sizes"] = sizes,
+                ["freeform"] = m.Freeform,
                 ["surfaces"] = surfaces,
                 ["releasedAt"] = releasedAt,
                 ["capabilities"] = manifest["capabilities"]?.DeepClone() ?? new JsonObject(),

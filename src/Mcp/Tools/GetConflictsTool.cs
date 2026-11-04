@@ -35,7 +35,7 @@ public sealed class GetConflictsTool : IMcpTool
             Id = c.Id,
             DisplayName = c.DisplayName,
             Category = c.Category,
-            ConflictsWith = DescribeConflict(c.Category),
+            ConflictsWith = c.IsSetting ? "a Windows setting (not an app) that drives the same lighting devices" : DescribeConflict(c.Category),
         }).ToList();
 
         var result = new McpConflictsResult { AnyConflict = items.Count > 0, Conflicts = items };

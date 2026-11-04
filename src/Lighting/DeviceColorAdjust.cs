@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting;
@@ -35,6 +36,8 @@ public readonly struct DeviceColorAdjust
     private readonly float _g;
     private readonly float _b;
     private readonly float _saturation;
+    // Index into OrderNames; 0 is RGB (no swizzle).
+    private readonly byte _order;
     /// <summary>False for the default-constructed value, which is why the flag
     ///  is stored this way round: `default(DeviceColorAdjust)` must read as a
     ///  no-op, not as three zeroed gains that would drive the strip black.</summary>
@@ -45,8 +48,45 @@ public readonly struct DeviceColorAdjust
 
     public static readonly DeviceColorAdjust Identity = default;
 
-    private DeviceColorAdjust(float r, float g, float b, float saturation)
+    /// <summary>Channel orders a device can expect on the wire, index 0 being identity.</summary>
+    private static readonly string[] OrderNameArray = { "RGB", "RBG", "GRB", "GBR", "BRG", "BGR" };
+
+    /// <summary>The accepted order names, read-only.</summary>
+    public static IReadOnlyList<string> OrderNames { get; } = Array.AsReadOnly(OrderNameArray);
+
+    /// <summary>Canonical form of a stored or requested order, or null when it is not one of <see cref="OrderNames"/>. Null and empty read as RGB.</summary>
+    public static string? NormalizeOrder(string? order)
     {
+        if (string.IsNullOrEmpty(order))
+        {
+            return OrderNameArray[0];
+        }
+        foreach (var name in OrderNameArray)
+        {
+            if (string.Equals(name, order, StringComparison.OrdinalIgnoreCase))
+            {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    private static byte OrderIndex(string? order)
+    {
+        var canonical = NormalizeOrder(order);
+        for (var i = 0; i < OrderNameArray.Length; i++)
+        {
+            if (OrderNameArray[i] == canonical)
+            {
+                return (byte)i;
+            }
+        }
+        return 0;
+    }
+
+    private DeviceColorAdjust(float r, float g, float b, float saturation, byte order)
+    {
+        _order = order;
         _r = r;
         _g = g;
         _b = b;
@@ -61,8 +101,9 @@ public readonly struct DeviceColorAdjust
     /// trim IS a red/blue balance, and folding it keeps the hot loop to three
     /// multiplies.
     /// </summary>
-    public static DeviceColorAdjust Create(float red, float green, float blue, float temperature, float saturation)
+    public static DeviceColorAdjust Create(float red, float green, float blue, float temperature, float saturation, string? colorOrder = null)
     {
+        var order = OrderIndex(colorOrder);
         var r = Math.Clamp(red, MinChannel, MaxChannel);
         var g = Math.Clamp(green, MinChannel, MaxChannel);
         var b = Math.Clamp(blue, MinChannel, MaxChannel);
@@ -70,11 +111,11 @@ public readonly struct DeviceColorAdjust
         var s = Math.Clamp(saturation, MinSaturation, MaxSaturation);
         r *= 1f + TemperatureSpan * t;
         b *= 1f - TemperatureSpan * t;
-        if (r == 1f && g == 1f && b == 1f && s == 1f)
+        if (r == 1f && g == 1f && b == 1f && s == 1f && order == 0)
         {
             return Identity;
         }
-        return new DeviceColorAdjust(r, g, b, s);
+        return new DeviceColorAdjust(r, g, b, s, order);
     }
 
     /// <summary>
@@ -92,18 +133,20 @@ public readonly struct DeviceColorAdjust
                 && pref.AdjustGreen == 1f
                 && pref.AdjustBlue == 1f
                 && pref.AdjustTemperature == 0f
-                && pref.AdjustSaturation == 1f))
+                && pref.AdjustSaturation == 1f
+                && OrderIndex(pref.ColorOrder) == 0))
         {
             return Identity;
         }
-        return Create(pref.AdjustRed, pref.AdjustGreen, pref.AdjustBlue, pref.AdjustTemperature, pref.AdjustSaturation);
+        return Create(pref.AdjustRed, pref.AdjustGreen, pref.AdjustBlue, pref.AdjustTemperature, pref.AdjustSaturation, pref.ColorOrder);
     }
 
     /// <summary>
     /// Apply saturation, then the channel gains, then <paramref name="mul"/>
     /// (the brightness multiplier the caller already computed), clamping to
     /// byte range. Saturation runs first so a channel trim shifts the colour
-    /// the user actually sees on the strip.
+    /// the user actually sees on the strip. The color order runs last: output
+    /// byte i is the input channel named by letter i of the order.
     /// </summary>
     public void Apply(byte sr, byte sg, byte sb, double mul, out byte or, out byte og, out byte ob)
     {
@@ -125,9 +168,49 @@ public readonly struct DeviceColorAdjust
             b = luma + (b - luma) * _saturation;
         }
         var m = (float)mul;
-        or = ToByte(r * _r * m);
-        og = ToByte(g * _g * m);
-        ob = ToByte(b * _b * m);
+        var cr = ToByte(r * _r * m);
+        var cg = ToByte(g * _g * m);
+        var cb = ToByte(b * _b * m);
+        switch (_order)
+        {
+            case 1: or = cr; og = cb; ob = cg; break;
+            case 2: or = cg; og = cr; ob = cb; break;
+            case 3: or = cg; og = cb; ob = cr; break;
+            case 4: or = cb; og = cr; ob = cg; break;
+            case 5: or = cb; og = cg; ob = cr; break;
+            default: or = cr; og = cg; ob = cb; break;
+        }
+    }
+
+    /// <summary>
+    /// Channel order only, for paths that send a color to firmware without the
+    /// trims (firmware effect palettes). Same permutation as <see cref="Apply"/>.
+    /// </summary>
+    public static void ReorderChannels(string? order, ref byte r, ref byte g, ref byte b)
+    {
+        byte cr = r, cg = g, cb = b;
+        switch (OrderIndex(order))
+        {
+            case 1: g = cb; b = cg; break;
+            case 2: r = cg; g = cr; break;
+            case 3: r = cg; g = cb; b = cr; break;
+            case 4: r = cb; g = cr; b = cg; break;
+            case 5: r = cb; b = cr; break;
+            default: break;
+        }
+    }
+
+    /// <summary>The stored color order for one device id, or null for RGB or no entry.</summary>
+    public static string? OrderOf(Dictionary<string, LightingDevicePreference> prefs, string id)
+    {
+        try
+        {
+            return prefs.TryGetValue(id, out var pref) && pref is not null ? pref.ColorOrder : null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static byte ToByte(float v) => (byte)Math.Clamp(v, 0f, 255f);

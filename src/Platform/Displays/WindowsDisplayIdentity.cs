@@ -99,6 +99,17 @@ internal static class WindowsDisplayIdentity
         return monitor.DeviceID ?? "";
     }
 
+    /// <summary>DeviceString of the display adapter \\.\DISPLAYn; empty when not found.</summary>
+    internal static string ReadAdapterString(string adapterDeviceName)
+    {
+        for (uint i = 0; ; i++)
+        {
+            var dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+            if (!EnumDisplayDevicesW(null!, i, ref dd, 0)) return "";
+            if (string.Equals(dd.DeviceName, adapterDeviceName, StringComparison.OrdinalIgnoreCase)) return dd.DeviceString ?? "";
+        }
+    }
+
     /// <summary>
     /// Monitor device interface path (\\?\DISPLAY#...#{guid}) via
     /// EDD_GET_DEVICE_INTERFACE_NAME only, with no flags=0 fallback: callers

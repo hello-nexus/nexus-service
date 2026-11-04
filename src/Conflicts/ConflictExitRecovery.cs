@@ -156,7 +156,7 @@ internal sealed class ConflictExitTracker
     internal static bool CompetesForOpenRgb(string id)
     {
         var def = ConflictWatcher.FindById(id);
-        return def is not null && (def.ClaimsAllRgb || string.Equals(def.Category, "lighting", StringComparison.OrdinalIgnoreCase));
+        return def is not null && !def.IsSetting && (def.ClaimsAllRgb || string.Equals(def.Category, "lighting", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string DisplayName(string id) => ConflictWatcher.FindById(id)?.DisplayName ?? id;

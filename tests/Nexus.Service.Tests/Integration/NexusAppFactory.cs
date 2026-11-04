@@ -117,6 +117,12 @@ public class NexusAppFactory : WebApplicationFactory<Program>
             services.RemoveAll<Nexus.Service.Mcp.History.IAiEventLog>();
             services.AddSingleton<Nexus.Service.Mcp.History.IAiEventLog>(
                 new Nexus.Service.Mcp.History.Binary.BinaryAiEventLog(Path.Combine(_configDir, "ai-history")));
+
+            // GetGameSessionsTool pulls the fps session store through the same
+            // chain; its default location is the real machine database dir,
+            // whose games.dict a running service holds open.
+            services.RemoveAll<Nexus.Service.Games.BinaryFpsSessionStore>();
+            services.AddSingleton(_ => new Nexus.Service.Games.BinaryFpsSessionStore(Path.Combine(_configDir, "fps")));
         });
     }
 

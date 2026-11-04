@@ -23,16 +23,32 @@ internal static class DashboardReopenFlag
         "Nexus",
         "reopen-dashboard.flag");
 
-    public static void Write()
+    /// <summary>The route the flag carries, or null when it has none, it is stale or invalid. Does not delete the flag.</summary>
+    public static string? ReadRoute(string? path = null)
     {
+        path ??= Path;
         try
         {
-            var dir = System.IO.Path.GetDirectoryName(Path);
+            return ReopenRoute.Parse(File.ReadAllText(path), File.GetLastWriteTimeUtc(path), DateTime.UtcNow);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <param name="route">Validated dashboard route for the reopened window; empty opens the default page.</param>
+    public static void Write(string? route = null, string? path = null)
+    {
+        path ??= Path;
+        try
+        {
+            var dir = System.IO.Path.GetDirectoryName(path);
             if (dir is not null)
             {
                 Directory.CreateDirectory(dir);
             }
-            File.WriteAllText(Path, "");
+            File.WriteAllText(path, ReopenRoute.Validate(route) ?? "");
             // Grant BUILTIN\Users (S-1-5-32-545) Modify so the user-session
             // helper can delete this LocalSystem-written flag after reopening.
             // Without it the delete fails and the dashboard reopens on every
@@ -44,7 +60,7 @@ internal static class DashboardReopenFlag
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
-            psi.ArgumentList.Add(Path);
+            psi.ArgumentList.Add(path);
             psi.ArgumentList.Add("/grant");
             psi.ArgumentList.Add("*S-1-5-32-545:(M)");
             using var icacls = Process.Start(psi);

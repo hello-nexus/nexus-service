@@ -2496,6 +2496,322 @@ public partial class Slv3HubTests
         f.Length >= 18 && f[0] == Slv3Protocol.UsbSendRf && f[1] == 0
         && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfSaveCfg);
 
+    // ── Bind-save: SaveCfg after an automatic rebind ──
+
+    private static readonly byte[] SecondFanMac = Convert.FromHexString("665544332211");
+    private const int BindSaveTicks = Slv3Hub.BindSaveStablePolls + 6;
+
+    // An owned chain that reports unbound, so the lock-on reconcile rebinds it on its own.
+    private static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx, ManualClock Clock, SimulatedFan Fan) CreateRebindHub(bool alreadyBound = false)
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 4 });
+        var fan = alreadyBound
+            ? new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 }
+            : new SimulatedFan { Mac = FanMac };
+        net.Fans.Add(fan);
+        return (hub, net, tx, clock, fan);
+    }
+
+    [Fact]
+    public void An_automatic_rebind_is_followed_by_one_savecfg_once_the_chain_is_stable()
+    {
+        var (hub, _, tx, _, _) = CreateRebindHub();
+
+        Ticks(hub, 3);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Empty(SaveCfgFrames(tx));
+
+        Ticks(hub, BindSaveTicks);
+        Assert.Single(SaveCfgFrames(tx));
+
+        Ticks(hub, BindSaveTicks * 3);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void No_savecfg_goes_out_without_a_rebind()
+    {
+        var (hub, _, tx, _, _) = CreateRebindHub(alreadyBound: true);
+
+        Ticks(hub, BindSaveTicks * 3);
+
+        Assert.Empty(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void The_bind_save_waits_for_every_owned_chain_to_reach_its_target()
+    {
+        var (hub, net, tx, _, _) = CreateRebindHub();
+        var second = new SimulatedFan { Mac = SecondFanMac, IgnoresBind = true };
+        net.Fans.Add(second);
+        hub.OwnedDevicesLoad = () => new Dictionary<string, int> { [Convert.ToHexString(FanMac)] = 4, [Convert.ToHexString(SecondFanMac)] = 5 };
+
+        Ticks(hub, BindSaveTicks * 3);
+        Assert.Empty(SaveCfgFrames(tx));
+
+        second.IgnoresBind = false;
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_misread_binding_blocks_the_bind_save_until_the_record_is_clean_again()
+    {
+        var (hub, _, tx, _, fan) = CreateRebindHub();
+        Ticks(hub, 3);
+
+        for (var i = 0; i < BindSaveTicks * 3; i++)
+        {
+            fan.ReportedRx = i % 2 == 0 ? (byte)54 : null;
+            Assert.True(hub.DriveTick());
+        }
+        Assert.Empty(SaveCfgFrames(tx));
+
+        fan.ReportedRx = null;
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void Continuous_effect_uploads_do_not_starve_the_bind_save()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        var mac = Convert.ToHexString(FanMac);
+        Ticks(hub, 3);
+
+        for (var i = 0; i < BindSaveTicks * 2; i++)
+        {
+            hub.SendRgbFrame(mac, new RgbColor[26], 100, 30, out _);
+            clock.AdvanceMs(1_000);
+            Assert.True(hub.DriveTick());
+        }
+
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_second_rebind_inside_the_minimum_interval_defers_its_save_until_the_interval_passes()
+    {
+        var (hub, net, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, BindSaveTicks + 3);
+        Assert.Single(SaveCfgFrames(tx));
+
+        net.Fans.Clear();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Ticks(hub, BindSaveTicks * 3);
+        Assert.Single(SaveCfgFrames(tx));
+
+        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs);
+        Ticks(hub, 2);
+        Assert.Equal(2, SaveCfgFrames(tx).Count);
+    }
+
+    [Fact]
+    public void One_rebind_yields_one_savecfg_however_long_the_clock_runs()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, BindSaveTicks);
+        Assert.Single(SaveCfgFrames(tx));
+
+        for (var i = 0; i < 5; i++)
+        {
+            clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+            Ticks(hub, BindSaveTicks);
+        }
+
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_binding_change_on_any_chain_blocks_the_bind_save_even_when_no_owned_chain_is_involved()
+    {
+        var (hub, net, tx, _, _) = CreateRebindHub();
+        var stranger = new SimulatedFan { Mac = SecondFanMac, MasterMac = OtherMasterMac, RxType = 3 };
+        net.Fans.Add(stranger);
+        Ticks(hub, 3);
+
+        for (var i = 0; i < BindSaveTicks * 3; i++)
+        {
+            stranger.ReportedRx = i % 2 == 0 ? (byte)5 : (byte)3;
+            Assert.True(hub.DriveTick());
+        }
+        Assert.Empty(SaveCfgFrames(tx));
+
+        stranger.ReportedRx = 3;
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_zeroed_copy_of_a_known_chain_blocks_the_bind_save_while_it_is_reported()
+    {
+        var (hub, net, tx, _, _) = CreateRebindHub();
+        var phantomMac = (byte[])FanMac.Clone();
+        phantomMac[1] = phantomMac[2] = phantomMac[3] = 0;
+        var phantom = new SimulatedFan { Mac = phantomMac };
+        Ticks(hub, 3);
+        net.Fans.Add(phantom);
+
+        Ticks(hub, BindSaveTicks * 3);
+        Assert.Empty(SaveCfgFrames(tx));
+
+        net.Fans.Remove(phantom);
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_pending_unbind_blocks_the_armed_bind_save_and_one_save_follows_once_it_settles()
+    {
+        var (hub, _, tx, _, fan) = CreateRebindHub();
+        Ticks(hub, 3);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+
+        fan.IgnoresBind = true;
+        Assert.True(ManualUnbind(hub, Convert.ToHexString(FanMac)));
+        Ticks(hub, BindSaveTicks * 3);
+        Assert.Empty(SaveCfgFrames(tx));
+
+        fan.IgnoresBind = false;
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void A_bind_save_is_held_back_by_any_recent_savecfg_and_clears_the_pending_config_change_save()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        var mac = Convert.ToHexString(FanMac);
+        Ticks(hub, 3);
+        hub.SendRgbFrame(mac, new RgbColor[26], 100, 30, out _);
+        clock.AdvanceMs(15_000);
+        Ticks(hub, 1);
+        Assert.Single(SaveCfgFrames(tx)); // the debounced config-change save
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx)); // bind-save waits out the interval after it
+
+        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs);
+        Ticks(hub, 2);
+        Assert.Equal(2, SaveCfgFrames(tx).Count);
+    }
+
+    [Fact]
+    public void The_bind_save_replaces_a_pending_config_change_save()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, 3);
+        hub.SendRgbFrame(Convert.ToHexString(FanMac), new RgbColor[26], 100, 30, out _);
+        Ticks(hub, BindSaveTicks);
+        Assert.Single(SaveCfgFrames(tx));
+
+        clock.AdvanceMs(15_000);
+        Ticks(hub, 2);
+
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public void Bind_saves_are_capped_per_hour_and_the_capped_one_fires_when_the_window_allows()
+    {
+        var (hub, net, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, BindSaveTicks);
+        for (var i = 1; i < Slv3Hub.BindSaveMaxPerWindow; i++)
+        {
+            clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+            net.Fans.Clear();
+            net.Fans.Add(new SimulatedFan { Mac = FanMac });
+            Ticks(hub, BindSaveTicks);
+        }
+        Assert.Equal(Slv3Hub.BindSaveMaxPerWindow, SaveCfgFrames(tx).Count);
+
+        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+        net.Fans.Clear();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Equal(Slv3Hub.BindSaveMaxPerWindow, SaveCfgFrames(tx).Count);
+
+        // Exactly one window after the first save and not past the periodic save's first due time.
+        var elapsed = (Slv3Hub.BindSaveMaxPerWindow) * (Slv3Hub.BindSaveMinIntervalMs + 1);
+        clock.AdvanceMs(Slv3Hub.BindSaveWindowMs - elapsed);
+        Ticks(hub, 2);
+        Assert.Equal(Slv3Hub.BindSaveMaxPerWindow + 1, SaveCfgFrames(tx).Count);
+    }
+
+    [Fact]
+    public void A_failed_bind_save_send_stays_armed_keeps_the_config_change_save_and_retries_later()
+    {
+        var (hub, _, tx, clock, _) = CreateRebindHub();
+        Ticks(hub, 3);
+        hub.SendRgbFrame(Convert.ToHexString(FanMac), new RgbColor[26], 100, 30, out _);
+        tx.FailSaveCfg = true;
+        Ticks(hub, BindSaveTicks * 2);
+        Assert.Single(SaveCfgFrames(tx)); // one failed attempt, no tight retry
+
+        clock.AdvanceMs(15_000);
+        Ticks(hub, 1);
+        Assert.Equal(2, SaveCfgFrames(tx).Count); // the config-change save was still due
+
+        tx.FailSaveCfg = false;
+        clock.AdvanceMs(Slv3Hub.BindSaveRetryMs);
+        Ticks(hub, 1);
+        Assert.Equal(3, SaveCfgFrames(tx).Count);
+
+        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+        Ticks(hub, BindSaveTicks);
+        Assert.Equal(3, SaveCfgFrames(tx).Count);
+    }
+
+    // Drives hub passes from inside every upload frame, on the sending thread that holds the hub lock.
+    private static void DriveFromInsideUpload(Slv3Hub hub, FakeTxTransport tx, List<byte[]> saveFramesSeen)
+    {
+        var inside = false;
+        tx.OnSend = frame =>
+        {
+            if (inside || frame.Length < 6 || frame[0] != Slv3Protocol.UsbSendRf || frame[5] != Slv3Protocol.RfRgbSync)
+            {
+                return;
+            }
+            inside = true;
+            Ticks(hub, 3);
+            inside = false;
+            saveFramesSeen.AddRange(SaveCfgFrames(tx));
+        };
+    }
+
+    [Fact]
+    public void The_bind_save_never_goes_out_between_an_upload_header_and_its_data()
+    {
+        var (hub, _, tx, _, _) = CreateRebindHub();
+        Ticks(hub, 4);
+        Assert.Empty(SaveCfgFrames(tx));
+        var seen = new List<byte[]>();
+        DriveFromInsideUpload(hub, tx, seen);
+
+        hub.SendRgbFrame(Convert.ToHexString(FanMac), new RgbColor[26], 100, 30, out _);
+        tx.OnSend = null;
+
+        Assert.Empty(seen);
+        Ticks(hub, 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
+    [Fact]
+    public async Task The_bind_save_never_goes_out_during_a_window_upload_including_its_late_passes()
+    {
+        var (hub, _, tx, _, _) = CreateRebindHub();
+        Ticks(hub, 4);
+        var seen = new List<byte[]>();
+        DriveFromInsideUpload(hub, tx, seen);
+
+        Assert.True(await hub.SendRgbWindowAsync(Convert.ToHexString(FanMac), new byte[30 * 40 * 3], 40, 30, 53, 100));
+        tx.OnSend = null;
+
+        Assert.Empty(seen);
+        Ticks(hub, 2);
+        Assert.Single(SaveCfgFrames(tx));
+    }
+
     // ── EnsureVideoMode ──
 
     [Fact]
@@ -3019,6 +3335,8 @@ public partial class Slv3HubTests
         public bool TxWedged { get; set; }
         // A TX that takes writes and never replies; the RX's reset restarts it too.
         public bool TxMute { get; set; }
+        /// <summary>A hung TX the RX reset does not revive.</summary>
+        public bool TxIgnoresReset { get; set; }
         // Every TX write fails at once, with no timeout.
         public bool TxFailFast { get; set; }
     }
@@ -3177,8 +3495,11 @@ public partial class Slv3HubTests
             }
             if (copy.Length >= 1 && copy[0] == Slv3Protocol.UsbResetAnother)
             {
-                _net.TxWedged = false;
-                _net.TxMute = false;
+                if (!_net.TxIgnoresReset)
+                {
+                    _net.TxWedged = false;
+                    _net.TxMute = false;
+                }
             }
             return true;
         }

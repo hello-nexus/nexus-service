@@ -25,7 +25,7 @@ public static class LightingSceneRoutes
     public static void MapLightingSceneEndpoints(this WebApplication app)
     {
         app.MapGet("/lighting/scene", (LightingSceneStore store, IConfigStore config) =>
-            Results.Json(ToResponse(store.Load(), config.Load().Lighting.SceneView), AppJsonContext.Default.LightingSceneResponse));
+            Results.Json(ToResponse(store.LoadEffective(), config.Load().Lighting.SceneView), AppJsonContext.Default.LightingSceneResponse));
 
         app.MapPut("/lighting/scene", (PutLightingSceneBody body, LightingSceneStore store, IConfigStore config) =>
         {
@@ -37,16 +37,20 @@ public static class LightingSceneRoutes
             lock (SceneWriteLock)
             {
                 doc = store.Load();
-                doc.Objects = body.Objects;
-                doc.Bindings = body.Bindings;
-                // The model belongs to the imported case; an editor save cannot claim it for another object.
-                foreach (var o in doc.Objects)
+                // Once the shared PC setup has resolved objects they are the scene's objects; an editor save carries bindings only.
+                if (store.Setup.LoadSaved() is not { Setup.Resolved.Objects.Count: > 0 })
                 {
-                    o.HasModel = doc.ModelRev is not null && o.Source == "build" && o.Kind == "case";
+                    doc.Objects = body.Objects;
+                    // The model belongs to the imported case; an editor save cannot claim it for another object.
+                    foreach (var o in doc.Objects)
+                    {
+                        o.HasModel = doc.ModelRev is not null && o.Source == "build" && o.Kind == "case";
+                    }
                 }
+                doc.Bindings = body.Bindings;
                 store.Save(doc);
             }
-            return Results.Json(ToResponse(doc, config.Load().Lighting.SceneView), AppJsonContext.Default.LightingSceneResponse);
+            return Results.Json(ToResponse(store.LoadEffective(), config.Load().Lighting.SceneView), AppJsonContext.Default.LightingSceneResponse);
         });
 
         app.MapPut("/lighting/scene/import", async (HttpContext ctx, LightingSceneStore store, IConfigStore config) =>

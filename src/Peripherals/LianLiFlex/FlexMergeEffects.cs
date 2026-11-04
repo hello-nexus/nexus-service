@@ -63,7 +63,7 @@ public static class FlexMergeEffects
     /// <summary>The merge effect list in UI order, shared by both families.</summary>
     public static IReadOnlyList<string> MergeKeys(FlexFamily family) => OrderedKeys;
 
-    public static bool IsMergeable(FlexFamily family, string key) => Modes.ContainsKey(key);
+    public static bool IsMergeable(FlexFamily family, string key) => family != FlexFamily.P28V2 && Modes.ContainsKey(key);
 
     /// <summary>Rainbow Morph and Twinkle play per receiver as a whole-fan single effect; <see cref="Render"/> refuses them.</summary>
     public static bool IsPerReceiver(string key) => key is "rainbowMorph" or "twinkle";

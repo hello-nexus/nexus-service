@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
 
@@ -15,10 +16,29 @@ public interface IBulkUsbPipe : IDisposable
     bool Write(byte pipeId, ReadOnlySpan<byte> data);
 
     /// <summary>
+    /// Writes one bulk transfer and returns how many bytes the device took, also after a timeout when the
+    /// transport can tell; -1 when that is unknown.
+    /// </summary>
+    int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => Write(pipeId, data) ? data.Length : -1;
+
+    /// <summary>
+    /// As <see cref="WriteCounted(byte, ReadOnlySpan{byte})"/>, waiting up to <paramref name="timeoutMs"/> for the device to
+    /// take it; <paramref name="ct"/> ends the wait, and a write it cancels before starting returns 0.
+    /// </summary>
+    int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs, CancellationToken ct) =>
+        ct.IsCancellationRequested ? 0 : WriteCounted(pipeId, data);
+
+    /// <summary>
     /// Reads one bulk transfer from the IN pipe. Returns the byte count, 0 on timeout,
     /// or -1 when the pipe is gone.
     /// </summary>
     int Read(Span<byte> buffer, int timeoutMs);
+
+    /// <summary>Reads one bulk transfer from another IN pipe of the same interface; -1 when the transport has none.</summary>
+    int Read(byte pipeId, Span<byte> buffer, int timeoutMs) => -1;
+
+    /// <summary>Clears a halt a previous owner left on a pipe; false when the transport cannot.</summary>
+    bool ClearHalt(byte pipeId) => false;
 
     /// <summary>USB product id of the opened device, for a driver that claims several; 0 when unknown.</summary>
     int ProductId => 0;

@@ -6,15 +6,20 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
 
-/// <summary>
-/// ZMatrices cooler LCDs (see <see cref="ZMatricesProtocol"/>). Streams at half the
-/// 2240x1080 glass; the firmware upscales to fill it.
-/// </summary>
+/// <summary>One ZMatrices glass on the shared picture protocol, at the size it is streamed.</summary>
+public sealed record ZMatricesModel(string HandlerId, string Name, int ProductId, int Width, int Height, double? Dpi, int Fps, string Category = "cooler")
+{
+    /// <summary>Streams at half the glass resolution; the firmware upscales to fill it.</summary>
+    public static readonly ZMatricesModel GlacierMatrix = new("zmatrices-lcd", "Aftershock Glacier Matrix LCD", 0x0026, 1120, 540, null, 44);
+
+    /// <summary>Bar panel streamed at its native resolution.</summary>
+    public static readonly ZMatricesModel MaxE87 = new("zmatrices-max-e87", "ZMatrices MAX E87", 0x0032, 1280, 440, 218, 60, "light");
+}
+
+/// <summary>ZMatrices LCDs (see <see cref="ZMatricesProtocol"/>).</summary>
 public sealed class ZMatricesPanelDriver : IBulkPanelDriver
 {
-    public const int Width = 1120;
-    public const int Height = 540;
-
+    private readonly ZMatricesModel _model;
     private BgraJpegEncoder? _jpeg;
     private byte[] _trans = Array.Empty<byte>();
     private int _transLength;
@@ -22,13 +27,22 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
     private int _pictures;
     private bool _resync;
 
-    public string HandlerId => "zmatrices-lcd";
-    public string Name => "Aftershock Glacier Matrix LCD";
+    public ZMatricesPanelDriver(ZMatricesModel? model = null)
+    {
+        _model = model ?? ZMatricesModel.GlacierMatrix;
+        ProductIds = new[] { _model.ProductId };
+    }
+
+    public ZMatricesModel Model => _model;
+    public string HandlerId => _model.HandlerId;
+    public string Name => _model.Name;
+    public string Category => _model.Category;
     public int VendorId => 0x38C1;
-    public IReadOnlyList<int> ProductIds { get; } = new[] { 0x0026 };
+    public IReadOnlyList<int> ProductIds { get; }
     public string Surface => Models.Panel.PanelSurfaces.LcdWide;
-    /// <summary>The glass shows at most ~44.5 fps.</summary>
-    public int Fps => 44;
+    public double? Dpi => _model.Dpi;
+    /// <summary>The glass's refresh rate; the Glacier Matrix swaps frames at a measured ceiling below the bar panel's.</summary>
+    public int Fps => _model.Fps;
     public byte WritePipeId => ZMatricesProtocol.PicturePipe;
 
     public byte ReadPipeId => ZMatricesProtocol.InputPipe;
@@ -44,6 +58,8 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
 
     public bool HasTouch => true;
 
+    public IPanelTouchDecoder CreateTouchDecoder() => new ZMatricesTouchParser();
+
     public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
     {
         if (!pipe.Write(ZMatricesProtocol.CommandPipe, ZMatricesProtocol.EncodePictureModeCommand()))
@@ -53,9 +69,9 @@ public sealed class ZMatricesPanelDriver : IBulkPanelDriver
         _pictures = 0;
         _resync = false;
         _jpeg?.Dispose();
-        _jpeg = new BgraJpegEncoder(Width, Height);
-        ServiceLog.Info($"[{HandlerId}] picture mode on, streaming {Width}x{Height}");
-        return (Width, Height);
+        _jpeg = new BgraJpegEncoder(_model.Width, _model.Height);
+        ServiceLog.Info($"[{HandlerId}] picture mode on, streaming {_model.Width}x{_model.Height}");
+        return (_model.Width, _model.Height);
     }
 
     public bool SendFrame(IBulkUsbPipe pipe, IHidDevice? hid, ReadOnlySpan<byte> bgra)

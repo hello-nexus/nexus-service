@@ -19,3 +19,5 @@ void main() {
     col *= 1.0 - 0.25 * smoothstep(0.8, 1.6, length(uv));
     fragColor = vec4(finalize(col * 1.15), 1.0);
 }
+
+float outGain() { return 1.77; }

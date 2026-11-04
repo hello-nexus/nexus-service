@@ -67,6 +67,7 @@ public sealed class SystemCaseTests : IDisposable
     private sealed class Rig
     {
         public required SystemCaseService Svc;
+        public required CloudAccountService Accounts;
         public required FakeCloudApiClient Api;
         public required InMemoryConfigStore Config;
         public required MachineCaseStore Store;
@@ -82,7 +83,7 @@ public sealed class SystemCaseTests : IDisposable
         var accounts = new CloudAccountService(api, config);
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
         var store = new MachineCaseStore(FilePath);
-        var rig = new Rig { Svc = null!, Api = api, Config = config, Store = store, Clock = clock };
+        var rig = new Rig { Svc = null!, Accounts = accounts, Api = api, Config = config, Store = store, Clock = clock };
         rig.Svc = new SystemCaseService(store, accounts, api, clock, () => rig.Held);
         rig.InstallId = accounts.ResolveStableInstallId();
         api.OnRefresh = _ => CloudApiResult<CloudAuthSession>.Ok(new CloudAuthSession
@@ -119,6 +120,162 @@ public sealed class SystemCaseTests : IDisposable
         Assert.Equal(0, rig.Api.ListDevicesCalls);
         Assert.True(rig.Store.Load().Pending);
         Assert.Equal("case-1", await rig.Svc.GetAsync(CancellationToken.None));
+    }
+
+    private const string SnowWhiteY70 = "0a4e3be9-0866-411f-a1be-dcb4055b767e";
+
+    private static async Task<bool> DetectUntilDecidedAsync(Rig rig)
+    {
+        var assigner = new Nexus.Service.Peripherals.Y70.Y70CaseAssigner(rig.Svc);
+        for (var i = 0; i < 3; i++)
+        {
+            if (assigner.OnDetected())
+            {
+                return true;
+            }
+            await rig.Svc.IdleAsync();
+        }
+        return false;
+    }
+
+    [Fact]
+    public async Task Fresh_install_with_an_account_y70_adopts_it_as_account_origin()
+    {
+        var rig = Make();
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = SnowWhiteY70 } });
+
+        Assert.True(await DetectUntilDecidedAsync(rig));
+
+        Assert.Equal(SnowWhiteY70, rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Account, rig.Store.Load().Origin);
+        Assert.Equal(0, rig.Api.SetDeviceCaseCalls);
+    }
+
+    [Fact]
+    public async Task Fresh_install_with_a_non_y70_account_case_adopts_it_and_does_not_auto_assign()
+    {
+        var rig = Make();
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = "other-case" } });
+
+        Assert.True(await DetectUntilDecidedAsync(rig));
+
+        Assert.Equal("other-case", rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Account, rig.Store.Load().Origin);
+    }
+
+    [Fact]
+    public async Task Fresh_install_signed_out_assigns_pitch_black_at_once_with_no_api_call()
+    {
+        var rig = Make(activeAccount: null);
+
+        Assert.True(new Nexus.Service.Peripherals.Y70.Y70CaseAssigner(rig.Svc).OnDetected());
+
+        Assert.Equal(Nexus.Service.Peripherals.Y70.Y70CaseAssigner.DefaultCaseId, rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Auto, rig.Store.Load().Origin);
+        Assert.Equal(0, rig.Api.SetDeviceCaseCalls);
+        Assert.Equal(0, rig.Api.ListDevicesCalls);
+        await rig.Svc.IdleAsync();
+    }
+
+    [Fact]
+    public async Task Auto_value_is_replaced_by_a_later_account_pull_and_never_pushed()
+    {
+        var rig = Make();
+        rig.Store.Save("auto-case", pending: false, MachineCaseOrigin.Auto);
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = null } });
+        await rig.Svc.GetAsync(CancellationToken.None);
+        await rig.Svc.IdleAsync();
+        Assert.Equal("auto-case", rig.Store.Load().CaseId);
+        Assert.Equal(0, rig.Api.SetDeviceCaseCalls);
+
+        rig.Clock.Advance(TimeSpan.FromMinutes(5));
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = SnowWhiteY70 } });
+        await rig.Svc.GetAsync(CancellationToken.None);
+        await rig.Svc.IdleAsync();
+
+        Assert.Equal(SnowWhiteY70, rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Account, rig.Store.Load().Origin);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Manual_clear_then_detection_keeps_no_case(bool signedIn)
+    {
+        var rig = Make(activeAccount: signedIn ? "acct-1" : null);
+
+        await rig.Svc.SetAsync(null, CancellationToken.None);
+        await rig.Svc.IdleAsync();
+        // Signed in, the push has settled and Pending is clear, so only IsUserChoice keeps the clear.
+        Assert.Equal(!signedIn, rig.Store.Load().Pending);
+        Assert.True(await DetectUntilDecidedAsync(rig));
+
+        Assert.Null(rig.Store.Load().CaseId);
+        Assert.Equal(MachineCaseOrigin.Manual, rig.Store.Load().Origin);
+    }
+
+    [Fact]
+    public async Task A_stale_pull_finishing_after_an_account_switch_does_not_let_auto_assign_run()
+    {
+        var rig = Make();
+        rig.Config.Update(s => s.Auth!.CloudAccounts.Add(new CloudAccountRecord { AccountId = "acct-2", RefreshToken = "refresh" }));
+        var entered = new ManualResetEventSlim(false);
+        var release = new ManualResetEventSlim(false);
+        var first = true;
+        rig.Api.OnListDevices = _ =>
+        {
+            if (first)
+            {
+                first = false;
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+            }
+            return CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto>());
+        };
+        var assigner = new Nexus.Service.Peripherals.Y70.Y70CaseAssigner(rig.Svc);
+
+        Assert.False(assigner.OnDetected());
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+        Assert.Equal(CloudActionResult.Ok().Success, rig.Accounts.Activate("acct-2").Success);
+        release.Set();
+        await rig.Svc.IdleAsync();
+
+        Assert.False(assigner.OnDetected());
+        Assert.Null(rig.Store.Load().CaseId);
+        release.Dispose();
+        entered.Dispose();
+    }
+
+    [Fact]
+    public async Task With_the_network_held_auto_assign_runs_without_an_account_call_and_a_later_pull_replaces_it()
+    {
+        var rig = Make();
+        rig.Held = true;
+
+        Assert.True(new Nexus.Service.Peripherals.Y70.Y70CaseAssigner(rig.Svc).OnDetected());
+
+        Assert.Equal(0, rig.Api.ListDevicesCalls);
+        Assert.Equal(MachineCaseOrigin.Auto, rig.Store.Load().Origin);
+
+        rig.Held = false;
+        rig.Clock.Advance(TimeSpan.FromMinutes(5));
+        rig.Api.OnListDevices = _ => CloudApiResult<List<CloudDeviceDto>>.Ok(new List<CloudDeviceDto> { new() { InstallId = rig.InstallId, CaseId = SnowWhiteY70 } });
+        await rig.Svc.GetAsync(CancellationToken.None);
+        await rig.Svc.IdleAsync();
+
+        Assert.Equal(SnowWhiteY70, rig.Store.Load().CaseId);
+    }
+
+    [Fact]
+    public void Pending_manual_pick_is_left_alone_by_auto_assign()
+    {
+        var rig = Make(activeAccount: null);
+        rig.Store.Save("manual-case", pending: true);
+
+        Assert.True(new Nexus.Service.Peripherals.Y70.Y70CaseAssigner(rig.Svc).OnDetected());
+
+        Assert.Equal("manual-case", rig.Store.Load().CaseId);
+        Assert.True(rig.Store.Load().Pending);
     }
 
     [Fact]

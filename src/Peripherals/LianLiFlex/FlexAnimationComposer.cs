@@ -26,8 +26,12 @@ public static class FlexAnimationComposer
 {
     private static readonly int[] BrightnessLevels = { 0, 64, 128, 192, 255 };
 
-    public static IReadOnlyList<string> Keys(FlexFamily family) =>
-        family == FlexFamily.SlInfFlex ? FlexSlInfEffects.Keys : FlexTlEffects.Keys;
+    public static IReadOnlyList<string> Keys(FlexFamily family) => family switch
+    {
+        FlexFamily.SlInfFlex => FlexSlInfEffects.Keys,
+        FlexFamily.P28V2 => Array.Empty<string>(),
+        _ => FlexTlEffects.Keys,
+    };
 
     /// <summary>Speed index 0..4 to the interval multiplier; Static ignores the speed slider and runs at the slowest.</summary>
     public static int SpeedMultiplier(string key, int speed) =>
@@ -39,6 +43,10 @@ public static class FlexAnimationComposer
     public static FlexComposedAnimation Compose(
         FlexFamily family, int fans, IReadOnlyDictionary<string, FlexZoneLook> zones, bool upDownSwap, int infAttachFlag = 1)
     {
+        if (family == FlexFamily.P28V2)
+        {
+            throw new NotSupportedException("P28 V2 has no stored effects");
+        }
         fans = fans is < 1 or > 4 ? 4 : fans;
         return family == FlexFamily.SlInfFlex ? ComposeSlInf(fans, zones, infAttachFlag) : ComposeTl(fans, zones, upDownSwap);
     }

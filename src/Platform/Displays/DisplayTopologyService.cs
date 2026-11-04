@@ -4,6 +4,7 @@ using System.Linq;
 using Nexus.Service.Models.Displays;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
+using Nexus.Service.Panel.Streams;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
 
 namespace Nexus.Service.Platform.Displays;
@@ -42,21 +43,64 @@ public sealed class DisplayTopologyService : IDisposable
     private readonly IDisplayTopologyProvider _provider;
     private readonly PanelDeviceRegistry _panelRegistry;
     private readonly Nexus.Service.Persistence.IConfigStore? _store;
+    private readonly IVirtualMonitorHost? _virtualMonitors;
     private readonly object _cacheLock = new();
     private HashSet<string>? _attachedIds;
     // Display id of the attached Y70 panel monitor ("" when none); the
     // brightness controller routes that id through the Y70 provider.
     private string _y70DisplayId = "";
     private string _ddcOnlyY70Variant = "";
+    // Id of the OS primary display ("" when unknown), refreshed with the attached-id cache.
+    private string _primaryDisplayId = "";
     private long _attachedIdsAtMs;
     private bool _attachedIdsValid;
+    // Id of the virtual display a USB device's panel owns ("" when none), refreshed with the attached-id cache.
+    private string _ownedDisplayId = "";
 
-    public DisplayTopologyService(IDisplayTopologyProvider provider, PanelDeviceRegistry panelRegistry, Nexus.Service.Persistence.IConfigStore? store = null)
+    /// <summary>The USB device panel (record id and name) whose secondary monitor is up, or null. Wired by the host once the stream coordinator exists.</summary>
+    public Func<(string PanelDeviceId, string Name)?>? DevicePanelOwner { get; set; }
+
+    /// <summary>Raised when the virtual display a USB device's panel owns appears, goes, or changes id.</summary>
+    public event Action? OwnedDisplayChanged;
+
+    /// <summary>Id of the virtual display a USB device's panel owns, from the last enumeration whatever its age; "" when none. Never enumerates.</summary>
+    public string OwnedVirtualDisplayId()
+    {
+        lock (_cacheLock) return _ownedDisplayId;
+    }
+
+    /// <summary>The owning USB device's name when <paramref name="displayId"/> is its virtual display, else null. Cached ids only.</summary>
+    public string? DevicePanelNameFor(string displayId)
+    {
+        lock (_cacheLock)
+        {
+            if (_ownedDisplayId.Length == 0 || !string.Equals(_ownedDisplayId, displayId, StringComparison.Ordinal)) return null;
+        }
+        return DevicePanelOwner?.Invoke()?.Name;
+    }
+
+    private bool IsOwnedVirtualDisplay(RawDisplayInfo info)
+        => _virtualMonitors?.OwnsAdapter(info.AdapterName) == true;
+
+    public DisplayTopologyService(IDisplayTopologyProvider provider, PanelDeviceRegistry panelRegistry, Nexus.Service.Persistence.IConfigStore? store = null, IVirtualMonitorHost? virtualMonitors = null)
     {
         _provider = provider;
         _panelRegistry = panelRegistry;
         _store = store;
+        _virtualMonitors = virtualMonitors;
+        // The arrival scan can run before the claim exists; rescan so the record corrects itself.
+        _virtualMonitors?.OwnedDisplayClaimed += OnOwnedDisplayClaimed;
     }
+
+    private void OnOwnedDisplayClaimed() => System.Threading.Tasks.Task.Run(() =>
+    {
+        try { CacheAttachedIds(_provider.Enumerate()); }
+        catch (Exception ex) { Console.Error.WriteLine($"[displays] claim rescan failed: {ex.Message}"); }
+    });
+
+    // The service-created virtual display's EDID carries a placeholder density; its owning device's real density wins.
+    private double? EffectiveDpi(RawDisplayInfo info)
+        => _virtualMonitors?.OwnedDisplayDpi(info.AdapterName) ?? info.Dpi;
 
     /// <summary>Display ids with brightness control turned off. Read per
     /// topology build rather than cached: the list changes from a toggle, not
@@ -87,12 +131,14 @@ public sealed class DisplayTopologyService : IDisposable
             // reads as unassigned: the UI offers "Use as Nexus panel", which
             // re-activates the same record.
             var assigned = _panelRegistry.FindByDisplayId(info.Id);
-            if (assigned?.Enabled == false) assigned = null;
+            if (assigned is not null && !PanelHosting.IsOn(assigned)) assigned = null;
+            // A USB device's secondary monitor is that device's glass: named after it, panel managed by the device.
+            var devicePanel = IsOwnedVirtualDisplay(info) ? DevicePanelOwner?.Invoke() : null;
             response.Displays.Add(new DisplayTopologyEntryDto
             {
                 Id = info.Id,
                 Number = info.Number,
-                Name = info.Name,
+                Name = devicePanel?.Name ?? info.Name,
                 Manufacturer = info.Manufacturer,
                 Model = info.Model,
                 Bounds = info.X is int x && info.Y is int y
@@ -100,16 +146,17 @@ public sealed class DisplayTopologyService : IDisposable
                     : null,
                 Resolution = new DisplaySizeDto { Width = info.ResolutionWidth, Height = info.ResolutionHeight },
                 ScaleFactor = info.Scale,
-                Dpi = info.Dpi,
+                Dpi = EffectiveDpi(info),
                 IsPrimary = info.IsPrimary,
                 IsInternal = info.IsInternal,
                 IsTouch = info.IsTouch,
                 Orientation = info.Orientation,
                 IsY70 = isY70,
                 DdcEnabled = !ddcDisabled.Contains(info.Id),
-                HostingSupported = HostingSupportedOnHost && !isY70,
-                AssignedPanelDeviceId = assigned?.Id,
-                AssignedPanelName = assigned?.DisplayName,
+                HostingSupported = HostingSupportedOnHost && !isY70 && devicePanel is null,
+                OwnedByDevicePanel = devicePanel is not null,
+                AssignedPanelDeviceId = devicePanel?.PanelDeviceId ?? assigned?.Id,
+                AssignedPanelName = devicePanel?.Name ?? assigned?.DisplayName,
                 Fingerprint = info.Fingerprint,
             });
         }
@@ -179,6 +226,16 @@ public sealed class DisplayTopologyService : IDisposable
     }
 
     /// <summary>
+    /// Whether <paramref name="displayId"/> is the OS primary display, from the last enumeration whatever its
+    /// age. Never enumerates: a helper round trip does not belong in a request handler.
+    /// </summary>
+    public bool IsPrimaryDisplay(string displayId)
+    {
+        if (string.IsNullOrEmpty(displayId)) return false;
+        lock (_cacheLock) return _primaryDisplayId.Length > 0 && string.Equals(_primaryDisplayId, displayId, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Variant key of the attached DDC-only Y70 panel (GW / Ina, matched by
     /// EDID fragment), or empty. These panels expose no USB serial function,
     /// so their handler must not treat a missing serial connection as a
@@ -215,25 +272,36 @@ public sealed class DisplayTopologyService : IDisposable
         HashSet<string>? ids = null;
         var y70DisplayId = "";
         var ddcOnlyVariant = "";
+        var primaryId = "";
+        var ownedId = "";
         if (raw is not null)
         {
             ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var info in raw)
             {
                 ids.Add(info.Id);
+                if (primaryId.Length == 0 && info.IsPrimary) primaryId = info.Id;
+                if (ownedId.Length == 0 && IsOwnedVirtualDisplay(info)) ownedId = info.Id;
                 if (y70DisplayId.Length == 0 && IsY70Display(info.RawHardwareId)) y70DisplayId = info.Id;
                 if (ddcOnlyVariant.Length == 0)
                     ddcOnlyVariant = Y70DisplayProtocol.DdcOnlyVariantForHardwareId(info.RawHardwareId);
             }
         }
+        bool primaryChanged, ownedChanged;
         lock (_cacheLock)
         {
+            primaryChanged = !string.Equals(_primaryDisplayId, primaryId, StringComparison.Ordinal);
+            ownedChanged = !string.Equals(_ownedDisplayId, ownedId, StringComparison.Ordinal);
+            _ownedDisplayId = ownedId;
             _attachedIds = ids;
             _y70DisplayId = y70DisplayId;
             _ddcOnlyY70Variant = ddcOnlyVariant;
+            _primaryDisplayId = primaryId;
             _attachedIdsAtMs = Environment.TickCount64;
             _attachedIdsValid = true;
         }
+        if (primaryChanged) PrimaryDisplayChanged?.Invoke();
+        if (ownedChanged) OwnedDisplayChanged?.Invoke();
         if (raw is not null)
         {
             RelinkPanelDisplays(raw);
@@ -251,6 +319,7 @@ public sealed class DisplayTopologyService : IDisposable
 
     public void Dispose()
     {
+        _virtualMonitors?.OwnedDisplayClaimed -= OnOwnedDisplayClaimed;
         lock (_recheckLock)
         {
             _disposed = true;
@@ -296,7 +365,7 @@ public sealed class DisplayTopologyService : IDisposable
             foreach (var info in raw)
             {
                 if (IsY70Display(info.RawHardwareId)) continue;
-                attached.Add(new RelinkDisplay(info.Id, info.Fingerprint, info.IsPrimary));
+                attached.Add(new RelinkDisplay(info.Id, info.Fingerprint, info.IsPrimary, info.ResolutionWidth, info.ResolutionHeight));
             }
             var (applied, pending) = _panelRegistry.ReconcileDisplayFingerprints(attached);
             if (applied.Count > 0)
@@ -320,6 +389,9 @@ public sealed class DisplayTopologyService : IDisposable
     /// </summary>
     public event Action<IReadOnlyList<string>>? PromotedPanelCapabilitiesChanged;
 
+    /// <summary>Raised when the primary display id changes, including the first time it becomes known after startup.</summary>
+    public event Action? PrimaryDisplayChanged;
+
     /// <summary>
     /// Re-derives promote-time capabilities for every enabled display-bound
     /// record from the current OS facts. Promote stamps them once and the
@@ -336,14 +408,14 @@ public sealed class DisplayTopologyService : IDisposable
             foreach (var info in raw)
             {
                 var record = _panelRegistry.FindByDisplayId(info.Id);
-                if (record is null || record.Enabled == false) continue;
+                if (record is null || !PanelHosting.IsOn(record)) continue;
                 if (record.Capabilities?.Surface is { } surface && surface != PanelSurfaces.Monitor) continue;
                 var caps = BuildPromotedCapabilities(
                     info.Manufacturer, info.Model, info.Name,
                     info.ResolutionWidth, info.ResolutionHeight,
                     info.Scale, info.IsTouch, info.Orientation,
                     // A failed EDID read must not drop the grid to the default density.
-                    info.Dpi ?? record.Capabilities?.Dpi);
+                    EffectiveDpi(info) ?? record.Capabilities?.Dpi);
                 // Grid is kiosk-reported on self-registered panels; carry any
                 // stored value so the rebuild never clears it.
                 caps.Grid = record.Capabilities?.Grid;
@@ -376,7 +448,7 @@ public sealed class DisplayTopologyService : IDisposable
         double? measuredDpi)
     {
         var scale = scaleFactor is > 0 ? scaleFactor.Value : 1.0;
-        var known = KnownPanelDisplays.Match(manufacturer, model, name);
+        var known = KnownPanelDisplays.Match(manufacturer, model, name, resolutionWidth, resolutionHeight);
         return new PanelDeviceCapabilities
         {
             Surface = PanelSurfaces.Monitor,

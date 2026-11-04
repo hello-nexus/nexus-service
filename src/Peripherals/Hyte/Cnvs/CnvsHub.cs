@@ -144,6 +144,12 @@ public sealed class CnvsHub : IDisposable, IDfuFlashTarget
         lock (_writeLock)
         {
             if (IsConnected) return true;
+            // A port that stopped reporting open (device removed) is still held; release it rather than drop it for the finalizer.
+            if (_port is not null)
+            {
+                Nexus.Service.Peripherals.IoSafety.SerialPortSafety.Close(_port);
+                _port = null;
+            }
             var ports = _discovery.Discover();
             foreach (var info in ports)
             {
@@ -171,8 +177,10 @@ public sealed class CnvsHub : IDisposable, IDfuFlashTarget
     {
         lock (_writeLock)
         {
-            try { if (_port?.IsOpen == true) _port.Close(); } catch { }
-            try { _port?.Dispose(); } catch { }
+            if (_port is not null)
+            {
+                Nexus.Service.Peripherals.IoSafety.SerialPortSafety.Close(_port);
+            }
             _port = null;
             _firmwareVersion = "";
             // Force the next connect to re-apply settings before the
@@ -411,9 +419,7 @@ public sealed class CnvsHub : IDisposable, IDfuFlashTarget
             DtrEnable = true,
             RtsEnable = true,
         };
-        port.Open();
-        port.DiscardInBuffer();
-        port.DiscardOutBuffer();
+        Nexus.Service.Peripherals.IoSafety.SerialPortSafety.OpenAndClear(port);
         return port;
     }
 

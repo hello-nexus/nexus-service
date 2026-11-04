@@ -231,7 +231,8 @@ public sealed unsafe class MacDisplayBrightnessProvider : IDisplayBrightnessProv
 
             if (string.IsNullOrWhiteSpace(name))
             {
-                name = string.IsNullOrEmpty(manufacturer) || string.IsNullOrEmpty(modelText)
+                // A vendor id that is not a valid EISA code decodes to hex, which is no name to show.
+                name = !IsEisaCode(manufacturer) || string.IsNullOrEmpty(modelText)
                     ? $"Display {index + 1}"
                     : $"{manufacturer} {modelText}";
             }
@@ -965,6 +966,8 @@ public sealed unsafe class MacDisplayBrightnessProvider : IDisplayBrightnessProv
 
         return value.ToString("X4");
     }
+
+    private static bool IsEisaCode(string value) => value.Length == 3 && value.All(IsUpperAscii);
 
     private static bool IsUpperAscii(char value) => value >= 'A' && value <= 'Z';
 

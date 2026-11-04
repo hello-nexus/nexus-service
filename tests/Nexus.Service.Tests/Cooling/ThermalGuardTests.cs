@@ -41,36 +41,26 @@ public class ThermalGuardTests
     }
 
     [Fact]
-    public void SittingAtTheLimit_ForAMinute_NeverTripsAndHoldsSixtyPercent()
-    {
-        // Ryzen 7000/9000 and recent Intel sit at their limit under load by design.
-        var g = new ThermalGuard();
-        for (var s = 0; s <= 120; s++)
-        {
-            var o = g.Step(s * 1000L, 95, L, 100, 80);
-            Assert.Equal(ThermalGuardStates.Floor, o.State);
-            Assert.Equal(60, o.FloorDuty);
-            Assert.False(o.TripStarted);
-        }
-    }
-
-    [Fact]
-    public void JustUnderLimitPlusThree_NeverTrips()
+    public void JustUnderLimit_NeverTrips()
     {
         var g = new ThermalGuard();
         for (var s = 0; s <= 120; s++)
         {
-            Assert.False(g.Step(s * 1000L, 97.9, L, 100, 80).TripStarted);
+            Assert.False(g.Step(s * 1000L, 94.9, L, 100, 80).TripStarted);
         }
     }
 
     [Fact]
-    public void LimitTrip_NeedsFiveSecondsSustainedAtLimitPlusThree()
+    public void LimitTrip_NeedsFiveSecondsSustainedAtTheLimit()
     {
         var g = new ThermalGuard();
-        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 98, L, 100, 80).State);
-        Assert.Equal(ThermalGuardStates.Floor, g.Step(4000, 98, L, 100, 80).State);
-        var o = g.Step(5000, 98, L, 100, 80);
+        var start = g.Step(0, 95, L, 100, 80);
+        Assert.Equal(ThermalGuardStates.Floor, start.State);
+        Assert.Equal(60, start.FloorDuty);
+        var late = g.Step(4900, 95, L, 100, 80);
+        Assert.Equal(ThermalGuardStates.Floor, late.State);
+        Assert.Equal(60, late.FloorDuty);
+        var o = g.Step(5000, 95, L, 100, 80);
         Assert.Equal(ThermalGuardStates.Tripped, o.State);
         Assert.True(o.TripStarted);
         Assert.True(o.ForceMax);
@@ -79,11 +69,21 @@ public class ThermalGuardTests
     }
 
     [Fact]
-    public void LimitTrip_DipBelowThresholdResetsSustainTimer()
+    public void LimitTrip_ReadingGapRestartsTheSustainTimer()
+    {
+        var g = new ThermalGuard();
+        g.Step(0, 95, L, 100, 80);
+        Assert.False(g.Step(60_000, 95, L, 100, 80).TripStarted);
+        Assert.False(g.Step(64_900, 95, L, 100, 80).TripStarted);
+        Assert.True(g.Step(65_000, 95, L, 100, 80).TripStarted);
+    }
+
+    [Fact]
+    public void LimitTrip_DipBelowLimitResetsSustainTimer()
     {
         var g = new ThermalGuard();
         g.Step(0, 99, L, 100, 80);
-        g.Step(3000, 95, L, 100, 80);
+        g.Step(3000, 94.9, L, 100, 80);
         var o = g.Step(6000, 99, L, 100, 80);
         Assert.NotEqual(ThermalGuardStates.Tripped, o.State);
     }
@@ -146,17 +146,108 @@ public class ThermalGuardTests
     }
 
     [Fact]
-    public void Escalation_FansNotRespondingTwentySecondsIntoTheTripAtTheLimit_ReleasesAllOnce()
+    public void Escalation_FansNotRespondingTwentySecondsIntoTheTripAtTheLimit_FlagsTheEscalationOnce()
     {
         var g = Tripped();
         var o = g.Step(25_000, 97, L, 100, 100, writesNotLanding: true);
         Assert.Equal(ThermalGuardStates.Escalated, o.State);
         Assert.True(o.ReleaseAllNow);
-        Assert.True(o.StopWriting);
+        Assert.Equal(100, o.FloorDuty);
 
         var again = g.Step(26_000, 98, L, 100, 100, writesNotLanding: true);
         Assert.False(again.ReleaseAllNow);
-        Assert.True(again.StopWriting);
+        Assert.Equal(100, again.FloorDuty);
+    }
+
+    [Fact]
+    public void Restore_EndsATrip_AndSuppressesANewOneUntilTheCpuIsBelowTheFloorStartBand()
+    {
+        var g = Tripped();
+        Assert.True(g.Restore());
+        Assert.NotEqual(ThermalGuardStates.Tripped, g.State);
+
+        // Still hot for a long spell: the floor keeps raising, no trip starts.
+        var t = 30_000L;
+        for (; t < 120_000; t += 1000)
+        {
+            var o = g.Step(t, 99, L, 100, 80);
+            Assert.False(o.TripStarted);
+            Assert.NotEqual(ThermalGuardStates.Tripped, g.State);
+            Assert.Equal(100, o.FloorDuty);
+        }
+
+        // Cool below limit minus the band, then hot again: the guard is armed and trips.
+        var below = L - ThermalGuardThresholds.Default.FloorStartBelowLimitC - 5;
+        g.Step(t, below, L, 100, 80);
+        t += 1000;
+        var tripped = false;
+        for (var i = 0; i < 30 && !tripped; i++, t += 1000)
+        {
+            tripped = g.Step(t, L + 4, L, 100, 80).TripStarted;
+        }
+        Assert.True(tripped);
+    }
+
+    [Fact]
+    public void Restore_SuppressionExpiresAfterTenMinutesEvenWhileTheCpuStaysInTheBand()
+    {
+        var g = Tripped();
+        Assert.True(g.Restore());
+        var inBand = L - ThermalGuardThresholds.Default.FloorStartBelowLimitC + 2;
+
+        var t = 30_000L;
+        for (; t < 30_000 + 9 * 60_000; t += 1000)
+        {
+            g.Step(t, inBand, L, 100, 80);
+        }
+        // Inside the ten minutes a hot reading still does not trip.
+        for (var i = 0; i < 30; i++, t += 1000)
+        {
+            Assert.False(g.Step(t, L + 4, L, 100, 80).TripStarted);
+        }
+        for (var i = 0; i < 90; i++, t += 1000)
+        {
+            g.Step(t, inBand, L, 100, 80);
+        }
+
+        var tripped = false;
+        for (var i = 0; i < 30 && !tripped; i++, t += 1000)
+        {
+            tripped = g.Step(t, L + 4, L, 100, 80).TripStarted;
+        }
+        Assert.True(tripped);
+    }
+
+    [Fact]
+    public void Restore_CoolingLossStillTripsDuringTheSuppression()
+    {
+        var g = Tripped();
+        Assert.True(g.Restore());
+
+        ThermalGuardOutput? tripped = null;
+        for (var s = 0; s <= 300 && tripped is null; s++)
+        {
+            var temp = 81 + 3.0 * s / 60;
+            var o = g.Step(30_000 + s * 1000L, temp, L, 2, 0);
+            if (o.TripStarted)
+            {
+                tripped = o;
+            }
+        }
+
+        Assert.NotNull(tripped);
+        Assert.Equal(ThermalTripReasons.CoolingLoss, tripped!.Value.TripReason);
+    }
+
+    [Fact]
+    public void Restore_EndsAnEscalation_AndIsANoOpWhenNothingIsTripped()
+    {
+        var g = Tripped();
+        g.Step(25_000, 97, L, 100, 100, writesNotLanding: true);
+        Assert.Equal(ThermalGuardStates.Escalated, g.State);
+        Assert.True(g.Restore());
+        Assert.NotEqual(ThermalGuardStates.Escalated, g.State);
+        Assert.False(g.Restore());
     }
 
     [Fact]
@@ -385,8 +476,8 @@ public class ThermalGuardTests
     public void TheLimitTrip_StillReadsTheRawValue()
     {
         var g = new ThermalGuard();
-        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 98, L, 100, 80).State);
-        var tripped = g.Step(5000, 98, L, 100, 80);
+        Assert.Equal(ThermalGuardStates.Floor, g.Step(0, 95, L, 100, 80).State);
+        var tripped = g.Step(5000, 95, L, 100, 80);
         Assert.Equal(ThermalGuardStates.Tripped, tripped.State);
     }
 

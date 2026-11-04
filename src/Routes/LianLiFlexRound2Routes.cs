@@ -113,7 +113,7 @@ public static partial class LianLiFlexRoutes
             Members = members.Select(m => new LianLiFlexSyncMemberDto
             {
                 Mac = m.Mac,
-                Family = m.Family == FlexFamily.SlInfFlex ? "slInfFlex" : "tlFlex",
+                Family = m.Family == FlexFamily.SlInfFlex ? "slInfFlex" : m.Family == FlexFamily.P28V2 ? "p28v2" : "tlFlex",
                 Label = FlexLightingDeviceProvider.ModelName(m.Family),
                 SortIndex = m.SortIndex,
                 SliceDirection = m.SliceDirection,

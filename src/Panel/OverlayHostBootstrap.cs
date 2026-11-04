@@ -1,3 +1,4 @@
+using System;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Persistence;
@@ -23,13 +24,50 @@ internal static class OverlayHostBootstrap
         var panelKioskLauncher = app.Services.GetRequiredService<PanelKioskLauncher>();
         var edgeLock = new object();
         var lastShowPanel = store.Load().Panel.AutoLaunch;
-        var lastAssignments = AssignmentsSignature(store.Load());
+        var topology = app.Services.GetService<Platform.Displays.DisplayTopologyService>();
+        var lastAssignments = AssignmentsSignature(store.Load(), topology is null ? null : topology.IsPrimaryDisplay);
 #if WINDOWS
         var helperRegistry = app.Services.GetService<HelperRegistry>();
 #endif
 #if LINUX
         var linuxKiosks = app.Services.GetService<Platform.Linux.LinuxPanelKioskHost>();
 #endif
+        // The primary id is cold at startup and learned later; the signature carries it, so the late
+        // correction re-pokes the host even though no setting changed.
+        void OnPrimaryChanged()
+        {
+            try
+            {
+                var assignments = AssignmentsSignature(store.Load(), id => topology?.IsPrimaryDisplay(id) ?? false);
+                bool changed;
+                lock (edgeLock)
+                {
+                    changed = assignments != lastAssignments;
+                    lastAssignments = assignments;
+                }
+                if (changed) overlayHost.NotifyDisplayAssignmentsChanged();
+            }
+            catch { }
+        }
+        topology?.PrimaryDisplayChanged += OnPrimaryChanged;
+        if (topology is not null)
+        {
+            var streams = app.Services.GetService<Streams.StreamedPanelCoordinator>();
+            topology.DevicePanelOwner = () => streams?.MonitorOwner();
+            // The owned display's appearance is not a settings edit, so the host is told directly.
+            topology.OwnedDisplayChanged += () =>
+            {
+                try
+                {
+#if WINDOWS
+                    if (helperRegistry is not null)
+                        LifecycleCommands.NotifyOverlayPrefsChangedAsync(helperRegistry).ObserveFaults();
+#endif
+                    overlayHost.NotifyDisplayAssignmentsChanged();
+                }
+                catch { }
+            };
+        }
         store.OnChanged += () =>
         {
             try
@@ -40,7 +78,7 @@ internal static class OverlayHostBootstrap
                     LifecycleCommands.NotifyOverlayPrefsChangedAsync(helperRegistry).ObserveFaults();
 #endif
                 bool showPanelChanged, assignmentsChanged;
-                var assignments = AssignmentsSignature(snapshot);
+                var assignments = AssignmentsSignature(snapshot, topology is null ? null : topology.IsPrimaryDisplay);
                 lock (edgeLock)
                 {
                     showPanelChanged = snapshot.Panel.AutoLaunch != lastShowPanel;
@@ -74,19 +112,42 @@ internal static class OverlayHostBootstrap
             });
         });
 #endif
+#if LINUX
+        // Kiosk teardown is a browser kill plus waits. It runs beside the hosted-service
+        // stops, so a slow browser cannot delay the fan release or the Lian Li disconnect;
+        // ApplicationStopped joins it, bounded, before the DI container disposes (which kills OpenRGB).
+        Task? kioskStop = null;
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            kioskStop = Task.Run(() =>
+            {
+                try { linuxKiosks?.Shutdown(); } catch { }
+            });
+        });
+        app.Lifetime.ApplicationStopped.Register(() =>
+        {
+            try { kioskStop?.Wait(Platform.Linux.LinuxPanelKioskHost.ShutdownBudgetMs); } catch { }
+        });
+#else
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             try { overlayHost.Stop(); } catch { }
         });
+#endif
     }
 
-    private static string AssignmentsSignature(NexusSettings snapshot)
+    internal static string AssignmentsSignature(NexusSettings snapshot, Func<string, bool>? isPrimary = null)
     {
         var parts = new List<string>();
         foreach (var record in snapshot.PanelDevices.Values)
         {
-            if (!string.IsNullOrEmpty(record.DisplayId) && record.Enabled != false)
-                parts.Add($"{record.DisplayId}|{record.Id}|{record.ReserveMonitor ?? true}|{record.KeepCursorOff ?? false}");
+            if (string.IsNullOrEmpty(record.DisplayId) || !PanelHosting.IsOn(record)) continue;
+            // Effective values as ListAssignments derives them, so a Family or backdrop change that flips one wakes the overlay.
+            var seeThrough = record.Backdrop == "desktop";
+            var generic = string.IsNullOrEmpty(record.Capabilities?.Family);
+            var onTop = (record.AlwaysOnTop ?? true) && (seeThrough || !generic);
+            var clickThrough = seeThrough && (generic || (record.ClickThrough ?? false));
+            parts.Add($"{record.DisplayId}|{record.Id}|{record.ReserveMonitor ?? true}|{record.KeepCursorOff ?? false}|{onTop}|{record.Backdrop ?? ""}|{clickThrough}|{isPrimary?.Invoke(record.DisplayId) ?? false}");
         }
         parts.Sort(StringComparer.Ordinal);
         return string.Join(";", parts);

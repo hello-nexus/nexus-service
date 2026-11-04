@@ -265,6 +265,48 @@ public sealed partial class Slv3Hub : IDisposable
     private int _txRecoveries;
     private long _nextTxRecoveryMs;
 
+    // Last resort for a TX that ignores the RX reset: cycle the one hub port the TX
+    // devnode sits on. It needs several RX resets sent and a minimum elapsed time since
+    // the first, with the TX enumerated and never answering a probe in between. A TX
+    // that recovers on its own does so on the first resets, long before either floor.
+    internal const int TxResetsBeforePortCycle = 5;
+    internal const long TxHangMinMsBeforePortCycle = 300_000;
+    // Spacing between cycles, and a rolling cap that no answer resets: a TX that
+    // answers once and hangs again must not be cycled forever. Past the cap only a
+    // physical replug is left.
+    internal const long PortCycleSpacingMs = 600_000;
+    internal const int MaxPortCyclesPerWindow = 3;
+    internal const long PortCycleWindowMs = 86_400_000;
+    // No cycle until this long after a resume: the TX is re-enumerating on its own.
+    internal const long PortCycleResumeQuietMs = 120_000;
+    // Display state: Modern Standby always turns the display off first
+    // and may raise no suspend event, so cycling is held while it is anything but on, and after it returns.
+    internal const int DisplayUnknown = -1;
+    internal const int DisplayOff = 0;
+    internal const int DisplayOn = 1;
+    internal const int DisplayDimmed = 2;
+    private int _displayState = DisplayUnknown;
+    private long _displayQuietUntilMs;
+    private readonly object _portCycleGate = new();
+    private readonly Queue<long> _portCycleTimesMs = new();
+    private bool _portCycleCapLogged;
+    private bool _portCycleQuietLogged;
+    private int _portCycleRefusalLogged;
+    private int _txHungResets;
+    private long _txHungSinceMs;
+    private int _portCycles;
+    private long _nextPortCycleMs;
+    private int _portCycleInFlight;
+    private long _powerQuietUntilMs;
+
+    /// <summary>Windows only; null leaves the TX reset to the RX alone.</summary>
+    internal ISlv3TxPortCycler? TxPortCycler { get; set; }
+
+    /// <summary>Owned display-state registration, released on dispose.</summary>
+    internal IDisposable? DisplayWatch { get; set; }
+
+    internal Action<Action> RunPortCycle { get; init; } = work => _ = Task.Run(work);
+
     // The transport keeps a TX handle open through write timeouts, so a TX that
     // sends nothing back to the once-a-second GetMac this many times in a row is
     // closed here; the reopen path then counts toward the reset above.
@@ -305,6 +347,24 @@ public sealed partial class Slv3Hub : IDisposable
     private const long SaveCfgQuietMs = 5_000;
     private long _saveCfgDueMs;
     private long _lastConfigChangeMs;
+
+    // A rebind that converged arms one save, sent once every owned chain has sat at its target for
+    // BindSaveStablePolls consecutive polls with no binding change anywhere. Effect uploads do not touch it.
+    // A chain that flaps keeps resetting the run, and a sent save is followed by at least BindSaveMinIntervalMs of quiet.
+    internal const int BindSaveStablePolls = 10;
+    internal const long BindSaveMinIntervalMs = 120_000;
+    internal const int BindSaveMaxPerWindow = 3;
+    internal const long BindSaveWindowMs = 3_600_000;
+    internal const long BindSaveRetryMs = 30_000;
+    private long _bindSaveRetryAtMs;
+    private int _uploadsInFlight;
+    private bool _bindSaveArmed;
+    private int _bindSaveStablePolls;
+    private long _bindSaveEvalPoll;
+    private long _lastBindingChangePoll;
+    private long? _lastSaveSentMs;
+    private readonly Queue<long> _bindSaveTimesMs = new();
+    private bool _bindSaveCapLogged;
 
     // Sends a sequenced control frame (RF_Select / RF_RebootLcd) gets before it
     // is dropped without an echo (L-Connect selected / reboot_lcd counters).
@@ -407,6 +467,7 @@ public sealed partial class Slv3Hub : IDisposable
                     rxPort ??= port;
                 }
             }
+            ConsiderTxPortCycleLocked(txPort, _nowMs());
             if (txPort is null || rxPort is null)
             {
                 // The module presents TX and RX as two WinUSB devices behind its
@@ -432,6 +493,7 @@ public sealed partial class Slv3Hub : IDisposable
                     _txFails = 0;
                     _txRecoveries = 0;
                     _nextTxRecoveryMs = 0;
+                    ClearPortCycleEpisodeLocked();
                 }
                 return false;
             }
@@ -541,6 +603,8 @@ public sealed partial class Slv3Hub : IDisposable
         _bothAbsentSinceMs = 0;
         _lastBindMs = null;
         _saveCfgDueMs = 0;
+        _bindSaveArmed = false;
+        _bindSaveStablePolls = 0;
         _videoModeActive = false;
         _videoModePreppedCount = 0;
     }
@@ -563,6 +627,7 @@ public sealed partial class Slv3Hub : IDisposable
                 rxPort ??= port;
             }
         }
+        ConsiderTxPortCycleLocked(txPort, nowMs);
         if (txPort is null && rxPort is null)
         {
             if (_bothAbsentSinceMs == 0)
@@ -576,6 +641,7 @@ public sealed partial class Slv3Hub : IDisposable
                 _txFails = 0;
                 _txRecoveries = 0;
                 _nextTxRecoveryMs = 0;
+                ClearPortCycleEpisodeLocked();
                 return false;
             }
         }
@@ -642,7 +708,8 @@ public sealed partial class Slv3Hub : IDisposable
 
     private void ResetTxViaRxLocked(long nowMs, string reason)
     {
-        if (nowMs < _nextTxRecoveryMs)
+        // The port cycle owns the TX while it runs.
+        if (nowMs < _nextTxRecoveryMs || Volatile.Read(ref _portCycleInFlight) != 0)
         {
             return;
         }
@@ -657,12 +724,159 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         _txRecoveries++;
+        if (_txHungResets++ == 0)
+        {
+            _txHungSinceMs = nowMs;
+        }
         _nextTxRecoveryMs = nowMs + RecoveryBackoffFor(_txRecoveries);
         ServiceLog.Warn($"[lianli-wireless] {reason}, resetting TX via RX ({_txRecoveries})");
     }
 
     private static long RecoveryBackoffFor(int recoveries) =>
         Math.Min(RecoveryBackoffMs << Math.Min(recoveries - 1, 4), RecoveryBackoffMaxMs);
+
+    private void ClearPortCycleEpisodeLocked()
+    {
+        _txHungResets = 0;
+        _txHungSinceMs = 0;
+        _portCycles = 0;
+        Volatile.Write(ref _portCycleRefusalLogged, 0);
+    }
+
+    private string? PortCycleHoldReason(long nowMs)
+    {
+        var quietUntil = Volatile.Read(ref _powerQuietUntilMs);
+        if (quietUntil == long.MaxValue)
+        {
+            return "suspend seen without a resume";
+        }
+        var display = Volatile.Read(ref _displayState);
+        if (display == DisplayUnknown)
+        {
+            return "display state unknown";
+        }
+        if (display != DisplayOn)
+        {
+            return "display off";
+        }
+        return nowMs < quietUntil || nowMs < Volatile.Read(ref _displayQuietUntilMs) ? "recent power transition" : null;
+    }
+
+    private int PortCyclesInWindow(long nowMs)
+    {
+        lock (_portCycleGate)
+        {
+            while (_portCycleTimesMs.Count > 0 && nowMs - _portCycleTimesMs.Peek() >= PortCycleWindowMs)
+            {
+                _portCycleTimesMs.Dequeue();
+            }
+            return _portCycleTimesMs.Count;
+        }
+    }
+
+    // Called with the TX this pass found enumerated, or null when it is not. A TX
+    // that left the bus was re-enumerated, which is not a hang the RX reset ignored.
+    private void ConsiderTxPortCycleLocked(Slv3PortInfo? txPort, long nowMs)
+    {
+        if (txPort is null)
+        {
+            _txHungResets = 0;
+            _txHungSinceMs = 0;
+            return;
+        }
+        var cycler = TxPortCycler;
+        if (cycler is null || _disposed || txPort.Role != Slv3DongleRole.Tx
+            || _txHungResets < TxResetsBeforePortCycle
+            || nowMs - _txHungSinceMs < TxHangMinMsBeforePortCycle
+            || nowMs < _nextPortCycleMs
+            || Volatile.Read(ref _portCycleInFlight) != 0)
+        {
+            return;
+        }
+        var hold = PortCycleHoldReason(nowMs);
+        if (hold is not null)
+        {
+            if (!_portCycleQuietLogged)
+            {
+                _portCycleQuietLogged = true;
+                ServiceLog.Info($"[lianli-wireless] TX port cycle held back: {hold}");
+            }
+            return;
+        }
+        _portCycleQuietLogged = false;
+        var issued = PortCyclesInWindow(nowMs);
+        if (issued >= MaxPortCyclesPerWindow)
+        {
+            if (!_portCycleCapLogged)
+            {
+                _portCycleCapLogged = true;
+                ServiceLog.Warn($"[lianli-wireless] TX still hung after {issued} port cycle(s) in the last day, giving up: unplug and replug the module");
+            }
+            return;
+        }
+        _portCycleCapLogged = false;
+        var resets = _txHungResets;
+        var hungMinutes = (nowMs - _txHungSinceMs) / 60_000;
+        _nextPortCycleMs = nowMs + PortCycleSpacingMs;
+        _txHungResets = 0;
+        _txHungSinceMs = 0;
+        Volatile.Write(ref _portCycleInFlight, 1);
+        RunPortCycle(() => CycleTxPort(cycler, txPort, resets, hungMinutes));
+    }
+
+    // Runs without _lock: the hub IOCTL and the re-arrival wait can block for seconds.
+    // A cap slot is taken only once the IOCTL is about to be issued.
+    private void CycleTxPort(ISlv3TxPortCycler cycler, Slv3PortInfo txPort, int resets, long hungMinutes)
+    {
+        try
+        {
+            if (!cycler.TryResolve(txPort, out var instanceId, out var target))
+            {
+                if (Interlocked.Exchange(ref _portCycleRefusalLogged, 1) == 0)
+                {
+                    ServiceLog.Warn($"[lianli-wireless] TX port cycle refused: {target}");
+                }
+                return;
+            }
+            var nowMs = _nowMs();
+            if (_disposed || PortCycleHoldReason(nowMs) is not null)
+            {
+                return;
+            }
+            int slot;
+            lock (_portCycleGate)
+            {
+                _portCycleTimesMs.Enqueue(nowMs);
+                slot = _portCycleTimesMs.Count;
+            }
+            Interlocked.Increment(ref _portCycles);
+            ServiceLog.Warn($"[lianli-wireless] TX ignored {resets} RX reset(s) over {hungMinutes} min, cycling its USB port {target} ({slot}/{MaxPortCyclesPerWindow} today)");
+            var ok = cycler.TryCycle(instanceId, out var detail);
+            ServiceLog.Warn($"[lianli-wireless] TX port cycle {(ok ? "done" : "failed")}: {detail}");
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] TX port cycle failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _portCycleInFlight, 0);
+        }
+    }
+
+    /// <summary>Console display state from the OS (the Display constants). Cycling waits out a quiet period after it returns to on.</summary>
+    public void OnDisplayState(int state)
+    {
+        var previous = Interlocked.Exchange(ref _displayState, state);
+        if (state == DisplayOn && previous != DisplayOn && previous != DisplayUnknown)
+        {
+            Volatile.Write(ref _displayQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
+        }
+    }
+
+    /// <summary>The system resumed: no TX port cycle until it has had time to re-enumerate on its own.</summary>
+    public void OnSystemResumed() =>
+        Volatile.Write(ref _powerQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
 
     private bool MasterInitLocked(out bool anyWritten)
     {
@@ -734,17 +948,25 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
         probe = TxProbe.Answered;
+        // A reply of any kind means the TX is not hung, whatever it says about the master.
+        _txHungResets = 0;
+        _txHungSinceMs = 0;
         if (Slv3Protocol.MacIsZero(mac))
         {
             return false;
         }
-        if (_txRecoveries > 0)
+        if (_portCycles > 0)
+        {
+            ServiceLog.Info($"[lianli-wireless] TX answered after port cycle ({_portCycles}), {_txRecoveries} reset(s) via RX");
+        }
+        else if (_txRecoveries > 0)
         {
             ServiceLog.Info($"[lianli-wireless] TX answered after {_txRecoveries} reset(s) via RX");
         }
         _txFails = 0;
         _txRecoveries = 0;
         _nextTxRecoveryMs = 0;
+        ClearPortCycleEpisodeLocked();
         _txMissedProbes = 0;
         _txProbeWriteFailures = 0;
         if (!Slv3Protocol.MacIsZero(_masterMac) && !Slv3Protocol.MacEquals(_masterMac, mac))
@@ -1223,6 +1445,10 @@ public sealed partial class Slv3Hub : IDisposable
     {
         if (!NeedsBind(intent, record))
         {
+            if (intent.Sends > 0 && !intent.Manual)
+            {
+                _bindSaveArmed = true;
+            }
             intent.Sends = 0;
             intent.Manual = false;
             if (!_lockBound)
@@ -1454,7 +1680,7 @@ public sealed partial class Slv3Hub : IDisposable
 
         if (_lastBindMs is { } bound && _nowMs() - bound < PostBindSaveCfgMs)
         {
-            SendSaveCfgLocked();
+            SendSaveCfgLocked("manual");
         }
     }
 
@@ -1814,9 +2040,10 @@ public sealed partial class Slv3Hub : IDisposable
         {
             _firstPeriodicSaveDone = true;
             _saveCfgDueMs = 0;
-            SendSaveCfgLocked();
+            SendSaveCfgLocked("periodic");
             return;
         }
+        RunBindSaveLocked(now);
         if (_saveCfgDueMs == 0 || now < _saveCfgDueMs)
         {
             return;
@@ -1827,17 +2054,110 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         _saveCfgDueMs = 0;
-        SendSaveCfgLocked();
+        SendSaveCfgLocked("config-change");
     }
 
-    private bool SendSaveCfgLocked()
+    private void RunBindSaveLocked(long now)
+    {
+        if (!_bindSaveArmed)
+        {
+            return;
+        }
+        if (_bindSaveEvalPoll != _devicePolls)
+        {
+            _bindSaveEvalPoll = _devicePolls;
+            _bindSaveStablePolls = AllOwnedStableLocked() ? _bindSaveStablePolls + 1 : 0;
+        }
+        // An upload between its header and its last data pass must not be split by a save.
+        if (_bindSaveStablePolls < BindSaveStablePolls
+            || _uploadsInFlight > 0
+            || now < _bindSaveRetryAtMs
+            || (_lastSaveSentMs is { } last && now - last < BindSaveMinIntervalMs))
+        {
+            return;
+        }
+        while (_bindSaveTimesMs.Count > 0 && now - _bindSaveTimesMs.Peek() >= BindSaveWindowMs)
+        {
+            _bindSaveTimesMs.Dequeue();
+        }
+        if (_bindSaveTimesMs.Count >= BindSaveMaxPerWindow)
+        {
+            if (!_bindSaveCapLogged)
+            {
+                _bindSaveCapLogged = true;
+                ServiceLog.Info("[lianli-wireless] bind-save deferred, hourly cap reached");
+            }
+            return;
+        }
+        if (!SendSaveCfgLocked("bind-save"))
+        {
+            _bindSaveRetryAtMs = now + BindSaveRetryMs;
+            return;
+        }
+        _bindSaveCapLogged = false;
+        _bindSaveArmed = false;
+        _bindSaveStablePolls = 0;
+        _saveCfgDueMs = 0;
+        _bindSaveTimesMs.Enqueue(now);
+    }
+
+    // Every owned chain in the list was heard this poll bound to our master at its target slot and channel,
+    // none has a bind or unbind in flight, and no chain's binding changed (or was misread) this poll.
+    private bool AllOwnedStableLocked()
+    {
+        if (_devicePolls - _lastBindingChangePoll < 1)
+        {
+            return false;
+        }
+        foreach (var intent in _intents.Values)
+        {
+            if (intent.Unbinding || intent.Sends > 0)
+            {
+                return false;
+            }
+        }
+        foreach (var (key, slot) in _owned)
+        {
+            if (_userUnbound.Contains(key) || !_knownChains.TryGetValue(key, out var chain))
+            {
+                continue;
+            }
+            var record = chain.Record;
+            if (chain.Poll != _devicePolls
+                || (_intents.TryGetValue(key, out var intent) && NeedsBind(intent, record)))
+            {
+                return false;
+            }
+            if (!IsBoundToUsLocked(record) || record.RxType != slot || record.Channel != _channel)
+            {
+                if (IsWiredOwned(key))
+                {
+                    continue;
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private bool SendSaveCfgLocked(string reason)
     {
         if (_tx is null)
         {
             return false;
         }
         _lastSaveMs = _nowMs();
-        return WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
+        var sent = WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
+        if (sent)
+        {
+            _lastSaveSentMs = _lastSaveMs;
+            ServiceLog.Info($"[lianli-wireless] SaveCfg sent ({reason})");
+        }
+        else
+        {
+            ServiceLog.Warn($"[lianli-wireless] SaveCfg failed ({reason})");
+        }
+        return sent;
     }
 
     // Pages needed to hold recordCount records at RecordsPerPage each, >=1 and
@@ -1913,6 +2233,7 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     if (IsZeroedCopyOfKnownChainLocked(record.Mac))
                     {
+                        _lastBindingChangePoll = _devicePolls;
                         continue;
                     }
                     if (ConfirmNewChains)
@@ -1932,9 +2253,16 @@ public sealed partial class Slv3Hub : IDisposable
                         : $"{record.FanCount} fan(s), {record.Family}";
                     ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what}, {DescribeBinding(record, _masterMac)})");
                 }
-                else if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                else
                 {
-                    ServiceLog.Info(line);
+                    if (BindingChanged(known.Record, record))
+                    {
+                        _lastBindingChangePoll = _devicePolls;
+                    }
+                    if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                    {
+                        ServiceLog.Info(line);
+                    }
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, _blindTotalMs);
             }
@@ -2781,63 +3109,71 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return false;
         }
-        lock (_lock)
+        BeginUpload();
+        try
         {
-            if (_tx is null)
+            lock (_lock)
             {
-                return false;
-            }
-            for (var i = 0; i < WindowHeaderRepeats; i++)
-            {
-                if (!SendRfPayloadLocked(channel, rxType, packets[0]))
+                if (_tx is null)
                 {
                     return false;
                 }
+                for (var i = 0; i < WindowHeaderRepeats; i++)
+                {
+                    if (!SendRfPayloadLocked(channel, rxType, packets[0]))
+                    {
+                        return false;
+                    }
+                }
+                for (var pass = 0; pass < WindowDataPasses; pass++)
+                {
+                    for (var p = 1; p < packets.Length; p++)
+                    {
+                        if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                NoteConfigChangedLocked();
             }
-            for (var pass = 0; pass < WindowDataPasses; pass++)
+            // The late passes' cost is booked at decision time so a concurrent
+            // upload's check already sees it; the passes themselves are not re-counted.
+            var lateCost = WindowLatePasses * (packets.Length - 1);
+            var latePasses = 0;
+            lock (_lock)
             {
+                if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
+                {
+                    latePasses = WindowLatePasses;
+                    var now = _nowMs();
+                    for (var i = 0; i < lateCost; i++)
+                    {
+                        _airSendsMs.Enqueue(now);
+                    }
+                }
+            }
+            // Late passes release the lock between packets so the device-list poll keeps running.
+            for (var pass = 0; pass < latePasses; pass++)
+            {
+                await Task.Delay(WindowLateGapMs).ConfigureAwait(false);
                 for (var p = 1; p < packets.Length; p++)
                 {
-                    if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                    lock (_lock)
                     {
-                        return false;
+                        if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
+                        {
+                            return false;
+                        }
                     }
                 }
             }
-            NoteConfigChangedLocked();
+            return true;
         }
-        // The late passes' cost is booked at decision time so a concurrent
-        // upload's check already sees it; the passes themselves are not re-counted.
-        var lateCost = WindowLatePasses * (packets.Length - 1);
-        var latePasses = 0;
-        lock (_lock)
+        finally
         {
-            if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
-            {
-                latePasses = WindowLatePasses;
-                var now = _nowMs();
-                for (var i = 0; i < lateCost; i++)
-                {
-                    _airSendsMs.Enqueue(now);
-                }
-            }
+            EndUpload();
         }
-        // Late passes release the lock between packets so the device-list poll keeps running.
-        for (var pass = 0; pass < latePasses; pass++)
-        {
-            await Task.Delay(WindowLateGapMs).ConfigureAwait(false);
-            for (var p = 1; p < packets.Length; p++)
-            {
-                lock (_lock)
-                {
-                    if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
     }
 
     // A chain can misparse effect-index bytes as a bind target and re-bind off
@@ -2919,6 +3255,36 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
 
+        BeginUpload();
+        try
+        {
+            return SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex);
+        }
+        finally
+        {
+            EndUpload();
+        }
+    }
+
+    private void BeginUpload()
+    {
+        lock (_lock)
+        {
+            _uploadsInFlight++;
+        }
+    }
+
+    private void EndUpload()
+    {
+        lock (_lock)
+        {
+            _uploadsInFlight--;
+        }
+    }
+
+    private bool SendRgbDataParts(byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex)
+    {
+        effectIndexHex = "";
         // The header gaps run with _lock RELEASED so the device-list poll keeps
         // running even with several chains streaming. The repeats are
         // identical, so a keepalive/poll frame slipping into a gap is harmless.
@@ -3129,6 +3495,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public Task OnSystemSuspending()
     {
+        Volatile.Write(ref _powerQuietUntilMs, long.MaxValue);
         if (_disposed || !IsConnected)
         {
             return Task.CompletedTask;
@@ -3184,7 +3551,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 return SuspendSend.Down;
             }
-            return SendSaveCfgLocked() ? SuspendSend.Sent : SuspendSend.Failed;
+            return SendSaveCfgLocked("suspend") ? SuspendSend.Sent : SuspendSend.Failed;
         }
         finally
         {
@@ -3233,6 +3600,7 @@ public sealed partial class Slv3Hub : IDisposable
                 return;
             }
             _disposed = true;
+            try { DisplayWatch?.Dispose(); } catch { /* best effort */ }
             DisconnectLocked();
         }
     }

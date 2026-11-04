@@ -55,7 +55,7 @@ are simplified.
 | ferrofluid* | 17.0 | 23.7 | heavy |
 | lavafissure | 17.0 | 51.3 | heavy |
 | dotmatrix* | 17.0 | 23.7 | heavy |
-| ball | 18.3 | 54.7 | medium |
+| ball | 18.3 | 54.7 | medium (old shader, needs re-measurement on the Q60) |
 | meteor | 19.3 | 53.7 | medium |
 | voronoi | 19.3 | 53.3 | medium |
 | prismwave* | 19.3 | 24.3 | medium |
@@ -80,7 +80,7 @@ are simplified.
 | simplegreen | 54.0 | 53.3 | free |
 | simplecyan | 54.0 | 52.3 | free |
 | simpleblue | 54.0 | 55.3 | free |
-| matrix | 54.0 | 54.3 | free |
+| matrix | 54.0 | 54.3 | free (old shader, needs re-measurement on the Q60) |
 | simpleorange | 54.0 | 54.7 | free |
 | wave | 54.3 | 54.0 | free |
 | radar | 54.3 | 54.7 | free |

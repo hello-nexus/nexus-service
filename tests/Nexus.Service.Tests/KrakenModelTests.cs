@@ -50,14 +50,15 @@ public class KrakenModelTests
     }
 
     [Fact]
-    public void Only_the_Plus_V2_takes_the_rgb565_direct_stream()
+    public void Only_the_Plus_V2_and_2023_Kraken_take_the_rgb565_direct_stream()
     {
-        Assert.Equal(new[] { 0x3014 }, KrakenModel.All.Where(m => m.Rgb565DirectStream).Select(m => m.ProductId));
+        Assert.Equal(new[] { 0x3014, 0x300E }, KrakenModel.All.Where(m => m.Rgb565DirectStream).Select(m => m.ProductId));
         var plus = KrakenModel.Find(0x3014)!;
         Assert.Equal("NZXT Kraken Plus V2", plus.Name);
         Assert.False(plus.DirectStream);
         Assert.Equal(0x0B, plus.TelemetryInterval);
         Assert.All(KrakenModel.All.Where(m => m.ProductId != 0x3014), m => Assert.Equal(0x01, m.TelemetryInterval));
+        Assert.False(KrakenModel.Find(0x300E)!.DirectStream);
     }
 
     [Fact]
@@ -98,11 +99,12 @@ public class KrakenModelTests
     }
 
     [Fact]
-    public void Only_the_Z3_recreates_its_stream_buckets_at_fifteen_frames_a_second()
+    public void Only_the_Z3_recreates_its_stream_buckets_and_non_default_stream_rates_are_pinned()
     {
         Assert.Equal(new[] { 0x3008 }, KrakenModel.All.Where(m => m.StreamRecreatesBuckets).Select(m => m.ProductId));
-        Assert.Equal(new[] { 0x3014, 0x3008 }, KrakenModel.All.Where(m => m.HasLcd && m.StreamFps != 30).Select(m => m.ProductId));
+        Assert.Equal(new[] { 0x3014, 0x300E, 0x3008 }, KrakenModel.All.Where(m => m.HasLcd && m.StreamFps != 30).Select(m => m.ProductId));
         Assert.Equal(15, KrakenModel.Find(0x3008)!.StreamFps);
+        Assert.Equal(20, KrakenModel.Find(0x300E)!.StreamFps);
     }
 
     [Fact]

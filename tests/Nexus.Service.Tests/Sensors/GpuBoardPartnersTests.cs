@@ -244,7 +244,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.Equal(expected, LinuxPciSubsystem.NormalizeBusId(input));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void Reads_the_subsystem_ids_from_sysfs_for_either_bus_id_spelling()
     {
         Device("0000:01:00.0", "0x1462", "0x3881");
@@ -253,7 +253,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.Equal((0x1462, 0x3881), LinuxPciSubsystem.Read(_root, "01:00.0"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void A_missing_device_or_garbled_file_reads_as_nothing()
     {
         Device("0000:02:00.0", "garbage", "0x0001");
@@ -311,7 +311,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.Contains("Raphael", gpus[0].Name);
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void On_the_am5_desktop_the_igpu_and_the_boards_own_nvidia_card_get_no_maker_and_a_partner_radeon_does()
     {
         Am5Desktop();
@@ -325,7 +325,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 4090"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void On_an_all_one_vendor_intel_board_the_boards_own_card_gets_none_and_another_partners_card_gets_its_maker()
     {
         HostBridge("0x1043");
@@ -338,7 +338,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.Equal("MSI", GpuBoardPartners.NameOf(0x1462));
     }
 
-    [Theory]
+    [NonWindowsTheory]
     [InlineData("NVIDIA GeForce RTX 4060 Laptop GPU")]
     [InlineData("NVIDIA GeForce RTX 3080 Max-Q")]
     [InlineData("NVIDIA GeForce GTX 1060 Mobile")]
@@ -353,7 +353,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.False(Discrete("02:00.0", name));
     }
 
-    [Theory]
+    [NonWindowsTheory]
     [InlineData("0x1900", 2)]  // Hawk Point laptop with a small UMA carve-out
     [InlineData("0x13fe", 1)]  // BC-250
     [InlineData("0x164e", 8)]  // desktop Raphael
@@ -370,7 +370,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.False(Discrete("65:00.0"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void A_listed_radeon_needs_a_foreign_subsystem_and_readable_memory()
     {
         Am5Desktop();
@@ -381,7 +381,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.False(Discrete("04:00.0"));
     }
 
-    [Theory]
+    [NonWindowsTheory]
     [InlineData("0000:00:02.0", "0x7d55", "Intel Corporation Meteor Lake-P [Intel Arc Graphics]")]
     [InlineData("0000:00:02.0", "0x64a0", "Intel Corporation Core Ultra 200V Series Processors Arc Graphics 130V/140V GPU")]
     [InlineData("0000:00:02.0", "0x56a0", "Intel Corporation DG2 [Arc A770]")]
@@ -394,7 +394,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.False(Discrete(busId[5..], name));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void An_intel_arc_card_off_the_igpu_slot_with_a_dgpu_codename_gets_a_maker()
     {
         Am5Desktop();
@@ -404,7 +404,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.False(Discrete("03:00.0", "Intel Corporation Some New Part"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void With_no_usable_board_vendor_there_is_no_maker()
     {
         Device("0000:01:00.0", "0x1462", "0x3881", chipVendor: "0x10de");
@@ -414,7 +414,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.False(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void A_host_bridge_naming_a_board_maker_stands_in_when_there_is_no_smbus_controller()
     {
         HostBridge("0x1043");
@@ -425,7 +425,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.True(Discrete("02:00.0", "NVIDIA GeForce RTX 3090"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void The_smbus_controller_wins_over_a_host_bridge()
     {
         HostBridge("0x1043");
@@ -435,7 +435,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.True(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
     }
 
-    [Theory]
+    [NonWindowsTheory]
     [InlineData("8", true)]
     [InlineData("9", true)]
     [InlineData("10", true)]
@@ -456,7 +456,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.Equal(!portable, Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void A_laptop_with_a_modular_radeon_and_a_pascal_or_turing_laptop_gpu_named_without_a_laptop_marker_gets_none()
     {
         HostBridge("0x1022");
@@ -475,7 +475,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.True(Discrete("02:00.0", "NVIDIA GeForce RTX 2060"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void An_unreadable_or_garbled_chassis_type_falls_back_to_the_other_gates()
     {
         Am5Desktop();
@@ -486,7 +486,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.True(Discrete("01:00.0", "NVIDIA GeForce RTX 3090"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void A_silicon_smbus_controller_is_skipped_for_a_later_board_vendor_one()
     {
         var first = Path.Combine(_root, "0000:00:14.0");
@@ -504,7 +504,7 @@ public sealed class LinuxPciSubsystemTests : IDisposable
         Assert.True(Discrete("02:00.0", "NVIDIA GeForce RTX 3090"));
     }
 
-    [Fact]
+    [NonWindowsFact]
     public void Only_silicon_smbus_controllers_fall_back_to_a_board_maker_host_bridge()
     {
         var dir = Path.Combine(_root, "0000:00:14.0");

@@ -172,9 +172,8 @@ public static class LightingDevicesCatalog
 
         // First-party devices Nexus drives natively lead the list with correct
         // model/category and a "nexus" source. The bundled OpenRGB fork registers
-        // some of the same hardware under its own controllers (the "HYTE Nexus"
-        // detector groups the THICC Q60 and Nexus Portal NP50 into one mislabeled
-        // row; LianLiController and CorsairICueLinkController cover exactly the Uni
+        // some of the same hardware under its own controllers (the HYTE
+        // THICC Q60, Nexus Portal NP50 and CNVS detectors; LianLiController and CorsairICueLinkController cover exactly the Uni
         // Fan/Strimer/Galahad and iCUE LINK hubs we now drive ourselves), so those
         // controllers are skipped to avoid duplicate, wrongly-typed rows.
         var result = new List<SupportedDeviceDto>(FirstPartyDevices.Count + file.Devices.Count);
@@ -198,7 +197,7 @@ public static class LightingDevicesCatalog
                 Category = ResolveCategory(detector, d.Controller, d.Kind, d.Type),
                 VendorId = d.Vid ?? "-",
                 ProductId = d.Pid ?? "-",
-                Capabilities = new List<string> { "rgb" },
+                Capabilities = HasNativeScreen(d.Vid, d.Pid) ? new List<string> { "rgb", "screen" } : new List<string> { "rgb" },
                 Source = "openrgb",
             });
         }
@@ -245,6 +244,8 @@ public static class LightingDevicesCatalog
         Native("HYTE",    "Y70 Touch",              "case",     "0x3402", "0x0C00", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C01", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C02", screen: true, rgb: false),
+        // hidden: pre-release, out of the Supported Devices list until launch.
+        Native("HYTE",    "Y70 GT",                 "case",     "0x3402", "0x0C06", screen: true, hidden: true),
         Native("HYTE",    "Y70 Touch GW",           "case",     "-",      "-",      screen: true, rgb: false),
         Native("HYTE",    "Y70 Ina Touch",          "case",     "-",      "-",      screen: true, rgb: false),
 
@@ -274,6 +275,7 @@ public static class LightingDevicesCatalog
         Native("Lian Li", "TL LCD Flex Fan Screen", "fan",      "0x1CBE", "0xA018", screen: true, rgb: false),
         Native("Lian Li", "SL-INF LCD Flex Fan",    "fan",      "0x43A8", "0x0104", screen: true),
         Native("Lian Li", "SL-INF LCD Flex Fan Screen", "fan",  "0x1CBE", "0xA019", screen: true, rgb: false),
+        Native("Lian Li", "P28 V2 Fan",             "fan",      "0x43A8", "0x0105"),
         Native("Lian Li", "Strimer",                "light",    "0x0CF2", "0xA200"),
         Native("Lian Li", "Galahad II Trinity",     "aio",      "0x0416", "0x7373"),
         Native("Lian Li", "Galahad II Performance", "aio",      "0x0416", "0x7371"),
@@ -313,6 +315,10 @@ public static class LightingDevicesCatalog
         Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x1031", screen: true),
         Native("Tryx",    "Panorama v2",            "aio",      "0x391A", "0x10B1", screen: true),
 
+        // Corsair Galleon 100 SD keyboard - IDs from src/Peripherals/Corsair/Galleon.
+        Native("Corsair", "Galleon 100 SD Keyboard", "keyboard", "0x1B1C", "0x2B0C"),
+        Native("Corsair", "Galleon 100 SD Dials", "keyboard", "0x1B1C", "0x2B18"),
+
         // Corsair iCUE LINK - PIDs from src/Peripherals/CorsairLink. The LCD/XD5 pumps
         // carry a screen.
         Native("Corsair", "iCUE LINK System Hub",   "fan",      "0x1B1C", "0x0C3F"),
@@ -329,8 +335,9 @@ public static class LightingDevicesCatalog
         Native("NZXT",    "Kraken X3",              "aio",      "0x1E71", "0x2007"),
         Native("NZXT",    "Kraken X3 RGB",          "aio",      "0x1E71", "0x2014"),
 
-        // ZMatrices LCD AIOs - PID from src/Peripherals/BulkPanels/ZMatricesPanelDriver.cs.
+        // ZMatrices LCDs - PIDs from ZMatricesModel in src/Peripherals/BulkPanels/ZMatricesPanelDriver.cs.
         Native("Aftershock", "Glacier Matrix 360",  "aio",      "0x38C1", "0x0026", screen: true, rgb: false),
+        Native("ZMatrices",  "MAX E87",             "light",    "0x38C1", "0x0032", screen: true, rgb: false),
 
         // JPEG-over-HID cooler LCDs - PIDs from src/Peripherals/JpegPanels/JpegPanelModel.cs.
         // Screen only: Nexus drives the glass on these, not their RGB, except the HydroShift
@@ -354,6 +361,7 @@ public static class LightingDevicesCatalog
         Native("ASUS",       "Ryujin LCD",          "aio",      "0x0B05", "0x1AA2", screen: true, rgb: false),
         Native("Lian Li",    "Universal Screen 8.8","light",    "0x1CBE", "0xA088", screen: true, rgb: false),
         Native("ASUS",       "ROG Crosshair X870E Glacial LCD", "light", "0x0B05", "0x1D93", screen: true, rgb: false),
+        Native("DeepCool",   "Mystique",            "aio",      "0x3633", "0x0009", screen: true, rgb: false),
 
         // HydroShift II LCD-S / LCD-C over USB: glass, pump, fan headers and ring on one bulk
         // pipe - src/Peripherals/BulkPanels/HydroShift2LcdDriver.cs.
@@ -380,7 +388,7 @@ public static class LightingDevicesCatalog
     };
 
     private static SupportedDeviceDto Native(
-        string vendor, string model, string category, string vid, string pid, bool screen = false, bool rgb = true) => new()
+        string vendor, string model, string category, string vid, string pid, bool screen = false, bool rgb = true, bool hidden = false) => new()
     {
         Vendor = vendor,
         Model = model,
@@ -389,7 +397,16 @@ public static class LightingDevicesCatalog
         ProductId = pid,
         Capabilities = BuildCapabilities(rgb, screen),
         Source = "nexus",
+        Hidden = hidden,
     };
+
+    /// <summary>
+    /// A keyboard whose OLED Nexus drives as a panel. It stays an OpenRGB row so the keyboard keeps its
+    /// name and system-device identity; only the screen capability is added.
+    /// </summary>
+    private static bool HasNativeScreen(string? vid, string? pid) =>
+        string.Equals(vid, $"0x{Peripherals.SteelSeries.ApexOledProtocol.VendorId:X4}", System.StringComparison.OrdinalIgnoreCase)
+        && System.Array.Exists(Peripherals.SteelSeries.ApexOledProtocol.ProductIds, id => string.Equals(pid, $"0x{id:X4}", System.StringComparison.OrdinalIgnoreCase));
 
     private static List<string> BuildCapabilities(bool rgb, bool screen)
     {

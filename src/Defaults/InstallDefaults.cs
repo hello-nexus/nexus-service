@@ -32,7 +32,6 @@ public static class InstallDefaults
     public static ThemeSettings Theme => All.Theme;
     public static MonitoringSettings Monitoring => All.Monitoring;
     public static PanelSettings Panel => All.Panel;
-    public static OverlaySettings Overlay => All.Overlay;
     public static LightingDefaults Lighting => All.Lighting;
     public static Y70Defaults Y70 => All.Y70;
     public static KeebDefaults Keeb => All.Keeb;
@@ -75,7 +74,6 @@ public sealed class InstallDefaultsDocument
     public ThemeSettings Theme { get; set; } = new();
     public MonitoringSettings Monitoring { get; set; } = new();
     public PanelSettings Panel { get; set; } = new() { Layouts = new() };
-    public OverlaySettings Overlay { get; set; } = new();
     public LightingDefaults Lighting { get; set; } = new();
     public Y70Defaults Y70 { get; set; } = new();
     public KeebDefaults Keeb { get; set; } = new();
@@ -87,16 +85,16 @@ public sealed class InstallDefaultsDocument
     public AuthDefaults Auth { get; set; } = new();
 }
 
-// ThemeSettings, MonitoringSettings, PanelSettings, OverlaySettings and the
+// ThemeSettings, MonitoringSettings, PanelSettings and the
 // PanelLayouts* seed types live in Persistence/SharedSettings.cs - same POCOs
 // are reused by NexusSettings so the install-defaults shape and the live profile
 // shape stay in lockstep.
 
 public sealed class LightingDefaults
 {
-    // Simple mode's first Rainbow tile: fresh installs open the lighting page in
-    // simple mode, which can only mark a simple tile or a palette colour active.
-    public string Sync { get; set; } = "sweeprainbow";
+    // Rainbow's first preset is simple mode's first tile: fresh installs open the
+    // lighting page in simple mode, which can only mark a simple tile or a palette colour active.
+    public string Sync { get; set; } = "rainbow";
     public bool BrightnessEnabled { get; set; }
     public bool SpeedEnabled { get; set; }
     public int FrameRate { get; set; } = 60;
@@ -122,7 +120,7 @@ public sealed class LightingStaticColor
 
 public sealed class LightingAnimateDefaults
 {
-    public string Effect { get; set; } = "sweeprainbow";
+    public string Effect { get; set; } = "rainbow";
     public LightingAnimateState State { get; set; } = new();
 }
 

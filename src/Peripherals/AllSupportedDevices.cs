@@ -23,6 +23,11 @@ public static class AllSupportedDevices
     /// <summary>Vendors listed before every other row; the brands Nexus is built for.</summary>
     internal static readonly string[] LeadingVendors = { "HYTE", "iBUYPOWER" };
 
+    /// <summary>The public Supported Devices listing: <see cref="All"/> minus hidden rows.</summary>
+    public static IReadOnlyList<SupportedDeviceDto> Listed => _listed ??= All.Where(d => !d.Hidden).ToList();
+
+    private static IReadOnlyList<SupportedDeviceDto>? _listed;
+
     public static IReadOnlyList<SupportedDeviceDto> All
     {
         get
@@ -123,5 +128,6 @@ public static class AllSupportedDevices
         ProductId = d.ProductId,
         Capabilities = new List<string>(d.Capabilities),
         Source = d.Source,
+        Hidden = d.Hidden,
     };
 }

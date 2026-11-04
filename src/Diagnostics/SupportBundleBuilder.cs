@@ -264,6 +264,9 @@ public sealed class SupportInfo
     public double ServiceUptimeSeconds { get; set; }
     public List<string> ConflictsRunning { get; set; } = new();
     public bool ConflictScanReady { get; set; }
+
+    /// <summary>Windows Dynamic Lighting state: available, enabled and LampArray count.</summary>
+    public string DynamicLighting { get; set; } = "";
     public bool LightingBridgeActive { get; set; }
     public bool LightingRescanning { get; set; }
     public List<string> LightingDevices { get; set; } = new();

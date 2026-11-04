@@ -49,6 +49,13 @@ Q-series screens.
   items) sample the effect canvas where a camera sees them. The scene lives in
   its own machine-local files; the view (on/off + camera) lives in settings and
   layout presets. Unplaced devices keep their 2D frame.
+- Shared PC setup (`Lighting/Scene/PcSetup*`, `/system/setup`): one record
+  (`pc-setup.json`, machine-local, revisioned) that the Build portal and the
+  3D lighting scene share. Build writes the whole record (`PUT`); lighting may
+  only move and turn existing items (`PATCH /system/setup/placements`). Once the
+  record has resolved objects, `GET /lighting/scene` serves them in place of the
+  scene file's objects. Changes ping the `system/setup` topic, and the record
+  rides the manual profile Back up.
 - Key reactions (`Lighting/KeyReactive/`, `/lighting/key-reactive*`): per-key
   keyboards light up as keys are pressed (ripple, sweeps, heatmap, sparks,
   lightning and more), painted by the engine over any effect. One config per
@@ -103,7 +110,7 @@ media uploads via `POST /tryx/media`.
   elgato-streamdeck references.
 - Dials, touch strip and screens: Plus and Plus XL (dials under an
   800x100 / 1200x100 touch strip), Neo (info screen and two touch keys),
-  Studio (two dials with LED rings) and the Corsair Galleon K100 SD (screen
+  Studio (two dials with LED rings) and the Corsair Galleon 100 SD (screen
   and two dials). A `DeckPage` or folder carries `dials`; the connection
   worker dispatches turns, presses and touches (`StreamDeckConnectionWorker.
   Dials.cs`), `Rendering/DeckStripRenderer.cs` draws the segments, and
@@ -174,7 +181,10 @@ support-bundle ZIP export.
   (`Bundled/macos/overlay-helper/streamhost.swift`: an off-screen WKWebView
   captured by ScreenCaptureKit, raw frames only, needs the Screen Recording
   grant). Bulk-pipe screens open over WinUSB on Windows and IOUSBHost on macOS
-  (`Peripherals/BulkPanels/`). The ArtInChip D213 reference transport is
+  (`Peripherals/BulkPanels/`). A glass that reports touch (driver `HasTouch` plus
+  a `CreateTouchDecoder`) streams its contacts back to the render host on
+  `GET /panel/streams/{sessionId}/touch`; the Windows host replays them as CDP
+  touch events, the macOS host as mouse events under `touchViaPointer=injected`. The ArtInChip D213 reference transport is
   dev-tools only.
 
 ## Apps and the store
@@ -281,7 +291,8 @@ base URL.
   diagnostics (health verdict, SMART, GPU throttling, crash incidents, driver
   problems, conflicts, updates) and history (sensors, temperatures, apps,
   screen time, game FPS sessions), and control cooling, lighting and profiles,
-  over a dedicated loopback listener speaking Streamable HTTP.
+  over a dedicated listener speaking Streamable HTTP, loopback unless the
+  user opts into remote connections (`AllowRemote`, then all interfaces).
 - A bearer token separate from the dashboard's pairing token; per-capability
   consent (telemetry, cooling, lighting, profiles, history) checked live on
   every call; every non-read-only call audited to an append-only binary log

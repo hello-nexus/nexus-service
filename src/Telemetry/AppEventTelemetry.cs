@@ -106,7 +106,7 @@ public static partial class AppTelemetryValidator
 
 public sealed record RecordedAppEvent(DateTimeOffset At, string Event, IReadOnlyList<(string Key, object? Value)> Properties);
 
-/// <summary>Buffers SDK-app events before the real client decides whether to send them, so they are visible without a PostHog key.</summary>
+/// <summary>Buffers SDK-app events before the real client decides whether to send them, so they are visible on builds that send nothing.</summary>
 public sealed class AppEventRecorder : ITelemetry
 {
     public const int Capacity = 200;
@@ -144,7 +144,7 @@ public sealed class AppEventRecorder : ITelemetry
 
     public void Identify(params (string Key, object? Value)[] properties) => _inner.Identify(properties);
 
-    /// <summary>"on", "off" (no key, nothing is sent) or "opted_out" (the user's setting wins).</summary>
+    /// <summary>"on", "off" (unofficial build, nothing is sent) or "opted_out" (the user's setting wins).</summary>
     public string Status => _status();
 
     /// <summary>Newest first.</summary>
@@ -159,7 +159,7 @@ public sealed class AppEventRecorder : ITelemetry
         using (var w = new Utf8JsonWriter(stream))
         {
             w.WriteStartObject();
-            w.WriteString("posthog", Status);
+            w.WriteString("status", Status);
             w.WriteStartArray("events");
             foreach (var e in Recent())
             {

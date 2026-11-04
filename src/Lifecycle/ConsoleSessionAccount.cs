@@ -39,13 +39,25 @@ internal static class ConsoleSessionAccount
         }
     }
 
-    private static string SessionUserName(uint sessionId)
+    private const int WtsUserName = 5;
+    private const int WtsDomainName = 7;
+
+    /// <summary>The domain (the PC's own name for a local account) of the console session's user; empty when unavailable.</summary>
+    [SupportedOSPlatform("windows")]
+    internal static string ConsoleDomain()
+    {
+        var sessionId = WTSGetActiveConsoleSessionId();
+        return sessionId == 0xFFFFFFFF ? string.Empty : SessionString(sessionId, WtsDomainName);
+    }
+
+    private static string SessionUserName(uint sessionId) => SessionString(sessionId, WtsUserName);
+
+    private static string SessionString(uint sessionId, int infoClass)
     {
         var buf = IntPtr.Zero;
         try
         {
-            // WTSUserName = 5
-            if (!WTSQuerySessionInformation(IntPtr.Zero, sessionId, 5, out buf, out _) || buf == IntPtr.Zero)
+            if (!WTSQuerySessionInformation(IntPtr.Zero, sessionId, infoClass, out buf, out _) || buf == IntPtr.Zero)
             {
                 return string.Empty;
             }

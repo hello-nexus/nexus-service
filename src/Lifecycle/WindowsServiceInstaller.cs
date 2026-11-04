@@ -8,6 +8,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
 using Microsoft.Win32;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform.Windows;
 
 namespace Nexus.Service.Lifecycle;
@@ -46,6 +47,7 @@ internal static class WindowsServiceInstaller
     public const string UninstallRegKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Nexus";
     public const int DefaultPort = 9400;
     public const int DefaultHttpsPort = 9443;
+    public const int DefaultMcpPort = AiIntegrationSettings.DefaultPort;
 
     /// <summary>
     /// `Nexus.exe --install` entry. Self-elevates if needed; copies files to
@@ -188,8 +190,9 @@ internal static class WindowsServiceInstaller
             pawnTask.GetAwaiter().GetResult();
 
             // 5. Firewall rule for LAN access (phone pairing on any network).
-            // Opens both the plain-HTTP port (browser fallback) and the
-            // HTTPS port the iOS app uses. `public` is included because
+            // Opens the plain-HTTP port (browser fallback), the HTTPS port the
+            // iOS app uses, and the MCP port (reachable only when the user opts
+            // into remote MCP connections). `public` is included because
             // home Wi-Fi often auto-classifies as Public on Windows, and
             // pairing is still protected by SPKI pinning + pair tokens.
             // Rule name has no spaces and the program path has no embedded
@@ -210,7 +213,7 @@ internal static class WindowsServiceInstaller
                 "dir=in", "action=allow",
                 $"program={installedExe}",
                 "protocol=TCP",
-                $"localport={DefaultPort},{DefaultHttpsPort}",
+                $"localport={DefaultPort},{DefaultHttpsPort},{DefaultMcpPort}",
                 "profile=private,domain,public");
 
             // 6. Add/Remove Programs registration is owned by Inno Setup

@@ -196,6 +196,20 @@ public class PanelDisplayRelinkTests
         Assert.Equal(@"\\.\DISPLAY2", Assert.Single(plan.Moves).NewDisplayId);
     }
 
+    [Theory]
+    [InlineData(1920, 515, 1)]
+    [InlineData(515, 1920, 1)]
+    [InlineData(1920, 1080, 0)]
+    public void Y60_edid_record_relinks_only_onto_a_display_at_its_native_resolution(int width, int height, int moves)
+    {
+        var fp = Fp(0, null, "RTK", "BC32");
+        var plan = PanelDisplayRelink.Plan(
+            new[] { new RelinkRecord("p1", "old", fp) },
+            new[] { new RelinkDisplay("new", fp, false, width, height) });
+
+        Assert.Equal(moves, plan.Moves.Count);
+    }
+
     [Fact]
     public void Registry_applies_backfill_then_relink_and_keeps_layout()
     {
@@ -221,6 +235,21 @@ public class PanelDisplayRelinkTests
         Assert.Equal("dark", stored.ThemeMode);
         Assert.False(stored.Enabled);
         Assert.Single(store.Load().PanelDevices);
+    }
+
+    [Fact]
+    public void Registry_relink_clears_the_reported_kiosk_viewport()
+    {
+        var store = new InMemoryConfigStore();
+        var registry = new PanelDeviceRegistry(store);
+        var (record, _) = registry.AllocateForDisplay("old-id", "Side panel", null);
+        registry.Patch(record.Id, new PanelDevicePatch { KioskViewport = new KioskViewportDto { CssWidth = 1920, CssHeight = 1152, Dpr = 1 } });
+        registry.ReconcileDisplayFingerprints(new[] { Disp("old-id", Fp(77)) });
+        Assert.NotNull(store.Load().PanelDevices[record.Id].KioskViewport);
+
+        registry.ReconcileDisplayFingerprints(new[] { Disp("new-id", Fp(77)) });
+
+        Assert.Null(store.Load().PanelDevices[record.Id].KioskViewport);
     }
 
     [Fact]

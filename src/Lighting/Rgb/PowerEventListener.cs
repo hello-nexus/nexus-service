@@ -91,6 +91,7 @@ public sealed class PowerEventListener : IHostedService, IDisposable
             _blackout.OnResumed();
             _bridge.OnSystemResume();
             _lianLi?.OnSystemResumed();
+            _slv3?.OnSystemResumed();
             _curve?.OnSystemResumed();
         }
     }

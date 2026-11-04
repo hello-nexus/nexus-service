@@ -43,10 +43,10 @@ public static class DeckRoutes
             CreateDeckPresetRequest body, HttpContext ctx, TokenService tokens, IConfigStore store, MultiplexHub hub,
             DeckPresetCatalog catalog, Nexus.Service.Activity.IShortcutsProvider shortcuts, ListedAppIds listed) =>
         {
-            var optionCount = (body.Deck is not null ? 1 : 0) + (body.TemplateId is not null ? 1 : 0) + (body.CopyOfPresetId is not null ? 1 : 0);
+            var optionCount = (body.Deck is not null ? 1 : 0) + (body.TemplateId is not null ? 1 : 0) + (body.CopyOfPresetId is not null ? 1 : 0) + (body.Fresh ? 1 : 0);
             if (optionCount > 1)
             {
-                return Results.Json(ApiResponse.Fail("specify at most one of deck, templateId, copyOfPresetId"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+                return Results.Json(ApiResponse.Fail("specify at most one of deck, templateId, copyOfPresetId, fresh"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
             var isDesktopCreate = ServiceTokenRequests.HasServiceToken(ctx, tokens);
             if (body.TemplateId is not null)
@@ -91,7 +91,13 @@ public static class DeckRoutes
                 }
 
                 DeckConfig deck;
-                if (body.CopyOfPresetId is not null)
+                var cols = System.Math.Clamp(body.Cols, 1, 8);
+                var rows = System.Math.Clamp(body.Rows, 1, 8);
+                if (body.Fresh)
+                {
+                    (cols, rows, deck) = DeckDefaultPresets.EssentialsFor(cols, rows);
+                }
+                else if (body.CopyOfPresetId is not null)
                 {
                     var source = s.StreamDeck.Presets.Find(p => p.Id == body.CopyOfPresetId);
                     if (source is null)
@@ -114,8 +120,8 @@ public static class DeckRoutes
                 {
                     Id = DeckModesMigration.NewPresetId(),
                     Name = trimmedName,
-                    Cols = System.Math.Clamp(body.Cols, 1, 8),
-                    Rows = System.Math.Clamp(body.Rows, 1, 8),
+                    Cols = cols,
+                    Rows = rows,
                     Deck = deck,
                 };
                 s.StreamDeck.Presets.Add(created);

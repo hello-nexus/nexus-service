@@ -1605,12 +1605,37 @@ public sealed class TryxPanoramaHub : IDisposable
 
     private List<TryxOverlayLine> BuildOverlayLines()
     {
-        var lines = new List<TryxOverlayLine>(_overlay.Items.Count);
-        foreach (var item in _overlay.Items)
+        var items = _overlay.Items;
+        var sources = GatherOverlaySources(items);
+        var lines = new List<TryxOverlayLine>(items.Count);
+        foreach (var item in items)
         {
-            lines.Add(new TryxOverlayLine(item.Label, ResolveSensorValue(item.Device, item.SensorId)));
+            lines.Add(new TryxOverlayLine(item.Label, ResolveSensorValue(item.Device, item.SensorId, sources)));
         }
         return lines;
+    }
+
+    /// <summary>Gathers the extras snapshot and network aggregate once per frame, only when an item reads a category that needs them.</summary>
+    private SensorSnapshotSources GatherOverlaySources(IReadOnlyList<TryxOverlaySensorItem> items)
+    {
+        var needExtras = false;
+        var needNetwork = false;
+        foreach (var item in items)
+        {
+            if (SensorSnapshotResolver.CategoryUsesExtras(item.Device))
+            {
+                needExtras = true;
+                needNetwork |= item.Device == "network";
+            }
+        }
+        if (!needExtras)
+        {
+            return default;
+        }
+        var extras = _sensors.GetSensorExtras();
+        return new SensorSnapshotSources(
+            extras,
+            NetworkSensors: needNetwork ? SensorSnapshotResolver.BuildNicNetworkSensors(extras.Nics) : null);
     }
 
     private List<(double X, double Y)> BuildOverlayPositions()
@@ -1626,14 +1651,14 @@ public sealed class TryxPanoramaHub : IDisposable
     /// <summary>Looks up <paramref name="sensorId"/> within <paramref name="device"/>'s
     /// live sensor group and formats it by its <see cref="HardwareSensor.Type"/>; "--"
     /// if the group is unknown or the id isn't currently reported.</summary>
-    private string ResolveSensorValue(string device, string sensorId)
+    private string ResolveSensorValue(string device, string sensorId, SensorSnapshotSources sources = default)
     {
         // "fps" needs IFpsProvider, which SensorSnapshotResolver does not depend
         // on, so it stays resolved here directly; every other device routes
         // through the shared resolver (also used by the deck monitoring tiles).
         var sensor = device == "fps"
             ? FindById(_fps.GetComponent().Sensors, sensorId)
-            : SensorSnapshotResolver.Resolve(_sensors, device, sensorId);
+            : SensorSnapshotResolver.Resolve(_sensors, device, sensorId, sources);
         return sensor is null ? "--" : FormatSensorValue(sensor);
     }
 
@@ -1666,7 +1691,7 @@ public sealed class TryxPanoramaHub : IDisposable
         "SmallData" => $"{(int)Math.Round(sensor.Value)}MB",
         "Power" => $"{(int)Math.Round(sensor.Value)}W",
         "Fan" => $"{(int)Math.Round(sensor.Value)}RPM",
-        "Throughput" => FormatThroughput(sensor.Value),
+        "Throughput" or "Rate" => FormatThroughput(sensor.Value),
         "Framerate" => $"{(int)Math.Round(sensor.Value)}fps",
         "FrameTime" => $"{sensor.Value.ToString("0.0", CultureInfo.InvariantCulture)}ms",
         _ => sensor.Value.ToString(CultureInfo.InvariantCulture),

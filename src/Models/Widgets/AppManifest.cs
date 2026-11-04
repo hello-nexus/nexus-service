@@ -126,6 +126,13 @@ public sealed class AppManifest
     public bool SingleInstance { get; set; }
 
     /// <summary>
+    /// App opts into free resizing on panels, like the built-in Web View widget,
+    /// instead of snapping to its declared <c>sizes</c>. Default false.
+    /// </summary>
+    [JsonPropertyName("freeform")]
+    public bool Freeform { get; set; }
+
+    /// <summary>
     /// Optional device-driver block: declares a native sidecar executable the host
     /// fetches from the app store and runs. Honored only for a <b>bundled</b> app
     /// (the registry drops it from user installs); the widget facet always

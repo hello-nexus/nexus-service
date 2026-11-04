@@ -8,6 +8,7 @@ namespace Nexus.Service.Tests;
 /// targets of the macOS survivor sweep). The spawn path itself is never
 /// exercised here - a real Begin would launch the testhost as a finalizer.
 /// </summary>
+[Collection("FactoryResetLatch")]
 public class FactoryResetBeginTests : IDisposable
 {
     public FactoryResetBeginTests() => FactoryReset.ResetFinalizerClaimForTests();
@@ -58,5 +59,22 @@ public class FactoryResetBeginTests : IDisposable
         {
             Directory.Delete(dir, recursive: true);
         }
+    }
+}
+
+public class FactoryResetSweepTests
+{
+    [Fact]
+    public void Sibling_kill_args_force_exactly_the_given_pids()
+    {
+        Assert.Equal(new[] { "/F", "/PID", "11", "/PID", "22" }, FactoryReset.SiblingKillArgs(new[] { 11, 22 }));
+    }
+
+    [Fact]
+    public void Sibling_kill_args_never_name_the_finalizers_own_pid()
+    {
+        var args = FactoryReset.SiblingKillArgs(new[] { Environment.ProcessId });
+
+        Assert.Equal(new[] { "/F" }, args);
     }
 }

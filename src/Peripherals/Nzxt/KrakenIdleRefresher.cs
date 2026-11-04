@@ -6,8 +6,8 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Peripherals.Nzxt;
 
 /// <summary>
-/// Runs the Plus V2 idle refresh on the hub's own deadline. It blocks on a gate with no
-/// periodic wake until a Plus V2 is connected, and an exception costs one iteration, not the loop.
+/// Runs the RGB565 direct-stream idle refresh on the hub's own deadline. It blocks on a gate with no
+/// periodic wake until an RGB565 direct-stream Kraken is connected, and an exception costs one iteration, not the loop.
 /// </summary>
 internal sealed class KrakenIdleRefresher
 {
@@ -27,7 +27,7 @@ internal sealed class KrakenIdleRefresher
 
     private static TaskCompletionSource NewGate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    /// <summary>Opens the gate while a Plus V2 is connected; closes it otherwise.</summary>
+    /// <summary>Opens the gate while an RGB565 direct-stream Kraken is connected; closes it otherwise.</summary>
     public void SetActive(bool active)
     {
         if (active)

@@ -435,7 +435,7 @@ public sealed class XeneonEdgeOrientationWorker : BackgroundService
         foreach (var record in _registry.List())
         {
             if (string.IsNullOrEmpty(record.DisplayId)) continue;
-            if (record.Enabled == false) continue;
+            if (!PanelHosting.IsOn(record)) continue;
             if (!string.Equals(record.Capabilities?.Family, KnownPanelDisplays.XeneonEdgeFamily, StringComparison.Ordinal)) continue;
             return (record, record.DisplayId);
         }

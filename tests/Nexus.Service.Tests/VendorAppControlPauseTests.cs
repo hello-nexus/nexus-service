@@ -40,6 +40,27 @@ public class VendorAppControlPauseTests
     }
 
     [Fact]
+    public void ADeviceHeldOnlyByASecondaryMonitorIsReleasedWhenItsAppStarts()
+    {
+        var (gate, detector, pause) = Setup("lianli");
+        gate.SetEnabled("lianli", false);
+        gate.KeepsDeviceClaimed = _ => true;
+        pause.Refresh();
+        Assert.True(gate.IsClaimed("lianli"));
+
+        detector.Running.Add("lian-li-l-connect");
+        pause.Refresh();
+
+        Assert.False(gate.IsClaimed("lianli"));
+        Assert.Equal("lian-li-l-connect", gate.PausedByApp("lianli"));
+
+        detector.Running.Clear();
+        pause.Refresh();
+
+        Assert.True(gate.IsClaimed("lianli"));
+    }
+
+    [Fact]
     public void ADeviceTheUserTurnedOnKeepsDrivingWhileANonWhitelistedAppRuns()
     {
         var (gate, detector, pause) = Setup("lianli");

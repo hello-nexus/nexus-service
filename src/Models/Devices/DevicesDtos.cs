@@ -29,6 +29,9 @@ public sealed class DeviceListItem
     public bool HasPage { get; set; } = true;
     /// <summary>Interface the device hangs off: "usb" for every handler holding a USB handle, "smbus" for the chipset bus. A USB device is exclusive to whoever opens it, a shared bus is not, which is why turning Nexus Control off for one also stops its monitoring. Absent on an older service, which the UI reads as "usb".</summary>
     public string Bus { get; set; } = "usb";
+    /// <summary>"failing" while this handler's controlled hardware writes fail in a sustained way (see LightingWriteHealth). Omitted from the wire when healthy.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? WriteHealth { get; set; }
 }
 
 /// <summary>Body for POST /devices/control.</summary>
@@ -277,6 +280,10 @@ public class LightingDevice
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? DevicePageReason { get; set; }
 
+    /// <summary>"failing" while the card's hardware writes fail in a sustained way (see LightingWriteHealth). Omitted from the wire when healthy, so a build that predates it reads absent as healthy.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? WriteHealth { get; set; }
+
     public const string ReasonFirmware = "firmware";
     public const string ReasonArgbInput = "argbInput";
 }
@@ -348,6 +355,8 @@ public class LightingColorAdjustDto
     public float Blue { get; set; } = 1f;
     public float Temperature { get; set; }
     public float Saturation { get; set; } = 1f;
+    /// <summary>Channel order the device expects on the wire; always present, "RGB" when unset.</summary>
+    public string ColorOrder { get; set; } = "RGB";
 }
 
 /// <summary>GET /devices/lighting-devices/color-adjust: the trims of every card
@@ -373,6 +382,8 @@ public class SetLightingColorAdjustBody
     public float? Blue { get; set; }
     public float? Temperature { get; set; }
     public float? Saturation { get; set; }
+    /// <summary>One of <see cref="Nexus.Service.Lighting.DeviceColorAdjust.OrderNames"/>; null leaves the stored order alone.</summary>
+    public string? ColorOrder { get; set; }
     public int? Brightness { get; set; }
 }
 
@@ -447,6 +458,8 @@ public sealed class LayoutPresetsResponse
 public sealed class CreateLayoutPresetBody
 {
     public string Name { get; set; } = "";
+    /// <summary>Reset the looks to clean-install defaults and apply them, keeping layouts, scene view and device slices; false snapshots the live state.</summary>
+    public bool Fresh { get; set; }
 }
 
 public sealed class CreateLayoutPresetResponse

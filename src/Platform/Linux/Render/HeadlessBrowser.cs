@@ -41,7 +41,122 @@ public sealed class HeadlessBrowser : IDisposable
         }
     }
 
-    internal static List<string> Arguments(string profileDir) => new()
+    public GpuTier Tier { get; private init; }
+
+    /// <summary>
+    /// Best effort: set when browser stderr reports the GPU process dying or being unusable. Chromium
+    /// does not promise to print these, so a false value proves nothing.
+    /// </summary>
+    public bool GpuProcessFailed => Volatile.Read(ref _gpuProcessFailed) != 0;
+    private int _gpuProcessFailed;
+
+    private static readonly string[] GpuFailureMarkers =
+    {
+        "GPU process exited unexpectedly", "GPU process isn't usable", "Exiting GPU process",
+    };
+
+    internal static bool IsGpuFailureLine(string? line)
+    {
+        if (string.IsNullOrEmpty(line))
+        {
+            return false;
+        }
+        foreach (var marker in GpuFailureMarkers)
+        {
+            if (line.Contains(marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Forgets markers seen so far; a tier accepted by the probe is judged only on what follows.</summary>
+    public void ClearGpuFailure() => Volatile.Write(ref _gpuProcessFailed, 0);
+
+    /// <summary>Kills the browser tree without waiting; reap with <see cref="Dispose"/> off the caller's path.</summary>
+    public void Kill()
+    {
+        try
+        {
+            _process.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>Kills the tree, waits a bounded time for the process to leave (so a relaunch on the same profile is not blocked by its singleton lock), and reaps in the background.</summary>
+    public async Task AbandonAsync(CancellationToken ct = default)
+    {
+        Kill();
+        try
+        {
+            await _process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromMilliseconds(AbandonWaitMs), ct).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+        _ = Task.Run(Dispose);
+    }
+
+    private const int AbandonWaitMs = 2000;
+
+    private const string WebGlRendererProbe =
+        "(() => { const c = document.createElement('canvas');"
+        + " const gl = c.getContext('webgl2') || c.getContext('webgl'); if (!gl) return 'none';"
+        + " const e = gl.getExtension('WEBGL_debug_renderer_info');"
+        + " return String(e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)); })()";
+
+    /// <summary>
+    /// The renderer string the page's WebGL context actually got. A GPU flag is only a request:
+    /// Chromium drops to SwiftShader or llvmpipe when the driver is missing, so the flags alone prove nothing.
+    /// </summary>
+    public async Task<string> ProbeRendererAsync(CancellationToken ct)
+    {
+        var created = await Cdp.SendAsync("Target.createTarget", w =>
+        {
+            w.WriteString("url", "about:blank");
+            w.WriteNumber("width", 64);
+            w.WriteNumber("height", 64);
+            w.WriteBoolean("newWindow", true);
+        }, ct: ct).ConfigureAwait(false);
+        var targetId = created.GetProperty("targetId").GetString();
+        try
+        {
+            var attached = await Cdp.SendAsync("Target.attachToTarget", w =>
+            {
+                w.WriteString("targetId", targetId);
+                w.WriteBoolean("flatten", true);
+            }, ct: ct).ConfigureAwait(false);
+            var session = attached.GetProperty("sessionId").GetString();
+            var result = await Cdp.SendAsync("Runtime.evaluate", w =>
+            {
+                w.WriteString("expression", WebGlRendererProbe);
+                w.WriteBoolean("returnByValue", true);
+            }, session, ct: ct, timeoutMs: 15000).ConfigureAwait(false);
+            return result.TryGetProperty("result", out var r) && r.TryGetProperty("value", out var v)
+                ? v.GetString() ?? "none"
+                : "none";
+        }
+        finally
+        {
+            if (targetId is not null && !Cdp.IsClosed)
+            {
+                Cdp.Post("Target.closeTarget", w => w.WriteString("targetId", targetId));
+            }
+        }
+    }
+
+    internal static List<string> Arguments(string profileDir, GpuTier tier = GpuTier.Software)
+    {
+        var args = BaseArguments(profileDir);
+        // The trailing about:blank stays last.
+        args.InsertRange(args.Count - 1, GpuTiers.Arguments(tier));
+        return args;
+    }
+
+    private static List<string> BaseArguments(string profileDir) => new()
     {
         "--headless=new",
         "--remote-debugging-pipe",
@@ -64,10 +179,10 @@ public sealed class HeadlessBrowser : IDisposable
 
     public static async Task<HeadlessBrowser> LaunchAsync(string browserPath, string profileDir,
         Func<string, List<string>, (string File, List<string> Args)> wrapSpawn,
-        Action<string>? log, CancellationToken ct)
+        Action<string>? log, CancellationToken ct, GpuTier tier = GpuTier.Software)
     {
         var shellArgs = new List<string> { "-c", FdShim, browserPath };
-        shellArgs.AddRange(Arguments(profileDir));
+        shellArgs.AddRange(Arguments(profileDir, tier));
         var (file, args) = wrapSpawn("/bin/sh", shellArgs);
 
         var psi = new ProcessStartInfo
@@ -85,8 +200,8 @@ public sealed class HeadlessBrowser : IDisposable
         }
         var process = Process.Start(psi) ?? throw new IOException($"could not start {browserPath}");
         var cdp = new CdpPipeClient(process.StandardInput.BaseStream, process.StandardOutput.BaseStream);
-        var browser = new HeadlessBrowser(process, cdp, browserPath);
-        _ = DrainStderrAsync(process, log);
+        var browser = new HeadlessBrowser(process, cdp, browserPath) { Tier = tier };
+        _ = DrainStderrAsync(process, log, browser);
         try
         {
             var version = await cdp.SendAsync("Browser.getVersion", ct: ct, timeoutMs: 20000).ConfigureAwait(false);
@@ -96,12 +211,12 @@ public sealed class HeadlessBrowser : IDisposable
         }
         catch
         {
-            browser.Dispose();
+            await browser.AbandonAsync(ct).ConfigureAwait(false);
             throw;
         }
     }
 
-    private static async Task DrainStderrAsync(Process process, Action<string>? log)
+    private static async Task DrainStderrAsync(Process process, Action<string>? log, HeadlessBrowser browser)
     {
         var logged = 0;
         try
@@ -109,6 +224,10 @@ public sealed class HeadlessBrowser : IDisposable
             string? line;
             while ((line = await process.StandardError.ReadLineAsync().ConfigureAwait(false)) is not null)
             {
+                if (IsGpuFailureLine(line))
+                {
+                    Volatile.Write(ref browser._gpuProcessFailed, 1);
+                }
                 if (logged < StderrLinesLogged && !string.IsNullOrWhiteSpace(line))
                 {
                     logged++;

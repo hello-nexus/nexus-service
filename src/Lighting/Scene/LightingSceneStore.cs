@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -26,6 +28,117 @@ public sealed class LightingSceneStore
     {
         _docPath = Path.Combine(dir, "lighting-scene.json");
         _modelPath = Path.Combine(dir, "lighting-scene.glb");
+        Setup = new PcSetupStore(dir, Load);
+        Cooling = new Nexus.Service.Cooling.CoolingLayoutStore(dir);
+        // A record save re-applies the scene: the engine samples from the record's resolved objects.
+        Setup.Changed += _ => Changed?.Invoke();
+    }
+
+    /// <summary>The shared PC setup, in the same directory.</summary>
+    public PcSetupStore Setup { get; }
+
+    /// <summary>The 3D cooling layout, in the same directory.</summary>
+    public Nexus.Service.Cooling.CoolingLayoutStore Cooling { get; }
+
+    /// <summary>
+    /// <see cref="Load"/> with the objects replaced by the saved PC setup's
+    /// resolved objects when there are any; the scene file's own objects
+    /// otherwise. Bindings are always the scene's.
+    /// </summary>
+    public LightingSceneDoc LoadEffective()
+    {
+        var doc = Load();
+        if (Setup.LoadSaved() is { Setup.Resolved.Objects.Count: > 0 } saved)
+        {
+            doc.Objects = saved.Setup.Resolved.Objects;
+        }
+        if (HealBindings(doc.Bindings, doc.Objects))
+        {
+            var healed = false;
+            lock (_lock)
+            {
+                // Re-heal the stored copy under the write lock, so concurrent readers persist it once.
+                var stored = Clone(_cached ??= ReadUnlocked());
+                if (HealBindings(stored.Bindings, doc.Objects))
+                {
+                    try
+                    {
+                        WriteUnlocked(stored);
+                        _cached = Clone(stored);
+                        healed = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        // A failed write must not fail the read: the healed view still applies, and the next read retries.
+                        Console.Error.WriteLine($"[lighting-scene] heal persist failed: {ex.GetType().Name}: {ex.Message}");
+                    }
+                }
+                doc.Bindings = stored.Bindings;
+            }
+            if (healed)
+            {
+                Changed?.Invoke();
+            }
+        }
+        return doc;
+    }
+
+    /// <summary>
+    /// Retargets a binding whose object no longer exists (an id from before the shared PC setup, like
+    /// <c>mouse-1</c>) onto the one object of the same kind, when that object has the target's anchor or
+    /// a surface and no other target holds it. One target at a time, so two missing ids never share an
+    /// object. Only legacy <c>kind-N</c> ids heal. With zero or several candidates the target is left as it is. True when anything changed.
+    /// </summary>
+    private static readonly System.Text.RegularExpressions.Regex s_legacyId = new(@"^([a-z]+)-\d+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    internal static bool HealBindings(List<SceneBinding> bindings, List<SceneObject> objects)
+    {
+        var present = new HashSet<string>(objects.Select(o => o.Id), StringComparer.Ordinal);
+        var held = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var binding in bindings)
+        {
+            foreach (var target in binding.Targets)
+            {
+                if (present.Contains(target.ObjectId))
+                {
+                    held.Add(target.ObjectId);
+                }
+            }
+        }
+        var changed = false;
+        foreach (var binding in bindings)
+        {
+            foreach (var target in binding.Targets)
+            {
+                if (present.Contains(target.ObjectId))
+                {
+                    continue;
+                }
+                // Only the ids the scene editor minted before the shared setup (kind-N); a removed p-... item stays unbound.
+                if (s_legacyId.Match(target.ObjectId) is not { Success: true } legacy)
+                {
+                    continue;
+                }
+                var kind = legacy.Groups[1].Value;
+                var candidates = objects.Where(o => string.Equals(o.Kind, kind, StringComparison.Ordinal)).ToList();
+                if (candidates.Count != 1 || held.Contains(candidates[0].Id))
+                {
+                    continue;
+                }
+                var anchors = candidates[0].Anchors;
+                var anchor = anchors.FirstOrDefault(a => a.Id == target.AnchorId)
+                    ?? (anchors.Count(a => a.Kind == "surface") == 1 ? anchors.First(a => a.Kind == "surface") : null);
+                if (anchor is null)
+                {
+                    continue;
+                }
+                target.ObjectId = candidates[0].Id;
+                target.AnchorId = anchor.Id;
+                held.Add(candidates[0].Id);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     /// <summary>Raised after every successful write, outside the store lock.</summary>

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using Nexus.Service.Peripherals.JpegPanels;
 using Nexus.Service.Peripherals.PixelFormats;
 using Nexus.Service.Platform;
@@ -13,7 +14,7 @@ namespace Nexus.Service.Panel.Streams;
 /// concatenate writes, so this buffers to exactly one frame before encoding. Frames are
 /// fixed-size, which makes the boundary unambiguous.
 /// </summary>
-public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport, IBrightnessPanelTransport
+public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport, IBrightnessPanelTransport, IRepeatGatedPanelTransport
 {
     private readonly JpegPanelHub _hub;
     private readonly BgraJpegEncoder _encoder;
@@ -38,6 +39,17 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private readonly object _brightnessLock = new();
 
     private readonly byte[] _turned;
+
+    // Live sends, repeats and Dispose all run under this lock, and the last frame is stored under it too,
+    // so a repeat can never send a frame older than the last live one.
+    private readonly object _sendLock = new();
+    private byte[]? _lastJpeg;
+    private long _lastSentMs;
+    internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
+    private Timer? _repeat;
+    private volatile Func<bool>? _repeatAllowed;
+
+    public void BindRepeatGate(Func<bool> allowed) => _repeatAllowed = allowed;
 
     private const long FailureStatsIntervalMs = 30_000;
     private long _statsWindowStartMs;
@@ -136,6 +148,51 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             throw new IOException($"{_hub.Model.Name} not connected");
         }
         _filled = 0;
+        var repeatMs = _hub.Model.RepeatLastFrameMs;
+        if (repeatMs > 0 && _repeat is null)
+        {
+            // Ticking at half the period keeps the real gap near the period rather than up to twice it.
+            var tick = Math.Max(1, repeatMs / 2);
+            _repeat = new Timer(_ => RepeatLast(repeatMs), null, tick, tick);
+        }
+    }
+
+    internal static bool RepeatDue(int repeatMs, long nowMs, long lastSentMs, bool hasFrame) =>
+        repeatMs > 0 && hasFrame && nowMs - lastSentMs >= repeatMs;
+
+    internal void RepeatLast(int repeatMs)
+    {
+        try
+        {
+            // The gate takes the coordinator's lock, so it is read before this transport's own.
+            if (_disposed || !_hub.IsConnected || _repeatAllowed?.Invoke() == false)
+            {
+                return;
+            }
+            // A busy lock means a live frame or an earlier repeat is being written.
+            if (!Monitor.TryEnter(_sendLock))
+            {
+                return;
+            }
+            try
+            {
+                var last = _lastJpeg;
+                if (_disposed || !RepeatDue(repeatMs, Clock(), _lastSentMs, last is not null))
+                {
+                    return;
+                }
+                _lastSentMs = Clock();
+                _hub.SendFrame(last!);
+            }
+            finally
+            {
+                Monitor.Exit(_sendLock);
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[{_hub.Model.HandlerId}] frame repeat failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>The panel has no player to start; the first pushed frame is the start.</summary>
@@ -193,7 +250,17 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
             return;
         }
 
-        if (_hub.SendFrame(jpeg))
+        bool sent;
+        lock (_sendLock)
+        {
+            sent = _hub.SendFrame(jpeg);
+            if (sent && _hub.Model.RepeatLastFrameMs > 0)
+            {
+                _lastJpeg = jpeg.ToArray();
+                _lastSentMs = Clock();
+            }
+        }
+        if (sent)
         {
             _dropLogged = false;
         }
@@ -287,7 +354,12 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         {
             return;
         }
-        _disposed = true;
+        lock (_sendLock)
+        {
+            _disposed = true;
+        }
+        _repeat?.Dispose();
+        _repeat = null;
         _encoder.Dispose();
         if (_stepDown is not null)
         {

@@ -61,7 +61,6 @@ public static class ProfileRoutes
                 {
                     Theme = s.Theme,
                     Panel = s.Panel,
-                    Overlay = s.Overlay,
                     Monitoring = s.Monitoring,
                     Cooling = new CoolingPrefs
                     {
@@ -143,9 +142,12 @@ public static class ProfileRoutes
             }
         });
 
-        app.MapGet("/profiles/{id}/export", (string id, ProfileManager pm, AppDataStore appDataStore) =>
+        app.MapGet("/profiles/{id}/export", (string id, ProfileManager pm, AppDataStore appDataStore, Nexus.Service.Lighting.Scene.LightingSceneStore scene, Nexus.Service.Cloud.CloudAccountService accounts) =>
         {
-            var json = AppDataStore.IsValidProfileId(id) ? pm.ExportProfileJson(id, appDataStore.ReadProfile(id)) : null;
+            // The PC setup rides in the app-data bundle; the file names this machine so an import can tell it from another's.
+            var json = AppDataStore.IsValidProfileId(id)
+                ? pm.ExportProfileJson(id, Nexus.Service.Cloud.CoolingLayoutBackup.Attach(Nexus.Service.Cloud.PcSetupBackup.Attach(appDataStore.ReadProfile(id), scene.Setup, out _), scene.Cooling, out _), Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()))
+                : null;
             return json == null
                 ? Results.NotFound(ApiResponse.Fail("Profile not found."))
                 : Results.Text(json, "application/json");
@@ -164,7 +166,7 @@ public static class ProfileRoutes
         });
 
         app.MapPost("/profiles/import", async (HttpRequest req, ProfileManager pm, MultiplexHub hub,
-            AppDataStore appDataStore, bool? replace, string? appData) =>
+            AppDataStore appDataStore, Nexus.Service.Lighting.Scene.LightingSceneStore scene, Nexus.Service.Cloud.CloudAccountService accounts, bool? replace, string? appData) =>
         {
             var parsed = ProfileBundle.Parse(await ReadBodyAsync(req));
             if (!parsed.Ok)
@@ -176,9 +178,42 @@ public static class ProfileRoutes
             try
             {
                 var entry = pm.ImportProfileJson(parsed.ProfileJson, replace == true);
+                string? setupOutcome = null;
                 if (!skipAppData)
                 {
-                    appDataStore.ReplaceApps(entry.Id, parsed.AppData);
+                    var rest = Nexus.Service.Cloud.PcSetupBackup.Detach(parsed.AppData, out var setup);
+                    rest = Nexus.Service.Cloud.CoolingLayoutBackup.Detach(rest, out var coolingLayout);
+                    appDataStore.ReplaceApps(entry.Id, rest);
+                    if (setup is not null || coolingLayout is not null)
+                    {
+                        // Machine scope: only a replace of a profile from a file this machine exported (or one naming no machine) may replace this machine's setup and cooling layout; a new profile never touches them.
+                        string outcome;
+                        if (replace != true)
+                        {
+                            outcome = "skipped_new_profile";
+                        }
+                        else if (parsed.InstallDigest is not null
+                            && !string.Equals(parsed.InstallDigest, Nexus.Service.Cloud.PcSetupBackup.MachineDigest(accounts.ResolveStableInstallId()), StringComparison.Ordinal))
+                        {
+                            outcome = "skipped_other_machine";
+                        }
+                        else
+                        {
+                            if (setup is not null)
+                            {
+                                scene.Setup.Replace(setup);
+                            }
+                            if (coolingLayout is not null)
+                            {
+                                scene.Cooling.Replace(coolingLayout);
+                            }
+                            outcome = parsed.InstallDigest is null ? "applied_unknown_machine" : "applied";
+                        }
+                        if (setup is not null)
+                        {
+                            setupOutcome = outcome;
+                        }
+                    }
                 }
 
                 if (replace == true)
@@ -189,7 +224,7 @@ public static class ProfileRoutes
                     PanelTopics.BroadcastLighting(hub);
                     PanelTopics.BroadcastCooling(hub);
                 }
-                return Results.Ok(new ProfileResponse { Profile = entry });
+                return Results.Ok(new ProfileResponse { Profile = entry, PcSetup = setupOutcome });
             }
             catch (ProfileNameConflictException)
             {
@@ -212,7 +247,6 @@ public static class ProfileRoutes
             {
                 Theme = s.Theme,
                 Panel = s.Panel,
-                Overlay = s.Overlay,
                 Monitoring = s.Monitoring,
                 Cooling = new CoolingPrefs
                 {
@@ -450,7 +484,7 @@ public static class ProfileRoutes
                     if (theme.Language is not null)    s.Theme.Language    = theme.Language;
                     if (theme.ThemeMode is not null)   s.Theme.ThemeMode   = theme.ThemeMode;
                     if (theme.AccentColor is not null) s.Theme.AccentColor = theme.AccentColor;
-                    if (theme.ResolvedThemeMode is not null) s.Theme.ResolvedThemeMode = theme.ResolvedThemeMode;
+                    // ResolvedThemeMode is host-owned (HostThemeSync); a client value is dropped.
                     if (theme.BackgroundMode is not null) s.Theme.BackgroundMode = theme.BackgroundMode;
                     if (theme.AccentSource is not null) s.Theme.AccentSource = theme.AccentSource;
                     if (theme.CustomAccentColor is not null) s.Theme.CustomAccentColor = theme.CustomAccentColor;
@@ -467,7 +501,7 @@ public static class ProfileRoutes
                     if (panel.BackgroundColor is not null)       s.Panel.BackgroundColor       = panel.BackgroundColor;
                     if (panel.BackgroundColorLight is not null)  s.Panel.BackgroundColorLight  = panel.BackgroundColorLight;
                     if (panel.BackgroundMode is not null)        s.Panel.BackgroundMode        = panel.BackgroundMode;
-                    if (panel.BackgroundEffect is not null)      s.Panel.BackgroundEffect      = panel.BackgroundEffect;
+                    if (panel.BackgroundEffect is not null)      s.Panel.BackgroundEffect      = Nexus.Service.Lighting.SimplePatternMigration.Normalize(panel.BackgroundEffect);
                     if (panel.BackgroundTemplate.HasValue)       s.Panel.BackgroundTemplate    = panel.BackgroundTemplate.Value;
                     if (panel.BackgroundOpacity.HasValue)        s.Panel.BackgroundOpacity     = panel.BackgroundOpacity.Value;
                     if (panel.PanelOpacity.HasValue)             s.Panel.PanelOpacity          = Math.Clamp(panel.PanelOpacity.Value, 0.0, 1.0);
@@ -480,46 +514,6 @@ public static class ProfileRoutes
                         s.Panel.DashboardLayout = panel.DashboardLayout;
                     }
                     if (panel.DashboardGaugeGradient is not null) s.Panel.DashboardGaugeGradient = panel.DashboardGaugeGradient;
-                }
-                if (body.Overlay is { } overlay)
-                {
-                    if (overlay.Enabled.HasValue)      s.Overlay.Enabled     = overlay.Enabled.Value;
-                    if (overlay.AlwaysOnTop.HasValue)  s.Overlay.AlwaysOnTop = overlay.AlwaysOnTop.Value;
-                    if (overlay.Scale.HasValue)
-                    {
-                        var newScale = Math.Clamp(overlay.Scale.Value, 50, 200);
-                        var oldScale = s.Overlay.Scale > 0 ? s.Overlay.Scale : 100;
-                        // Rescale every pinned widget's (col, row) so the *visual*
-                        // position stays put when the cell-size scale changes.
-                        // ratio = old / new because at 100→200% a widget at col 4
-                        // should land at col 2 (half as many cells cover the same
-                        // pixels). Snap to the 0.25 drag grid and clamp ≥0; max
-                        // clamp happens client-side where monitor size is known.
-                        if (oldScale != newScale && s.Overlay.Layout is { } layout)
-                        {
-                            var ratio = (double)oldScale / newScale;
-                            foreach (var w in layout)
-                            {
-                                w.Col = Math.Max(0, Math.Round(w.Col * ratio * 4) / 4);
-                                w.Row = Math.Max(0, Math.Round(w.Row * ratio * 4) / 4);
-                            }
-                        }
-                        s.Overlay.Scale = newScale;
-                    }
-                    if (overlay.Opacity.HasValue)
-                    {
-                        s.Overlay.Opacity = Math.Clamp(overlay.Opacity.Value, 0, 1);
-                    }
-                    if (overlay.Monitor.HasValue)
-                    {
-                        // -1 (primary) or any non-negative index. Don't clamp to a
-                        // max here - the overlay host validates against the
-                        // enumerated monitor count and falls back to primary if
-                        // the index is out of range.
-                        var v = overlay.Monitor.Value;
-                        s.Overlay.Monitor = v < -1 ? -1 : v;
-                    }
-                    if (overlay.Layout is not null) s.Overlay.Layout = overlay.Layout;
                 }
                 if (body.Monitoring is { } monitoring)
                 {
@@ -560,6 +554,13 @@ public static class ProfileRoutes
                     if (ui.ShowUncontrolledDevices.HasValue) s.Ui.ShowUncontrolledDevices = ui.ShowUncontrolledDevices.Value;
                     if (ui.ShowUncontrolledLightingDevices.HasValue) s.Ui.ShowUncontrolledLightingDevices = ui.ShowUncontrolledLightingDevices.Value;
                     if (ui.ShowUncontrolledCoolingDevices.HasValue) s.Ui.ShowUncontrolledCoolingDevices = ui.ShowUncontrolledCoolingDevices.Value;
+                    if (ui.LightingView3d.HasValue) s.Ui.LightingView3d = ui.LightingView3d.Value;
+                    if (ui.CoolingView3d.HasValue) s.Ui.CoolingView3d = ui.CoolingView3d.Value;
+                    if (ui.CoolingCollisionShapes.HasValue) s.Ui.CoolingCollisionShapes = ui.CoolingCollisionShapes.Value;
+                    if (ui.CoolingFlowMode is "both" or "case" or "airflow")
+                    {
+                        s.Ui.CoolingFlowMode = ui.CoolingFlowMode;
+                    }
                     if (ui.HiddenSidebarDevices is not null)
                     {
                         s.Ui.HiddenSidebarDevices = ui.HiddenSidebarDevices
@@ -567,6 +568,8 @@ public static class ProfileRoutes
                             .Distinct(StringComparer.Ordinal)
                             .ToList();
                     }
+                    if (ui.RecentStaticColors is not null) s.Ui.RecentStaticColors = UiRecents.SanitizeColors(ui.RecentStaticColors);
+                    if (ui.RecentAnimations is not null) s.Ui.RecentAnimations = UiRecents.SanitizeKeys(ui.RecentAnimations.Select(Nexus.Service.Lighting.SimplePatternMigration.Normalize));
                     if (ui.LightingDashboardMode is "simple" or "advanced")
                     {
                         if (!string.Equals(s.Ui.LightingDashboardMode, ui.LightingDashboardMode, StringComparison.Ordinal))

@@ -1,0 +1,2137 @@
+{
+ "schemaVersion": 24,
+ "theme": {
+  "language": "en",
+  "themeMode": "system",
+  "accentColor": "#0078D4",
+  "resolvedThemeMode": "dark",
+  "backgroundMode": "glass",
+  "accentSource": "system",
+  "customAccentColor": ""
+ },
+ "monitoring": {
+  "showMacStatusBarIcon": true,
+  "showWindowsTrayIcon": true,
+  "detailedCollapsed": [],
+  "eventsEnabled": true,
+  "fpsOverlayEnabled": true,
+  "eventKindsHidden": [],
+  "smartPollSeconds": {},
+  "smartPollDefaultSeconds": 30,
+  "smartPollPerDrive": false
+ },
+ "panel": {
+  "autoLaunch": true,
+  "reserveMonitor": true,
+  "alwaysOnTop": true,
+  "themeSyncWithDesktop": true,
+  "themeMode": "system",
+  "accentSyncWithDesktop": true,
+  "backgroundMode": "solid",
+  "backgroundEffect": "plasma",
+  "backgroundTemplate": 0,
+  "backgroundOpacity": 1,
+  "panelOpacity": 1,
+  "widgetOpacity": 0.7,
+  "widgetLabels": false,
+  "dashboardLayout": {
+   "layoutSchemaVersion": 2,
+   "surface": "desktop",
+   "pages": [
+    {
+     "id": "6411e2a1-aed5-433c-a770-f3af60d9751c",
+     "widgets": [
+      {
+       "id": "fda47aa7-d009-4353-abef-3d6e1dcbcd70",
+       "type": "monitoring",
+       "size": "4x2",
+       "col": 0,
+       "row": 0,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false,
+       "config": {
+        "slotCount": 2,
+        "slot0_device": "quick",
+        "slot0_sensor": "summary/cpu-usage",
+        "slot0_design": "sparkline",
+        "slot1_device": "quick",
+        "slot1_sensor": "summary/memory-usage",
+        "slot1_design": "halfgauge"
+       }
+      },
+      {
+       "id": "711acdc6-04db-40d0-b4e3-c521dea83bdb",
+       "type": "lighting",
+       "size": "4x2",
+       "col": 0,
+       "row": 2,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "1dc75ee9-cf92-40dc-bc9c-f6b94182e19d",
+       "type": "cooling",
+       "size": "4x2",
+       "col": 0,
+       "row": 4,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "ac1b7ea8-8d1b-4b70-b342-9265e5732576",
+       "type": "mixer",
+       "size": "4x4",
+       "col": 4,
+       "row": 0,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false,
+       "config": {
+        "hideIdle": false,
+        "showLabels": true,
+        "showOutput": true,
+        "showPresets": true
+       }
+      },
+      {
+       "id": "f546823c-cec0-4533-a84f-0ff892785510",
+       "type": "diagnostics",
+       "size": "2x2",
+       "col": 8,
+       "row": 0,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "f26ea3a3-b0e4-4d2a-a678-88a535f76e90",
+       "type": "weather",
+       "size": "2x2",
+       "col": 8,
+       "row": 2,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "overlay": {
+  "enabled": false,
+  "alwaysOnTop": false,
+  "scale": 100,
+  "opacity": 1,
+  "monitor": -1,
+  "layout": []
+ },
+ "auth": {
+  "token": "scrubbed",
+  "panelPhoneSessions": [],
+  "remoteControlEnabled": true,
+  "relayEnabled": false,
+  "pairBroadcast": {
+   "mode": "always",
+   "untilUnixSeconds": 0
+  },
+  "cloudAccounts": []
+ },
+ "lighting": {
+  "sync": "static",
+  "brightnessScale": {},
+  "brightnessEnabled": false,
+  "globalBrightness": 0.8,
+  "brightnessSchedule": {
+   "enabled": false,
+   "points": [
+    {
+     "hour": 5,
+     "brightness": 10
+    },
+    {
+     "hour": 7,
+     "brightness": 30
+    },
+    {
+     "hour": 10,
+     "brightness": 100
+    },
+    {
+     "hour": 17,
+     "brightness": 100
+    },
+    {
+     "hour": 20,
+     "brightness": 30
+    },
+    {
+     "hour": 22,
+     "brightness": 10
+    }
+   ],
+   "sunShift": true
+  },
+  "idleDim": {
+   "enabled": false,
+   "timeoutSeconds": 0,
+   "level": 10
+  },
+  "speedScale": {},
+  "speedEnabled": false,
+  "frameRate": 60,
+  "scaleRatio": 1,
+  "deviceLayouts": {
+   "keeb:tkl-00000001:underglow": {
+    "x": 0,
+    "y": 0,
+    "w": 1000,
+    "h": 600,
+    "rotation": 0
+   },
+   "keeb:tkl-00000001:keys": {
+    "x": 0,
+    "y": 0,
+    "w": 1000,
+    "h": 600,
+    "rotation": 0
+   },
+   "openrgb-2": {
+    "x": 576.453,
+    "y": 0,
+    "w": 140,
+    "h": 120,
+    "rotation": 0
+   }
+  },
+  "sceneView": {
+   "enabled": false,
+   "camera": {
+    "position": [
+     -1234,
+     85.2,
+     665.6
+    ],
+    "target": [
+     0,
+     150,
+     0
+    ],
+    "fov": 40
+   }
+  },
+  "freeRotationLayouts": true,
+  "deviceNames": {},
+  "deviceGroups": [
+   {
+    "id": "grp-2e9970e4",
+    "name": "Group 1",
+    "members": [],
+    "after": "openrgb-2"
+   }
+  ],
+  "deviceStacks": [
+   {
+    "id": "grp-e8ab0299",
+    "name": "",
+    "members": [
+     "keeb:tkl-00000001:keys",
+     "keeb:tkl-00000001:underglow"
+    ]
+   }
+  ],
+  "devicePins": {
+   "openrgb-s-0x00001000-1": {
+    "kind": "animate",
+    "effect": "custom:fxmva7s5gj"
+   },
+   "openrgb-2": {
+    "kind": "static",
+    "effect": "stripes",
+    "intensity": 1,
+    "hue": 0,
+    "colorize": 0,
+    "saturation": 1,
+    "contrast": 1,
+    "params": {
+     "u_aHue": 0,
+     "u_aSat": 1,
+     "u_aVal": 1,
+     "u_bHue": 0.62,
+     "u_bSat": 1,
+     "u_bVal": 1,
+     "u_count": 3,
+     "u_angle": 0,
+     "u_softness": 0.02,
+     "u_balance": 0.5
+    },
+    "slot": 0
+   }
+  },
+  "ledColorLocks": {},
+  "keyReactions": {
+   "keeb:tkl-00000001": {
+    "enabled": false,
+    "effect": "ripple",
+    "colorMode": "custom",
+    "color": "#ff2d55",
+    "speed": 1,
+    "size": 1,
+    "background": "effect"
+   }
+  },
+  "layoutPresets": [],
+  "lastMediaId": "",
+  "animate": {
+   "effect": "sensorsegments",
+   "states": {
+    "sweeprainbow": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {}
+    },
+    "custom:fxmva7s5gj": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {}
+    },
+    "static": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {}
+    },
+    "sensorheat": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_grad_angle": 90,
+      "u_grad_spread": 1,
+      "u_grad_speed": 0,
+      "u_col_low": 0.95,
+      "u_col_low_m": -1,
+      "u_col_shade": 0,
+      "u_col_c1r": 0.15,
+      "u_col_c1g": 0.35,
+      "u_col_c1b": 1,
+      "u_col_c2r": 0.1,
+      "u_col_c2g": 0.95,
+      "u_col_c2b": 0.55,
+      "u_col_c3r": 1,
+      "u_col_c3g": 0.85,
+      "u_col_c3b": 0.1,
+      "u_col_c4r": 1,
+      "u_col_c4g": 0.15,
+      "u_col_c4b": 0.1
+     },
+     "sensors": {
+      "u_col_low_s": {
+       "category": "quick",
+       "sensor": "summary/cpu-temp",
+       "min": 30,
+       "max": 90
+      }
+     }
+    },
+    "sensorshift": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0.39198706,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_hot_level": 0,
+      "u_hot_level_m": 1,
+      "u_col_low": 0,
+      "u_col_shade": 0,
+      "u_col_c1r": 0.15,
+      "u_col_c1g": 0.35,
+      "u_col_c1b": 1,
+      "u_col_c2r": 0.1,
+      "u_col_c2g": 0.95,
+      "u_col_c2b": 0.55,
+      "u_col_c3r": 1,
+      "u_col_c3g": 0.85,
+      "u_col_c3b": 0.1,
+      "u_col_c4r": 1,
+      "u_col_c4g": 0.15,
+      "u_col_c4b": 0.1
+     },
+     "sensors": {
+      "u_hot_level_s": {
+       "category": "quick",
+       "sensor": "summary/gpu-usage",
+       "min": 0,
+       "max": 100
+      }
+     }
+    },
+    "sensorclock": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_fill_level": 0,
+      "u_fill_level_m": 1,
+      "u_fill_angle": 0,
+      "u_fill_flip": 0,
+      "u_fill_softness": 0.04,
+      "u_col_low": 0.55,
+      "u_col_shade": 1,
+      "u_col_c1r": 0.15,
+      "u_col_c1g": 0.35,
+      "u_col_c1b": 1,
+      "u_col_c2r": 0.1,
+      "u_col_c2g": 0.95,
+      "u_col_c2b": 0.55,
+      "u_col_c3r": 1,
+      "u_col_c3g": 0.85,
+      "u_col_c3b": 0.1,
+      "u_col_c4r": 1,
+      "u_col_c4g": 0.15,
+      "u_col_c4b": 0.1
+     },
+     "sensors": {
+      "u_fill_level_s": {
+       "category": "quick",
+       "sensor": "summary/cpu-temp",
+       "min": 30,
+       "max": 95
+      }
+     }
+    },
+    "sensorgauge": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_fill_level": 0,
+      "u_fill_level_m": 1,
+      "u_fill_angle": 0,
+      "u_fill_flip": 0,
+      "u_fill_span": 240,
+      "u_fill_radius": 0.65,
+      "u_fill_width": 0.4,
+      "u_fill_track": 0.1,
+      "u_col_low": 0.55,
+      "u_col_shade": 1,
+      "u_col_c1r": 0.1,
+      "u_col_c1g": 1,
+      "u_col_c1b": 0.4,
+      "u_col_c2r": 0.6,
+      "u_col_c2g": 1,
+      "u_col_c2b": 0.2,
+      "u_col_c3r": 1,
+      "u_col_c3g": 0.85,
+      "u_col_c3b": 0.1,
+      "u_col_c4r": 1,
+      "u_col_c4g": 0.15,
+      "u_col_c4b": 0.1
+     },
+     "sensors": {
+      "u_fill_level_s": {
+       "category": "quick",
+       "sensor": "summary/cpu-temp",
+       "min": 30,
+       "max": 95
+      }
+     }
+    }
+   },
+   "templates": {
+    "fire": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.03,
+       "colorize": 0.8,
+       "saturation": 0.74,
+       "contrast": 4,
+       "params": {
+        "u_turbulence": 1
+       }
+      }
+     ]
+    },
+    "rainbow": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 4,
+       "params": {
+        "u_density": 0.4,
+        "u_rotation": 0
+       }
+      }
+     ]
+    },
+    "breathing": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_aHue": 0,
+        "u_aSpan": 1,
+        "u_aSat": 1,
+        "u_aVal": 1,
+        "u_bHue": 0,
+        "u_bSpan": 0,
+        "u_bSat": 1,
+        "u_bVal": 0,
+        "u_sharpness": 1
+       }
+      }
+     ]
+    },
+    "meteor": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.1,
+       "colorize": 0.4,
+       "saturation": 4,
+       "contrast": 1.95,
+       "params": {
+        "u_streaks": 16,
+        "u_width": 0.095
+       }
+      }
+     ]
+    },
+    "ripple": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.55,
+       "colorize": 0.3,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_freq": 12
+       }
+      }
+     ]
+    },
+    "watercolor": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 40,
+       "intensity": 1,
+       "hue": 0.5,
+       "colorize": 0.3,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.5
+       }
+      },
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.3
+       }
+      },
+      null,
+      {
+       "speed": 30,
+       "intensity": 1,
+       "hue": 0.62,
+       "colorize": 0.75,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.6
+       }
+      }
+     ]
+    },
+    "lavalamp": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.85,
+       "colorize": 0.5,
+       "saturation": 4,
+       "contrast": 4,
+       "params": {
+        "u_count": 10,
+        "u_viscosity": 1,
+        "u_size": 0.08
+       }
+      }
+     ]
+    },
+    "bursts": {
+     "selected": 1,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.08,
+       "colorize": 0.5,
+       "saturation": 1.05,
+       "contrast": 1,
+       "params": {
+        "u_rate": 1.2,
+        "u_particles": 10,
+        "u_size": 0.8
+       }
+      },
+      {
+       "speed": -8,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 4,
+       "contrast": 4,
+       "params": {
+        "u_rate": 6,
+        "u_particles": 20,
+        "u_size": 2
+       }
+      }
+     ]
+    },
+    "starpath": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.62,
+       "colorize": 0.2,
+       "saturation": 4,
+       "contrast": 4,
+       "params": {
+        "u_trail": 1.5,
+        "u_axisShift": 0.3,
+        "u_brightness": 2
+       }
+      }
+     ]
+    },
+    "lightning": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.6,
+       "colorize": 0.3,
+       "saturation": 4,
+       "contrast": 4,
+       "params": {
+        "u_boltRate": 3,
+        "u_forks": 6,
+        "u_glow": 2
+       }
+      }
+     ]
+    },
+    "hextunnel": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.55,
+       "colorize": 0.4,
+       "saturation": 1.2,
+       "contrast": 1.1,
+       "params": {
+        "u_cellSize": 0.15,
+        "u_zoomRate": 1,
+        "u_neon": 1
+       }
+      }
+     ]
+    },
+    "sandstorm": {
+     "selected": 2,
+     "slots": [
+      null,
+      null,
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.7217602,
+       "colorize": 1,
+       "saturation": 2.2,
+       "contrast": 4,
+       "params": {
+        "u_wind": 3,
+        "u_density": 2.5,
+        "u_gusts": 2
+       }
+      }
+     ]
+    },
+    "ridgeline": {
+     "selected": 1,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.55,
+       "colorize": 0.3,
+       "saturation": 4,
+       "contrast": 4,
+       "params": {
+        "u_layers": 7,
+        "u_jag": 8,
+        "u_height": 0.23
+       }
+      },
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_layers": 7,
+        "u_jag": 6,
+        "u_height": 0.3
+       }
+      }
+     ]
+    },
+    "constellation": {
+     "selected": 1,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.55,
+       "colorize": 0.2,
+       "saturation": 1.1,
+       "contrast": 1.05,
+       "params": {
+        "u_points": 6,
+        "u_reach": 1.4,
+        "u_dots": 1.3
+       }
+      },
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 4,
+       "contrast": 4,
+       "params": {
+        "u_points": 10,
+        "u_reach": 1.5,
+        "u_dots": 2
+       }
+      }
+     ]
+    },
+    "hyperspace": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 100,
+       "intensity": 1,
+       "hue": 0.75,
+       "colorize": 0.25,
+       "saturation": 1.2,
+       "contrast": 1.1,
+       "params": {
+        "u_streaks": 40,
+        "u_depth": 1,
+        "u_core": 1
+       }
+      }
+     ]
+    },
+    "sensorbar": {
+     "selected": 1,
+     "slots": [
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.73201615,
+       "colorize": 0.25933027,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_softness": 0.06,
+        "u_col_low": 0.55,
+        "u_col_shade": 1,
+        "u_col_reverse": 0
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/cpu-usage",
+         "min": 0,
+         "max": 5
+        }
+       }
+      },
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.31163228,
+       "colorize": 0.38,
+       "saturation": 4,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_softness": 0.06,
+        "u_col_low": 0.55,
+        "u_col_shade": 1,
+        "u_col_reverse": 0
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/gpu-temp",
+         "min": 0,
+         "max": 100
+        }
+       }
+      }
+     ]
+    },
+    "sensorclock": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.78176314,
+       "colorize": 0.60392845,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_softness": 0.04,
+        "u_col_low": 0.55,
+        "u_col_shade": 1,
+        "u_col_reverse": 0
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/cpu-temp",
+         "min": 30,
+         "max": 80
+        }
+       }
+      }
+     ]
+    },
+    "sensorsegments": {
+     "selected": 2,
+     "slots": [
+      null,
+      null,
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_count": 10,
+        "u_fill_size": 0.8,
+        "u_col_low": 0.5,
+        "u_col_shade": 1,
+        "u_col_reverse": 0,
+        "u_col_aHue": 0.54,
+        "u_col_aSat": 0.9,
+        "u_col_aVal": 1,
+        "u_col_bHue": 0.64,
+        "u_col_bSat": 0.6,
+        "u_col_bVal": 1,
+        "u_col_cHue": 0.76,
+        "u_col_cSat": 0.7,
+        "u_col_cVal": 1,
+        "u_col_dHue": 0.88,
+        "u_col_dSat": 0.7,
+        "u_col_dVal": 1,
+        "u_col_c1r": 0.1,
+        "u_col_c1g": 0.8,
+        "u_col_c1b": 1,
+        "u_col_c2r": 0.4,
+        "u_col_c2g": 0.5,
+        "u_col_c2b": 1,
+        "u_col_c3r": 0.7,
+        "u_col_c3g": 0.3,
+        "u_col_c3b": 1,
+        "u_col_c4r": 1,
+        "u_col_c4g": 0.3,
+        "u_col_c4b": 0.8
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/gpu-usage",
+         "min": 0,
+         "max": 100
+        }
+       }
+      }
+     ]
+    },
+    "sensorliquid": {
+     "selected": 1,
+     "slots": [
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_wave": 0.6,
+        "u_fill_speed": 1,
+        "u_fill_softness": 0.05,
+        "u_col_low": 0.5,
+        "u_col_shade": 1,
+        "u_col_reverse": 0,
+        "u_col_aHue": 0.6,
+        "u_col_aSat": 1,
+        "u_col_aVal": 0.8,
+        "u_col_bHue": 0.57,
+        "u_col_bSat": 0.95,
+        "u_col_bVal": 1,
+        "u_col_cHue": 0.48947194,
+        "u_col_cSat": 0.8,
+        "u_col_cVal": 1,
+        "u_col_dHue": 0.46,
+        "u_col_dSat": 0.2,
+        "u_col_dVal": 1,
+        "u_col_c1r": 0,
+        "u_col_c1g": 0.3,
+        "u_col_c1b": 0.8,
+        "u_col_c2r": 0.05,
+        "u_col_c2g": 0.6,
+        "u_col_c2b": 1,
+        "u_col_c3r": 0.2,
+        "u_col_c3g": 1,
+        "u_col_c3b": 0.9,
+        "u_col_c4r": 0.8,
+        "u_col_c4g": 1,
+        "u_col_c4b": 0.95
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/memory-usage",
+         "min": 0,
+         "max": 100
+        }
+       }
+      },
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.86771035,
+       "colorize": 0.5928423,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_wave": 1,
+        "u_fill_speed": 1,
+        "u_fill_softness": 0.05,
+        "u_col_low": 0.5,
+        "u_col_shade": 1,
+        "u_col_reverse": 0
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/memory-usage",
+         "min": 0,
+         "max": 100
+        }
+       }
+      },
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.9,
+       "colorize": 0.76,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_wave": 0.3,
+        "u_fill_speed": 1,
+        "u_fill_softness": 0.05,
+        "u_col_low": 0.5,
+        "u_col_shade": 1,
+        "u_col_reverse": 0
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/memory-usage",
+         "min": 0,
+         "max": 50
+        }
+       }
+      }
+     ]
+    },
+    "sensorcenter": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.31,
+       "colorize": 0.38,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_softness": 0.06,
+        "u_col_low": 0.55,
+        "u_col_shade": 1,
+        "u_col_reverse": 0
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/gpu-temp",
+         "min": 30,
+         "max": 90
+        }
+       }
+      },
+      null,
+      null,
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.29678875,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_fill_level": 0,
+        "u_fill_level_m": 1,
+        "u_fill_angle": 0,
+        "u_fill_flip": 0,
+        "u_fill_softness": 0.06,
+        "u_col_low": 0.55,
+        "u_col_shade": 1,
+        "u_col_reverse": 0,
+        "u_col_aHue": 0.63,
+        "u_col_aSat": 0.85,
+        "u_col_aVal": 1,
+        "u_col_bHue": 0.42,
+        "u_col_bSat": 0.89,
+        "u_col_bVal": 0.95,
+        "u_col_cHue": 0.14,
+        "u_col_cSat": 0.9,
+        "u_col_cVal": 1,
+        "u_col_dHue": 0.01,
+        "u_col_dSat": 0.9,
+        "u_col_dVal": 1,
+        "u_col_c1r": 0.15,
+        "u_col_c1g": 0.35,
+        "u_col_c1b": 1,
+        "u_col_c2r": 0.1,
+        "u_col_c2g": 0.95,
+        "u_col_c2b": 0.55,
+        "u_col_c3r": 1,
+        "u_col_c3g": 0.85,
+        "u_col_c3b": 0.1,
+        "u_col_c4r": 1,
+        "u_col_c4g": 0.15,
+        "u_col_c4b": 0.1
+       },
+       "sensors": {
+        "u_fill_level_s": {
+         "category": "quick",
+         "sensor": "summary/gpu-usage",
+         "min": 0,
+         "max": 100
+        }
+       }
+      }
+     ]
+    },
+    "sensorshift": {
+     "selected": 1,
+     "slots": [
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.9358756,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_hot_level": 0,
+        "u_hot_level_m": 1,
+        "u_col_low": 0,
+        "u_col_shade": 0,
+        "u_col_reverse": 0,
+        "u_col_aHue": 0.63,
+        "u_col_aSat": 0.85,
+        "u_col_aVal": 1,
+        "u_col_bHue": 0.42,
+        "u_col_bSat": 0.89,
+        "u_col_bVal": 0.95,
+        "u_col_cHue": 0.14,
+        "u_col_cSat": 0.9,
+        "u_col_cVal": 1,
+        "u_col_dHue": 0.01,
+        "u_col_dSat": 0.9,
+        "u_col_dVal": 1,
+        "u_col_c1r": 0.15,
+        "u_col_c1g": 0.35,
+        "u_col_c1b": 1,
+        "u_col_c2r": 0.1,
+        "u_col_c2g": 0.95,
+        "u_col_c2b": 0.55,
+        "u_col_c3r": 1,
+        "u_col_c3g": 0.85,
+        "u_col_c3b": 0.1,
+        "u_col_c4r": 1,
+        "u_col_c4g": 0.15,
+        "u_col_c4b": 0.1
+       },
+       "sensors": {
+        "u_hot_level_s": {
+         "category": "quick",
+         "sensor": "summary/cpu-temp",
+         "min": 30,
+         "max": 50
+        }
+       }
+      },
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.9811199,
+       "colorize": 0.67,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_hot_level": 0,
+        "u_hot_level_m": 1,
+        "u_col_low": 0,
+        "u_col_shade": 0,
+        "u_col_reverse": 0
+       },
+       "sensors": {
+        "u_hot_level_s": {
+         "category": "quick",
+         "sensor": "summary/cpu-temp",
+         "min": 30,
+         "max": 90
+        }
+       }
+      },
+      null,
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.39198706,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_hot_level": 0,
+        "u_hot_level_m": 1,
+        "u_col_low": 0,
+        "u_col_shade": 0,
+        "u_col_reverse": 0,
+        "u_col_aHue": 0.63,
+        "u_col_aSat": 0.85,
+        "u_col_aVal": 1,
+        "u_col_bHue": 0.42,
+        "u_col_bSat": 0.89,
+        "u_col_bVal": 0.95,
+        "u_col_cHue": 0.14,
+        "u_col_cSat": 0.9,
+        "u_col_cVal": 1,
+        "u_col_dHue": 0.01,
+        "u_col_dSat": 0.9,
+        "u_col_dVal": 1,
+        "u_col_c1r": 0.15,
+        "u_col_c1g": 0.35,
+        "u_col_c1b": 1,
+        "u_col_c2r": 0.1,
+        "u_col_c2g": 0.95,
+        "u_col_c2b": 0.55,
+        "u_col_c3r": 1,
+        "u_col_c3g": 0.85,
+        "u_col_c3b": 0.1,
+        "u_col_c4r": 1,
+        "u_col_c4g": 0.15,
+        "u_col_c4b": 0.1
+       },
+       "sensors": {
+        "u_hot_level_s": {
+         "category": "quick",
+         "sensor": "summary/gpu-usage",
+         "min": 0,
+         "max": 100
+        }
+       }
+      }
+     ]
+    },
+    "sensorheat": {
+     "selected": 2,
+     "slots": [
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_grad_angle": 90,
+        "u_grad_spread": 1,
+        "u_grad_speed": 0,
+        "u_col_low": 0.95,
+        "u_col_low_m": -1,
+        "u_col_shade": 0,
+        "u_col_reverse": 0,
+        "u_col_aHue": 0.68684244,
+        "u_col_aSat": 0.85,
+        "u_col_aVal": 1,
+        "u_col_bHue": 0.42,
+        "u_col_bSat": 0.89,
+        "u_col_bVal": 0.95,
+        "u_col_cHue": 0.5550215,
+        "u_col_cSat": 0.9,
+        "u_col_cVal": 1,
+        "u_col_dHue": 0.01,
+        "u_col_dSat": 0.9,
+        "u_col_dVal": 1
+       },
+       "sensors": {
+        "u_col_low_s": {
+         "category": "quick",
+         "sensor": "summary/cpu-temp",
+         "min": 30,
+         "max": 90
+        }
+       }
+      },
+      null,
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0.58,
+       "colorize": 0.6,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_grad_angle": 90,
+        "u_grad_spread": 1,
+        "u_grad_speed": 0,
+        "u_col_low": 0.95,
+        "u_col_low_m": -1,
+        "u_col_shade": 0,
+        "u_col_reverse": 0
+       },
+       "sensors": {
+        "u_col_low_s": {
+         "category": "quick",
+         "sensor": "summary/cpu-temp",
+         "min": 30,
+         "max": 90
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  "static": {
+   "effect": "gradientconic",
+   "states": {}
+  },
+  "staticColor": {
+   "r": 255,
+   "g": 151,
+   "b": 116
+  },
+  "musicReactive": true,
+  "audioOutputDeviceId": "{0.0.1.00000000}.{00000000-0000-4000-8000-000000000001}",
+  "audioOutputDeviceName": "Microphone (Sample Device)",
+  "audioOutputDeviceDirection": "input",
+  "screenEffect": {
+   "hue": 0,
+   "colorize": 0,
+   "saturation": 1,
+   "contrast": 1,
+   "flipX": false,
+   "flipY": false,
+   "reactive": false,
+   "reactivity": 0.5,
+   "intensity": 0.5
+  },
+  "screenMonitor": "",
+  "mediaEffect": {
+   "hue": 0,
+   "colorize": 0,
+   "saturation": 1,
+   "contrast": 1,
+   "flipX": false,
+   "flipY": false,
+   "reactive": false,
+   "reactivity": 0.5,
+   "intensity": 0.5
+  },
+  "renderGpu": "software",
+  "renderBackend": "angle",
+  "sleepBlackout": true,
+  "lockBlackout": true
+ },
+ "keeb": {
+  "rotaryLeft": "VolumeAdjustment",
+  "rotaryRight": "BrightnessAdjustment",
+  "gameMode": {
+   "altF4": false,
+   "altTab": false,
+   "shiftTab": false,
+   "windowsKey": false
+  },
+  "firmwareLighting": {
+   "animationMode": "Wave",
+   "speed": "Standard",
+   "direction": "LeftToRight",
+   "brightness": 80,
+   "keyReactive": false,
+   "keyReactiveMask": false,
+   "keyReactiveMode": "SingleKey",
+   "keyReactiveColor": {
+    "r": 0,
+    "g": 0,
+    "b": 0,
+    "a": 1
+   }
+  },
+  "macros": {},
+  "keyOverrides": [],
+  "pristineLayers": {}
+ },
+ "cooling": {
+  "globalSpeedModifier": 1,
+  "curves": [
+   {
+    "id": "preset-silent",
+    "name": "Silent",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": "CPU"
+    },
+    "outputs": [
+     {
+      "id": "/lpc/it8696e/0/control/0",
+      "type": "Fan"
+     },
+     {
+      "id": "/lpc/it8696e/0/control/1",
+      "type": "Fan"
+     },
+     {
+      "id": "/lpc/it8696e/0/control/2",
+      "type": "Fan"
+     },
+     {
+      "id": "/lpc/it8696e/0/control/4",
+      "type": "Fan"
+     }
+    ],
+    "linear": {
+     "responseTime": 3,
+     "minTemp": 45,
+     "maxTemp": 85,
+     "minSpeed": 20,
+     "maxSpeed": 70
+    },
+    "graph": {
+     "responseTime": 3,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 45,
+       "speed": 20
+      },
+      {
+       "temp": 55,
+       "speed": 25
+      },
+      {
+       "temp": 65,
+       "speed": 45
+      },
+      {
+       "temp": 75,
+       "speed": 65
+      },
+      {
+       "temp": 85,
+       "speed": 70
+      }
+     ]
+    },
+    "preset": "silent"
+   },
+   {
+    "id": "preset-balanced",
+    "name": "Balanced",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": "CPU"
+    },
+    "outputs": [],
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 35,
+       "speed": 30
+      },
+      {
+       "temp": 45,
+       "speed": 36
+      },
+      {
+       "temp": 55,
+       "speed": 60
+      },
+      {
+       "temp": 65,
+       "speed": 84
+      },
+      {
+       "temp": 75,
+       "speed": 90
+      }
+     ]
+    },
+    "preset": "balanced"
+   },
+   {
+    "id": "preset-turbo",
+    "name": "Turbo",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": "CPU"
+    },
+    "outputs": [],
+    "linear": {
+     "responseTime": 0.5,
+     "minTemp": 30,
+     "maxTemp": 65,
+     "minSpeed": 50,
+     "maxSpeed": 100
+    },
+    "graph": {
+     "responseTime": 0.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 50
+      },
+      {
+       "temp": 39,
+       "speed": 55
+      },
+      {
+       "temp": 48,
+       "speed": 75
+      },
+      {
+       "temp": 56,
+       "speed": 95
+      },
+      {
+       "temp": 65,
+       "speed": 100
+      }
+     ]
+    },
+    "preset": "turbo"
+   },
+   {
+    "id": "preset-max",
+    "name": "Max",
+    "type": "Flat",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": "CPU"
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 100
+    },
+    "linear": {
+     "responseTime": 0.5,
+     "minTemp": 20,
+     "maxTemp": 100,
+     "minSpeed": 100,
+     "maxSpeed": 100
+    },
+    "preset": "max"
+   }
+  ],
+  "curvesSeeded": true,
+  "fanNames": {},
+  "fanGroups": [],
+  "fanCalibrations": {},
+  "manualSpeeds": {},
+  "fanOffsets": {},
+  "fanPinOverrides": {},
+  "uncontrolledFanChannels": [],
+  "hubControlModes": {},
+  "fanRoles": {},
+  "activePreset": "silent",
+  "customFanCurveAssignments": {},
+  "customManualSpeeds": {},
+  "presets": [],
+  "thermalGuardEnabled": true,
+  "curveLintWarnings": true,
+  "healDroppedManualSpeeds": {},
+  "healedChannels": [],
+  "gpuManualBackup": {}
+ },
+ "y70": {
+  "orientation": "Landscape",
+  "brightness": 80,
+  "screenOff": false,
+  "forceOrientation": true,
+  "compatibilityRendering": false,
+  "keepCursorOff": false
+ },
+ "qSeries": {
+  "orientation": "Portrait",
+  "brightness": 100,
+  "screenOff": false,
+  "sleepWithHost": true,
+  "sleepWhenLocked": true
+ },
+ "tryx": {
+  "overlayItems": [],
+  "overlayColor": "#ffffff",
+  "overlayAlign": "left",
+  "overlayOpacity": 100,
+  "overlayFont": "roboto-regular",
+  "overlaySize": 100,
+  "overlayDocked": false,
+  "currentMedia": "",
+  "currentMediaIsCustom": false,
+  "brightness": 100,
+  "installedCloudIds": [],
+  "slideshowEnabled": false,
+  "slideshowIntervalSec": 10,
+  "slideshowShuffle": false,
+  "slideshowFinishVideos": true,
+  "sleepWhenLocked": true
+ },
+ "devices": {
+  "disabledLightingDevices": [],
+  "ddcDisabledDisplays": [],
+  "uncontrolledLightingDevices": [],
+  "nexusControlDisabled": [],
+  "nexusControlEnabled": [
+   "smbus-dram"
+  ],
+  "betaLockWhitelisted": [],
+  "lightingDevicePrefs": {},
+  "krakenFirmwareLighting": {},
+  "krakenLcdSleepWhenLocked": true,
+  "ledMapOverrides": {},
+  "ledMapAspectRatios": {},
+  "zonePartitions": {},
+  "portChains": {},
+  "lightingMaxRates": {},
+  "strimerGpuZones": 6,
+  "deviceLedOverrides": {},
+  "deviceAspectRatios": {},
+  "motherboardLeds": [],
+  "zoneLedCounts": {
+   "openrgb-s-0x00001000-0": 60,
+   "openrgb-s-0x00001000-1": 60
+  },
+  "cnvs": {
+   "playAnimation": true,
+   "playWhenPCOff": false
+  },
+  "lianLi": {
+   "port0Fans": 4,
+   "port1Fans": 4,
+   "port2Fans": 4,
+   "port3Fans": 4
+  },
+  "lianLiWireless": {
+   "screens": {},
+   "chains": {},
+   "aioScreens": {},
+   "ownedDevices": {},
+   "lockBoundDevices": true
+  },
+  "lianLiLighting": {
+   "mode": "rainbowWave",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": [],
+   "merge": false,
+   "argbSync": false,
+   "ports": [],
+   "mergeOrder": []
+  },
+  "lianLiExtraHubs": {},
+  "lianLiHubKeys": [],
+  "tlLighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "scope": "all",
+   "colors": [],
+   "argbSync": false
+  },
+  "tlLcdScreens": {},
+  "strimerLighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": [],
+   "argbSync": false
+  },
+  "galahad2Lighting": {
+   "mode": "canvas",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "innerColor": "#FFFFFF",
+   "outerColor": "#FFFFFF",
+   "colors": []
+  },
+  "asiahorseUmbra": {
+   "source": "nexus",
+   "lightOn": true,
+   "group": "sync",
+   "sync": {
+    "effect": "rainbow",
+    "values": {}
+   },
+   "merge": {
+    "effect": "rainbow",
+    "values": {}
+   },
+   "async": {},
+   "fanSyncMb": false
+  },
+  "hydroShift2Lighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": []
+  },
+  "hydroShift2Curve": {
+   "tilt": 0,
+   "slide": 0,
+   "recalibrating": false,
+   "screenMode": "nexus",
+   "screenSaverMinutes": 0,
+   "screenSaverBrightness": 50
+  },
+  "corsair": {
+   "sleepWhenLocked": true,
+   "lcdBrightness": 100,
+   "lcdRotation": 0
+  },
+  "nollie": {
+   "standalone": {}
+  },
+  "lightingComposition": {},
+  "appliedMappings": {},
+  "ledGroups": {},
+  "mappingAutoApplyDeclined": [],
+  "mappingKnownDevices": [
+   "keeb:tkl-00000001:keys",
+   "keeb:tkl-00000001:underglow",
+   "openrgb-s-00000000000000000000000000000002",
+   "openrgb-s-0x00001000-0",
+   "openrgb-s-0x00001000-1",
+   "openrgb-s-0x00001000-2",
+   "openrgb-2"
+  ],
+  "openRgbDetectorExclusions": {},
+  "openRgbPinnedIds": {
+   "NVIDIA GeForce RTX 5080 FE#0": "openrgb-2",
+   "Corsair M65 PRO#0": "openrgb-0"
+  },
+  "openRgbGamepadDetectorsAllowed": [],
+  "openRgbManualDevices": {
+   "qmk": [],
+   "e131": []
+  }
+ },
+ "smartLights": {
+  "devices": [],
+  "brandEnabled": {}
+ },
+ "ui": {
+  "showConflictAlerts": true,
+  "autoKillConflictsAtStartup": false,
+  "conflictAutoKillExclusions": [
+   "nzxt-cam",
+   "msi-companion",
+   "msi-game-bar-tool",
+   "msi-super-charger",
+   "lian-li-l-connect",
+   "tryx-kanali",
+   "zmatrices",
+   "elgato-stream-deck",
+   "evga-precision-x-server",
+   "icue"
+  ],
+  "notifyConflictLaunches": false,
+  "endConflictsOnLaunch": false,
+  "oemAppSeeded": false,
+  "sidebarCollapsed": false,
+  "lightingDashboardMode": "advanced",
+  "coolingDashboardMode": "advanced",
+  "dashboardAutoArrange": false,
+  "showUncontrolledDevices": true,
+  "showUncontrolledLightingDevices": true,
+  "hiddenSidebarDevices": []
+ },
+ "units": {
+  "monitoringTempUnit": "c",
+  "timeFormat": "system",
+  "numberFormat": "system",
+  "dateFormat": "system"
+ },
+ "screenTime": {
+  "trackingEnabled": true
+ },
+ "fps": {
+  "trackingEnabled": true
+ },
+ "focus": {
+  "modes": [
+   {
+    "id": "game",
+    "name": "Game Mode",
+    "icon": "gamepad",
+    "builtIn": true,
+    "trigger": "game",
+    "holdNotifications": true,
+    "holdBackgroundTraffic": true,
+    "turnPanelDisplaysOff": false,
+    "staticPanelBackgrounds": false,
+    "exitGraceSeconds": 3
+   },
+   {
+    "id": "streaming",
+    "name": "Streaming",
+    "icon": "broadcast",
+    "builtIn": true,
+    "trigger": "obs",
+    "holdNotifications": true,
+    "holdBackgroundTraffic": true,
+    "turnPanelDisplaysOff": false,
+    "staticPanelBackgrounds": false,
+    "exitGraceSeconds": 3
+   }
+  ]
+ },
+ "obs": {
+  "host": "127.0.0.1",
+  "port": 4455,
+  "password": ""
+ },
+ "audioMixer": {
+  "stickyLevels": true,
+  "levels": {
+   "@system": {
+    "name": "System Sounds",
+    "volume": 0.64,
+    "muted": false
+   }
+  },
+  "presets": [],
+  "outputOrder": [],
+  "inputOrder": []
+ },
+ "steam": {
+  "apiKey": "",
+  "steamId": ""
+ },
+ "discord": {
+  "clientId": "",
+  "clientSecret": "",
+  "richPresenceEnabled": false,
+  "richPresencePreset": ""
+ },
+ "homeAssistant": {
+  "url": "",
+  "token": "",
+  "enabled": true
+ },
+ "weather": {
+  "unit": "auto",
+  "locations": []
+ },
+ "telemetry": {
+  "collectAnonymousData": true,
+  "installId": "00000000000000000000000000000004",
+  "fleetInstallDelivered": true,
+  "fleetSpecsHash": "0000000000000000000000000000000000000000000000000000000000000003",
+  "profileSignature": "0000000000000000000000000000000000000000000000000000000000000005",
+  "profileSentAt": "2026-10-20T16:44:55.7049479+00:00",
+  "fleetRamBytes": 34359738368,
+  "fleetGpu": "AMD Radeon(TM) Graphics + NVIDIA GeForce RTX 5080",
+  "fleetY70Seen": false,
+  "fleetPendingConsentEvent": "",
+  "fleetPendingConsentSince": ""
+ },
+ "diagnostics": {
+  "thresholds": {
+   "cpuC": 90,
+   "gpuC": 85,
+   "storageC": 70,
+   "ramC": 60
+  },
+  "warningLingerMinutes": 0,
+  "notifications": {
+   "enabled": false,
+   "highTemp": true,
+   "storageHealth": true,
+   "cooling": true,
+   "memoryTest": true,
+   "systemDevices": true,
+   "gpuThrottle": true,
+   "cooldownMinutes": 60
+  },
+  "components": {
+   "cpu": true,
+   "gpu": true,
+   "storage": true,
+   "ram": true,
+   "cooling": true,
+   "system": true
+  },
+  "ignoredComponents": []
+ },
+ "features": {
+  "lighting": true,
+  "cooling": true,
+  "monitoring": true,
+  "diagnostics": true
+ },
+ "sentry": {
+  "armed": false
+ },
+ "panelDevices": {},
+ "autoPromotedPanelModels": [],
+ "autoInstalledApps": [],
+ "userRemovedApps": [],
+ "hostDisplayName": "",
+ "reportSystem": true,
+ "transferInboxPath": "",
+ "primaryProfileId": "085feb38",
+ "sharedCategories": [
+  "device"
+ ],
+ "deviceCategorySeeded": true,
+ "panelsCategorySeeded": true,
+ "hasPanelsData": false,
+ "update": {
+  "updateMode": "always",
+  "updateChannel": "production",
+  "lastDismissedUpdateVersion": "",
+  "lastRunVersion": "v99.0.0"
+ },
+ "startupDelaySeconds": 0,
+ "disableGpuMonitoring": false,
+ "readRamTemperatures": true,
+ "onboardingCompleted": true,
+ "nexus2MigrationOffered": false,
+ "lightingOnboardingCompleted": true,
+ "maximizedCanvasDefaults": false,
+ "gameSyncRemovedNotice": false,
+ "featuresOnboardingCompleted": true,
+ "featuresReplayPending": false,
+ "panelSwipeOnboardingCompleted": false,
+ "deckDefaultPresetsSeeded": true,
+ "immersiveSwipeOnboardingCompleted": false,
+ "dashboardBannerDismissed": "",
+ "dismissedOnboardingHints": [
+  "cooling-calibrate",
+  "lighting-pin"
+ ],
+ "nexus2MigrationCompleted": false,
+ "fanControlImportOffered": true,
+ "fanControlImportCompleted": false,
+ "streamDeck": {
+  "decks": {},
+  "presets": [
+   {
+    "id": "default-essentials",
+    "name": "Essentials",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "volumeDown"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "volumeUp"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "screenshot"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "taskManager"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-essentials"
+   },
+   {
+    "id": "default-media",
+    "name": "Media",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaPrev"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaPlayPause"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaNext"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "muteToggle"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-media"
+   },
+   {
+    "id": "default-system",
+    "name": "System",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "power",
+          "action": "lock"
+         }
+        },
+        {
+         "action": {
+          "type": "power",
+          "action": "sleep"
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "screenRecord"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "openSettings"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-system"
+   }
+  ],
+  "instances": {},
+  "recentApps": [],
+  "recentAppsExcluded": []
+ },
+ "aiIntegration": {
+  "enabled": false,
+  "token": "",
+  "port": 9420,
+  "allowTelemetry": true,
+  "allowCooling": true,
+  "allowLighting": true,
+  "allowProfiles": true,
+  "allowHistory": true,
+  "assistantActiveModel": "",
+  "assistantRuntimePort": 0,
+  "useSystemOllama": false
+ }
+}

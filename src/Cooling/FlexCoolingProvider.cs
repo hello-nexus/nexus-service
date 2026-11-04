@@ -49,7 +49,12 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private static string DeviceId(string mac) => $"{IdPrefix}{mac}";
 
 
-    private static int MinDuty(FlexFamily family) => family == FlexFamily.SlInfFlex ? 10 : 11;
+    private static int MinDuty(FlexFamily family) => family switch
+    {
+        FlexFamily.SlInfFlex => 10,
+        FlexFamily.P28V2 => FlexProtocol.P28MinDutyPercent,
+        _ => 11,
+    };
 
     private static bool Follows(FlexUnit unit) =>
         unit.Info.Pwm.Length > 0 && unit.Info.Pwm[0] == FlexProtocol.PwmFollowMotherboard;
@@ -57,7 +62,7 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
     private static int Duty(FlexUnit unit) =>
         Follows(unit) ? 0 : FlexProtocol.DecodeDuty(unit.Info.Pwm.Length > 0 ? unit.Info.Pwm[0] : 0);
 
-    private static int Rpm(FlexUnit unit) => unit.Info.Rpm.Length > 0 ? unit.Info.Rpm[0] : 0;
+    private static int Rpm(FlexUnit unit, int port = 0) => port < unit.Info.Rpm.Length ? unit.Info.Rpm[port] : 0;
 
     public IReadOnlyList<FanChannel> GetFanChannels()
     {
@@ -71,12 +76,13 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
             }
             var unitName = NameOf(unit, order);
             var pending = _hub.PendingDuty(unit.Mac);
+            // One control channel; a P28 reports its per-fan tachs through the component's devices and the state route.
             result.Add(new FanChannel
             {
                 Id = ChannelId(unit.Mac),
                 Name = "Fan",
                 DutyPercent = pending is { } p ? Math.Max(p, 0) : Duty(unit),
-                Rpm = Rpm(unit),
+                Rpm = Rpm(unit, 0),
                 Mode = pending is { } wanted ? (wanted == -1 ? FanModes.Auto : FanModes.Manual) : (Follows(unit) ? FanModes.Auto : FanModes.Manual),
                 MinDuty = MinDuty(unit.Family),
                 DeviceId = DeviceId(unit.Mac),
@@ -132,21 +138,23 @@ public sealed class FlexCoolingProvider : IFanControlProvider, ICoolingProvider
                 Id = DeviceId(unit.Mac),
                 Name = NameOf(unit, order),
                 Type = "LianLiFlex",
-                Devices = new List<CoolingDevice>
-                {
-                    new CoolingDevice
-                    {
-                        Id = ChannelId(unit.Mac),
-                        Name = "Fan",
-                        Type = "Fan",
-                        Rpm = Rpm(unit),
-                        Pwm = _hub.PendingDuty(unit.Mac) is { } shown ? Math.Max(shown, 0) : Duty(unit),
-                    },
-                },
+                Devices = DevicesOf(unit),
             });
         }
         return components;
     }
+
+    private List<CoolingDevice> DevicesOf(FlexUnit unit) => new()
+    {
+        new CoolingDevice
+        {
+            Id = ChannelId(unit.Mac),
+            Name = "Fan",
+            Type = "Fan",
+            Rpm = Rpm(unit, 0),
+            Pwm = _hub.PendingDuty(unit.Mac) is { } shown ? Math.Max(shown, 0) : Duty(unit),
+        },
+    };
 
     private void Write(string channelId, int percent)
     {

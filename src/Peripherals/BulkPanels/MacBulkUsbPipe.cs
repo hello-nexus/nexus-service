@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
@@ -27,6 +28,7 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
     private byte[] _leftover = Array.Empty<byte>();
     private int _leftoverOffset;
     private int _leftoverCount;
+    private bool _readFailureLogged;
     private bool _disposed;
 
     public int ProductId { get; }
@@ -89,17 +91,23 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
 
     public bool Write(ReadOnlySpan<byte> data) => Write(_writePipeId, data);
 
-    public bool Write(byte pipeId, ReadOnlySpan<byte> data)
+    public bool Write(byte pipeId, ReadOnlySpan<byte> data) => WriteCounted(pipeId, data) == data.Length;
+
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) =>
+        WriteCounted(pipeId, data, (int)(TransferTimeoutSeconds * 1000), CancellationToken.None);
+
+    /// <summary>Bytes the device took, also when the transfer failed part way and IOUSBHost reports a count; -1 when it reports none.</summary>
+    public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data, int timeoutMs, CancellationToken ct)
     {
         if (_disposed || data.Length == 0)
         {
-            return false;
+            return -1;
         }
         lock (_ioLock)
         {
             if (_disposed)
             {
-                return false;
+                return -1;
             }
             // Pushed before PipeFor: a failed pipe copy leaves an autoreleased NSError.
             var pool = MacUsbHost.objc_autoreleasePoolPush();
@@ -108,8 +116,14 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 var pipe = PipeFor(pipeId);
                 if (pipe == IntPtr.Zero)
                 {
-                    return false;
+                    return -1;
                 }
+                if (ct.IsCancellationRequested)
+                {
+                    return 0;
+                }
+                // Dispose waits on _ioLock, so the pipe outlives the registration.
+                using var abort = ct.Register(() => MacUsbHost.Abort(pipe));
                 IntPtr nsData;
                 fixed (byte* p = data)
                 {
@@ -117,7 +131,13 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 }
                 try
                 {
-                    return MacUsbHost.Transfer(pipe, nsData, TransferTimeoutSeconds, out _) == data.Length;
+                    // A cancel between the check above and the registration aborted no transfer.
+                    if (ct.IsCancellationRequested)
+                    {
+                        return 0;
+                    }
+                    int moved = MacUsbHost.Transfer(pipe, nsData, Math.Max(1, timeoutMs) / 1000.0, out _, out int partial);
+                    return moved >= 0 ? moved : partial > 0 ? partial : -1;
                 }
                 finally
                 {
@@ -131,9 +151,37 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
         }
     }
 
-    public int Read(Span<byte> buffer, int timeoutMs)
+    public bool ClearHalt(byte pipeId)
     {
-        if (_disposed || _readPipeId == 0 || buffer.Length == 0)
+        lock (_ioLock)
+        {
+            if (_disposed)
+            {
+                return false;
+            }
+            var pool = MacUsbHost.objc_autoreleasePoolPush();
+            try
+            {
+                var pipe = PipeFor(pipeId);
+                if (pipe == IntPtr.Zero)
+                {
+                    return false;
+                }
+                MacUsbHost.ClearStall(pipe);
+                return true;
+            }
+            finally
+            {
+                MacUsbHost.objc_autoreleasePoolPop(pool);
+            }
+        }
+    }
+
+    public int Read(Span<byte> buffer, int timeoutMs) => Read(_readPipeId, buffer, timeoutMs);
+
+    public int Read(byte pipeId, Span<byte> buffer, int timeoutMs)
+    {
+        if (_disposed || pipeId == 0 || buffer.Length == 0)
         {
             return -1;
         }
@@ -143,7 +191,7 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
             {
                 return -1;
             }
-            if (_leftoverCount > 0)
+            if (pipeId == _readPipeId && _leftoverCount > 0)
             {
                 return TakeLeftover(buffer);
             }
@@ -151,7 +199,7 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
             IntPtr nsData = IntPtr.Zero;
             try
             {
-                var pipe = PipeFor(_readPipeId);
+                var pipe = PipeFor(pipeId);
                 if (pipe == IntPtr.Zero)
                 {
                     return -1;
@@ -162,10 +210,26 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 int packet = MacUsbHost.MaxPacketSize(pipe);
                 int request = (buffer.Length + packet - 1) / packet * packet;
                 nsData = MacUsbHost.NewData(null, request);
-                var read = MacUsbHost.Transfer(pipe, nsData, Math.Max(1, timeoutMs) / 1000.0, out var timedOut);
+                int read;
+                bool timedOut;
+                int code;
+                bool interrupt = MacUsbHost.IsInterrupt(pipe);
+                if (interrupt)
+                {
+                    read = TransferInterrupt(pipe, nsData, timeoutMs, out timedOut, out code);
+                }
+                else
+                {
+                    read = MacUsbHost.Transfer(pipe, nsData, Math.Max(1, timeoutMs) / 1000.0, out timedOut, out _, out code);
+                }
                 if (read < 0)
                 {
                     // A timed-out read is a quiet panel, not a broken one.
+                    if (!timedOut && !_readFailureLogged)
+                    {
+                        _readFailureLogged = true;
+                        ServiceLog.Warn($"[bulk-panel] read on 0x{pipeId:X2} failed: 0x{code:X8} ({(interrupt ? "interrupt" : "bulk")}, {request} bytes)");
+                    }
                     return timedOut ? 0 : -1;
                 }
                 var received = new ReadOnlySpan<byte>((void*)MacUsbHost.Bytes(nsData), read);
@@ -175,6 +239,10 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                     return read;
                 }
                 received[..buffer.Length].CopyTo(buffer);
+                if (pipeId != _readPipeId)
+                {
+                    return buffer.Length;
+                }
                 _leftover = received[buffer.Length..].ToArray();
                 _leftoverOffset = 0;
                 _leftoverCount = _leftover.Length;
@@ -184,6 +252,36 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
             {
                 MacUsbHost.Release(nsData);
                 MacUsbHost.objc_autoreleasePoolPop(pool);
+            }
+        }
+    }
+
+    // IOUSBHost refuses a completion timeout on an interrupt pipe (kIOReturnBadArgument), so the
+    // read waits unbounded and an abort ends it. The abort repeats: one landing before the
+    // transfer is queued ends nothing.
+    private static int TransferInterrupt(IntPtr pipe, IntPtr nsData, int timeoutMs, out bool timedOut, out int code)
+    {
+        int wait = Math.Max(1, timeoutMs);
+        using var drained = new ManualResetEvent(false);
+        var deadline = new Timer(_ => MacUsbHost.Abort(pipe), null, wait, wait);
+        try
+        {
+            int read = MacUsbHost.Transfer(pipe, nsData, 0, out _, out int partial, out code);
+            if (read < 0 && code == MacUsbHost.KIOReturnAborted)
+            {
+                // A report that landed as the deadline fired is kept.
+                timedOut = partial == 0;
+                return partial > 0 ? partial : -1;
+            }
+            timedOut = false;
+            return read;
+        }
+        finally
+        {
+            // An abort still in flight must not reach the next transfer.
+            if (deadline.Dispose(drained))
+            {
+                drained.WaitOne();
             }
         }
     }
@@ -380,6 +478,7 @@ internal static unsafe class MacUsbHost
     // IOReturn codes a timed-out transfer completes with.
     private const int KIOReturnTimeout = unchecked((int)0xE00002D6);
     private const int KIOUSBTransactionTimeout = unchecked((int)0xE0004051);
+    public const int KIOReturnAborted = unchecked((int)0xE00002EB);
 
     private static readonly object LoadLock = new();
     private static bool? _loaded;
@@ -396,6 +495,10 @@ internal static unsafe class MacUsbHost
     private static readonly IntPtr SelConfigure = Sel("configureWithValue:matchInterfaces:error:");
     private static readonly IntPtr SelCopyPipe = Sel("copyPipeWithAddress:error:");
     private static readonly IntPtr SelClearStall = Sel("clearStallWithError:");
+    private static readonly IntPtr SelAbort = Sel("abortWithOption:error:");
+
+    // IOUSBHostAbortOptionAsynchronous: returns without waiting for the aborted transfer.
+    private const nuint AbortAsynchronous = 0;
     private static readonly IntPtr SelSendRequest = Sel("sendIORequestWithData:bytesTransferred:completionTimeout:error:");
     private static readonly IntPtr SelInitWithBytes = Sel("initWithBytes:length:");
     private static readonly IntPtr SelInitWithLength = Sel("initWithLength:");
@@ -491,6 +594,21 @@ internal static unsafe class MacUsbHost
     public static IntPtr CopyPipe(IntPtr iface, byte address, IntPtr* error) =>
         MsgSendIndexError(iface, SelCopyPipe, address, error);
 
+    /// <summary>Ends the pipe's pending transfer, which then returns aborted.</summary>
+    public static void Abort(IntPtr pipe)
+    {
+        var pool = objc_autoreleasePoolPush();
+        try
+        {
+            IntPtr error = IntPtr.Zero;
+            MsgSendIndexError(pipe, SelAbort, AbortAsynchronous, &error);
+        }
+        finally
+        {
+            objc_autoreleasePoolPop(pool);
+        }
+    }
+
     public static void ClearStall(IntPtr pipe)
     {
         IntPtr error = IntPtr.Zero;
@@ -501,18 +619,46 @@ internal static unsafe class MacUsbHost
     /// One synchronous transfer of the whole <paramref name="data"/> length. Returns the byte
     /// count, or -1 with <paramref name="timedOut"/> set when the deadline was what ended it.
     /// </summary>
-    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut)
+    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut) =>
+        Transfer(pipe, data, timeoutSeconds, out timedOut, out _);
+
+    /// <param name="partial">On failure, the byte count IOUSBHost reported for the part that went through.</param>
+    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut, out int partial) =>
+        Transfer(pipe, data, timeoutSeconds, out timedOut, out partial, out _);
+
+    /// <param name="code">The IOReturn the transfer failed with, 0 on success. A timeout of 0 never expires.</param>
+    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut, out int partial, out int code)
     {
         nuint transferred = 0;
         IntPtr error = IntPtr.Zero;
         if (MsgSendTransfer(pipe, SelSendRequest, data, &transferred, timeoutSeconds, &error) != 0)
         {
             timedOut = false;
+            partial = 0;
+            code = 0;
             return (int)transferred;
         }
-        var code = error == IntPtr.Zero ? 0 : (int)MsgSendLong(error, SelCode);
+        code = error == IntPtr.Zero ? 0 : (int)MsgSendLong(error, SelCode);
         timedOut = code is KIOReturnTimeout or KIOUSBTransactionTimeout;
+        partial = (int)transferred;
         return -1;
+    }
+
+    // IOUSBHostIOSourceDescriptors opens with a uint16 bcdUSB; the endpoint descriptor follows it.
+    private const int EndpointDescriptorOffset = sizeof(ushort);
+
+    /// <summary>The pipe's endpoint descriptor, or null.</summary>
+    private static byte* EndpointDescriptor(IntPtr pipe)
+    {
+        var descriptors = MsgSend(pipe, SelDescriptors);
+        return descriptors == IntPtr.Zero ? null : (byte*)descriptors + EndpointDescriptorOffset;
+    }
+
+    /// <summary>bmAttributes transfer type of the pipe's endpoint descriptor is interrupt.</summary>
+    public static bool IsInterrupt(IntPtr pipe)
+    {
+        var endpoint = EndpointDescriptor(pipe);
+        return endpoint is not null && (endpoint[3] & 0x03) == 0x03;
     }
 
     /// <summary>A retained NSMutableData: a copy of <paramref name="bytes"/>, or zeroed when it is null.</summary>
@@ -526,11 +672,11 @@ internal static unsafe class MacUsbHost
 
     public static IntPtr Bytes(IntPtr data) => MsgSend(data, SelMutableBytes);
 
-    /// <summary>wMaxPacketSize of the pipe's endpoint descriptor, the first member of its IOUSBHostIOSourceDescriptors.</summary>
+    /// <summary>wMaxPacketSize of the pipe's endpoint descriptor.</summary>
     public static int MaxPacketSize(IntPtr pipe)
     {
-        var descriptors = MsgSend(pipe, SelDescriptors);
-        int size = descriptors == IntPtr.Zero ? 0 : (((byte*)descriptors)[4] | (((byte*)descriptors)[5] << 8)) & 0x7FF;
+        var endpoint = EndpointDescriptor(pipe);
+        int size = endpoint is null ? 0 : (endpoint[4] | (endpoint[5] << 8)) & 0x7FF;
         return size > 0 ? size : FallbackPacketSize;
     }
 

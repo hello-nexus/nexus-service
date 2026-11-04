@@ -49,11 +49,13 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
         var driver = _hub.Driver;
         while (!stoppingToken.IsCancellationRequested)
         {
+            bool sessionOpened = false;
             try
             {
-                if (!_gate.IsEnabled(driver.HandlerId))
+                if (!_gate.IsClaimed(driver.HandlerId))
                 {
                     _hub.SetOpenAccessDenied(false);
+                    _hub.SetOpenFailed(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
@@ -61,6 +63,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                 if (!_presence.UsbPresent(driver.VendorId, driver.ProductIds))
                 {
                     _hub.SetOpenAccessDenied(false);
+                    _hub.SetOpenFailed(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
@@ -68,16 +71,20 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                 if (!TryOpen(out var pipe, out var hid) || pipe is null)
                 {
                     hid?.Dispose();
+                    _hub.SetOpenFailed(true);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
                 if (!_hub.Attach(pipe, hid))
                 {
+                    _hub.SetOpenFailed(true);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
 
+                sessionOpened = true;
+                _hub.SetOpenFailed(false);
                 ServiceLog.Info($"[{driver.HandlerId}] connected: {driver.Name}, {_hub.Width}x{_hub.Height}");
                 try
                 {
@@ -85,7 +92,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                     // device re-enumerated, is what ends the session after an unplug.
                     int misses = 0;
                     while (!stoppingToken.IsCancellationRequested
-                        && _gate.IsEnabled(driver.HandlerId)
+                        && _gate.IsClaimed(driver.HandlerId)
                         && _hub.IsConnected)
                     {
                         misses = _presence.UsbPresent(driver.VendorId, driver.ProductIds) ? 0 : misses + 1;
@@ -119,6 +126,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             {
                 ServiceLog.Error($"[{driver.HandlerId}] worker error: {ex.Message}");
                 _hub.SetOpenAccessDenied(false);
+                _hub.SetOpenFailed(!sessionOpened);
                 await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
             }
         }

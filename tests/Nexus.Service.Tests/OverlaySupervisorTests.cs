@@ -34,12 +34,86 @@ public class OverlaySupervisorTests
     }
 
     [Fact]
-    public void Pinned_widgets_start_the_host()
+    public void Shown_legacy_widgets_still_to_migrate_start_the_host()
     {
         var (sup, host, store) = Build();
-        store.Update(s => { s.Overlay.Enabled = true; s.Overlay.Layout.Add(new()); });
+        store.Update(s =>
+        {
+            s.Panel.AutoLaunch = false;
+            s.Overlay.Enabled = true;
+            s.Overlay.Layout = new() { new() };
+        });
         sup.Reconcile(T0);
         Assert.Equal(1, host.StartCalls);
+    }
+
+    private static (OverlaySupervisor sup, FakeHost host, long[] clock) BuildMigration(Func<NexusSettings, bool> canAdvance)
+    {
+        var host = new FakeHost();
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Panel.AutoLaunch = false;
+            s.Overlay.Enabled = true;
+            s.Overlay.Layout = new() { new() };
+        });
+        var clock = new long[1];
+        var sup = new OverlaySupervisor(host, store, () => false, () => false, null, canAdvance) { MonoMs = () => clock[0] };
+        return (sup, host, clock);
+    }
+
+    [Fact]
+    public void Pending_widgets_with_no_resolvable_target_do_not_start_the_host()
+    {
+        var (sup, host, _) = BuildMigration(_ => false);
+
+        sup.Reconcile(T0);
+
+        Assert.Equal(0, host.StartCalls);
+    }
+
+    [Fact]
+    public void Pending_widgets_start_the_host_when_the_migration_can_still_advance()
+    {
+        var (sup, host, _) = BuildMigration(_ => true);
+
+        sup.Reconcile(T0);
+
+        Assert.Equal(1, host.StartCalls);
+    }
+
+    [Fact]
+    public void The_pending_migration_term_lapses_after_the_migration_grace()
+    {
+        var (sup, host, clock) = BuildMigration(_ => true);
+        sup.Reconcile(T0);
+        Assert.Equal(1, host.StartCalls);
+        host.Running = false;
+
+        clock[0] = DesktopWidgetsMigration.MissingMonitorGraceMs;
+        sup.Reconcile(T0.AddHours(25));
+
+        Assert.Equal(1, host.StartCalls);
+    }
+
+    [Fact]
+    public void Migrated_or_hidden_legacy_widgets_do_not_start_the_host()
+    {
+        var (sup, host, store) = Build();
+        store.Update(s =>
+        {
+            s.Panel.AutoLaunch = false;
+            s.Overlay.Enabled = false;
+            s.Overlay.Layout = new() { new() };
+        });
+        sup.Reconcile(T0);
+        store.Update(s =>
+        {
+            s.Overlay.Enabled = true;
+            s.Overlay.MigratedToPanels = true;
+        });
+        sup.Reconcile(T0);
+        Assert.Equal(0, host.StartCalls);
     }
 
     [Fact]
@@ -115,7 +189,7 @@ public class OverlaySupervisorTests
         sup.Reconcile(T0);
         Assert.Equal(0, host.StartCalls);
 
-        store.Update(s => { s.Overlay.Enabled = true; s.Overlay.Layout.Add(new()); });
+        store.Update(s => s.PanelDevices["a"] = new() { Id = "a", DisplayId = "D1" });
         sup.Reconcile(T0.AddSeconds(1));
         Assert.Equal(1, host.StartCalls);
     }
@@ -137,7 +211,6 @@ public class OverlaySupervisorTests
         public bool IsRunning => Running;
         public bool Start() { StartCalls++; if (StartSucceeds) Running = true; return StartSucceeds; }
         public void Stop() { Running = false; }
-        public void SetAlwaysOnTop(bool value) { }
         public void NotifyDisplayAssignmentsChanged() { }
     }
 

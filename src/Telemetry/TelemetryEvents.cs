@@ -3,7 +3,7 @@ namespace Nexus.Service.Telemetry;
 /// <summary>
 /// Canonical event names. Add one line here and reference it at the call site -
 /// never a raw string literal (keeps the taxonomy greppable and typo-proof).
-/// snake_case to match PostHog conventions.
+/// snake_case.
 /// </summary>
 public static class TelemetryEvents
 {
@@ -31,7 +31,7 @@ public static class TelemetryEvents
     /// which seeded every pre-existing install to "advanced".</summary>
     public const string DashboardModeChanged = "dashboard_mode_changed";
 
-    /// <summary>Unchanged-profile refresh; delivered to nexus-api only, never PostHog.</summary>
+    /// <summary>Unchanged-profile refresh; delivered to nexus-api only.</summary>
     public const string ProfileRefresh = "profile";
 
     public const string OnboardingCompleted = "onboarding_completed";
@@ -69,7 +69,7 @@ public static class TelemetryEvents
     /// <summary>A custom event from an app that declares capabilities.telemetry (dev-tools builds only).</summary>
     public const string AppEvent = "app_event";
 
-    // Fleet events (dual-sink: PostHog + nexus-api /telemetry/events). The
+    // Fleet events (also posted to nexus-api /telemetry/events). The
     // string doubles as the wire "type" field nexus-api expects.
     public const string Install = "install";
     public const string Specs = "specs";

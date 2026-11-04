@@ -159,7 +159,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
@@ -408,7 +408,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     private static int ChainStateSig(
         IReadOnlyList<string> ids, List<string> disabled, List<string> uncontrolled,
-        Dictionary<string, LightingDevicePreference> prefs, float globalBrightness)
+        Dictionary<string, LightingDevicePreference> prefs, MasterLevel globalBrightness)
     {
         var hc = new HashCode();
         hc.Add(globalBrightness);
@@ -426,6 +426,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 hc.Add(p.AdjustBlue);
                 hc.Add(p.AdjustTemperature);
                 hc.Add(p.AdjustSaturation);
+                hc.Add(p.ColorOrder);
             }
         }
         return hc.ToHashCode();
@@ -501,6 +502,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             Console.Error.WriteLine($"[lianli-wireless-lighting-writer] {macHex} window upload failed");
         }
         st.Failing = !ok;
+        var chainKey = Slv3LightingDeviceProvider.DeviceIdFor(macHex);
+        if (ok) Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(chainKey, "lianli-wireless");
+        else Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(chainKey, "lianli-wireless");
     }
 
     /// <summary>
@@ -514,7 +518,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private bool TickRolling(
         string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones,
         List<string> disabled, List<string> uncontrolled, Dictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks, double nowMs)
+        MasterLevel globalBrightness, long nowTicks, double nowMs)
     {
         if (!_rolling.TryGetValue(macHex, out var st))
         {
@@ -626,7 +630,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private bool ComposeWindow(
         string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones,
         List<string> disabled, List<string> uncontrolled, Dictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks, out byte[] payload, out int ledCount)
+        MasterLevel globalBrightness, long nowTicks, out byte[] payload, out int ledCount)
     {
         payload = Array.Empty<byte>();
         ledCount = 0;
@@ -808,7 +812,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     /// </summary>
     private bool TickPreset(
         string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones, List<string> disabled,
-        LianLiWirelessChainLighting lighting, float globalBrightness, long nowTicks)
+        LianLiWirelessChainLighting lighting, MasterLevel globalBrightness, long nowTicks)
     {
         var fan = FindFanInfo(macHex);
         if (fan is null)
@@ -852,11 +856,24 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 break;
             }
         }
+        // Already a product with master in both modes; the multiplier setting does not change it.
         var brightnessPercent = poweredOff || _engine.Blackout
             ? 0
-            : (int)Math.Round(Math.Clamp(lighting.Brightness, 0, 4) * 25 * globalBrightness);
+            : (int)Math.Round(Math.Clamp(lighting.Brightness, 0, 4) * 25 * globalBrightness.Level);
 
-        var sig = PresetSignature(lighting, brightnessPercent, ledCount);
+        // One animation plays on the whole chain, so the first non-RGB zone order stands for it.
+        string? presetOrder = null;
+        var presetPrefs = _store.Load().Devices.LightingDevicePrefs;
+        foreach (var zone in zones)
+        {
+            var zoneOrder = DeviceColorAdjust.OrderOf(presetPrefs, zone.Id);
+            if (DeviceColorAdjust.NormalizeOrder(zoneOrder) is not (null or "RGB"))
+            {
+                presetOrder = zoneOrder;
+                break;
+            }
+        }
+        var sig = PresetSignature(lighting, brightnessPercent, ledCount, presetOrder);
         _lastSent.TryGetValue(macHex, out var last);
         var sinceLastPushMs = _lastPushTicks.TryGetValue(macHex, out var lastPush)
             ? (nowTicks - lastPush) / TimeSpan.TicksPerMillisecond
@@ -888,6 +905,16 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             catch (ArgumentException)
             {
                 return false;
+            }
+            if (DeviceColorAdjust.NormalizeOrder(presetOrder) is not (null or "RGB"))
+            {
+                // The renderer's frames may be shared, so permute a copy.
+                var permuted = (byte[])animation.Frames.Clone();
+                for (var i = 0; i + 2 < permuted.Length; i += 3)
+                {
+                    DeviceColorAdjust.ReorderChannels(presetOrder, ref permuted[i], ref permuted[i + 1], ref permuted[i + 2]);
+                }
+                animation = new Slv3StrimerAnimation { Frames = permuted, FrameCount = animation.FrameCount, IntervalMs = animation.IntervalMs };
             }
         }
 
@@ -933,7 +960,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             : new RgbColor(0, 0, 0);
     }
 
-    private static int PresetSignature(LianLiWirelessChainLighting lighting, int brightnessPercent, int ledCount)
+    private static int PresetSignature(LianLiWirelessChainLighting lighting, int brightnessPercent, int ledCount, string? order)
     {
         var hc = new HashCode();
         hc.Add(lighting.Mode);
@@ -942,6 +969,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         hc.Add(lighting.Merge);
         hc.Add(brightnessPercent);
         hc.Add(ledCount);
+        hc.Add(order);
         foreach (var c in lighting.Colors)
         {
             hc.Add(c);

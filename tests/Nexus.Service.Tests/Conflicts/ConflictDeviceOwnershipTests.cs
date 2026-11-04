@@ -66,6 +66,7 @@ public class ConflictDeviceOwnershipTests
     [InlineData("nzxt-cam")]
     [InlineData("tryx-kanali")]
     [InlineData("zmatrices")]
+    [InlineData("deepcool")]
     public void Overlap_is_known_for_apps_with_a_claim_vendor_or_handler(string id)
     {
         Assert.True(ConflictDeviceOwnership.DeviceOverlapKnown(ConflictWatcher.FindById(id)!));

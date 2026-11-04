@@ -43,6 +43,7 @@ public class ConflictPillarFilterTests
     [InlineData("nzxt-cam", "nzxt-kraken")]
     [InlineData("tryx-kanali", "tryx")]
     [InlineData("armoury-crate", "asus-ryujin-lcd")]
+    [InlineData("deepcool", "deepcool-mystique")]
     public void ADisplayApp_CompetesWithBothPillarsOff_OnlyForAHandlerInUse(string id, string handler)
     {
         Assert.False(ConflictAppCatalog.Competes(App(id), false, false));

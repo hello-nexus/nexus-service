@@ -93,6 +93,21 @@ vec3 tintedPalette(float t) {
     return art ? artPalette(t) : rainbowPalette(t + u_hue);
 }
 
+// The color wheel as a palette: Hue is the middle of the arc and 1 - Colorize its
+// width, so a narrow arc is one tone and a full arc is the rainbow. k reflects at
+// 0 and 1 so a coordinate that runs past the ends sweeps back through the arc
+// instead of leaving it. Album-art stops, when on, replace it. Effects that take
+// their color from the wheel alone define tintedPalette as this and end with finish().
+vec3 wheelColor(float k) {
+    vec3 stops = u_palette[0] + u_palette[1] + u_palette[2] + u_palette[3];
+    if (u_paletteMix > 0.5 && dot(stops, vec3(1.0)) > 0.0) {
+        return artPalette(k);
+    }
+    float m = abs(fract(k * 0.5 + 0.5) * 2.0 - 1.0);
+    float span = 1.0 - clamp(u_colorize, 0.0, 1.0);
+    return hsv2rgb(vec3(u_hue + (m - 0.5) * span, 1.0, 1.0));
+}
+
 // 0..1 sweep across the frame along an axis rotated `deg` degrees, covering the
 // full rotated bounding box so a gradient reaches both edges at any angle.
 float axis01(float deg) {
@@ -113,9 +128,23 @@ float sweep01() {
     return fract(atan(p.y, p.x) / 6.28318 + 1.0);
 }
 
-// Soft-knee tonemap to keep HDR highlights from clipping.
+// Soft-knee tonemap to keep HDR highlights from clipping. It compresses by the
+// brightest channel and scales all three by the same factor, so hue and
+// saturation survive; a per-channel curve would desaturate bright colors.
 vec3 tonemap(vec3 c) {
-    return c / (1.0 + c);
+    vec3 p = max(c, 0.0);
+    return p / (1.0 + max(max(p.r, p.g), p.b));
+}
+
+// Each effect that tonemaps defines outGain(): a constant multiplier applied
+// after the tonemap, sized so its brightest pixel peaks near the top of the
+// range without clipping. Hue, saturation and structure are untouched; the
+// clamp is a safety net. ShaderLibrary.Get appends a unity outGain() to any
+// composed source whose body defines none, since a defined gainOut() may not
+// call an undefined function on every GLSL ES compiler.
+float outGain();
+vec3 gainOut(vec3 c) {
+    return clamp(c * outGain(), 0.0, 1.0);
 }
 
 // Post-process every effect's output: blend from palette-shifted colour
@@ -131,7 +160,15 @@ vec3 finalize(vec3 col) {
     float bl = dot(max(blended, 0.0), vec3(0.2126, 0.7152, 0.0722));
     blended = mix(vec3(bl), blended, clamp(u_saturation, 0.0, 4.0));
     blended = (blended - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
-    return tonemap(max(blended, 0.0));
+    return gainOut(tonemap(max(blended, 0.0)));
+}
+
+// finalize() without its colorize blend, for effects whose wheel arc alone decides hue.
+vec3 finish(vec3 col) {
+    float bl = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
+    col = mix(vec3(bl), col, clamp(u_saturation, 0.0, 4.0));
+    col = (col - 0.5) * clamp(u_contrast, 0.0, 4.0) + 0.5;
+    return gainOut(tonemap(max(col, 0.0)));
 }
 
 // Hash + value noise - fast, cheap, good enough for lighting.
