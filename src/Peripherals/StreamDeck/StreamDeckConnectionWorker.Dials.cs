@@ -1145,7 +1145,7 @@ public sealed partial class StreamDeckConnectionWorker
                 : sensor is null ? "" : DeckMonitoringFormat.ResolveLabel(action.Category, sensor.Name);
         var valueText = sensor is null
             ? UnresolvedSensorValueText
-            : DeckMonitoringFormat.ResolveValueText(sensor, snapshot.Units.MonitoringTempUnit, snapshot.Units.NumberFormat);
+            : DeckMonitoringFormat.ResolveValueText(sensor, snapshot.Units.MonitoringTempUnit, snapshot.Units.NumberFormat, snapshot.Units.MonitoringWholeNumbers == true);
         return new DialFrame(new DialSegmentInput
         {
             Kind = DialSegmentKind.Monitoring,

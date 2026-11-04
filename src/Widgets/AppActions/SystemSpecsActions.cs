@@ -40,6 +40,7 @@ public static class SystemSpecsActions
                 Monitor = specs.Monitor,
                 SoundCard = specs.SoundCard,
                 NetworkCard = specs.NetworkCard,
+                NexusVersion = BuildInfo.Version.TrimStart('v', 'V'),
             };
 
             var json = JsonSerializer.Serialize(dto, AppJsonContext.Default.SystemInfoResponse);
