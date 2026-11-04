@@ -64,17 +64,26 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
 
                 _hub.Attach(device);
                 bool started = false;
-                string detachCause = "unknown";
+                string detachCause = "worker error";
                 try
                 {
-                    if (_hub.Connect())
+                    if (_hub.Connect(stoppingToken, () => _gate.IsEnabled(NzxtFanControllerHub.DeviceId)))
                     {
                         started = true;
                         connectFailureLogged = false;
                         ServiceLog.Info($"[nzxt-fan-controller] connected: {_hub.Fans.Length} fan channel(s)");
-                        detachCause = "service stopping";
-                        while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(NzxtFanControllerHub.DeviceId))
+                        while (true)
                         {
+                            if (stoppingToken.IsCancellationRequested)
+                            {
+                                detachCause = "service stopping";
+                                break;
+                            }
+                            if (!_gate.IsEnabled(NzxtFanControllerHub.DeviceId))
+                            {
+                                detachCause = "gate turned off";
+                                break;
+                            }
                             if (_hub.Poll())
                             {
                                 _cooling.ReassertControl();
@@ -85,17 +94,15 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                                 break;
                             }
                         }
-                        if (detachCause == "service stopping" && !stoppingToken.IsCancellationRequested && !_gate.IsEnabled(NzxtFanControllerHub.DeviceId))
-                        {
-                            detachCause = "gate turned off";
-                        }
                     }
                     else
                     {
-                        if (!connectFailureLogged)
+                        if (!connectFailureLogged
+                            && !stoppingToken.IsCancellationRequested
+                            && _gate.IsEnabled(NzxtFanControllerHub.DeviceId))
                         {
                             connectFailureLogged = true;
-                            ServiceLog.Warn("[nzxt-fan-controller] connect failed (init write or first status report); retrying");
+                            ServiceLog.Warn("[nzxt-fan-controller] connect failed (init write or read error); retrying");
                         }
                         await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     }
