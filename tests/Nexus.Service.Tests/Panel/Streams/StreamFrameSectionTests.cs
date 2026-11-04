@@ -107,7 +107,9 @@ public sealed unsafe class StreamFrameSectionTests
             "p");
         session.AcceptFrame(new StreamFrame { Flags = StreamFraming.FlagIdr, Payload = new byte[4] });
         session.AcceptFrame(new StreamFrame { Flags = StreamFraming.FlagIdr, Payload = new byte[4] });
-        Assert.Equal(2, session.QueueDepthForTest);
+        // A raw session holds only the newest frame; the older one counts as dropped.
+        Assert.Equal(1, session.QueueDepthForTest);
+        Assert.Equal(2, session.StatsSnapshot().Enqueued);
     }
 
     [Fact]

@@ -309,9 +309,12 @@ public class BulkPanelDriverTests
         }
 
         var pictures = pipe.Writes.Chunk(3).ToList();
-        Assert.Equal(14, pictures.Count);
+        Assert.Equal(15, pictures.Count);
         Assert.Equal(pictures[1], pictures[0]);
-        Assert.Equal(pictures[8], pictures[7]);
+        // The copy for the next discarded slot follows the real picture, not the picture after it.
+        Assert.Equal(pictures[7], pictures[6]);
+        Assert.NotEqual(pictures[8][0], pictures[7][0]);
+        Assert.Equal(pictures[15 - 1], pictures[15 - 2]);
         Assert.NotEqual(pictures[2][0], pictures[1][0]);
     }
 
