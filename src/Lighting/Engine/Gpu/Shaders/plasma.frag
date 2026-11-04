@@ -22,9 +22,8 @@ void main() {
     col = col * 0.88 + 0.06;
     float pl = dot(col, vec3(0.2126, 0.7152, 0.0722));
     col *= 1.0 - 0.12 * smoothstep(0.45, 0.8, pl);
-    // Halfway between the old per-channel tonemap look and the full-strength one:
-    // the colors are pulled slightly toward their own luma so a full-rainbow
-    // preset reads as color rather than glare. Hue stays on the wheel.
+    // Pull the colors slightly toward their own luma so a full-rainbow preset reads
+    // as color rather than glare. Hue stays on the wheel.
     col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, 0.9);
     fragColor = vec4(finalize(col * 1.15), 1.0);
 }
