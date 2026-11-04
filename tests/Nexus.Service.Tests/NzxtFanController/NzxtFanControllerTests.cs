@@ -21,6 +21,8 @@ public class NzxtFanControllerTests
         public bool Disposed;
         public int EmptyReadsBefore;
         public bool FailReads;
+        public int RespondAfterStartReports;
+        public Action? OnRead;
 
         public int VendorId => NzxtFanControllerProtocol.VendorId;
         public int ProductId => NzxtFanControllerProtocol.ProductIds[0];
@@ -42,11 +44,12 @@ public class NzxtFanControllerTests
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
+            OnRead?.Invoke();
             if (FailReads)
             {
                 return -1;
             }
-            if (EmptyReadsBefore > 0 || Incoming.Count == 0)
+            if (EmptyReadsBefore > 0 || Incoming.Count == 0 || Writes.Count(w => w[1] == 0x03) < RespondAfterStartReports)
             {
                 EmptyReadsBefore = Math.Max(0, EmptyReadsBefore - 1);
                 System.Threading.Thread.Sleep(Math.Min(timeoutMs, 5));
@@ -175,14 +178,21 @@ public class NzxtFanControllerTests
         Assert.All(hid.Writes, w => Assert.Equal(0x60, w[0]));
     }
 
+    /// <summary>An enabled check that allows the given number of windows, then reports the gate off.</summary>
+    private static Func<bool> WindowBudget(int windows)
+    {
+        int calls = 0;
+        return () => ++calls <= windows;
+    }
+
     [Fact]
-    public void Connect_FailsWhenNoStatusReportArrives()
+    public void Connect_StopsWhenTheGateTurnsOffWithoutAStatusReport()
     {
         var hid = new FakeHid();
-        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20, ConnectWindows = 2 };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
         hub.Attach(hid);
 
-        Assert.False(hub.Connect());
+        Assert.False(hub.Connect(default, WindowBudget(2)));
         Assert.False(hub.IsConnected);
     }
 
@@ -197,7 +207,7 @@ public class NzxtFanControllerTests
     [Fact]
     public void Connect_FirstReportAfterSeveralWindowsConnectsOnTheSameHandleWithResends()
     {
-        var hid = new FakeHid { EmptyReadsBefore = 10 };
+        var hid = new FakeHid { RespondAfterStartReports = 4 };
         hid.Incoming.Enqueue(Status(ThreeFans));
         var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
         hub.Attach(hid);
@@ -206,22 +216,53 @@ public class NzxtFanControllerTests
 
         Assert.True(hub.IsConnected);
         Assert.False(hid.Disposed);
-        Assert.True(StartReportingWrites(hid) >= 2);
-        Assert.Equal(StartReportingWrites(hid), hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x02));
+        Assert.Equal(4, StartReportingWrites(hid));
+        Assert.Equal(4, hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x02));
     }
 
     [Fact]
-    public void Connect_GivesUpAfterTheWindowBoundKeepingTheHandleOpen()
+    public void Connect_ReadableButSilentDeviceKeepsWaitingUntilTheGateTurnsOff()
     {
         var hid = new FakeHid();
-        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20, ConnectWindows = 3 };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
         hub.Attach(hid);
 
-        Assert.False(hub.Connect());
+        Assert.False(hub.Connect(default, WindowBudget(25)));
 
-        Assert.Equal(3, StartReportingWrites(hid));
+        Assert.Equal(25, StartReportingWrites(hid));
+        Assert.False(hub.LastReadFailed);
+        Assert.False(hid.Disposed);
+    }
+
+    [Fact]
+    public void Connect_ReturnsPromptlyWhenTheTokenIsCancelledMidWait()
+    {
+        using var cts = new System.Threading.CancellationTokenSource();
+        int reads = 0;
+        var hid = new FakeHid { OnRead = () => { if (++reads == 3) { cts.Cancel(); } } };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect(cts.Token));
+
         Assert.False(hub.IsConnected);
         Assert.False(hid.Disposed);
+        Assert.True(StartReportingWrites(hid) <= 2);
+    }
+
+    [Fact]
+    public void Connect_ReturnsWhenTheGateTurnsOffMidWait()
+    {
+        bool enabled = true;
+        int reads = 0;
+        var hid = new FakeHid { OnRead = () => { if (++reads == 3) { enabled = false; } } };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect(default, () => enabled));
+
+        Assert.False(hub.IsConnected);
+        Assert.True(StartReportingWrites(hid) <= 2);
     }
 
     [Fact]
@@ -261,10 +302,10 @@ public class NzxtFanControllerTests
         {
             hid.Incoming.Enqueue(Other(0x30 + i, 0x01));
         }
-        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20, ConnectWindows = 1 };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
         hub.Attach(hid);
 
-        Assert.False(hub.Connect());
+        Assert.False(hub.Connect(default, WindowBudget(1)));
         var text = hub.DescribeSilence();
 
         Assert.Contains("21 03 x3", text);
@@ -340,10 +381,10 @@ public class NzxtFanControllerTests
         ws.OnBroadcastForTest += (topic, _) => topics.Add(topic);
         using var sub = ws.AddTestSubscription(PanelTopics.Cooling);
         var hid = new FakeHid();
-        var hub = new NzxtFanControllerHub(ws) { StatusTimeoutMs = 20, ConnectWindows = 2 };
+        var hub = new NzxtFanControllerHub(ws) { StatusTimeoutMs = 20 };
         hub.Attach(hid);
 
-        Assert.False(hub.Connect());
+        Assert.False(hub.Connect(default, WindowBudget(2)));
         hub.Detach();
         Assert.Empty(topics);
 

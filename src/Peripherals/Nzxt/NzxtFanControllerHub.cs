@@ -21,14 +21,9 @@ public sealed class NzxtFanControllerHub
     // re-initializing the controller can silence the stream for several windows.
     public const int MaxMissedPolls = 8;
 
-    // Status windows Connect keeps asking on one handle before giving up. Reopening resets nothing
-    // on the device, and customers saw the first report take 22 s or more, so this is sized to
-    // cover the common slow start while still bounding a handle that never answers.
-    public const int MaxConnectWindows = 10;
-
     // Distinct report ids tracked per diagnostic window; anything past it lands in the last bucket.
     private const int MaxTrackedReportKinds = 12;
-    private const long ReadErrorLogIntervalMs = 30_000;
+    private const long LogCeilingMs = 3_600_000;
 
     private readonly object _writeLock = new();
     private readonly MultiplexHub? _ws;
@@ -44,9 +39,10 @@ public sealed class NzxtFanControllerHub
     private int _readErrors;
     private long _openedAtMs;
     private long _lastStatusMs;
-    private long _lastReadErrorLogMs;
     private int _initResends;
-    private int _connectGiveUps;
+    private readonly LogBackoff _giveUpLog = new();
+    private readonly LogBackoff _waitLog = new();
+    private readonly LogBackoff _readErrorLog = new();
 
     public NzxtFanControllerHub(MultiplexHub? ws = null)
     {
@@ -54,8 +50,6 @@ public sealed class NzxtFanControllerHub
     }
 
     internal int StatusTimeoutMs { get; set; } = 1500;
-
-    internal int ConnectWindows { get; set; } = MaxConnectWindows;
 
     /// <summary>True when the last failure was a read error, not silence. Worker thread only.</summary>
     public bool LastReadFailed => _readErrors > 0;
@@ -85,12 +79,18 @@ public sealed class NzxtFanControllerHub
 
     /// <summary>
     /// Starts the status stream and waits for the first report on the same handle, re-sending the
-    /// init each silent window for up to <see cref="ConnectWindows"/> windows. Worker thread only.
+    /// init each silent window. A handle that reads fine but stays silent is waited on until the
+    /// token cancels or <paramref name="isEnabled"/> turns false; a read error or failed write ends it.
+    /// Worker thread only.
     /// </summary>
-    public bool Connect()
+    public bool Connect(CancellationToken ct = default, Func<bool>? isEnabled = null)
     {
-        for (int window = 0; window < ConnectWindows; window++)
+        for (int window = 0; ; window++)
         {
+            if (ct.IsCancellationRequested || (isEnabled != null && !isEnabled()))
+            {
+                return false;
+            }
             IHidDevice? device;
             lock (_writeLock)
             {
@@ -112,6 +112,9 @@ public sealed class NzxtFanControllerHub
                 Interlocked.Increment(ref _generation);
                 Volatile.Write(ref _missedPolls, 0);
                 _isConnected = true;
+                _giveUpLog.Reset();
+                _waitLog.Reset();
+                _readErrorLog.Reset();
                 ServiceLog.Info($"[nzxt-fan-controller] first status {Environment.TickCount64 - _openedAtMs} ms after open, {_initResends} init resend(s)");
                 if (_ws != null)
                 {
@@ -124,9 +127,11 @@ public sealed class NzxtFanControllerHub
                 LogGiveUp("read error", window + 1);
                 return false;
             }
+            if (_waitLog.ShouldLog())
+            {
+                ServiceLog.Info($"[nzxt-fan-controller] still waiting for the first status after {window + 1} window(s), {Environment.TickCount64 - _openedAtMs} ms since open; {DescribeSilence()}");
+            }
         }
-        LogGiveUp("no status report", ConnectWindows);
-        return false;
     }
 
     /// <summary>One-line account of what the handle delivered since the last status report, for a detach or give-up log.</summary>
@@ -149,11 +154,9 @@ public sealed class NzxtFanControllerHub
 
     private void LogGiveUp(string cause, int windows)
     {
-        _connectGiveUps++;
-        // First few attempts in full, then every tenth, so a handle that never answers does not flood the log.
-        if (_connectGiveUps <= 3 || _connectGiveUps % 10 == 0)
+        if (_giveUpLog.ShouldLog())
         {
-            ServiceLog.Warn($"[nzxt-fan-controller] connect gave up ({cause}) after {windows} window(s), {_initResends} init resend(s), attempt {_connectGiveUps}; {DescribeSilence()}");
+            ServiceLog.Warn($"[nzxt-fan-controller] connect gave up ({cause}) after {windows} window(s), {_initResends} init resend(s), attempt {_giveUpLog.Count}; {DescribeSilence()}");
         }
     }
 
@@ -245,10 +248,8 @@ public sealed class NzxtFanControllerHub
             if (n < 0)
             {
                 _readErrors++;
-                long now = Environment.TickCount64;
-                if (_lastReadErrorLogMs == 0 || now - _lastReadErrorLogMs >= ReadErrorLogIntervalMs)
+                if (_readErrorLog.ShouldLog())
                 {
-                    _lastReadErrorLogMs = now;
                     ServiceLog.Warn($"[nzxt-fan-controller] hid read returned {n}");
                 }
                 return false;
@@ -278,5 +279,37 @@ public sealed class NzxtFanControllerHub
             key = -1;
         }
         _reportCounts[key] = _reportCounts.GetValueOrDefault(key) + 1;
+    }
+
+    /// <summary>Logs on occurrence 1, 2, 4, 8, ... and at least once per ceiling interval.</summary>
+    private sealed class LogBackoff
+    {
+        private int _next = 1;
+        private long _lastMs;
+
+        public int Count { get; private set; }
+
+        public bool ShouldLog()
+        {
+            Count++;
+            long now = Environment.TickCount64;
+            if (Count >= _next || now - _lastMs >= LogCeilingMs)
+            {
+                if (Count >= _next)
+                {
+                    _next = Count > int.MaxValue / 2 ? int.MaxValue : Count * 2;
+                }
+                _lastMs = now;
+                return true;
+            }
+            return false;
+        }
+
+        public void Reset()
+        {
+            Count = 0;
+            _next = 1;
+            _lastMs = 0;
+        }
     }
 }
