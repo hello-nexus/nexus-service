@@ -179,11 +179,14 @@ public static class DiagnosticsHealthRoutes
                     conflicts.GetConflicts().Select(c => c.Id).ToHashSet(),
                     id => sp.GetService<Nexus.Service.Conflicts.IConflictAppInstallProbe>()?.IsInstalled(id) ?? false),
             };
-            var userNames = new List<string> { Environment.UserName };
-            if (OperatingSystem.IsWindows())
-            {
-                userNames.AddRange(Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles().Select(Path.GetFileName).Where(n => !string.IsNullOrEmpty(n))!);
-            }
+            var identity = SupportBundleExtras.CollectIdentity(
+                Environment.UserName,
+                OperatingSystem.IsWindows() ? Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles() : Array.Empty<string>(),
+                SupportBundleExtras.ConsoleUser(),
+                OperatingSystem.IsLinux() ? Nexus.Service.Platform.Linux.LinuxSession.SessionHome : null,
+                OperatingSystem.IsLinux() ? SupportBundleExtras.SubdirectoriesOrEmpty("/home") : OperatingSystem.IsMacOS() ? SupportBundleExtras.SubdirectoriesOrEmpty("/Users") : Array.Empty<string>(),
+                Environment.MachineName,
+                SupportBundleExtras.TryDnsHostName());
             // A failing fan provider must not cost the user the rest of the bundle.
             List<Nexus.Service.Models.Cooling.FanChannel>? fanChannels = null;
             try
@@ -228,12 +231,10 @@ public static class DiagnosticsHealthRoutes
                 Cooling = cooling.Snapshot(),
                 Fans = fanChannels,
                 System = BuildSystemResponse(pnp, events),
-                UsbTopology = UsbTopology.Collect((vid, pid) =>
-                {
-                    var probe = new[] { new Nexus.Service.Devices.UsbDeviceEntry { VendorId = vid, ProductId = pid } };
-                    return handlers.Any(h => h.IsConnected(probe));
-                }),
-                UserNames = userNames,
+                UsbTopology = UsbTopology.Collect((vid, pid) => SupportBundleExtras.IsKnownUsbId(handlers, vid, pid)),
+                UserNames = identity.UserNames,
+                AccountNames = identity.AccountNames,
+                OtherHostNames = identity.HostNames,
                 MachineName = Environment.MachineName,
             });
             var fileName = $"nexus-support-{DateTime.Now:yyyyMMdd-HHmmss}.zip";

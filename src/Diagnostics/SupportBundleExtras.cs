@@ -9,7 +9,7 @@ using Nexus.Service.Routes;
 
 namespace Nexus.Service.Diagnostics;
 
-/// <summary>Plain string replacement and filtering for bundle contents: usernames in home paths, the machine name, other apps' crashes, NEXUS_* environment.</summary>
+/// <summary>Plain string replacement and filtering for bundle contents: user names in paths and as account names, host names where they carry a machine identity, other apps' crashes, NEXUS_* environment. MAC addresses, device serials and LAN IPs are deliberately left alone: they are diagnostic keys.</summary>
 public sealed class BundleRedactor
 {
     private static readonly HashSet<string> GenericMachineNames = new(StringComparer.OrdinalIgnoreCase)
@@ -19,11 +19,27 @@ public sealed class BundleRedactor
     };
 
     private readonly List<(string Needle, string Replacement)> _paths = new();
-    private readonly List<string> _machine = new();
-    private readonly List<Regex> _jsonNames = new();
+    private readonly List<string> _freeText = new();
+    private readonly List<string> _users = new();
+    private readonly List<Regex> _rules = new();
 
-    public BundleRedactor(IEnumerable<string> userNames, string machineName)
+    /// <param name="userNames">Every profile and account name: redacted in home paths and after "as ", never as a bare word (a profile folder can be named like a word).</param>
+    /// <param name="accountNames">Logon names that logs print bare (the console user, the service user): also redacted as whole tokens when distinctive.</param>
+    public BundleRedactor(IEnumerable<string> userNames, string machineName, IEnumerable<string>? otherHostNames = null, IEnumerable<string>? accountNames = null)
     {
+        foreach (var account in (accountNames ?? Array.Empty<string>()).Where(a => a.Length >= 3).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var name in new[] { account, JsonEncodedText.Encode(account).ToString() }.Distinct())
+            {
+                // The helper bootstrapper logs the console logon name after "as", and a renamed account's name matches no profile folder.
+                _paths.Add((" as " + name, " as <user>"));
+                _paths.Add(("user=" + name, "user=<user>"));
+                if (!IsGenericMachineName(account))
+                {
+                    _users.Add(name);
+                }
+            }
+        }
         // Longest first, so a profile "alice" is never cut short by a profile "al".
         foreach (var user in userNames.Where(u => u.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(u => u.Length))
         {
@@ -34,24 +50,33 @@ public sealed class BundleRedactor
                 _paths.Add((@"\Users\" + name, @"\Users\<user>"));
                 _paths.Add(("/Users/" + name, "/Users/<user>"));
                 _paths.Add(("/home/" + name, "/home/<user>"));
+                _paths.Add(("/media/" + name, "/media/<user>"));
+                _paths.Add(("/run/media/" + name, "/run/media/<user>"));
             }
         }
-        if (machineName.Length > 0)
+        var hosts = new[] { machineName }.Concat(otherHostNames ?? Array.Empty<string>())
+            .Where(h => h.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(h => h.Length).ToList();
+        foreach (var host in hosts)
         {
             // The startup snapshot's host line and JSON name fields carry the machine name explicitly, so these are safe for any name.
-            _paths.Add(("host: " + machineName, "host: <pc>"));
-            foreach (var name in new[] { machineName, JsonEncodedText.Encode(machineName).ToString() }.Distinct())
+            _paths.Add(("host: " + host, "host: <pc>"));
+            foreach (var name in new[] { host, JsonEncodedText.Encode(host).ToString() }.Distinct())
             {
-                _jsonNames.Add(new Regex("(\"(?:pcName|machineName)\"\\s*:\\s*\")" + Regex.Escape(name) + "(\")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+                var escaped = Regex.Escape(name);
+                _rules.Add(new Regex("(\"(?:pcName|machineName)\"\\s*:\\s*\")" + escaped + "(\")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+                // A bare name is also a device or product word ("TITAN 360"), so only carrier contexts count: DOMAIN\user, \\HOST\share, HOST.local and URL hosts.
+                _rules.Add(new Regex(@"(?<![\w-])" + escaped + @"(?=\\{1,2}[\w.$-])|(?<![\w-])" + escaped + @"(?=\.(?:local|lan|home|localdomain)\b)|(?<=//)" + escaped + @"(?=[:/\s""]|$)",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
             }
-        }
-        if (!IsGenericMachineName(machineName))
-        {
-            _machine.Add(machineName);
-            var encoded = JsonEncodedText.Encode(machineName).ToString();
-            if (encoded != machineName)
+            // A name made of one plain word is ambiguous; a distinctive one (a digit or separator in it) is safe to replace anywhere.
+            if (!IsGenericMachineName(host) && host.Any(c => char.IsDigit(c) || c is '-' or '_'))
             {
-                _machine.Add(encoded);
+                _freeText.Add(host);
+                var encoded = JsonEncodedText.Encode(host).ToString();
+                if (encoded != host)
+                {
+                    _freeText.Add(encoded);
+                }
             }
         }
     }
@@ -65,15 +90,20 @@ public sealed class BundleRedactor
         {
             text = ReplaceBounded(text, needle, replacement, pathSegment: true);
         }
-        foreach (var rule in _jsonNames)
+        foreach (var rule in _rules)
         {
-            text = rule.Replace(text, "$1<pc>$2");
+            text = rule.Replace(text, m => m.Groups.Count > 1 ? m.Groups[1].Value + "<pc>" + m.Groups[2].Value : "<pc>");
         }
-        foreach (var name in _machine)
+        foreach (var name in _users)
+        {
+            text = ReplaceBounded(text, name, "<user>", pathSegment: false);
+        }
+        foreach (var name in _freeText)
         {
             text = ReplaceBounded(text, name, "<pc>", pathSegment: false);
         }
-        return text;
+        // Account names this machine never reported still sit under a user directory.
+        return Telemetry.ErrorReporter.RedactUserPaths(text);
     }
 
     // A path segment ends at any character that cannot be part of a name or the end; a machine name is a whole token, so letters, digits, '-' and '_' on either side keep it.
@@ -106,8 +136,107 @@ public sealed class BundleRedactor
     private static bool IsTokenChar(char c) => char.IsLetterOrDigit(c) || c is '-' or '_';
 }
 
+/// <summary>Who the bundle must scrub: OS account names (home paths, account logons) and machine host names.</summary>
+public sealed record BundleIdentity(IReadOnlyList<string> UserNames, IReadOnlyList<string> AccountNames, IReadOnlyList<string> HostNames);
+
 public static class SupportBundleExtras
 {
+    private static readonly HashSet<string> NotAccountNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "root", "system", "administrator", "guest", "default", "public", "shared", "all users", "lost+found", "nobody",
+    };
+
+    /// <summary>Every name worth scrubbing. Names come from the process user, the Windows profiles, the interactive console logon (the helper bootstrapper logs it), the Linux session home (a root daemon runs as root) and the home directories on disk.</summary>
+    internal static BundleIdentity CollectIdentity(string processUser, IEnumerable<string> windowsProfiles, string? consoleUser, string? linuxSessionHome,
+        IEnumerable<string> homeDirectories, string machineName, string? dnsHostName)
+    {
+        var users = new List<string>();
+        var accounts = new List<string>();
+        void Account(string? name)
+        {
+            name = (name ?? "").Trim();
+            if (name.Length > 0 && !NotAccountNames.Contains(name) && !name.EndsWith('$'))
+            {
+                accounts.Add(name);
+                users.Add(name);
+            }
+        }
+        Account(processUser);
+        Account(consoleUser);
+        if (!string.IsNullOrEmpty(linuxSessionHome))
+        {
+            Account(LastSegment(linuxSessionHome));
+        }
+        foreach (var profile in windowsProfiles)
+        {
+            var name = LastSegment(profile);
+            if (!string.IsNullOrEmpty(name))
+            {
+                users.Add(name);
+            }
+        }
+        foreach (var home in homeDirectories)
+        {
+            var name = LastSegment(home);
+            if (!string.IsNullOrEmpty(name) && !NotAccountNames.Contains(name))
+            {
+                users.Add(name);
+            }
+        }
+        var hosts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(dnsHostName) && !string.Equals(dnsHostName, machineName, StringComparison.OrdinalIgnoreCase))
+        {
+            hosts.Add(dnsHostName);
+        }
+        return new BundleIdentity(users, accounts, hosts);
+    }
+
+    /// <summary>True when a handler declares the VID/PID. IsConnected is not used: several handlers answer from live hub state whatever the probe holds, which would list every USB device.</summary>
+    internal static bool IsKnownUsbId(IEnumerable<Devices.IDeviceHandler> handlers, int vendorId, int productId) =>
+        handlers.Any(h => h.Identifiers.Any(i => i.VendorId == vendorId && i.ProductId == productId));
+
+    /// <summary>The interactive console logon the helper bootstrapper logs; Windows only.</summary>
+    internal static string? ConsoleUser()
+    {
+#if WINDOWS
+        return Lifecycle.UserHelperBootstrapper.ResolveActiveConsoleUsername();
+#else
+        return null;
+#endif
+    }
+
+    internal static string? TryDnsHostName()
+    {
+        try
+        {
+            return System.Net.Dns.GetHostName();
+        }
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    // Windows paths use backslashes whatever the host OS, which Path.GetFileName only splits on Windows.
+    private static string LastSegment(string path)
+    {
+        var trimmed = path.TrimEnd('\\', '/');
+        return trimmed[(trimmed.LastIndexOfAny(new[] { '\\', '/' }) + 1)..];
+    }
+
+    /// <summary>Immediate subdirectories of <paramref name="parent"/>; empty when it is missing or unreadable.</summary>
+    internal static List<string> SubdirectoriesOrEmpty(string parent)
+    {
+        try
+        {
+            return Directory.Exists(parent) ? Directory.EnumerateDirectories(parent).ToList() : new List<string>();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new List<string>();
+        }
+    }
+
     internal const int MaxOverrideFileChars = 1024;
 
     internal const int InstallerLogKeep = 3;

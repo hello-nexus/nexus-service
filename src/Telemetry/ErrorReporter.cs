@@ -520,6 +520,15 @@ internal sealed partial class ErrorReporter
         return OpaqueIdRegex().Replace(text, "<id>");
     }
 
+    /// <summary>Only the user-path and email parts of <see cref="Scrub"/>, keeping everything else (addresses, serials, ids) verbatim and the path prefix so the text stays readable. Covers any drive, JSON-escaped backslashes, 8.3 short names and the Linux mount homes.</summary>
+    internal static string RedactUserPaths(string text)
+    {
+        if (text.Length == 0)
+            return text;
+        text = UserPathPrefixRegex().Replace(text, "${1}<user>");
+        return EmailRegex().Replace(text, "<email>");
+    }
+
     internal static string Scrub(string text)
     {
         if (text.Length == 0)
@@ -545,6 +554,9 @@ internal sealed partial class ErrorReporter
 
     [GeneratedRegex(@"[A-Za-z]:[\\/]Users[\\/][^\\/\s]+")]
     private static partial Regex WindowsUserPathRegex();
+
+    [GeneratedRegex(@"((?:[A-Za-z]:)?(?:\\{1,2}|/)Users(?:\\{1,2}|/)|/home/|/media/|/run/media/)[\w~'\-]+(?:\.[\w~'\-]+)*")]
+    private static partial Regex UserPathPrefixRegex();
 
     [GeneratedRegex(@"/Users/[^/\s]+")]
     private static partial Regex MacUserPathRegex();

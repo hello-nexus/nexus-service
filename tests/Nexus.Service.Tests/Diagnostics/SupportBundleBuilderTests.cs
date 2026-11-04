@@ -178,9 +178,9 @@ public class SupportBundleBuilderTests : IDisposable
         Assert.DoesNotContain("session-bearer", text);
         Assert.DoesNotContain("s3cr3t", text);
         var shipped = JsonSerializer.Deserialize(text, PersistenceJsonContext.Default.NexusSettings)!;
-        Assert.Equal("Moose", shipped.HostDisplayName);
+        Assert.Equal("<redacted>", shipped.HostDisplayName);
         Assert.True(shipped.Auth!.RelayEnabled);
-        Assert.Equal("acct", shipped.Auth.CloudAccounts[0].AccountId);
+        Assert.Equal("account-1", shipped.Auth.CloudAccounts[0].AccountId);
         Assert.Single(shipped.Auth.PanelPhoneSessions);
         Assert.Null(shipped.Auth.PanelPhoneSessions[0].PushTarget);
         Assert.NotNull(settings.Auth.PanelPhoneSessions[0].PushTarget);

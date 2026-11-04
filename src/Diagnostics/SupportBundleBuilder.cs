@@ -59,6 +59,10 @@ public static class SupportBundleBuilder
         /// <summary>OS account names whose home paths are rewritten to a placeholder in every text file.</summary>
         public IReadOnlyList<string> UserNames { get; init; } = Array.Empty<string>();
         public string MachineName { get; init; } = "";
+        /// <summary>Further host names the logs carry for this PC, such as the DNS name behind a 15-character NetBIOS name.</summary>
+        public IReadOnlyList<string> OtherHostNames { get; init; } = Array.Empty<string>();
+        /// <summary>Logon names that logs print as bare words.</summary>
+        public IReadOnlyList<string> AccountNames { get; init; } = Array.Empty<string>();
         /// <summary>Total uncompressed log bytes shipped, newest files first.</summary>
         public long LogBudgetBytes { get; init; } = DefaultLogBudgetBytes;
     }
@@ -99,7 +103,7 @@ public static class SupportBundleBuilder
     public static byte[] Build(Sources src)
     {
         using var ms = new MemoryStream();
-        var r = new BundleRedactor(src.UserNames, src.MachineName);
+        var r = new BundleRedactor(src.UserNames, src.MachineName, src.OtherHostNames, src.AccountNames);
         var logs = new List<LogCandidate>();
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
         {
@@ -175,10 +179,37 @@ public static class SupportBundleBuilder
                 session.RelayKey = blank;
                 // A device push token is a credential to alert that phone.
                 session.PushTarget = null;
+                // The name is whatever the user called the phone, often their own.
+                session.Name = blank;
             }
+            var accountIndex = 0;
+            var accountAliases = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var account in copy.Auth.CloudAccounts)
             {
                 account.RefreshToken = blank;
+                account.Email = blank;
+                account.Username = blank;
+                account.AvatarLarge = "";
+                account.AvatarSmall = "";
+                // A stable alias keeps "which account is active" readable without naming the cloud id.
+                var alias = "account-" + ++accountIndex;
+                accountAliases[account.AccountId] = alias;
+                account.AccountId = alias;
+            }
+            if (copy.Auth.ActiveCloudAccountId is { } active)
+            {
+                copy.Auth.ActiveCloudAccountId = accountAliases.GetValueOrDefault(active, blank);
+            }
+        }
+        copy.HostDisplayName = copy.HostDisplayName.Length == 0 ? "" : blank;
+        foreach (var location in copy.Weather.Locations)
+        {
+            // Saved coordinates are as precise as a street address; the label is kept only when it is a plain place name.
+            location.Lat = 0;
+            location.Lon = 0;
+            if (location.Label.Any(char.IsDigit))
+            {
+                location.Label = blank;
             }
         }
         // The install id is what the mapping registry keys provenance and caps on.
@@ -311,8 +342,9 @@ public static class SupportBundleBuilder
         }
     }
 
+    // The default encoder writes the placeholders' angle brackets as \u003C and \u003E; both are valid raw inside a JSON string.
     private static void WriteJson<T>(ZipArchive zip, BundleRedactor r, string name, T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo) =>
-        WriteText(zip, r, name, JsonSerializer.Serialize(value, typeInfo));
+        WriteText(zip, r, name, JsonSerializer.Serialize(value, typeInfo).Replace("\\u003C", "<", StringComparison.Ordinal).Replace("\\u003E", ">", StringComparison.Ordinal));
 
     private static void WriteText(ZipArchive zip, BundleRedactor r, string name, string content)
     {
