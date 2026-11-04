@@ -60,6 +60,16 @@ public sealed class PhoneTunnelPorts
             ctx.Connection.RemoteIpAddress = PhoneRemote;
             return true;
         }
-        return !PhoneRemote.Equals(ctx.Connection.RemoteIpAddress);
+        return !IsStandInAddress(ctx.Connection.RemoteIpAddress);
+    }
+
+    /// <summary>True for the stand-in address in either family: the main listeners are dual-mode, so a LAN spoofer arrives as the IPv4-mapped form.</summary>
+    public static bool IsStandInAddress(IPAddress? address)
+    {
+        if (address is null)
+            return false;
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+        return PhoneRemote.Equals(address);
     }
 }

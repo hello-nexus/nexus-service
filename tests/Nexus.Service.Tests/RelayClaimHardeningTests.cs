@@ -24,12 +24,14 @@ public sealed class RelayClaimHardeningTests
         public string Rid = "";
         public byte[] PairRoot = Array.Empty<byte>();
         public int Created;
+        public InMemoryConfigStore Store = null!;
 
         public static async Task<Rig> StartAsync()
         {
             var rig = new Rig();
             await rig.Relay.StartAsync();
             var store = new InMemoryConfigStore();
+            rig.Store = store;
             store.Update(s =>
             {
                 s.Auth ??= new AuthSettings();
@@ -167,5 +169,33 @@ public sealed class RelayClaimHardeningTests
         await rig.SendAsync(keyB, 1, confirm);
         var (next, _) = await rig.ReadAsync(keyB);
         Assert.Equal(1ul, next);
+    }
+
+    [Fact]
+    public async Task SeenSalts_SurviveARelayToggleThatRebuildsTheLink()
+    {
+        await using var rig = await Rig.StartAsync();
+        var keyA = await rig.PeerUpAsync(0x50);
+        await rig.SendAsync(keyA, 0, Claim());
+        var pending = (await rig.ReadAsync(keyA)).Reply;
+        Assert.Equal(RelayClaimMessageTypes.ClaimPending, pending.Type);
+
+        // Toggling relay off and on rebuilds the host link from scratch.
+        rig.Store.Update(s => s.Auth!.RelayEnabled = false);
+        await Task.Delay(500);
+        rig.Store.Update(s => s.Auth!.RelayEnabled = true);
+        await Task.Delay(500);
+        await rig.Relay.WaitForHostAsync(rig.Rid, MultiRidFakeRelay.HostWait);
+
+        // The relay replays the old salt: same key, same nonces. No reply may be sealed under them.
+        await rig.PeerUpAsync(0x50);
+        var confirm = new RelayClaimRequest { Type = RelayClaimMessageTypes.ClaimConfirm, RequestId = pending.RequestId };
+        await rig.SendAsync(keyA, 0, confirm);
+
+        var keyB = await rig.PeerUpAsync(0x60);
+        await rig.SendAsync(keyB, 0, confirm);
+        var (counter, reply) = await rig.ReadAsync(keyB);
+        Assert.Equal(0ul, counter);
+        Assert.Equal(RelayClaimMessageTypes.ClaimWaiting, reply.Type);
     }
 }

@@ -275,7 +275,7 @@ public sealed class UsbPhoneWatcher : BackgroundService
         if (applied.Count == 0)
         {
             // No phone listener is bound: nothing was reversed, so do not claim it
-            // was and do not mark the serial (a later tick may find a port free).
+            // was and do not mark the serial.
             if (_noTunnelWarned.Add(device.Serial))
                 ServiceLog.Warn($"[usb-phone-watcher] {device.Serial}: no phone tunnel listener is bound; wired Android stays unreachable");
             return;

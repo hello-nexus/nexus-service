@@ -209,14 +209,8 @@ public sealed class RelayClaimRequest
     public string DeviceId { get; set; } = "";
 
     /// <summary>
-    /// Live session token of a device that is already paired. The only evidence
-    /// that lets a re-pair skip the host's Allow; empty means approval is required.
-    /// </summary>
-    public string SessionToken { get; set; } = "";
-
-    /// <summary>
     /// True when the app can show the SAS and poll claim-confirm. A claim without
-    /// it (and without a portable session) is answered claim-err update_required
+    /// it is answered claim-err update_required
     /// and never raises a prompt on the PC.
     /// </summary>
     public bool SupportsSasApproval { get; set; }

@@ -62,6 +62,8 @@ public sealed class PanelPhonePairingService
     private readonly HashSet<string> _heldRelayTokens = new(StringComparer.Ordinal);
     // Unix ms of the last auto-open; at most one per AutoOpenMinIntervalMs overall.
     private long _lastAutoOpenMs;
+    private readonly Dictionary<string, HashSet<string>> _seenRelaySalts = new(StringComparer.Ordinal);
+    private const int MaxRelaySaltsPerToken = 64;
     private const long AutoOpenMinIntervalMs = 60_000;
     // Collection window an approved request keeps past its original expiry.
     private const long ApprovedCollectGraceMs = 15_000;
@@ -277,6 +279,7 @@ public sealed class PanelPhonePairingService
         lock (_lock)
         {
             _heldRelayTokens.Remove(token);
+            _seenRelaySalts.Remove(token);
             removed = _pairTokens.Remove(token);
         }
         if (removed)
@@ -284,8 +287,8 @@ public sealed class PanelPhonePairingService
     }
 
     /// <summary>
-    /// Bring the desktop window forward for a new request, at most once per
-    /// minute overall (a LAN host rotating addresses cannot pop it repeatedly)
+    /// Bring the desktop window forward for a new request, debounced overall
+    /// (a LAN host rotating addresses cannot pop it repeatedly)
     /// and off the calling thread: the Windows launcher blocks on schtasks and
     /// callers may hold the pair-code lock.
     /// </summary>
@@ -294,18 +297,24 @@ public sealed class PanelPhonePairingService
         var handler = PairRequestCreated;
         if (handler is null)
             return;
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var now = ClockMs();
         var last = Interlocked.Read(ref _lastAutoOpenMs);
         if (last != 0 && now - last < AutoOpenMinIntervalMs)
             return;
         if (Interlocked.CompareExchange(ref _lastAutoOpenMs, now, last) != last)
             return;
-        _ = Task.Run(() =>
+        AutoOpenDispatch(() =>
         {
             try { handler(); }
             catch { /* window open is best-effort */ }
         });
     }
+
+    /// <summary>Unix-ms clock for the auto-open debounce; replaced in tests.</summary>
+    internal Func<long> ClockMs { get; set; } = () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    /// <summary>Runs the auto-open handler off the calling thread; replaced in tests so dispatch is observable.</summary>
+    internal Action<Action> AutoOpenDispatch { get; set; } = work => _ = Task.Run(work);
 
     private void ResolvePairAttention()
     {
@@ -527,11 +536,6 @@ public sealed class PanelPhonePairingService
     }
 
     /// <summary>
-    /// True when the request carries a live session token (bearer or cookie),
-    /// the only evidence that lets a re-pair skip host approval. A client
-    /// supplied deviceId or a UA+IP match proves nothing: both are spoofable.
-    /// </summary>
-    /// <summary>
     /// Remote address used to key lockouts and confirm matching. The tunnel's
     /// stand-in address counts only on a request the tunnel middleware marked;
     /// the same address from anywhere else is no identity at all.
@@ -540,7 +544,7 @@ public sealed class PanelPhonePairingService
     {
         var address = context.Connection.RemoteIpAddress;
         if (address is not null
-            && address.Equals(PhoneTunnelPorts.PhoneRemote)
+            && PhoneTunnelPorts.IsStandInAddress(address)
             && !PhoneTunnelPorts.IsTunnelRequest(context))
         {
             return "";
@@ -548,6 +552,11 @@ public sealed class PanelPhonePairingService
         return address?.ToString() ?? "";
     }
 
+    /// <summary>
+    /// True when the request carries a live session token (bearer or cookie),
+    /// the only evidence that lets a re-pair skip host approval. A client
+    /// supplied deviceId or a UA+IP match proves nothing: both are spoofable.
+    /// </summary>
     private bool PresentsValidSession(HttpContext context)
     {
         var bearer = Nexus.Service.Auth.AuthRequestPolicy.ExtractBearerOrQueryToken(context);
@@ -558,24 +567,37 @@ public sealed class PanelPhonePairingService
             && TryValidateSessionToken(cookie, context, out _);
     }
 
-    /// <summary>True while a request is pending, or approved and not yet collected.</summary>
+    /// <summary>Put a one-shot token back when the claim that consumed it lost the single-flight race.</summary>
+    private void RestoreConsumedToken(string pairToken, bool consumed, DateTime expiry)
+    {
+        if (!consumed)
+            return;
+        lock (_lock)
+            _pairTokens[pairToken] = expiry;
+        RaisePairTokensChanged();
+    }
+
+    /// <summary>
+    /// Record a relay connSalt for a pair token; false when it was already used (or the
+    /// per-token cap is reached). The relay picks the salt and the AEAD nonce is only
+    /// dir||counter, so a salt may key a channel once, however often the link is rebuilt.
+    /// </summary>
+    public bool TryRegisterRelaySalt(string pairToken, string salt)
+    {
+        lock (_lock)
+        {
+            if (!_seenRelaySalts.TryGetValue(pairToken, out var set))
+                _seenRelaySalts[pairToken] = set = new HashSet<string>(StringComparer.Ordinal);
+            return set.Count < MaxRelaySaltsPerToken && set.Add(salt);
+        }
+    }
+
+    /// <summary>True while a request is pending, or approved and not yet collected. A denied request is final for its token but frees the host.</summary>
     private bool PairFlightBusy()
     {
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         lock (_pairCodeLock)
-            return _pairCode is { RequestId: { Length: > 0 } } state && state.ExpiresAt > nowMs;
-    }
-
-    /// <summary>
-    /// A session token that may skip approval on a relay claim. Relay requests
-    /// carry no client address, so the HTTP-claimed IP+UA bind cannot be checked;
-    /// only HTTPS- or relay-claimed sessions (which skip that bind anyway) qualify.
-    /// </summary>
-    public bool PresentsPortableSession(string? token)
-    {
-        if (!TryValidateSessionToken(token, context: null, out var id))
-            return false;
-        return SnapshotSessionList()?.FirstOrDefault(t => t.Id == id) is { ClaimedOverHttps: true };
+            return _pairCode is { RequestId: { Length: > 0 }, HostDenied: false } state && state.ExpiresAt > nowMs;
     }
 
     /// <summary>
@@ -617,24 +639,29 @@ public sealed class PanelPhonePairingService
 
         // Single-flight, like the code and Wi-Fi flows: no claim may replace a
         // request that is pending or approved and not yet collected.
-        // A relay token with a request parked on it admits no second claim.
-        if (needsApproval && overRelay)
+        // Non-consuming look at the token first, so an expired token reports
+        // expired and a relay token with a request parked on it admits no second claim.
+        lock (_lock)
         {
-            lock (_lock)
+            PruneExpiredPairsLocked();
+            if (!_pairTokens.TryGetValue(pairToken, out var peekExpiry) || peekExpiry <= DateTime.UtcNow)
             {
-                if (_heldRelayTokens.Contains(pairToken))
-                    return ClaimResult.Fail("claim-in-progress");
+                _pairTokens.Remove(pairToken);
+                return ClaimResult.Fail("pairing token expired");
             }
+            if (needsApproval && overRelay && _heldRelayTokens.Contains(pairToken))
+                return ClaimResult.Fail("claim-in-progress");
         }
 
         if (needsApproval && PairFlightBusy())
             return ClaimResult.Fail("code-in-use");
 
         bool consumed = false;
+        DateTime tokenExpiry;
         lock (_lock)
         {
             PruneExpiredPairsLocked();
-            if (!_pairTokens.TryGetValue(pairToken, out var expires) || expires <= DateTime.UtcNow)
+            if (!_pairTokens.TryGetValue(pairToken, out tokenExpiry) || tokenExpiry <= DateTime.UtcNow)
             {
                 _pairTokens.Remove(pairToken);
                 return ClaimResult.Fail("pairing token expired");
@@ -679,8 +706,11 @@ public sealed class PanelPhonePairingService
             lock (_pairCodeLock)
             {
                 // Lost a race with another request since the early check.
-                if (_pairCode is { RequestId: { Length: > 0 } } && _pairCode.ExpiresAt > nowMs)
+                if (_pairCode is { RequestId: { Length: > 0 }, HostDenied: false } && _pairCode.ExpiresAt > nowMs)
+                {
+                    RestoreConsumedToken(pairToken, consumed, tokenExpiry);
                     return ClaimResult.Fail("code-in-use");
+                }
 
                 _pairCode = new PairCodeState
                 {
@@ -1232,6 +1262,8 @@ public sealed class PanelPhonePairingService
         foreach (var token in expired)
             _pairTokens.Remove(token);
         _heldRelayTokens.RemoveWhere(t => !_pairTokens.ContainsKey(t));
+        foreach (var stale in _seenRelaySalts.Keys.Where(t => !_pairTokens.ContainsKey(t)).ToList())
+            _seenRelaySalts.Remove(stale);
         return expired.Count;
     }
 

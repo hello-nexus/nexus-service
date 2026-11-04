@@ -543,13 +543,6 @@ public sealed class RelayConnectionService : BackgroundService
         // consumed and this link is obsolete (Reconcile removes it). Set so the
         // reconnect loop stops instead of re-registering a dead pair rendezvous.
         private volatile bool _pairClaimDone;
-        // Every connSalt this pair link has already keyed a channel with. The
-        // relay picks connSalt, and the AES-GCM nonce is only dir||counter, so a
-        // repeated salt (a replayed peer-up) would reuse key and nonces. Each salt
-        // is accepted once per link, across reconnects; later ones are ignored.
-        private readonly HashSet<string> _seenSalts = new(StringComparer.Ordinal);
-        private const int MaxSeenSalts = 64;
-
         /// <summary>Per-key counters for one peer-up: strictly increasing inbound, never repeating outbound.</summary>
         private sealed class PairChannel
         {
@@ -817,7 +810,8 @@ public sealed class RelayConnectionService : BackgroundService
                     if (claimKey is not null)
                     {
                         // A salt seen before would re-derive the same key: refuse the peer-up.
-                        if (_seenSalts.Count >= MaxSeenSalts || !_seenSalts.Add(saltKey))
+                        // The set lives with the pair token, so rebuilding this link (a relay or remote toggle) cannot reset it.
+                        if (!_owner._pairing.TryRegisterRelaySalt(_desired.PairToken ?? "", saltKey))
                             claimKey = null;
                         else
                             channel = new PairChannel();
@@ -898,8 +892,7 @@ public sealed class RelayConnectionService : BackgroundService
         /// Open one sealed phone request (dir=2) and send back exactly one sealed
         /// reply. A <c>claim</c> runs ClaimCore for this link's pair token: it
         /// answers claim-pending (the host must click Allow; the link stays up),
-        /// claim-ok when the phone presented a live session of its own, or
-        /// claim-err. A <c>claim-confirm</c> polls the parked request: claim-waiting
+        /// or claim-err. A <c>claim-confirm</c> polls the parked request: claim-waiting
         /// until the host decides, then claim-ok with the session token or
         /// claim-err (denied / expired). A decrypt failure ends the link with no
         /// reply (the peer doesn't hold the token; possession is what the AEAD
@@ -983,8 +976,7 @@ public sealed class RelayConnectionService : BackgroundService
                 deviceId: request.DeviceId ?? "",
                 overRelay: true,
                 claimedOverHttps: false,
-                supportsSasApproval: request.SupportsSasApproval,
-                presentedValidSession: _owner._pairing.PresentsPortableSession(request.SessionToken));
+                supportsSasApproval: request.SupportsSasApproval);
 
             if (claim.Ok && claim.NeedsApproval)
             {

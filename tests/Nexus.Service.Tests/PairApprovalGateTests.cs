@@ -299,34 +299,39 @@ public class PairApprovalGateTests
     }
 
     [Fact]
-    public async Task NewRequest_RaisesCreatedEvent_OffThread_AndAtMostOncePerMinute()
+    public void NewRequest_AutoOpenIsDispatchedNotRunInline_AndDebouncedOverall()
     {
         var service = NewService();
-        var created = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var count = 0;
-        var callerThread = Environment.CurrentManagedThreadId;
-        var handlerThread = -1;
-        service.PairRequestCreated += () =>
-        {
-            handlerThread = Environment.CurrentManagedThreadId;
-            // A slow handler (Windows schtasks) must not block the claim.
-            Thread.Sleep(300);
-            created.TrySetResult(Interlocked.Increment(ref count));
-        };
+        var now = 1_000_000L;
+        var dispatched = new List<Action>();
+        service.ClockMs = () => now;
+        service.AutoOpenDispatch = work => dispatched.Add(work);
+        var handled = 0;
+        service.PairRequestCreated += () => handled++;
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
         var first = service.Claim(Token(service), "dev-x", "Phone", Ctx("192.168.1.50", https: false), supportsSasApproval: true);
-        Assert.True(sw.ElapsedMilliseconds < 250, "claim waited on the auto-open handler");
-        Assert.Equal(1, await created.Task.WaitAsync(TimeSpan.FromSeconds(5)));
-        Assert.NotEqual(callerThread, handlerThread);
 
-        // A second request (any source) inside the minute does not open the window again.
+        // The claim only queued the work: the handler has not run on the claiming thread.
+        Assert.Single(dispatched);
+        Assert.Equal(0, handled);
+        dispatched[0]();
+        Assert.Equal(1, handled);
+
+        // A second request inside the debounce window queues nothing.
         service.HostDecisionPairCode(first.RequestId!, false);
         service.ConfirmPairCode(first.RequestId!, true, Ctx("192.168.1.50", https: false));
+        now += 59_000;
         var second = service.Claim(Token(service), "dev-y", "Phone", Ctx("192.168.1.51", https: false), supportsSasApproval: true);
         Assert.True(second.NeedsApproval);
-        await Task.Delay(600);
-        Assert.Equal(1, Volatile.Read(ref count));
+        Assert.Single(dispatched);
+
+        // Past the window the next request opens the window again.
+        service.HostDecisionPairCode(second.RequestId!, false);
+        service.ConfirmPairCode(second.RequestId!, true, Ctx("192.168.1.51", https: false));
+        now += 2_000;
+        var third = service.Claim(Token(service), "dev-z", "Phone", Ctx("192.168.1.52", https: false), supportsSasApproval: true);
+        Assert.True(third.NeedsApproval);
+        Assert.Equal(2, dispatched.Count);
     }
 
     [Fact]
@@ -380,22 +385,6 @@ public class PairApprovalGateTests
     }
 
     [Fact]
-    public void RelayFastPath_AcceptsOnlyHttpsOrRelayClaimedSessions()
-    {
-        var service = NewService();
-        var https = service.ClaimApproved(Token(service), "dev-s", "Phone", Ctx("192.168.1.50", https: true));
-        var http = service.ClaimApproved(Token(service), "dev-h", "Phone", Ctx("192.168.1.51", https: false));
-        Assert.True(https.Paired);
-        Assert.True(http.Paired);
-
-        Assert.True(service.PresentsPortableSession(https.Token));
-        // A sniffed plain-HTTP cookie is bound to IP+UA, which a relay request cannot present.
-        Assert.False(service.PresentsPortableSession(http.Token));
-        Assert.False(service.PresentsPortableSession("junk"));
-        Assert.False(service.PresentsPortableSession(""));
-    }
-
-    [Fact]
     public void TunnelMarker_IsTheOnlyIdentity_ForTheStandInAddress()
     {
         var ports = new PhoneTunnelPorts(9402, 9445);
@@ -437,5 +426,39 @@ public class PairApprovalGateTests
         var spoof = Ctx(PhoneTunnelPorts.PhoneRemote.ToString(), https: true);
         Assert.Equal("unknown", service.ConfirmPairCode(claim.RequestId!, true, spoof).Status);
         Assert.Equal("waiting-host", service.ConfirmPairCode(claim.RequestId!, true, phone).Status);
+    }
+
+    [Fact]
+    public void IPv4MappedStandInAddress_IsRefused_AndGetsNoIdentity()
+    {
+        var ports = new PhoneTunnelPorts(9402, 9445);
+        var mapped = PhoneTunnelPorts.PhoneRemote.MapToIPv6();
+
+        var lan = new DefaultHttpContext();
+        lan.Connection.RemoteIpAddress = mapped;
+        lan.Connection.LocalPort = 9443;
+        Assert.False(ports.Reclassify(lan));
+
+        var service = NewService();
+        var phone = Ctx("127.0.0.1", https: true);
+        phone.Connection.LocalPort = 9445;
+        ports.Reclassify(phone);
+        var claim = service.Claim(Token(service), "dev-usb", "Phone", phone, supportsSasApproval: true);
+
+        var spoof = Ctx("192.168.1.9", https: true);
+        spoof.Connection.RemoteIpAddress = mapped;
+        Assert.Equal("unknown", service.ConfirmPairCode(claim.RequestId!, true, spoof).Status);
+    }
+
+    [Fact]
+    public void DeniedRequest_DoesNotBlockTheOwnersNextScan()
+    {
+        var service = NewService();
+        var stranger = service.Claim(Token(service), "dev-stranger", "Phone", Ctx("192.168.1.99", https: true), supportsSasApproval: true);
+        service.HostDecisionPairCode(stranger.RequestId!, false);
+
+        var owner = service.Claim(Token(service), "dev-owner", "Phone", Ctx("192.168.1.50", https: true), supportsSasApproval: true);
+
+        Assert.True(owner.NeedsApproval);
     }
 }
