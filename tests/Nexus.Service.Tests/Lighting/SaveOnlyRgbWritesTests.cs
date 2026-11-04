@@ -194,4 +194,44 @@ public class SaveOnlyRgbWritesTests : IDisposable
             Assert.True(dev.IsEVisionKeyboard);
         }
     }
+
+    [Fact]
+    public void IsSaveOnly_false_for_a_saving_mode_specific_mode_without_per_led_color()
+    {
+        Assert.False(new RgbDevice { Modes = { Mode(0, "Static", 2, Save) } }.IsSaveOnly);
+    }
+
+    [Fact]
+    public void Returning_to_control_forgets_the_baseline_so_the_first_frame_pushes()
+    {
+        using var bridge = NewBridge();
+        var buf = new RgbColor[] { new(1, 2, 3) };
+        Assert.True(bridge.ShouldPush(0, buf, 0, 1000, saveOnly: true));
+        Assert.False(bridge.ShouldPush(0, buf, 0, 2000, saveOnly: true));
+
+        bridge.ForgetBaseline(0);
+        Assert.True(bridge.ShouldPush(0, buf, 0, 2001, saveOnly: true));
+    }
+
+    [Fact]
+    public void Cards_report_the_enforced_default_and_an_explicit_choice_wins()
+    {
+        var ev = Device(0, "EV", "EVision", Mode(0, "Custom", 1, PerLed | Save));
+        var other = Device(1, "AK", "Akko", Mode(0, "Custom", 1, PerLed | Save));
+        var settings = new Nexus.Service.Persistence.NexusSettings();
+
+        var cards = OpenRgbZoneSupport.BuildCards(new[] { ev, other }, settings, isInit: true).Devices;
+        Assert.Equal(2, cards.First(c => c.Id.StartsWith(ev.StableId)).MaxRateHz);
+        Assert.Null(cards.First(c => c.Id.StartsWith(other.StableId)).MaxRateHz);
+
+        settings.Devices.LightingMaxRates[ev.StableId] = 10;
+        cards = OpenRgbZoneSupport.BuildCards(new[] { ev, other }, settings, isInit: true).Devices;
+        Assert.Equal(10, cards.First(c => c.Id.StartsWith(ev.StableId)).MaxRateHz);
+    }
+
+    [Fact]
+    public void Default_cap_rate_is_a_selectable_value()
+    {
+        Assert.True(Nexus.Service.Lighting.DeviceRateCap.IsValid(RgbDevice.EVisionDefaultCapHz));
+    }
 }

@@ -60,6 +60,7 @@ public sealed class RgbDevice
             {
                 return false;
             }
+            var anyPerLed = false;
             foreach (var m in Modes)
             {
                 var perLed = m.ColorMode == 1u || (m.Flags & RgbMode.FlagHasPerLedColor) != 0;
@@ -67,10 +68,15 @@ public sealed class RgbDevice
                 {
                     return false;
                 }
+                anyPerLed |= perLed;
             }
-            return true;
+            return anyPerLed;
         }
     }
+
+    /// <summary>Write cap in Hz this device runs at until the user picks one, or null.</summary>
+    public const int EVisionDefaultCapHz = 2;
+    public int? DefaultMaxRateHz => IsSaveOnly && IsEVisionKeyboard ? EVisionDefaultCapHz : null;
 
     /// <summary>The EVision keyboard controller family: per-LED writes blank the keys while it reloads from memory.</summary>
     public bool IsEVisionKeyboard =>
