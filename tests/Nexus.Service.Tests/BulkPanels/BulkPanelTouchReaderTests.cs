@@ -25,7 +25,7 @@ public class BulkPanelTouchReaderTests
 
         using var second = new BulkPanelTouchReader(hub, 1120, 540, () => (false, false), i => { contacts.Enqueue(i); return true; }, "t");
         second.Start();
-        Thread.Sleep(300);
+        Assert.True(SpinWait.SpinUntil(() => hub.InputReadersWaiting == 1, 5000));
         Assert.Equal(1, pipe.ReadCalls);
 
         pipe.Release.Set();

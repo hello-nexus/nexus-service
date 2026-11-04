@@ -624,6 +624,7 @@ final class TouchConnection: NSObject, URLSessionDataDelegate {
     private var cancelled = false
     private var gone = false
     private var failures = 0
+    private var lastRefusedStatus = 0
     private static let maxReconnectDelay: TimeInterval = 30
 
     init(port: Int, sessionId: String, token: String) {
@@ -661,11 +662,15 @@ final class TouchConnection: NSObject, URLSessionDataDelegate {
             // Only a session the service no longer knows is terminal; reconcile re-creates the host. Anything else backs off and retries.
             if status == 404 { gone = true }
             failures += 1
-            streamLog("touch stream refused: HTTP \(status)")
+            if status != lastRefusedStatus {
+                lastRefusedStatus = status
+                streamLog("touch stream refused: HTTP \(status)")
+            }
             completionHandler(.cancel)
             return
         }
         failures = 0
+        lastRefusedStatus = 0
         completionHandler(.allow)
     }
 

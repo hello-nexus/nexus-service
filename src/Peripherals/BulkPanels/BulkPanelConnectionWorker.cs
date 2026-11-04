@@ -49,6 +49,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
         var driver = _hub.Driver;
         while (!stoppingToken.IsCancellationRequested)
         {
+            bool sessionOpened = false;
             try
             {
                 if (!_gate.IsClaimed(driver.HandlerId))
@@ -82,6 +83,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                     continue;
                 }
 
+                sessionOpened = true;
                 _hub.SetOpenFailed(false);
                 ServiceLog.Info($"[{driver.HandlerId}] connected: {driver.Name}, {_hub.Width}x{_hub.Height}");
                 try
@@ -124,7 +126,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             {
                 ServiceLog.Error($"[{driver.HandlerId}] worker error: {ex.Message}");
                 _hub.SetOpenAccessDenied(false);
-                _hub.SetOpenFailed(true);
+                _hub.SetOpenFailed(!sessionOpened);
                 await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
             }
         }

@@ -62,7 +62,7 @@ internal sealed class BulkPanelTouchReader : IDisposable
         try
         {
             // A stalled read in a disposed reader holds the slot, so a successor never splits a report with it.
-            _hub.InputReaderGate.Wait(_cts.Token);
+            _hub.WaitForInputReader(_cts.Token);
             try
             {
                 Run();

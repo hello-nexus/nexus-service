@@ -33,6 +33,24 @@ public sealed class BulkPanelHub : IDisposable
     /// <summary>Held by the one thread reading the IN pipe; a second reader would split reports.</summary>
     internal SemaphoreSlim InputReaderGate { get; } = new(1, 1);
 
+    private int _inputReadersWaiting;
+
+    /// <summary>Readers blocked at <see cref="InputReaderGate"/>.</summary>
+    internal int InputReadersWaiting => Volatile.Read(ref _inputReadersWaiting);
+
+    internal void WaitForInputReader(CancellationToken ct)
+    {
+        Interlocked.Increment(ref _inputReadersWaiting);
+        try
+        {
+            InputReaderGate.Wait(ct);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inputReadersWaiting);
+        }
+    }
+
     public bool IsConnected => _attached;
 
     /// <summary>True while the last open of a present panel failed because the OS denied access.</summary>
