@@ -540,6 +540,7 @@ internal sealed partial class ErrorReporter
             return text;
         static string Redact(Match m) => SharedProfileNames.Contains(m.Groups[2].Value) ? m.Value : m.Groups[1].Value + "<user>";
         text = WindowsUsersRegex().Replace(text, Redact);
+        text = DriveSlashUsersRegex().Replace(text, Redact);
         text = SlashUsersRegex().Replace(text, Redact);
         text = MountedHomeRegex().Replace(text, Redact);
         return BundleEmailRegex().Replace(text, m => NotAMailDomain.Contains(m.Groups[1].Value) ? m.Value : "<email>");
@@ -571,9 +572,12 @@ internal sealed partial class ErrorReporter
     [GeneratedRegex(@"[A-Za-z]:[\\/]Users[\\/][^\\/\s]+")]
     private static partial Regex WindowsUserPathRegex();
 
-    // No lookbehind on the Users branches: the folder also sits behind /System/Volumes/Data, \\Device\\HarddiskVolume3, /Volumes/<disk> and \\server\\share. Spaces in the name are allowed only on Windows forms (a backslash path, or a drive letter with forward slashes), where a path continues after them or the text ends.
-    [GeneratedRegex(@"((?:[A-Za-z]:)?\\{1,2}Users\\{1,2}|[A-Za-z]:/Users/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-])| (?=[\w~'\- .]*[\\/]))+)", RegexOptions.IgnoreCase)]
+    // No lookbehind on the Users branches: the folder also sits behind /System/Volumes/Data, \\Device\\HarddiskVolume3, /Volumes/<disk> and \\server\\share. Spaces in the name are allowed on the backslash form when a backslash follows later in the name-like text, and on the drive forward-slash form for at most one internal space with the next slash directly after the second word.
+    [GeneratedRegex(@"((?:[A-Za-z]:)?\\{1,2}Users\\{1,2})((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-])| (?=[\w~'\- .]*[\\/]))+)", RegexOptions.IgnoreCase)]
     private static partial Regex WindowsUsersRegex();
+
+    [GeneratedRegex(@"([A-Za-z]:/Users/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-]))+(?: (?:[\w~'\-]|\\u[0-9a-fA-F]{4})+(?=/))?)", RegexOptions.IgnoreCase)]
+    private static partial Regex DriveSlashUsersRegex();
 
     // Case-sensitive: macOS paths are /Users/, while /api/users/42 and /users/settings are routes.
     [GeneratedRegex(@"(/Users/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-]))+)")]

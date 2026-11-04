@@ -84,6 +84,8 @@ public class SupportBundleReviewTests : IDisposable
 
     [Theory]
     [InlineData("C:/Users/John Smith/AppData", "C:/Users/<user>/AppData")]
+    [InlineData("C:/Users/bob/x", "C:/Users/<user>/x")]
+    [InlineData("copied C:/Users/bob to the share /mnt/x", "copied C:/Users/<user> to the share /mnt/x")]
     [InlineData("GET /api/users/42/profile", "GET /api/users/42/profile")]
     [InlineData("https://example.com/users/settings", "https://example.com/users/settings")]
     [InlineData("/Volumes/Macintosh HD/Users/bob/x", "/Volumes/Macintosh HD/Users/<user>/x")]
