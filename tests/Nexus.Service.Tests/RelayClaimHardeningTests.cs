@@ -181,11 +181,11 @@ public sealed class RelayClaimHardeningTests
         Assert.Equal(RelayClaimMessageTypes.ClaimPending, pending.Type);
 
         // Toggling relay off and on rebuilds the host link from scratch.
+        var registrationsBefore = rig.Relay.RegistrationCount(rig.Rid);
         rig.Store.Update(s => s.Auth!.RelayEnabled = false);
-        await Task.Delay(500);
+        await rig.Relay.WaitForHostGoneAsync(rig.Rid, MultiRidFakeRelay.HostWait);
         rig.Store.Update(s => s.Auth!.RelayEnabled = true);
-        await Task.Delay(500);
-        await rig.Relay.WaitForHostAsync(rig.Rid, MultiRidFakeRelay.HostWait);
+        await rig.Relay.WaitForRegistrationsAsync(rig.Rid, registrationsBefore + 1, MultiRidFakeRelay.HostWait);
 
         // The relay replays the old salt: same key, same nonces. No reply may be sealed under them.
         await rig.PeerUpAsync(0x50);

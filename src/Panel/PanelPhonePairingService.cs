@@ -567,13 +567,22 @@ public sealed class PanelPhonePairingService
             && TryValidateSessionToken(cookie, context, out _);
     }
 
+    /// <summary>Test seam: runs between the early single-flight check and the locked recheck.</summary>
+    internal Action? BeforeFlightRecheck { get; set; }
+
     /// <summary>Put a one-shot token back when the claim that consumed it lost the single-flight race.</summary>
-    private void RestoreConsumedToken(string pairToken, bool consumed, DateTime expiry)
+    internal void RestoreConsumedToken(string pairToken, bool consumed, DateTime expiry, HashSet<string>? salts)
     {
-        if (!consumed)
+        // A token that lapsed while the claim ran stays dead.
+        if (!consumed || expiry <= DateTime.UtcNow)
             return;
         lock (_lock)
+        {
             _pairTokens[pairToken] = expiry;
+            // The consume's prune dropped the used salts; a restored token must not forget them.
+            if (salts is not null)
+                _seenRelaySalts[pairToken] = salts;
+        }
         RaisePairTokensChanged();
     }
 
@@ -586,6 +595,10 @@ public sealed class PanelPhonePairingService
     {
         lock (_lock)
         {
+            // A dead or empty token is never keyed.
+            if (!_pairTokens.ContainsKey(pairToken))
+                return false;
+            // The cap bounds memory; a relay burning it only refuses its own channels.
             if (!_seenRelaySalts.TryGetValue(pairToken, out var set))
                 _seenRelaySalts[pairToken] = set = new HashSet<string>(StringComparer.Ordinal);
             return set.Count < MaxRelaySaltsPerToken && set.Add(salt);
@@ -658,6 +671,7 @@ public sealed class PanelPhonePairingService
 
         bool consumed = false;
         DateTime tokenExpiry;
+        HashSet<string>? saltSnapshot = null;
         lock (_lock)
         {
             PruneExpiredPairsLocked();
@@ -674,6 +688,7 @@ public sealed class PanelPhonePairingService
             // the host decides, because the phone has no session to poll with.
             if (!(needsApproval && overRelay))
             {
+                _seenRelaySalts.TryGetValue(pairToken, out saltSnapshot);
                 _pairTokens.Remove(pairToken);
                 consumed = true;
             }
@@ -703,15 +718,19 @@ public sealed class PanelPhonePairingService
             }
             var normalizedRemote = NormalizeRemoteAddress(remoteAddress);
 
+            string? supersededRelayToken = null;
+            BeforeFlightRecheck?.Invoke();
             lock (_pairCodeLock)
             {
                 // Lost a race with another request since the early check.
                 if (_pairCode is { RequestId: { Length: > 0 }, HostDenied: false } && _pairCode.ExpiresAt > nowMs)
                 {
-                    RestoreConsumedToken(pairToken, consumed, tokenExpiry);
+                    RestoreConsumedToken(pairToken, consumed, tokenExpiry, saltSnapshot);
                     return ClaimResult.Fail("code-in-use");
                 }
 
+                // Overwriting a denied relay request: its token dies with it.
+                supersededRelayToken = _pairCode?.RelayPairToken;
                 _pairCode = new PairCodeState
                 {
                     Code = string.Empty,
@@ -728,6 +747,9 @@ public sealed class PanelPhonePairingService
                     RelayPairToken = overRelay ? pairToken : "",
                 };
             }
+
+            if (supersededRelayToken != pairToken)
+                DropRelayPairToken(supersededRelayToken);
 
             if (overRelay)
             {

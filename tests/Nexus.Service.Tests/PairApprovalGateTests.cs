@@ -461,4 +461,64 @@ public class PairApprovalGateTests
 
         Assert.True(owner.NeedsApproval);
     }
+
+    [Fact]
+    public void DeniedRelayRequest_SupersededByANewClaim_DropsItsToken()
+    {
+        var service = NewService();
+        var relayToken = Token(service);
+        var relay = service.ClaimCore(relayToken, "Phone", "", "", "dev-r", overRelay: true, claimedOverHttps: false, supportsSasApproval: true);
+        service.HostDecisionPairCode(relay.RequestId, false);
+
+        // The owner scans: a denied request frees the host, so this claim overwrites it.
+        var owner = service.Claim(Token(service), "dev-owner", "Phone", Ctx("192.168.1.50", https: true), supportsSasApproval: true);
+
+        Assert.True(owner.NeedsApproval);
+        Assert.DoesNotContain(service.GetOutstandingPairTokens(), t => t.Token == relayToken);
+        Assert.False(service.ClaimCore(relayToken, "Phone", "", "", "dev-r", overRelay: true, claimedOverHttps: false, supportsSasApproval: true).Ok);
+    }
+
+    [Fact]
+    public void LostSingleFlightRace_RestoresTheTokenAndItsSeenSalts()
+    {
+        var service = NewService();
+        var token = Token(service);
+        Assert.True(service.TryRegisterRelaySalt(token, "salt-1"));
+        service.BeforeFlightRecheck = () =>
+        {
+            service.BeforeFlightRecheck = null;
+            // Another request lands between the early check and the locked recheck.
+            Assert.True(service.Claim(Token(service), "dev-b", "Phone", Ctx("192.168.1.51", https: true), supportsSasApproval: true).NeedsApproval);
+        };
+
+        var lost = service.Claim(token, "dev-a", "Phone", Ctx("192.168.1.50", https: true), supportsSasApproval: true);
+
+        Assert.Equal("code-in-use", lost.Error);
+        // The one-shot token is back, and the relay still cannot replay a used salt.
+        Assert.Contains(service.GetOutstandingPairTokens(), t => t.Token == token);
+        Assert.False(service.TryRegisterRelaySalt(token, "salt-1"));
+        Assert.True(service.TryRegisterRelaySalt(token, "salt-2"));
+    }
+
+    [Fact]
+    public void RestoreConsumedToken_DoesNotResurrectAnExpiredToken()
+    {
+        var service = NewService();
+        var token = Token(service);
+
+        service.RestoreConsumedToken("lapsed-token", consumed: true, DateTime.UtcNow.AddSeconds(-1), salts: null);
+
+        Assert.DoesNotContain(service.GetOutstandingPairTokens(), t => t.Token == "lapsed-token");
+        Assert.Contains(service.GetOutstandingPairTokens(), t => t.Token == token);
+    }
+
+    [Fact]
+    public void RelaySalts_AreRefusedForDeadOrEmptyTokens()
+    {
+        var service = NewService();
+
+        Assert.False(service.TryRegisterRelaySalt("", "s"));
+        Assert.False(service.TryRegisterRelaySalt("never-issued", "s"));
+        Assert.True(service.TryRegisterRelaySalt(Token(service), "s"));
+    }
 }
