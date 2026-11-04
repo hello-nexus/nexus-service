@@ -97,6 +97,65 @@ public class NzxtFanControllerTests
         return (hub, hid);
     }
 
+    private static NzxtFanControllerHub CycleHub(Func<long> clock) => new() { StatusTimeoutMs = 20, Clock = clock };
+
+    private static void ConnectCycle(NzxtFanControllerHub hub)
+    {
+        var hid = new FakeHid();
+        hid.Incoming.Enqueue(Status(ThreeFans));
+        hub.Attach(hid);
+        Assert.True(hub.Connect());
+    }
+
+    [Fact]
+    public void ConnectionCycles_FirstTwoLogThirdIsSkipped()
+    {
+        long now = 1000;
+        var hub = CycleHub(() => now);
+        var logged = new List<bool>();
+        for (int i = 0; i < 3; i++)
+        {
+            ConnectCycle(hub);
+            logged.Add(hub.LogConnectionCycle);
+            now += 1000;
+            hub.Detach();
+            Assert.Equal(hub.LogConnectionCycle, hub.LogDisconnect);
+        }
+
+        Assert.Equal(new[] { true, true, false }, logged);
+    }
+
+    [Fact]
+    public void StableConnection_LogsDisconnectAndRestartsCycleCounting()
+    {
+        long now = 1000;
+        var hub = CycleHub(() => now);
+        for (int i = 0; i < 4; i++)
+        {
+            ConnectCycle(hub);
+            now += 1000;
+            hub.Detach();
+        }
+        ConnectCycle(hub);
+        Assert.False(hub.LogConnectionCycle);
+
+        now += 600_000;
+        hub.Detach();
+        Assert.True(hub.LogDisconnect);
+
+        ConnectCycle(hub);
+        Assert.True(hub.LogConnectionCycle);
+    }
+
+    [Fact]
+    public void Detach_WithoutConnection_DoesNotLogDisconnect()
+    {
+        var hub = CycleHub(() => 1000);
+        hub.Detach();
+
+        Assert.False(hub.LogDisconnect);
+    }
+
     [Fact]
     public void Status_DecodesModeRpmAndDutyPerChannel()
     {

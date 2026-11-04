@@ -122,7 +122,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                 finally
                 {
                     _hub.Detach();
-                    if (started && _hub.LogConnectionCycle)
+                    if (started && _hub.LogDisconnect)
                     {
                         ServiceLog.Info($"[nzxt-fan-controller] disconnected: {detachCause}; {_hub.DescribeSilence()}");
                     }
