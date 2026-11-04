@@ -1139,38 +1139,54 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
-    public void DerivePresetFromCurves_PinnedUncontrolledOrUnresponsiveFan_StaysOff()
+    public void DerivePresetFromCurves_PinnedUncontrolledFan_StaysOff()
     {
-        // The narrowing halves of the pinned-fan check. An uncontrolled channel
-        // is inert at the write chokepoint and an unresponsive one is physically
-        // gone, so a stale attachment on either is not something Nexus drives.
+        // An uncontrolled channel is inert at the write chokepoint, so a stale
+        // attachment on it is not something Nexus drives.
         var fans = new FakeFanProvider(
             channels: new List<FanChannel>
             {
                 new() { Id = "fan1", Name = "Fan 1" },
-                new() { Id = "fan2", Name = "Fan 2", Classification = "Unresponsive" },
                 new() { Id = "fan3", Name = "Fan 3" },
             },
             temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
-        foreach (var id in new[] { "fan2", "fan3" })
-        {
-            FanProfiles.SetPinOverride(fans.GetFanChannels().First(c => c.Id == id), true, _store);
-        }
+        FanProfiles.SetPinOverride(fans.GetFanChannels().First(c => c.Id == "fan3"), true, _store);
         FanControlledState.SetControlled("fan3", false, _store);
         _store.Update(s =>
         {
             s.Cooling.Curves.Add(new CurveDocument
             {
                 Id = "user-a",
-                Outputs = new List<CurveOutputDocument>
-                {
-                    new() { Id = "fan2", Type = "Fan" },
-                    new() { Id = "fan3", Type = "Fan" },
-                },
+                Outputs = new List<CurveOutputDocument> { new() { Id = "fan3", Type = "Fan" } },
             });
         });
 
         Assert.Equal("off", FanProfiles.DerivePresetFromCurves(_store, fans));
+    }
+
+    [Fact]
+    public void DerivePresetFromCurves_PinnedUnresponsiveFanOnACurve_IsCustom()
+    {
+        // An Unresponsive fan is still driven, so a pinned one on a user curve
+        // means software is driving it and the system is not off.
+        var fans = new FakeFanProvider(
+            channels: new List<FanChannel>
+            {
+                new() { Id = "fan1", Name = "Fan 1" },
+                new() { Id = "fan2", Name = "Fan 2", Classification = "Unresponsive" },
+            },
+            temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
+        FanProfiles.SetPinOverride(fans.GetFanChannels().First(c => c.Id == "fan2"), true, _store);
+        _store.Update(s =>
+        {
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "user-a",
+                Outputs = new List<CurveOutputDocument> { new() { Id = "fan2", Type = "Fan" } },
+            });
+        });
+
+        Assert.Equal("custom", FanProfiles.DerivePresetFromCurves(_store, fans));
     }
 
     [Fact]
