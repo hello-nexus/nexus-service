@@ -833,6 +833,8 @@ public sealed class CorsairLinkHub : IDisposable
     private int Transfer(ReadOnlySpan<byte> command, ReadOnlySpan<byte> payload)
     {
         if (_device == null || ForeignHostSeen) return -1;
+        // A reply is owed for this very command byte (an earlier timed-out request): replies arrive in order, so the first one with this echo is that late one.
+        var sameOwed = _owedReplies[command[0]] > 0 && NowMs() - _owedSinceMs[command[0]] <= OwedReplyMaxAgeMs;
         Array.Clear(_write);
         _write[1] = 0x00;
         _write[2] = 0x01;
@@ -862,9 +864,10 @@ public sealed class CorsairLinkHub : IDisposable
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
         // A late reply to an earlier timed-out command shifts the stream by one; keep
         // reading until this command's own reply arrives so the shift does not persist.
-        for (var i = 0; i < CorsairLinkProtocol.ReadResyncTries && TakeLateOwedReply(command[0]); i++)
+        for (var i = 0; i < CorsairLinkProtocol.ReadResyncTries && TakeLateReply(command[0], ref sameOwed); i++)
         {
-            n = _device.Read(_readRaw, ResyncReadTimeoutMs);
+            // This command's own reply may not be produced yet, so it gets the full read timeout.
+            n = _device.Read(_readRaw, ReadTimeoutMs);
             if (n <= 0)
             {
                 if (_trace != null) TraceNote($"read n={n}");
@@ -886,11 +889,16 @@ public sealed class CorsairLinkHub : IDisposable
         if (_owedReplies[cmd] < OwedReplyMaxCount) _owedReplies[cmd]++;
     }
 
-    // True when _read holds a reply owed for a different command, which it consumes.
-    private bool TakeLateOwedReply(byte sent)
+    // True when _read holds a late reply Nexus is owed, which it consumes. An echo equal to the sent byte counts only when that byte was already owed before the send.
+    private bool TakeLateReply(byte sent, ref bool sameOwed)
     {
         var echo = _read[CorsairLinkProtocol.ResponseCommandOffset];
-        if (echo == 0 || echo == sent) return false;
+        if (echo == 0) return false;
+        if (echo == sent)
+        {
+            if (!sameOwed) return false;
+            sameOwed = false;
+        }
         return TakeOwedLocked(echo);
     }
 
