@@ -153,6 +153,8 @@ internal static class DdcGate
     /// every failure path read as unlocked: a query that cannot answer must not
     /// disable brightness control forever.
     /// </summary>
+    private static readonly Nexus.Service.Platform.LogGate s_queryFailureLog = new(TimeSpan.FromMinutes(10));
+
     private static bool QuerySessionLocked()
     {
         try
@@ -172,7 +174,12 @@ internal static class DdcGate
         }
         catch (Exception ex)
         {
-            Nexus.Service.Platform.HelperLog.Warn($"[ddc] lock-state query failed: {ex.Message}");
+            // Runs every poll, so a persistent failure is one line per interval.
+            if (s_queryFailureLog.Check("lock-state", ex.GetType().Name, out var withheld, out var changed))
+            {
+                Nexus.Service.Platform.HelperLog.Warn(
+                    $"[ddc] lock-state query failed: {ex.Message}{Nexus.Service.Platform.LogGate.Suffix(withheld, changed)}");
+            }
             return false;
         }
     }

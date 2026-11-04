@@ -137,7 +137,7 @@ public sealed unsafe class WindowsVolumeProvider : IVolumeProvider, IDisposable
             var path = System.IO.Path.Combine(dir, "nexus-volume.log");
             lock (s_logLock)
             {
-                System.IO.File.AppendAllText(path, Nexus.Service.Platform.LogLineFormat.Line(DateTime.UtcNow, Nexus.Service.Platform.LogLineFormat.Info, "volume", msg) + "\n");
+                System.IO.File.AppendAllText(path, Nexus.Service.Platform.LogLineFormat.Line(DateTime.UtcNow, Nexus.Service.Platform.LogLineFormat.Info, "volume", msg, newline: true));
             }
         }
         catch { /* logging is best-effort */ }

@@ -144,7 +144,7 @@ public static class LaunchFocus
         // Refused when the window is elevated (Task Manager, admin apps): UIPI blocks this medium-integrity helper.
         if (GetForegroundWindow() != window)
         {
-            HelperLog.Warn("[launch-focus] focus refused, asking the service to focus it elevated");
+            HelperLog.Write("[launch-focus] focus refused, asking the service to focus it elevated");
             s_focusElevated?.Invoke(window, focusedAtArm);
         }
         else

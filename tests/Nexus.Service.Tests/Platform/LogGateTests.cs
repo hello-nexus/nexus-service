@@ -104,6 +104,36 @@ public class LogGateTests
             Assert.True(gate.Check("k" + i, "s", out _));
     }
 
+    [Fact]
+    public void StateChange_ReportsStateChangedFlag_ButIntervalSummaryDoesNot()
+    {
+        var gate = Gate();
+        gate.Check("k", "a", out _, out var changed);
+        Assert.False(changed);
+        gate.Check("k", "a", out _, out _);
+        Assert.True(gate.Check("k", "b", out var n, out changed));
+        Assert.True(changed);
+        Assert.Equal(1, n);
+        gate.Check("k", "b", out _, out _);
+        _now += 60_000;
+        Assert.True(gate.Check("k", "b", out _, out changed));
+        Assert.False(changed);
+    }
+
+    [Fact]
+    public void ResetPrefix_DropsMatchingKeysAndReturnsWithheldTotal()
+    {
+        var gate = Gate();
+        foreach (var k in new[] { "probe:a", "probe:b", "gate" })
+        {
+            gate.Check(k, "s", out _);
+            gate.Check(k, "s", out _);
+        }
+        Assert.Equal(2, gate.ResetPrefix("probe:"));
+        Assert.True(gate.Check("probe:a", "s", out _));
+        Assert.False(gate.Check("gate", "s", out _));
+    }
+
     [Theory]
     [InlineData(0, "")]
     [InlineData(1, " suppressed=1")]
@@ -111,5 +141,11 @@ public class LogGateTests
     public void Suffix_NamesTheCountOnlyWhenNonZero(int count, string expected)
     {
         Assert.Equal(expected, LogGate.Suffix(count));
+    }
+
+    [Fact]
+    public void Suffix_LabelsPreviousStateCount()
+    {
+        Assert.Equal(" prev_repeats=3", LogGate.Suffix(3, stateChanged: true));
     }
 }

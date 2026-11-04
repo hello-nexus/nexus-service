@@ -40,8 +40,8 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     private static void Log(string message) => Nexus.Service.Platform.HelperLog.Write($"[ddc] {message}");
 
     // Enumerate runs every poll and a non-capable monitor is re-probed every
-    // time, so these two lines were 95 percent of nexus-helper.log. Each is
-    // written on change and then at most once per interval with a count.
+    // time, so these lines are written on change and then at most once per
+    // interval with a count.
     private static readonly TimeSpan RepeatLogInterval = TimeSpan.FromMinutes(10);
     private readonly Nexus.Service.Platform.LogGate _enumerateLog = new(RepeatLogInterval);
 
@@ -134,9 +134,9 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             var gated = DdcGate.ShouldSkip(out var gateReason);
             if (gated)
             {
-                if (_enumerateLog.Check("gate", gateReason, out var withheld))
+                if (_enumerateLog.Check("gate", gateReason, out var withheld, out var gateChanged))
                 {
-                    Log($"enumerate: probing suppressed ({gateReason}){Nexus.Service.Platform.LogGate.Suffix(withheld)}");
+                    Log($"enumerate: probing suppressed ({gateReason}){Nexus.Service.Platform.LogGate.Suffix(withheld, gateChanged)}");
                 }
             }
             else if (_enumerateLog.Reset("gate", out var gatedCount))
@@ -225,9 +225,9 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                     }
                 }
                 var probeState = $"capable={dto.IsDdcCapable} brightness={dto.Capabilities.Brightness} contrast={dto.Capabilities.Contrast}";
-                if (_enumerateLog.Check("probe:" + dto.Id, probeState, out var repeats))
+                if (_enumerateLog.Check("probe:" + dto.Id, probeState, out var repeats, out var probeChanged))
                 {
-                    Log($"probed id={dto.Id} {probeState}{Nexus.Service.Platform.LogGate.Suffix(repeats)}");
+                    Log($"probed id={dto.Id} {probeState}{Nexus.Service.Platform.LogGate.Suffix(repeats, probeChanged)}");
                 }
                 // Only a successful probe is cached. A failure is transient far
                 // more often than it is real - a monitor still waking, bus
@@ -450,7 +450,8 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             if (_capsSignature == signature) return;
             if (_capsSignature.Length > 0)
             {
-                Log("attached displays changed; dropping the probe cache");
+                // Every display is a first occurrence again; the counts of the old set are reported here.
+                Log($"attached displays changed; dropping the probe cache{Nexus.Service.Platform.LogGate.Suffix(_enumerateLog.ResetPrefix("probe:"))}");
             }
             _capsSignature = signature;
             _capsCache.Clear();

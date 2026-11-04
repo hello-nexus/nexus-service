@@ -24,9 +24,9 @@ internal static class LogLineFormat
     /// Builds one log line without the trailing newline. A message that already opens with a
     /// <c>[tag]</c> keeps it; otherwise <paramref name="defaultTag"/> is prefixed. Line breaks are
     /// folded so one entry stays one line. <paramref name="pid"/> follows the tag as <c>pid=N</c>
-    /// for files several processes append to.
+    /// for files several processes append to. <paramref name="newline"/> appends the terminator for append-only writers.
     /// </summary>
-    public static string Line(DateTime utc, string level, string defaultTag, string message, int? pid = null)
+    public static string Line(DateTime utc, string level, string defaultTag, string message, int? pid = null, bool newline = false)
     {
         message = Fold(message);
         string tag;
@@ -48,6 +48,8 @@ internal static class LogLineFormat
             sb.Append(" pid=").Append(p.ToString(CultureInfo.InvariantCulture));
         if (body.Length > 0)
             sb.Append(' ').Append(body);
+        if (newline)
+            sb.Append('\n');
         return sb.ToString();
     }
 
@@ -62,13 +64,16 @@ internal static class LogLineFormat
         return string.Join(" | ", parts);
     }
 
-    /// <summary>Last namespace segment of a logger category in kebab case ("Microsoft.Hosting.Lifetime" gives "lifetime", "MdnsAdvertiser" gives "mdns-advertiser").</summary>
+    /// <summary>Last namespace segment of a logger category, generic arguments dropped, in kebab case ("Microsoft.Hosting.Lifetime" gives "lifetime", "MdnsAdvertiser" gives "mdns-advertiser").</summary>
     public static string Kebab(string category)
     {
         if (string.IsNullOrEmpty(category))
             return "log";
-        var start = category.LastIndexOf('.') + 1;
-        var segment = category.AsSpan(start);
+        // Generic categories read "Ns.Outer.Gen<Ns.Arg>" or "Ns.Gen`1": name the generic type, not its argument.
+        var cut = category.IndexOfAny(new[] { '<', '`' });
+        var name = cut > 0 ? category[..cut] : category;
+        var start = name.LastIndexOf('.') + 1;
+        var segment = name.AsSpan(start);
         if (segment.IsEmpty)
             return "log";
         var sb = new StringBuilder(segment.Length + 4);
@@ -91,7 +96,7 @@ internal static class LogLineFormat
         return sb.ToString();
     }
 
-    private static bool TryTakeTag(string message, out string tag, out string rest)
+    internal static bool TryTakeTag(string message, out string tag, out string rest)
     {
         tag = string.Empty;
         rest = message;

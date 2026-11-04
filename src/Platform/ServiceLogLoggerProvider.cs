@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 
 namespace Nexus.Service.Platform;
 
@@ -9,7 +10,19 @@ namespace Nexus.Service.Platform;
 /// </summary>
 internal sealed class ServiceLogLoggerProvider : ILoggerProvider
 {
-    public ILogger CreateLogger(string categoryName) => new Logger(LogLineFormat.Kebab(categoryName));
+    /// <summary>Swaps the console provider for this one. Other registered providers (such as ErrorLoggerProvider) are kept.</summary>
+    public static void ReplaceConsoleProvider(ILoggingBuilder logging)
+    {
+        foreach (var d in logging.Services
+            .Where(d => d.ServiceType == typeof(ILoggerProvider) && d.ImplementationType == typeof(ConsoleLoggerProvider))
+            .ToList())
+        {
+            logging.Services.Remove(d);
+        }
+        logging.AddProvider(new ServiceLogLoggerProvider());
+    }
+
+    public ILogger CreateLogger(string categoryName) => new Logger(categoryName, LogLineFormat.Kebab(categoryName));
 
     public void Dispose()
     {
@@ -17,9 +30,14 @@ internal sealed class ServiceLogLoggerProvider : ILoggerProvider
 
     private sealed class Logger : ILogger
     {
+        private readonly string _category;
         private readonly string _tag;
 
-        public Logger(string tag) => _tag = tag;
+        public Logger(string category, string tag)
+        {
+            _category = category;
+            _tag = tag;
+        }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -30,9 +48,17 @@ internal sealed class ServiceLogLoggerProvider : ILoggerProvider
             if (!IsEnabled(logLevel))
                 return;
             var text = LogLineFormat.Fold(formatter(state, exception));
+            // A message that already carries its own [tag] keeps it; the category tag would double it.
+            var message = LogLineFormat.TryTakeTag(text, out _, out _) ? text : $"[{_tag}] {text}";
+            if (logLevel >= LogLevel.Warning)
+            {
+                // The kebab tag keeps only the last segment, so the full category rides along where it matters.
+                message += $" cat={_category}";
+                if (eventId.Id != 0)
+                    message += $" event={eventId.Id}";
+            }
             if (exception is not null)
-                text = $"{text} ex={LogLineFormat.Fold(exception.ToString())}";
-            var message = $"[{_tag}] {text}";
+                message += $" ex={LogLineFormat.Fold(exception.ToString())}";
             if (logLevel >= LogLevel.Error) ServiceLog.Error(message);
             else if (logLevel == LogLevel.Warning) ServiceLog.Warn(message);
             else ServiceLog.Info(message);

@@ -321,7 +321,7 @@ public static class TrayIcon
                         // service's connect-time push, or the retry poll
                         // re-attempts; latching it true here is what stranded
                         // the icon invisible until a manual off/on toggle.
-                        DiagFile("NIM_ADD failed; shell tray not ready");
+                        DiagFile("NIM_ADD failed; shell tray not ready", warn: true);
                         StartIconRetry();
                     }
                 }
@@ -405,7 +405,7 @@ public static class TrayIcon
             ApplyDisplayWatch();
             RegisterScreenOffTimeoutWatch(hwnd);
             var sessionWatch = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
-            if (!sessionWatch) DiagFile($"session lock watch: register failed ({Marshal.GetLastWin32Error()})");
+            if (!sessionWatch) DiagFile($"session lock watch: register failed ({Marshal.GetLastWin32Error()})", warn: true);
             _sessionWatchActive = sessionWatch;
             _taskbarCreatedMsg = RegisterWindowMessage("TaskbarCreated");
 
@@ -507,7 +507,7 @@ public static class TrayIcon
             var guid = setting;
             if (RegisterPowerSettingNotification(hwnd, ref guid, DEVICE_NOTIFY_WINDOW_HANDLE) == IntPtr.Zero)
             {
-                DiagFile($"screen-off timeout watch: register {setting} failed ({Marshal.GetLastWin32Error()})");
+                DiagFile($"screen-off timeout watch: register {setting} failed ({Marshal.GetLastWin32Error()})", warn: true);
             }
         }
     }
@@ -544,14 +544,17 @@ public static class TrayIcon
         }
     }
 
-    private static void DiagFile(string msg)
+    private static void DiagFile(string msg, bool warn = false)
     {
         // Co-located with nexus-service.log under the canonical logs dir, which
         // both LocalSystem and the user-session helper can write (each owns the
         // file it creates).
         try
         {
-            var line = Nexus.Service.Platform.LogLineFormat.Line(DateTime.UtcNow, Nexus.Service.Platform.LogLineFormat.Info, "tray", msg, Environment.ProcessId) + "\n";
+            var line = Nexus.Service.Platform.LogLineFormat.Line(
+                DateTime.UtcNow,
+                warn ? Nexus.Service.Platform.LogLineFormat.Warn : Nexus.Service.Platform.LogLineFormat.Info,
+                "tray", msg, Environment.ProcessId, newline: true);
             Nexus.Service.Platform.ServiceLog.AppendUserSessionLog("nexus-tray.log", System.Text.Encoding.UTF8.GetBytes(line));
         }
         catch { }

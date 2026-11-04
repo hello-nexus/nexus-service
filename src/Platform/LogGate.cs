@@ -34,8 +34,12 @@ internal sealed class LogGate
     /// lines withheld since the previous emission for this key; after a state change it counts repeats
     /// of the previous state.
     /// </summary>
-    public bool Check(string key, string state, out int suppressed)
+    public bool Check(string key, string state, out int suppressed) => Check(key, state, out suppressed, out _);
+
+    /// <summary>As <see cref="Check(string, string, out int)"/>; <paramref name="stateChanged"/> is true when the count belongs to the previous state.</summary>
+    public bool Check(string key, string state, out int suppressed, out bool stateChanged)
     {
+        stateChanged = false;
         var now = _nowMs();
         lock (_lock)
         {
@@ -52,6 +56,7 @@ internal sealed class LogGate
             if (!string.Equals(e.State, state, StringComparison.Ordinal) || now - e.LastEmitMs >= _intervalMs)
             {
                 suppressed = e.Suppressed;
+                stateChanged = !string.Equals(e.State, state, StringComparison.Ordinal);
                 e.State = state;
                 e.LastEmitMs = now;
                 e.Suppressed = 0;
@@ -79,6 +84,22 @@ internal sealed class LogGate
         return false;
     }
 
-    /// <summary>Message suffix naming the withheld count, empty when none.</summary>
-    public static string Suffix(int suppressed) => suppressed > 0 ? $" suppressed={suppressed}" : string.Empty;
+    /// <summary>Forgets every key starting with <paramref name="prefix"/>; returns the withheld lines dropped with them.</summary>
+    public int ResetPrefix(string prefix)
+    {
+        var total = 0;
+        lock (_lock)
+        {
+            foreach (var key in _entries.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            {
+                total += _entries[key].Suppressed;
+                _entries.Remove(key);
+            }
+        }
+        return total;
+    }
+
+    /// <summary>Message suffix naming the withheld count, empty when none. After a state change the count is the previous state's repeats and is labelled so.</summary>
+    public static string Suffix(int suppressed, bool stateChanged = false) =>
+        suppressed <= 0 ? string.Empty : stateChanged ? $" prev_repeats={suppressed}" : $" suppressed={suppressed}";
 }

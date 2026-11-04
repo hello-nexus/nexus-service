@@ -20,13 +20,11 @@ internal static class HelperLog
 
     public static void Warn(string message) => Append(LogLineFormat.Warn, message);
 
-    public static void Error(string message) => Append(LogLineFormat.Error, message);
-
     private static void Append(string level, string message)
     {
         try
         {
-            var bytes = Encoding.UTF8.GetBytes(LogLineFormat.Line(DateTime.UtcNow, level, "helper", message, Environment.ProcessId) + "\n");
+            var bytes = Encoding.UTF8.GetBytes(LogLineFormat.Line(DateTime.UtcNow, level, "helper", message, Environment.ProcessId, newline: true));
             ServiceLog.AppendUserSessionLog("nexus-helper.log", bytes);
         }
         catch { }

@@ -58,6 +58,13 @@ public class LogLineFormatTests
     }
 
     [Fact]
+    public void Line_Newline_AppendsTerminator()
+    {
+        var line = LogLineFormat.Line(At, LogLineFormat.Info, "gpu", "m", newline: true);
+        Assert.Equal("2026-11-04T08:58:07.331Z INF [gpu] m\n", line);
+    }
+
+    [Fact]
     public void Line_EmptyMessage_HasNoTrailingSpace()
     {
         var line = LogLineFormat.Line(At, LogLineFormat.Info, "gpu", "");
@@ -76,6 +83,8 @@ public class LogLineFormatTests
     [InlineData("Nexus.Service.Discovery.MdnsAdvertiser", "mdns-advertiser")]
     [InlineData("Microsoft.AspNetCore.Server.Kestrel", "kestrel")]
     [InlineData("HTTPClient", "http-client")]
+    [InlineData("Nexus.Service.Foo.Gen<Nexus.Service.Bar>", "gen")]
+    [InlineData("Nexus.Service.Foo.Gen`1", "gen")]
     [InlineData("", "log")]
     [InlineData("Ends.With.", "log")]
     public void Kebab_UsesLastSegmentInKebabCase(string category, string expected)
