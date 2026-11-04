@@ -220,6 +220,19 @@ public class CorsairLinkHubTakeoverTests
     }
 
     [Fact]
+    public void A_late_software_mode_reply_on_the_firmware_read_leaves_the_real_firmware_reply_to_be_read()
+    {
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(700) };
+        using var hub = NewHub(device);
+
+        var ok = hub.Initialize();
+
+        Assert.True(ok, hub.LastInitTrace);
+        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
+        Assert.Equal("4.1.656", hub.State.Firmware);
+    }
+
+    [Fact]
     public void A_foreign_report_inside_the_drain_window_marks_another_program()
     {
         var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(300) };

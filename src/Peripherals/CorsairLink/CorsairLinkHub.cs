@@ -339,8 +339,12 @@ public sealed class CorsairLinkHub : IDisposable
 
         TraceNote("step=firmware");
         var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
-        // A stray reply answered the read; the firmware major gates the port mapping, so ask once more.
-        if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] != CorsairLinkProtocol.CmdGetFirmware[0]) fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
+        // A stray reply answered the read and the firmware major gates the port mapping. The real reply may already be queued behind it, so read that first; ask again only when nothing is queued.
+        if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] != CorsairLinkProtocol.CmdGetFirmware[0])
+        {
+            var queued = ReadStrippedLocked(ReadTimeoutMs);
+            fw = queued > 0 ? queued : Transfer(CorsairLinkProtocol.CmdGetFirmware);
+        }
         if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdGetFirmware[0])
         {
             State.Firmware = $"{_read[4]}.{_read[5]}.{_read[6] | (_read[7] << 8)}";
