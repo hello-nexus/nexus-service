@@ -33,16 +33,33 @@ public sealed class PhoneTunnelPorts
     public static (int Http, int Https) Derive(int servicePort)
         => (servicePort + 2, (servicePort == 9400 ? 9443 : servicePort + 443) + 2);
 
+    /// <summary><see cref="HttpContext.Items"/> key set on every phone tunnel request; the server creates Items per request, so a client cannot set it.</summary>
+    public const string ItemKey = "nexus.phone-tunnel";
+
+    /// <summary>True only for a request <see cref="Reclassify"/> marked as arriving on a phone tunnel listener.</summary>
+    public static bool IsTunnelRequest(HttpContext ctx)
+        => ctx.Items.TryGetValue(ItemKey, out var marked) && marked is true;
+
     public bool IsPhoneTunnelRequest(HttpContext ctx)
     {
         var port = ctx.Connection.LocalPort;
         return port != 0 && (port == HttpPort || port == HttpsPort);
     }
 
-    /// <summary>Re-label a phone tunnel request as the non-loopback client it is. Call first in the pipeline.</summary>
-    public void Reclassify(HttpContext ctx)
+    /// <summary>
+    /// Re-label a phone tunnel request as the non-loopback client it is and mark
+    /// it. Call first in the pipeline. Returns false for a request that is NOT on
+    /// a tunnel listener yet claims the stand-in address (a LAN host borrowing
+    /// it): the caller must refuse it, so that address only ever means the tunnel.
+    /// </summary>
+    public bool Reclassify(HttpContext ctx)
     {
         if (IsPhoneTunnelRequest(ctx))
+        {
+            ctx.Items[ItemKey] = true;
             ctx.Connection.RemoteIpAddress = PhoneRemote;
+            return true;
+        }
+        return !PhoneRemote.Equals(ctx.Connection.RemoteIpAddress);
     }
 }

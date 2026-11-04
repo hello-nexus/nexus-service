@@ -61,6 +61,7 @@ public sealed class UsbPhoneWatcher : BackgroundService
 
     private readonly Dictionary<string, bool> _reverseAppliedBySerial = new(StringComparer.Ordinal);
     private readonly HashSet<string> _reverseRefreshedThisRun = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _noTunnelWarned = new(StringComparer.Ordinal);
     private readonly HashSet<string> _launchedThisRun = new(StringComparer.Ordinal);
     // Serials confirmed to have the panel app; skips the per-tick pm-list shell.
     private readonly HashSet<string> _panelAppConfirmedBySerial = new(StringComparer.Ordinal);
@@ -269,6 +270,15 @@ public sealed class UsbPhoneWatcher : BackgroundService
                 _reverseAppliedBySerial.Remove(device.Serial);
                 ServiceLog.Info($"[usb-phone-watcher] {device.Serial}: reverse apply failed for {remoteSpec}->{localSpec}: {ex.GetType().Name}: {ex.Message}");
             }
+        }
+
+        if (applied.Count == 0)
+        {
+            // No phone listener is bound: nothing was reversed, so do not claim it
+            // was and do not mark the serial (a later tick may find a port free).
+            if (_noTunnelWarned.Add(device.Serial))
+                ServiceLog.Warn($"[usb-phone-watcher] {device.Serial}: no phone tunnel listener is bound; wired Android stays unreachable");
+            return;
         }
 
         if (allApplied && !_reverseAppliedBySerial.ContainsKey(device.Serial))

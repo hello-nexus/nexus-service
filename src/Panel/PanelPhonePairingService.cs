@@ -57,6 +57,14 @@ public sealed class PanelPhonePairingService
     // /start); _pairCodeAttempts tracks per-IP brute-force lockouts.
     private readonly object _pairCodeLock = new();
     private PairCodeState? _pairCode;
+    // Relay pair tokens parked on a pending request (guarded by _lock). A held
+    // token cannot be claimed again, so one photographed QR is one prompt.
+    private readonly HashSet<string> _heldRelayTokens = new(StringComparer.Ordinal);
+    // Unix ms of the last auto-open; at most one per AutoOpenMinIntervalMs overall.
+    private long _lastAutoOpenMs;
+    private const long AutoOpenMinIntervalMs = 60_000;
+    // Collection window an approved request keeps past its original expiry.
+    private const long ApprovedCollectGraceMs = 15_000;
     private readonly Dictionary<string, PairCodeAttempt> _pairCodeAttempts = new(StringComparer.Ordinal);
 
     public int ServicePort { get; set; } = 9400;
@@ -203,8 +211,7 @@ public sealed class PanelPhonePairingService
         if (string.Equals(frame.Kind, "request", StringComparison.Ordinal))
         {
             ScheduleRequestExpiry(frame.RequestId, frame.ExpiresAt);
-            try { PairRequestCreated?.Invoke(); }
-            catch { /* window open is best-effort */ }
+            RaiseCreatedDebounced();
 
             // Gate on live subscribers: if a dashboard is connected it
             // shows the modal itself, so a notification would be redundant.
@@ -268,9 +275,36 @@ public sealed class PanelPhonePairingService
             return;
         bool removed;
         lock (_lock)
+        {
+            _heldRelayTokens.Remove(token);
             removed = _pairTokens.Remove(token);
+        }
         if (removed)
             RaisePairTokensChanged();
+    }
+
+    /// <summary>
+    /// Bring the desktop window forward for a new request, at most once per
+    /// minute overall (a LAN host rotating addresses cannot pop it repeatedly)
+    /// and off the calling thread: the Windows launcher blocks on schtasks and
+    /// callers may hold the pair-code lock.
+    /// </summary>
+    private void RaiseCreatedDebounced()
+    {
+        var handler = PairRequestCreated;
+        if (handler is null)
+            return;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var last = Interlocked.Read(ref _lastAutoOpenMs);
+        if (last != 0 && now - last < AutoOpenMinIntervalMs)
+            return;
+        if (Interlocked.CompareExchange(ref _lastAutoOpenMs, now, last) != last)
+            return;
+        _ = Task.Run(() =>
+        {
+            try { handler(); }
+            catch { /* window open is best-effort */ }
+        });
     }
 
     private void ResolvePairAttention()
@@ -420,7 +454,7 @@ public sealed class PanelPhonePairingService
     public PanelPhoneClaimResponse Claim(string pairToken, string? deviceId, string? deviceName, HttpContext context, bool supportsSasApproval = false)
     {
         var userAgent = context.Request.Headers["User-Agent"].ToString();
-        var remoteAddress = context.Connection.RemoteIpAddress?.ToString() ?? "";
+        var remoteAddress = RemoteKey(context);
         // A deviceId on the POST body wins; fall back to the ?deviceId= query
         // param. Both claim paths funnel the same stable id into ClaimCore.
         var effectiveDeviceId = string.IsNullOrWhiteSpace(deviceId)
@@ -497,6 +531,23 @@ public sealed class PanelPhonePairingService
     /// the only evidence that lets a re-pair skip host approval. A client
     /// supplied deviceId or a UA+IP match proves nothing: both are spoofable.
     /// </summary>
+    /// <summary>
+    /// Remote address used to key lockouts and confirm matching. The tunnel's
+    /// stand-in address counts only on a request the tunnel middleware marked;
+    /// the same address from anywhere else is no identity at all.
+    /// </summary>
+    private static string RemoteKey(HttpContext context)
+    {
+        var address = context.Connection.RemoteIpAddress;
+        if (address is not null
+            && address.Equals(PhoneTunnelPorts.PhoneRemote)
+            && !PhoneTunnelPorts.IsTunnelRequest(context))
+        {
+            return "";
+        }
+        return address?.ToString() ?? "";
+    }
+
     private bool PresentsValidSession(HttpContext context)
     {
         var bearer = Nexus.Service.Auth.AuthRequestPolicy.ExtractBearerOrQueryToken(context);
@@ -505,6 +556,26 @@ public sealed class PanelPhonePairingService
         var cookie = context.Request.Cookies[SessionCookieName];
         return !string.Equals(bearer, cookie, StringComparison.Ordinal)
             && TryValidateSessionToken(cookie, context, out _);
+    }
+
+    /// <summary>True while a request is pending, or approved and not yet collected.</summary>
+    private bool PairFlightBusy()
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        lock (_pairCodeLock)
+            return _pairCode is { RequestId: { Length: > 0 } } state && state.ExpiresAt > nowMs;
+    }
+
+    /// <summary>
+    /// A session token that may skip approval on a relay claim. Relay requests
+    /// carry no client address, so the HTTP-claimed IP+UA bind cannot be checked;
+    /// only HTTPS- or relay-claimed sessions (which skip that bind anyway) qualify.
+    /// </summary>
+    public bool PresentsPortableSession(string? token)
+    {
+        if (!TryValidateSessionToken(token, context: null, out var id))
+            return false;
+        return SnapshotSessionList()?.FirstOrDefault(t => t.Id == id) is { ClaimedOverHttps: true };
     }
 
     /// <summary>
@@ -543,6 +614,21 @@ public sealed class PanelPhonePairingService
 
         // Only a device presenting its own live session skips host approval.
         var needsApproval = !presentedValidSession;
+
+        // Single-flight, like the code and Wi-Fi flows: no claim may replace a
+        // request that is pending or approved and not yet collected.
+        // A relay token with a request parked on it admits no second claim.
+        if (needsApproval && overRelay)
+        {
+            lock (_lock)
+            {
+                if (_heldRelayTokens.Contains(pairToken))
+                    return ClaimResult.Fail("claim-in-progress");
+            }
+        }
+
+        if (needsApproval && PairFlightBusy())
+            return ClaimResult.Fail("code-in-use");
 
         bool consumed = false;
         lock (_lock)
@@ -590,13 +676,11 @@ public sealed class PanelPhonePairingService
             }
             var normalizedRemote = NormalizeRemoteAddress(remoteAddress);
 
-            string? supersededRequestId = null;
             lock (_pairCodeLock)
             {
-                if (_pairCode is { RequestId: { Length: > 0 } prior } && _pairCode.ExpiresAt > nowMs)
-                {
-                    supersededRequestId = prior;
-                }
+                // Lost a race with another request since the early check.
+                if (_pairCode is { RequestId: { Length: > 0 } } && _pairCode.ExpiresAt > nowMs)
+                    return ClaimResult.Fail("code-in-use");
 
                 _pairCode = new PairCodeState
                 {
@@ -621,18 +705,11 @@ public sealed class PanelPhonePairingService
                 lock (_lock)
                 {
                     if (_pairTokens.ContainsKey(pairToken))
+                    {
                         _pairTokens[pairToken] = DateTimeOffset.FromUnixTimeMilliseconds(expires).UtcDateTime;
+                        _heldRelayTokens.Add(pairToken);
+                    }
                 }
-            }
-
-            if (supersededRequestId is not null)
-            {
-                PublishPairCodeFrame(new PanelPhonePairCodeRequestFrame
-                {
-                    Kind = "cancelled",
-                    RequestId = supersededRequestId,
-                    Reason = "host-started-new-code",
-                });
             }
 
             PublishPairCodeFrame(new PanelPhonePairCodeRequestFrame
@@ -1154,6 +1231,7 @@ public sealed class PanelPhonePairingService
         var expired = _pairTokens.Where(kvp => kvp.Value <= now).Select(kvp => kvp.Key).ToList();
         foreach (var token in expired)
             _pairTokens.Remove(token);
+        _heldRelayTokens.RemoveWhere(t => !_pairTokens.ContainsKey(t));
         return expired.Count;
     }
 
@@ -1536,10 +1614,14 @@ public sealed class PanelPhonePairingService
         var nonce = RandomNumberGenerator.GetBytes(16);
 
         string? supersededRequestId = null;
+        string? supersededRelayToken = null;
         lock (_pairCodeLock)
         {
             if (_pairCode is { RequestId: { Length: > 0 } prior })
+            {
                 supersededRequestId = prior;
+                supersededRelayToken = _pairCode.RelayPairToken;
+            }
 
             _pairCode = new PairCodeState
             {
@@ -1549,6 +1631,7 @@ public sealed class PanelPhonePairingService
             };
         }
 
+        DropRelayPairToken(supersededRelayToken);
         if (supersededRequestId is not null)
         {
             PublishPairCodeFrame(new PanelPhonePairCodeRequestFrame
@@ -1590,7 +1673,7 @@ public sealed class PanelPhonePairingService
         if (!context.Request.IsHttps)
             return new PanelPhonePairCodeSubmitResponse { Error = "https-required" };
 
-        var remoteAddress = NormalizeRemoteAddress(context.Connection.RemoteIpAddress?.ToString());
+        var remoteAddress = NormalizeRemoteAddress(RemoteKey(context));
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         lock (_pairCodeLock)
@@ -1712,7 +1795,7 @@ public sealed class PanelPhonePairingService
         if (!context.Request.IsHttps)
             return new PanelPhonePairCodeSubmitResponse { Error = "https-required" };
 
-        var remoteAddress = NormalizeRemoteAddress(context.Connection.RemoteIpAddress?.ToString());
+        var remoteAddress = NormalizeRemoteAddress(RemoteKey(context));
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var expires = nowMs + PairCodeTtlSeconds * 1000L;
 
@@ -1811,7 +1894,7 @@ public sealed class PanelPhonePairingService
             requestId,
             approved,
             context.Request.IsHttps,
-            NormalizeRemoteAddress(context.Connection.RemoteIpAddress?.ToString()),
+            NormalizeRemoteAddress(RemoteKey(context)),
             relayPairToken: null);
 
     /// <summary>
@@ -1954,6 +2037,8 @@ public sealed class PanelPhonePairingService
     {
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         string? tokenToDrop = null;
+        string? approvedRelayToken = null;
+        long approvedExpiresAt = 0;
         PanelPhonePairCodeHostDecisionResponse response;
         string frameReason;
         lock (_pairCodeLock)
@@ -1983,6 +2068,11 @@ public sealed class PanelPhonePairingService
             else
             {
                 state.HostApproved = true;
+                // An Allow given before expiry is honored: keep the request
+                // collectable for a short grace past the original TTL.
+                state.ExpiresAt = Math.Max(state.ExpiresAt, nowMs + ApprovedCollectGraceMs);
+                approvedRelayToken = state.RelayPairToken;
+                approvedExpiresAt = state.ExpiresAt;
                 // Token issuance happens on the phone's next /confirm poll so
                 // the cookie/token lives in that response - keeps the host
                 // endpoint side-effect-free for the network stack. The phone
@@ -1996,6 +2086,14 @@ public sealed class PanelPhonePairingService
         // Every decision tells all subscribers (dashboard, touch panels) to
         // dismiss their prompt, whichever client pressed Allow or Deny.
         DropRelayPairToken(tokenToDrop);
+        if (!string.IsNullOrEmpty(approvedRelayToken))
+        {
+            lock (_lock)
+            {
+                if (_pairTokens.ContainsKey(approvedRelayToken))
+                    _pairTokens[approvedRelayToken] = DateTimeOffset.FromUnixTimeMilliseconds(approvedExpiresAt).UtcDateTime;
+            }
+        }
         PublishPairCodeFrame(new PanelPhonePairCodeRequestFrame
         {
             Kind = "cancelled",

@@ -543,6 +543,19 @@ public sealed class RelayConnectionService : BackgroundService
         // consumed and this link is obsolete (Reconcile removes it). Set so the
         // reconnect loop stops instead of re-registering a dead pair rendezvous.
         private volatile bool _pairClaimDone;
+        // Every connSalt this pair link has already keyed a channel with. The
+        // relay picks connSalt, and the AES-GCM nonce is only dir||counter, so a
+        // repeated salt (a replayed peer-up) would reuse key and nonces. Each salt
+        // is accepted once per link, across reconnects; later ones are ignored.
+        private readonly HashSet<string> _seenSalts = new(StringComparer.Ordinal);
+        private const int MaxSeenSalts = 64;
+
+        /// <summary>Per-key counters for one peer-up: strictly increasing inbound, never repeating outbound.</summary>
+        private sealed class PairChannel
+        {
+            public long LastInbound = -1;
+            public ulong NextReply;
+        }
         private volatile bool _unauthorized;
 
         /// <summary>The reconcile key this link satisfies (sess:&lt;id&gt; or pair:&lt;rid&gt;).</summary>
@@ -775,7 +788,7 @@ public sealed class RelayConnectionService : BackgroundService
             await SendHelloAsync(transport, ct).ConfigureAwait(false);
 
             byte[]? claimKey = null; // non-null once a client has peered up
-            ulong replyCounter = 0;  // host→client counter, reset on every peer-up
+            PairChannel channel = new();
             var buffer = new byte[ReceiveBufferSize];
             using var message = new System.IO.MemoryStream();
 
@@ -800,8 +813,15 @@ public sealed class RelayConnectionService : BackgroundService
 
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
-                    claimKey = HandlePairControl(message.ToArray());
-                    replyCounter = 0;
+                    claimKey = HandlePairControl(message.ToArray(), out var saltKey);
+                    if (claimKey is not null)
+                    {
+                        // A salt seen before would re-derive the same key: refuse the peer-up.
+                        if (_seenSalts.Count >= MaxSeenSalts || !_seenSalts.Add(saltKey))
+                            claimKey = null;
+                        else
+                            channel = new PairChannel();
+                    }
                 }
                 else if (result.MessageType == WebSocketMessageType.Binary)
                 {
@@ -809,9 +829,9 @@ public sealed class RelayConnectionService : BackgroundService
                         continue; // a forwarded frame with no peer-up; ignore
                     // A sealed claim or claim-confirm request. Process it and reply;
                     // a claim parked on host approval keeps the link open for polls.
-                    var outcome = await ProcessClaimFrameAsync(transport, claimKey, message.ToArray(), replyCounter++)
+                    var outcome = await ProcessClaimFrameAsync(transport, claimKey, message.ToArray(), channel)
                         .ConfigureAwait(false);
-                    if (outcome == ClaimFrameOutcome.Pending)
+                    if (outcome is ClaimFrameOutcome.Pending or ClaimFrameOutcome.Ignored)
                         continue;
                     if (outcome == ClaimFrameOutcome.Done)
                         _pairClaimDone = true;
@@ -826,8 +846,9 @@ public sealed class RelayConnectionService : BackgroundService
         /// clears it so a stale key can't be reused for a different peer. Returns
         /// the derived key (or null) for the caller's "awaiting claim" state.
         /// </summary>
-        private byte[]? HandlePairControl(byte[] textBytes)
+        private byte[]? HandlePairControl(byte[] textBytes, out string saltKey)
         {
+            saltKey = "";
             string? evt;
             string? saltB64;
             try
@@ -851,6 +872,7 @@ public sealed class RelayConnectionService : BackgroundService
                 catch { return null; }
                 if (connSalt.Length != RelayCrypto.ConnSaltLength)
                     return null;
+                saltKey = saltB64;
                 // claimKey = DeriveAeadKey(pairRoot, connSalt) - identical to the
                 // runtime AEAD derivation, just keyed off the pairRoot.
                 return RelayCrypto.DeriveAeadKey(_root, connSalt);
@@ -866,6 +888,8 @@ public sealed class RelayConnectionService : BackgroundService
             Dropped,
             /// <summary>The claim reached a final answer (token spent or decided); the link is one-shot done.</summary>
             Done,
+            /// <summary>A replayed or out-of-order inbound counter: drop it without a reply and keep the link.</summary>
+            Ignored,
             /// <summary>The claim waits on the host's Allow; the link stays open for claim-confirm polls.</summary>
             Pending,
         }
@@ -882,14 +906,20 @@ public sealed class RelayConnectionService : BackgroundService
         /// decrypt proves) and never consumes the token.
         /// </summary>
         private async Task<ClaimFrameOutcome> ProcessClaimFrameAsync(
-            WebSocket transport, byte[] claimKey, byte[] frame, ulong replyCounter)
+            WebSocket transport, byte[] claimKey, byte[] frame, PairChannel channel)
         {
             RelayClaimRequest? request;
+            ulong replyCounter = 0;
             try
             {
-                var (dir, _, plaintext) = RelayCrypto.Open(claimKey, frame);
+                var (dir, inCounter, plaintext) = RelayCrypto.Open(claimKey, frame);
                 if (dir != RelayCrypto.DirClientToHost)
                     return ClaimFrameOutcome.Dropped; // wrong direction ⇒ not a client→host request; drop.
+                // Strictly increasing inbound counter per key: a replayed frame is ignored.
+                if (inCounter > long.MaxValue || (long)inCounter <= channel.LastInbound)
+                    return ClaimFrameOutcome.Ignored;
+                channel.LastInbound = (long)inCounter;
+                replyCounter = channel.NextReply++;
                 request = JsonSerializer.Deserialize(plaintext, AppJsonContext.Default.RelayClaimRequest);
             }
             catch (CryptographicException)
@@ -953,8 +983,8 @@ public sealed class RelayConnectionService : BackgroundService
                 deviceId: request.DeviceId ?? "",
                 overRelay: true,
                 claimedOverHttps: false,
-                supportsSasApproval: true,
-                presentedValidSession: _owner._pairing.ValidateSessionToken(request.SessionToken));
+                supportsSasApproval: request.SupportsSasApproval,
+                presentedValidSession: _owner._pairing.PresentsPortableSession(request.SessionToken));
 
             if (claim.Ok && claim.NeedsApproval)
             {
@@ -981,6 +1011,9 @@ public sealed class RelayConnectionService : BackgroundService
                 : ClaimError(claim.Error);
 
             await SendSealedAsync(transport, claimKey, reply, replyCounter).ConfigureAwait(false);
+            // These refusals leave the token (and any parked request) untouched, so the link stays up.
+            if (!claim.Ok && claim.Error is "update_required" or "claim-in-progress" or "code-in-use")
+                return ClaimFrameOutcome.Pending;
             // ClaimCore ran ⇒ the token is spent or otherwise decided; one-shot done.
             return ClaimFrameOutcome.Done;
         }

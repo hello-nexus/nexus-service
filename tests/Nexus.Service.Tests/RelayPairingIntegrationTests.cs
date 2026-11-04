@@ -77,7 +77,7 @@ public sealed class RelayPairingIntegrationTests
         var claimKey = RelayCrypto.DeriveAeadKey(pairRoot, connSalt);
         await relay.SendPeerUpAsync(ridPair, connSalt);
 
-        var claimReq = new RelayClaimRequest { Type = RelayClaimMessageTypes.Claim, DeviceName = DeviceName };
+        var claimReq = new RelayClaimRequest { Type = RelayClaimMessageTypes.Claim, DeviceName = DeviceName, SupportsSasApproval = true };
         var reqBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
             claimReq, Nexus.Service.Serialization.AppJsonContext.Default.RelayClaimRequest);
         var sealedReq = RelayCrypto.Seal(claimKey, RelayCrypto.DirClientToHost, counter: 0, reqBytes);

@@ -214,6 +214,13 @@ public sealed class RelayClaimRequest
     /// </summary>
     public string SessionToken { get; set; } = "";
 
+    /// <summary>
+    /// True when the app can show the SAS and poll claim-confirm. A claim without
+    /// it (and without a portable session) is answered claim-err update_required
+    /// and never raises a prompt on the PC.
+    /// </summary>
+    public bool SupportsSasApproval { get; set; }
+
     /// <summary>claim-confirm only: the pending request being polled.</summary>
     public string RequestId { get; set; } = "";
 

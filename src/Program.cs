@@ -628,7 +628,11 @@ if (!testHost)
 // loopback-trust check (the /pair desktop token, the desktop-token lane) runs.
 app.Use(async (ctx, next) =>
 {
-    phoneTunnelPorts.Reclassify(ctx);
+    if (!phoneTunnelPorts.Reclassify(ctx))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
     await next(ctx);
 });
 

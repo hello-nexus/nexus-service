@@ -908,7 +908,7 @@ public class PanelPhonePairingServiceTests
     }
 
     [Fact]
-    public void QrSasApproval_SupersedesInFlightWifiRequest()
+    public void QrSasApproval_RefusedWhileWifiRequestInFlight()
     {
         var hub = new Nexus.Service.Sockets.MultiplexHub();
         var service = new PanelPhonePairingService(new InMemoryConfigStore(), hub)
@@ -918,13 +918,11 @@ public class PanelPhonePairingServiceTests
             ServicePort = 9400,
         };
 
-        // Start a manual Wi-Fi pair-code (host-initiated).
         var start = service.StartPairCode();
         var submit = service.SubmitPairCode(start.Code, NewContext(NativeIosUserAgent, "192.168.1.77", isHttps: true));
         Assert.True(submit.Accepted);
-        var wifiRequestId = submit.RequestId;
 
-        // A QR-SAS claim from a new device arrives while the Wi-Fi request is in flight.
+        // A QR claim may not replace the in-flight request, like code and Wi-Fi.
         var sasResult = service.ClaimCore(
             PairTokenFrom(service.CreatePairQr()),
             deviceName: "iPhone",
@@ -935,19 +933,13 @@ public class PanelPhonePairingServiceTests
             claimedOverHttps: true,
             supportsSasApproval: true);
 
-        Assert.True(sasResult.Ok);
-        Assert.True(sasResult.NeedsApproval);
-        Assert.NotEqual(wifiRequestId, sasResult.RequestId);
+        Assert.False(sasResult.Ok);
+        Assert.Equal("code-in-use", sasResult.Error);
 
-        // The prior Wi-Fi request is no longer the live _pairCode.
-        var priorCheck = service.ConfirmPairCode(wifiRequestId, approved: true, NewContext(NativeIosUserAgent, "192.168.1.77", isHttps: true));
-        Assert.Equal("unknown", priorCheck.Status);
-
-        // The new QR-SAS request is live: host approve + phone confirm work.
-        service.HostDecisionPairCode(sasResult.RequestId, approved: true);
-        var confirm = service.ConfirmPairCode(sasResult.RequestId, approved: true, NewContext(NativeIosUserAgent, "192.168.1.50", isHttps: true));
+        // The original request is untouched and still completes.
+        service.HostDecisionPairCode(submit.RequestId, approved: true);
+        var confirm = service.ConfirmPairCode(submit.RequestId, approved: true, NewContext(NativeIosUserAgent, "192.168.1.77", isHttps: true));
         Assert.Equal("approved", confirm.Status);
-        Assert.False(string.IsNullOrEmpty(confirm.Token));
     }
 
     private sealed class RecordingTelemetry : Nexus.Service.Telemetry.ITelemetry
