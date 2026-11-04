@@ -28,6 +28,16 @@ public static class SupportBundleBuilder
         public string LogsDirectory { get; init; } = "";
         /// <summary>Per-user fallback log dirs (user-session writers land there when the shared dir is not writable for them), keyed by user label.</summary>
         public IReadOnlyList<(string Label, string Directory)> UserLogDirectories { get; init; } = Array.Empty<(string, string)>();
+        /// <summary>Per-profile temp dirs searched for a hand-run installer's Setup Log, keyed by user label.</summary>
+        public IReadOnlyList<(string Label, string Directory)> InstallerLogDirectories { get; init; } = Array.Empty<(string, string)>();
+        /// <summary>Machine-wide temp dirs (not under a user profile) searched for the same Setup Log.</summary>
+        public IReadOnlyList<string> InstallerSystemDirectories { get; init; } = Array.Empty<string>();
+        /// <summary>Per-profile Nexus\updater dirs, where the update splash writes splash.log.</summary>
+        public IReadOnlyList<(string Label, string Directory)> SplashLogDirectories { get; init; } = Array.Empty<(string, string)>();
+        /// <summary>macOS launchd stdout and stderr files.</summary>
+        public IReadOnlyList<string> LaunchdLogPaths { get; init; } = Array.Empty<string>();
+        /// <summary>Linux journal text for the Nexus unit, collected by the caller; counted against the log budget.</summary>
+        public string JournalText { get; init; } = "";
         /// <summary>The OTA staging dir: a failed silent install leaves its only trace in the Inno log there.</summary>
         public string UpdatesDirectory { get; init; } = "";
         public string OpenRgbConfigDirectory { get; init; } = "";
@@ -100,25 +110,27 @@ public static class SupportBundleBuilder
             }
             WriteText(zip, r, "system-profile.txt", src.StartupSnapshot);
             AddLogs(logs, "logs/", src.LogsDirectory, "*.log");
-            var userIndex = 0;
-            foreach (var (_, dir) in src.UserLogDirectories)
+            foreach (var pattern in SupportBundleExtras.ExtraLogPatterns)
             {
-                // SYSTEM reads user-controlled folders here: one user's folder must never break the export
-                // for everyone, so any failure skips that user. Junctioned dirs and linked files are
-                // refused, and each opened file must still resolve under the expected dir.
-                try
-                {
-                    if (Lifecycle.UserDataSafety.ChainHasReparsePoint(dir, 4))
-                    {
-                        continue;
-                    }
-                    var profile = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(dir))));
-                    var prefix = profile is null ? null : Lifecycle.UserDataSafety.ExpectedFinalPrefix(profile, Path.Combine("AppData", "Local", "Nexus", "logs"));
-                    AddLogs(logs, $"logs/user-{++userIndex}/", dir, "*.log", mustBeUnder: true, expectedPrefix: prefix);
-                }
-                catch (Exception)
-                {
-                }
+                AddLogs(logs, "logs/", src.LogsDirectory, pattern, accept: SupportBundleExtras.IsExtraLogCandidate);
+            }
+            AddPerUserLogs(logs, "logs/user-", src.UserLogDirectories, Path.Combine("AppData", "Local", "Nexus", "logs"), new[] { "*.log" });
+            foreach (var pattern in SupportBundleExtras.ExtraLogPatterns)
+            {
+                AddPerUserLogs(logs, "logs/user-", src.UserLogDirectories, Path.Combine("AppData", "Local", "Nexus", "logs"), new[] { pattern }, SupportBundleExtras.IsExtraLogCandidate);
+            }
+            AddPerUserLogs(logs, "splash/user-", src.SplashLogDirectories, Path.Combine("AppData", "Local", "Nexus", "updater"), new[] { "splash.log" });
+            var installerLogs = new List<LogCandidate>();
+            AddPerUserLogs(installerLogs, "installer/user-", src.InstallerLogDirectories, Path.Combine("AppData", "Local", "Temp"), new[] { SupportBundleExtras.InstallerLogPattern }, SupportBundleExtras.IsNexusInstallerLog);
+            var systemIndex = 0;
+            foreach (var dir in src.InstallerSystemDirectories)
+            {
+                AddLogs(installerLogs, $"installer/system-{++systemIndex}/", dir, SupportBundleExtras.InstallerLogPattern, accept: SupportBundleExtras.IsNexusInstallerLog);
+            }
+            logs.AddRange(installerLogs.OrderByDescending(c => c.LastWriteUtc).ThenBy(c => c.EntryName, StringComparer.Ordinal).Take(SupportBundleExtras.InstallerLogKeep));
+            foreach (var path in src.LaunchdLogPaths)
+            {
+                AddLogs(logs, "launchd/", Path.GetDirectoryName(path) ?? "", Path.GetFileName(path));
             }
             AddLogs(logs, "updates/", src.UpdatesDirectory, Update.UpdateInstaller.InstallLogGlob);
             AddFile(zip, r, "updates/" + Update.StagedInstallMarkerStore.MarkerFileName, Path.Combine(src.UpdatesDirectory, Update.StagedInstallMarkerStore.MarkerFileName));
@@ -134,7 +146,13 @@ public static class SupportBundleBuilder
             if (src.Fans is not null) WriteJson(zip, r, "diagnostics/fans.json", src.Fans, AppJsonContext.Default.ListFanChannel);
             if (src.System is not null) WriteJson(zip, r, "diagnostics/system.json", src.System, AppJsonContext.Default.SystemDiagnosticsResponse);
             if (src.UsbTopology is not null) WriteJson(zip, r, "diagnostics/usb-topology.json", src.UsbTopology, AppJsonContext.Default.UsbTopologyReport);
-            foreach (var c in SelectWithinBudget(logs, src.LogBudgetBytes))
+            var budget = src.LogBudgetBytes;
+            if (src.JournalText.Length > 0)
+            {
+                WriteText(zip, r, "logs/journal-" + Lifecycle.LinuxStartupProvider.UnitName + ".txt", src.JournalText);
+                budget = Math.Max(0, budget - src.JournalText.Length);
+            }
+            foreach (var c in SelectWithinBudget(logs, budget))
             {
                 AddFile(zip, r, c.EntryName, c.Path, c.MustBeUnder, c.ExpectedPrefix);
             }
@@ -179,7 +197,11 @@ public static class SupportBundleBuilder
     }
 
     /// <summary>The per-user fallback log dir of every profile, deduplicated, labeled by profile folder name.</summary>
-    internal static List<(string Label, string Directory)> UserLogDirectoriesFor(IEnumerable<string> profiles)
+    internal static List<(string Label, string Directory)> UserLogDirectoriesFor(IEnumerable<string> profiles) =>
+        ProfileSubdirectoriesFor(profiles, "AppData", "Local", "Nexus", "logs");
+
+    /// <summary>The same relative folder under every profile, deduplicated, labeled by profile folder name.</summary>
+    internal static List<(string Label, string Directory)> ProfileSubdirectoriesFor(IEnumerable<string> profiles, params string[] relative)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<(string, string)>();
@@ -191,12 +213,43 @@ public static class SupportBundleBuilder
                 continue;
             }
             var label = Path.GetFileName(trimmed);
-            result.Add((label.Length == 0 ? "user" : label, Path.Combine(trimmed, "AppData", "Local", "Nexus", "logs")));
+            result.Add((label.Length == 0 ? "user" : label, Path.Combine(new[] { trimmed }.Concat(relative).ToArray())));
         }
         return result;
     }
 
-    private static void AddLogs(List<LogCandidate> logs, string prefix, string dir, string pattern, bool mustBeUnder = false, string? expectedPrefix = null)
+    /// <summary>Per-user dirs sit under a profile the user controls while SYSTEM reads them: one user's folder must never break the export for everyone, so any failure skips that user. Junctioned dirs and linked files are refused, and each opened file must still resolve under the expected dir.</summary>
+    private static void AddPerUserLogs(List<LogCandidate> logs, string prefix, IReadOnlyList<(string Label, string Directory)> dirs, string tailUnderProfile, string[] patterns, Func<string, bool>? accept = null)
+    {
+        var levels = tailUnderProfile.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries).Length;
+        var userIndex = 0;
+        foreach (var (_, dir) in dirs)
+        {
+            try
+            {
+                if (Lifecycle.UserDataSafety.ChainHasReparsePoint(dir, levels))
+                {
+                    continue;
+                }
+                ++userIndex;
+                string? profile = dir;
+                for (var i = 0; i < levels; i++)
+                {
+                    profile = Path.GetDirectoryName(profile);
+                }
+                var expected = profile is null ? null : Lifecycle.UserDataSafety.ExpectedFinalPrefix(profile, tailUnderProfile);
+                foreach (var pattern in patterns)
+                {
+                    AddLogs(logs, $"{prefix}{userIndex}/", dir, pattern, mustBeUnder: true, expectedPrefix: expected, accept: accept);
+                }
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    private static void AddLogs(List<LogCandidate> logs, string prefix, string dir, string pattern, bool mustBeUnder = false, string? expectedPrefix = null, Func<string, bool>? accept = null)
     {
         if (!Directory.Exists(dir))
         {
@@ -205,6 +258,10 @@ public static class SupportBundleBuilder
         foreach (var path in Directory.EnumerateFiles(dir, pattern))
         {
             if (mustBeUnder && Lifecycle.UserDataSafety.IsReparsePoint(path))
+            {
+                continue;
+            }
+            if (accept is not null && !accept(path))
             {
                 continue;
             }

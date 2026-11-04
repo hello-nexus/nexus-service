@@ -110,6 +110,76 @@ public static class SupportBundleExtras
 {
     internal const int MaxOverrideFileChars = 1024;
 
+    internal const int InstallerLogKeep = 3;
+    internal const string InstallerLogPattern = "Setup Log *.txt";
+    private const int InstallerLogProbeChars = 1024 * 1024;
+
+    /// <summary>The installer's AppId from installer/Nexus.iss; Inno writes it into the log as the uninstall key name.</summary>
+    internal const string InstallerAppId = "8F2E3A4D-9C5B-4E7A-B1F8-3C2A5E9D0F12";
+
+    /// <summary>Non-.log diagnostics that land in the logs dir. helper-disable.txt is not here: <see cref="OverrideFiles"/> already carries it.</summary>
+    internal static readonly string[] ExtraLogPatterns = { "qseries-home-diag-*.txt", "lighting-bench-*.json", "lighting-bench-*.txt" };
+
+    internal static bool IsExtraLogCandidate(string path) => !path.EndsWith(".child.json", StringComparison.OrdinalIgnoreCase);
+
+    internal static readonly string[] MacLaunchdLogPaths = { Lifecycle.MacStartupProvider.LaunchdStdoutPath, Lifecycle.MacStartupProvider.LaunchdStderrPath };
+
+    internal const int MaxJournalChars = 4 * 1024 * 1024;
+    internal const int JournalTimeoutMs = 15_000;
+
+    /// <summary>Other vendors' Inno installers write the same "Setup Log" file name, so a log counts only when its head carries the Nexus AppId or names Nexus-Setup as the original setup exe.</summary>
+    internal static bool IsNexusInstallerLog(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            var buffer = new char[InstallerLogProbeChars];
+            var read = reader.ReadBlock(buffer, 0, buffer.Length);
+            var head = new string(buffer, 0, read);
+            if (head.Contains(InstallerAppId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            foreach (var line in head.Split('\n'))
+            {
+                if (line.StartsWith("Original Setup EXE:", StringComparison.OrdinalIgnoreCase) && line.Contains("Nexus-Setup", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The last 7 days of the Nexus systemd system unit (it runs as a root system unit, see LinuxStartupProvider), tail-capped; empty when journalctl is missing, fails or times out.</summary>
+    internal static string ReadJournal(Func<string[], string> run)
+    {
+        try
+        {
+            var text = run(new[] { "-u", Lifecycle.LinuxStartupProvider.UnitName, "--since", "7 days ago", "--no-pager", "-o", "short-iso", "-n", "50000" });
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return "";
+            }
+            return text.Length > MaxJournalChars
+                ? $"[support-bundle] last {MaxJournalChars / (1024 * 1024)} MB of {text.Length} chars\n" + text[^MaxJournalChars..]
+                : text;
+        }
+        catch (Exception)
+        {
+            return "";
+        }
+    }
+
     private static readonly string[] SecretWords = { "TOKEN", "KEY", "SECRET", "PASSWORD" };
 
     /// <summary>Every NEXUS_* variable, value redacted when the name contains TOKEN, KEY, SECRET or PASSWORD.</summary>

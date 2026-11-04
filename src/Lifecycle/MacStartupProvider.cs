@@ -14,6 +14,8 @@ public sealed class MacStartupProvider : IStartupProvider
 {
     // internal so FactoryReset can drive the same launchd agent on restart.
     internal const string PlistLabel = "com.hellonexus.panel.service";
+    internal const string LaunchdStdoutPath = "/tmp/nexus-service.log";
+    internal const string LaunchdStderrPath = "/tmp/nexus-service.err";
 
     internal static string PlistPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -79,9 +81,9 @@ public sealed class MacStartupProvider : IStartupProvider
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/nexus-service.log</string>
+    <string>{LaunchdStdoutPath}</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/nexus-service.err</string>
+    <string>{LaunchdStderrPath}</string>
 </dict>
 </plist>";
 
