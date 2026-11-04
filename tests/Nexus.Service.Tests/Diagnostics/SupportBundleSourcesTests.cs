@@ -45,7 +45,37 @@ public class SupportBundleSourcesTests : IDisposable
         });
     }
 
-    private static string InnoLog(string appLine) => $"Log opened. (Time zone: UTC-07:00)\nSetup version: Inno Setup version 6.4.3\n{appLine}\nOpened as C:\\Users\\alice\\x on GAMING-PC\n";
+    private const string Stamp = "2026-10-28 23:15:34.136   ";
+
+    // Real Inno logs prefix every line with a timestamp.
+    private static string InnoLog(string appLine) => $"{Stamp}Log opened. (Time zone: UTC-07:00)\n{Stamp}Setup version: Inno Setup version 6.7.1\n{Stamp}{appLine}\n{Stamp}Opened as C:\\Users\\alice\\x on GAMING-PC\n";
+
+    // Captured from a hand-run Nexus-Setup on the lab PC (names changed), cancelled at the first prompt.
+    private const string RealNexusLog = """
+        2026-10-28 23:15:34.136   Log opened. (Time zone: UTC-07:00)
+        2026-10-28 23:15:34.136   Setup version: Inno Setup version 6.7.1
+        2026-10-28 23:15:34.136   Original Setup EXE: C:\Users\Public\Desktop\Nexus-Setup-3.0.21-alpha.1.exe
+        2026-10-28 23:15:34.136   Setup command line: /SL5="$681222,48521675,1008640,C:\Users\Public\Desktop\Nexus-Setup-3.0.21-alpha.1.exe" /SPAWNWND=$17150C /FIRSTWND=$290CDC
+        2026-10-28 23:15:34.136   Compatibility mode: Yes (DetectorsAdminProtection Installer)
+        2026-10-28 23:15:34.136   Windows version: 10.0.26300
+        2026-10-28 23:15:34.140   Created protected temporary directory: C:\Users\alice\AppData\Local\Temp\is-NVLAXVQ54I.tmp
+        2026-10-28 23:15:34.453   [nexus] WebView2 runtime installed=1 pv=156.0.4314.50
+        2026-10-28 23:15:46.206   Deinitializing Setup.
+        2026-10-28 23:15:46.233   Log closed.
+        """;
+
+    [Fact]
+    public void Inno_filter_accepts_a_real_timestamped_nexus_log_the_web_installer_and_an_nexus_marker_only_log()
+    {
+        var real = Write("t/real.txt", RealNexusLog);
+        var web = Write("t/web.txt", InnoLog(@"Original Setup EXE: C:\Users\alice\Downloads\Nexus-Installer-Beta.exe"));
+        var markerOnly = Write("t/marker.txt", $"{Stamp}Log opened.\n{Stamp}[nexus] WebView2 runtime installed=1 pv=1\n");
+        var other = Write("t/other.txt", InnoLog(@"Original Setup EXE: C:\Users\alice\Downloads\OtherApp-Setup.exe"));
+        Assert.True(SupportBundleExtras.IsNexusInstallerLog(real));
+        Assert.True(SupportBundleExtras.IsNexusInstallerLog(web));
+        Assert.True(SupportBundleExtras.IsNexusInstallerLog(markerOnly));
+        Assert.False(SupportBundleExtras.IsNexusInstallerLog(other));
+    }
 
     [Fact]
     public void Inno_filter_accepts_the_nexus_installer_and_rejects_other_vendors()
@@ -176,7 +206,7 @@ public class SupportBundleSourcesTests : IDisposable
             seen = args;
             return @"Jan 01 nexus[1]: opened /home/alice/x on GAMING-PC";
         });
-        Assert.Equal("nexus.service", seen![1]);
+        Assert.Equal("nexus.service", seen![2]);
         Assert.Contains("--since", seen);
         Assert.Contains("7 days ago", seen);
         Assert.Contains("--no-pager", seen);

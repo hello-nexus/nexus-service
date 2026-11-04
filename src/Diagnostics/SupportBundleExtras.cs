@@ -21,10 +21,10 @@ public sealed class BundleRedactor
     private readonly List<(string Needle, string Replacement)> _paths = new();
     private readonly List<string> _freeText = new();
     private readonly List<string> _users = new();
-    private readonly List<Regex> _rules = new();
+    private readonly List<(Regex Rule, string Replacement)> _rules = new();
 
-    /// <param name="userNames">Every profile and account name: redacted in home paths and after "as ", never as a bare word (a profile folder can be named like a word).</param>
-    /// <param name="accountNames">Logon names that logs print bare (the console user, the service user): also redacted as whole tokens when distinctive.</param>
+    /// <param name="userNames">Every profile and account name: redacted in home paths (the generic path rule also catches names not listed), never as a bare word.</param>
+    /// <param name="accountNames">Logon names that logs print outside paths. A distinctive one (a digit or separator in it) is redacted as a whole token anywhere; a word-like one (Owner, Gamer, Dell) only in carrier contexts: after "as ", "user=", as DOMAIN\name or as a quoted JSON value. A bare word would corrupt diagnostics.</param>
     public BundleRedactor(IEnumerable<string> userNames, string machineName, IEnumerable<string>? otherHostNames = null, IEnumerable<string>? accountNames = null)
     {
         foreach (var account in (accountNames ?? Array.Empty<string>()).Where(a => a.Length >= 3).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -34,7 +34,9 @@ public sealed class BundleRedactor
                 // The helper bootstrapper logs the console logon name after "as", and a renamed account's name matches no profile folder.
                 _paths.Add((" as " + name, " as <user>"));
                 _paths.Add(("user=" + name, "user=<user>"));
-                if (!IsGenericMachineName(account))
+                var escaped = Regex.Escape(name);
+                _rules.Add((new Regex(@"(?<=[\w.\-]\\{1,2})" + escaped + @"(?![\w\-])|(?<=:\s*"")" + escaped + @"(?="")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant), "<user>"));
+                if (IsDistinctive(account))
                 {
                     _users.Add(name);
                 }
@@ -60,16 +62,26 @@ public sealed class BundleRedactor
         {
             // The startup snapshot's host line and JSON name fields carry the machine name explicitly, so these are safe for any name.
             _paths.Add(("host: " + host, "host: <pc>"));
+            var generic = IsGenericMachineName(host);
             foreach (var name in new[] { host, JsonEncodedText.Encode(host).ToString() }.Distinct())
             {
                 var escaped = Regex.Escape(name);
-                _rules.Add(new Regex("(\"(?:pcName|machineName)\"\\s*:\\s*\")" + escaped + "(\")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
-                // A bare name is also a device or product word ("TITAN 360"), so only carrier contexts count: DOMAIN\user, \\HOST\share, HOST.local and URL hosts.
-                _rules.Add(new Regex(@"(?<![\w-])" + escaped + @"(?=\\{1,2}[\w.$-])|(?<![\w-])" + escaped + @"(?=\.(?:local|lan|home|localdomain)\b)|(?<=//)" + escaped + @"(?=[:/\s""]|$)",
-                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+                _rules.Add((new Regex("(\"(?:pcName|machineName)\"\\s*:\\s*\")" + escaped + "(\")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant), "$1<pc>$2"));
+                if (generic)
+                {
+                    // Nexus, Windows, localhost and vendor names are also directories and URL hosts; only the explicit labels above carry them.
+                    continue;
+                }
+                // A bare name is also a device or product word ("TITAN 360"), so only carrier contexts count. None may follow a path separator, which would hit a directory of that name.
+                const string notAfterPathOrWord = @"(?<![\w.\-\\/:])";
+                _rules.Add((new Regex(@"(?<=(?<![\w.\-:])\\\\)" + escaped + @"(?=\\)"
+                    + "|" + notAfterPathOrWord + escaped + @"(?=\\{1,2}[\w.$-])"
+                    + "|" + notAfterPathOrWord + escaped + @"(?=\.(?:local|lan|home|localdomain)\b)"
+                    + "|" + @"(?<=://)" + escaped + @"(?=[:/\s""]|$)",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant), "<pc>"));
             }
-            // A name made of one plain word is ambiguous; a distinctive one (a digit or separator in it) is safe to replace anywhere.
-            if (!IsGenericMachineName(host) && host.Any(c => char.IsDigit(c) || c is '-' or '_'))
+            // A name made of one plain word is ambiguous; a distinctive one is safe to replace anywhere.
+            if (!generic && IsDistinctive(host))
             {
                 _freeText.Add(host);
                 var encoded = JsonEncodedText.Encode(host).ToString();
@@ -81,6 +93,8 @@ public sealed class BundleRedactor
         }
     }
 
+    private static bool IsDistinctive(string name) => !IsGenericMachineName(name) && name.Any(c => char.IsDigit(c) || c is '-' or '_');
+
     /// <summary>Too short or too common to replace inside free text without corrupting it; such a name is redacted only where it follows a host label.</summary>
     internal static bool IsGenericMachineName(string name) => name.Length < 4 || GenericMachineNames.Contains(name);
 
@@ -90,9 +104,9 @@ public sealed class BundleRedactor
         {
             text = ReplaceBounded(text, needle, replacement, pathSegment: true);
         }
-        foreach (var rule in _rules)
+        foreach (var (rule, replacement) in _rules)
         {
-            text = rule.Replace(text, m => m.Groups.Count > 1 ? m.Groups[1].Value + "<pc>" + m.Groups[2].Value : "<pc>");
+            text = rule.Replace(text, replacement);
         }
         foreach (var name in _users)
         {
@@ -256,7 +270,7 @@ public static class SupportBundleExtras
     internal const int MaxJournalChars = 4 * 1024 * 1024;
     internal const int JournalTimeoutMs = 15_000;
 
-    /// <summary>Other vendors' Inno installers write the same "Setup Log" file name, so a log counts only when its head carries the Nexus AppId or names Nexus-Setup as the original setup exe.</summary>
+    /// <summary>Other vendors' Inno installers write the same "Setup Log" file name, so a log counts only when its head carries the Nexus AppId, an "Original Setup EXE:" line (timestamp-prefixed in a real log) naming Nexus-Setup or the web installer Nexus-Installer, or one of Nexus.iss's own "[nexus] " lines. The web installer's log is kept on purpose: it records the download and hash-check failures that stop an install before Nexus-Setup ever runs.</summary>
     internal static bool IsNexusInstallerLog(string path)
     {
         try
@@ -266,13 +280,14 @@ public static class SupportBundleExtras
             var buffer = new char[InstallerLogProbeChars];
             var read = reader.ReadBlock(buffer, 0, buffer.Length);
             var head = new string(buffer, 0, read);
-            if (head.Contains(InstallerAppId, StringComparison.OrdinalIgnoreCase))
+            if (head.Contains(InstallerAppId, StringComparison.OrdinalIgnoreCase) || head.Contains("] [nexus] ", StringComparison.Ordinal) || head.Contains(" [nexus] ", StringComparison.Ordinal))
             {
                 return true;
             }
             foreach (var line in head.Split('\n'))
             {
-                if (line.StartsWith("Original Setup EXE:", StringComparison.OrdinalIgnoreCase) && line.Contains("Nexus-Setup", StringComparison.OrdinalIgnoreCase))
+                if (line.Contains("Original Setup EXE:", StringComparison.OrdinalIgnoreCase)
+                    && (line.Contains("Nexus-Setup", StringComparison.OrdinalIgnoreCase) || line.Contains("Nexus-Installer", StringComparison.OrdinalIgnoreCase)))
                 {
                     return true;
                 }
@@ -289,12 +304,42 @@ public static class SupportBundleExtras
         }
     }
 
+    /// <summary>Machine-wide temp folders: Temp, and SystemTemp where Windows 11 24H2 and later give SYSTEM its own.</summary>
+    internal static string[] WindowsSystemTempDirectories(string? systemRoot)
+    {
+        var root = string.IsNullOrEmpty(systemRoot) ? @"C:\Windows" : systemRoot;
+        return new[] { Path.Combine(root, "Temp"), Path.Combine(root, "SystemTemp") };
+    }
+
+    /// <summary>The launchd output files sit in world-writable /tmp, where another local user can plant a symlink or a file of their own; only regular files owned by the service's own uid ship. <paramref name="run"/> runs a tool and returns its stdout.</summary>
+    internal static List<string> TrustedLaunchdLogs(IEnumerable<string> paths, Func<string, string[], string> run)
+    {
+        var uid = run("/usr/bin/id", new[] { "-u" }).Trim();
+        var trusted = new List<string>();
+        if (uid.Length == 0)
+        {
+            return trusted;
+        }
+        foreach (var path in paths)
+        {
+            if (!File.Exists(path) || Lifecycle.UserDataSafety.IsReparsePoint(path))
+            {
+                continue;
+            }
+            if (run("/usr/bin/stat", new[] { "-f", "%u", path }).Trim() == uid)
+            {
+                trusted.Add(path);
+            }
+        }
+        return trusted;
+    }
+
     /// <summary>The last 7 days of the Nexus systemd system unit (it runs as a root system unit, see LinuxStartupProvider), tail-capped; empty when journalctl is missing, fails or times out.</summary>
     internal static string ReadJournal(Func<string[], string> run)
     {
         try
         {
-            var text = run(new[] { "-u", Lifecycle.LinuxStartupProvider.UnitName, "--since", "7 days ago", "--no-pager", "-o", "short-iso", "-n", "50000" });
+            var text = run(new[] { "-q", "-u", Lifecycle.LinuxStartupProvider.UnitName, "--since", "7 days ago", "--no-pager", "-o", "short-iso", "-n", "50000" });
             if (string.IsNullOrWhiteSpace(text))
             {
                 return "";

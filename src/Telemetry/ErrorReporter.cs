@@ -520,13 +520,26 @@ internal sealed partial class ErrorReporter
         return OpaqueIdRegex().Replace(text, "<id>");
     }
 
-    /// <summary>Only the user-path and email parts of <see cref="Scrub"/>, keeping everything else (addresses, serials, ids) verbatim and the path prefix so the text stays readable. Covers any drive, JSON-escaped backslashes, 8.3 short names and the Linux mount homes.</summary>
+    // Shared folders and the profile templates are not a person's name.
+    private static readonly HashSet<string> SharedProfileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Public", "Shared", "Default", "Default User", "All Users", "Guest", "Administrator", "<user>",
+    };
+
+    // Look like an address (icon@2x.png, user@1000.service) but name a file or a systemd unit.
+    private static readonly HashSet<string> NotAMailDomain = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "service", "socket", "mount", "target", "timer", "scope", "slice", "path",
+        "js", "mjs", "css", "json", "txt", "log", "mp4", "webm", "woff", "woff2", "ttf", "dll", "exe", "so", "dylib", "xml", "html",
+    };
+
+    /// <summary>Only the user-path and email parts of <see cref="Scrub"/>, keeping everything else (addresses, serials, ids) verbatim and the path prefix so the text stays readable. Covers any drive, JSON-escaped backslashes and quotes, 8.3 short names, names with spaces, and the Linux mount homes; /home, /media and /run/media count only at the start of a path, so a URL route such as /api/media/x is left alone. Shared profile folders (Public, Shared, Default) stay.</summary>
     internal static string RedactUserPaths(string text)
     {
         if (text.Length == 0)
             return text;
-        text = UserPathPrefixRegex().Replace(text, "${1}<user>");
-        return EmailRegex().Replace(text, "<email>");
+        text = UserPathPrefixRegex().Replace(text, m => SharedProfileNames.Contains(m.Groups[2].Value) ? m.Value : m.Groups[1].Value + "<user>");
+        return BundleEmailRegex().Replace(text, m => NotAMailDomain.Contains(m.Groups[1].Value) ? m.Value : "<email>");
     }
 
     internal static string Scrub(string text)
@@ -555,8 +568,11 @@ internal sealed partial class ErrorReporter
     [GeneratedRegex(@"[A-Za-z]:[\\/]Users[\\/][^\\/\s]+")]
     private static partial Regex WindowsUserPathRegex();
 
-    [GeneratedRegex(@"((?:[A-Za-z]:)?(?:\\{1,2}|/)Users(?:\\{1,2}|/)|/home/|/media/|/run/media/)[\w~'\-]+(?:\.[\w~'\-]+)*")]
+    [GeneratedRegex(@"((?<![\w.\-])(?:[A-Za-z]:)?(?:\\{1,2}|/)Users(?:\\{1,2}|/)|(?<![\w.\-<>])/(?:home|media|run/media)/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-])| (?=[\w~'\- .]*[\\/]))+)", RegexOptions.IgnoreCase)]
     private static partial Regex UserPathPrefixRegex();
+
+    [GeneratedRegex(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.([A-Za-z]{2,})")]
+    private static partial Regex BundleEmailRegex();
 
     [GeneratedRegex(@"/Users/[^/\s]+")]
     private static partial Regex MacUserPathRegex();

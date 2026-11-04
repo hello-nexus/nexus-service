@@ -117,8 +117,9 @@ public static partial class VendorSoftwareProbe
         {
             foreach (var sid in Microsoft.Win32.Registry.Users.GetSubKeyNames())
             {
-                // Per-user class hives and the service accounts never hold a user's installs.
-                if (sid.EndsWith("_Classes", StringComparison.OrdinalIgnoreCase) || !sid.StartsWith("S-1-5-21-", StringComparison.Ordinal))
+                // Local and domain accounts are S-1-5-21-, Entra ID and Microsoft-account sign-ins S-1-12-1-; class hives and the service accounts never hold a user's installs.
+                if (sid.EndsWith("_Classes", StringComparison.OrdinalIgnoreCase)
+                    || !(sid.StartsWith("S-1-5-21-", StringComparison.Ordinal) || sid.StartsWith("S-1-12-1-", StringComparison.Ordinal)))
                 {
                     continue;
                 }

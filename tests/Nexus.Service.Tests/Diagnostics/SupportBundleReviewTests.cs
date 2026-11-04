@@ -44,13 +44,125 @@ public class SupportBundleReviewTests : IDisposable
         new(id.UserNames, machine, id.HostNames, id.AccountNames);
 
     [Fact]
-    public void Console_logon_name_is_redacted_as_a_token_and_after_as_even_when_no_profile_matches()
+    public void Console_logon_name_is_redacted_in_carrier_contexts_and_a_distinctive_one_anywhere()
     {
-        var id = SupportBundleExtras.CollectIdentity("SYSTEM", new[] { @"C:\Users\alice-old" }, "bobby", null, Array.Empty<string>(), "GAMING-PC", null);
+        var id = SupportBundleExtras.CollectIdentity("SYSTEM", new[] { @"C:\Users\alice-old" }, "Owner", null, Array.Empty<string>(), "GAMING-PC", null);
         var r = RedactorFor(id, "GAMING-PC");
-        Assert.Equal("[helper-bootstrap] launched --helper as <user> ok", r.Apply("[helper-bootstrap] launched --helper as bobby ok"));
-        Assert.Equal("owner <user> logged in", r.Apply("owner Bobby logged in"));
+        Assert.Equal("[helper-bootstrap] launched --helper as <user> ok", r.Apply("[helper-bootstrap] launched --helper as Owner ok"));
+        Assert.Equal(@"user=<user> and <pc>\<user>", r.Apply(@"user=Owner and GAMING-PC\Owner"));
+        Assert.Equal(@"{""account"":""<user>""}", r.Apply(@"{""account"":""Owner""}"));
+        // A word-like name is a bare word in diagnostics too: never replaced outside a carrier.
+        Assert.Equal("the owner mode is Owner-style", r.Apply("the owner mode is Owner-style"));
         Assert.Equal(@"C:\Users\<user>\x", r.Apply(@"C:\Users\alice-old\x"));
+        var distinctive = RedactorFor(SupportBundleExtras.CollectIdentity("u", Array.Empty<string>(), "bob_01", null, Array.Empty<string>(), "GAMING-PC", null), "GAMING-PC");
+        Assert.Equal("hello <user> there", distinctive.Apply("hello Bob_01 there"));
+    }
+
+    [Fact]
+    public void Brand_like_account_names_do_not_corrupt_diagnostics()
+    {
+        var r = new BundleRedactor(Array.Empty<string>(), "pc-1", null, new[] { "Dell", "Lenovo", "Kraken", "mode", "color" });
+        const string text = @"{""mode"":""static"",""color"":""red"",""vendor"":""Dell Lenovo Kraken X73""}";
+        Assert.Equal(text, r.Apply(text));
+    }
+
+    [Theory]
+    [InlineData(@"C:\Program Files\Nexus\Nexus.exe")]
+    [InlineData(@"C:\Windows\System32\x.dll")]
+    [InlineData(@"C:\Program Files\MSI\Center")]
+    [InlineData("http://localhost:9400/api")]
+    [InlineData(@"C:\Corsair\iCUE")]
+    public void Generic_machine_names_never_hit_directories_or_url_hosts(string text)
+    {
+        foreach (var machine in new[] { "NEXUS", "WINDOWS", "MSI", "localhost", "CORSAIR" })
+        {
+            Assert.Equal(text, new BundleRedactor(Array.Empty<string>(), machine).Apply(text));
+        }
+    }
+
+    [Fact]
+    public void A_generic_machine_name_is_still_redacted_on_its_explicit_labels()
+    {
+        var r = new BundleRedactor(Array.Empty<string>(), "NEXUS");
+        Assert.Equal("host: <pc>", r.Apply("host: NEXUS"));
+        Assert.Equal(@"{""pcName"":""<pc>""}", r.Apply(@"{""pcName"":""NEXUS""}"));
+    }
+
+    [Fact]
+    public void A_specific_machine_name_is_not_replaced_as_a_directory_but_is_as_a_unc_host()
+    {
+        var r = new BundleRedactor(Array.Empty<string>(), "TITAN");
+        Assert.Equal(@"C:\TITAN\x and D:\data\TITAN\y", r.Apply(@"C:\TITAN\x and D:\data\TITAN\y"));
+        Assert.Equal(@"\\<pc>\share", r.Apply(@"\\TITAN\share"));
+    }
+
+    [Theory]
+    [InlineData("/api/media/spotify/control")]
+    [InlineData(@"C:\ProgramData\Nexus\media\effects\x.mp4")]
+    [InlineData("C:/ProgramData/Nexus/media/effects/x.mp4")]
+    [InlineData("apps/com.vendor.app/media/shot1.png")]
+    [InlineData("https://host/apps/<id>/media/shot1.png")]
+    [InlineData(@"C:\Users\Public\Desktop\x")]
+    [InlineData("/Users/Shared/x")]
+    [InlineData(@"C:\Users\Default\x")]
+    [InlineData("icon@2x.png and user@1000.service")]
+    public void Generic_rules_leave_routes_media_dirs_shared_profiles_and_file_names_alone(string text)
+    {
+        Assert.Equal(text, new BundleRedactor(Array.Empty<string>(), "pc-1").Apply(text));
+    }
+
+    [Theory]
+    [InlineData(@"C:\Users\John Smith\AppData", @"C:\Users\<user>\AppData")]
+    [InlineData(@"c:\users\bob\x", @"c:\users\<user>\x")]
+    [InlineData(@"{""p"":""C:\\Users\\O\u0027Brien\\x""}", @"{""p"":""C:\\Users\\<user>\\x""}")]
+    [InlineData(@"C:\Users\bob is the owner", @"C:\Users\<user> is the owner")]
+    [InlineData("file:///home/zed/x", "file:///home/<user>/x")]
+    public void Generic_path_rule_handles_spaces_case_and_json_escapes(string input, string expected)
+    {
+        Assert.Equal(expected, new BundleRedactor(Array.Empty<string>(), "pc-1").Apply(input));
+    }
+
+    [Fact]
+    public void Steam_id_and_null_settings_strings_do_not_fail_the_redaction()
+    {
+        var s = new NexusSettings();
+        s.Steam.SteamId = "76561198000000000";
+        s.Auth!.CloudAccounts.Add(new CloudAccountRecord { AccountId = null!, Email = null!, Username = null! });
+        s.Weather.Locations.Add(new WeatherSavedLocation { Label = null! });
+        s.HostDisplayName = null!;
+        var copy = SupportBundleBuilder.Redact(s);
+        Assert.Equal("<redacted>", copy.Steam.SteamId);
+        Assert.Equal("account-1", copy.Auth!.CloudAccounts[0].AccountId);
+    }
+
+    [Fact]
+    public void Angle_bracket_unescape_leaves_an_escaped_backslash_before_u003C_alone()
+    {
+        Assert.Equal("a<b>c", SupportBundleBuilder.UnescapeAngleBrackets(@"a\u003Cb\u003Ec"));
+        Assert.Equal(@"a\\u003Cb", SupportBundleBuilder.UnescapeAngleBrackets(@"a\\u003Cb"));
+        Assert.Equal(@"a\\<b", SupportBundleBuilder.UnescapeAngleBrackets(@"a\\\u003Cb"));
+    }
+
+    [Fact]
+    public void Launchd_files_ship_only_when_regular_and_owned_by_the_service_uid()
+    {
+        var good = Path.Combine(_root, "good.log");
+        var planted = Path.Combine(_root, "planted.log");
+        var link = Path.Combine(_root, "link.log");
+        File.WriteAllText(good, "x");
+        File.WriteAllText(planted, "x");
+        File.CreateSymbolicLink(link, good);
+        string Run(string exe, string[] args) => exe.EndsWith("id", StringComparison.Ordinal) ? "501\n" : args[2] == planted ? "0\n" : "501\n";
+        var trusted = SupportBundleExtras.TrustedLaunchdLogs(new[] { good, planted, link, Path.Combine(_root, "missing.log") }, Run);
+        Assert.Equal(new[] { good }, trusted);
+        Assert.Empty(SupportBundleExtras.TrustedLaunchdLogs(new[] { good }, (_, _) => ""));
+    }
+
+    [Fact]
+    public void System_temp_directories_include_the_win11_24h2_system_temp()
+    {
+        Assert.Equal(new[] { Path.Combine(@"D:\Win", "Temp"), Path.Combine(@"D:\Win", "SystemTemp") }, SupportBundleExtras.WindowsSystemTempDirectories(@"D:\Win"));
+        Assert.Contains(Path.Combine(@"C:\Windows", "SystemTemp"), SupportBundleExtras.WindowsSystemTempDirectories(null));
     }
 
     [Theory]
@@ -244,24 +356,44 @@ public class SupportBundleReviewTests : IDisposable
     }
 
     [Fact]
-    public void Backoff_resets_after_a_quiet_hour()
+    public void Backoff_doubles_from_the_documented_first_gap_and_resets_only_after_a_quiet_hour()
     {
         long ms = 0;
         var log = NewLog(() => ms);
         log.Note("d", "keeb", DeviceEventKind.WriteFail);
         Assert.True(log.Snapshot("d", "a"));
         ms += 31_000;
-        Assert.False(log.Snapshot("d", "too soon, the gap doubled"));
-        ms += 30_000;
-        Assert.True(log.Snapshot("d", "b"));
-        ms += 61_000;
-        Assert.False(log.Snapshot("d", "c"));
-        ms += (long)DeviceIncidentLog.MaxSnapshotGap.TotalMilliseconds;
-        Assert.True(log.Snapshot("d", "d"));
+        Assert.True(log.Snapshot("d", "b: the first re-snapshot needs the 30 s gap"));
         ms += 31_000;
-        Assert.False(log.Snapshot("d", "e"));
+        Assert.False(log.Snapshot("d", "too soon: the second needs 60 s"));
         ms += 30_000;
-        Assert.True(log.Snapshot("d", "f"));
+        Assert.True(log.Snapshot("d", "c"));
+        ms += (long)DeviceIncidentLog.MaxSnapshotGap.TotalMilliseconds;
+        Assert.True(log.Snapshot("d", "d, after a quiet hour"));
+        ms += 31_000;
+        Assert.True(log.Snapshot("d", "e: the ladder started over"));
+    }
+
+    [Fact]
+    public void A_device_that_flaps_for_hours_settles_at_one_snapshot_per_hour()
+    {
+        long ms = 0;
+        var log = NewLog(() => ms);
+        log.Note("d", "keeb", DeviceEventKind.WriteFail);
+        var written = new List<long>();
+        while (ms <= 3 * 3600_000L)
+        {
+            if (log.Snapshot("d", "flap"))
+            {
+                written.Add(ms);
+            }
+            ms += 30_000;
+        }
+        Assert.InRange(written.Count, 8, 10);
+        for (var i = 8; i < written.Count; i++)
+        {
+            Assert.InRange(written[i] - written[i - 1], 3600_000L, 3660_000L);
+        }
     }
 
     [Fact]
@@ -294,8 +426,8 @@ public class SupportBundleReviewTests : IDisposable
         health.Report("k", failures: 3, successes: 7, handlerId: "keeb");
         log.Snapshot("k", "probe");
         var text = IncidentText(log);
-        Assert.Contains("WriteFail n=3", text);
-        Assert.Contains("WriteOk n=7", text);
+        Assert.Contains("WriteFail n=3 ok=7", text);
+        Assert.Single(text.Split('\n'), l => l.Contains("WriteFail") || l.Contains("WriteOk"));
     }
 
     [Fact]

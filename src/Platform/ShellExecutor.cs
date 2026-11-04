@@ -31,6 +31,8 @@ public static class ShellExecutor
             // it never writes / never closes stdout (e.g. /bin/sleep), making
             // the timeoutMs cap useless.
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            // Stderr is redirected too: a tool that fills its pipe would otherwise stall until the timeout.
+            _ = proc.StandardError.ReadToEndAsync();
             if (!proc.WaitForExit(timeoutMs))
             {
                 Console.Error.WriteLine($"[shell] timeout ({timeoutMs}ms) waiting for {fileName} {string.Join(' ', args)}");

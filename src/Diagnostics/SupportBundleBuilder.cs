@@ -134,7 +134,7 @@ public static class SupportBundleBuilder
             logs.AddRange(installerLogs.OrderByDescending(c => c.LastWriteUtc).ThenBy(c => c.EntryName, StringComparer.Ordinal).Take(SupportBundleExtras.InstallerLogKeep));
             foreach (var path in src.LaunchdLogPaths)
             {
-                AddLogs(logs, "launchd/", Path.GetDirectoryName(path) ?? "", Path.GetFileName(path));
+                AddLogs(logs, "launchd/", Path.GetDirectoryName(path) ?? "", Path.GetFileName(path), mustBeUnder: true);
             }
             AddLogs(logs, "updates/", src.UpdatesDirectory, Update.UpdateInstaller.InstallLogGlob);
             AddFile(zip, r, "updates/" + Update.StagedInstallMarkerStore.MarkerFileName, Path.Combine(src.UpdatesDirectory, Update.StagedInstallMarkerStore.MarkerFileName));
@@ -193,7 +193,8 @@ public static class SupportBundleBuilder
                 account.AvatarSmall = "";
                 // A stable alias keeps "which account is active" readable without naming the cloud id.
                 var alias = "account-" + ++accountIndex;
-                accountAliases[account.AccountId] = alias;
+                // A settings file edited by hand can hold a JSON null where a string belongs; the export must survive it.
+                accountAliases[account.AccountId ?? ""] = alias;
                 account.AccountId = alias;
             }
             if (copy.Auth.ActiveCloudAccountId is { } active)
@@ -201,13 +202,14 @@ public static class SupportBundleBuilder
                 copy.Auth.ActiveCloudAccountId = accountAliases.GetValueOrDefault(active, blank);
             }
         }
-        copy.HostDisplayName = copy.HostDisplayName.Length == 0 ? "" : blank;
+        copy.HostDisplayName = string.IsNullOrEmpty(copy.HostDisplayName) ? "" : blank;
+        copy.Steam.SteamId = string.IsNullOrEmpty(copy.Steam.SteamId) ? "" : blank;
         foreach (var location in copy.Weather.Locations)
         {
             // Saved coordinates are as precise as a street address; the label is kept only when it is a plain place name.
             location.Lat = 0;
             location.Lon = 0;
-            if (location.Label.Any(char.IsDigit))
+            if (location.Label is { } label && label.Any(char.IsDigit))
             {
                 location.Label = blank;
             }
@@ -344,7 +346,13 @@ public static class SupportBundleBuilder
 
     // The default encoder writes the placeholders' angle brackets as \u003C and \u003E; both are valid raw inside a JSON string.
     private static void WriteJson<T>(ZipArchive zip, BundleRedactor r, string name, T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo) =>
-        WriteText(zip, r, name, JsonSerializer.Serialize(value, typeInfo).Replace("\\u003C", "<", StringComparison.Ordinal).Replace("\\u003E", ">", StringComparison.Ordinal));
+        WriteText(zip, r, name, UnescapeAngleBrackets(JsonSerializer.Serialize(value, typeInfo)));
+
+    // An escaped backslash followed by u003C is literal text, not an escape: only an even run of backslashes before the backslash-u keeps the match an escape.
+    private static readonly System.Text.RegularExpressions.Regex AngleEscape = new(@"(?<!\\)((?:\\\\)*)\\u003([CcEe])", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    internal static string UnescapeAngleBrackets(string json) =>
+        AngleEscape.Replace(json, m => m.Groups[1].Value + (m.Groups[2].Value is "C" or "c" ? "<" : ">"));
 
     private static void WriteText(ZipArchive zip, BundleRedactor r, string name, string content)
     {

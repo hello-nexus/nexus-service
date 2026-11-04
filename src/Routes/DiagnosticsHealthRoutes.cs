@@ -207,12 +207,14 @@ public static class DiagnosticsHealthRoutes
                     ? SupportBundleBuilder.ProfileSubdirectoriesFor(Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles(), "AppData", "Local", "Temp")
                     : Array.Empty<(string, string)>(),
                 InstallerSystemDirectories = OperatingSystem.IsWindows()
-                    ? new[] { Path.Combine(Environment.GetEnvironmentVariable("SystemRoot") ?? @"C:\Windows", "Temp") }
+                    ? SupportBundleExtras.WindowsSystemTempDirectories(Environment.GetEnvironmentVariable("SystemRoot"))
                     : Array.Empty<string>(),
                 SplashLogDirectories = OperatingSystem.IsWindows()
                     ? SupportBundleBuilder.ProfileSubdirectoriesFor(Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles(), "AppData", "Local", "Nexus", "updater")
                     : Array.Empty<(string, string)>(),
-                LaunchdLogPaths = OperatingSystem.IsMacOS() ? SupportBundleExtras.MacLaunchdLogPaths : Array.Empty<string>(),
+                LaunchdLogPaths = OperatingSystem.IsMacOS()
+                    ? SupportBundleExtras.TrustedLaunchdLogs(SupportBundleExtras.MacLaunchdLogPaths, (exe, args) => Nexus.Service.Platform.ShellExecutor.Run(exe, args))
+                    : Array.Empty<string>(),
                 JournalText = OperatingSystem.IsLinux()
                     ? SupportBundleExtras.ReadJournal(args => Nexus.Service.Platform.ShellExecutor.Run("journalctl", SupportBundleExtras.JournalTimeoutMs, args))
                     : "",
