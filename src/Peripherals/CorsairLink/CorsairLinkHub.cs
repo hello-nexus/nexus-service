@@ -332,7 +332,7 @@ public sealed class CorsairLinkHub : IDisposable
 
         TraceNote("step=firmware");
         var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
-        if (fw >= 8)
+        if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdGetFirmware[0])
         {
             State.Firmware = $"{_read[4]}.{_read[5]}.{_read[6] | (_read[7] << 8)}";
             _firmwareMajor = _read[4];
@@ -850,10 +850,7 @@ public sealed class CorsairLinkHub : IDisposable
         if (n <= 0)
         {
             if (_trace != null) TraceNote($"read n={n}");
-            var now = NowMs();
-            if (_owedReplies[command[0]] > 0 && now - _owedSinceMs[command[0]] > OwedReplyMaxAgeMs) _owedReplies[command[0]] = 0;
-            if (_owedReplies[command[0]] == 0) _owedSinceMs[command[0]] = now;
-            if (_owedReplies[command[0]] < OwedReplyMaxCount) _owedReplies[command[0]]++;
+            RecordOwedReply(command[0]);
             return n;
         }
         if (_trace != null)
@@ -863,8 +860,38 @@ public sealed class CorsairLinkHub : IDisposable
         // Windows ReadFile returns the report with the report-id byte at [0]; hidapi
         // (which the parsers mirror) drops it. Strip it and report the stripped length.
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
+        // A late reply to an earlier timed-out command shifts the stream by one; keep
+        // reading until this command's own reply arrives so the shift does not persist.
+        for (var i = 0; i < CorsairLinkProtocol.ReadResyncTries && TakeLateOwedReply(command[0]); i++)
+        {
+            n = _device.Read(_readRaw, ResyncReadTimeoutMs);
+            if (n <= 0)
+            {
+                if (_trace != null) TraceNote($"read n={n}");
+                RecordOwedReply(command[0]);
+                return n;
+            }
+            if (_trace != null) TraceNote(_traceQuiet ? $"in n={n} status={_readRaw[1 + CorsairLinkProtocol.ResponseStatusOffset]:x2}" : $"in n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
+            _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
+        }
         NoteEcho(command[0]);
         return n - 1;
+    }
+
+    private void RecordOwedReply(byte cmd)
+    {
+        var now = NowMs();
+        if (_owedReplies[cmd] > 0 && now - _owedSinceMs[cmd] > OwedReplyMaxAgeMs) _owedReplies[cmd] = 0;
+        if (_owedReplies[cmd] == 0) _owedSinceMs[cmd] = now;
+        if (_owedReplies[cmd] < OwedReplyMaxCount) _owedReplies[cmd]++;
+    }
+
+    // True when _read holds a reply owed for a different command, which it consumes.
+    private bool TakeLateOwedReply(byte sent)
+    {
+        var echo = _read[CorsairLinkProtocol.ResponseCommandOffset];
+        if (echo == 0 || echo == sent) return false;
+        return TakeOwedLocked(echo);
     }
 
     public void Dispose()

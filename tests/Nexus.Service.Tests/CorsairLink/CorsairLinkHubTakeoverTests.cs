@@ -21,6 +21,10 @@ public class CorsairLinkHubTakeoverTests
         public bool RefuseUntilHardware;
         public bool NeverAcceptSoftware;
         public Action<byte[]>? OnCommand;
+        /// <summary>Withholds the first software-mode reply (the read times out) and delivers it ahead of the next command's reply.</summary>
+        public bool DelayFirstSoftwareReply;
+        private byte[]? _held;
+        private bool _heldOnce;
         private bool _hardwareSeen;
         private readonly Dictionary<byte, byte> _resource = new();
         private readonly Queue<byte[]> _responses = new();
@@ -79,7 +83,21 @@ public class CorsairLinkHubTakeoverTests
             resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = cmd[0];
             resp[1 + CorsairLinkProtocol.ResponseStatusOffset] = (byte)status;
             payload.CopyTo(resp, 1 + 4);
-            lock (_responses) _responses.Enqueue(resp);
+            lock (_responses)
+            {
+                if (DelayFirstSoftwareReply && !_heldOnce && cmd[0] == 0x01 && cmd[3] == CorsairLinkProtocol.ModeSoftware)
+                {
+                    _heldOnce = true;
+                    _held = resp;
+                    return true;
+                }
+                if (_held != null)
+                {
+                    _responses.Enqueue(_held);
+                    _held = null;
+                }
+                _responses.Enqueue(resp);
+            }
             return true;
         }
 
@@ -153,6 +171,34 @@ public class CorsairLinkHubTakeoverTests
     }
 
     private static string Join(IEnumerable<string> names) => string.Join(" ", names);
+
+    [Fact]
+    public void A_late_software_mode_reply_does_not_shift_the_stream_into_a_false_foreign_host()
+    {
+        var device = new TakeoverHub { DelayFirstSoftwareReply = true };
+        using var hub = NewHub(device);
+
+        var ok = hub.Initialize();
+
+        Assert.True(ok, hub.LastInitTrace);
+        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
+        Assert.Equal("4.1.656", hub.State.Firmware);
+    }
+
+    [Fact]
+    public void A_foreign_echo_after_a_timed_out_command_still_marks_another_program()
+    {
+        var device = new TakeoverHub { DelayFirstSoftwareReply = true };
+        device.OnCommand = c =>
+        {
+            if (c[0] == 0x02 && c[1] == 0x13) device.Inject(0x77);
+        };
+        using var hub = NewHub(device);
+
+        hub.Initialize();
+
+        Assert.True(hub.ForeignHostSeen, hub.LastInitTrace);
+    }
 
     [Fact]
     public void Takeover_runs_the_measured_order_before_the_endpoint_setup()
