@@ -46,6 +46,45 @@ public sealed class RgbDevice
         return null;
     }
 
+    /// <summary>
+    /// True when per-LED writes can only reach the device through modes that save to
+    /// onboard memory: the mode we drive saves, and no per-LED mode is free of the flag.
+    /// Such a write is a flash write, so repeating an unchanged frame buys nothing.
+    /// </summary>
+    public bool IsSaveOnly
+    {
+        get
+        {
+            var driven = FindCustomMode();
+            if (driven is null || (driven.Flags & RgbMode.FlagAutomaticSave) == 0)
+            {
+                return false;
+            }
+            var anyPerLed = false;
+            foreach (var m in Modes)
+            {
+                var perLed = m.ColorMode == 1u || (m.Flags & RgbMode.FlagHasPerLedColor) != 0;
+                if (perLed && (m.Flags & RgbMode.FlagAutomaticSave) == 0)
+                {
+                    return false;
+                }
+                anyPerLed |= perLed;
+            }
+            return anyPerLed;
+        }
+    }
+
+    /// <summary>Default write cap in Hz for the EVision keyboard family.</summary>
+    public const int EVisionDefaultCapHz = 2;
+
+    /// <summary>Write cap in Hz this device runs at until the user picks one, or null.</summary>
+    public int? DefaultMaxRateHz => IsSaveOnly && IsEVisionKeyboard ? EVisionDefaultCapHz : null;
+
+    /// <summary>The EVision keyboard controller family: per-LED writes blank the keys while it reloads from memory.</summary>
+    public bool IsEVisionKeyboard =>
+        string.Equals(Vendor, "EVision", StringComparison.OrdinalIgnoreCase)
+        || Name.StartsWith("EVision Keyboard", StringComparison.OrdinalIgnoreCase);
+
     private string? _stableId;
 
     /// <summary>
@@ -133,6 +172,12 @@ public sealed class RgbMode
     public string Name { get; set; } = "";
     /// <summary>color_mode field: 0=NONE, 1=PER_LED, 2=MODE_SPECIFIC, 3=RANDOM.</summary>
     public uint ColorMode { get; set; }
+    /// <summary>MODE_FLAG_* bits from the controller data.</summary>
+    public uint Flags { get; set; }
+    /// <summary>MODE_FLAG_HAS_PER_LED_COLOR (RGBControllerInterface.h).</summary>
+    public const uint FlagHasPerLedColor = 1u << 5;
+    /// <summary>MODE_FLAG_AUTOMATIC_SAVE: every write lands in the device's onboard memory.</summary>
+    public const uint FlagAutomaticSave = 1u << 9;
     /// <summary>Raw mode-entry bytes as they appeared in the controller-data response.</summary>
     public byte[] Bytes { get; set; } = System.Array.Empty<byte>();
 }
