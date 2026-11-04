@@ -42,8 +42,7 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     // Enumerate runs every poll and a non-capable monitor is re-probed every
     // time, so these lines are written on change and then at most once per
     // interval with a count.
-    private static readonly TimeSpan RepeatLogInterval = TimeSpan.FromMinutes(10);
-    private readonly Nexus.Service.Platform.LogGate _enumerateLog = new(RepeatLogInterval);
+    private readonly Nexus.Service.Platform.LogGate _enumerateLog = new(DdcGate.RepeatLogInterval);
 
     /// <summary>Reason of the last skip, so a locked hour is one line rather
     /// than seven hundred.</summary>

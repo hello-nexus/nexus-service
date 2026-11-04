@@ -148,29 +148,27 @@ internal static class DdcGate
         }
     }
 
+    /// <summary>How often a repeating DDC log line is restated with its count.</summary>
+    internal static readonly TimeSpan RepeatLogInterval = TimeSpan.FromMinutes(10);
+
+    private static readonly Nexus.Service.Platform.LogGate s_queryFailureLog = new(RepeatLogInterval);
+
     /// <summary>
     /// WTS lock state for this process's own session. UNKNOWN (0xFFFFFFFF) and
     /// every failure path read as unlocked: a query that cannot answer must not
     /// disable brightness control forever.
     /// </summary>
-    private static readonly Nexus.Service.Platform.LogGate s_queryFailureLog = new(TimeSpan.FromMinutes(10));
-
     private static bool QuerySessionLocked()
     {
         try
         {
-            if (!WTSQuerySessionInformationW(IntPtr.Zero, WTS_CURRENT_SESSION, WTSSessionInfoEx, out var buf, out var len)
-                || buf == IntPtr.Zero)
+            var locked = QueryCore();
+            if (s_queryFailureLog.Reset("lock-state", out var withheld))
             {
-                return false;
+                Nexus.Service.Platform.HelperLog.Write(
+                    $"[ddc] lock-state query recovered{Nexus.Service.Platform.LogGate.Suffix(withheld)}");
             }
-            try
-            {
-                if (len < (uint)Marshal.SizeOf<WTSINFOEX_PREFIX>()) return false;
-                var info = Marshal.PtrToStructure<WTSINFOEX_PREFIX>(buf);
-                return info.Level == 1 && info.SessionFlags == WTS_SESSIONSTATE_LOCK;
-            }
-            finally { WTSFreeMemory(buf); }
+            return locked;
         }
         catch (Exception ex)
         {
@@ -182,6 +180,22 @@ internal static class DdcGate
             }
             return false;
         }
+    }
+
+    private static bool QueryCore()
+    {
+        if (!WTSQuerySessionInformationW(IntPtr.Zero, WTS_CURRENT_SESSION, WTSSessionInfoEx, out var buf, out var len)
+            || buf == IntPtr.Zero)
+        {
+            return false;
+        }
+        try
+        {
+            if (len < (uint)Marshal.SizeOf<WTSINFOEX_PREFIX>()) return false;
+            var info = Marshal.PtrToStructure<WTSINFOEX_PREFIX>(buf);
+            return info.Level == 1 && info.SessionFlags == WTS_SESSIONSTATE_LOCK;
+        }
+        finally { WTSFreeMemory(buf); }
     }
 
     private const uint WTS_CURRENT_SESSION = unchecked((uint)-1);
