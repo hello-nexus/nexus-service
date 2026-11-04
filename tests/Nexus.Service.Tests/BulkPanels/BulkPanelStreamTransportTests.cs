@@ -45,6 +45,21 @@ public class BulkPanelStreamTransportTests
         Assert.Empty(pipe.PipeWrites);
     }
 
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void Discovery_offers_the_render_mode_except_for_native_only_zmatrices(bool maxE87, bool offered)
+    {
+        using var hub = new BulkPanelHub(new ZMatricesPanelDriver(maxE87 ? ZMatricesModel.MaxE87 : ZMatricesModel.GlacierMatrix));
+        hub.Attach(new RecordingPipe(), null);
+
+        var profile = new BulkPanelDiscovery(hub).Discover().Single().Profile;
+
+        Assert.Equal(maxE87, profile.NativeRenderOnly);
+        Assert.Equal(offered, profile.SupportsRenderScale);
+        Assert.Equal(offered, profile.BuildCapabilities().SupportsRenderScale ?? false);
+    }
+
     [Fact]
     public void Discovery_advertises_brightness_only_for_drivers_that_take_it()
     {
