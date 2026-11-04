@@ -1059,15 +1059,55 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
-    public void Preview_lapses_when_the_client_stops_refreshing_it()
+    public void A_lapsed_preview_is_persisted_and_the_device_stays_there()
     {
-        var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        Assert.Null(transport.CurrentBrightness);
 
-        coordinator.PreviewBrightness(panelId, 60);
+        coordinator.PreviewBrightness(panelId, 55);
         Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
-        coordinator.ApplyBrightness(panelId);
+        coordinator.TickOnce();
 
-        Assert.Equal(35, transport.Applied);
+        Assert.Equal(55, _registry.Get(panelId)!.LcdBrightness);
+        Assert.Equal(55, transport.Applied);
+        coordinator.ApplyBrightness(panelId);
+        Assert.Equal(55, transport.Applied);
+    }
+
+    [Fact]
+    public void Lock_after_a_lapsed_preview_restores_the_persisted_level()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        coordinator.PreviewBrightness(panelId, 55);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+        coordinator.TickOnce();
+
+        _lock.Set(true);
+        Advance(coordinator, 2000);
+        Assert.Equal(0, transport.LastApplied);
+        _lock.Set(false);
+        Advance(coordinator, 2000);
+
+        Assert.Equal(55, transport.Applied);
+        Assert.Equal(55, _registry.Get(panelId)!.LcdBrightness);
+    }
+
+    [Fact]
+    public void A_second_drag_after_a_lapse_previews_and_lapses_again()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        coordinator.PreviewBrightness(panelId, 55);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+        coordinator.TickOnce();
+
+        coordinator.PreviewBrightness(panelId, 20);
+        Assert.Equal(20, transport.Applied);
+        Assert.Equal(55, _registry.Get(panelId)!.LcdBrightness);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+        coordinator.TickOnce();
+
+        Assert.Equal(20, _registry.Get(panelId)!.LcdBrightness);
+        Assert.Equal(20, transport.Applied);
     }
 
     [Fact]
@@ -1101,34 +1141,6 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         }
 
         Assert.Equal(80, transport.Applied);
-    }
-
-    [Fact]
-    public void A_lapsed_preview_is_put_back_by_the_tick_on_an_idle_feed()
-    {
-        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
-        transport.Applied = 70;
-
-        coordinator.PreviewBrightness(panelId, 55);
-        Assert.Equal(55, transport.Applied);
-        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
-        coordinator.TickOnce();
-
-        Assert.Equal(70, transport.Applied);
-    }
-
-    [Fact]
-    public void Lock_after_a_lapsed_preview_remembers_the_level_from_before_it()
-    {
-        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
-        transport.Applied = 70;
-        coordinator.PreviewBrightness(panelId, 55);
-        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
-
-        _lock.Set(true);
-        Advance(coordinator, 2000);
-
-        Assert.Equal(70, _registry.Get(panelId)!.LockRestoreBrightness);
     }
 
     [Fact]

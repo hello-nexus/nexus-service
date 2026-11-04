@@ -65,13 +65,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     internal LcdFadeRunner FadeRunner { get; }
     // Live slider levels not yet persisted, per panel record id; read lock-free from frame threads.
     // A client holds one by re-posting it while its slider is down; one not refreshed within
-    // PreviewIdleMs lapses, so an abandoned drag cannot stick. The record write also clears it.
+    // PreviewIdleMs is persisted to the record by the sweep. The record write also clears it.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Percent, long AtMs)> _previews = new(StringComparer.Ordinal);
     internal const long PreviewIdleMs = 5000;
-    // The level a panel was at when its first preview began, kept until the record write: what a
-    // record with no stored level returns to once the preview lapses, and the only level a lock may
-    // remember for it, since whatever the device shows after a preview came from the preview.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _baselines = new(StringComparer.Ordinal);
     private readonly LcdLockSleepSet? _lockSleep;
 
     /// <summary>Backlight percent used only when a panel with no stored value never revealed its pre-lock level.</summary>
@@ -93,7 +89,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         _removePanel = id =>
         {
             _previews.TryRemove(id, out _);
-            _baselines.TryRemove(id, out _);
             return remove(id);
         };
         _isCustomized = isCustomized ?? registry.IsCustomized;
@@ -175,8 +170,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             return live;
         }
         var record = _registry.Get(panelDeviceId);
-        return record?.LcdBrightness ?? record?.LockRestoreBrightness
-            ?? (_baselines.TryGetValue(panelDeviceId, out var baseline) ? baseline : null);
+        return record?.LcdBrightness ?? record?.LockRestoreBrightness;
     }
 
     private IBrightnessPanelTransport? DimmableTransport(string panelDeviceId)
@@ -314,11 +308,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             return null;
         }
-        // A level that came from a preview (live or lapsed) is not the panel's own.
-        if (_baselines.TryGetValue(panelDeviceId, out var baseline))
-        {
-            return baseline > 0 ? baseline : UnlockDefaultBrightness;
-        }
+        // A level still being dragged is not the panel's own; it is never kept as the restore level.
         if (LivePreview(panelDeviceId) is not null)
         {
             return UnlockDefaultBrightness;
@@ -601,49 +591,34 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     /// </summary>
     public bool PreviewBrightness(string panelDeviceId, int percent)
     {
-        if (!_previews.ContainsKey(panelDeviceId) && !_baselines.ContainsKey(panelDeviceId)
-            && DimmableTransport(panelDeviceId)?.CurrentBrightness is int before)
-        {
-            _baselines[panelDeviceId] = before;
-        }
         _previews[panelDeviceId] = (Math.Clamp(percent, 0, 100), _nowMs());
         return ApplyBrightness(panelDeviceId);
     }
 
-    private int? LivePreview(string panelDeviceId)
-    {
-        if (!_previews.TryGetValue(panelDeviceId, out var entry))
-        {
-            return null;
-        }
-        if (_nowMs() - entry.AtMs < PreviewIdleMs)
-        {
-            return entry.Percent;
-        }
-        _previews.TryRemove(new KeyValuePair<string, (int Percent, long AtMs)>(panelDeviceId, entry));
-        return null;
-    }
+    // Expiry is decided by the sweep alone, so a preview never flickers back to the record first.
+    private int? LivePreview(string panelDeviceId) => _previews.TryGetValue(panelDeviceId, out var entry) ? entry.Percent : null;
 
     /// <summary>Drops a live slider level so the record's value governs again, and re-applies it.</summary>
     public void ClearBrightnessPreview(string panelDeviceId)
     {
-        var had = _previews.TryRemove(panelDeviceId, out _);
-        had |= _baselines.TryRemove(panelDeviceId, out _);
-        if (had)
-        {
-            ApplyBrightness(panelDeviceId);
-        }
+        _previews.TryRemove(panelDeviceId, out _);
+        ApplyBrightness(panelDeviceId);
     }
 
-    // Idle feeds never re-read the backlight, so a lapsed preview is put back here.
+    // A preview nobody refreshed was still chosen by the user: it becomes the record's level, so
+    // the record and the display agree and the lock path reads the record as it always has.
     private void SweepLapsedPreviews()
     {
-        foreach (var id in _previews.Keys)
+        foreach (var entry in _previews.ToArray())
         {
-            if (LivePreview(id) is null)
+            if (_nowMs() - entry.Value.AtMs < PreviewIdleMs
+                || !_previews.TryRemove(entry))
             {
-                ApplyBrightness(id);
+                continue;
             }
+            _registry.Patch(entry.Key, new PanelDevicePatch { LcdBrightness = entry.Value.Percent });
+            _notifyPanelChanged?.Invoke(entry.Key);
+            ApplyBrightness(entry.Key);
         }
     }
 

@@ -395,10 +395,7 @@ public static class PanelRoutes
             // ProfileManager.MarkDirty, so a look edit reaches the active
             // profile's Panels data on the next flush with no explicit pulse.
             if (body.LcdBrightness.HasValue)
-            {
                 streams.ClearBrightnessPreview(updated.Id);
-                streams.ApplyBrightness(updated.Id);
-            }
             if (body.SecondaryMonitor.HasValue)
             {
                 streams.ApplySecondaryMonitor(updated.Id);
