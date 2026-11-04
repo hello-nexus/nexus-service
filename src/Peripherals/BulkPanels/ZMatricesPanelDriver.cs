@@ -13,7 +13,7 @@ public sealed record ZMatricesModel(string HandlerId, string Name, int ProductId
     public static readonly ZMatricesModel GlacierMatrix = new("zmatrices-lcd", "Aftershock Glacier Matrix LCD", 0x0026, 1120, 540, null, 44);
 
     /// <summary>Bar panel streamed at its native resolution.</summary>
-    public static readonly ZMatricesModel MaxE87 = new("zmatrices-max-e87", "ZMatrices MAX E87", 0x0032, 1280, 440, 218, 60, "light");
+    public static readonly ZMatricesModel MaxE87 = new("zmatrices-max-e87", "ZMatrices MAX E87", 0x0032, 1280, 480, 218, 60, "light");
 }
 
 /// <summary>ZMatrices LCDs (see <see cref="ZMatricesProtocol"/>).</summary>

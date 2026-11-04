@@ -129,8 +129,7 @@ public sealed class ZMatricesTouchParser : IPanelTouchDecoder
     /// <summary>
     /// Places a report on a landscape frame of the given size. The glass reports portrait
     /// coordinates: X runs up the short side, Y along the long side, each scaled from the
-    /// declared span (the Glacier Matrix declares the frame size, the MAX E87 a taller span
-    /// than its glass).
+    /// declared span, so a span that differs from the frame is stretched onto it.
     /// </summary>
     public static bool TryMapToFrame(ZMatricesTouchReport report, int width, int height, out int x, out int y)
     {

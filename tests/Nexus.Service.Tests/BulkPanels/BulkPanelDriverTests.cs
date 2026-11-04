@@ -229,14 +229,14 @@ public class BulkPanelDriverTests
         var driver = new ZMatricesPanelDriver(ZMatricesModel.MaxE87);
         var pipe = new FakeBulkPipe();
 
-        Assert.Equal((1280, 440), driver.Connect(pipe, null));
+        Assert.Equal((1280, 480), driver.Connect(pipe, null));
         Assert.Equal("zmatrices-max-e87", driver.HandlerId);
         Assert.Equal(new[] { 0x0032 }, driver.ProductIds);
         Assert.Equal(0x38C1, driver.VendorId);
         Assert.True(driver.HasTouch);
         Assert.Equal(ZMatricesProtocol.InputPipe, driver.ReadPipeId);
         Assert.Equal(ZMatricesProtocol.CommandPipe, Assert.Single(pipe.PipeWrites).Item1);
-        Assert.True(driver.SendFrame(pipe, null, Frame(1280, 440)));
+        Assert.True(driver.SendFrame(pipe, null, Frame(1280, 480)));
     }
 
     [Theory]
