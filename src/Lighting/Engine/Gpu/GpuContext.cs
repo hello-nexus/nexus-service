@@ -294,7 +294,7 @@ public sealed class GpuContext : IDisposable
         try
         {
             System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(LogPath)!);
-            System.IO.File.AppendAllText(LogPath, $"{DateTime.UtcNow:HH:mm:ss.fff} {line}\n");
+            System.IO.File.AppendAllText(LogPath, LogLineFormat.Line(DateTime.UtcNow, LogLineFormat.Info, "gpu", line) + "\n");
         }
         catch { }
         // These are GL init/shader traces, not failures - INF, not ERR. Full

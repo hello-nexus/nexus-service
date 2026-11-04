@@ -551,7 +551,7 @@ public static class TrayIcon
         // file it creates).
         try
         {
-            var line = $"{DateTime.Now:HH:mm:ss.fff} [TrayIcon p{Environment.ProcessId}] {msg}\n";
+            var line = Nexus.Service.Platform.LogLineFormat.Line(DateTime.UtcNow, Nexus.Service.Platform.LogLineFormat.Info, "tray", msg, Environment.ProcessId) + "\n";
             Nexus.Service.Platform.ServiceLog.AppendUserSessionLog("nexus-tray.log", System.Text.Encoding.UTF8.GetBytes(line));
         }
         catch { }

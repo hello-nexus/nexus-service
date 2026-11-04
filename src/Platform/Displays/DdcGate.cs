@@ -144,7 +144,7 @@ internal static class DdcGate
         }
         catch (Exception ex)
         {
-            Nexus.Service.Platform.HelperLog.Write($"[ddc] settle callback failed: {ex.Message}");
+            Nexus.Service.Platform.HelperLog.Warn($"[ddc] settle callback failed: {ex.Message}");
         }
     }
 
@@ -172,7 +172,7 @@ internal static class DdcGate
         }
         catch (Exception ex)
         {
-            Nexus.Service.Platform.HelperLog.Write($"[ddc] lock-state query failed: {ex.Message}");
+            Nexus.Service.Platform.HelperLog.Warn($"[ddc] lock-state query failed: {ex.Message}");
             return false;
         }
     }

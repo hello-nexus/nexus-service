@@ -378,6 +378,15 @@ builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o => o.Shut
 // Information lines, which otherwise flood nexus-service.log on every internal API call.
 // Keep Microsoft.Hosting.Lifetime at Information for the useful "Now listening" /
 // "Application started/stopping" boot markers.
+// The default console provider writes two untimestamped, untagged lines per entry; ILogger output goes
+// through ServiceLog instead so it matches every other line in the file. Only that provider is removed:
+// the hosting defaults' other providers (event log) stay.
+foreach (var d in builder.Services.Where(d => d.ServiceType == typeof(ILoggerProvider)
+    && d.ImplementationType?.FullName == "Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider").ToList())
+{
+    builder.Services.Remove(d);
+}
+builder.Logging.AddProvider(new Nexus.Service.Platform.ServiceLogLoggerProvider());
 builder.Logging.AddFilter("Microsoft", LogLevel.Warning);
 builder.Logging.AddFilter("System", LogLevel.Warning);
 builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);

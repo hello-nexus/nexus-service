@@ -115,7 +115,7 @@ public sealed class GlobalHotkeys : IDisposable
         started.Set();
         if (!_ready)
         {
-            Platform.HelperLog.Write($"[hotkeys] message window failed err={Marshal.GetLastWin32Error()}");
+            Platform.HelperLog.Warn($"[hotkeys] message window failed err={Marshal.GetLastWin32Error()}");
             return;
         }
         try
@@ -192,7 +192,7 @@ public sealed class GlobalHotkeys : IDisposable
             }
             else
             {
-                Platform.HelperLog.Write($"[hotkeys] RegisterHotKey failed id={reg.Id} combo={reg.Combo} err={Marshal.GetLastWin32Error()}");
+                Platform.HelperLog.Warn($"[hotkeys] RegisterHotKey failed id={reg.Id} combo={reg.Combo} err={Marshal.GetLastWin32Error()}");
                 results[reg.Id] = false;
             }
         }

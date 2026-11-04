@@ -974,7 +974,10 @@ public static class PawnIoInstaller
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
-            File.AppendAllText(LogPath, $"{DateTime.Now:O} {msg}\n");
+            var isError = msg.StartsWith("ERROR: ", StringComparison.Ordinal);
+            var text = isError ? msg["ERROR: ".Length..] : msg;
+            File.AppendAllText(LogPath, Nexus.Service.Platform.LogLineFormat.Line(
+                DateTime.UtcNow, isError ? Nexus.Service.Platform.LogLineFormat.Error : Nexus.Service.Platform.LogLineFormat.Info, "pawnio-install", text) + "\n");
         }
         catch { /* logging is best-effort */ }
     }
