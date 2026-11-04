@@ -85,11 +85,12 @@ public sealed class LightingWriteHealth
         {
             return;
         }
+        // One entry for a mixed window keeps the ring's time coverage; a failure window carries its successes as ok=.
         if (failures > 0)
         {
-            Incidents?.Note(key, handlerId, Nexus.Service.Diagnostics.DeviceEventKind.WriteFail, count: failures);
+            Incidents?.Note(key, handlerId, Nexus.Service.Diagnostics.DeviceEventKind.WriteFail, count: failures, okCount: Math.Max(successes, 0));
         }
-        if (successes > 0)
+        else
         {
             Incidents?.Note(key, handlerId, Nexus.Service.Diagnostics.DeviceEventKind.WriteOk, count: successes);
         }

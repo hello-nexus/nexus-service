@@ -30,10 +30,10 @@ public sealed class DeviceIncidentLog
     public const string FileName = "device-incidents.log";
     public const long MaxFileBytes = 1024 * 1024;
 
-    /// <summary>The first gap between snapshots of one device and one kind; each snapshot doubles the next required gap up to <see cref="MaxSnapshotGap"/>, so a flapping device cannot fill the file and evict its first incident.</summary>
+    /// <summary>The gap required after a device's first snapshot of one kind; each further snapshot doubles it up to <see cref="MaxSnapshotGap"/>, so a flapping device cannot fill the file and evict its first incident.</summary>
     public static readonly TimeSpan MinSnapshotGap = TimeSpan.FromSeconds(30);
 
-    /// <summary>The longest required gap, and the quiet span after which the gap starts over.</summary>
+    /// <summary>The longest required gap, and the span with no attempt at all (written or refused) after which the ladder starts over.</summary>
     public static readonly TimeSpan MaxSnapshotGap = TimeSpan.FromHours(1);
 
     /// <summary>Steady per-frame successes fold into one entry per this span so they do not evict the failures.</summary>
@@ -56,6 +56,8 @@ public sealed class DeviceIncidentLog
         public long AtMs;
         public DeviceEventKind Kind;
         public int Count;
+        /// <summary>Successes that shared a report window with the failures counted in <see cref="Count"/>.</summary>
+        public int OkCount;
         public int LatencyMs;
         public int Code;
     }
@@ -72,7 +74,7 @@ public sealed class DeviceIncidentLog
     private readonly Dictionary<string, Ring> _rings = new(StringComparer.Ordinal);
     private readonly Func<string> _dir;
     private readonly Func<long> _nowMs;
-    private readonly record struct Throttle(long LastMs, long NextGapMs);
+    private readonly record struct Throttle(long LastAttemptMs, long LastWrittenMs, int Written);
     // Keyed by device and snapshot kind: a drop after a write-failure snapshot must not be throttled by it.
     private readonly Dictionary<string, Throttle> _throttle = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Throttle?> _priorThrottle = new(StringComparer.Ordinal);
@@ -89,7 +91,7 @@ public sealed class DeviceIncidentLog
     }
 
     /// <summary>Records one event. Allocates only the first time a key is seen.</summary>
-    public void Note(string key, string? name, DeviceEventKind kind, int latencyMs = 0, int code = 0, int count = 1)
+    public void Note(string key, string? name, DeviceEventKind kind, int latencyMs = 0, int code = 0, int count = 1, int okCount = 0)
     {
         if (string.IsNullOrEmpty(key))
         {
@@ -121,6 +123,7 @@ public sealed class DeviceIncidentLog
             slot.AtMs = now;
             slot.Kind = kind;
             slot.Count = count;
+            slot.OkCount = okCount;
             slot.LatencyMs = latencyMs;
             slot.Code = code;
             ring.Next = (ring.Next + 1) % RingSize;
@@ -151,6 +154,7 @@ public sealed class DeviceIncidentLog
             slot.AtMs = now;
             slot.Kind = DeviceEventKind.Disconnect;
             slot.Count = 1;
+            slot.OkCount = 0;
             slot.LatencyMs = 0;
             slot.Code = 0;
             ring.Next = (ring.Next + 1) % RingSize;
@@ -196,17 +200,20 @@ public sealed class DeviceIncidentLog
         var tkey = key + (disconnect ? DisconnectSuffix : SnapshotSuffix);
         var minGap = (long)MinSnapshotGap.TotalMilliseconds;
         var maxGap = (long)MaxSnapshotGap.TotalMilliseconds;
-        var required = minGap;
+        var written = 0;
         if (_throttle.TryGetValue(tkey, out var last))
         {
-            required = now - last.LastMs >= maxGap ? minGap : last.NextGapMs;
-            if (now - last.LastMs < required)
+            // Refused attempts count as activity: a device that keeps flapping never earns a reset.
+            written = now - last.LastAttemptMs >= maxGap ? 0 : last.Written;
+            var required = written == 0 ? 0 : Math.Min(minGap << Math.Min(written - 1, 20), maxGap);
+            if (written > 0 && now - last.LastWrittenMs < required)
             {
+                _throttle[tkey] = last with { LastAttemptMs = now };
                 return null;
             }
         }
         _priorThrottle[tkey] = _throttle.TryGetValue(tkey, out var prior) ? prior : null;
-        _throttle[tkey] = new Throttle(now, Math.Min(required * 2, maxGap));
+        _throttle[tkey] = new Throttle(now, now, written + 1);
         return Format(ring, key, reason, now);
     }
 
@@ -308,7 +315,7 @@ public sealed class DeviceIncidentLog
         {
             var e = ring.Entries[(start + i) % RingSize];
             sb.Append(DateTimeOffset.FromUnixTimeMilliseconds(e.AtMs).ToString("HH:mm:ss.fff")).Append(' ')
-                .Append(e.Kind).Append(" n=").Append(e.Count).Append(" lat=").Append(e.LatencyMs).Append("ms code=").Append(e.Code).Append('\n');
+                .Append(e.Kind).Append(" n=").Append(e.Count).Append(e.OkCount > 0 ? " ok=" + e.OkCount : "").Append(" lat=").Append(e.LatencyMs).Append("ms code=").Append(e.Code).Append('\n');
         }
         return sb.ToString();
     }
