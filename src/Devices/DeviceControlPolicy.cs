@@ -68,6 +68,7 @@ public static class DeviceControlPolicy
         ["nzxt-kraken"] = "nzxt-cam",
         ["nzxt-fan-controller"] = "nzxt-cam",
         ["zmatrices-lcd"] = "zmatrices",
+        ["zmatrices-max-e87"] = "zmatrices",
         ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
         ["asiahorse-umbra"] = "asiahorse-umbra",
         ["deepcool-mystique"] = "deepcool",

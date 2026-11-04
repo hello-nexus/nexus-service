@@ -10,8 +10,17 @@ public enum TouchPhase : byte
     Move = 3,
 }
 
-/// <summary>One contact report off the glass, in the panel's own coordinates.</summary>
-public readonly record struct ZMatricesTouchReport(byte TrackId, TouchPhase Phase, ushort X, ushort Y);
+/// <summary>A contact read off a panel's glass, placed on the streamed frame; an unmapped report carries no usable position.</summary>
+public readonly record struct PanelTouchReport(byte TrackId, TouchPhase Phase, int X, int Y, bool Mapped);
+
+/// <summary>Turns the bytes a panel's touch pipe delivers into contacts on its frame. One per reader: it buffers split reports.</summary>
+public interface IPanelTouchDecoder
+{
+    void Decode(ReadOnlySpan<byte> data, int width, int height, List<PanelTouchReport> output);
+}
+
+/// <summary>One contact report off the glass: X runs across <paramref name="SpanX"/>, Y across <paramref name="SpanY"/>, the touch space the report declares.</summary>
+public readonly record struct ZMatricesTouchReport(byte TrackId, TouchPhase Phase, ushort X, ushort Y, ushort SpanX, ushort SpanY);
 
 /// <summary>
 /// Touch reports on EP 0x81, interleaved with a 1 Hz ASCII status token. Two layouts, both
@@ -19,7 +28,7 @@ public readonly record struct ZMatricesTouchReport(byte TrackId, TouchPhase Phas
 /// v1, 11 bytes: AE track event w h x y.
 /// v2, 16 bytes: AE 5A 02 event track _ w h x y _ xor, where xor covers bytes 0-14.
 /// </summary>
-public sealed class ZMatricesTouchParser
+public sealed class ZMatricesTouchParser : IPanelTouchDecoder
 {
     private const byte Header = 0xAE;
     private const byte V2Magic = 0x5A;
@@ -29,6 +38,18 @@ public sealed class ZMatricesTouchParser
 
     private readonly byte[] _pending = new byte[128];
     private int _count;
+    private readonly List<ZMatricesTouchReport> _decoded = new();
+
+    public void Decode(ReadOnlySpan<byte> data, int width, int height, List<PanelTouchReport> output)
+    {
+        _decoded.Clear();
+        Feed(data, _decoded);
+        foreach (var report in _decoded)
+        {
+            bool mapped = TryMapToFrame(report, width, height, out int x, out int y);
+            output.Add(new PanelTouchReport(report.TrackId, report.Phase, x, y, mapped));
+        }
+    }
 
     public void Feed(ReadOnlySpan<byte> data, List<ZMatricesTouchReport> reports)
     {
@@ -100,25 +121,27 @@ public sealed class ZMatricesTouchParser
         {
             return;
         }
-        reports.Add(new ZMatricesTouchReport(track, (TouchPhase)phase, x, y));
+        reports.Add(new ZMatricesTouchReport(track, (TouchPhase)phase, x, y, width, height));
     }
 
     private static ushort BigEndian(ReadOnlySpan<byte> p, int at) => (ushort)((p[at] << 8) | p[at + 1]);
 
     /// <summary>
     /// Places a report on a landscape frame of the given size. The glass reports portrait
-    /// coordinates in frame pixels: x runs up the short side, y along the long side.
+    /// coordinates: X runs up the short side, Y along the long side, each scaled from the
+    /// declared span (the Glacier Matrix declares the frame size, the MAX E87 a taller span
+    /// than its glass).
     /// </summary>
     public static bool TryMapToFrame(ZMatricesTouchReport report, int width, int height, out int x, out int y)
     {
         x = 0;
         y = 0;
-        if (report.X >= height || report.Y >= width)
+        if (report.X >= report.SpanX || report.Y >= report.SpanY)
         {
             return false;
         }
-        x = report.Y;
-        y = height - 1 - report.X;
+        x = report.Y * width / report.SpanY;
+        y = height - 1 - report.X * height / report.SpanX;
         return true;
     }
 }

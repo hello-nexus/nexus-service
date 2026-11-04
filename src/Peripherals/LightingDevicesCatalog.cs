@@ -333,8 +333,9 @@ public static class LightingDevicesCatalog
         Native("NZXT",    "Kraken X3",              "aio",      "0x1E71", "0x2007"),
         Native("NZXT",    "Kraken X3 RGB",          "aio",      "0x1E71", "0x2014"),
 
-        // ZMatrices LCD AIOs - PID from src/Peripherals/BulkPanels/ZMatricesPanelDriver.cs.
+        // ZMatrices LCDs - PIDs from ZMatricesModel in src/Peripherals/BulkPanels/ZMatricesPanelDriver.cs.
         Native("Aftershock", "Glacier Matrix 360",  "aio",      "0x38C1", "0x0026", screen: true, rgb: false),
+        Native("ZMatrices",  "MAX E87",             "light",    "0x38C1", "0x0032", screen: true, rgb: false),
 
         // JPEG-over-HID cooler LCDs - PIDs from src/Peripherals/JpegPanels/JpegPanelModel.cs.
         // Screen only: Nexus drives the glass on these, not their RGB, except the HydroShift

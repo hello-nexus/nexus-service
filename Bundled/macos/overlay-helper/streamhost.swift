@@ -6,6 +6,8 @@
 // and each complete frame goes to POST /panel/streams/{sessionId}/ingest as raw
 // BGRA. The service owns pacing and the device transport. Reconciled against
 // GET /panel/streams/assignments on a poll and on the service's stdin poke.
+// A session whose glass reports touch also reads GET /panel/streams/{sessionId}/touch
+// and replays its primary contact into the page as mouse events.
 
 import AppKit
 import WebKit
@@ -26,6 +28,7 @@ struct StreamAssignment {
     let dpr: Double
     let fps: Int
     let codec: String
+    let touch: Bool
 }
 
 final class StreamHostController {
@@ -94,7 +97,8 @@ final class StreamHostController {
                     cssHeight: height,
                     dpr: (e["dpr"] as? Double) ?? 1,
                     fps: (e["fps"] as? Int) ?? 30,
-                    codec: (e["codec"] as? String) ?? "h264")
+                    codec: (e["codec"] as? String) ?? "h264",
+                    touch: (e["touch"] as? Bool) ?? false)
             }
             completion(items)
         }.resume()
@@ -157,6 +161,10 @@ final class StreamPanelHost: NSObject, WKNavigationDelegate, SCStreamOutput, SCS
     private var stream: SCStream?
     private var captureStarted = false
     private var closed = false
+    private var touch: TouchConnection?
+    // Main-thread only: WebKit gets one mouse, so only the first contact down drives it.
+    private var activePointer: UInt32?
+    private var lastPointerAt = NSPoint.zero
 
     // queue-confined
     private var ingest: IngestConnection?
@@ -206,9 +214,20 @@ final class StreamPanelHost: NSObject, WKNavigationDelegate, SCStreamOutput, SCS
         c.path = "/panel/\(assignment.panelDeviceId)"
         // streamFps lets the page cap its shader draws near what the capture keeps.
         c.queryItems = [URLQueryItem(name: "token", value: opts.token), URLQueryItem(name: "streamFps", value: String(fps))]
+        if assignment.touch {
+            // The page takes these mouse events as touch contacts, ended only by their release (WebKit reports no button held on an injected drag).
+            c.queryItems?.append(URLQueryItem(name: "touchViaPointer", value: "injected"))
+        }
         guard let url = c.url else { fault(denied: false); return }
         window.orderBack(nil)
         webView.load(URLRequest(url: url))
+        if assignment.touch {
+            let connection = TouchConnection(port: opts.port, sessionId: sessionId, token: opts.token)
+            connection.onContact = { [weak self] contact in self?.inject(contact) }
+            connection.onDrop = { [weak self] in self?.releasePointer() }
+            touch = connection
+            connection.open()
+        }
         streamLog("opened session=\(sessionId) device=\(assignment.panelDeviceId) \(pixelWidth)x\(pixelHeight)@\(fps) dpr=\(assignment.dpr)")
     }
 
@@ -217,6 +236,8 @@ final class StreamPanelHost: NSObject, WKNavigationDelegate, SCStreamOutput, SCS
         closed = true
         stream?.stopCapture(completionHandler: nil)
         stream = nil
+        touch?.cancel()
+        touch = nil
         queue.async { [self] in
             watchdog?.cancel()
             watchdog = nil
@@ -234,6 +255,44 @@ final class StreamPanelHost: NSObject, WKNavigationDelegate, SCStreamOutput, SCS
         let callback = onFault
         close()
         callback?(denied)
+    }
+
+    // MARK: touch
+
+    private func inject(_ contact: TouchContact) {
+        if closed { return }
+        // The window is sized in frame pixels with a bottom-left origin; contacts are fractions from the top-left.
+        let at = NSPoint(x: contact.x * Double(pixelWidth), y: Double(pixelHeight) * (1 - contact.y))
+        switch contact.phase {
+        case .down:
+            if activePointer != nil { return }
+            activePointer = contact.pointerId
+            sendMouse(.leftMouseDown, at)
+        case .move:
+            guard activePointer == contact.pointerId else { return }
+            sendMouse(.leftMouseDragged, at)
+        case .up:
+            guard activePointer == contact.pointerId else { return }
+            activePointer = nil
+            sendMouse(.leftMouseUp, at)
+        }
+    }
+
+    /// A dropped touch stream must not leave the page holding a press.
+    private func releasePointer() {
+        guard activePointer != nil else { return }
+        activePointer = nil
+        sendMouse(.leftMouseUp, lastPointerAt)
+    }
+
+    // An off-screen, never-key window takes these through sendEvent; WebKit reports them as trusted pointer events.
+    private func sendMouse(_ type: NSEvent.EventType, _ at: NSPoint) {
+        lastPointerAt = at
+        guard let event = NSEvent.mouseEvent(with: type, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                                             pressure: type == .leftMouseUp ? 0 : 1)
+        else { return }
+        window.sendEvent(event)
     }
 
     // MARK: navigation
@@ -524,5 +583,104 @@ final class IngestConnection {
         keepalive = nil
         connection.cancel()
         onFault?(reason)
+    }
+}
+
+struct TouchContact {
+    enum Phase { case down, move, up }
+    let pointerId: UInt32
+    let phase: Phase
+    let x: Double
+    let y: Double
+
+    /// One line of the touch stream: "<pointerId> <down|move|up> <x> <y>", x and y fractions of the page.
+    static func parse(_ line: Substring) -> TouchContact? {
+        let parts = line.split(separator: " ")
+        guard parts.count == 4, let id = UInt32(parts[0]), let x = Double(parts[2]), let y = Double(parts[3]) else { return nil }
+        let phase: Phase
+        switch parts[1] {
+        case "down": phase = .down
+        case "move": phase = .move
+        case "up": phase = .up
+        default: return nil
+        }
+        return TouchContact(pointerId: id, phase: phase, x: min(max(x, 0), 1), y: min(max(y, 0), 1))
+    }
+}
+
+/// The long-lived GET /panel/streams/{sessionId}/touch, reopened until cancelled. Callbacks run on the main thread.
+final class TouchConnection: NSObject, URLSessionDataDelegate {
+    /// Pause before reopening a stream that dropped while its session was still live.
+    private static let reconnectDelay: TimeInterval = 1
+    /// Comfortably above the service's keepalive line interval.
+    private static let idleTimeout: TimeInterval = 60
+
+    var onContact: ((TouchContact) -> Void)?
+    var onDrop: (() -> Void)?
+
+    private let url: URL?
+    private var session: URLSession?
+    private var pending = Data()
+    private var cancelled = false
+    private var gone = false
+
+    init(port: Int, sessionId: String, token: String) {
+        var c = URLComponents()
+        c.scheme = "http"
+        c.host = "localhost"
+        c.port = port
+        c.path = "/panel/streams/\(sessionId)/touch"
+        c.queryItems = [URLQueryItem(name: "token", value: token)]
+        url = c.url
+        super.init()
+    }
+
+    func open() {
+        guard !cancelled, !gone, let url = url else { return }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = Self.idleTimeout
+        config.timeoutIntervalForResource = .infinity
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
+        self.session = session
+        pending.removeAll()
+        session.dataTask(with: url).resume()
+    }
+
+    func cancel() {
+        cancelled = true
+        session?.invalidateAndCancel()
+        session = nil
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status != 200 {
+            // A session the service no longer knows (404) or a refused token is not retried; reconcile re-creates the host.
+            gone = true
+            streamLog("touch stream refused: HTTP \(status)")
+            completionHandler(.cancel)
+            return
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        pending.append(data)
+        while let newline = pending.firstIndex(of: 0x0A) {
+            let line = pending[pending.startIndex..<newline]
+            pending.removeSubrange(pending.startIndex...newline)
+            guard !line.isEmpty, let text = String(data: line, encoding: .utf8),
+                  let contact = TouchContact.parse(Substring(text)) else { continue }
+            onContact?(contact)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        session.finishTasksAndInvalidate()
+        if self.session === session { self.session = nil }
+        onDrop?()
+        if cancelled || gone { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.reconnectDelay) { [weak self] in self?.open() }
     }
 }

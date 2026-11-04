@@ -510,13 +510,13 @@ public static class ConflictAppCatalog
         // ── ZMatrices ──────────────────────────────────────────────────────
         new()
         {
-            // Cooler LCD app (Electron, C:\Program Files\ZMatrices); its sender process
-            // holds the panel's WinUSB handle Nexus drives directly.
+            // LCD app (Electron, C:\Program Files\ZMatrices); its sender process holds the
+            // WinUSB handle of every ZMatrices glass Nexus drives directly.
             Id = "zmatrices",
             DefaultWhitelisted = true,
             DisplayName = "ZMatrices",
             Category = "cooling",
-            DisplayHandlers = new[] { "zmatrices-lcd" },
+            DisplayHandlers = new[] { "zmatrices-lcd", "zmatrices-max-e87" },
             ProcessNames = new[] { "ZMatrices", "zmUsbSendJpg" },
         },
 
