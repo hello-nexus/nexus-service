@@ -575,6 +575,7 @@ public static class PanelRoutes
                 ResetPersonalization(registry, bgLibrary, id);
                 registry.ResetHardwareSettings(id);
                 registry.Patch(id, new PanelDevicePatch { RestrictedMode = false });
+                sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ClearBrightnessPreview(id);
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
             }
@@ -595,6 +596,7 @@ public static class PanelRoutes
             var record = registry.ResetHardwareSettings(id);
             if (record is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ClearBrightnessPreview(id);
             sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
 
             var surface = record.Capabilities?.Surface;

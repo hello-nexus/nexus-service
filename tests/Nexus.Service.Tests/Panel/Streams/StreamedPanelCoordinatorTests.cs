@@ -1033,7 +1033,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
-    public void Preview_puts_the_level_on_the_glass_without_writing_the_record()
+    public void Preview_puts_the_level_on_the_display_without_writing_the_record()
     {
         var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
 
@@ -1059,15 +1059,60 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
-    public void Preview_holds_until_the_persisted_write_with_no_expiry()
+    public void Preview_lapses_when_the_client_stops_refreshing_it()
     {
         var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
 
         coordinator.PreviewBrightness(panelId, 60);
-        Advance(coordinator, 600_000);
+        Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs + 1);
+        coordinator.ApplyBrightness(panelId);
+
+        Assert.Equal(35, transport.Applied);
+    }
+
+    [Fact]
+    public void Preview_holds_while_it_keeps_being_refreshed()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
+
+        for (var i = 0; i < 5; i++)
+        {
+            coordinator.PreviewBrightness(panelId, 60);
+            Advance(coordinator, (int)StreamedPanelCoordinator.PreviewIdleMs - 1000);
+        }
         coordinator.ApplyBrightness(panelId);
 
         Assert.Equal(60, transport.Applied);
+    }
+
+    [Fact]
+    public void Unlock_fade_ends_at_the_live_preview()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
+        _lock.Set(true);
+        Advance(coordinator, 2000);
+        Assert.Equal(0, transport.LastApplied);
+
+        _lock.Set(false);
+        for (var i = 0; i < 5; i++)
+        {
+            coordinator.PreviewBrightness(panelId, 80);
+            Advance(coordinator, 500);
+        }
+
+        Assert.Equal(80, transport.Applied);
+    }
+
+    [Fact]
+    public void Lock_does_not_keep_a_previewed_level_as_the_restore_level()
+    {
+        var (coordinator, panelId, _) = DimmablePanel(stored: null);
+        coordinator.PreviewBrightness(panelId, 55);
+
+        _lock.Set(true);
+        Advance(coordinator, 2000);
+
+        Assert.Equal(StreamedPanelCoordinator.UnlockDefaultBrightness, _registry.Get(panelId)!.LockRestoreBrightness);
     }
 
     [Fact]

@@ -63,8 +63,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly object _fadeGate = new();
     private readonly Dictionary<string, LcdFade> _fades = new(StringComparer.Ordinal);
     internal LcdFadeRunner FadeRunner { get; }
-    // Live slider levels not yet persisted (held until the record write clears them), per panel record id; read lock-free from frame threads.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _previews = new(StringComparer.Ordinal);
+    // Live slider levels not yet persisted, per panel record id; read lock-free from frame threads.
+    // A client holds one by re-posting it while its slider is down; one not refreshed within
+    // PreviewIdleMs lapses, so an abandoned drag cannot stick. The record write also clears it.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Percent, long AtMs)> _previews = new(StringComparer.Ordinal);
+    internal const long PreviewIdleMs = 5000;
     private readonly LcdLockSleepSet? _lockSleep;
 
     /// <summary>Backlight percent used only when a panel with no stored value never revealed its pre-lock level.</summary>
@@ -82,7 +85,12 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Func<string, bool>? removePanel = null,
         Func<string, bool>? isCustomized = null)
     {
-        _removePanel = removePanel ?? registry.Remove;
+        var remove = removePanel ?? registry.Remove;
+        _removePanel = id =>
+        {
+            ClearBrightnessPreview(id);
+            return remove(id);
+        };
         _isCustomized = isCustomized ?? registry.IsCustomized;
         _discoveries = discoveries.ToList();
         _store = store;
@@ -157,9 +165,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             return 0;
         }
-        if (_previews.TryGetValue(panelDeviceId, out var preview))
+        if (LivePreview(panelDeviceId) is int live)
         {
-            return preview;
+            return live;
         }
         var record = _registry.Get(panelDeviceId);
         return record?.LcdBrightness ?? record?.LockRestoreBrightness;
@@ -299,6 +307,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         if (record is null || record.LcdBrightness is not null || record.LockRestoreBrightness is not null)
         {
             return null;
+        }
+        // A level still being dragged is not the panel's own; it is never kept as the restore level.
+        if (LivePreview(panelDeviceId) is not null)
+        {
+            return UnlockDefaultBrightness;
         }
         var transport = DimmableTransport(panelDeviceId);
         if (transport?.CurrentBrightness is > 0 and var current)
@@ -572,16 +585,28 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
     /// <summary>
     /// Puts a live slider level on the display without touching the record, so a drag costs one
-    /// device command per step. The level yields to a lock sleep or fade and holds until the
-    /// persisted write that ends the drag clears it (or the service restarts).
+    /// device command per step. The level yields to a lock sleep or fade and holds while the
+    /// client keeps refreshing it, and the persisted write that ends the drag clears it.
     /// </summary>
     public bool PreviewBrightness(string panelDeviceId, int percent)
     {
-        _previews[panelDeviceId] = Math.Clamp(percent, 0, 100);
+        _previews[panelDeviceId] = (Math.Clamp(percent, 0, 100), _nowMs());
         return ApplyBrightness(panelDeviceId);
     }
 
-    private int? LivePreview(string panelDeviceId) => _previews.TryGetValue(panelDeviceId, out var level) ? level : null;
+    private int? LivePreview(string panelDeviceId)
+    {
+        if (!_previews.TryGetValue(panelDeviceId, out var entry))
+        {
+            return null;
+        }
+        if (_nowMs() - entry.AtMs < PreviewIdleMs)
+        {
+            return entry.Percent;
+        }
+        _previews.TryRemove(new KeyValuePair<string, (int Percent, long AtMs)>(panelDeviceId, entry));
+        return null;
+    }
 
     /// <summary>Drops a live slider level so the record's value governs again.</summary>
     public void ClearBrightnessPreview(string panelDeviceId) => _previews.TryRemove(panelDeviceId, out _);
