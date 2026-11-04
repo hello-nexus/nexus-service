@@ -861,43 +861,44 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     };
 
     [Fact]
-    public void A_raw_panel_over_1000_px_renders_lower_until_its_record_asks_for_high_resolution()
+    public void A_raw_panel_over_1000_px_renders_native_until_its_record_asks_for_high_performance()
     {
         _discovery.Devices.Add(Sized(2288, 1080));
         var coordinator = Coordinator();
         coordinator.TickOnce();
-        var half = Assert.Single(coordinator.GetAssignments().Assignments);
-
-        Assert.Equal(0.5, half.Dpr);
-        Assert.Equal(2288, half.CssWidth);
-        Assert.Equal(1080, half.CssHeight);
-        var caps = _registry.Get(half.PanelDeviceId)!.Capabilities!;
-        Assert.True(caps.SupportsRenderScale);
-        Assert.Equal(1.0, caps.Dpr);
-
-        _registry.Patch(half.PanelDeviceId, new PanelDevicePatch { HighResolution = true });
-        coordinator.TickOnce();
         var full = Assert.Single(coordinator.GetAssignments().Assignments);
 
         Assert.Equal(1.0, full.Dpr);
-        Assert.NotEqual(half.SessionId, full.SessionId);
-        Assert.Equal(half.PanelDeviceId, full.PanelDeviceId);
+        Assert.Equal(2288, full.CssWidth);
+        Assert.Equal(1080, full.CssHeight);
+        var record = _registry.Get(full.PanelDeviceId)!;
+        Assert.Null(record.HighResolution);
+        Assert.True(record.Capabilities!.SupportsRenderScale);
+        Assert.Equal(1.0, record.Capabilities.Dpr);
 
-        _registry.Patch(half.PanelDeviceId, new PanelDevicePatch { HighResolution = false });
+        _registry.Patch(full.PanelDeviceId, new PanelDevicePatch { HighResolution = false });
+        coordinator.TickOnce();
+        var half = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(0.5, half.Dpr);
+        Assert.NotEqual(full.SessionId, half.SessionId);
+        Assert.Equal(full.PanelDeviceId, half.PanelDeviceId);
+
+        _registry.Patch(full.PanelDeviceId, new PanelDevicePatch { HighResolution = true });
         coordinator.TickOnce();
 
-        Assert.Equal(0.5, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+        Assert.Equal(1.0, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
     }
 
     [Fact]
-    public void A_record_that_asks_for_high_resolution_renders_native_from_the_first_session()
+    public void A_record_that_asks_for_high_performance_renders_lower_from_the_first_session()
     {
         _discovery.Devices.Add(Sized(1920, 480));
         var coordinator = Coordinator();
         coordinator.TickOnce();
         var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
-        Assert.Equal(2.0 / 3, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
-        _registry.Patch(panelId, new PanelDevicePatch { HighResolution = true });
+        Assert.Equal(1.0, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+        _registry.Patch(panelId, new PanelDevicePatch { HighResolution = false });
         _discovery.Devices.Clear();
         _nowMs += 120_000;
         coordinator.TickOnce();
@@ -906,7 +907,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         _discovery.Devices.Add(Sized(1920, 480));
         coordinator.TickOnce();
 
-        Assert.Equal(1.0, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+        Assert.Equal(2.0 / 3, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
     }
 
     [Theory]
