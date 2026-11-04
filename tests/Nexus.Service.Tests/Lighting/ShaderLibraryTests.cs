@@ -139,4 +139,23 @@ public class ShaderLibraryTests
         Assert.DoesNotMatch(@"mod\(\s*t\s*,\s*\d", src);
         Assert.Contains("haloCol = tintedPalette(fi * 0.14 + 0.35) * halo * seam;", src);
     }
+
+    [Fact]
+    public void Bubbles_keep_continuous_motion_and_a_per_spawn_opacity()
+    {
+        var src = ShaderLibrary.Get("bubbles");
+        // The master clock is never wrapped; only the rise clock, at a whole number of cycles.
+        Assert.DoesNotMatch(@"float\s+t\s*=\s*mod\(", src);
+        Assert.Contains("mod(t * rise, 1024.0)", src);
+        // Opacity is hashed from the bubble's spawn cycle, never from time.
+        Assert.Contains("0.6 + 0.4 * hash21(vec2(fi * 3.7 + 1.9, mod(floor(cyc), 8.0)", src);
+    }
+
+    [Fact]
+    public void Plasma_keeps_its_color_on_the_wheel_with_a_calmer_gain()
+    {
+        var src = ShaderLibrary.Get("plasma");
+        Assert.Contains("float outGain() { return 1.4; }", src);
+        Assert.Contains("tintedPalette(v + t * 0.05)", src);
+    }
 }
