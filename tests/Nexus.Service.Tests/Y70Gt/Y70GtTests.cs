@@ -107,11 +107,27 @@ public class Y70GtTests
     }
 
     [Fact]
-    public void Supported_devices_keep_the_pre_release_gt_out_of_the_list()
+    public void Supported_devices_listing_hides_the_pre_release_gt_but_the_catalog_keeps_it()
     {
-        Assert.DoesNotContain(LightingDevicesCatalog.All, d => d.VendorId == "0x3402" && d.ProductId == "0x0C06");
-        Assert.DoesNotContain(AllSupportedDevices.All, d => d.VendorId == "0x3402" && d.ProductId == "0x0C06");
-        Assert.DoesNotContain(AllSupportedDevices.All, d => d.Model == "Y70 GT");
+        Assert.DoesNotContain(AllSupportedDevices.Listed, d => d.VendorId == "0x3402" && d.ProductId == "0x0C06");
+        Assert.DoesNotContain(AllSupportedDevices.Listed, d => d.Model == "Y70 GT");
+        var row = Assert.Single(AllSupportedDevices.All, d => d.VendorId == "0x3402" && d.ProductId == "0x0C06");
+        Assert.Equal("case", row.Category);
+        Assert.True(row.Hidden);
+        Assert.Contains(AllSupportedDevices.Listed, d => d.Model == "Y70 Touch");
+    }
+
+    [Fact]
+    public void Unclaimed_gt_usb_entry_produces_no_stray_inventory_row()
+    {
+        var hub = ConnectedHub(Y70DisplayProtocol.VariantGt, out _);
+        var handler = new Nexus.Service.Devices.Handlers.Y70Handler(hub, TestHandlers.FakeTopology());
+        var usb = new[] { new Nexus.Service.Devices.UsbDeviceEntry { VendorId = 0x3402, ProductId = 0x0C06 } };
+
+        var rows = Nexus.Service.Devices.DeviceInventoryMapper.FromUsb(
+            usb, new Nexus.Service.Devices.IDeviceHandler[] { handler }, new HashSet<string>(), new HashSet<(int, int)>(), AllSupportedDevices.All);
+
+        Assert.Empty(rows);
     }
 
     [Fact]
