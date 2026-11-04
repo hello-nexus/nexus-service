@@ -107,12 +107,11 @@ public class Y70GtTests
     }
 
     [Fact]
-    public void Supported_devices_lists_the_gt_with_screen_and_rgb()
+    public void Supported_devices_keep_the_pre_release_gt_out_of_the_list()
     {
-        var row = LightingDevicesCatalog.All.Single(d => d.VendorId == "0x3402" && d.ProductId == "0x0C06");
-        Assert.Equal("Y70 GT", row.Model);
-        Assert.Equal("case", row.Category);
-        Assert.Equal(new[] { "rgb", "screen" }, row.Capabilities.OrderBy(c => c, StringComparer.Ordinal));
+        Assert.DoesNotContain(LightingDevicesCatalog.All, d => d.VendorId == "0x3402" && d.ProductId == "0x0C06");
+        Assert.DoesNotContain(AllSupportedDevices.All, d => d.VendorId == "0x3402" && d.ProductId == "0x0C06");
+        Assert.DoesNotContain(AllSupportedDevices.All, d => d.Model == "Y70 GT");
     }
 
     [Fact]
