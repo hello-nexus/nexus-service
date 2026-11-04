@@ -238,8 +238,7 @@ public class NzxtFanControllerTests
     public void Connect_ReturnsPromptlyWhenTheTokenIsCancelledMidWait()
     {
         using var cts = new System.Threading.CancellationTokenSource();
-        int reads = 0;
-        var hid = new FakeHid { OnRead = () => { if (++reads == 3) { cts.Cancel(); } } };
+        var hid = new FakeHid { OnRead = () => cts.Cancel() };
         var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
         hub.Attach(hid);
 
@@ -247,22 +246,37 @@ public class NzxtFanControllerTests
 
         Assert.False(hub.IsConnected);
         Assert.False(hid.Disposed);
-        Assert.True(StartReportingWrites(hid) <= 2);
+        Assert.Equal(1, StartReportingWrites(hid));
     }
 
     [Fact]
     public void Connect_ReturnsWhenTheGateTurnsOffMidWait()
     {
         bool enabled = true;
-        int reads = 0;
-        var hid = new FakeHid { OnRead = () => { if (++reads == 3) { enabled = false; } } };
+        var hid = new FakeHid { OnRead = () => enabled = false };
         var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
         hub.Attach(hid);
 
         Assert.False(hub.Connect(default, () => enabled));
 
         Assert.False(hub.IsConnected);
-        Assert.True(StartReportingWrites(hid) <= 2);
+        Assert.Equal(1, StartReportingWrites(hid));
+    }
+
+    [Fact]
+    public void Connect_EndsWhenTheUsbDeviceVanishesDuringASilentWait()
+    {
+        bool present = true;
+        bool absentReported = false;
+        var hid = new FakeHid { OnRead = () => present = false };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+        var guard = ConnectGuard.Create(() => true, () => present, () => absentReported = true);
+
+        Assert.False(hub.Connect(default, guard));
+
+        Assert.True(absentReported);
+        Assert.Equal(ConnectGuard.PresenceCheckEveryWindows - 1, StartReportingWrites(hid));
     }
 
     [Fact]

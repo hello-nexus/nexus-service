@@ -65,13 +65,21 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                 _hub.Attach(device);
                 bool started = false;
                 string detachCause = "worker error";
+                bool usbAbsentWhileWaiting = false;
                 try
                 {
-                    if (_hub.Connect(stoppingToken, () => _gate.IsEnabled(NzxtFanControllerHub.DeviceId)))
+                    var keepWaiting = ConnectGuard.Create(
+                        () => _gate.IsEnabled(NzxtFanControllerHub.DeviceId),
+                        () => _presence.UsbPresent(NzxtFanControllerProtocol.VendorId, NzxtFanControllerProtocol.ProductIds),
+                        () => usbAbsentWhileWaiting = true);
+                    if (_hub.Connect(stoppingToken, keepWaiting))
                     {
                         started = true;
                         connectFailureLogged = false;
-                        ServiceLog.Info($"[nzxt-fan-controller] connected: {_hub.Fans.Length} fan channel(s)");
+                        if (_hub.LogConnectionCycle)
+                        {
+                            ServiceLog.Info($"[nzxt-fan-controller] connected: {_hub.Fans.Length} fan channel(s)");
+                        }
                         while (true)
                         {
                             if (stoppingToken.IsCancellationRequested)
@@ -97,7 +105,11 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                     }
                     else
                     {
-                        if (!connectFailureLogged
+                        if (usbAbsentWhileWaiting)
+                        {
+                            ServiceLog.Info("[nzxt-fan-controller] usb device absent while waiting for the first status; retrying");
+                        }
+                        else if (!connectFailureLogged
                             && !stoppingToken.IsCancellationRequested
                             && _gate.IsEnabled(NzxtFanControllerHub.DeviceId))
                         {
@@ -110,7 +122,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                 finally
                 {
                     _hub.Detach();
-                    if (started)
+                    if (started && _hub.LogConnectionCycle)
                     {
                         ServiceLog.Info($"[nzxt-fan-controller] disconnected: {detachCause}; {_hub.DescribeSilence()}");
                     }
@@ -155,5 +167,32 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
         }
         // forInput so Read honors its timeout instead of busy-spinning on Windows.
         return best == null ? null : _hid.Open(best.Path, forInput: true);
+    }
+}
+
+/// <summary>
+/// The enabled check handed to <see cref="NzxtFanControllerHub.Connect"/>: the gate every
+/// window, USB presence every few windows so a replug during a silent wait ends it.
+/// </summary>
+internal static class ConnectGuard
+{
+    internal const int PresenceCheckEveryWindows = 4;
+
+    internal static Func<bool> Create(Func<bool> gateEnabled, Func<bool> usbPresent, Action onUsbAbsent)
+    {
+        int windows = 0;
+        return () =>
+        {
+            if (!gateEnabled())
+            {
+                return false;
+            }
+            if (windows++ % PresenceCheckEveryWindows != PresenceCheckEveryWindows - 1 || usbPresent())
+            {
+                return true;
+            }
+            onUsbAbsent();
+            return false;
+        };
     }
 }

@@ -25,6 +25,10 @@ public sealed class NzxtFanControllerHub
     private const int MaxTrackedReportKinds = 12;
     private const long LogCeilingMs = 3_600_000;
 
+    // A connection must stay up this long before the connect and wait log counters start over,
+    // so a connect/drop flap cannot log every cycle.
+    private const long StableConnectionMs = 600_000;
+
     private readonly object _writeLock = new();
     private readonly MultiplexHub? _ws;
     private IHidDevice? _device;
@@ -43,6 +47,9 @@ public sealed class NzxtFanControllerHub
     private readonly LogBackoff _giveUpLog = new();
     private readonly LogBackoff _waitLog = new();
     private readonly LogBackoff _readErrorLog = new();
+    private readonly LogBackoff _cycleLog = new();
+    private long _connectedAtMs;
+    private long _lastUptimeMs;
 
     public NzxtFanControllerHub(MultiplexHub? ws = null)
     {
@@ -61,6 +68,9 @@ public sealed class NzxtFanControllerHub
     public NzxtFanReading[] Fans => _fans;
 
     public bool IsConnected => _isConnected;
+
+    /// <summary>Whether the connect that just succeeded should log its connected and disconnected lines. Worker thread only.</summary>
+    public bool LogConnectionCycle { get; private set; } = true;
 
     /// <summary>Changes on every successful connect, so a holder of per-connection state can tell a reconnect happened.</summary>
     public int Generation => Volatile.Read(ref _generation);
@@ -112,10 +122,19 @@ public sealed class NzxtFanControllerHub
                 Interlocked.Increment(ref _generation);
                 Volatile.Write(ref _missedPolls, 0);
                 _isConnected = true;
-                _giveUpLog.Reset();
-                _waitLog.Reset();
-                _readErrorLog.Reset();
-                ServiceLog.Info($"[nzxt-fan-controller] first status {Environment.TickCount64 - _openedAtMs} ms after open, {_initResends} init resend(s)");
+                if (_lastUptimeMs >= StableConnectionMs || _connectedAtMs == 0)
+                {
+                    _giveUpLog.Reset();
+                    _waitLog.Reset();
+                    _readErrorLog.Reset();
+                    _cycleLog.Reset();
+                }
+                _connectedAtMs = Environment.TickCount64;
+                LogConnectionCycle = _cycleLog.ShouldLog();
+                if (LogConnectionCycle)
+                {
+                    ServiceLog.Info($"[nzxt-fan-controller] first status {Environment.TickCount64 - _openedAtMs} ms after open, {_initResends} init resend(s)");
+                }
                 if (_ws != null)
                 {
                     PanelTopics.BroadcastCooling(_ws);
@@ -214,6 +233,10 @@ public sealed class NzxtFanControllerHub
         lock (_writeLock)
         {
             wasConnected = _isConnected;
+            if (wasConnected)
+            {
+                _lastUptimeMs = Environment.TickCount64 - _connectedAtMs;
+            }
             _isConnected = false;
             _fans = Array.Empty<NzxtFanReading>();
             _device?.Dispose();
