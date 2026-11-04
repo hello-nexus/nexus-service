@@ -135,7 +135,7 @@ public sealed class PacedStreamWriter : IDisposable
     // A raw framebuffer panel shows a frame the moment it lands, so a fixed tick only adds the
     // wait for the next tick on top of the render. A frame goes out as it arrives; a token
     // bucket lets a short burst through (a frame landing early after a capture gap) and keeps
-    // the long-run rate at or below the assignment's, which may sit under the profile's.
+    // the long-run rate at or below the session's profile rate (already lowered to any frame cap).
     private void RunOnArrival()
     {
         var bucket = new SendRateBucket(_fps, 2, Stopwatch.Frequency);
