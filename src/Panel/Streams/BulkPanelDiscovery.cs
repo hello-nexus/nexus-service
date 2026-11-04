@@ -65,6 +65,7 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
                     SupportsPortrait = driver.SupportsPortrait,
                     SupportsTouch = driver.HasTouch,
                     Dpi = driver.Dpi,
+                    NativeRenderOnly = driver.NativeRenderOnly,
                     MultiInstance = driver.MultiInstance,
                     // The driver owns compression - JPEG for most, raw pixels for the
                     // Ryujin - so the overlay hands back whole frames either way.

@@ -853,10 +853,10 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Equal(new[] { 15, 40 }, coordinator.GetAssignments().Assignments.Select(x => x.Fps).OrderBy(x => x).ToArray());
     }
 
-    private static StreamedPanelDeviceInfo Sized(int width, int height, StreamCodec codec = StreamCodec.RawBgra) => new()
+    private static StreamedPanelDeviceInfo Sized(int width, int height, StreamCodec codec = StreamCodec.RawBgra, bool nativeOnly = false) => new()
     {
         Serial = "sized",
-        Profile = new StreamedPanelProfile { Kind = "sized", DisplayName = "Sized", Surface = "lcd-wide", CssWidth = width, CssHeight = height, Codec = codec },
+        Profile = new StreamedPanelProfile { Kind = "sized", DisplayName = "Sized", Surface = "lcd-wide", CssWidth = width, CssHeight = height, Codec = codec, NativeRenderOnly = nativeOnly },
     };
 
     [Fact]
@@ -922,6 +922,30 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
 
         Assert.Equal(1.0, assignment.Dpr);
         Assert.Null(_registry.Get(assignment.PanelDeviceId)!.Capabilities!.SupportsRenderScale);
+    }
+
+    [Fact]
+    public void A_native_only_panel_renders_native_and_drops_a_stored_render_scale_capability()
+    {
+        _discovery.Devices.Add(Sized(1280, 480, nativeOnly: true));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
+        _registry.Patch(panelId, new PanelDevicePatch
+        {
+            HighResolution = false,
+            Capabilities = new PanelDeviceCapabilities { SupportsRenderScale = true },
+        });
+        _discovery.Devices.Clear();
+        _nowMs += 120_000;
+        coordinator.TickOnce();
+        _discovery.Devices.Add(Sized(1280, 480, nativeOnly: true));
+        coordinator.TickOnce();
+
+        Assert.Equal(1.0, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+        var record = _registry.Get(panelId)!;
+        Assert.False(record.Capabilities!.SupportsRenderScale);
+        Assert.False(record.HighResolution);
     }
 
     [Fact]

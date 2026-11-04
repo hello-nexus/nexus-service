@@ -240,6 +240,26 @@ public class BulkPanelDriverTests
     }
 
     [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void Only_the_glacier_matrix_offers_the_render_mode_among_zmatrices(bool maxE87, bool offered)
+    {
+        var driver = new ZMatricesPanelDriver(maxE87 ? ZMatricesModel.MaxE87 : ZMatricesModel.GlacierMatrix);
+        var profile = new Nexus.Service.Panel.Streams.StreamedPanelProfile
+        {
+            Kind = driver.HandlerId,
+            DisplayName = driver.Name,
+            Surface = driver.Surface,
+            CssWidth = driver.Model.Width,
+            CssHeight = driver.Model.Height,
+            Codec = Nexus.Service.Panel.Streams.StreamCodec.RawBgra,
+            NativeRenderOnly = driver.NativeRenderOnly,
+        };
+
+        Assert.Equal(offered, profile.SupportsRenderScale);
+    }
+
+    [Theory]
     [InlineData(false, 44)]
     [InlineData(true, 60)]
     public void ZMatrices_streams_at_its_own_glass_rate(bool maxE87, int fps)

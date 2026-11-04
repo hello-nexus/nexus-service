@@ -54,6 +54,9 @@ public interface IBulkPanelDriver
     /// <summary>The panel never shares a Nexus Panel record with another device's screen.</summary>
     bool MultiInstance => false;
 
+    /// <summary>The panel always renders at native resolution, so the render mode is not offered.</summary>
+    bool NativeRenderOnly => false;
+
     /// <summary>Writes any state the driver keeps in memory to settings; called on service shutdown, which skips the hub's disconnect.</summary>
     void PersistState()
     {

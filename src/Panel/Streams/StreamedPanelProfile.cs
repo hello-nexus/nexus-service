@@ -94,7 +94,10 @@ public sealed record StreamedPanelProfile
     public double RenderScale { get; init; } = 1.0;
 
     /// <summary>Only raw frames can be scaled back up before the device sees them.</summary>
-    public bool SupportsRenderScale => Codec == StreamCodec.RawBgra && Math.Max(CssWidth, CssHeight) > RenderScaleMinSide;
+    public bool SupportsRenderScale => !NativeRenderOnly && Codec == StreamCodec.RawBgra && Math.Max(CssWidth, CssHeight) > RenderScaleMinSide;
+
+    /// <summary>The panel always renders at native resolution and never offers the render mode, whatever its record stores.</summary>
+    public bool NativeRenderOnly { get; init; }
 
     /// <summary>The overlay's frame length for a CSS length at a pixel ratio: its own even(round(css * dpr)).</summary>
     public static int FramePixels(int cssLength, double dpr) => Math.Max(2, (int)Math.Round(cssLength * dpr) & ~1);
@@ -128,7 +131,8 @@ public sealed record StreamedPanelProfile
         SupportsBrightness = SupportsBrightness ? true : null,
         SupportsSecondaryMonitor = SupportsSecondaryMonitor ? true : null,
         SupportsPortrait = SupportsPortrait ? true : null,
-        SupportsRenderScale = SupportsRenderScale ? true : null,
+        // An explicit false overrides a true that an earlier build stored on the record.
+        SupportsRenderScale = SupportsRenderScale ? true : NativeRenderOnly ? false : null,
         Dpi = Dpi,
         Touch = SupportsTouch,
         CssWidth = CssWidth,
