@@ -4,7 +4,7 @@ using System.Buffers.Binary;
 namespace Nexus.Service.Peripherals.BulkPanels;
 
 /// <summary>
-/// ZMatrices cooler LCDs on WinUSB (38C1:0026). Commands go to EP 0x04, pictures to EP 0x02.
+/// ZMatrices LCDs on WinUSB (VID 38C1, PIDs in <see cref="ZMatricesModel"/>). Commands go to EP 0x04, pictures to EP 0x02.
 /// A picture is a 4:2:0 JPEG in 505-byte chunks, each behind a 7-byte "Trans" header so it
 /// fills one 512-byte packet, framed by a 16-byte "Start" header and a "DCLdfinish" trailer.
 /// </summary>
@@ -13,7 +13,7 @@ public static class ZMatricesProtocol
     public const byte CommandPipe = 0x04;
     public const byte PicturePipe = 0x02;
 
-    /// <summary>Touch reports and a 1 Hz ASCII status token.</summary>
+    /// <summary>Touch reports; the Glacier Matrix also sends a periodic ASCII status token. Interrupt endpoint on the MAX E87.</summary>
     public const byte InputPipe = 0x81;
 
     public const int PacketSize = 512;

@@ -9,6 +9,7 @@ using Nexus.Service.Lighting;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
 using Nexus.Service.Panel.Streams;
+using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Persistence;
 using Xunit;
 
@@ -82,8 +83,10 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     private static StreamedPanelDeviceInfo Device(string serial = "d211_fake", string kind = "fake-fs", int fps = 30, bool monitor = false, bool dimmable = false)
         => new() { Serial = serial, Profile = Profile(kind, fps, monitor, dimmable) };
 
-    private sealed class FakeTransport : IStreamedPanelTransport
+    private sealed class FakeTransport : IStreamedPanelTransport, ITouchPanelTransport
     {
+        public Action<PanelTouchContact>? TouchSink { get; private set; }
+        public void BindTouch(Action<PanelTouchContact> sink) => TouchSink = sink;
         public bool IsOpen { get; private set; }
         public string Serial { get; }
         public bool FailOpen { get; set; }
@@ -409,6 +412,45 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Equal(30, assignment.Fps);
         Assert.NotNull(_registry.Get(assignment.PanelDeviceId));
         Assert.Equal(assignment.PanelDeviceId, _store.Load()["d211_fake"].PanelDeviceId);
+    }
+
+    [Fact]
+    public void A_touch_panel_publishes_its_contacts_to_the_session_feed()
+    {
+        _discovery.Devices.Add(new StreamedPanelDeviceInfo { Serial = "touchy", Profile = Profile() with { SupportsTouch = true } });
+        var coordinator = Coordinator();
+
+        coordinator.TickOnce();
+
+        var assignment = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.True(assignment.Touch);
+        Assert.True(_registry.Get(assignment.PanelDeviceId)!.Capabilities!.Touch);
+        var feed = coordinator.TryGetTouchFeed(assignment.SessionId);
+        var reader = feed!.Subscribe()!;
+        Assert.NotNull(_discovery.Transports.Single().TouchSink);
+        _discovery.Transports.Single().TouchSink!(new PanelTouchContact(1, TouchPhase.Down, 0.5, 0.25));
+        Assert.True(reader.TryRead(out var contact));
+        Assert.Equal(new PanelTouchContact(1, TouchPhase.Down, 0.5, 0.25), contact);
+
+        _discovery.Devices.Clear();
+        _nowMs += 61_000;
+        coordinator.TickOnce();
+        Assert.Null(coordinator.TryGetTouchFeed(assignment.SessionId));
+        Assert.True(reader.Completion.IsCompleted);
+    }
+
+    [Fact]
+    public void A_panel_without_touch_gets_no_feed()
+    {
+        _discovery.Devices.Add(Device());
+        var coordinator = Coordinator();
+
+        coordinator.TickOnce();
+
+        var assignment = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.False(assignment.Touch);
+        Assert.Null(coordinator.TryGetTouchFeed(assignment.SessionId));
+        Assert.Null(_discovery.Transports.Single().TouchSink);
     }
 
     [Fact]

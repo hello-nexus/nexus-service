@@ -28,6 +28,7 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
     private byte[] _leftover = Array.Empty<byte>();
     private int _leftoverOffset;
     private int _leftoverCount;
+    private bool _readFailureLogged;
     private bool _disposed;
 
     public int ProductId { get; }
@@ -209,10 +210,26 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
                 int packet = MacUsbHost.MaxPacketSize(pipe);
                 int request = (buffer.Length + packet - 1) / packet * packet;
                 nsData = MacUsbHost.NewData(null, request);
-                var read = MacUsbHost.Transfer(pipe, nsData, Math.Max(1, timeoutMs) / 1000.0, out var timedOut);
+                int read;
+                bool timedOut;
+                int code;
+                bool interrupt = MacUsbHost.IsInterrupt(pipe);
+                if (interrupt)
+                {
+                    read = TransferInterrupt(pipe, nsData, timeoutMs, out timedOut, out code);
+                }
+                else
+                {
+                    read = MacUsbHost.Transfer(pipe, nsData, Math.Max(1, timeoutMs) / 1000.0, out timedOut, out _, out code);
+                }
                 if (read < 0)
                 {
                     // A timed-out read is a quiet panel, not a broken one.
+                    if (!timedOut && !_readFailureLogged)
+                    {
+                        _readFailureLogged = true;
+                        ServiceLog.Warn($"[bulk-panel] read on 0x{pipeId:X2} failed: 0x{code:X8} ({(interrupt ? "interrupt" : "bulk")}, {request} bytes)");
+                    }
                     return timedOut ? 0 : -1;
                 }
                 var received = new ReadOnlySpan<byte>((void*)MacUsbHost.Bytes(nsData), read);
@@ -235,6 +252,36 @@ public sealed unsafe class MacBulkUsbPipe : IBulkUsbPipe
             {
                 MacUsbHost.Release(nsData);
                 MacUsbHost.objc_autoreleasePoolPop(pool);
+            }
+        }
+    }
+
+    // IOUSBHost refuses a completion timeout on an interrupt pipe (kIOReturnBadArgument), so the
+    // read waits unbounded and an abort ends it. The abort repeats: one landing before the
+    // transfer is queued ends nothing.
+    private static int TransferInterrupt(IntPtr pipe, IntPtr nsData, int timeoutMs, out bool timedOut, out int code)
+    {
+        int wait = Math.Max(1, timeoutMs);
+        using var drained = new ManualResetEvent(false);
+        var deadline = new Timer(_ => MacUsbHost.Abort(pipe), null, wait, wait);
+        try
+        {
+            int read = MacUsbHost.Transfer(pipe, nsData, 0, out _, out int partial, out code);
+            if (read < 0 && code == MacUsbHost.KIOReturnAborted)
+            {
+                // A report that landed as the deadline fired is kept.
+                timedOut = partial == 0;
+                return partial > 0 ? partial : -1;
+            }
+            timedOut = false;
+            return read;
+        }
+        finally
+        {
+            // An abort still in flight must not reach the next transfer.
+            if (deadline.Dispose(drained))
+            {
+                drained.WaitOne();
             }
         }
     }
@@ -431,6 +478,7 @@ internal static unsafe class MacUsbHost
     // IOReturn codes a timed-out transfer completes with.
     private const int KIOReturnTimeout = unchecked((int)0xE00002D6);
     private const int KIOUSBTransactionTimeout = unchecked((int)0xE0004051);
+    public const int KIOReturnAborted = unchecked((int)0xE00002EB);
 
     private static readonly object LoadLock = new();
     private static bool? _loaded;
@@ -575,7 +623,11 @@ internal static unsafe class MacUsbHost
         Transfer(pipe, data, timeoutSeconds, out timedOut, out _);
 
     /// <param name="partial">On failure, the byte count IOUSBHost reported for the part that went through.</param>
-    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut, out int partial)
+    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut, out int partial) =>
+        Transfer(pipe, data, timeoutSeconds, out timedOut, out partial, out _);
+
+    /// <param name="code">The IOReturn the transfer failed with, 0 on success. A timeout of 0 never expires.</param>
+    public static int Transfer(IntPtr pipe, IntPtr data, double timeoutSeconds, out bool timedOut, out int partial, out int code)
     {
         nuint transferred = 0;
         IntPtr error = IntPtr.Zero;
@@ -583,12 +635,30 @@ internal static unsafe class MacUsbHost
         {
             timedOut = false;
             partial = 0;
+            code = 0;
             return (int)transferred;
         }
-        var code = error == IntPtr.Zero ? 0 : (int)MsgSendLong(error, SelCode);
+        code = error == IntPtr.Zero ? 0 : (int)MsgSendLong(error, SelCode);
         timedOut = code is KIOReturnTimeout or KIOUSBTransactionTimeout;
         partial = (int)transferred;
         return -1;
+    }
+
+    // IOUSBHostIOSourceDescriptors opens with a uint16 bcdUSB; the endpoint descriptor follows it.
+    private const int EndpointDescriptorOffset = sizeof(ushort);
+
+    /// <summary>The pipe's endpoint descriptor, or null.</summary>
+    private static byte* EndpointDescriptor(IntPtr pipe)
+    {
+        var descriptors = MsgSend(pipe, SelDescriptors);
+        return descriptors == IntPtr.Zero ? null : (byte*)descriptors + EndpointDescriptorOffset;
+    }
+
+    /// <summary>bmAttributes transfer type of the pipe's endpoint descriptor is interrupt.</summary>
+    public static bool IsInterrupt(IntPtr pipe)
+    {
+        var endpoint = EndpointDescriptor(pipe);
+        return endpoint is not null && (endpoint[3] & 0x03) == 0x03;
     }
 
     /// <summary>A retained NSMutableData: a copy of <paramref name="bytes"/>, or zeroed when it is null.</summary>
@@ -602,11 +672,11 @@ internal static unsafe class MacUsbHost
 
     public static IntPtr Bytes(IntPtr data) => MsgSend(data, SelMutableBytes);
 
-    /// <summary>wMaxPacketSize of the pipe's endpoint descriptor, the first member of its IOUSBHostIOSourceDescriptors.</summary>
+    /// <summary>wMaxPacketSize of the pipe's endpoint descriptor.</summary>
     public static int MaxPacketSize(IntPtr pipe)
     {
-        var descriptors = MsgSend(pipe, SelDescriptors);
-        int size = descriptors == IntPtr.Zero ? 0 : (((byte*)descriptors)[4] | (((byte*)descriptors)[5] << 8)) & 0x7FF;
+        var endpoint = EndpointDescriptor(pipe);
+        int size = endpoint is null ? 0 : (endpoint[4] | (endpoint[5] << 8)) & 0x7FF;
         return size > 0 ? size : FallbackPacketSize;
     }
 
