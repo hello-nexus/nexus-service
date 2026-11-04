@@ -24,6 +24,9 @@ public static class ServiceLog
 
     public static readonly TimeSpan MaxRotatedAge = TimeSpan.FromDays(7);
 
+    /// <summary>Most rotated logs kept; a crash loop of tiny runs stays under the byte cap but would otherwise leave a thousand files.</summary>
+    public const int MaxRotatedFiles = 100;
+
     /// <summary>Cap on the rotated logs plus the current one.</summary>
     public const long MaxTotalLogBytes = 50L * 1024 * 1024;
 
@@ -267,8 +270,8 @@ public static class ServiceLog
         catch { /* best effort */ }
     }
 
-    /// <summary>Deletes rotated logs older than <paramref name="maxAge"/>, then the oldest until the total (current log included) fits <paramref name="maxTotalBytes"/>; the newest <paramref name="minKeep"/> always stay.</summary>
-    internal static void PruneRotated(string dir, DateTime now, TimeSpan maxAge, long maxTotalBytes, int minKeep)
+    /// <summary>Deletes rotated logs older than <paramref name="maxAge"/>, then the oldest until the count is within <paramref name="maxFiles"/> and the total (current log included) fits <paramref name="maxTotalBytes"/>; the newest <paramref name="minKeep"/> always stay.</summary>
+    internal static void PruneRotated(string dir, DateTime now, TimeSpan maxAge, long maxTotalBytes, int minKeep, int maxFiles = MaxRotatedFiles)
     {
         // The yyyyMMdd-HHmmss stamp makes names sort oldest-first by ordinal.
         var rotated = Directory.GetFiles(dir, "nexus-service-*.log");
@@ -288,7 +291,8 @@ public static class ServiceLog
         for (var i = 0; i < rotated.Length - minKeep; i++)
         {
             var tooOld = now - File.GetLastWriteTime(rotated[i]) > maxAge;
-            if (!tooOld && total <= maxTotalBytes)
+            var tooMany = rotated.Length - i > maxFiles;
+            if (!tooOld && !tooMany && total <= maxTotalBytes)
             {
                 continue;
             }

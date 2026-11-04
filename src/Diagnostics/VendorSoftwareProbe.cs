@@ -39,7 +39,7 @@ public static partial class VendorSoftwareProbe
     public static IReadOnlyList<string> ProcessNames() =>
         Entries.SelectMany(e => ConflictWatcher.FindById(e.Id)?.ProcessNames ?? Array.Empty<string>()).ToList();
 
-    /// <summary>Id to a one-line state: "installed 5.2.1, running", "installed", "not installed" or "not applicable".</summary>
+    /// <summary>Id to a one-line state: "installed <version>, running", "installed", "not installed" or "not applicable".</summary>
     public static Dictionary<string, string> Collect(IReadOnlySet<string> runningIds, Func<string, bool> serviceInstalled)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -105,36 +105,53 @@ public static partial class VendorSoftwareProbe
         File.Exists(Path.Combine("/var/lib/flatpak/exports/bin", appId))
         || File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local/share/flatpak/exports/bin", appId));
 
+    /// <summary>Machine-wide Uninstall keys plus those of every loaded user hive: run as SYSTEM, a per-user install (the common case for vendor apps installed from a downloaded setup) is only visible under HKEY_USERS.</summary>
     [SupportedOSPlatform("windows")]
     private static List<(string Name, string Version)> ReadUninstall()
     {
         var found = new List<(string, string)>();
-        foreach (var path in new[]
+        const string uninstall = @"Microsoft\Windows\CurrentVersion\Uninstall";
+        ReadUninstallKey(found, Microsoft.Win32.Registry.LocalMachine, @"SOFTWARE\" + uninstall);
+        ReadUninstallKey(found, Microsoft.Win32.Registry.LocalMachine, @"SOFTWARE\WOW6432Node\" + uninstall);
+        try
         {
-            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-            @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-        })
-        {
-            try
+            foreach (var sid in Microsoft.Win32.Registry.Users.GetSubKeyNames())
             {
-                using var root = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(path);
-                if (root is null)
+                // Per-user class hives and the service accounts never hold a user's installs.
+                if (sid.EndsWith("_Classes", StringComparison.OrdinalIgnoreCase) || !sid.StartsWith("S-1-5-21-", StringComparison.Ordinal))
                 {
                     continue;
                 }
-                foreach (var sub in root.GetSubKeyNames())
-                {
-                    using var key = root.OpenSubKey(sub);
-                    if (key?.GetValue("DisplayName") is string name)
-                    {
-                        found.Add((name, key.GetValue("DisplayVersion") as string ?? ""));
-                    }
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-            {
+                ReadUninstallKey(found, Microsoft.Win32.Registry.Users, sid + @"\SOFTWARE\" + uninstall);
             }
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+        }
         return found;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void ReadUninstallKey(List<(string, string)> found, Microsoft.Win32.RegistryKey hive, string path)
+    {
+        try
+        {
+            using var root = hive.OpenSubKey(path);
+            if (root is null)
+            {
+                return;
+            }
+            foreach (var sub in root.GetSubKeyNames())
+            {
+                using var key = root.OpenSubKey(sub);
+                if (key?.GetValue("DisplayName") is string name)
+                {
+                    found.Add((name, key.GetValue("DisplayVersion") as string ?? ""));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+        }
     }
 }
