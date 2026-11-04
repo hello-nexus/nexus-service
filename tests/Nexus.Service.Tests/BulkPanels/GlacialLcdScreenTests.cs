@@ -799,7 +799,8 @@ public class GlacialLcdScreenTests
     }
 
     [Theory]
-    [InlineData("Temperature", 43.5f, "44℃")]
+    [InlineData("Temperature", 43.5f, "44.0℃")]
+    [InlineData("Temperature", 43.4f, "43.0℃")]
     [InlineData("Load", 42.4f, "42%")]
     [InlineData("Power", 125.5f, "126W")]
     [InlineData("Frequency", 59.5f, "60Hz")]
@@ -823,8 +824,8 @@ public class GlacialLcdScreenTests
     [InlineData("Level", 80f, "80.0%")]
     [InlineData("Power", 125.46f, "125.5W")]
     [InlineData("Current", 1.5f, "1.500A")]
-    [InlineData("Frequency", 60f, "60.0Hz")]
-    [InlineData("Flow", 12.34f, "12.3L/h")]
+    [InlineData("Frequency", 60f, "60Hz")]
+    [InlineData("Flow", 12.34f, "12L/h")]
     [InlineData("Noise", 31.25f, "31.3dBA")]
     [InlineData("FrameTime", 16.66f, "16.7ms")]
     [InlineData("Throughput", 1536f, "1.5KB/s")]

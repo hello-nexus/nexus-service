@@ -41,6 +41,19 @@ public class MonitoringDecimalsTests
         Assert.Equal(expected, MonitoringDecimals.FormatNumber(value, type, whole));
     }
 
+    // Expected strings come from node Number(x).toFixed(d).
+    [Theory]
+    [InlineData("Temperature", 0.45f, false, "0.5")]
+    [InlineData("Temperature", 1.45f, false, "1.4")]
+    [InlineData("Temperature", 12.35f, false, "12.3")]
+    [InlineData("Voltage", 1.2345f, false, "1.234")]
+    [InlineData("Temperature", -1.25f, false, "-1.3")]
+    [InlineData("Temperature", 2.5f, true, "3")]
+    public void FormatNumber_MatchesJsToFixedNearTies(string type, float value, bool whole, string expected)
+    {
+        Assert.Equal(expected, MonitoringDecimals.FormatNumber(value, type, whole));
+    }
+
     [Theory]
     [InlineData("Data")]
     [InlineData("SmallData")]

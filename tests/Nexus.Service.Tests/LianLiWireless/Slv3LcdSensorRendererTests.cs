@@ -99,7 +99,7 @@ public class Slv3LcdSensorRendererTests
         Assert.NotEmpty(jpeg);
     }
 
-    /// <summary>The widest decimal readings must stay inside the gauge: the ring's inner circle and the 400 px bar canvas.</summary>
+    /// <summary>The widest decimal readings must stay inside the gauge: the ring's inner circle and the bar canvas.</summary>
     [Theory]
     [InlineData("100.0", 72f, 270f)]
     [InlineData("212.0", 72f, 270f)]

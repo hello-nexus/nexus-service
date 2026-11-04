@@ -1607,10 +1607,11 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         var items = _overlay.Items;
         var sources = GatherOverlaySources(items);
+        var wholeNumbers = _configStore.Load().Units.MonitoringWholeNumbers == true;
         var lines = new List<TryxOverlayLine>(items.Count);
         foreach (var item in items)
         {
-            lines.Add(new TryxOverlayLine(item.Label, ResolveSensorValue(item.Device, item.SensorId, sources)));
+            lines.Add(new TryxOverlayLine(item.Label, ResolveSensorValue(item.Device, item.SensorId, wholeNumbers, sources)));
         }
         return lines;
     }
@@ -1651,7 +1652,7 @@ public sealed class TryxPanoramaHub : IDisposable
     /// <summary>Looks up <paramref name="sensorId"/> within <paramref name="device"/>'s
     /// live sensor group and formats it by its <see cref="HardwareSensor.Type"/>; "--"
     /// if the group is unknown or the id isn't currently reported.</summary>
-    private string ResolveSensorValue(string device, string sensorId, SensorSnapshotSources sources = default)
+    private string ResolveSensorValue(string device, string sensorId, bool wholeNumbers, SensorSnapshotSources sources = default)
     {
         // "fps" needs IFpsProvider, which SensorSnapshotResolver does not depend
         // on, so it stays resolved here directly; every other device routes
@@ -1659,7 +1660,7 @@ public sealed class TryxPanoramaHub : IDisposable
         var sensor = device == "fps"
             ? FindById(_fps.GetComponent().Sensors, sensorId)
             : SensorSnapshotResolver.Resolve(_sensors, device, sensorId, sources);
-        return sensor is null ? "--" : FormatSensorValue(sensor, _configStore.Load().Units.MonitoringWholeNumbers == true);
+        return sensor is null ? "--" : FormatSensorValue(sensor, wholeNumbers);
     }
 
     private static HardwareSensor? FindById(IReadOnlyList<HardwareSensor> sensors, string id)

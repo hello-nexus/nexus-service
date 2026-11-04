@@ -88,21 +88,21 @@ internal static partial class DeckMonitoringFormat
     }
 
     /// <summary>
-    /// Value text for a resolved sensor, mirroring formatSensorValue: a
-    /// Celsius temperature converts to Fahrenheit when tempUnit is "f",
-    /// every per-type decimal count comes from <see cref="MonitoringDecimals"/> (wholeNumbers
-    /// is the monitoringWholeNumbers preference), auto-scales a
-    /// byte-based Units reading along the B/KB/MB/GB/TB/PB ladder (mirroring
-    /// formatScaledDataValue), or falls back to the service's own formatted
-    /// string for any other unit (percent, clock, RPM, ...). The result is
-    /// then re-separated to numberFormat, mirroring localizeNumbers.
+    /// Value text for a resolved sensor, mirroring formatSensorValue. A Celsius
+    /// temperature converts to Fahrenheit when tempUnit is "f". Types covered by
+    /// <see cref="MonitoringDecimals"/> take their decimals from it (wholeNumbers is the
+    /// monitoringWholeNumbers preference), swapping the number inside the provider's formatted
+    /// string. A byte-based Units reading auto-scales along the B/KB/MB/GB/TB/PB ladder
+    /// (mirroring formatScaledDataValue); any other reading keeps the provider's formatted
+    /// string. The result is then re-separated to numberFormat, mirroring localizeNumbers.
     /// </summary>
     internal static string ResolveValueText(HardwareSensor sensor, string? tempUnit, string? numberFormat, bool wholeNumbers = false)
     {
         if (string.Equals(tempUnit, "f", StringComparison.OrdinalIgnoreCase) && IsCelsiusUnit(sensor.Units))
         {
-            var fahrenheit = sensor.Value * 9f / 5f + 32f;
-            var number = MonitoringDecimals.FormatNumber(fahrenheit, "Temperature", wholeNumbers);
+            // Converted in double on the web's parsed value, like convertTemperature.
+            var fahrenheit = MonitoringDecimals.ToWebDouble(sensor.Value) * 9d / 5d + 32d;
+            var number = float.IsFinite(sensor.Value) ? MonitoringDecimals.FormatNumber(fahrenheit, "Temperature", wholeNumbers) : null;
             if (number is not null)
             {
                 return LocalizeNumbers($"{number} °F", numberFormat);

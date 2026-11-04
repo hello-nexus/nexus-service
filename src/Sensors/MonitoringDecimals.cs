@@ -27,21 +27,32 @@ public static class MonitoringDecimals
     public static bool Governs(string? sensorType) => For(sensorType, false) is not null;
 
     /// <summary>
-    /// The number text for <paramref name="value"/> at its type's decimals, rounded half away from zero,
-    /// or null for an ungoverned type or a non-finite value.
+    /// The double the web parses from the JSON for this float (the shortest round-trip string),
+    /// so rounding agrees with the web near ties.
     /// </summary>
-    public static string? FormatNumber(float value, string? sensorType, bool wholeNumbers)
+    public static double ToWebDouble(float value) =>
+        double.Parse(value.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The number text for <paramref name="value"/> at its type's decimals, matching JS toFixed
+    /// on the web's parsed double, or null for an ungoverned type or a non-finite value.
+    /// </summary>
+    public static string? FormatNumber(float value, string? sensorType, bool wholeNumbers) =>
+        float.IsFinite(value) ? FormatNumber(ToWebDouble(value), sensorType, wholeNumbers) : null;
+
+    /// <summary>Same as the float overload for a value already widened the web's way (for example a converted temperature).</summary>
+    public static string? FormatNumber(double value, string? sensorType, bool wholeNumbers)
     {
-        if (For(sensorType, wholeNumbers) is not { } decimals || !float.IsFinite(value))
+        if (For(sensorType, wholeNumbers) is not { } decimals || !double.IsFinite(value))
         {
             return null;
         }
-        var rounded = Math.Round((double)value, decimals, MidpointRounding.AwayFromZero);
+        // toFixed rounds the exact binary value, so expand it exactly before the half-away tie rule.
+        var exact = decimal.Parse(value.ToString("F25", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+        var rounded = Math.Round(exact, decimals, MidpointRounding.AwayFromZero);
         // A small negative rounds to negative zero, which would print as "-0".
-        if (rounded == 0d)
-        {
-            rounded = 0d;
-        }
-        return rounded.ToString("F" + decimals, CultureInfo.InvariantCulture);
+        return rounded == 0m
+            ? 0m.ToString("F" + decimals, CultureInfo.InvariantCulture)
+            : rounded.ToString("F" + decimals, CultureInfo.InvariantCulture);
     }
 }

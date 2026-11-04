@@ -173,6 +173,21 @@ public class DeckMonitoringFormatTests
         Assert.Equal(expected, DeckMonitoringFormat.ResolveValueText(sensor, tempUnit, "system", whole));
     }
 
+    // Expected strings come from node (c * 9 / 5 + 32).toFixed(d).
+    [Theory]
+    [InlineData(30.25f, false, "86.5 °F")]
+    [InlineData(45.25f, false, "113.5 °F")]
+    [InlineData(50.25f, false, "122.5 °F")]
+    [InlineData(60.75f, false, "141.3 °F")]
+    [InlineData(30.25f, true, "86 °F")]
+    [InlineData(45.25f, true, "113 °F")]
+    [InlineData(60.75f, true, "141 °F")]
+    public void ResolveValueText_Fahrenheit_MatchesTheWebAtQuarterDegrees(float celsius, bool whole, string expected)
+    {
+        var sensor = Sensor("S", celsius, "°C", "x", "Temperature");
+        Assert.Equal(expected, DeckMonitoringFormat.ResolveValueText(sensor, "f", "system", whole));
+    }
+
     [Fact]
     public void ResolveValueText_RuleType_EmptyFormatted_StaysEmpty()
     {
