@@ -17,7 +17,11 @@ void main() {
     v = v / 3.0 * 0.5 + 0.5;
     vec3 col = tintedPalette(v + t * 0.05);
     col *= 1.0 - 0.25 * smoothstep(0.8, 1.6, length(uv));
+    // Halfway between the old per-channel tonemap look and the full-strength one:
+    // the colors are pulled slightly toward their own luma so a full-rainbow
+    // preset reads as color rather than glare. Hue stays on the wheel.
+    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, 0.9);
     fragColor = vec4(finalize(col * 1.15), 1.0);
 }
 
-float outGain() { return 1.77; }
+float outGain() { return 1.4; }
