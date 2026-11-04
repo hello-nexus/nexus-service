@@ -30,17 +30,23 @@ public sealed class DeviceIncidentLog
     public const string FileName = "device-incidents.log";
     public const long MaxFileBytes = 1024 * 1024;
 
-    /// <summary>At most one snapshot per device in this span, so a flapping device cannot spam the file.</summary>
+    /// <summary>The first gap between snapshots of one device and one kind; each snapshot doubles the next required gap up to <see cref="MaxSnapshotGap"/>, so a flapping device cannot fill the file and evict its first incident.</summary>
     public static readonly TimeSpan MinSnapshotGap = TimeSpan.FromSeconds(30);
+
+    /// <summary>The longest required gap, and the quiet span after which the gap starts over.</summary>
+    public static readonly TimeSpan MaxSnapshotGap = TimeSpan.FromHours(1);
 
     /// <summary>Steady per-frame successes fold into one entry per this span so they do not evict the failures.</summary>
     private const long OkMergeMs = 1000;
 
     public static DeviceIncidentLog Shared { get; } = CreateShared();
 
+    /// <summary>Redirects <see cref="Shared"/>'s file; the test assembly sets it so suites that drive the shared instance never write into a real logs directory.</summary>
+    internal static Func<string>? SharedDirectoryOverride { get; set; }
+
     private static DeviceIncidentLog CreateShared()
     {
-        var log = new DeviceIncidentLog(() => ServiceLog.LogsDirectory, () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var log = new DeviceIncidentLog(() => SharedDirectoryOverride?.Invoke() ?? ServiceLog.LogsDirectory, () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         AppDomain.CurrentDomain.ProcessExit += (_, _) => log.WaitIdle(TimeSpan.FromSeconds(2));
         return log;
     }
@@ -66,8 +72,10 @@ public sealed class DeviceIncidentLog
     private readonly Dictionary<string, Ring> _rings = new(StringComparer.Ordinal);
     private readonly Func<string> _dir;
     private readonly Func<long> _nowMs;
-    private readonly Dictionary<string, long> _lastSnapshotMs = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, long?> _priorSnapshotMs = new(StringComparer.Ordinal);
+    private readonly record struct Throttle(long LastMs, long NextGapMs);
+    // Keyed by device and snapshot kind: a drop after a write-failure snapshot must not be throttled by it.
+    private readonly Dictionary<string, Throttle> _throttle = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Throttle?> _priorThrottle = new(StringComparer.Ordinal);
     private readonly System.Threading.Channels.Channel<string> _queue =
         System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(64) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait, SingleReader = true });
     private readonly object _writerLock = new();
@@ -150,9 +158,18 @@ public sealed class DeviceIncidentLog
             {
                 ring.Count++;
             }
-            text = TryFormat(ring, key, reason, now);
+            text = TryFormat(ring, key, reason, now, disconnect: true);
         }
-        Enqueue(text, key);
+        Enqueue(text, key + DisconnectSuffix);
+    }
+
+    /// <summary>Drops a device's ring without recording anything, for a device Nexus released rather than lost.</summary>
+    public void Discard(string key)
+    {
+        lock (_lock)
+        {
+            _rings.Remove(key);
+        }
     }
 
     /// <summary>Queues the device's ring for the file unless one was queued for it within <see cref="MinSnapshotGap"/>. Returns whether it queued.</summary>
@@ -165,20 +182,31 @@ public sealed class DeviceIncidentLog
             {
                 return false;
             }
-            text = TryFormat(ring, key, reason, _nowMs());
+            text = TryFormat(ring, key, reason, _nowMs(), disconnect: false);
         }
-        return Enqueue(text, key);
+        return Enqueue(text, key + SnapshotSuffix);
     }
 
-    // Caller holds _lock. The throttle timestamp outlives the ring so a re-created ring cannot bypass it.
-    private string? TryFormat(Ring ring, string key, string reason, long now)
+    private const string DisconnectSuffix = "|d";
+    private const string SnapshotSuffix = "|s";
+
+    // Caller holds _lock. The throttle outlives the ring so a re-created ring cannot bypass it.
+    private string? TryFormat(Ring ring, string key, string reason, long now, bool disconnect)
     {
-        if (_lastSnapshotMs.TryGetValue(key, out var last) && now - last < MinSnapshotGap.TotalMilliseconds)
+        var tkey = key + (disconnect ? DisconnectSuffix : SnapshotSuffix);
+        var minGap = (long)MinSnapshotGap.TotalMilliseconds;
+        var maxGap = (long)MaxSnapshotGap.TotalMilliseconds;
+        var required = minGap;
+        if (_throttle.TryGetValue(tkey, out var last))
         {
-            return null;
+            required = now - last.LastMs >= maxGap ? minGap : last.NextGapMs;
+            if (now - last.LastMs < required)
+            {
+                return null;
+            }
         }
-        _priorSnapshotMs[key] = _lastSnapshotMs.TryGetValue(key, out var prior) ? prior : null;
-        _lastSnapshotMs[key] = now;
+        _priorThrottle[tkey] = _throttle.TryGetValue(tkey, out var prior) ? prior : null;
+        _throttle[tkey] = new Throttle(now, Math.Min(required * 2, maxGap));
         return Format(ring, key, reason, now);
     }
 
@@ -205,13 +233,13 @@ public sealed class DeviceIncidentLog
         // The snapshot was never written, so it must not throttle the next one.
         lock (_lock)
         {
-            if (_priorSnapshotMs.GetValueOrDefault(key) is { } prior)
+            if (_priorThrottle.GetValueOrDefault(key) is { } prior)
             {
-                _lastSnapshotMs[key] = prior;
+                _throttle[key] = prior;
             }
             else
             {
-                _lastSnapshotMs.Remove(key);
+                _throttle.Remove(key);
             }
         }
         return false;

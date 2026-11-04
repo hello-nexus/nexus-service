@@ -85,9 +85,14 @@ public sealed class LightingWriteHealth
         {
             return;
         }
-        Incidents?.Note(key, handlerId,
-            failures > 0 ? Nexus.Service.Diagnostics.DeviceEventKind.WriteFail : Nexus.Service.Diagnostics.DeviceEventKind.WriteOk,
-            count: Math.Max(failures, successes));
+        if (failures > 0)
+        {
+            Incidents?.Note(key, handlerId, Nexus.Service.Diagnostics.DeviceEventKind.WriteFail, count: failures);
+        }
+        if (successes > 0)
+        {
+            Incidents?.Note(key, handlerId, Nexus.Service.Diagnostics.DeviceEventKind.WriteOk, count: successes);
+        }
         var flippedFailing = false;
         lock (_lock)
         {
@@ -167,12 +172,16 @@ public sealed class LightingWriteHealth
         }
     }
 
-    /// <summary>Drops a key, for a device Nexus no longer controls or that left.</summary>
-    public void Forget(string key)
+    /// <summary>Drops a key, for a device Nexus no longer controls or that left. <paramref name="deviceLeft"/> false (control released) drops the key without recording a drop snapshot.</summary>
+    public void Forget(string key, bool deviceLeft = true)
     {
-        if (Incidents is { } incidents)
+        if (deviceLeft && Incidents is { } incidents)
         {
             incidents.Disconnect(key, "device left");
+        }
+        else if (Incidents is { } released)
+        {
+            released.Discard(key);
         }
         lock (_lock)
         {
