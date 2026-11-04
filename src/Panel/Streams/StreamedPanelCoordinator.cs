@@ -63,6 +63,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly object _fadeGate = new();
     private readonly Dictionary<string, LcdFade> _fades = new(StringComparer.Ordinal);
     internal LcdFadeRunner FadeRunner { get; }
+    // Live slider levels not yet persisted, per panel record id; read lock-free from frame threads.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Percent, long UntilMs)> _previews = new(StringComparer.Ordinal);
+    private const long PreviewTtlMs = 10_000;
     private readonly LcdLockSleepSet? _lockSleep;
 
     /// <summary>Backlight percent used only when a panel with no stored value never revealed its pre-lock level.</summary>
@@ -154,6 +157,14 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         if (IsLockSleeping(panelDeviceId))
         {
             return 0;
+        }
+        if (_previews.TryGetValue(panelDeviceId, out var preview))
+        {
+            if (_nowMs() < preview.UntilMs)
+            {
+                return preview.Percent;
+            }
+            _previews.TryRemove(panelDeviceId, out _);
         }
         var record = _registry.Get(panelDeviceId);
         return record?.LcdBrightness ?? record?.LockRestoreBrightness;
@@ -563,6 +574,20 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
         return ids;
     }
+
+    /// <summary>
+    /// Puts a live slider level on the glass without touching the record, so a drag costs one
+    /// device command per step. The level yields to a lock sleep or fade and lapses after a
+    /// short TTL; the persisted write that ends the drag supersedes it.
+    /// </summary>
+    public bool PreviewBrightness(string panelDeviceId, int percent)
+    {
+        _previews[panelDeviceId] = (Math.Clamp(percent, 0, 100), _nowMs() + PreviewTtlMs);
+        return ApplyBrightness(panelDeviceId);
+    }
+
+    /// <summary>Drops a live slider level so the record's value governs again.</summary>
+    public void ClearBrightnessPreview(string panelDeviceId) => _previews.TryRemove(panelDeviceId, out _);
 
     /// <summary>Applies a persisted panel backlight change without waiting for a frame.</summary>
     public bool ApplyBrightness(string panelDeviceId)

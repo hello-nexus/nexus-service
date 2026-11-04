@@ -38,6 +38,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private readonly object _brightnessLock = new();
     private Func<int?>? _brightness;
     private int _brightnessApplied = -1;
+    private long _brightnessLoggedMs = long.MinValue / 2;
     private int _brightnessPrevious = -1;
     private long _brightnessNextReadMs;
     private bool _brightnessFaultLogged;
@@ -263,7 +264,12 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         {
             _brightnessPrevious = _brightnessApplied;
             _brightnessApplied = percent;
-            ServiceLog.Info($"[{_hub.Driver.HandlerId}] backlight {percent}%");
+            // A slider drag changes the level many times a second; log at most once a second.
+            if (nowMs - _brightnessLoggedMs >= 1000)
+            {
+                _brightnessLoggedMs = nowMs;
+                ServiceLog.Info($"[{_hub.Driver.HandlerId}] backlight {percent}%");
+            }
             return true;
         }
         return false;

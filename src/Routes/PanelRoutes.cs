@@ -357,6 +357,19 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
+        // Live slider step: puts the level on the backlight and nothing else (no record write, no
+        // broadcast), so a drag stays cheap. The drag's final value goes through the record POST.
+        app.MapPost("/panel/devices/{id}/backlight-preview", (string id, PanelDevicePatch body, PanelDeviceRegistry registry, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
+        {
+            var record = registry.Get(id);
+            if (record is null)
+                return Results.NotFound(ApiResponse.Fail("device not found"));
+            if (record.Capabilities?.SupportsBrightness != true || !body.LcdBrightness.HasValue)
+                return Results.Json(ApiResponse.Fail("backlight_not_supported"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            streams.PreviewBrightness(id, body.LcdBrightness.Value);
+            return Results.Ok(ApiResponse.Ok("previewed"));
+        }).AllowPanel();
+
         app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams, Nexus.Service.Deck.ListedAppIds listed, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
             // A panel session may rearrange or remove the deck keys it has, but
@@ -382,7 +395,10 @@ public static class PanelRoutes
             // ProfileManager.MarkDirty, so a look edit reaches the active
             // profile's Panels data on the next flush with no explicit pulse.
             if (body.LcdBrightness.HasValue)
+            {
+                streams.ClearBrightnessPreview(updated.Id);
                 streams.ApplyBrightness(updated.Id);
+            }
             if (body.SecondaryMonitor.HasValue)
             {
                 streams.ApplySecondaryMonitor(updated.Id);

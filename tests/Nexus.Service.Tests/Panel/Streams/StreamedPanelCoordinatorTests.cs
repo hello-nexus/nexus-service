@@ -1033,6 +1033,46 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void Preview_puts_the_level_on_the_glass_without_writing_the_record()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
+
+        Assert.True(coordinator.PreviewBrightness(panelId, 60));
+
+        Assert.Equal(60, transport.Applied);
+        Assert.Equal(35, _registry.Get(panelId)!.LcdBrightness);
+    }
+
+    [Fact]
+    public void Preview_is_clamped_and_cleared_by_the_persisted_write()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
+
+        coordinator.PreviewBrightness(panelId, 250);
+        Assert.Equal(100, transport.Applied);
+
+        _registry.Patch(panelId, new PanelDevicePatch { LcdBrightness = 20 });
+        coordinator.ClearBrightnessPreview(panelId);
+        coordinator.ApplyBrightness(panelId);
+
+        Assert.Equal(20, transport.Applied);
+    }
+
+    [Fact]
+    public void Preview_does_not_light_a_panel_the_lock_has_darkened()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
+        _lock.Set(true);
+        Advance(coordinator, 5000);
+        Assert.Equal(0, transport.LastApplied);
+
+        coordinator.PreviewBrightness(panelId, 80);
+
+        Assert.Equal(0, transport.LastApplied);
+        Assert.Equal(0, transport.Applied);
+    }
+
+    [Fact]
     public void Lock_darkens_a_dimmable_panel_and_unlock_restores_the_stored_backlight()
     {
         var (coordinator, panelId, transport) = DimmablePanel(stored: 35);
