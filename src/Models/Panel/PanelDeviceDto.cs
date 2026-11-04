@@ -184,7 +184,7 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
-    /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
+    /// capabilities carry SupportsRenderScale; null = native (high resolution).</summary>
     public bool? HighResolution { get; set; }
     /// <summary>Frame rate cap for this device: a streamed display's session rate and secondary-monitor pacing, or how often a display-bound panel page draws. Null = the device's own rate.</summary>
     public int? FpsCap { get; set; }
@@ -511,7 +511,7 @@ public sealed class PanelDevicePatch
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
     /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
-    /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
+    /// capabilities carry SupportsRenderScale; null = native (high resolution).</summary>
     public bool? HighResolution { get; set; }
     /// <summary>Frame rate cap in fps, clamped to PanelDeviceRegistry.MaxFpsCap; 0 or less clears it (the device's own rate). Null = leave it.</summary>
     public int? FpsCap { get; set; }

@@ -77,17 +77,36 @@ public sealed class RelayPairingIntegrationTests
         var claimKey = RelayCrypto.DeriveAeadKey(pairRoot, connSalt);
         await relay.SendPeerUpAsync(ridPair, connSalt);
 
-        var claimReq = new RelayClaimRequest { Type = RelayClaimMessageTypes.Claim, DeviceName = DeviceName };
+        var claimReq = new RelayClaimRequest { Type = RelayClaimMessageTypes.Claim, DeviceName = DeviceName, SupportsSasApproval = true };
         var reqBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
             claimReq, Nexus.Service.Serialization.AppJsonContext.Default.RelayClaimRequest);
         var sealedReq = RelayCrypto.Seal(claimKey, RelayCrypto.DirClientToHost, counter: 0, reqBytes);
         await relay.ForwardToHostAsync(ridPair, sealedReq);
 
-        // 3) The PC replies with ONE sealed claim-ok frame (dir=1, host→client).
-        var replyFrame = await relay.WaitForHostFrameAsync(ridPair, TimeSpan.FromSeconds(5));
-        var (dir, counter, replyPlain) = RelayCrypto.Open(claimKey, replyFrame);
+        // 3) The claim parks on the host's Allow: the PC replies claim-pending
+        //    (counter 0) with the request id + SAS and mints nothing yet.
+        var pendingFrame = await relay.WaitForHostFrameAsync(ridPair, TimeSpan.FromSeconds(5));
+        var (dir, counter, pendingPlain) = RelayCrypto.Open(claimKey, pendingFrame);
         Assert.Equal(RelayCrypto.DirHostToClient, dir);
         Assert.Equal(0ul, counter);
+        var pending = System.Text.Json.JsonSerializer.Deserialize(
+            pendingPlain, Nexus.Service.Serialization.AppJsonContext.Default.RelayClaimResponse);
+        Assert.Equal(RelayClaimMessageTypes.ClaimPending, pending!.Type);
+        Assert.False(string.IsNullOrEmpty(pending.RequestId));
+        Assert.Equal(6, pending.Sas.Length);
+        Assert.Empty(pairing.GetActiveRelaySessions());
+
+        // The host clicks Allow; the phone's next claim-confirm poll collects the session.
+        Assert.Equal("approved", pairing.HostDecisionPairCode(pending.RequestId, approved: true).Status);
+        var confirmReq = new RelayClaimRequest { Type = RelayClaimMessageTypes.ClaimConfirm, RequestId = pending.RequestId };
+        var confirmBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+            confirmReq, Nexus.Service.Serialization.AppJsonContext.Default.RelayClaimRequest);
+        await relay.ForwardToHostAsync(ridPair, RelayCrypto.Seal(claimKey, RelayCrypto.DirClientToHost, counter: 1, confirmBytes));
+
+        var replyFrame = await relay.WaitForHostFrameAsync(ridPair, TimeSpan.FromSeconds(5));
+        var (replyDir, replyCounter, replyPlain) = RelayCrypto.Open(claimKey, replyFrame);
+        Assert.Equal(RelayCrypto.DirHostToClient, replyDir);
+        Assert.Equal(1ul, replyCounter);
 
         var reply = System.Text.Json.JsonSerializer.Deserialize(
             replyPlain, Nexus.Service.Serialization.AppJsonContext.Default.RelayClaimResponse);

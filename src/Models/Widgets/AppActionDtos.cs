@@ -64,6 +64,8 @@ public sealed class SystemInfoResponse
     [JsonPropertyName("family")] public string Family { get; set; } = "";
     [JsonPropertyName("serial")] public string Serial { get; set; } = "";
     [JsonPropertyName("windowsProductKey")] public string WindowsProductKey { get; set; } = "";
+    // True activated, false not activated; omitted from the JSON when unknown (non-Windows or the query failed).
+    [JsonPropertyName("windowsActivated")] public bool? WindowsActivated { get; set; }
     [JsonPropertyName("pcName")] public string PcName { get; set; } = "";
     [JsonPropertyName("osBuild")] public string OsBuild { get; set; } = "";
     [JsonPropertyName("processor")] public string Processor { get; set; } = "";
@@ -74,6 +76,8 @@ public sealed class SystemInfoResponse
     [JsonPropertyName("monitor")] public string Monitor { get; set; } = "";
     [JsonPropertyName("soundCard")] public string SoundCard { get; set; } = "";
     [JsonPropertyName("networkCard")] public string NetworkCard { get; set; } = "";
+    // Host Nexus version (BuildInfo.Version without a leading v).
+    [JsonPropertyName("nexusVersion")] public string NexusVersion { get; set; } = "";
 }
 
 /// <summary>One device row returned by the <c>devices.list</c> host action.

@@ -255,4 +255,20 @@ public class WindowsSpecsParsersTests
         Assert.Equal(keys[1], WindowsSpecsParsers.SelectDisplayConfig(keys, present));
         Assert.Equal(keys[0], WindowsSpecsParsers.SelectDisplayConfig(keys, new[] { "DELA0B8_13_07E1_FD" }));
     }
+
+    [Theory]
+    [InlineData(new[] { 0, 0, 1, 0 }, true)]
+    [InlineData(new[] { 1 }, true)]
+    [InlineData(new[] { 0, 0, 0 }, false)]
+    [InlineData(new[] { 0, 2, 3 }, false)]
+    public void IsActivated_TrueOnlyWhenASkuIsLicensed(int[] statuses, bool expected)
+    {
+        Assert.Equal(expected, WindowsSpecsParsers.IsActivated(statuses));
+    }
+
+    [Fact]
+    public void IsActivated_NullWhenNoSkuIsReported()
+    {
+        Assert.Null(WindowsSpecsParsers.IsActivated(Array.Empty<int>()));
+    }
 }
