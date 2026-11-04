@@ -64,7 +64,12 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     // on replay stays held and goes out again ahead of the next write.
     private const int HeldWriteMaxAttempts = 3;
 
-    public WindowsDisplayBrightnessProvider() => DdcGate.Opened += ApplyHeldWrites;
+    public WindowsDisplayBrightnessProvider()
+    {
+        DdcGate.Opened += ApplyHeldWrites;
+        // A session unlock or settle is the moment a failing display is likely to answer again.
+        DdcGate.Opened += _negativeProbes.Clear;
+    }
 
     private bool Skip(string op, string id)
     {
@@ -172,6 +177,8 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                 // a display switched off must not even be probed.
                 if (excludedIds is not null && excludedIds.Contains(dto.Id))
                 {
+                    // Forgotten while opted out, so turning DDC back on probes it fresh.
+                    _negativeProbes.RecordSuccess(dto.Id);
                     dto.DdcEnabled = false;
                     dto.BrightnessControl.UnsupportedReason = "Brightness control is turned off for this display.";
                     results.Add(dto);

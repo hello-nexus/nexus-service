@@ -4,11 +4,14 @@ namespace Nexus.Service.Platform.Displays;
 /// Remembers displays whose DDC probe keeps failing so Enumerate stops re-probing them every poll.
 /// A failure is usually transient (a monitor still waking, bus contention), so a display is probed
 /// freely for its first <see cref="MaxAttempts"/> failures; after that it is skipped until
-/// <see cref="RetryInterval"/> passes or the attached set changes (<see cref="Clear"/>).
+/// <see cref="RetryInterval"/> passes or the attached set changes (<see cref="Clear"/>). A failure
+/// only counts when <see cref="FailureSpacing"/> has passed since the last counted one, so a burst
+/// from concurrent or back-to-back polls during a short outage cannot trip the threshold.
 /// </summary>
 internal sealed class DdcNegativeProbeCache
 {
     public const int MaxAttempts = 3;
+    public static readonly TimeSpan FailureSpacing = TimeSpan.FromSeconds(60);
     public static readonly TimeSpan RetryInterval = TimeSpan.FromMinutes(15);
 
     private readonly object _lock = new();
@@ -32,8 +35,10 @@ internal sealed class DdcNegativeProbeCache
     {
         lock (_lock)
         {
-            _failures.TryGetValue(id, out var e);
-            _failures[id] = (Math.Min(e.Failures + 1, MaxAttempts), _nowMs());
+            var now = _nowMs();
+            if (_failures.TryGetValue(id, out var e) && now - e.LastMs < (long)FailureSpacing.TotalMilliseconds)
+                return;
+            _failures[id] = (Math.Min(e.Failures + 1, MaxAttempts), now);
         }
     }
 

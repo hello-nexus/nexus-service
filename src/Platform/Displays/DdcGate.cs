@@ -152,6 +152,8 @@ internal static class DdcGate
     internal static readonly TimeSpan RepeatLogInterval = TimeSpan.FromMinutes(10);
 
     private static readonly Nexus.Service.Platform.LogGate s_queryFailureLog = new(RepeatLogInterval);
+    private static readonly Nexus.Service.Platform.LogGate s_queryRecoveryLog = new(RepeatLogInterval);
+    private static volatile bool s_queryFailing;
 
     /// <summary>
     /// WTS lock state for this process's own session. UNKNOWN (0xFFFFFFFF) and
@@ -163,15 +165,19 @@ internal static class DdcGate
         try
         {
             var locked = QueryCore();
-            if (s_queryFailureLog.Reset("lock-state", out var withheld))
+            // The failure key is kept so an alternating throw/succeed query still writes at most
+            // one failed and one recovered line per interval.
+            if (s_queryFailing)
             {
-                Nexus.Service.Platform.HelperLog.Write(
-                    $"[ddc] lock-state query recovered{Nexus.Service.Platform.LogGate.Suffix(withheld)}");
+                s_queryFailing = false;
+                if (s_queryRecoveryLog.Check("lock-state", "", out _))
+                    Nexus.Service.Platform.HelperLog.Write("[ddc] lock-state query recovered");
             }
             return locked;
         }
         catch (Exception ex)
         {
+            s_queryFailing = true;
             // Runs every poll, so a persistent failure is one line per interval.
             if (s_queryFailureLog.Check("lock-state", ex.GetType().Name, out var withheld, out var changed))
             {
