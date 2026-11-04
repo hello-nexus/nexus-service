@@ -245,7 +245,8 @@ public sealed class HydroShift2Aio : BackgroundService
             if (_overlayClear || rewipe)
             {
                 _overlayClear = false;
-                if (!own && !_hub.Exchange(pipe => _driver.ClearOverlay(pipe), false))
+                var attempted = false;
+                if (!own && !_hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false) && attempted)
                 {
                     ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] overlay wipe unanswered");
                 }
