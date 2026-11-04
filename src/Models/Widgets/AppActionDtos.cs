@@ -64,7 +64,7 @@ public sealed class SystemInfoResponse
     [JsonPropertyName("family")] public string Family { get; set; } = "";
     [JsonPropertyName("serial")] public string Serial { get; set; } = "";
     [JsonPropertyName("windowsProductKey")] public string WindowsProductKey { get; set; } = "";
-    // True activated, false not activated, null unknown (non-Windows or the query failed).
+    // True activated, false not activated; omitted from the JSON when unknown (non-Windows or the query failed).
     [JsonPropertyName("windowsActivated")] public bool? WindowsActivated { get; set; }
     [JsonPropertyName("pcName")] public string PcName { get; set; } = "";
     [JsonPropertyName("osBuild")] public string OsBuild { get; set; } = "";
