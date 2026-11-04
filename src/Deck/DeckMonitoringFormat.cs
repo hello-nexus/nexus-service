@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.Text.RegularExpressions;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Sensors;
@@ -102,10 +101,14 @@ internal static partial class DeckMonitoringFormat
         {
             // Converted in double on the web's parsed value, like convertTemperature.
             var fahrenheit = MonitoringDecimals.ToWebDouble(sensor.Value) * 9d / 5d + 32d;
-            var number = float.IsFinite(sensor.Value) ? MonitoringDecimals.FormatNumber(fahrenheit, "Temperature", wholeNumbers) : null;
-            if (number is not null)
+            if (!float.IsFinite(sensor.Value) || !MonitoringDecimals.Governs(sensor.Type))
             {
-                return LocalizeNumbers($"{number} °F", numberFormat);
+                // Outside the shared rule the web keeps the source string's own precision.
+                return LocalizeNumbers($"{MonitoringDecimals.ToFixed(fahrenheit, CountFractionDigits(sensor.Formatted))} °F", numberFormat);
+            }
+            if (NumberTokenRegex().IsMatch(sensor.Formatted))
+            {
+                return LocalizeNumbers($"{MonitoringDecimals.FormatNumber(fahrenheit, sensor.Type, wholeNumbers)} °F", numberFormat);
             }
         }
         if (FormatScaledDataValue(sensor.Value, sensor.Units) is { } scaled)
@@ -127,6 +130,22 @@ internal static partial class DeckMonitoringFormat
         return number is null || !match.Success
             ? sensor.Formatted
             : string.Concat(sensor.Formatted.AsSpan(0, match.Index), number, sensor.Formatted.AsSpan(match.Index + match.Length));
+    }
+
+    /// <summary>Mirrors formatted.match(/\.(\d+)/) digit-count: the source string's own decimal precision, or 0 when it has none.</summary>
+    private static int CountFractionDigits(string formatted)
+    {
+        var dot = formatted.IndexOf('.');
+        if (dot < 0)
+        {
+            return 0;
+        }
+        var count = 0;
+        for (var i = dot + 1; i < formatted.Length && char.IsDigit(formatted[i]); i++)
+        {
+            count++;
+        }
+        return count;
     }
 
     /// <summary>Mirrors isCelsiusUnit: strips a degree sign and trims before the case-insensitive "C" compare.</summary>

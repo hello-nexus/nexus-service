@@ -500,14 +500,14 @@ public sealed class GlacialLcdScreen
         {
             // The vendor app always sends a temperature with one decimal and no capture shows the firmware
             // taking an integer one, so whole numbers keep that form with a zero decimal.
-            "Temperature" => (wholeNumbers ? MonitoringDecimals.FormatNumber(value, "Temperature", true) + ".0" : number) + "℃",
+            "Temperature" => number + (wholeNumbers ? ".0" : "") + "℃",
             "Voltage" => number + "↊",
             "Fan" => number + "↌",
             "Clock" => (value / 1000f).ToString("0.000", c) + "㎓",
             "Load" or "Control" or "Level" => number + "%",
             "Power" => number + "W",
             "Current" => number + "A",
-            // No capture shows these forms; they keep the whole-number text the device received before the shared rule.
+            // No capture shows these forms, so they stay outside the shared rule as whole numbers.
             "Frequency" => value.ToString("0", c) + "Hz",
             "Flow" => value.ToString("0", c) + "L/h",
             "Noise" => number + "dBA",

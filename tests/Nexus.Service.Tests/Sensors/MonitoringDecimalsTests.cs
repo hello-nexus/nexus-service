@@ -73,4 +73,11 @@ public class MonitoringDecimalsTests
     {
         Assert.Null(MonitoringDecimals.FormatNumber(float.NaN, "Temperature", false));
     }
+
+    /// <summary>A garbage reading past decimal's range formats instead of throwing.</summary>
+    [Fact]
+    public void FormatNumber_HugeValue_DoesNotThrow()
+    {
+        Assert.NotNull(MonitoringDecimals.FormatNumber(float.MaxValue, "Temperature", true));
+    }
 }

@@ -47,6 +47,17 @@ public static class MonitoringDecimals
         {
             return null;
         }
+        return ToFixed(value, decimals);
+    }
+
+    /// <summary>JS toFixed on <paramref name="value"/>: the exact binary value rounded half away from zero.</summary>
+    public static string ToFixed(double value, int decimals)
+    {
+        // decimal overflows near 7.9e28; from 1e15 up a double has no fraction left to tie on.
+        if (!double.IsFinite(value) || Math.Abs(value) >= 1e15)
+        {
+            return value.ToString("F" + decimals, CultureInfo.InvariantCulture);
+        }
         // toFixed rounds the exact binary value, so expand it exactly before the half-away tie rule.
         var exact = decimal.Parse(value.ToString("F25", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
         var rounded = Math.Round(exact, decimals, MidpointRounding.AwayFromZero);

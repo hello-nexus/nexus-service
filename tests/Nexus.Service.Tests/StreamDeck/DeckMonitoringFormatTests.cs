@@ -140,12 +140,28 @@ public class DeckMonitoringFormatTests
         Assert.Equal("149.5 °F", DeckMonitoringFormat.ResolveValueText(sensor, "f", "system"));
     }
 
-    /// <summary>The shared rule gives Fahrenheit one decimal regardless of the source string's precision.</summary>
+    /// <summary>A source string with no decimal point converts with zero decimal places.</summary>
     [Fact]
-    public void ResolveValueText_TemperatureUnderF_NoSourceDecimal_UsesTheRuleDecimals()
+    public void ResolveValueText_TemperatureUnderF_NoSourceDecimal_ConvertsWithZeroDecimals()
     {
         var sensor = Sensor("Core", 20f, "°C", "20 °C");
+        Assert.Equal("68 °F", DeckMonitoringFormat.ResolveValueText(sensor, "f", "system"));
+    }
+
+    /// <summary>The shared rule gives a Temperature sensor one decimal regardless of the source string's precision.</summary>
+    [Fact]
+    public void ResolveValueText_TemperatureTypeUnderF_NoSourceDecimal_UsesTheRuleDecimals()
+    {
+        var sensor = Sensor("Core", 20f, "°C", "20 °C", "Temperature");
         Assert.Equal("68.0 °F", DeckMonitoringFormat.ResolveValueText(sensor, "f", "system"));
+    }
+
+    /// <summary>A governed type whose formatted string has no number passes it through, like formatSensorValue.</summary>
+    [Fact]
+    public void ResolveValueText_TemperatureTypeUnderF_NoNumberInFormatted_PassesThrough()
+    {
+        var sensor = Sensor("Core", 20f, "°C", "n/a", "Temperature");
+        Assert.Equal("n/a", DeckMonitoringFormat.ResolveValueText(sensor, "f", "system"));
     }
 
     [Theory]
@@ -184,7 +200,7 @@ public class DeckMonitoringFormatTests
     [InlineData(60.75f, true, "141 °F")]
     public void ResolveValueText_Fahrenheit_MatchesTheWebAtQuarterDegrees(float celsius, bool whole, string expected)
     {
-        var sensor = Sensor("S", celsius, "°C", "x", "Temperature");
+        var sensor = Sensor("S", celsius, "°C", "0 °C", "Temperature");
         Assert.Equal(expected, DeckMonitoringFormat.ResolveValueText(sensor, "f", "system", whole));
     }
 
