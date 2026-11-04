@@ -153,7 +153,7 @@ public static class SupportBundleBuilder
             var budget = src.LogBudgetBytes;
             if (src.JournalText.Length > 0)
             {
-                WriteText(zip, r, "logs/journal-" + Lifecycle.LinuxStartupProvider.UnitName + ".txt", src.JournalText);
+                WriteText(zip, r, "logs/journal-" + SupportBundleExtras.JournalUnitName + ".txt", src.JournalText);
                 budget = Math.Max(0, budget - src.JournalText.Length);
             }
             foreach (var c in SelectWithinBudget(logs, budget))

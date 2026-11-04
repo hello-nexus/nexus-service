@@ -538,7 +538,10 @@ internal sealed partial class ErrorReporter
     {
         if (text.Length == 0)
             return text;
-        text = UserPathPrefixRegex().Replace(text, m => SharedProfileNames.Contains(m.Groups[2].Value) ? m.Value : m.Groups[1].Value + "<user>");
+        static string Redact(Match m) => SharedProfileNames.Contains(m.Groups[2].Value) ? m.Value : m.Groups[1].Value + "<user>";
+        text = WindowsUsersRegex().Replace(text, Redact);
+        text = SlashUsersRegex().Replace(text, Redact);
+        text = MountedHomeRegex().Replace(text, Redact);
         return BundleEmailRegex().Replace(text, m => NotAMailDomain.Contains(m.Groups[1].Value) ? m.Value : "<email>");
     }
 
@@ -568,8 +571,16 @@ internal sealed partial class ErrorReporter
     [GeneratedRegex(@"[A-Za-z]:[\\/]Users[\\/][^\\/\s]+")]
     private static partial Regex WindowsUserPathRegex();
 
-    [GeneratedRegex(@"((?<![\w.\-])(?:[A-Za-z]:)?(?:\\{1,2}|/)Users(?:\\{1,2}|/)|(?<![\w.\-<>])/(?:home|media|run/media)/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-])| (?=[\w~'\- .]*[\\/]))+)", RegexOptions.IgnoreCase)]
-    private static partial Regex UserPathPrefixRegex();
+    // No lookbehind on the Users branches: the folder also sits behind /System/Volumes/Data, \\Device\\HarddiskVolume3, /Volumes/<disk> and \\server\\share. Spaces in the name are allowed only here, where a backslash path continues after them.
+    [GeneratedRegex(@"((?:[A-Za-z]:)?\\{1,2}Users\\{1,2})((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-])| (?=[\w~'\- .]*\\))+)", RegexOptions.IgnoreCase)]
+    private static partial Regex WindowsUsersRegex();
+
+    [GeneratedRegex(@"(/Users/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-]))+)", RegexOptions.IgnoreCase)]
+    private static partial Regex SlashUsersRegex();
+
+    [GeneratedRegex(@"((?<![\w.\-<>])/(?:home|media|run/media)/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-]))+)", RegexOptions.IgnoreCase)]
+    private static partial Regex MountedHomeRegex();
+
 
     [GeneratedRegex(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.([A-Za-z]{2,})")]
     private static partial Regex BundleEmailRegex();

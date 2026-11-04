@@ -59,6 +59,30 @@ public class SupportBundleReviewTests : IDisposable
     }
 
     [Fact]
+    public void A_logon_named_User_never_corrupts_json_values_or_path_segments()
+    {
+        var r = new BundleRedactor(Array.Empty<string>(), "TITAN", null, new[] { "User", "Admin", "Owner" });
+        const string safe = @"{""Source"":""user"",""Role"":""Admin"",""path"":""C:\\ProgramData\\Google\\Chrome\\User Data""} Chrome\User Data user mode";
+        Assert.Equal(safe, r.Apply(safe));
+        Assert.Equal(@"{""user"":""<user>"",""Owner"":""<user>""}", r.Apply(@"{""user"":""User"",""Owner"":""Owner""}"));
+        Assert.Equal("launched --helper as <user> ok", r.Apply("launched --helper as User ok"));
+        Assert.Equal(@"<pc>\<user> logged in", r.Apply(@"TITAN\User logged in"));
+        Assert.Equal("works as user here", r.Apply("works as user here"));
+    }
+
+    [Theory]
+    [InlineData("/System/Volumes/Data/Users/bob/x", "/System/Volumes/Data/Users/<user>/x")]
+    [InlineData(@"\Device\HarddiskVolume3\Users\bob\x", @"\Device\HarddiskVolume3\Users\<user>\x")]
+    [InlineData("/Volumes/Macintosh HD/Users/bob/x", "/Volumes/Macintosh HD/Users/<user>/x")]
+    [InlineData(@"\\server\share\Users\bob\x", @"\\server\share\Users\<user>\x")]
+    [InlineData("copying /Users/bob to /Volumes/x", "copying /Users/<user> to /Volumes/x")]
+    [InlineData(@"C:\Users\John Smith\x to D:\y", @"C:\Users\<user>\x to D:\y")]
+    public void Users_branch_has_no_lookbehind_and_spaces_only_on_backslash_paths(string input, string expected)
+    {
+        Assert.Equal(expected, new BundleRedactor(Array.Empty<string>(), "pc-1").Apply(input));
+    }
+
+    [Fact]
     public void Brand_like_account_names_do_not_corrupt_diagnostics()
     {
         var r = new BundleRedactor(Array.Empty<string>(), "pc-1", null, new[] { "Dell", "Lenovo", "Kraken", "mode", "color" });
@@ -152,8 +176,10 @@ public class SupportBundleReviewTests : IDisposable
         File.WriteAllText(good, "x");
         File.WriteAllText(planted, "x");
         File.CreateSymbolicLink(link, good);
-        string Run(string exe, string[] args) => exe.EndsWith("id", StringComparison.Ordinal) ? "501\n" : args[2] == planted ? "0\n" : "501\n";
-        var trusted = SupportBundleExtras.TrustedLaunchdLogs(new[] { good, planted, link, Path.Combine(_root, "missing.log") }, Run);
+        var hardLinked = Path.Combine(_root, "hardlinked.log");
+        File.WriteAllText(hardLinked, "x");
+        string Run(string exe, string[] args) => exe.EndsWith("id", StringComparison.Ordinal) ? "501\n" : args[2] == planted ? "0 1\n" : args[2] == hardLinked ? "501 2\n" : "501 1\n";
+        var trusted = SupportBundleExtras.TrustedLaunchdLogs(new[] { good, planted, link, hardLinked, Path.Combine(_root, "missing.log") }, Run);
         Assert.Equal(new[] { good }, trusted);
         Assert.Empty(SupportBundleExtras.TrustedLaunchdLogs(new[] { good }, (_, _) => ""));
     }

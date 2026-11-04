@@ -24,22 +24,31 @@ public sealed class BundleRedactor
     private readonly List<(Regex Rule, string Replacement)> _rules = new();
 
     /// <param name="userNames">Every profile and account name: redacted in home paths (the generic path rule also catches names not listed), never as a bare word.</param>
-    /// <param name="accountNames">Logon names that logs print outside paths. A distinctive one (a digit or separator in it) is redacted as a whole token anywhere; a word-like one (Owner, Gamer, Dell) only in carrier contexts: after "as ", "user=", as DOMAIN\name or as a quoted JSON value. A bare word would corrupt diagnostics.</param>
+    /// <param name="accountNames">Logon names that logs print outside paths. A distinctive one (a digit or separator in it) is redacted as a whole token anywhere; a word-like one (User, Owner, Dell) only in carrier contexts, in its real case: after "as ", "user=", as the value of an identity JSON key (user, account, owner, login) or as HOST\name for a known host. A bare word would corrupt diagnostics.</param>
     public BundleRedactor(IEnumerable<string> userNames, string machineName, IEnumerable<string>? otherHostNames = null, IEnumerable<string>? accountNames = null)
     {
+        var hosts = new[] { machineName }.Concat(otherHostNames ?? Array.Empty<string>())
+            .Where(h => h.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(h => h.Length).ToList();
+        var hostAlternation = string.Join("|", hosts.Select(Regex.Escape));
         foreach (var account in (accountNames ?? Array.Empty<string>()).Where(a => a.Length >= 3).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             foreach (var name in new[] { account, JsonEncodedText.Encode(account).ToString() }.Distinct())
             {
-                // The helper bootstrapper logs the console logon name after "as", and a renamed account's name matches no profile folder.
-                _paths.Add((" as " + name, " as <user>"));
-                _paths.Add(("user=" + name, "user=<user>"));
                 var escaped = Regex.Escape(name);
-                _rules.Add((new Regex(@"(?<=[\w.\-]\\{1,2})" + escaped + @"(?![\w\-])|(?<=:\s*"")" + escaped + @"(?="")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant), "<user>"));
                 if (IsDistinctive(account))
                 {
+                    // A digit or separator makes it safe as a bare token anywhere, and after "as " in any case.
+                    _paths.Add((" as " + name, " as <user>"));
+                    _paths.Add(("user=" + name, "user=<user>"));
                     _users.Add(name);
+                    continue;
                 }
+                // A word-like name (User, Admin, Owner) is also a common word, JSON value and folder name ("Source":"user", Chrome\User Data), so it
+                // matches only where a logon is printed, in its real case: after "as " or "user=", as an identity JSON value, or as HOST\name for a known host.
+                _rules.Add((new Regex(@"(?<= as )" + escaped + @"(?![\w\-])|(?<=user=)" + escaped + @"(?![\w\-])"
+                    + @"|(?<=""(?i:user|userName|username|account|accountName|owner|login|logonUser)""\s*:\s*"")" + escaped + @"(?="")"
+                    + (hosts.Count > 0 ? @"|(?<=(?<![\w.\-])(?i:" + hostAlternation + @")\\{1,2})" + escaped + @"(?![\w\-\\/])" : ""),
+                    RegexOptions.CultureInvariant), "<user>"));
             }
         }
         // Longest first, so a profile "alice" is never cut short by a profile "al".
@@ -56,8 +65,6 @@ public sealed class BundleRedactor
                 _paths.Add(("/run/media/" + name, "/run/media/<user>"));
             }
         }
-        var hosts = new[] { machineName }.Concat(otherHostNames ?? Array.Empty<string>())
-            .Where(h => h.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(h => h.Length).ToList();
         foreach (var host in hosts)
         {
             // The startup snapshot's host line and JSON name fields carry the machine name explicitly, so these are safe for any name.
@@ -75,7 +82,7 @@ public sealed class BundleRedactor
                 // A bare name is also a device or product word ("TITAN 360"), so only carrier contexts count. None may follow a path separator, which would hit a directory of that name.
                 const string notAfterPathOrWord = @"(?<![\w.\-\\/:])";
                 _rules.Add((new Regex(@"(?<=(?<![\w.\-:])\\\\)" + escaped + @"(?=\\)"
-                    + "|" + notAfterPathOrWord + escaped + @"(?=\\{1,2}[\w.$-])"
+                    + "|" + notAfterPathOrWord + escaped + @"(?=\\{1,2}[\w.$<-])"
                     + "|" + notAfterPathOrWord + escaped + @"(?=\.(?:local|lan|home|localdomain)\b)"
                     + "|" + @"(?<=://)" + escaped + @"(?=[:/\s""]|$)",
                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant), "<pc>"));
@@ -265,7 +272,24 @@ public static class SupportBundleExtras
 
     internal static bool IsExtraLogCandidate(string path) => !path.EndsWith(".child.json", StringComparison.OrdinalIgnoreCase);
 
-    internal static readonly string[] MacLaunchdLogPaths = { Lifecycle.MacStartupProvider.LaunchdStdoutPath, Lifecycle.MacStartupProvider.LaunchdStderrPath };
+    /// <summary>The launchd plist written by MacStartupProvider points StandardOutPath and StandardErrorPath here; that file is macOS-only, so the paths live in this cross-platform file and the plist reads them.</summary>
+    internal const string LaunchdStdoutPath = "/tmp/nexus-service.log";
+    internal const string LaunchdStderrPath = "/tmp/nexus-service.err";
+
+    internal static readonly string[] MacLaunchdLogPaths = { LaunchdStdoutPath, LaunchdStderrPath };
+
+    /// <summary>The root system unit installer/linux/install.sh installs; LinuxStartupProvider.UnitName is the same string, but that file is Linux-only.</summary>
+    internal const string JournalUnitName = "nexus.service";
+
+    /// <summary>The adopted session user's home on a Linux root daemon; null elsewhere (LinuxSession is compiled only into Linux builds).</summary>
+    internal static string? LinuxSessionHome()
+    {
+#if LINUX
+        return Platform.Linux.LinuxSession.SessionHome;
+#else
+        return null;
+#endif
+    }
 
     internal const int MaxJournalChars = 4 * 1024 * 1024;
     internal const int JournalTimeoutMs = 15_000;
@@ -280,7 +304,7 @@ public static class SupportBundleExtras
             var buffer = new char[InstallerLogProbeChars];
             var read = reader.ReadBlock(buffer, 0, buffer.Length);
             var head = new string(buffer, 0, read);
-            if (head.Contains(InstallerAppId, StringComparison.OrdinalIgnoreCase) || head.Contains("] [nexus] ", StringComparison.Ordinal) || head.Contains(" [nexus] ", StringComparison.Ordinal))
+            if (head.Contains(InstallerAppId, StringComparison.OrdinalIgnoreCase) || head.Contains(" [nexus] ", StringComparison.Ordinal))
             {
                 return true;
             }
@@ -311,7 +335,7 @@ public static class SupportBundleExtras
         return new[] { Path.Combine(root, "Temp"), Path.Combine(root, "SystemTemp") };
     }
 
-    /// <summary>The launchd output files sit in world-writable /tmp, where another local user can plant a symlink or a file of their own; only regular files owned by the service's own uid ship. <paramref name="run"/> runs a tool and returns its stdout.</summary>
+    /// <summary>The launchd output files sit in world-writable /tmp, where another local user can plant a symlink or a file of their own; only regular, unlinked files owned by the service's own uid ship. <paramref name="run"/> runs a tool and returns its stdout.</summary>
     internal static List<string> TrustedLaunchdLogs(IEnumerable<string> paths, Func<string, string[], string> run)
     {
         var uid = run("/usr/bin/id", new[] { "-u" }).Trim();
@@ -326,7 +350,8 @@ public static class SupportBundleExtras
             {
                 continue;
             }
-            if (run("/usr/bin/stat", new[] { "-f", "%u", path }).Trim() == uid)
+            // A hard link to a root-only file shows the root owner's uid, but a file created for us has a link count of 1.
+            if (run("/usr/bin/stat", new[] { "-f", "%u %l", path }).Trim() == uid + " 1")
             {
                 trusted.Add(path);
             }
@@ -339,7 +364,7 @@ public static class SupportBundleExtras
     {
         try
         {
-            var text = run(new[] { "-q", "-u", Lifecycle.LinuxStartupProvider.UnitName, "--since", "7 days ago", "--no-pager", "-o", "short-iso", "-n", "50000" });
+            var text = run(new[] { "-q", "-u", JournalUnitName, "--since", "7 days ago", "--no-pager", "-o", "short-iso", "-n", "50000" });
             if (string.IsNullOrWhiteSpace(text))
             {
                 return "";

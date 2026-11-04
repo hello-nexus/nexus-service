@@ -183,7 +183,7 @@ public static class DiagnosticsHealthRoutes
                 Environment.UserName,
                 OperatingSystem.IsWindows() ? Nexus.Service.Lifecycle.FactoryReset.WindowsUserProfiles() : Array.Empty<string>(),
                 SupportBundleExtras.ConsoleUser(),
-                OperatingSystem.IsLinux() ? Nexus.Service.Platform.Linux.LinuxSession.SessionHome : null,
+                SupportBundleExtras.LinuxSessionHome(),
                 OperatingSystem.IsLinux() ? SupportBundleExtras.SubdirectoriesOrEmpty("/home") : OperatingSystem.IsMacOS() ? SupportBundleExtras.SubdirectoriesOrEmpty("/Users") : Array.Empty<string>(),
                 Environment.MachineName,
                 SupportBundleExtras.TryDnsHostName());

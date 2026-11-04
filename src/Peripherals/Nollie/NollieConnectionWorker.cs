@@ -343,7 +343,7 @@ public sealed class NollieConnectionWorker : BackgroundService
         foreach (var controller in _hub.Controllers)
         {
             if (!IsSimulated(controller)) continue;
-            _hub.Detach(controller.DeviceId);
+            _hub.Detach(controller.DeviceId, deviceLeft: false);
             dropped.Add(controller);
             ServiceLog.Info($"[nollie] detached simulated {controller.Spec.Name} id={controller.DeviceId}");
         }

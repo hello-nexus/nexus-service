@@ -32,12 +32,14 @@ public static class ShellExecutor
             // the timeoutMs cap useless.
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
             // Stderr is redirected too: a tool that fills its pipe would otherwise stall until the timeout.
-            _ = proc.StandardError.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
             if (!proc.WaitForExit(timeoutMs))
             {
                 Console.Error.WriteLine($"[shell] timeout ({timeoutMs}ms) waiting for {fileName} {string.Join(' ', args)}");
                 try { proc.Kill(entireProcessTree: true); } catch { }
             }
+            // Observed so a faulted read cannot surface later as an unobserved task exception.
+            try { stderrTask.Wait(1000); } catch { }
             try { return stdoutTask.GetAwaiter().GetResult(); }
             catch { return string.Empty; }
         }
