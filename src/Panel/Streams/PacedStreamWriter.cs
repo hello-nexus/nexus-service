@@ -133,8 +133,10 @@ public sealed class PacedStreamWriter : IDisposable
     }
 
     // A raw framebuffer panel shows a frame the moment it lands, so a fixed tick only adds the
-    // wait for the next tick on top of the render. A frame goes out as it arrives, with the
-    // frame period as the floor between sends so the profile's rate is still the ceiling.
+    // wait for the next tick on top of the render. A frame goes out as it arrives, with
+    // half the frame period as the floor between sends. The capture's own pacing keeps the
+    // average at the profile's rate, so the floor only guards against a burst; a full period
+    // would hold an early frame back until a newer one replaced it and thin the stream.
     private void RunOnArrival(long interval)
     {
         long nextAllowed = 0;
@@ -158,7 +160,7 @@ public sealed class PacedStreamWriter : IDisposable
             LogStatsIfDue(now);
             var frames = _session.DequeueForTick();
             if (frames.Count == 0) continue;
-            nextAllowed = now + interval;
+            nextAllowed = now + interval / 2;
             try
             {
                 SendTick(transport, frames);
