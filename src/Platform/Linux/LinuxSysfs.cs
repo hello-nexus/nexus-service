@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace Nexus.Service.Platform.Linux;
 
@@ -21,6 +22,61 @@ internal static partial class LinuxSysfs
         try { return OperatingSystem.IsLinux() && chown(path, uid, gid) == 0; }
         catch { return false; }
     }
+
+    /// <summary>
+    /// Opens the path, symlinks followed, for reading only if it is a regular file; null otherwise. The open is
+    /// non-blocking and the type is checked on the open descriptor (statx, whose layout is the same on every
+    /// architecture), so a FIFO swapped in after the path check cannot block the caller.
+    /// </summary>
+    internal static FileStream? OpenRegularFile(string path)
+    {
+        if (!OperatingSystem.IsLinux())
+            return File.Exists(path) ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite) : null;
+        // Path check first: opening a device node as root has side effects (arms a watchdog, resets a USB serial port).
+        var pathInfo = new byte[StatxSize];
+        if (statx(AtFdCwd, path, 0, StatxType, pathInfo) != 0 || !IsRegularMode(pathInfo))
+            return null;
+        var fd = open(path, ORdOnly | ONonBlock | OCloExec);
+        if (fd < 0)
+            return null;
+        var handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
+        try
+        {
+            var buffer = new byte[StatxSize];
+            if (statx(fd, "", AtEmptyPath, StatxType, buffer) != 0 || !IsRegularMode(buffer))
+            {
+                handle.Dispose();
+                return null;
+            }
+            return new FileStream(handle, FileAccess.Read, 1, isAsync: false);
+        }
+        catch
+        {
+            handle.Dispose();
+            return null;
+        }
+    }
+
+    // Linux generic values (x86, arm); statx(2) layout is fixed across architectures.
+    private const int ORdOnly = 0;
+    private const int ONonBlock = 0x800;
+    private const int OCloExec = 0x80000;
+    private const int AtEmptyPath = 0x1000;
+    private const int AtFdCwd = -100;
+
+    private static bool IsRegularMode(byte[] statxBuffer)
+        => (BitConverter.ToUInt16(statxBuffer, StatxModeOffset) & SIfMt) == SIfReg;
+    private const uint StatxType = 1;
+    private const int StatxSize = 256;
+    private const int StatxModeOffset = 28;
+    private const int SIfMt = 0xF000;
+    private const int SIfReg = 0x8000;
+
+    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int open(string path, int flags);
+
+    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int statx(int dirfd, string path, int flags, uint mask, byte[] buffer);
 
     [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int chown(string path, uint owner, uint group);

@@ -1,15 +1,18 @@
 uniform float u_density; // hint_range(4.0, 16.0, 1.0) = 9.0  trace density
 uniform float u_pulse; // hint_range(0.3, 3.0, 0.05) = 1.0  pulse rate along traces
 uniform float u_glow; // hint_range(0.3, 2.0, 0.05) = 1.0  pulse glow
-uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
-#define tintedPalette(t) moodPalette((t), u_mood)
+#define tintedPalette(t) wheelColor(t)
 
 // Animated circuit-board traces with bright pulses traveling along
 // them. Each grid cell carries an L-shaped trace whose orientation is
 // hashed; pulses are bright dots moving along the traces.
 void main() {
     vec2 uv = uvCentered();
-    float t = mod(u_time * u_speed * 0.7, 1000.0);
+    // Pulses run on their own long clock because their rate is user-set; every
+    // other motion uses the short clock below, whose rates are whole multiples
+    // of one shared base rate so its wrap is invisible.
+    float tPulse = mod(u_time * u_speed * 0.7, 1000.0);
+    float t = mod(u_time * u_speed * 0.7, 125.6637);
     float dens = clamp(u_density, 3.0, 20.0);
     float pulseRate = clamp(u_pulse, 0.1, 4.0);
     float glow = clamp(u_glow, 0.1, 3.0);
@@ -51,8 +54,8 @@ void main() {
     float pulseGlow = 0.0;
     if (trace > 0.0) {
         float invGlow = 20.0 / glow;
-        for (int k = 0; k < 2; k++) {
-            float pulsePhase = fract(t * pulseRate * 1.3 + cellHash + float(k) * 0.5);
+        for (int k = 0; k < 3; k++) {
+            float pulsePhase = fract(tPulse * pulseRate * 1.3 + cellHash + float(k) * 0.3333);
             float pulseDistH = abs(p.x - (pulsePhase - 0.5)) + abs(p.y) * 4.0;
             float pulseDistV = abs(p.y - ((1.0 - pulsePhase) - 0.5)) + abs(p.x) * 4.0;
             pulseGlow += exp(-pulseDistH * invGlow) + exp(-pulseDistV * invGlow);
@@ -62,20 +65,28 @@ void main() {
     vec3 traceColor = tintedPalette(0.55 + cellHash * 0.2);
     vec3 pulseColor = tintedPalette(0.4 + cellHash * 0.2 + t * 0.1);
 
+    // A slow wave sweeps across the board and swells the traces it passes, so
+    // the static layout itself shimmers; the base level sits low so the
+    // moving pulses read brighter against it.
+    float sweep = 0.5 + 0.5 * sin(grid.x * 0.55 + grid.y * 0.35 - t * 2.2 + cellHash * 1.5);
+    float traceLevel = 0.35 + 0.65 * sweep;
+
     // Board tint varies across the frame so the background itself carries
     // colour instead of being a dim uniform slab.
     // perf: faint 0.18-scaled background tint, no fine detail needed -> fbm3
-    float boardFbm = fbm3(uv * 1.4 + vec2(t * 0.2, 0.0));
+    float boardFbm = fbm3(uv * 1.4 + vec2(t * 0.5, t * 0.3));
     vec3 boardTint = tintedPalette(0.35 + boardFbm * 0.3) * 0.32;
 
     vec3 col = boardTint;
-    col += traceColor * trace * 1.4;
-    col += pulseColor * pulseGlow * 2.2;
+    col += traceColor * trace * 1.1 * traceLevel;
+    col += pulseColor * pulseGlow * 3.0;
     // Solder-mask glow where traces are dense.
-    col += traceColor * trace * trace * 0.6;
+    col += traceColor * trace * trace * 0.45 * traceLevel;
     // Nodes at the cell centers light up in turn.
-    float node = exp(-dot(inCell, inCell) * 90.0) * (0.35 + 0.65 * pow(0.5 + 0.5 * sin(t * 2.4 + cellHash * 40.0), 4.0));
+    float node = exp(-dot(inCell, inCell) * 90.0) * (0.35 + 0.65 * pow(0.5 + 0.5 * sin(t * 4.8 + cellHash * 40.0), 4.0));
     col += pulseColor * node * 1.6;
 
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finish(col), 1.0);
 }
+
+float outGain() { return 1.59; }

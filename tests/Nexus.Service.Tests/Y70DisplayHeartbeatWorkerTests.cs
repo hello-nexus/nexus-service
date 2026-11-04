@@ -5,6 +5,8 @@ using Nexus.Service.Cloud;
 using Nexus.Service.Tests.Cloud;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Lighting;
+using Nexus.Service.Peripherals.Hyte.Np50;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
 using Nexus.Service.Peripherals.Y70;
 using Nexus.Service.Persistence;
@@ -240,6 +242,61 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         worker.Tick();
 
         Assert.Equal(0, y70.ApplyCount);
+    }
+
+    [Fact]
+    public void Replugged_gt_refires_devices_changed_even_through_early_return_ticks()
+    {
+        var gtDiscovery = new GtDiscovery();
+        var hub = new Y70DisplayHub(gtDiscovery, _ => new GtTransport());
+        var config = new InMemoryConfigStore();
+        var lighting = new Y70GtLightingDeviceProvider(hub, config, new Np50IdentifyTracker());
+        var changes = 0;
+        lighting.DevicesChanged += () => changes++;
+        var worker = new Y70DisplayHeartbeatWorker(
+            hub, new HardwarePresence(new EmptyUsbEnumerator()), new DeviceControlGate(config),
+            new FakeY70Provider(), lighting: lighting);
+
+        Assert.True(hub.EnsureConnected());
+        worker.Tick();
+        Assert.True(hub.HasBacklight);
+        Assert.Equal(1, changes);
+
+        // Unplugged: the USB-absent early return must still report the disconnect.
+        hub.Disconnect();
+        gtDiscovery.Present = false;
+        worker.Tick();
+        Assert.Equal(2, changes);
+
+        // Replugged: the connect edge fires again.
+        gtDiscovery.Present = true;
+        hub.EnsureConnected();
+        worker.Tick();
+        Assert.Equal(3, changes);
+    }
+
+    private sealed class GtDiscovery : IY70DisplayPortDiscovery
+    {
+        public bool Present = true;
+        public IReadOnlyList<Y70DisplayPort> Discover() => Present
+            ? new[] { new Y70DisplayPort { PortName = "COM_TEST", Serial = "GTTEST1", Variant = Y70DisplayProtocol.VariantGt } }
+            : Array.Empty<Y70DisplayPort>();
+    }
+
+    private sealed class GtTransport : INp50Transport
+    {
+        public bool IsOpen => true;
+        public string Serial => "GTTEST1";
+        public void Write(ReadOnlySpan<byte> data) { }
+        public void DiscardInput() { }
+        public int Read(Span<byte> buffer, int timeoutMs)
+        {
+            // Firmware-version reply: header, sub-command, then four version bytes.
+            ReadOnlySpan<byte> reply = new byte[] { 0xFF, 0xDD, 0x02, 1, 0, 3, 1 };
+            reply.CopyTo(buffer);
+            return reply.Length;
+        }
+        public void Dispose() { }
     }
 
     private sealed class EmptyUsbEnumerator : IUsbEnumerator

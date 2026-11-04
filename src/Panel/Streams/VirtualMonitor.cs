@@ -10,6 +10,8 @@ public static class SecondaryMonitorStates
     public const string Starting = "starting";
     public const string Active = "active";
     public const string DriverMissing = "driver-missing";
+    /// <summary>The one virtual monitor Nexus can create is already held by another device.</summary>
+    public const string InUse = "in-use";
     public const string Failed = "failed";
 }
 
@@ -24,6 +26,9 @@ public interface IVirtualMonitorHost
 
     /// <summary>The owning device's density when <paramref name="adapterName"/> is the live monitor this host created and its device has one; null otherwise.</summary>
     double? OwnedDisplayDpi(string adapterName);
+
+    /// <summary>True when <paramref name="adapterName"/> is the display adapter of the live monitor this host created.</summary>
+    bool OwnsAdapter(string adapterName) => false;
 
     /// <summary>Raised once a monitor's owned density is set.</summary>
     event Action? OwnedDisplayClaimed;

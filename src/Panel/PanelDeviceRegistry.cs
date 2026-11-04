@@ -673,6 +673,9 @@ public sealed class PanelDeviceRegistry
 
     private const long TouchIntervalMs = 30_000;
 
+    /// <summary>Highest frame cap a patch stores.</summary>
+    public const int MaxFpsCap = 240;
+
     // A single-instance surface is the record's identity, not a viewport sample:
     // a Y70 kiosk that first maps on the desktop monitor would rename itself
     // "phone". Every other field a patch omits keeps its stored value.
@@ -760,7 +763,7 @@ public sealed class PanelDeviceRegistry
             if (patch.BackgroundMode is not null)
                 record.BackgroundMode = NullIfEmpty(patch.BackgroundMode);
             if (patch.BackgroundEffect is not null)
-                record.BackgroundEffect = NullIfEmpty(patch.BackgroundEffect);
+                record.BackgroundEffect = NullIfEmpty(Nexus.Service.Lighting.SimplePatternMigration.Normalize(patch.BackgroundEffect));
             if (patch.BackgroundTemplate.HasValue)
                 record.BackgroundTemplate = patch.BackgroundTemplate.Value;
             if (patch.BackgroundTemplates is not null)
@@ -829,6 +832,8 @@ public sealed class PanelDeviceRegistry
                 record.ClickThrough = patch.ClickThrough.Value;
             if (patch.WidgetsLocked.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.WidgetsLocked = patch.WidgetsLocked.Value;
+            if (patch.RestrictedMode.HasValue)
+                record.RestrictedMode = patch.RestrictedMode.Value ? true : null;
             // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
             if (patch.GridSlots is <= 0)
                 record.GridSlots = null;
@@ -854,6 +859,8 @@ public sealed class PanelDeviceRegistry
                 record.Portrait = patch.Portrait.Value;
             if (patch.HighResolution.HasValue)
                 record.HighResolution = patch.HighResolution.Value;
+            if (patch.FpsCap is { } fpsCap)
+                record.FpsCap = fpsCap <= 0 ? null : Math.Min(fpsCap, MaxFpsCap);
             if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.MidLarge or PanelWidgetSizes.Small or PanelWidgetSizes.Medium or PanelWidgetSizes.XSmall or PanelWidgetSizes.Compact)
                 record.WidgetSize = patch.WidgetSize;
             if (patch.KioskViewport is { } viewport && !string.IsNullOrEmpty(record.DisplayId) && ValidViewport(viewport))
@@ -985,6 +992,7 @@ public sealed class PanelDeviceRegistry
             record.SecondaryMonitor = null;
             record.Portrait = null;
             record.HighResolution = null;
+            record.FpsCap = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -1005,7 +1013,7 @@ public sealed class PanelDeviceRegistry
     /// the id is unknown, or when the panel already holds
     /// <see cref="PanelPresets.Cap"/> presets (<paramref name="capped"/>).
     /// </summary>
-    public PanelPresetsResponse? CreatePreset(string id, string name, out bool capped)
+    public PanelPresetsResponse? CreatePreset(string id, string name, out bool capped, bool fresh = false)
     {
         PanelPresetsResponse? result = null;
         var hitCap = false;
@@ -1019,7 +1027,17 @@ public sealed class PanelDeviceRegistry
                 hitCap = true;
                 return;
             }
+            // With no preset active, fresh would discard the only copy of the live layout.
+            var useStarter = fresh && record.Presets.Exists(p => p.Id == record.ActivePresetId);
             PanelPresets.CaptureActive(record);
+            // A fresh preset takes the starter layout a new panel of this surface gets and keeps the rest of the personalization; the live record follows so the next switch-away capture does not write the old layout back.
+            if (useStarter)
+            {
+                record.Layout = PanelLayoutDefaults.WithStableIds(
+                    PanelLayoutDefaults.StripSeedFor(record)
+                        ?? PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? PanelSurfaces.Y70),
+                    record.Id);
+            }
             var preset = new PanelPreset { Id = Guid.NewGuid().ToString("n"), Name = name };
             PanelPresets.Copy(record, preset);
             record.Presets.Add(preset);
@@ -1310,6 +1328,7 @@ public sealed class PanelDeviceRegistry
             SecondaryMonitor = r.SecondaryMonitor,
             Portrait = r.Portrait,
             HighResolution = r.HighResolution,
+            FpsCap = r.FpsCap,
             WidgetSize = r.WidgetSize,
             KioskViewport = r.KioskViewport,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
@@ -1327,6 +1346,7 @@ public sealed class PanelDeviceRegistry
             Enabled = r.Hosted ?? r.Enabled,
             ClickThrough = r.ClickThrough,
             WidgetsLocked = r.WidgetsLocked,
+            RestrictedMode = r.RestrictedMode,
             GridSlots = r.GridSlots is > 0 ? r.GridSlots : null,
             DesktopImport = r.DesktopImport,
         };

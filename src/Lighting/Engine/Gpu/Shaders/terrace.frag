@@ -24,3 +24,5 @@ void main() {
     col = mix(col, vec3(1.0), smoothstep(0.85, 1.0, edge) * line * 0.6);
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.77; }

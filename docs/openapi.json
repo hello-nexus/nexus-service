@@ -12509,6 +12509,44 @@
         }
       }
     },
+    "/panel/devices/{id}/backlight-preview": {
+      "post": {
+        "tags": [
+          "Nexus"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PanelDevicePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        }
+      }
+    },
     "/panel/devices/{id}/presets": {
       "get": {
         "tags": [
@@ -16704,9 +16742,6 @@
             "type": "string"
           },
           "paused": {
-            "type": "boolean"
-          },
-          "gameSyncRemovedNotice": {
             "type": "boolean"
           },
           "error": {

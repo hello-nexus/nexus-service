@@ -44,7 +44,7 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
     public int ConnectionEpoch => Volatile.Read(ref _connectionEpoch);
     private int _connectionEpoch;
 
-    /// <summary>"y70-touch" / "y70-infinite" / "y70-truly" once connected, else empty. Firmware-catalog key.</summary>
+    /// <summary>"y70-touch" / "y70-infinite" / "y70-truly" / "y70-gt" once connected, else empty. Firmware-catalog key.</summary>
     public string Variant => State.Variant;
 
     public string DeviceId => string.IsNullOrEmpty(State.Serial) ? "" : $"y70:{State.Serial}";
@@ -87,9 +87,9 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
                 try
                 {
                     var t = _transportFactory(new Np50PortInfo { PortName = port.PortName, Serial = port.Serial });
-                    _transport = t;
                     State.Serial = port.Serial;
                     State.Variant = port.Variant;
+                    _transport = t;
                     Interlocked.Increment(ref _connectionEpoch);
                     ServiceLog.Info($"[y70-display] connected to {port.PortName} (variant={port.Variant} serial={port.Serial})");
                     return true;
@@ -167,6 +167,34 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[y70-display] set brightness/power failed: {ex.GetType().Name}: {ex.Message}");
+                Disconnect();
+                return false;
+            }
+        }
+    }
+
+    /// <summary>True when the connected panel is the Y70 GT, the only variant with a backlight to stream.</summary>
+    public bool HasBacklight => IsConnected && Variant == Y70DisplayProtocol.VariantGt;
+
+    /// <summary>
+    /// Stream one backlight frame (RGB triples in wire order). Shares the port
+    /// lock with the heartbeat's version query so frames and replies never
+    /// interleave. No reply is returned.
+    /// </summary>
+    public bool WriteBacklight(ReadOnlySpan<byte> rgb)
+    {
+        lock (_lock)
+        {
+            if (!HasBacklight) return false;
+            var transport = _transport!;
+            try
+            {
+                transport.Write(Y70DisplayProtocol.BuildBacklightStream(rgb));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[y70-display] backlight write failed: {ex.GetType().Name}: {ex.Message}");
                 Disconnect();
                 return false;
             }

@@ -73,12 +73,23 @@ public sealed class PacedStreamWriter : IDisposable
         // Windows rounds Thread.Sleep to the ~15ms scheduler quantum by
         // default, which jitters the tick visibly; request finer timer
         // resolution while this thread lives.
-        if (OperatingSystem.IsWindows()) TimeBeginPeriod(1);
+        if (OperatingSystem.IsWindows())
+        {
+            TimeBeginPeriod(1);
+            // Only a raw-BGRA writer does the JPEG encode on this thread; an H.264 writer just forwards bytes.
+            if (_session.Info.Profile.Codec == StreamCodec.RawBgra)
+                Nexus.Service.Platform.Windows.PerformanceCoreHint.ApplyToCurrentThread();
+        }
         try
         {
             // One tick per batch: fps stays the frame rate on the wire while
             // batched frames share a single write (and round trip).
             var interval = Stopwatch.Frequency * _batchFrames / _fps;
+            if (_session.Info.Profile.Codec == StreamCodec.RawBgra && _batchFrames == 1)
+            {
+                RunOnArrival();
+                return;
+            }
             var deadline = Stopwatch.GetTimestamp() + interval;
             while (!_disposed)
             {
@@ -93,19 +104,7 @@ public sealed class PacedStreamWriter : IDisposable
 
                 WaitUntil(deadline);
                 var now = Stopwatch.GetTimestamp();
-                if (_lastStatsLogTicks == 0) _lastStatsLogTicks = now;
-                if (now - _lastStatsLogTicks > Stopwatch.Frequency * 30)
-                {
-                    var stats = _session.StatsSnapshot();
-                    var secs = (now - _lastStatsLogTicks) / (double)Stopwatch.Frequency;
-                    ServiceLog.Info(
-                        $"[streamed-panel] stats serial={_session.Info.Serial} in={(stats.Enqueued - _lastStats.Enqueued) / secs:F1}fps " +
-                        $"out={(stats.Sent - _lastStats.Sent) / secs:F1}fps depth={stats.Depth} " +
-                        $"dropped={stats.Dropped - _lastStats.Dropped} trims={stats.Trims - _lastStats.Trims} " +
-                        $"maxInGap={stats.MaxIngestGapMs}ms");
-                    _lastStats = stats;
-                    _lastStatsLogTicks = now;
-                }
+                LogStatsIfDue(now);
                 // A late tick (blocked write, empty stretch) must not bank
                 // debt that later bursts the wire; re-anchor instead. What
                 // the re-anchor leaves queued drains through the pacing
@@ -131,6 +130,62 @@ public sealed class PacedStreamWriter : IDisposable
         {
             if (OperatingSystem.IsWindows()) TimeEndPeriod(1);
         }
+    }
+
+    // A raw framebuffer panel shows a frame the moment it lands, so a fixed tick only adds the
+    // wait for the next tick on top of the render. A frame goes out as it arrives; a token
+    // bucket lets a short burst through (a frame landing early after a capture gap) and keeps
+    // the long-run rate at or below the session's profile rate (already lowered to any frame cap).
+    private void RunOnArrival()
+    {
+        var bucket = new SendRateBucket(_fps, 2, Stopwatch.Frequency);
+        while (!_disposed)
+        {
+            IStreamedPanelTransport? transport;
+            lock (_transportLock) transport = _transport;
+            if (transport is null || !transport.IsOpen)
+            {
+                _wake.WaitOne(100);
+                continue;
+            }
+            if (!_session.WaitForFrame(50))
+            {
+                LogStatsIfDue(Stopwatch.GetTimestamp());
+                continue;
+            }
+            // Waiting before the dequeue lets a newer frame take the place of the one that arrived.
+            var now = Stopwatch.GetTimestamp();
+            var wait = bucket.WaitTicks(now);
+            if (wait > 0) WaitUntil(now + wait);
+            now = Stopwatch.GetTimestamp();
+            LogStatsIfDue(now);
+            var frames = _session.DequeueForTick();
+            if (frames.Count == 0) continue;
+            bucket.Consume(now);
+            try
+            {
+                SendTick(transport, frames);
+            }
+            finally
+            {
+                foreach (var frame in frames) frame.Release();
+            }
+        }
+    }
+
+    private void LogStatsIfDue(long now)
+    {
+        if (_lastStatsLogTicks == 0) _lastStatsLogTicks = now;
+        if (now - _lastStatsLogTicks <= Stopwatch.Frequency * 30) return;
+        var stats = _session.StatsSnapshot();
+        var secs = (now - _lastStatsLogTicks) / (double)Stopwatch.Frequency;
+        ServiceLog.Info(
+            $"[streamed-panel] stats serial={_session.Info.Serial} in={(stats.Enqueued - _lastStats.Enqueued) / secs:F1}fps " +
+            $"out={(stats.Sent - _lastStats.Sent) / secs:F1}fps depth={stats.Depth} " +
+            $"dropped={stats.Dropped - _lastStats.Dropped} trims={stats.Trims - _lastStats.Trims} " +
+            $"maxInGap={stats.MaxIngestGapMs}ms");
+        _lastStats = stats;
+        _lastStatsLogTicks = now;
     }
 
     private void SendTick(IStreamedPanelTransport transport, IReadOnlyList<StreamFrame> frames)

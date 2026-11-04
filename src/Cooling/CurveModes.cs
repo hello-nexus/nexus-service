@@ -22,14 +22,18 @@ internal static class CurveModes
         var set = new HashSet<string>(StringComparer.Ordinal);
         if (config is null)
             return set;
-        foreach (var c in config.Load().Cooling.Curves)
+        // Under the store lock: curve edits mutate the live lists in place, and an enumeration racing one throws.
+        config.Read(s =>
         {
-            foreach (var o in c.Outputs)
+            foreach (var c in s.Cooling.Curves)
             {
-                if (!string.IsNullOrEmpty(o.Id))
-                    set.Add(o.Id);
+                foreach (var o in c.Outputs)
+                {
+                    if (!string.IsNullOrEmpty(o.Id))
+                        set.Add(o.Id);
+                }
             }
-        }
+        });
         return set;
     }
 }

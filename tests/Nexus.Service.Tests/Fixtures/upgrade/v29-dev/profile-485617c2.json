@@ -1,0 +1,3073 @@
+{
+ "schemaVersion": 29,
+ "theme": {
+  "language": "en",
+  "themeMode": "system",
+  "accentColor": "#0078D4",
+  "resolvedThemeMode": "",
+  "backgroundMode": "glass",
+  "accentSource": "system",
+  "customAccentColor": ""
+ },
+ "monitoring": {
+  "showMacStatusBarIcon": true,
+  "showWindowsTrayIcon": true,
+  "detailedCollapsed": [],
+  "eventsEnabled": true,
+  "fpsOverlayEnabled": true,
+  "eventKindsHidden": [],
+  "smartPollSeconds": {},
+  "smartPollDefaultSeconds": 30,
+  "smartPollPerDrive": false
+ },
+ "panel": {
+  "autoLaunch": true,
+  "reserveMonitor": true,
+  "alwaysOnTop": true,
+  "themeSyncWithDesktop": true,
+  "themeMode": "system",
+  "accentSyncWithDesktop": true,
+  "backgroundMode": "solid",
+  "backgroundEffect": "plasma",
+  "backgroundTemplate": 0,
+  "backgroundOpacity": 1,
+  "panelOpacity": 1,
+  "widgetOpacity": 1,
+  "widgetLabels": false,
+  "dashboardLayout": {
+   "layoutSchemaVersion": 2,
+   "surface": "desktop",
+   "pages": [
+    {
+     "id": "2985a31d-f03b-49f3-8126-337dbe929b16",
+     "widgets": [
+      {
+       "id": "169b2779-3f08-43a0-bdb9-58bb535ee583",
+       "type": "monitoring",
+       "size": "4x2",
+       "col": 0,
+       "row": 0,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false,
+       "config": {
+        "slotCount": 2,
+        "slot0_device": "quick",
+        "slot0_sensor": "summary/cpu-usage",
+        "slot0_design": "sparkline",
+        "slot1_device": "quick",
+        "slot1_sensor": "summary/memory-usage",
+        "slot1_design": "halfgauge"
+       }
+      },
+      {
+       "id": "2bf04162-166c-4738-b9d8-273ee1b7e671",
+       "type": "build",
+       "size": "2x2",
+       "col": 4,
+       "row": 0,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "58b692ec-f4be-4223-8b2b-9742767e5a8d",
+       "type": "lighting",
+       "size": "4x2",
+       "col": 0,
+       "row": 2,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false,
+       "config": {
+        "showRecents": true
+       }
+      },
+      {
+       "id": "1d657c85-f844-4379-9ab3-c7c7dddce076",
+       "type": "cooling",
+       "size": "4x2",
+       "col": 0,
+       "row": 4,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "9c160010-b044-441f-b481-3fb31135bffa",
+       "type": "diagnostics",
+       "size": "2x2",
+       "col": 4,
+       "row": 2,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false
+      },
+      {
+       "id": "04493a48-b322-4cff-93a0-360c43339d52",
+       "type": "weather",
+       "size": "2x2",
+       "col": 4,
+       "row": 4,
+       "position": 0,
+       "positionHorizontal": 0,
+       "isImmersive": false,
+       "config": {
+        "location": null
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "overlay": {
+  "migratedToPanels": true
+ },
+ "lighting": {
+  "sync": "liquidchrome",
+  "brightnessScale": {},
+  "brightnessEnabled": false,
+  "globalBrightness": 1,
+  "brightnessSchedule": {
+   "enabled": false,
+   "points": [
+    {
+     "hour": 5,
+     "brightness": 10
+    },
+    {
+     "hour": 7,
+     "brightness": 30
+    },
+    {
+     "hour": 10,
+     "brightness": 100
+    },
+    {
+     "hour": 17,
+     "brightness": 100
+    },
+    {
+     "hour": 20,
+     "brightness": 30
+    },
+    {
+     "hour": 22,
+     "brightness": 10
+    }
+   ]
+  },
+  "idleDim": {
+   "enabled": false,
+   "timeoutSeconds": 0,
+   "level": 10
+  },
+  "speedScale": {},
+  "speedEnabled": false,
+  "frameRate": 60,
+  "scaleRatio": 1,
+  "deviceLayouts": {},
+  "sceneView": {
+   "enabled": false
+  },
+  "freeRotationLayouts": true,
+  "deviceNames": {},
+  "deviceGroups": [],
+  "deviceStacks": [],
+  "devicePins": {},
+  "ledColorLocks": {},
+  "keyReactions": {},
+  "layoutPresets": [],
+  "lastMediaId": "",
+  "animate": {
+   "effect": "liquidchrome",
+   "states": {
+    "vapor": {
+     "speed": 45,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1.4,
+     "contrast": 1.15,
+     "params": {
+      "u_density": 1,
+      "u_scale": 1.5,
+      "u_drift": 1,
+      "u_mood": 5
+     }
+    },
+    "satinflow": {
+     "speed": 30,
+     "intensity": 1,
+     "hue": 0.62,
+     "colorize": 0.75,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_folds": 6,
+      "u_flow": 1.3,
+      "u_sheen": 1.2
+     }
+    },
+    "flowfield": {
+     "speed": 60,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1.35,
+     "contrast": 1.1,
+     "params": {
+      "u_streams": 0.9,
+      "u_flow": 1.2,
+      "u_colorSpread": 0.8,
+      "u_mood": 3
+     }
+    },
+    "rainbow": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_density": 1,
+      "u_rotation": 0,
+      "u_aspect": 0,
+      "u_tempo": 0.55
+     }
+    },
+    "radar": {
+     "speed": 85,
+     "intensity": 1,
+     "hue": 0.85,
+     "colorize": 0,
+     "saturation": 1.3,
+     "contrast": 1.1,
+     "params": {
+      "u_ringRate": 0.4
+     }
+    },
+    "meshgradient": {
+     "speed": 65,
+     "intensity": 1,
+     "hue": 0.35,
+     "colorize": 0.75,
+     "saturation": 1.1,
+     "contrast": 1.05,
+     "params": {
+      "u_blobs": 5,
+      "u_spread": 0.9,
+      "u_softness": 1
+     }
+    },
+    "sweepliquid": {
+     "speed": 50,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_warp": 1,
+      "u_scale": 1.6
+     }
+    },
+    "silkwave": {
+     "speed": 30,
+     "intensity": 1,
+     "hue": 0.62,
+     "colorize": 0.75,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_folds": 8,
+      "u_flow": 1.6,
+      "u_sheen": 1.3
+     }
+    },
+    "bubbles": {
+     "speed": 40,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1.35,
+     "contrast": 1.1,
+     "params": {
+      "u_count": 12,
+      "u_rise": 1,
+      "u_irid": 0.9,
+      "u_mood": 2
+     }
+    },
+    "contourbands": {
+     "speed": 30,
+     "intensity": 1,
+     "hue": 0.62,
+     "colorize": 0.75,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_bands": 5,
+      "u_scale": 2.6,
+      "u_flow": 0.8
+     }
+    },
+    "starfield": {
+     "speed": 40,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1.4,
+     "contrast": 1.05,
+     "params": {
+      "u_density": 26,
+      "u_layers": 3,
+      "u_trail": 0.3,
+      "u_mood": 1
+     }
+    },
+    "vortextunnel": {
+     "speed": 30,
+     "intensity": 1,
+     "hue": 0.62,
+     "colorize": 0.75,
+     "saturation": 1,
+     "contrast": 1,
+     "params": {
+      "u_twist": 1.2,
+      "u_churn": 1.3,
+      "u_depth": 1.4
+     }
+    },
+    "lavafissure": {
+     "speed": 40,
+     "intensity": 1,
+     "hue": 0,
+     "colorize": 0,
+     "saturation": 1.35,
+     "contrast": 1.1,
+     "params": {
+      "u_flow": 1,
+      "u_crackWidth": 0.35,
+      "u_shimmer": 0.8,
+      "u_mood": 1
+     }
+    }
+   },
+   "templates": {
+    "radar": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 85,
+       "intensity": 1,
+       "hue": 0.85,
+       "colorize": 0,
+       "saturation": 1.3,
+       "contrast": 1.1,
+       "params": {
+        "u_ringRate": 0.4
+       }
+      }
+     ]
+    },
+    "watercolor": {
+     "selected": 0,
+     "slots": [
+      {
+       "speed": 40,
+       "intensity": 1,
+       "hue": 0.5,
+       "colorize": 0.3,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.5
+       }
+      },
+      {
+       "speed": 50,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.3
+       }
+      },
+      null,
+      {
+       "speed": 30,
+       "intensity": 1,
+       "hue": 0.62,
+       "colorize": 0.75,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_blobs": 6,
+        "u_softness": 0.6
+       }
+      }
+     ]
+    },
+    "starfield": {
+     "selected": 2,
+     "slots": [
+      null,
+      null,
+      {
+       "speed": 40,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1.4,
+       "contrast": 1.05,
+       "params": {
+        "u_density": 26,
+        "u_layers": 3,
+        "u_trail": 0.3,
+        "u_mood": 1
+       }
+      }
+     ]
+    },
+    "flowfield": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 60,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1.35,
+       "contrast": 1.1,
+       "params": {
+        "u_streams": 0.9,
+        "u_flow": 1.2,
+        "u_colorSpread": 0.8,
+        "u_mood": 3
+       }
+      }
+     ]
+    },
+    "liquidchrome": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 80,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1.4,
+       "contrast": 1.1,
+       "params": {
+        "u_flow": 2.2,
+        "u_thickness": 1.2,
+        "u_ripple": 2,
+        "u_mood": 3
+       }
+      }
+     ]
+    },
+    "sandstorm": {
+     "selected": 2,
+     "slots": [
+      null,
+      {
+       "speed": 65,
+       "intensity": 1,
+       "hue": 0.018942375,
+       "colorize": 0,
+       "saturation": 1.4,
+       "contrast": 1.15,
+       "params": {
+        "u_wind": 2,
+        "u_density": 1.4,
+        "u_gusts": 1.4,
+        "u_mood": 7
+       }
+      },
+      {
+       "speed": 35,
+       "intensity": 1,
+       "hue": 0,
+       "colorize": 0,
+       "saturation": 1.4,
+       "contrast": 1.15,
+       "params": {
+        "u_wind": 0.6,
+        "u_density": 0.8,
+        "u_gusts": 0.4,
+        "u_mood": 2
+       }
+      }
+     ]
+    },
+    "silkwave": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 30,
+       "intensity": 1,
+       "hue": 0.62,
+       "colorize": 0.75,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_folds": 8,
+        "u_flow": 1.6,
+        "u_sheen": 1.3
+       }
+      }
+     ]
+    },
+    "vortextunnel": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 30,
+       "intensity": 1,
+       "hue": 0.62,
+       "colorize": 0.75,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_twist": 1.2,
+        "u_churn": 1.3,
+        "u_depth": 1.4
+       }
+      }
+     ]
+    },
+    "meshgradient": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 65,
+       "intensity": 1,
+       "hue": 0.35,
+       "colorize": 0.75,
+       "saturation": 1.1,
+       "contrast": 1.05,
+       "params": {
+        "u_blobs": 5,
+        "u_spread": 0.9,
+        "u_softness": 1
+       }
+      }
+     ]
+    },
+    "satinflow": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 30,
+       "intensity": 1,
+       "hue": 0.62,
+       "colorize": 0.75,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_folds": 6,
+        "u_flow": 1.3,
+        "u_sheen": 1.2
+       }
+      }
+     ]
+    },
+    "contourbands": {
+     "selected": 3,
+     "slots": [
+      null,
+      null,
+      null,
+      {
+       "speed": 30,
+       "intensity": 1,
+       "hue": 0.62,
+       "colorize": 0.75,
+       "saturation": 1,
+       "contrast": 1,
+       "params": {
+        "u_bands": 5,
+        "u_scale": 2.6,
+        "u_flow": 0.8
+       }
+      }
+     ]
+    }
+   }
+  },
+  "static": {
+   "effect": "gradientlinear",
+   "states": {}
+  },
+  "staticColor": {
+   "r": 255,
+   "g": 0,
+   "b": 0
+  },
+  "musicReactive": true,
+  "audioOutputDeviceId": "",
+  "audioOutputDeviceName": "",
+  "audioOutputDeviceDirection": "",
+  "screenEffect": {
+   "hue": 0,
+   "colorize": 0,
+   "saturation": 1,
+   "contrast": 1,
+   "flipX": false,
+   "flipY": false,
+   "reactive": false,
+   "reactivity": 0.5,
+   "intensity": 0.5
+  },
+  "screenMonitor": "",
+  "mediaEffect": {
+   "hue": 0,
+   "colorize": 0,
+   "saturation": 1,
+   "contrast": 1,
+   "flipX": false,
+   "flipY": false,
+   "reactive": false,
+   "reactivity": 0.5,
+   "intensity": 0.5
+  },
+  "renderGpu": "auto",
+  "renderBackend": "angle",
+  "sleepBlackout": true,
+  "lockBlackout": true
+ },
+ "masterScalesDevices": false,
+ "keeb": {
+  "rotaryLeft": "VolumeAdjustment",
+  "rotaryRight": "BrightnessAdjustment",
+  "gameMode": {
+   "altF4": false,
+   "altTab": false,
+   "shiftTab": false,
+   "windowsKey": false
+  },
+  "firmwareLighting": {
+   "animationMode": "Static",
+   "speed": "Standard",
+   "direction": "Forward",
+   "brightness": 100,
+   "keyReactive": false,
+   "keyReactiveMask": false,
+   "keyReactiveMode": "SingleKey",
+   "keyReactiveColor": {
+    "r": 0,
+    "g": 0,
+    "b": 0,
+    "a": 1
+   }
+  },
+  "macros": {},
+  "keyOverrides": [],
+  "pristineLayers": {}
+ },
+ "cooling": {
+  "globalSpeedModifier": 1,
+  "curves": [
+   {
+    "id": "preset-silent",
+    "name": "Silent",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 3,
+     "minTemp": 45,
+     "maxTemp": 85,
+     "minSpeed": 20,
+     "maxSpeed": 80
+    },
+    "graph": {
+     "responseTime": 3,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 45,
+       "speed": 20
+      },
+      {
+       "temp": 55,
+       "speed": 26
+      },
+      {
+       "temp": 65,
+       "speed": 50
+      },
+      {
+       "temp": 75,
+       "speed": 74
+      },
+      {
+       "temp": 85,
+       "speed": 80
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    },
+    "preset": "silent"
+   },
+   {
+    "id": "preset-balanced",
+    "name": "Balanced",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 35,
+       "speed": 30
+      },
+      {
+       "temp": 45,
+       "speed": 36
+      },
+      {
+       "temp": 55,
+       "speed": 60
+      },
+      {
+       "temp": 65,
+       "speed": 84
+      },
+      {
+       "temp": 75,
+       "speed": 90
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    },
+    "preset": "balanced"
+   },
+   {
+    "id": "preset-turbo",
+    "name": "Turbo",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 0.5,
+     "minTemp": 30,
+     "maxTemp": 65,
+     "minSpeed": 50,
+     "maxSpeed": 100
+    },
+    "graph": {
+     "responseTime": 0.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 50
+      },
+      {
+       "temp": 39,
+       "speed": 55
+      },
+      {
+       "temp": 48,
+       "speed": 75
+      },
+      {
+       "temp": 56,
+       "speed": 95
+      },
+      {
+       "temp": 65,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    },
+    "preset": "turbo"
+   },
+   {
+    "id": "preset-max",
+    "name": "Max",
+    "type": "Flat",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 100
+    },
+    "linear": {
+     "responseTime": 0.5,
+     "minTemp": 20,
+     "maxTemp": 100,
+     "minSpeed": 100,
+     "maxSpeed": 100
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    },
+    "preset": "max"
+   },
+   {
+    "id": "curve-1793404819918",
+    "name": "Curve 9918",
+    "type": "Flat",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404822457",
+    "name": "Curve 2457",
+    "type": "Linear",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404825014",
+    "name": "Curve 5014",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404827548",
+    "name": "Curve 7548",
+    "type": "Mixed",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404830083",
+    "name": "Curve 0083",
+    "type": "Flat",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404832617",
+    "name": "Curve 2617",
+    "type": "Linear",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404835155",
+    "name": "Curve 5155",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404837689",
+    "name": "Curve 7689",
+    "type": "Linear",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404840228",
+    "name": "Curve 0228",
+    "type": "Flat",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404842762",
+    "name": "Curve 2762",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404845296",
+    "name": "Curve 5296",
+    "type": "Flat",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404847836",
+    "name": "Curve 7836",
+    "type": "Linear",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404850372",
+    "name": "Curve 0372",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404852937",
+    "name": "Curve 2937",
+    "type": "Mixed",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404855471",
+    "name": "Curve 5471",
+    "type": "Flat",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   },
+   {
+    "id": "curve-1793404858010",
+    "name": "Curve 8010",
+    "type": "Graph",
+    "input": {
+     "id": "/amdcpu/0/temperature/2",
+     "type": "Temperature",
+     "device": ""
+    },
+    "outputs": [],
+    "flat": {
+     "speed": 50
+    },
+    "linear": {
+     "responseTime": 1.5,
+     "minTemp": 35,
+     "maxTemp": 75,
+     "minSpeed": 30,
+     "maxSpeed": 90
+    },
+    "graph": {
+     "responseTime": 1.5,
+     "speedModifier": 1,
+     "points": [
+      {
+       "temp": 30,
+       "speed": 25
+      },
+      {
+       "temp": 45,
+       "speed": 33
+      },
+      {
+       "temp": 60,
+       "speed": 63
+      },
+      {
+       "temp": 75,
+       "speed": 92
+      },
+      {
+       "temp": 90,
+       "speed": 100
+      }
+     ]
+    },
+    "mixed": {
+     "responseTime": 1.5,
+     "curveIds": [],
+     "fn": "max"
+    },
+    "trigger": {
+     "responseTime": 3,
+     "idleTemp": 45,
+     "loadTemp": 65,
+     "idleSpeed": 30,
+     "loadSpeed": 80
+    },
+    "sync": {
+     "sourceChannelId": "",
+     "offset": 0,
+     "proportional": false
+    },
+    "auto": {
+     "responseTime": 5,
+     "idleTemp": 40,
+     "loadTemp": 70,
+     "minSpeed": 25,
+     "maxSpeed": 100,
+     "step": 5,
+     "deadband": 2
+    }
+   }
+  ],
+  "curvesSeeded": true,
+  "fanNames": {},
+  "fanGroups": [],
+  "fanCalibrations": {},
+  "manualSpeeds": {},
+  "fanOffsets": {},
+  "fanPinOverrides": {},
+  "uncontrolledFanChannels": [],
+  "hubControlModes": {},
+  "fanRoles": {},
+  "activePreset": "off",
+  "customFanCurveAssignments": {},
+  "customManualSpeeds": {},
+  "presets": [],
+  "thermalGuardEnabled": true,
+  "curveLintWarnings": true,
+  "healDroppedManualSpeeds": {},
+  "healedChannels": [],
+  "lastThermalTrip": {
+   "atUtcMs": 1793470426602,
+   "peakC": 96.12500762939453,
+   "reason": "limit",
+   "escalated": false,
+   "endedAtUtcMs": 1793470496911
+  },
+  "gpuManualBackup": {}
+ },
+ "y70": {
+  "orientation": "Landscape",
+  "brightness": 80,
+  "screenOff": false,
+  "forceOrientation": true,
+  "compatibilityRendering": false,
+  "keepCursorOff": false
+ },
+ "qSeries": {
+  "orientation": "Portrait",
+  "brightness": 100,
+  "screenOff": false,
+  "sleepWithHost": true,
+  "sleepWhenLocked": true
+ },
+ "tryx": {
+  "overlayItems": [],
+  "overlayColor": "#ffffff",
+  "overlayAlign": "left",
+  "overlayOpacity": 100,
+  "overlayFont": "roboto-regular",
+  "overlaySize": 100,
+  "overlayDocked": false,
+  "currentMedia": "",
+  "currentMediaIsCustom": false,
+  "brightness": 100,
+  "installedCloudIds": [],
+  "slideshowEnabled": false,
+  "slideshowIntervalSec": 10,
+  "slideshowShuffle": false,
+  "slideshowFinishVideos": true,
+  "sleepWhenLocked": true
+ },
+ "devices": {
+  "glacialLcdUploadPacePercent": 0,
+  "glacialLcdNexusPanel": false,
+  "disabledLightingDevices": [],
+  "samplingModes": {},
+  "ddcDisabledDisplays": [],
+  "uncontrolledLightingDevices": [],
+  "nexusControlDisabled": [],
+  "nexusControlEnabled": [],
+  "betaLockWhitelisted": [],
+  "lightingDevicePrefs": {},
+  "krakenFirmwareLighting": {},
+  "krakenLcdSleepWhenLocked": true,
+  "ledMapOverrides": {},
+  "ledMapAspectRatios": {},
+  "zonePartitions": {},
+  "portChains": {},
+  "lightingMaxRates": {},
+  "strimerGpuZones": 6,
+  "deviceLedOverrides": {},
+  "deviceAspectRatios": {},
+  "motherboardLeds": [],
+  "zoneLedCounts": {},
+  "cnvs": {
+   "playAnimation": true,
+   "playWhenPCOff": false
+  },
+  "lianLi": {
+   "port0Fans": 4,
+   "port1Fans": 4,
+   "port2Fans": 4,
+   "port3Fans": 4
+  },
+  "lianLiWireless": {
+   "screens": {},
+   "chains": {},
+   "aioScreens": {},
+   "ownedDevices": {},
+   "lockBoundDevices": true,
+   "flexZonesMigrated": [],
+   "flexLcd": {}
+  },
+  "lianLiLighting": {
+   "mode": "rainbowWave",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": [],
+   "merge": false,
+   "argbSync": false,
+   "ports": [],
+   "mergeOrder": []
+  },
+  "lianLiExtraHubs": {},
+  "lianLiHubKeys": [],
+  "tlLighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "scope": "all",
+   "colors": [],
+   "argbSync": false
+  },
+  "tlLcdScreens": {},
+  "flexUnits": {},
+  "flexLcdScreens": {},
+  "flexSyncEnabled": false,
+  "strimerLighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": [],
+   "argbSync": false
+  },
+  "galahad2Lighting": {
+   "mode": "canvas",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "innerColor": "#FFFFFF",
+   "outerColor": "#FFFFFF",
+   "colors": []
+  },
+  "glacialLcd": {
+   "userEdited": false,
+   "modeChosen": false,
+   "modePending": false,
+   "brightnessEdited": false,
+   "displayEdited": false,
+   "sleepEdited": false,
+   "displayOn": true,
+   "mode": "animated",
+   "staticAsset": 3,
+   "animatedAsset": 1,
+   "slotCount": 3,
+   "slots": [
+    {
+     "category": "cpu",
+     "sensor": "",
+     "label": "CPU"
+    },
+    {
+     "category": "cpu",
+     "sensor": "",
+     "label": "CPU Package"
+    },
+    {
+     "category": "gpu",
+     "sensor": "",
+     "label": "GPU"
+    }
+   ],
+   "brightness": 50,
+   "stayOnWhileAsleep": false
+  },
+  "deepCoolMystique": {
+   "modeEdited": false,
+   "readoutEdited": false,
+   "mediaEdited": false,
+   "sourceEdited": false,
+   "recordingEdited": false,
+   "deviceEdited": false,
+   "mode": "monitor",
+   "readout": "temperature",
+   "readoutStyle": "normal",
+   "auxArea": "coreData",
+   "switchSeconds": 3,
+   "animation": "split",
+   "mediaSource": "images",
+   "edgePicking": false,
+   "media": [],
+   "freed": [],
+   "gifSlot": "",
+   "gifOrder": [],
+   "gifPlace": 0,
+   "gifOrderUnsure": true,
+   "gifSlotUnsure": true,
+   "pictureSlot": "",
+   "shownPicture": "",
+   "shownGif": "",
+   "recordFrequency": true,
+   "recordTemperature": true,
+   "brightness": 70,
+   "gyroscope": false,
+   "rgbSync": false,
+   "cpuTemperature": {
+    "category": "",
+    "sensor": ""
+   },
+   "cpuFrequency": {
+    "category": "",
+    "sensor": ""
+   },
+   "cpuUsage": {
+    "category": "",
+    "sensor": ""
+   },
+   "ramUsage": {
+    "category": "",
+    "sensor": ""
+   },
+   "cpuFan": {
+    "category": "",
+    "sensor": ""
+   },
+   "pump": {
+    "category": "",
+    "sensor": ""
+   }
+  },
+  "asiahorseUmbra": {
+   "source": "nexus",
+   "lightOn": true,
+   "group": "sync",
+   "sync": {
+    "effect": "rainbow",
+    "values": {}
+   },
+   "merge": {
+    "effect": "rainbow",
+    "values": {}
+   },
+   "async": {},
+   "fanSyncMb": false
+  },
+  "hydroShift2Lighting": {
+   "mode": "rainbow",
+   "speed": 2,
+   "direction": 0,
+   "brightness": 4,
+   "colors": []
+  },
+  "hydroShift2Curve": {
+   "tilt": 0,
+   "slide": 0,
+   "recalibrating": false,
+   "screenMode": "nexus",
+   "screenSaverMinutes": 0,
+   "screenSaverBrightness": 50
+  },
+  "corsair": {
+   "sleepWhenLocked": true,
+   "lcdBrightness": 100,
+   "lcdRotation": 0
+  },
+  "nollie": {
+   "standalone": {}
+  },
+  "lightingComposition": {},
+  "appliedMappings": {},
+  "ledGroups": {},
+  "mappingAutoApplyDeclined": [],
+  "mappingKnownDevices": [],
+  "openRgbDetectorExclusions": {},
+  "openRgbPinnedIds": {},
+  "openRgbGamepadDetectorsAllowed": [],
+  "openRgbManualDevices": {
+   "qmk": [],
+   "e131": []
+  }
+ },
+ "smartLights": {
+  "devices": [],
+  "brandEnabled": {}
+ },
+ "ui": {
+  "showConflictAlerts": true,
+  "autoKillConflictsAtStartup": true,
+  "conflictAutoKillExclusions": [
+   "nzxt-cam",
+   "msi-companion",
+   "msi-game-bar-tool",
+   "msi-super-charger",
+   "icue",
+   "lian-li-l-connect",
+   "tryx-kanali",
+   "zmatrices",
+   "deepcool",
+   "elgato-stream-deck",
+   "evga-precision-x-server"
+  ],
+  "notifyConflictLaunches": true,
+  "endConflictsOnLaunch": false,
+  "oemAppSeeded": false,
+  "sidebarCollapsed": false,
+  "lightingDashboardMode": "simple",
+  "coolingDashboardMode": "simple",
+  "dashboardAutoArrange": false,
+  "showUncontrolledDevices": true,
+  "hiddenSidebarDevices": [],
+  "recentStaticColors": [],
+  "recentAnimations": []
+ },
+ "units": {
+  "monitoringTempUnit": "c",
+  "timeFormat": "system",
+  "numberFormat": "system",
+  "dateFormat": "system"
+ },
+ "screenTime": {
+  "trackingEnabled": true
+ },
+ "fps": {
+  "trackingEnabled": true
+ },
+ "focus": {
+  "modes": [
+   {
+    "id": "game",
+    "name": "Game Mode",
+    "icon": "gamepad",
+    "builtIn": true,
+    "trigger": "game",
+    "holdNotifications": true,
+    "holdBackgroundTraffic": true,
+    "turnPanelDisplaysOff": false,
+    "staticPanelBackgrounds": false,
+    "exitGraceSeconds": 3
+   },
+   {
+    "id": "streaming",
+    "name": "Streaming",
+    "icon": "broadcast",
+    "builtIn": true,
+    "trigger": "obs",
+    "holdNotifications": true,
+    "holdBackgroundTraffic": true,
+    "turnPanelDisplaysOff": false,
+    "staticPanelBackgrounds": false,
+    "exitGraceSeconds": 3
+   }
+  ]
+ },
+ "obs": {
+  "host": "127.0.0.1",
+  "port": 4455,
+  "password": ""
+ },
+ "audioMixer": {
+  "stickyLevels": true,
+  "levels": {},
+  "presets": [],
+  "outputOrder": [],
+  "inputOrder": []
+ },
+ "steam": {
+  "apiKey": "",
+  "steamId": ""
+ },
+ "discord": {
+  "clientId": "",
+  "clientSecret": "",
+  "richPresenceEnabled": false,
+  "richPresencePreset": ""
+ },
+ "homeAssistant": {
+  "url": "",
+  "token": "",
+  "enabled": true
+ },
+ "weather": {
+  "unit": "auto",
+  "locations": []
+ },
+ "telemetry": {
+  "collectAnonymousData": false,
+  "installId": "00000000000000000000000000000001",
+  "fleetInstallDelivered": false,
+  "fleetSpecsHash": "0000000000000000000000000000000000000000000000000000000000000001",
+  "profileSignature": "0000000000000000000000000000000000000000000000000000000000000001",
+  "profileSentAt": "",
+  "fleetRamBytes": 0,
+  "fleetGpu": "",
+  "fleetGpuCards": [],
+  "fleetRamModules": [],
+  "fleetRamModuleTotal": 0,
+  "fleetDrives": [],
+  "fleetRamReadAt": "",
+  "fleetDrivesReadAt": "",
+  "fleetY70Seen": false,
+  "fleetPendingConsentEvent": "",
+  "fleetPendingConsentSince": ""
+ },
+ "diagnostics": {
+  "thresholds": {
+   "cpuC": 90,
+   "gpuC": 85,
+   "storageC": 70,
+   "ramC": 60
+  },
+  "warningLingerMinutes": 0,
+  "notifications": {
+   "enabled": false,
+   "highTemp": true,
+   "storageHealth": true,
+   "cooling": true,
+   "memoryTest": true,
+   "systemDevices": true,
+   "gpuThrottle": true,
+   "cooldownMinutes": 60
+  },
+  "components": {
+   "cpu": true,
+   "gpu": true,
+   "storage": true,
+   "ram": true,
+   "cooling": true,
+   "system": true
+  },
+  "ignoredComponents": []
+ },
+ "features": {
+  "lighting": true,
+  "cooling": true,
+  "monitoring": true,
+  "diagnostics": true
+ },
+ "sentry": {
+  "armed": false
+ },
+ "panelDevices": {
+  "3EjvVZp0Fkql": {
+   "id": "3EjvVZp0Fkql",
+   "displayName": "",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "y70",
+    "pages": [
+     {
+      "id": "18991d03-2518-40a4-a427-4806462c93a1",
+      "widgets": [
+       {
+        "id": "9ff5c587-8ccf-414b-92db-22d57bf5b582",
+        "type": "app:com.example.sample",
+        "size": "4x4",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       }
+      ]
+     }
+    ]
+   },
+   "firstSeenAt": 0,
+   "lastSeenAt": 1793404800000,
+   "capabilities": {
+    "surface": "y70"
+   }
+  },
+  "d6Wzac8fPSu9": {
+   "id": "d6Wzac8fPSu9",
+   "displayName": "",
+   "layout": {
+    "layoutSchemaVersion": 2,
+    "surface": "monitor",
+    "pages": [
+     {
+      "id": "7129948e-3e80-4eeb-944d-aa24f5d09f57",
+      "widgets": [
+       {
+        "id": "6028af16-e1b0-455d-af56-021170a2606e",
+        "type": "monitoring",
+        "size": "4x2",
+        "col": 0,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false,
+        "config": {
+         "slotCount": 2,
+         "slot0_device": "quick",
+         "slot0_sensor": "summary/cpu-usage",
+         "slot0_design": "sparkline",
+         "slot1_device": "quick",
+         "slot1_sensor": "summary/memory-usage",
+         "slot1_design": "halfgauge"
+        }
+       },
+       {
+        "id": "a5f25bac-e908-4565-9750-6d59762cfc00",
+        "type": "build",
+        "size": "2x2",
+        "col": 4,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "52172844-f274-4128-b28d-d1a7d7a0dd36",
+        "type": "clock",
+        "size": "2x2",
+        "col": 6,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "54e43c7f-3b73-4a8c-9ee2-522130abdeba",
+        "type": "calendar",
+        "size": "2x2",
+        "col": 8,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "54b85ff2-fc8a-4505-9def-28a9cec64def",
+        "type": "media",
+        "size": "2x2",
+        "col": 10,
+        "row": 0,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "003d5a77-0a35-46ae-b158-03f83ab2e557",
+        "type": "calendar",
+        "size": "2x2",
+        "col": 0,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "e9f62243-7e4e-40be-948f-da182c51a941",
+        "type": "stocks",
+        "size": "2x2",
+        "col": 2,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "a2b221e1-ec5c-4358-bf98-c0847de5e41d",
+        "type": "screentime",
+        "size": "2x2",
+        "col": 4,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "caf44022-030f-4342-b70c-5aad8efdd97d",
+        "type": "diagnostics",
+        "size": "2x2",
+        "col": 6,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "75b7cbb3-4ed0-4fd4-a325-4605ed235b03",
+        "type": "cooling",
+        "size": "4x2",
+        "col": 8,
+        "row": 2,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "26eafbd1-2f4d-4f49-915f-a8056ce7984f",
+        "type": "screentime",
+        "size": "2x2",
+        "col": 0,
+        "row": 4,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "b3dec94f-40a2-4a87-acc4-335ba64b67d0",
+        "type": "calendar",
+        "size": "2x2",
+        "col": 2,
+        "row": 4,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "0359a8d9-15bb-4422-921a-cef640a568e5",
+        "type": "mixer",
+        "size": "4x4",
+        "col": 4,
+        "row": 4,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "c0fc06ff-a9ff-4b56-b382-b3ff9114eb35",
+        "type": "weather",
+        "size": "2x2",
+        "col": 8,
+        "row": 4,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "8dae5e7e-5cc7-43cc-90c6-57b635ee307f",
+        "type": "monitoring",
+        "size": "2x2",
+        "col": 10,
+        "row": 4,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "3cf8ae8c-43ec-428b-a827-deea1bc268b4",
+        "type": "stocks",
+        "size": "2x2",
+        "col": 0,
+        "row": 6,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "37052fc9-c9e3-4145-841e-641412be6362",
+        "type": "media",
+        "size": "2x2",
+        "col": 2,
+        "row": 6,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "18a3df8f-90b5-4cf2-a7d2-6022dc63f188",
+        "type": "clock",
+        "size": "2x2",
+        "col": 8,
+        "row": 6,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       },
+       {
+        "id": "2b4a17b2-9e23-463c-8dac-492716c7e757",
+        "type": "home-assistant",
+        "size": "2x2",
+        "col": 10,
+        "row": 6,
+        "position": 0,
+        "positionHorizontal": 0,
+        "isImmersive": false
+       }
+      ]
+     }
+    ],
+    "activePageId": "7129948e-3e80-4eeb-944d-aa24f5d09f57"
+   },
+   "backgroundOpacity": 1,
+   "backdrop": "desktop",
+   "firstSeenAt": 0,
+   "lastSeenAt": 1793404800000,
+   "capabilities": {
+    "surface": "monitor"
+   },
+   "widgetSize": "small",
+   "fingerprintKey": "0000000000000000000000000000000000000000000000000000000000000001"
+  }
+ },
+ "astral": {
+  "alerts": true,
+  "equalizer": false,
+  "overcurrentShutdown": false,
+  "overcurrentSeconds": 60,
+  "countdownSeconds": 60,
+  "criticalShutdown": false
+ },
+ "astralLevelSense": {},
+ "glacialLcdPictureHashes": {},
+ "autoPromotedPanelModels": [],
+ "autoInstalledApps": [],
+ "userRemovedApps": [],
+ "hostDisplayName": "",
+ "reportSystem": true,
+ "transferInboxPath": "",
+ "sharedCategories": [],
+ "deviceCategorySeeded": false,
+ "panelsSharedByDefaultApplied": false,
+ "panelsCategorySeeded": false,
+ "hasPanelsData": true,
+ "keebBrightnessProfilesMigrated": false,
+ "update": {
+  "updateMode": "always",
+  "updateChannel": "production",
+  "lastDismissedUpdateVersion": "",
+  "lastRunVersion": ""
+ },
+ "startupDelaySeconds": 0,
+ "disableGpuMonitoring": false,
+ "readRamTemperatures": true,
+ "amdGpuLighting": false,
+ "onboardingCompleted": false,
+ "nexus2MigrationOffered": false,
+ "lightingOnboardingCompleted": false,
+ "maximizedCanvasDefaults": false,
+ "gameSyncRemovedNotice": false,
+ "featuresOnboardingCompleted": false,
+ "featuresReplayPending": false,
+ "panelSwipeOnboardingCompleted": false,
+ "deckDefaultPresetsSeeded": false,
+ "immersiveSwipeOnboardingCompleted": false,
+ "dashboardBannerDismissed": "",
+ "dismissedOnboardingHints": [],
+ "nexus2MigrationCompleted": false,
+ "fanControlImportOffered": false,
+ "fanControlImportCompleted": false,
+ "hotkeys": {
+  "bindings": [],
+  "defaultsSeeded": false
+ },
+ "streamDeck": {
+  "decks": {},
+  "presets": [
+   {
+    "id": "default-essentials",
+    "name": "Essentials",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "volumeDown"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "volumeUp"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "screenshot"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "taskManager"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-essentials"
+   },
+   {
+    "id": "default-media",
+    "name": "Media",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaPrev"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaPlayPause"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "mediaNext"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "muteToggle"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-media"
+   },
+   {
+    "id": "default-system",
+    "name": "System",
+    "cols": 2,
+    "rows": 2,
+    "deck": {
+     "pages": [
+      {
+       "slots": [
+        {
+         "action": {
+          "type": "power",
+          "action": "lock"
+         }
+        },
+        {
+         "action": {
+          "type": "power",
+          "action": "sleep"
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "screenRecord"
+          }
+         }
+        },
+        {
+         "action": {
+          "type": "system",
+          "action": {
+           "op": "openSettings"
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "templateId": "default-system"
+   }
+  ],
+  "instances": {},
+  "recentApps": [],
+  "recentAppsExcluded": []
+ },
+ "aiIntegration": {
+  "enabled": false,
+  "token": "",
+  "port": 9420,
+  "allowRemote": false,
+  "allowTelemetry": true,
+  "allowCooling": true,
+  "allowLighting": true,
+  "allowProfiles": true,
+  "allowHistory": true,
+  "assistantActiveModel": "",
+  "assistantRuntimePort": 0,
+  "useSystemOllama": false
+ }
+}

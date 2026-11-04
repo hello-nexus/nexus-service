@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Match the service's conditional TFM so the test project can reference it
          on Windows (the service is net10.0-windows there) and still run on
          macOS/Linux as plain net10.0. Lets the suite run on the Windows PC. -->

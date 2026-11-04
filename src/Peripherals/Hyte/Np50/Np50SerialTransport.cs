@@ -54,10 +54,8 @@ public sealed class Np50SerialTransport : INp50Transport
             DtrEnable = true,
             RtsEnable = true,
         };
-        _port.Open();
         // Don't leave stale bytes from a previous session in the input buffer.
-        _port.DiscardInBuffer();
-        _port.DiscardOutBuffer();
+        Nexus.Service.Peripherals.IoSafety.SerialPortSafety.OpenAndClear(_port);
     }
 
     public bool IsOpen => !_disposed && _port.IsOpen;
@@ -123,7 +121,6 @@ public sealed class Np50SerialTransport : INp50Transport
     {
         if (_disposed) return;
         _disposed = true;
-        try { if (_port.IsOpen) _port.Close(); } catch { /* best effort */ }
-        try { _port.Dispose(); } catch { /* best effort */ }
+        Nexus.Service.Peripherals.IoSafety.SerialPortSafety.Close(_port);
     }
 }

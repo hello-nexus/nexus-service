@@ -374,7 +374,6 @@ namespace Nexus.Service.Serialization;
 // Streamed panels (off-screen render in the overlay, H.264 to a USB device).
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamAssignmentDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamAssignmentsResponse))]
-[JsonSerializable(typeof(Nexus.Service.Models.Panel.StreamSettingsDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.OverlayStateResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.OverlayIdentifyDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.IdentifyDisplaysBody))]
@@ -585,6 +584,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.IdleDimBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.IdleDimStatus))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.RenderGpuBody))]
+[JsonSerializable(typeof(Nexus.Service.Models.Lighting.AnimateSimpleBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Lighting.RenderGpuInfo))]
 [JsonSerializable(typeof(SpeedScale))]
 [JsonSerializable(typeof(AnimateHeadlessStart))]
@@ -946,6 +946,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(WillStartResponse))]
 [JsonSerializable(typeof(PawnIoStatus))]
 [JsonSerializable(typeof(Nexus.Service.Lifecycle.PawnIoUpgradeMarker))]
+[JsonSerializable(typeof(Nexus.Service.Lifecycle.RestrictedModeState))]
 
 // Processes
 [JsonSerializable(typeof(ProcessInfo))]
@@ -1081,6 +1082,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessOpenLocationResult))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessActivateWindowRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessActivateWindowResult))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessEndSessionRequest))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessEndSessionResult))]
 // Native file/folder picker (IFileOpenDialog runs in the user-session helper)
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.FileDialogRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.FileDialogResult))]

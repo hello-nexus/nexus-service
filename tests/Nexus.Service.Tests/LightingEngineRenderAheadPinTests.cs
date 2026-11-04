@@ -228,17 +228,19 @@ public class LightingEngineRenderAheadPinTests
     }
 
     [Fact]
-    public async Task A_sweep_pin_samples_the_whole_frame_and_a_plain_pin_only_its_own_rect()
+    public async Task A_sweep_pin_maps_by_layout_like_a_plain_pin()
     {
         using var rig = new Rig(new TickRedEffect());
         rig.Build = _ => new RampEffect();
-        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "sweeprainbow"));
+        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "rainbow"));
         rig.Pins.Set("d-1", Pin(DevicePinKinds.Animate, "plasma"));
         var frames = await rig.Window(new long[] { 5 }, "d-0", "d-1");
         var sweepSpread = Led(frames[0][0], 0)[0] - Led(frames[0][0], 3)[0];
         var plainSpread = Led(frames[0][1], 0)[0] - Led(frames[0][1], 3)[0];
-        Assert.True(sweepSpread > 100, $"sweep spread {sweepSpread}");
-        Assert.True(plainSpread < sweepSpread / 2, $"plain spread {plainSpread}");
+        // Pins come from the advanced page: neither reads the whole frame.
+        Assert.True(sweepSpread < 100, $"sweep spread {sweepSpread}");
+        Assert.True(plainSpread < 100, $"plain spread {plainSpread}");
+        Assert.True(Math.Abs(sweepSpread - plainSpread) < 20, $"sweep {sweepSpread} vs plain {plainSpread}");
     }
 
     [Fact]

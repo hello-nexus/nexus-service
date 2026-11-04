@@ -81,7 +81,10 @@ internal static class WindowsUserHelper
         // Sync the tray-autostart Run key to the service start type, in the
         // user's hive (HKCU here is the real user). Mirrors "start on boot":
         // present when the service auto-starts, removed when it is demand.
-        WindowsStartupProvider.SyncHelperAutostart(Environment.ProcessPath ?? string.Empty);
+        if (Array.IndexOf(args, UserHelperBootstrapper.OobeHelperArg) < 0)
+        {
+            WindowsStartupProvider.SyncHelperAutostart(Environment.ProcessPath ?? string.Empty);
+        }
 
         // Pipe client to the service. Reconnects with backoff on drop.
         // Outbound is shared with the helper-side providers (screen-time

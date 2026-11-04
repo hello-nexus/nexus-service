@@ -143,13 +143,29 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         {
             _cached.FeaturesOnboardingCompleted = true;
             Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn(_cached);
-            _cached.GameSyncRemovedNotice = true;
             pinsMigrated = true;
         }
         if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
         {
+            var preUsbMonitor = _cached.SchemaVersion < Nexus.Service.Panel.UsbMonitorPanelMigration.SchemaVersion;
             Migrate(_cached);
             Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
+            if (preUsbMonitor && _cached.UsbMonitorPanelPairs is not null)
+            {
+                // The v29 copy overwrites a USB device's look; keep the file it was read from, once.
+                try
+                {
+                    var backup = SettingsPath + ".pre-v29";
+                    if (!File.Exists(backup))
+                    {
+                        File.WriteAllText(backup, json);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[nexus-service] could not keep the pre-v29 settings: {ex.Message}");
+                }
+            }
             Persist(_cached);
         }
         else
@@ -173,6 +189,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             }
             // A downgrade to an older build can write the removed mode back at the current schema version.
             if (Nexus.Service.Lighting.RemovedSyncModes.Apply(_cached.Lighting))
+            {
+                recovered = true;
+            }
+            // Same for a retired simple-mode tile key; the slot shift is schema-gated and never repeats.
+            if (Nexus.Service.Lighting.SimplePatternMigration.Apply(_cached, shiftSlots: false))
             {
                 recovered = true;
             }
@@ -256,10 +277,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
 
     /// <summary>
     /// In-place schema migrations, applied once at load and persisted
-    /// immediately. v6: LED map overrides / aspect ratios move from per-card
-    /// keys into the device-scoped segment-local dicts (zones model).
-    /// v7: legacy autoUpdateDisabled bool mapped to UpdateMode string.
-    /// v8: any settings.json that already existed predates the first-run
+    /// immediately. v8: any settings.json that already existed predates the first-run
     /// welcome screen, so it is marked already-onboarded; only an install
     /// with no settings.json at all (Load's !File.Exists branch, which never
     /// calls Migrate) sees OnboardingCompleted default to false.
@@ -290,24 +308,12 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// widget's inline layout config does the same (DeckModesMigration).
     /// v19: ConflictWhitelistMigration.
     /// v20: ConflictWhitelistMigration.KeepThirdPartyDevicesOn.
-    /// v23: the removed Game Sync mode becomes static; an upgrade sets GameSyncRemovedNotice.
+    /// v23: the removed Game Sync mode becomes static.
     /// v24: Lighting.RenderBackend "wgl" (the old default, always persisted) becomes "angle".
     /// v25: a stored Keeb.FirmwareLighting.Brightness equal to the old default (always persisted) moves to the new default. Profile files are covered by ProfileManager.
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
-        if (doc.SchemaVersion < 6)
-        {
-            Nexus.Service.Lighting.Zones.LegacyLedOverrideMigration.Apply(doc);
-        }
-        if (doc.SchemaVersion < 7)
-        {
-            if (doc.Update.LegacyAutoUpdateDisabled == true)
-            {
-                doc.Update.UpdateMode = "notify";
-            }
-            doc.Update.LegacyAutoUpdateDisabled = null;
-        }
         if (doc.SchemaVersion < 8)
         {
             doc.OnboardingCompleted = true;
@@ -392,7 +398,6 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 23)
         {
             Nexus.Service.Lighting.RemovedSyncModes.Apply(doc.Lighting);
-            doc.GameSyncRemovedNotice = true;
         }
         if (doc.SchemaVersion < 24 && doc.Lighting is { } lighting
             && string.Equals(lighting.RenderBackend, "wgl", StringComparison.OrdinalIgnoreCase))
@@ -410,6 +415,18 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 27 && !(doc.Overlay?.HasWidgets ?? false))
         {
             doc.Overlay?.ClearLegacy();
+        }
+        if (doc.SchemaVersion < 28)
+        {
+            Nexus.Service.Lighting.SimplePatternMigration.Apply(doc, shiftSlots: true);
+        }
+        if (doc.SchemaVersion < 29)
+        {
+            Nexus.Service.Panel.UsbMonitorPanelMigration.Apply(doc);
+        }
+        if (doc.SchemaVersion < 30)
+        {
+            Nexus.Service.Lighting.AnimateSimpleMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

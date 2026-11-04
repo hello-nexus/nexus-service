@@ -1269,6 +1269,127 @@ public class FanProfilesTests : IDisposable
         Assert.False(_store.Load().Cooling.FanRoles.ContainsKey("fan1"));
     }
 
+    [Fact]
+    public void ApplyPreset_KeepsSavedOutputsOfAbsentChannels()
+    {
+        FanProfiles.Apply("turbo", _fans, _store);
+        _store.Update(s => s.Cooling.Curves.Single(c => c.Preset == "turbo").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" }));
+
+        FanProfiles.Apply("turbo", _fans, _store);
+
+        var outputs = _store.Load().Cooling.Curves.Single(c => c.Preset == "turbo").Outputs;
+        Assert.Equal(new[] { "fan1", "fan2", "wireless-1" }, outputs.Select(o => o.Id).OrderBy(i => i).ToArray());
+    }
+
+    [Fact]
+    public void SwitchingPreset_MovesAbsentChannelsToTheNewPresetCurve()
+    {
+        FanProfiles.Apply("silent", _fans, _store);
+        _store.Update(s => s.Cooling.Curves.Single(c => c.Preset == "silent").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" }));
+
+        FanProfiles.Apply("turbo", _fans, _store);
+
+        var s = _store.Load();
+        Assert.Contains(s.Cooling.Curves.Single(c => c.Preset == "turbo").Outputs, o => o.Id == "wireless-1");
+        Assert.DoesNotContain(s.Cooling.Curves.Single(c => c.Preset == "silent").Outputs, o => o.Id == "wireless-1");
+    }
+
+    [Fact]
+    public void Off_DetachesAbsentOutputsToo()
+    {
+        FanProfiles.Apply("turbo", _fans, _store);
+        _store.Update(s => s.Cooling.Curves.Single(c => c.Preset == "turbo").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" }));
+
+        FanProfiles.Apply("off", _fans, _store);
+
+        Assert.All(_store.Load().Cooling.Curves, c => Assert.Empty(c.Outputs));
+    }
+
+    [Fact]
+    public void SwitchingPreset_CarriesAbsentOutputsOnlyFromPresetCurves_AndAbsentPumpNeverOnOneStaysOff()
+    {
+        FanProfiles.Apply("silent", _fans, _store);
+        _store.Update(s =>
+        {
+            s.Cooling.Curves.Single(c => c.Preset == "silent").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" });
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "c1",
+                Name = "Mine",
+                Type = "Flat",
+                Flat = new FlatCurveData { Speed = 40 },
+                Outputs = { new CurveOutputDocument { Id = "wireless-2", Type = "Fan" }, new CurveOutputDocument { Id = "lianli-wireless-AA:pump", Type = "Fan" } },
+            });
+        });
+
+        FanProfiles.Apply("turbo", _fans, _store);
+
+        var turbo = _store.Load().Cooling.Curves.Single(c => c.Preset == "turbo").Outputs.Select(o => o.Id).ToArray();
+        Assert.Contains("wireless-1", turbo);
+        Assert.DoesNotContain("lianli-wireless-AA:pump", turbo);
+        Assert.DoesNotContain("wireless-2", turbo);
+    }
+
+    [Fact]
+    public void SilentThenCustomThenBalanced_KeepsTheAbsentFanOnBalanced()
+    {
+        FanProfiles.Apply("silent", _fans, _store);
+        _store.Update(s => s.Cooling.Curves.Single(c => c.Preset == "silent").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" }));
+        FanProfiles.Apply("custom", _fans, _store);
+
+        FanProfiles.Apply("balanced", _fans, _store);
+
+        Assert.Contains(_store.Load().Cooling.Curves.Single(c => c.Preset == "balanced").Outputs, o => o.Id == "wireless-1");
+    }
+
+    [Fact]
+    public void AbsentChannel_KeepsItsCustomAssignmentAcrossLeavingCustomAndARestart()
+    {
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "c1",
+                Name = "Mine",
+                Type = "Flat",
+                Flat = new FlatCurveData { Speed = 40 },
+                Outputs = { new CurveOutputDocument { Id = "fan1", Type = "Fan" }, new CurveOutputDocument { Id = "wireless-1", Type = "Fan" } },
+            });
+        });
+
+        FanProfiles.Apply("turbo", _fans, _store);
+        Assert.Equal("c1", _store.Load().Cooling.CustomFanCurveAssignments["wireless-1"]);
+
+        var restarted = new TestableConfigStore(_settingsPath);
+        FanProfiles.Apply("custom", _fans, restarted);
+
+        var after = restarted.Load().Cooling;
+        Assert.Equal("c1", after.CustomFanCurveAssignments["wireless-1"]);
+        Assert.Contains(after.Curves.Single(c => c.Id == "c1").Outputs, o => o.Id == "wireless-1");
+    }
+
+    [Fact]
+    public void SavedPresetCapture_KeepsAbsentChannelAssignments()
+    {
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "c1",
+                Name = "Mine",
+                Type = "Flat",
+                Flat = new FlatCurveData { Speed = 40 },
+                Outputs = { new CurveOutputDocument { Id = "wireless-1", Type = "Fan" } },
+            });
+        });
+
+        var preset = CoolingPresets.Capture("p1", "A", _store);
+
+        Assert.Equal("c1", preset.FanCurveAssignments["wireless-1"]);
+    }
+
     private sealed class FakeFanProvider : IFanControlProvider
     {
         private readonly List<FanChannel> _channels;

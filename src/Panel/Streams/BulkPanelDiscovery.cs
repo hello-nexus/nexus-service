@@ -63,6 +63,7 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
                     SupportsBrightness = driver.SupportsBrightness,
                     SupportsSecondaryMonitor = driver.SupportsSecondaryMonitor && _monitors is { IsAvailable: true },
                     SupportsPortrait = driver.SupportsPortrait,
+                    SupportsTouch = driver.HasTouch,
                     Dpi = driver.Dpi,
                     MultiInstance = driver.MultiInstance,
                     // The driver owns compression - JPEG for most, raw pixels for the

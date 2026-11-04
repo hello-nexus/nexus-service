@@ -140,11 +140,7 @@ public sealed partial class LightingEngine
                     return FastWindow.NotUsed;
                 }
             }
-            var kind = ResolveAheadPin(dev, pins, effect, out var key, out var fx, out var sweep);
-            if (sweep)
-            {
-                return FastWindow.NotUsed;
-            }
+            var kind = ResolveAheadPin(dev, pins, effect, out var key, out var fx);
             switch (kind)
             {
                 case AheadPinKind.Base:
@@ -236,7 +232,6 @@ public sealed partial class LightingEngine
         try
         {
             _aheadPinned.Clear();
-            _aheadPinFullFrame.Clear();
             foreach (var kv in pinned)
             {
                 _aheadPinned[kv.Key] = kv.Value is null ? null : PinCanvasFor(kv.Value);
@@ -258,7 +253,7 @@ public sealed partial class LightingEngine
                 }
                 var shadow = shadows[i];
                 _sampleCanvas = _aheadCanvas;
-                SampleDevicesFromCanvas(shadow, pinned: _aheadPinned, pinFullFrame: _aheadPinFullFrame);
+                SampleDevicesFromCanvas(shadow, pinned: _aheadPinned);
                 ApplyLedColorLocks(shadow);
                 sampled[i] = shadow;
             }

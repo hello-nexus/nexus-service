@@ -16,7 +16,7 @@ public sealed class SystemPreviewMeta
 }
 
 /// <summary>A stored preview image with its hash.</summary>
-public sealed record SystemPreview(string CaseId, string Sha256, byte[] Bytes);
+public sealed record SystemPreview(string? CaseId, string Sha256, byte[] Bytes);
 
 /// <summary>
 /// The rendered image of this machine's PC, kept next to the machine case
@@ -40,7 +40,7 @@ public sealed class SystemPreviewStore
     }
 
     /// <summary>Writes the pair; false when the disk write failed (logged), leaving any earlier preview as it was or torn-and-ignored.</summary>
-    public bool Save(string caseId, byte[] png)
+    public bool Save(string? caseId, byte[] png)
     {
         var sha = Convert.ToHexStringLower(SHA256.HashData(png));
         lock (_lock)
@@ -64,13 +64,9 @@ public sealed class SystemPreviewStore
         }
     }
 
-    /// <summary>The stored preview when it exists, is intact, and was rendered for <paramref name="caseId"/>; otherwise null.</summary>
+    /// <summary>The stored preview when it exists, is intact, and was rendered for <paramref name="caseId"/> (null: a PC with no case chosen); otherwise null.</summary>
     public SystemPreview? TryGet(string? caseId)
     {
-        if (caseId is null)
-        {
-            return null;
-        }
         lock (_lock)
         {
             try
@@ -80,7 +76,7 @@ public sealed class SystemPreviewStore
                     return null;
                 }
                 var meta = JsonSerializer.Deserialize(File.ReadAllText(_metaPath), PersistenceJsonContext.Default.SystemPreviewMeta);
-                if (meta?.CaseId != caseId || string.IsNullOrEmpty(meta.Sha256))
+                if (meta is null || meta.CaseId != caseId || string.IsNullOrEmpty(meta.Sha256))
                 {
                     return null;
                 }

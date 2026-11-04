@@ -704,9 +704,13 @@ public sealed class OpenRgbProcessManager : IDisposable
                 Nexus.Service.Lifecycle.ChildProcessJob.Assign(proc);
 #endif
 
-                // Drain stdout/stderr so the OS pipe buffers don't fill up
-                _ = Task.Run(() => DrainStreamAsync(proc.StandardOutput, "stdout"));
-                _ = Task.Run(() => DrainStreamAsync(proc.StandardError, "stderr"));
+                // Drain stdout/stderr so the OS pipe buffers don't fill up. The readers are taken here, under
+                // the lock: a pool thread that dereferenced them later could find Stop() already disposed the
+                // Process and fault with nobody awaiting the task.
+                var stdoutReader = proc.StandardOutput;
+                var stderrReader = proc.StandardError;
+                _ = Task.Run(() => DrainStreamAsync(stdoutReader, "stdout"));
+                _ = Task.Run(() => DrainStreamAsync(stderrReader, "stderr"));
 
                 // Replace the previous CTS so Stop() can cancel only the current
                 // supervisor - and dispose the old one to avoid leaks.

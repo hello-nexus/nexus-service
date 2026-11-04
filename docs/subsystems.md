@@ -181,7 +181,10 @@ support-bundle ZIP export.
   (`Bundled/macos/overlay-helper/streamhost.swift`: an off-screen WKWebView
   captured by ScreenCaptureKit, raw frames only, needs the Screen Recording
   grant). Bulk-pipe screens open over WinUSB on Windows and IOUSBHost on macOS
-  (`Peripherals/BulkPanels/`). The ArtInChip D213 reference transport is
+  (`Peripherals/BulkPanels/`). A glass that reports touch (driver `HasTouch` plus
+  a `CreateTouchDecoder`) streams its contacts back to the render host on
+  `GET /panel/streams/{sessionId}/touch`; the Windows host replays them as CDP
+  touch events, the macOS host as mouse events under `touchViaPointer=injected`. The ArtInChip D213 reference transport is
   dev-tools only.
 
 ## Apps and the store

@@ -148,15 +148,19 @@ public static class UmbraEffects
 
     private const int ColorSlots = UmbraProtocol.ColorSlots;
 
-    public static byte ScaleBrightness(int level, float master)
+    /// <summary>The effect's firmware level after the master. Capping (default) holds the
+    /// effect at or below the master; <paramref name="scales"/> multiplies the effect's own
+    /// level by it. Either way the result lands on a firmware step.</summary>
+    public static byte ScaleBrightness(int level, float master, bool scales = false)
     {
-        var cap = (int)Math.Round(Math.Clamp(master, 0f, 1f) * 255f);
+        var m = Math.Clamp(master, 0f, 1f);
+        var cap = (int)Math.Round(m * (scales ? BrightnessByte(level) : 255f));
         var nearest = (int)Math.Round(cap / (double)LevelStep) * LevelStep;
         var quantized = nearest >= LevelStep ? nearest : BrightnessFloor;
         return (byte)Math.Min((int)BrightnessByte(level), quantized);
     }
 
-    internal static UmbraEffectBlock ToBlock(string group, UmbraEffectInfo effect, UmbraEffectValues values, float master, string? order = null)
+    internal static UmbraEffectBlock ToBlock(string group, UmbraEffectInfo effect, UmbraEffectValues values, float master, string? order = null, bool scales = false)
     {
         var colors = new byte[ColorSlots * 3];
         for (var i = 0; i < ColorSlots; i++)
@@ -171,7 +175,7 @@ public static class UmbraEffects
             (byte)id,
             SpeedByte(values.Speed),
             values.Direction == DirectionReverse ? (byte)0 : (byte)1,
-            ScaleBrightness(values.Brightness, master),
+            ScaleBrightness(values.Brightness, master, scales),
             colors);
     }
 }

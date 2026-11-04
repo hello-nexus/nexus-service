@@ -309,7 +309,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
         SegmentFrameComposer.Compose(
             structure, zones, devices, settings.Devices.DisabledLightingDevices, uncontrolled,
-            settings.Devices.LightingDevicePrefs, MasterBrightness.Effective(settings.Lighting), 1.0,
+            settings.Devices.LightingDevicePrefs, MasterBrightness.Resolve(settings), 1.0,
             now * TimeSpan.TicksPerMillisecond, _identify, _segmentBuffers);
 
         var swap = settings.Devices.FlexUnits.TryGetValue(unit.Mac, out var l) && l.UpDownSwap && unit.Family == FlexFamily.TlFlex;

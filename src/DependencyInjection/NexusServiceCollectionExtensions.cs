@@ -60,6 +60,8 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.MonitoringBroadcaster>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Monitoring.MonitoringBroadcaster>());
         services.AddHostedService<Nexus.Service.Activity.MediaTopicPublisher>();
+        services.AddSingleton<Nexus.Service.Lifecycle.RestrictedModePublisher>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lifecycle.RestrictedModePublisher>());
         // ConflictWatcher polls the running process list against
         // ConflictAppCatalog and publishes to the "conflicts" multiplex
         // topic. OpenRgbProcessManager is only registered on Win/Mac, so
@@ -80,6 +82,10 @@ public static class NexusServiceCollectionExtensions
         // singleton the rest of the service reads, and as a singleton in its
         // own right so the Windows tray bootstrap can subscribe to its
         // AppsTerminated event.
+        // The one way a competing app is ended from the sweep, the dashboard and the notice: a graceful close first, a hard kill as the fallback.
+        services.AddSingleton(sp => new Nexus.Service.Conflicts.ConflictGracefulEnd(
+            sp.GetService<Nexus.Service.Conflicts.IAppSessionEnder>(),
+            message => Nexus.Service.Platform.ServiceLog.Info($"[conflicts] {message}")));
         services.AddSingleton<Nexus.Service.Conflicts.ConflictStartupShutdown>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Conflicts.ConflictStartupShutdown>());
         services.AddHostedService<Nexus.Service.Devices.VendorAppControlPause>();
@@ -939,6 +945,17 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.QSeriesLightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.QSeriesLightingFrameWriter>());
 
+        // Y70 GT backlight: Y70DisplayHub owns the panel's serial port, so this
+        // provider surfaces the 5x7 matrix card (only while the connected variant
+        // is the GT) and the writer streams 30 Hz frames through the hub.
+        services.AddSingleton<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>();
+        services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Zones.IDeviceStructureSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>());
+        services.AddSingleton<Nexus.Service.Lighting.Y70GtLightingFrameWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingFrameWriter>());
+
         // Keeb TKL lighting: KeebHub owns the keyboard's vendor HID interface
         // (OpenRGB's "HYTE Keeb TKL" detector is disabled), this provider
         // surfaces the keys + underglow zones, and the writer streams 30 Hz
@@ -1486,7 +1503,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.JpegPanels.TlLcdScreens>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
 
-        // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices,
+        // Bulk-pipe LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices,
         // Lian Li HydroShift II). Their pixels ride a USB bulk endpoint rather than HID: Windows
         // reaches them where WinUSB is bound, macOS through IOUSBHost, and on Linux through usbfs
         // for the Screen 8.8 only; the other panels get no pipe there. Ryujin, Thermalright and the Screen
@@ -1514,7 +1531,8 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.ThermalrightPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.RyujinPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver(),
-            new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(),
+            new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(Nexus.Service.Peripherals.BulkPanels.ZMatricesModel.GlacierMatrix),
+            new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(Nexus.Service.Peripherals.BulkPanels.ZMatricesModel.MaxE87),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver(),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver(),
         })
@@ -1659,7 +1677,8 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Lighting.CorsairLinkLightingDeviceProvider>());
         services.AddSingleton<Nexus.Service.Lighting.CorsairLinkLightingFrameWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.CorsairLinkLightingFrameWriter>());
-        services.AddHostedService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkConnectionWorker>();
+        services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkConnectionWorker>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkConnectionWorker>());
         services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd>();
         services.AddSingleton<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcdMediaLibrary>();
         services.AddHostedService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcdWorker>();
@@ -1740,6 +1759,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShiftLcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -1770,6 +1790,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Lighting.HydroShiftLcdLightingProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.AsiahorseUmbraLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.GalleonSdLightingDeviceProvider>(),
+                sp.GetRequiredService<Nexus.Service.Lighting.Y70GtLightingDeviceProvider>(),
                 sp.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>(),
                 sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
@@ -2327,6 +2348,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IShortcutsProvider, HelperShortcutsProxy>();
         services.AddSingleton<IProcessIconProvider, HelperProcessIconProxy>();
         services.AddSingleton<IProcessActionsProvider, HelperProcessActionsProxy>();
+        services.AddSingleton<Nexus.Service.Conflicts.IAppSessionEnder, HelperAppSessionEnder>();
         services.AddSingleton<IMediaProvider, WindowsMediaProvider>();
         services.AddSingleton<IVolumeProvider, WindowsVolumeProvider>();
         services.AddSingleton<Nexus.Service.Platform.Radios.IRadioProvider, Nexus.Service.Platform.Radios.WindowsRadioProvider>();
@@ -2621,7 +2643,7 @@ public static class NexusServiceCollectionExtensions
 
         services.AddSingleton<Nexus.Service.Panel.UsbPhoneWatcher>(
             sp => new Nexus.Service.Panel.UsbPhoneWatcher(
-                servicePort,
+                sp.GetRequiredService<Nexus.Service.Panel.PhoneTunnelPorts>(),
                 sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.UsbPhoneWatcher>());
@@ -2650,6 +2672,8 @@ public static class NexusServiceCollectionExtensions
 #if LINUX
         Nexus.Service.Platform.Linux.LinuxPanelKioskHost.Configure(servicePort);
         services.AddSingleton<Nexus.Service.Platform.Linux.LinuxPanelKioskHost>();
+        services.AddHostedService(sp => new Nexus.Service.Platform.Linux.LinuxY70DisplayWatcher(
+            sp.GetRequiredService<Nexus.Service.Platform.Linux.LinuxPanelKioskHost>()));
         Nexus.Service.Platform.Linux.LinuxStreamRenderHost.Configure(servicePort);
         services.AddHostedService(sp => new Nexus.Service.Platform.Linux.LinuxStreamRenderHost(
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(),
@@ -2678,7 +2702,11 @@ public static class NexusServiceCollectionExtensions
             sp.GetRequiredService<Nexus.Service.Panel.IOverlayHost>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             () => sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>().Detected,
-            () => sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>().GetAssignments().Assignments.Count > 0,
+            () =>
+            {
+                var streams = sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>();
+                return streams.GetAssignments().Assignments.Count > 0 || streams.MonitorProjectedPanelId() is not null;
+            },
             () => sp.GetRequiredService<Nexus.Service.Panel.DisplayIdentifyService>().IsActive,
             settings => sp.GetRequiredService<Nexus.Service.Panel.DesktopWidgetsMigration>().HostCanAdvance(settings)));
         services.AddSingleton<Nexus.Service.Panel.PanelPhonePairingService>();
@@ -2739,6 +2767,16 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Panel.Streams.KrakenPanelDiscovery(
                 sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.KrakenHub>()));
 #endif
+#if WINDOWS || LINUX
+        // The Apex Pro TKL OLED is plain HID, but macOS has no streamed-panel renderer, so it is a Windows and Linux panel. Its
+        // lock hand-back reads the same LcdLockState the cooler LCDs do.
+        services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
+            new Nexus.Service.Panel.Streams.ApexOledPanelDiscovery(
+                sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
+                sp.GetService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+                sp.GetService<Nexus.Service.Lighting.LcdLockState>()));
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.ApexOledHandler>();
+#endif
         services.AddSingleton<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>(sp =>
         {
             Action? notifyOverlay = null;
@@ -2766,8 +2804,7 @@ public static class NexusServiceCollectionExtensions
                 notifyPanelChanged: id => Nexus.Service.Sockets.PanelTopics.BroadcastPanelDevice(sockets, id),
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
-                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized,
-                fpsCap: () => configStore.Load().StreamedPanelFpsCap);
+                isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());

@@ -1,8 +1,7 @@
 uniform float u_scale; // hint_range(1.0, 6.0, 0.1) = 3.0  cell density
 uniform float u_edgeWidth; // hint_range(0.01, 0.15, 0.005) = 0.05  glowing border thickness
 uniform float u_drift; // hint_range(0.0, 1.0, 0.02) = 0.6  how much cell centers drift
-uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
-#define tintedPalette(t) moodPalette((t), u_mood)
+#define tintedPalette(t) wheelColor(t)
 
 // Animated Voronoi returning (cell distance, second-closest distance, cell id hash).
 vec3 voronoi2(vec2 p, float t, float drift) {
@@ -44,5 +43,7 @@ void main() {
     vec3 body = cellCol * (0.5 * flick + 0.7 * sweep);
     vec3 edgeCol = tintedPalette(v.z + 0.3) * edge * (1.5 + 1.2 * sweep);
     vec3 col = body + edgeCol;
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finish(col), 1.0);
 }
+
+float outGain() { return 1.20; }

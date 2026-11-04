@@ -63,10 +63,37 @@ public interface IFanControlProvider
     /// its Cooling.ManualSpeeds entry - the user's explicit per-fan choice.</summary>
     void ReleaseFan(string channelId);
 
+    /// <summary>
+    /// True when <see cref="ReleaseFan"/> on this channel genuinely hands it back to the board or
+    /// firmware (a wire write or a SuperIO default), so the thermal guard may take over a channel
+    /// that is on hardware control and give it back afterwards. False for providers whose release
+    /// only flips a software flag and leaves the last duty on the fan.
+    /// </summary>
+    bool ReleaseRestoresHardwareControl(string channelId) => false;
+
     /// <summary>Release all fans back to BIOS/automatic control. Preserves
     /// Cooling.ManualSpeeds: this runs on shutdown and profile switch, where
     /// the persisted intent must survive for CurveEngine's replay.</summary>
     void ReleaseAll();
+
+    /// <summary>
+    /// <see cref="ReleaseAll"/> for shutdown: a channel whose release would stop the fan for want of a
+    /// board signal (a Lian Li wireless port) keeps the duty Nexus last gave it. Defaults to <see cref="ReleaseAll"/>.
+    /// </summary>
+    void ReleaseAllKeepingDrivenPorts() => ReleaseAll();
+
+    /// <summary>
+    /// Cooling mode: drives each channel to full speed without recording a manual duty. A channel
+    /// that fails does not stop the rest.
+    /// </summary>
+    void DriveFansToFull(IReadOnlyList<string> channelIds)
+    {
+        foreach (var id in channelIds)
+        {
+            try { DriveFanSpeed(id, 100); }
+            catch (Exception ex) { Console.Error.WriteLine($"[cooling] cooling-mode write to {id} failed: {ex.Message}"); }
+        }
+    }
 
     /// <summary>
     /// Calibrate the given fans by ramping duty 100%→0% and measuring RPM at

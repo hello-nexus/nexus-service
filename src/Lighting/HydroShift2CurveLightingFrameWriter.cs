@@ -78,7 +78,7 @@ public sealed class HydroShift2CurveLightingFrameWriter : BackgroundService
         SegmentFrameComposer.EnsureBuffers(_structure, ref _segBuf);
         SegmentFrameComposer.Compose(
             _structure, zones, devices, settings.Devices.DisabledLightingDevices, uncontrolled,
-            settings.Devices.LightingDevicePrefs, MasterBrightness.Effective(settings.Lighting), 1.0,
+            settings.Devices.LightingDevicePrefs, MasterBrightness.Resolve(settings), 1.0,
             DateTime.UtcNow.Ticks, _identify, _segBuf);
 
         var leds = _segBuf[0];

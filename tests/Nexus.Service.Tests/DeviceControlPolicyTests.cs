@@ -45,6 +45,7 @@ public class DeviceControlPolicyTests
     [InlineData("streamdeck")]
     [InlineData("tryx")]
     [InlineData("zmatrices-lcd")]
+    [InlineData("zmatrices-max-e87")]
     [InlineData("nollie")]
     [InlineData("asus-ryujin-lcd")]
     [InlineData("asus-glacial-lcd")]

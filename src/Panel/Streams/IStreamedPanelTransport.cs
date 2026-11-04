@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Nexus.Service.Peripherals.BulkPanels;
 
 namespace Nexus.Service.Panel.Streams;
 
@@ -73,11 +74,24 @@ public interface IBrightnessPanelTransport
     int? PreviousBrightness => null;
 }
 
+/// <summary>One contact on a rendered panel: X and Y are fractions of the frame's width and height.</summary>
+public readonly record struct PanelTouchContact(uint PointerId, TouchPhase Phase, double X, double Y);
+
+/// <summary>Transport whose glass may report touch. Implementing it is not the capability test; the attached model is.</summary>
+public interface ITouchPanelTransport
+{
+    /// <summary>Receives each contact while the glass shows the rendered page; a contact still down when that stops is released first.</summary>
+    void BindTouch(Action<PanelTouchContact> sink);
+}
+
 /// <summary>Transport whose glass can be handed to Windows as a secondary monitor.</summary>
 public interface ISecondaryMonitorTransport
 {
     /// <summary>Supplies whether the panel record wants the monitor; re-read on every keepalive tick.</summary>
     void BindSecondaryMonitor(Func<bool> source);
+
+    /// <summary>Supplies the panel record's frame cap (null = the driver's own rate), polled while the monitor runs.</summary>
+    void BindFpsCap(Func<int?> source);
 
     /// <summary>Starts or stops the monitor to match the bound value now.</summary>
     void ApplySecondaryMonitor();
@@ -113,4 +127,11 @@ public interface IStreamedPanelTransport : IDisposable
     /// any throw as transport loss.
     /// </summary>
     void Write(ReadOnlySpan<byte> annexBPayload);
+}
+
+/// <summary>Transport that re-sends its last frame while idle and must stop when the coordinator takes the panel off the render.</summary>
+public interface IRepeatGatedPanelTransport
+{
+    /// <summary>Supplies whether the session is currently rendering for this panel; read before each repeat.</summary>
+    void BindRepeatGate(Func<bool> allowed);
 }

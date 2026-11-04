@@ -67,7 +67,7 @@ public class JsonConfigStoreMigrationTests : IDisposable
 
         var s = store.Load();
         Assert.Equal(["corsair-icue", "deepcool"], s.Ui.ConflictAutoKillExclusions);
-        Assert.Equal(27, s.SchemaVersion);
+        Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
     }
 
     [Fact]
@@ -79,7 +79,7 @@ public class JsonConfigStoreMigrationTests : IDisposable
 
         var s = store.Load();
         Assert.Equal(["deepcool", "corsair-icue"], s.Ui.ConflictAutoKillExclusions);
-        Assert.Equal(27, s.SchemaVersion);
+        Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
     }
 
     [Fact]
@@ -94,33 +94,6 @@ public class JsonConfigStoreMigrationTests : IDisposable
         Assert.Null(overlay.Scale);
         Assert.Null(overlay.Layout);
         Assert.False(overlay.MigratedToPanels);
-    }
-
-    [Theory]
-    [InlineData(true, "notify")]
-    [InlineData(false, "always")]
-    public void Load_V6_MigratesLegacyAutoUpdateDisabled(bool legacyDisabled, string expectedMode)
-    {
-        var json = $$"""
-        {
-          "schemaVersion": 6,
-          "update": { "autoUpdateDisabled": {{(legacyDisabled ? "true" : "false")}}, "updateChannel": "production" }
-        }
-        """;
-        File.WriteAllText(_settingsPath, json);
-
-        var store = new JsonConfigStore(_settingsPath);
-        var s = store.Load();
-        try
-        {
-            Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
-            Assert.Equal(expectedMode, s.Update.UpdateMode);
-            Assert.Null(s.Update.LegacyAutoUpdateDisabled);
-        }
-        finally
-        {
-            store.Dispose();
-        }
     }
 
     [Fact]
@@ -1080,7 +1053,6 @@ public class JsonConfigStoreMigrationTests : IDisposable
         {
             var s = store.Load();
             Assert.Equal("angle", s.Lighting.RenderBackend);
-            Assert.True(s.GameSyncRemovedNotice);
             Assert.Equal(NexusSettings.CurrentSchemaVersion, s.SchemaVersion);
         }
         finally

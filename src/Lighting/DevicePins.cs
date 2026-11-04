@@ -110,7 +110,6 @@ public sealed class DevicePinTracker
     public static bool IsAnimateEffect(string? key) =>
         !string.IsNullOrEmpty(key)
         && ((AnimateTemplateDefaults.All.ContainsKey(key) && !StaticEffectCatalog.Contains(key))
-            || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSweepEffect(key)
             || Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsSensorEffect(key)
             || (Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsCustomKey(key)
                 && Nexus.Service.Lighting.Engine.Gpu.ShaderLibrary.IsKnownKey(key)));
@@ -151,7 +150,7 @@ public sealed class DevicePinTracker
         switch (pin.Kind)
         {
             case DevicePinKinds.Animate:
-                return new DevicePin { Kind = pin.Kind, Effect = pin.Effect, Sensors = SensorBinding.CopyMap(pin.Sensors) };
+                return new DevicePin { Kind = pin.Kind, Effect = SimplePatternMigration.Normalize(pin.Effect), Sensors = SensorBinding.CopyMap(pin.Sensors) };
             case DevicePinKinds.Mirror:
             case DevicePinKinds.Media:
                 return new DevicePin { Kind = pin.Kind };

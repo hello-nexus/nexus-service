@@ -486,6 +486,10 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
+    internal static readonly TimeSpan LinuxQuiesceBudget = TimeSpan.FromSeconds(1.5);
+    // Covers the stop task's other steps: waiting for a deferred spawn, the process kill and the socket close.
+    private static readonly TimeSpan LinuxStopTaskSlack = TimeSpan.FromSeconds(4);
+
     /// <summary>
     /// Take the bridge offline: disconnect from the SDK server and hard-kill the
     /// subprocess. Nothing is written to hardware here - a caller that needs the
@@ -552,6 +556,14 @@ public sealed class RgbBridge : IDisposable
                 { await pendingStart.ConfigureAwait(false); }
                 catch { }
             }
+            // OpenRGB drives DIMM RGB over the SMBus shared with SPD hubs and PMICs;
+            // let the last queued frame land before the kill can cut a transaction.
+            if (OperatingSystem.IsLinux())
+            {
+                try
+                { await _controller.QuiesceAsync(LinuxQuiesceBudget).ConfigureAwait(false); }
+                catch { }
+            }
             // Kill before disconnect: the kill is what frees a request parked on a silent daemon.
             _proc.Stop();
             try
@@ -570,7 +582,9 @@ public sealed class RgbBridge : IDisposable
     /// Block until the shutdown task from the last <see cref="Deactivate"/> has
     /// finished (socket closed, process killed). No-op if nothing is in flight.
     /// </summary>
-    public void AwaitShutdown()
+    public void AwaitShutdown() => AwaitShutdown(Timeout.InfiniteTimeSpan);
+
+    internal void AwaitShutdown(TimeSpan timeout)
     {
         Task? task;
         lock (_lock)
@@ -578,7 +592,7 @@ public sealed class RgbBridge : IDisposable
         if (task is not null)
         {
             try
-            { task.GetAwaiter().GetResult(); }
+            { task.Wait(timeout); }
             catch { }
         }
     }
@@ -1862,8 +1876,9 @@ public sealed class RgbBridge : IDisposable
         {
             // Reloaded per reconcile: the daemon rewrites the map whenever its
             // device list changes, including after this pass started.
-            var detectorMap = OpenRgbDetectorMap.Load(OpenRgbProcessManager.ResolveConfigDir());
-            delta = OpenRgbDetectorExclusions.Compute(settledList, settingsSnapshot, detectorMap);
+            var configDir = OpenRgbProcessManager.ResolveConfigDir();
+            var detectorMap = OpenRgbDetectorMap.Load(configDir);
+            delta = OpenRgbDetectorExclusions.Compute(settledList, settingsSnapshot, detectorMap, OpenRgbDetectorExclusions.LoadRegisteredDetectors(configDir));
         }
         catch (Exception ex)
         {
@@ -2596,7 +2611,7 @@ public sealed class RgbBridge : IDisposable
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var uncontrolledCount = uncontrolled.Count;
         var devicePrefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         _touchedPhysicals.Clear();
@@ -2677,7 +2692,7 @@ public sealed class RgbBridge : IDisposable
                 }
             }
             catch (InvalidOperationException) { devBrightness = 100; }
-            var brightnessMul = Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+            var brightnessMul = globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
 
             if (isOff)
             {
@@ -2810,6 +2825,11 @@ public sealed class RgbBridge : IDisposable
             _disposed = true;
         }
         Deactivate();
+        // The process exits right after disposal; without the join the quiesce and the kill race it.
+        if (OperatingSystem.IsLinux())
+        {
+            AwaitShutdown(LinuxQuiesceBudget + LinuxStopTaskSlack);
+        }
     }
 }
 

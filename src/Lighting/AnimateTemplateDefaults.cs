@@ -65,6 +65,41 @@ public static class AnimateTemplateDefaults
         return Slot(effect, slot);
     }
 
+    /// <summary>Whether a replay of <paramref name="effect"/> keeps the stored simple-mode flag: only the effect that flag was stored for, so the start does not overwrite it.</summary>
+    public static bool RunsAsSimple(LightingSettings lighting, string effect) =>
+        lighting.Animate.Simple && string.Equals(lighting.Animate.Effect, effect, System.StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A start that replays what the effect last ran: its saved state, else its selected preset slot, else plain defaults. For callers that name only the effect, whose shader defaults are not any preset.</summary>
+    public static Nexus.Service.Models.Lighting.AnimateHeadlessStart SavedStart(LightingSettings lighting, string effect)
+    {
+        var states = StaticEffectCatalog.Contains(effect) ? lighting.Static.States : lighting.Animate.States;
+        if (!states.TryGetValue(effect, out var look) || look is null)
+        {
+            look = ResolveSelected(lighting.Animate.Templates, effect) ?? new AnimateEffectState();
+        }
+        var start = new Nexus.Service.Models.Lighting.AnimateHeadlessStart
+        {
+            Effect = effect,
+            Speed = look.Speed,
+            Intensity = look.Intensity,
+            Hue = look.Hue,
+            Colorize = look.Colorize,
+            Saturation = look.Saturation,
+            Contrast = look.Contrast,
+            Sensors = look.Sensors,
+            Filter = "none",
+            Simple = RunsAsSimple(lighting, effect),
+        };
+        if (look.Params is not null)
+        {
+            foreach (var (name, value) in look.Params)
+            {
+                start.Params.Add(new Nexus.Service.Models.Lighting.ShaderParam { Name = name, Value = value });
+            }
+        }
+        return start;
+    }
+
     /// <summary>The effect's currently-selected preset slot look, resolved through the sparse store.</summary>
     public static AnimateEffectState? ResolveSelected(Dictionary<string, AnimateEffectTemplates>? templates, string effect)
     {

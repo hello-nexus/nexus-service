@@ -58,10 +58,12 @@ public sealed class CorsairLinkHub : IDisposable
 
     /// <param name="idPrefix">"corsair:" keeps the single-hub ids; other hubs carry their serial.</param>
     /// <param name="number">1-based display number; 1 for the hub holding the unqualified ids.</param>
-    public CorsairLinkHub(string idPrefix = "corsair:", int number = 1)
+    /// <param name="modeCycleWaitMs">Hardware-mode dwell of the takeover cycle.</param>
+    public CorsairLinkHub(string idPrefix = "corsair:", int number = 1, int modeCycleWaitMs = CorsairLinkProtocol.ModeCycleWaitMs)
     {
         IdPrefix = idPrefix;
         Number = number;
+        ModeCycleWaitMs = modeCycleWaitMs;
     }
 
     /// <summary>The Nexus Control / device-row id every hub shares.</summary>
@@ -133,18 +135,19 @@ public sealed class CorsairLinkHub : IDisposable
 
     private bool TakeOwedReply(byte echo)
     {
-        if (echo == 0) return false;
-        lock (_lock)
+        lock (_lock) return TakeOwedLocked(echo);
+    }
+
+    private bool TakeOwedLocked(byte echo)
+    {
+        if (echo == 0 || _owedReplies[echo] <= 0) return false;
+        if (NowMs() - _owedSinceMs[echo] > OwedReplyMaxAgeMs)
         {
-            if (_owedReplies[echo] <= 0) return false;
-            if (NowMs() - _owedSinceMs[echo] > OwedReplyMaxAgeMs)
-            {
-                _owedReplies[echo] = 0;
-                return false;
-            }
-            _owedReplies[echo]--;
-            return true;
+            _owedReplies[echo] = 0;
+            return false;
         }
+        _owedReplies[echo]--;
+        return true;
     }
 
     private static string Hex(ReadOnlySpan<byte> bytes, int count)
@@ -167,9 +170,27 @@ public sealed class CorsairLinkHub : IDisposable
     /// <summary>Hex of the reply that marked another program, empty when none.</summary>
     public string ForeignReplyHex { get; private set; } = "";
 
+    // The takeover or hand-back command sequence is running: probes and mode reads are
+    // ours, and the trace keeps every step.
+    private bool _sequencing;
+    // Initialize is mid-takeover; the lock is released during the mode-cycle wait, so
+    // other entry points stand down meanwhile.
+    private bool _initializing;
+    // Handle 0 holds the colour resource opened by Nexus.
+    private bool _colorHandleOpen;
+    private long _lastCycleMs = long.MinValue / 2;
+
+    /// <summary>Minimum time between two takeover mode cycles on this hub, so a failing connect does not repeat the dwell every retry.</summary>
+    internal const long CycleMinIntervalMs = 60_000;
+
+    internal int ModeCycleWaitMs { get; set; }
+
+    // Set by the service-stop release: no later Attach or Initialize takes the hub again.
+    private bool _retired;
+
     private void TraceNote(string note)
     {
-        if (_trace is { } t && (t.Length < TraceMaxChars || note.StartsWith("step=", StringComparison.Ordinal) || note.StartsWith("color open", StringComparison.Ordinal))) t.Append(" | ").Append(note);
+        if (_trace is { } t && (_sequencing || t.Length < TraceMaxChars || note.StartsWith("step=", StringComparison.Ordinal) || note.StartsWith("color open", StringComparison.Ordinal))) t.Append(" | ").Append(note);
     }
 
     /// <summary>Another program answered on the hub; every write is refused from then on, since the hub's handles are shared by all hosts.</summary>
@@ -179,12 +200,18 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            if (_retired)
+            {
+                device.Dispose();
+                return;
+            }
             _device = device;
             ForeignHostSeen = false;
             ForeignReplyHex = "";
             _softwareMode = false;
             _firmwareMajor = 0;
             _colorPrimed = false;
+            _colorHandleOpen = false;
             _colorReopenDue = false;
             _redetecting = false;
             _redetectRequested = false;
@@ -198,9 +225,7 @@ public sealed class CorsairLinkHub : IDisposable
         {
             if (_device != null && _softwareMode && handBack && !ForeignHostSeen)
             {
-                // Hand the chain back to firmware so the fans keep running on the
-                // hub's own curve once Nexus lets go.
-                Transfer(CorsairLinkProtocol.CmdHardwareMode);
+                HandBackLocked();
             }
             // Drain replies still queued for this handle, or the next session's
             // listen hears them as another program.
@@ -213,19 +238,60 @@ public sealed class CorsairLinkHub : IDisposable
             State.UnmappedChannels = Array.Empty<int>();
             _softwareMode = false;
             _colorPrimed = false;
+            _colorHandleOpen = false;
+            // Wakes a takeover waiting out the dwell.
+            Monitor.PulseAll(_lock);
+        }
+    }
+
+    /// <summary>Service stop: hands the hub back and refuses every later Attach and Initialize.</summary>
+    public void Retire(bool handBack)
+    {
+        lock (_lock) _retired = true;
+        Detach(handBack);
+    }
+
+    // Close what Nexus opened, return the chain to firmware so the fans keep running on
+    // the hub's own curve, and read the mode back to confirm. The leading mode read
+    // keeps the measured order of another host's hand-back.
+    private void HandBackLocked()
+    {
+        _sequencing = true;
+        try
+        {
+            Transfer(CorsairLinkProtocol.CmdGetMode);
+            if (_colorHandleOpen)
+            {
+                CloseHandleLocked(0);
+                _colorHandleOpen = false;
+            }
+            for (byte h = 1; h < CorsairLinkProtocol.TakeoverHandleCount; h++) CloseHandleIfOpenLocked(h);
+            Transfer(CorsairLinkProtocol.CmdHardwareMode);
+            var mode = ReadModeLocked();
+            if (mode != CorsairLinkProtocol.ModeHardware)
+            {
+                ServiceLog.Warn($"[corsair] hand-back: hub reports mode {(mode < 0 ? "unreadable" : mode.ToString())} after the hardware mode command");
+            }
+        }
+        finally
+        {
+            _sequencing = false;
         }
     }
 
     /// <summary>
-    /// Enter software mode, read firmware, enumerate the chain, and open the color
+    /// Take control of the hub, read firmware, enumerate the chain, and open the color
     /// endpoint. Marks the hub connected on success. Returns false if the device
-    /// stops responding mid-init.
+    /// stops responding mid-init. Blocks for the mode-cycle dwell on a first takeover.
     /// </summary>
     public bool Initialize()
     {
         lock (_lock)
         {
+            if (_retired) return false;
             _trace = new System.Text.StringBuilder();
+            _initializing = true;
+            _sequencing = true;
             try
             {
                 var ok = InitializeLocked();
@@ -234,6 +300,8 @@ public sealed class CorsairLinkHub : IDisposable
             }
             finally
             {
+                _initializing = false;
+                _sequencing = false;
                 LastInitTrace = _trace.ToString();
                 _trace = null;
             }
@@ -242,46 +310,148 @@ public sealed class CorsairLinkHub : IDisposable
 
     private bool InitializeLocked()
     {
+        if (_device == null) return false;
+
+        TraceNote("step=mode");
+        var startMode = ReadModeLocked(out var silent);
+        if (silent)
         {
+            TraceNote("hub silent");
+            return false;
+        }
+        TraceNote($"mode={(startMode < 0 ? "unreadable" : startMode.ToString())}");
+
+        TraceNote("step=handles");
+        CloseOpenHandlesLocked();
+
+        TraceNote("step=software-mode");
+        var softwareN = Transfer(CorsairLinkProtocol.CmdSoftwareMode);
+        var refused = softwareN > CorsairLinkProtocol.ResponseStatusOffset && Refused(CorsairLinkProtocol.CmdSoftwareMode);
+        if (refused) TraceNote("software mode refused");
+        _softwareMode = true;
+
+        TraceNote("step=firmware");
+        var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
+        if (fw >= 8)
+        {
+            State.Firmware = $"{_read[4]}.{_read[5]}.{_read[6] | (_read[7] << 8)}";
+            _firmwareMajor = _read[4];
+        }
+        TraceNote($"fw={State.Firmware}");
+
+        // Hardware then software again lets the fans spool on firmware control and frees a
+        // hub a killed host left refusing. The dwell, ModeCycleWaitMs, is the gap measured in a
+        // capture of another host's takeover.
+        if (NowMs() - _lastCycleMs >= CycleMinIntervalMs)
+        {
+            _lastCycleMs = NowMs();
+            TraceNote("step=cycle");
+            Transfer(CorsairLinkProtocol.CmdHardwareMode);
+            WaitReleasingLockLocked(ModeCycleWaitMs);
             if (_device == null) return false;
-
-            TraceNote("step=firmware");
-            var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
-            if (fw >= 8)
-            {
-                State.Firmware = $"{_read[4]}.{_read[5]}.{_read[6] | (_read[7] << 8)}";
-                _firmwareMajor = _read[4];
-            }
-
-            TraceNote($"fw={State.Firmware}");
-            TraceNote("step=software-mode");
+            // Nothing of ours is outstanding after the dwell, so any report in the queue is another program's: stop before closing a handle it may hold.
+            if (AbsorbDwellTrafficLocked()) return false;
+            ReadModeLocked();
+            CloseOpenHandlesLocked();
             Transfer(CorsairLinkProtocol.CmdSoftwareMode);
-            // Firmware needs ~500 ms after entering software mode before it accepts
-            // further commands (OpenLinkHub transferTimeout, lsh.go:4886).
-            Thread.Sleep(CorsairLinkProtocol.SoftwareModeSettleMs);
-            _softwareMode = true;
+            if (Refused(CorsairLinkProtocol.CmdSoftwareMode)) TraceNote("software mode refused after cycle");
+        }
 
-            TraceNote("step=refresh");
-            if (!RefreshLocked()) return false;
+        var mode = AwaitModeLocked(CorsairLinkProtocol.ModeSoftware);
+        TraceNote(mode == CorsairLinkProtocol.ModeSoftware ? "software mode confirmed" : $"software mode not confirmed (mode={(mode < 0 ? "unreadable" : mode.ToString())})");
 
-            TraceNote("step=color-handle");
-            // Another host (iCUE, a crashed session) can leave handle 0 holding a
-            // different resource, and an open on a busy handle is refused, so free
-            // it first. It then stays open for the whole session.
-            if (!OpenColorHandleLocked())
-            {
-                ServiceLog.Warn("[corsair] colour handle open refused");
-                return false;
-            }
-            // Mixed QX+RX chains drop QX lighting without a 40 ms settle after the
-            // first color endpoint open (OpenLinkHub lsh.go:4454).
-            Thread.Sleep(40);
-            _colorPrimed = true;
-            _colorReopenDue = false;
+        TraceNote("step=refresh");
+        if (!RefreshLocked()) return false;
 
-            State.IsConnected = true;
+        TraceNote("step=color-handle");
+        // The takeover closed every handle, and it then stays open for the whole session.
+        if (!OpenColorHandleLocked(closeFirst: false))
+        {
+            ServiceLog.Warn("[corsair] colour handle open refused");
+            return false;
+        }
+        // Mixed QX+RX chains drop QX lighting without a 40 ms settle after the
+        // first color endpoint open (OpenLinkHub lsh.go:4454).
+        Thread.Sleep(40);
+        _colorPrimed = true;
+        _colorReopenDue = false;
+
+        State.IsConnected = true;
+        return true;
+    }
+
+    // Releases _lock for the wait so a Detach is not held off by the dwell; the entry
+    // points that touch the hub stand down on _initializing meanwhile.
+    private void WaitReleasingLockLocked(int ms)
+    {
+        if (ms <= 0) return;
+        Monitor.Wait(_lock, ms);
+    }
+
+    // Reads whatever queued up during the dwell; a report that is not a late reply to a timed-out command of ours marks another program.
+    private bool AbsorbDwellTrafficLocked()
+    {
+        if (ForeignHostSeen) return true;
+        for (var i = 0; i < DrainReads; i++)
+        {
+            var n = _device?.Read(_readRaw, ResyncReadTimeoutMs) ?? 0;
+            if (n <= 0) return false;
+            if (n <= 1 + CorsairLinkProtocol.ResponseCommandOffset) continue;
+            var echo = _readRaw[1 + CorsairLinkProtocol.ResponseCommandOffset];
+            if (echo == 0 || TakeOwedLocked(echo)) continue;
+            ForeignHostSeen = true;
+            ForeignReplyHex = $"dwell echo={echo:x2} reply={Hex(_readRaw.AsSpan(1), TraceReplyBytes)}";
+            TraceNote($"foreign {ForeignReplyHex}");
             return true;
         }
+        return false;
+    }
+
+    // The mode property, or -1 when the reply is missing or not an answer to the read.
+    private int ReadModeLocked() => ReadModeLocked(out _);
+
+    private int ReadModeLocked(out bool silent)
+    {
+        var n = Transfer(CorsairLinkProtocol.CmdGetMode);
+        silent = n <= 0;
+        return Accepted(CorsairLinkProtocol.CmdGetMode, n) ? _read[CorsairLinkProtocol.ResponseStatusOffset + 1] : -1;
+    }
+
+    // Reads the mode until it equals want, replacing a fixed settle sleep.
+    private int AwaitModeLocked(byte want)
+    {
+        var mode = -1;
+        for (var i = 0; i < CorsairLinkProtocol.ModeVerifyTries; i++)
+        {
+            mode = ReadModeLocked(out var silent);
+            if (mode == want || silent || _device == null) return mode;
+            Monitor.Wait(_lock, CorsairLinkProtocol.ModeVerifyStepMs);
+        }
+        return mode;
+    }
+
+    private bool Accepted(ReadOnlySpan<byte> cmd, int n) =>
+        n > CorsairLinkProtocol.ResponseStatusOffset
+        && _read[CorsairLinkProtocol.ResponseCommandOffset] == cmd[0]
+        && _read[CorsairLinkProtocol.ResponseStatusOffset] == 0;
+
+    // Probes handles 0..2 and closes only the ones that answer open.
+    private void CloseOpenHandlesLocked()
+    {
+        for (byte h = 0; h < CorsairLinkProtocol.TakeoverHandleCount; h++) CloseHandleIfOpenLocked(h);
+    }
+
+    private void CloseHandleIfOpenLocked(byte handle)
+    {
+        Span<byte> h = stackalloc byte[] { handle };
+        var n = Transfer(CorsairLinkProtocol.CmdProbeHandle, h);
+        if (Accepted(CorsairLinkProtocol.CmdProbeHandle, n)) CloseHandleLocked(handle);
+    }
+
+    private void CloseHandleLocked(byte handle)
+    {
+        Span<byte> h = stackalloc byte[] { handle };
+        Transfer(CorsairLinkProtocol.CmdCloseHandle, h);
     }
 
     /// <summary>Re-enumerate the chain and refresh speed/temperature telemetry. Catches hot-plug.</summary>
@@ -289,7 +459,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
-            if (_device == null || _redetecting) return false;
+            if (_device == null || _redetecting || _initializing) return false;
             return RefreshLocked();
         }
     }
@@ -303,7 +473,7 @@ public sealed class CorsairLinkHub : IDisposable
         lock (_lock)
         {
             _redetectRequested = false;
-            if (_device == null || _redetecting) return false;
+            if (_device == null || _redetecting || _initializing) return false;
             _redetecting = true;
             var n = Transfer(CorsairLinkProtocol.CmdStartDetection);
             // A timed-out read may still have started detection; the pings below tell.
@@ -350,7 +520,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
-            if (_device == null || _redetecting || items.Count == 0) return false;
+            if (_device == null || _redetecting || _initializing || items.Count == 0) return false;
             var count = Math.Min(items.Count, CorsairLinkProtocol.MaxChannels);
             Span<byte> payload = stackalloc byte[1 + CorsairLinkProtocol.MaxChannels * 4];
             payload[0] = (byte)count;
@@ -377,7 +547,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
-            if (_device == null || !_colorPrimed || _redetecting) return false;
+            if (_device == null || !_colorPrimed || _redetecting || _initializing) return false;
 
             if (_colorReopenDue)
             {
@@ -423,12 +593,13 @@ public sealed class CorsairLinkHub : IDisposable
     }
 
     // Close then open handle 0 on the colour resource; true when the open is accepted.
-    private bool OpenColorHandleLocked()
+    private bool OpenColorHandleLocked(bool closeFirst = true)
     {
         Span<byte> mode = stackalloc byte[] { CorsairLinkProtocol.ModeSetColor };
-        Transfer(CorsairLinkProtocol.CmdCloseColorEndpoint);
+        if (closeFirst) Transfer(CorsairLinkProtocol.CmdCloseColorEndpoint);
         var n = Transfer(CorsairLinkProtocol.CmdOpenColorEndpoint, mode);
         var ok = n > CorsairLinkProtocol.ResponseStatusOffset && !Refused(CorsairLinkProtocol.CmdOpenColorEndpoint);
+        _colorHandleOpen = ok;
         TraceNote($"color open ok={ok} status={_read[CorsairLinkProtocol.ResponseStatusOffset]:x2}");
         return ok;
     }
@@ -607,18 +778,20 @@ public sealed class CorsairLinkHub : IDisposable
 
     // Every open HID handle receives every input report, so another program's
     // replies reach this one. Nexus sends only these commands after Initialize's
-    // 02 13, whose reply can arrive late after a timed-out read; iCUE probes (09)
-    // every file it opens.
+    // 02 13, whose reply can arrive late after a timed-out read; the takeover and the
+    // hand-back add mode reads (02) and handle probes (09), whose replies shift the same way.
     private bool IsOwnCommand(byte cmd) =>
         cmd is 0x01 or 0x05 or 0x06 or 0x07 or 0x08 or 0x0D
         || (cmd == 0x02 && !_colorPrimed)
-        || (cmd is 0x12 or 0x1A && _redetecting);
+        || (cmd is 0x12 or 0x1A && _redetecting)
+        || (cmd is 0x02 or 0x09 && _sequencing);
 
     private void NoteEcho(byte sent)
     {
         var echo = _read[CorsairLinkProtocol.ResponseCommandOffset];
-        if (echo != 0 && echo != sent && _owedReplies[echo] > 0) _owedReplies[echo]--;
-        if (echo != 0 && echo != sent && !IsOwnCommand(echo))
+        var owed = echo != 0 && echo != sent && _owedReplies[echo] > 0;
+        if (owed) _owedReplies[echo]--;
+        if (echo != 0 && echo != sent && !owed && !IsOwnCommand(echo))
         {
             ForeignHostSeen = true;
             ForeignReplyHex = $"sent={sent:x2} echo={echo:x2} reply={Hex(_read, TraceReplyBytes)}";

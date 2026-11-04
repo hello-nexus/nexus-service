@@ -114,6 +114,17 @@ public static class CoolingRoutes
             return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
         });
 
+        // Ends full-speed cooling mode (watchdog latch, trip or escalation). 200 with Error set and no state when nothing is active.
+        app.MapPost("/cooling/guard/restore", (ThermalGuardController guard, FeatureGates gates) =>
+        {
+            if (!gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var (result, error) = guard.RestoreCurves();
+            return error is not null ? Results.Ok(ApiResponse.Fail(error)) : Results.Ok(result);
+        });
+
         app.MapPost("/cooling/curves/lint", (SetCurvesBody body, ThermalGuardController guard) =>
             guard.Lint(body));
 
@@ -451,23 +462,48 @@ public static class CoolingRoutes
             };
         }).AllowPanel();
 
-        app.MapPost("/cooling/presets", (CreateCoolingPresetBody body, IFanControlProvider f, IConfigStore store) =>
+        app.MapPost("/cooling/presets", (CreateCoolingPresetBody body, IFanControlProvider f, IConfigStore store, MultiplexHub hub, FeatureGates gates) =>
         {
             var name = (body.Name ?? "").Trim();
             if (name.Length == 0)
             {
                 return Results.BadRequest(new CreateCoolingPresetResponse { Error = true, Msg = "Preset name required" });
             }
-            if (store.Load().Cooling.Presets.Count >= CoolingPresets.Cap)
+            if (body.Fresh && !gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var cooling = store.Load().Cooling;
+            if (cooling.Presets.Count >= CoolingPresets.Cap)
             {
                 return Results.BadRequest(new CreateCoolingPresetResponse { Error = true, Msg = $"Preset cap of {CoolingPresets.Cap} reached" });
             }
-            var created = CoolingPresets.Capture(Guid.NewGuid().ToString("n"), name, store, f);
+            // With no preset active, fresh would discard the only copy of the live configuration.
+            var fresh = body.Fresh && cooling.Presets.Exists(p => p.Id == cooling.ActivePresetId);
+            var id = Guid.NewGuid().ToString("n");
+            var created = fresh ? CoolingPresets.CreateFresh(id, name) : CoolingPresets.Capture(id, name, store);
             store.Update(s =>
             {
+                if (fresh && s.Cooling.Presets.Find(p => p.Id == s.Cooling.ActivePresetId) is { } outgoing)
+                {
+                    CoolingPresets.CaptureInto(outgoing, s.Cooling);
+                }
                 s.Cooling.Presets.Add(created);
-                s.Cooling.ActivePresetId = created.Id;
+                // Fresh leaves the active id to Activate, which sets it once the defaults are applied.
+                if (!fresh)
+                {
+                    s.Cooling.ActivePresetId = created.Id;
+                }
             });
+            if (fresh)
+            {
+                // The live fans still follow the old configuration; replay the defaults so the active preset matches them.
+                if (!CoolingPresets.Activate(created.Id, store, f))
+                {
+                    return Results.NotFound(new ApiResponse { Error = true, Msg = "Preset not found" });
+                }
+                PanelTopics.BroadcastCooling(hub);
+            }
             return Results.Ok(new CreateCoolingPresetResponse { Preset = ToPresetDto(created), ActiveId = created.Id });
         }).AllowPanel();
 
@@ -477,20 +513,19 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
-        app.MapPut("/cooling/presets/{id}", (string id, UpdateCoolingPresetBody body, IFanControlProvider f, IConfigStore store) =>
+        app.MapPut("/cooling/presets/{id}", (string id, UpdateCoolingPresetBody body, IConfigStore store) =>
         {
             if (store.Load().Cooling.Presets.Find(p => p.Id == id) is null)
             {
                 return Results.NotFound(new ApiResponse { Error = true, Msg = "Preset not found" });
             }
-            var fanIds = body.SaveCurrent ? CoolingPresets.FanIds(f) : null;
             store.Update(s =>
             {
                 var preset = s.Cooling.Presets.Find(p => p.Id == id);
                 if (preset is null) return;
                 var name = (body.Name ?? "").Trim();
                 if (name.Length > 0) preset.Name = name;
-                if (fanIds is not null) CoolingPresets.CaptureInto(preset, s.Cooling, fanIds);
+                if (body.SaveCurrent) CoolingPresets.CaptureInto(preset, s.Cooling);
             });
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();

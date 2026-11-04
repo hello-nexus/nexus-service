@@ -71,6 +71,14 @@ public static class DevSimRoutes
 
         MapAstralSim(app);
 
+        // PUT /dev/restricted?on=true forces system/session restricted:true until PUT ?on=false or restart.
+        app.MapPut("/dev/restricted", (bool on, Nexus.Service.Lifecycle.RestrictedModePublisher restricted) =>
+        {
+            Nexus.Service.Lifecycle.RestrictedModePublisher.DevForce = on;
+            restricted.Publish();
+            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
+        });
+
         app.MapPost("/dev/sim/clear", (DevSimEvents sim) =>
         {
             sim.Clear();

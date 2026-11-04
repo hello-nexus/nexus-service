@@ -29,6 +29,7 @@ public static class SystemSpecsActions
                 Family = oemInfo.Family ?? "",
                 Serial = oemInfo.Serial ?? "",
                 WindowsProductKey = specs.Oa3ProductKey,
+                WindowsActivated = WindowsActivation.Get(),
                 PcName = specs.PcName,
                 OsBuild = specs.OsBuild,
                 Processor = specs.Processor,

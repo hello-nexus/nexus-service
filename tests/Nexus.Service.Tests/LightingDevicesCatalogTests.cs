@@ -124,6 +124,7 @@ public class LightingDevicesCatalogTests
     [InlineData("Asiahorse", "Umbra V2", "0x1A86", "0xFE04")]
     [InlineData("Tryx", "Panorama", "0x391A", "0x1011")]
     [InlineData("Aftershock", "Glacier Matrix 360", "0x38C1", "0x0026")]
+    [InlineData("ZMatrices", "MAX E87", "0x38C1", "0x0032")]
     [InlineData("DeepCool", "Mystique", "0x3633", "0x0009")]
     [InlineData("Corsair", "Galleon 100 SD Keyboard", "0x1B1C", "0x2B0C")]
     [InlineData("Corsair", "Galleon 100 SD Dials", "0x1B1C", "0x2B18")]
@@ -145,6 +146,22 @@ public class LightingDevicesCatalogTests
         Assert.Equal("nexus", device!.Source);
         Assert.Equal(vid, device.VendorId);
         Assert.Equal(pid, device.ProductId);
+    }
+
+    [Theory]
+    [InlineData("SteelSeries Apex Pro TKL 2023 Wired", "0x1628", true)]
+    [InlineData("SteelSeries Apex Pro TKL Gen 3 Wired", "0x1642", true)]
+    [InlineData("SteelSeries Apex Pro TKL 2023 Wireless", "0x1630", false)]
+    [InlineData("SteelSeries Apex Pro TKL", "0x1614", false)]
+    public void The_apex_screen_adds_a_capability_without_renaming_the_keyboard(string name, string pid, bool screen)
+    {
+        var rows = LightingDevicesCatalog.All.Where(d => d.ProductId == pid && d.VendorId == "0x1038").ToList();
+        var row = Assert.Single(rows);
+
+        Assert.Equal("openrgb", row.Source);
+        Assert.Equal(name, $"{row.Vendor} {row.Model}");
+        Assert.Contains("rgb", row.Capabilities);
+        Assert.Equal(screen, row.Capabilities.Contains("screen"));
     }
 
     [Fact]

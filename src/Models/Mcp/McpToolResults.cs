@@ -42,8 +42,10 @@ public sealed class McpLightingStateResult
     /// <summary>Active sync mode, or the running effect's key when one is live.</summary>
     public string Sync { get; set; } = "";
     public string CurrentEffect { get; set; } = "";
-    /// <summary>0..1 master brightness cap.</summary>
+    /// <summary>0..1 master brightness.</summary>
     public float GlobalBrightness { get; set; }
+    /// <summary>True when master multiplies each device's brightness; false when it caps it.</summary>
+    public bool MasterScalesDevices { get; set; }
     /// <summary>Last static color as "#rrggbb".</summary>
     public string StaticColor { get; set; } = "";
 }

@@ -110,6 +110,42 @@ public class LinuxFanControlProviderTests
     }
 
     [Fact]
+    public void ReleaseFan_RestoresTheBoardsPriorModeAndDuty_NotGenericAutomatic()
+    {
+        using var t = new TempDir();
+        var p = WithControllableFan(t, pwm: 90, enable: 5, rpm: 600);
+        p.GetFanChannels();
+        Assert.True(p.ReleaseRestoresHardwareControl("linux-fan-nct6779-2"));
+
+        p.DriveFanSpeed("linux-fan-nct6779-2", 100);
+        Assert.Equal("1", File.ReadAllText(t.At("hwmon/hwmon0/pwm2_enable")));
+        Assert.True(p.ReleaseRestoresHardwareControl("linux-fan-nct6779-2"));
+
+        p.ReleaseFan("linux-fan-nct6779-2");
+        Assert.Equal("5", File.ReadAllText(t.At("hwmon/hwmon0/pwm2_enable")).Trim());
+    }
+
+    [Fact]
+    public void ChannelAlreadyInManualMode_CannotBeTakenOverByTheGuard()
+    {
+        using var t = new TempDir();
+        var p = WithControllableFan(t, pwm: 90, enable: 1, rpm: 600);
+        p.GetFanChannels();
+        Assert.False(p.ReleaseRestoresHardwareControl("linux-fan-nct6779-2"));
+    }
+
+    [Fact]
+    public void GpuHwmonFans_AreFlaggedAsGpu()
+    {
+        using var t = new TempDir();
+        t.Write("hwmon/hwmon0/name", "amdgpu\n");
+        t.Write("hwmon/hwmon0/pwm1", "100\n");
+        t.Write("hwmon/hwmon0/pwm1_enable", "2\n");
+        var p = new LinuxFanControlProvider(t.At("hwmon"), TimeSpan.FromMilliseconds(1));
+        Assert.True(Assert.Single(p.GetFanChannels()).IsGpu);
+    }
+
+    [Fact]
     public void GetTemperatureSources_ReadsHwmonTempsByCategory()
     {
         using var t = new TempDir();

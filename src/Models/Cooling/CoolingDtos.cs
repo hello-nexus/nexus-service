@@ -399,6 +399,8 @@ public sealed class CoolingPresetsResponse : ApiResponse
 public sealed class CreateCoolingPresetBody
 {
     public string Name { get; set; } = "";
+    /// <summary>Build the preset from clean-install cooling defaults and apply it, instead of snapshotting the live state.</summary>
+    public bool Fresh { get; set; }
 }
 
 public sealed class CreateCoolingPresetResponse : ApiResponse
