@@ -39,6 +39,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         public IStreamedPanelTransport? Transport { get; set; }
         public long LastPresentAtMs { get; set; }
         public HttpContext? IngestContext { get; set; }
+        public PanelTouchFeed? Touch { get; init; }
     }
 
     private readonly object _lock = new();
@@ -775,6 +776,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     Codec = p.Codec == StreamCodec.RawBgra ? "rawBgra" : "h264",
                     FrameSection = ds.Session.FrameSectionName,
                     FrameSectionBytes = ds.Session.FrameSectionBytes,
+                    Touch = ds.Touch is not null,
                 });
             }
         }
@@ -812,6 +814,15 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ServiceLog.Info($"[streamed-panel] ingest bound session={sessionId}{(superseded is not null ? " (superseded previous)" : "")}");
         }
         return session;
+    }
+
+    /// <summary>The touch feed of a live session whose glass reports touch, or null.</summary>
+    public PanelTouchFeed? TryGetTouchFeed(string sessionId)
+    {
+        lock (_lock)
+        {
+            return _bySessionId.TryGetValue(sessionId, out var ds) && !ds.Session.Closed ? ds.Touch : null;
+        }
     }
 
     public void OnIngestClosed(string sessionId, HttpContext ctx)
@@ -855,6 +866,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             Discovery = discovery,
             Info = info,
             LastPresentAtMs = now,
+            Touch = info.Profile.SupportsTouch ? new PanelTouchFeed() : null,
         };
         lock (_lock)
         {
@@ -1089,6 +1101,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     _notifyOverlay?.Invoke();
                 };
             }
+            if (transport is ITouchPanelTransport touchable && ds.Touch is { } touch)
+            {
+                touchable.BindTouch(touch.Publish);
+            }
             transport.Open();
             transport.StartPlayer();
             var accepted = false;
@@ -1172,6 +1188,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ds.Transport = null;
         }
         ds.Session.Close();
+        ds.Touch?.Close();
         ds.Writer.Dispose();
         if (transport is not null)
         {

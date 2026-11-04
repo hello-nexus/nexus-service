@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Nexus.Service.Peripherals.BulkPanels;
 
 namespace Nexus.Service.Panel.Streams;
 
@@ -71,6 +72,16 @@ public interface IBrightnessPanelTransport
 
     /// <summary>The backlight in effect before the most recent change this transport made, or null when it never knew one.</summary>
     int? PreviousBrightness => null;
+}
+
+/// <summary>One contact on a rendered panel: X and Y are fractions of the frame's width and height.</summary>
+public readonly record struct PanelTouchContact(uint PointerId, TouchPhase Phase, double X, double Y);
+
+/// <summary>Transport whose glass may report touch. Implementing it is not the capability test; the attached model is.</summary>
+public interface ITouchPanelTransport
+{
+    /// <summary>Receives each contact while the glass shows the rendered page; a contact still down when that stops is released first.</summary>
+    void BindTouch(Action<PanelTouchContact> sink);
 }
 
 /// <summary>Transport whose glass can be handed to Windows as a secondary monitor.</summary>

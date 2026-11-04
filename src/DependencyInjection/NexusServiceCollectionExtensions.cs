@@ -1503,7 +1503,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.JpegPanels.TlLcdScreens>(),
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
 
-        // Bulk-pipe cooler LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices,
+        // Bulk-pipe LCDs (ASUS Ryujin, Thermalright, Lian Li Universal Screen 8.8, ZMatrices,
         // Lian Li HydroShift II). Their pixels ride a USB bulk endpoint rather than HID: Windows
         // reaches them where WinUSB is bound, macOS through IOUSBHost, and on Linux through usbfs
         // for the Screen 8.8 only; the other panels get no pipe there. Ryujin, Thermalright and the Screen
@@ -1531,7 +1531,8 @@ public static class NexusServiceCollectionExtensions
             new Nexus.Service.Peripherals.BulkPanels.ThermalrightPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.RyujinPanelDriver(),
             new Nexus.Service.Peripherals.BulkPanels.UniversalScreen88Driver(),
-            new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(),
+            new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(Nexus.Service.Peripherals.BulkPanels.ZMatricesModel.GlacierMatrix),
+            new Nexus.Service.Peripherals.BulkPanels.ZMatricesPanelDriver(Nexus.Service.Peripherals.BulkPanels.ZMatricesModel.MaxE87),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver(),
             new Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver(),
         })

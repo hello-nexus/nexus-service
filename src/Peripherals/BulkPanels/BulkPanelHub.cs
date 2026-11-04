@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
@@ -20,6 +21,7 @@ public sealed class BulkPanelHub : IDisposable
     private int _height;
     private bool _disposed;
     private volatile bool _openAccessDenied;
+    private volatile bool _openFailed;
 
     public BulkPanelHub(IBulkPanelDriver driver)
     {
@@ -28,12 +30,38 @@ public sealed class BulkPanelHub : IDisposable
 
     public IBulkPanelDriver Driver => _driver;
 
+    /// <summary>Held by the one thread reading the IN pipe; a second reader would split reports.</summary>
+    internal SemaphoreSlim InputReaderGate { get; } = new(1, 1);
+
+    private int _inputReadersWaiting;
+
+    /// <summary>Readers blocked at <see cref="InputReaderGate"/>.</summary>
+    internal int InputReadersWaiting => Volatile.Read(ref _inputReadersWaiting);
+
+    internal void WaitForInputReader(CancellationToken ct)
+    {
+        Interlocked.Increment(ref _inputReadersWaiting);
+        try
+        {
+            InputReaderGate.Wait(ct);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inputReadersWaiting);
+        }
+    }
+
     public bool IsConnected => _attached;
 
     /// <summary>True while the last open of a present panel failed because the OS denied access.</summary>
     public bool OpenAccessDenied => _openAccessDenied;
 
     public void SetOpenAccessDenied(bool denied) => _openAccessDenied = denied;
+
+    /// <summary>True once an open of the present panel was attempted and failed, until it opens or Nexus Control or the panel goes away.</summary>
+    public bool OpenFailed => _openFailed;
+
+    public void SetOpenFailed(bool failed) => _openFailed = failed;
 
     /// <summary>Panel width the driver negotiated, or 0 while nothing is attached.</summary>
     public int Width { get { lock (_lock) { return _width; } } }
