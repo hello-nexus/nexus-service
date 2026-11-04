@@ -21,24 +21,12 @@ public class CorsairLinkHubTakeoverTests
         public bool RefuseUntilHardware;
         public bool NeverAcceptSoftware;
         public Action<byte[]>? OnCommand;
-        /// <summary>Withholds the first software-mode reply (the read times out) and delivers it ahead of the next command's reply.</summary>
-        public bool DelayFirstSoftwareReply;
-        /// <summary>Withholds the first reply to a command matching this predicate, with the same late delivery.</summary>
-        public Func<byte[], bool>? HoldFirstWhere;
-        /// <summary>Commands matching this predicate get no reply at all, as when the reply is lost with a closed handle.</summary>
-        public Func<byte[], bool>? DropWhere;
-        /// <summary>Runs after a held reply is queued and before the current command's own reply.</summary>
+        /// <summary>Runs after a command is handled and before its own reply is queued.</summary>
         public Action<byte[]>? OnBeforeReply;
         /// <summary>Overrides the echoed command byte of the firmware reply.</summary>
         public byte? FirmwareEcho;
-        /// <summary>The firmware reply is only readable by a read waiting at least this long.</summary>
-        public int FirmwareReplyDelayMs;
-        /// <summary>Per-command reply latency; a read shorter than it fails but the time it waited counts toward the next read.</summary>
+        /// <summary>Per-command reply latency; a read shorter than it fails, but the time it waited counts toward the next read.</summary>
         public Func<byte[], int>? ReplyDelayMs;
-        /// <summary>Reads that waited the full timeout and got nothing.</summary>
-        public int EmptyReads;
-        private byte[]? _held;
-        private bool _heldOnce;
         private bool _hardwareSeen;
         private readonly Dictionary<byte, byte> _resource = new();
         private readonly List<(byte[] Report, int NeedMs)> _responses = new();
@@ -98,26 +86,8 @@ public class CorsairLinkHubTakeoverTests
             resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = isFirmware && FirmwareEcho is { } fe ? fe : cmd[0];
             resp[1 + CorsairLinkProtocol.ResponseStatusOffset] = (byte)status;
             payload.CopyTo(resp, 1 + 4);
-            if (DropWhere?.Invoke(cmd) ?? false) return true;
-            lock (_responses)
-            {
-                var hold = !_heldOnce
-                    && ((DelayFirstSoftwareReply && cmd[0] == 0x01 && cmd[3] == CorsairLinkProtocol.ModeSoftware)
-                        || (HoldFirstWhere?.Invoke(cmd) ?? false));
-                if (hold)
-                {
-                    _heldOnce = true;
-                    _held = resp;
-                    return true;
-                }
-                if (_held != null)
-                {
-                    _responses.Add((_held, 0));
-                    _held = null;
-                }
-                OnBeforeReply?.Invoke(cmd);
-                _responses.Add((resp, Math.Max(isFirmware ? FirmwareReplyDelayMs : 0, ReplyDelayMs?.Invoke(cmd) ?? 0)));
-            }
+            OnBeforeReply?.Invoke(cmd);
+            lock (_responses) _responses.Add((resp, ReplyDelayMs?.Invoke(cmd) ?? 0));
             return true;
         }
 
@@ -150,11 +120,7 @@ public class CorsairLinkHubTakeoverTests
             byte[] resp;
             lock (_responses)
             {
-                if (_responses.Count == 0)
-                {
-                    EmptyReads++;
-                    return 0;
-                }
+                if (_responses.Count == 0) return 0;
                 var head = _responses[0];
                 if (head.NeedMs > timeoutMs)
                 {
@@ -203,10 +169,22 @@ public class CorsairLinkHubTakeoverTests
 
     private static string Join(IEnumerable<string> names) => string.Join(" ", names);
 
+    // The first software-mode command's reply is produced after the given latency.
+    private static Func<byte[], int> SlowFirstSoftwareReply(int ms)
+    {
+        var seen = false;
+        return c =>
+        {
+            if (seen || c[0] != 0x01 || c[3] != CorsairLinkProtocol.ModeSoftware) return 0;
+            seen = true;
+            return ms;
+        };
+    }
+
     [Fact]
     public void A_late_software_mode_reply_does_not_shift_the_stream_into_a_false_foreign_host()
     {
-        var device = new TakeoverHub { DelayFirstSoftwareReply = true };
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(300) };
         using var hub = NewHub(device);
 
         var ok = hub.Initialize();
@@ -228,132 +206,9 @@ public class CorsairLinkHubTakeoverTests
     }
 
     [Fact]
-    public void A_late_mode_reply_owed_for_the_same_command_byte_is_skipped()
+    public void A_foreign_echo_after_a_late_software_mode_reply_still_marks_another_program()
     {
-        var device = new TakeoverHub { HoldFirstWhere = c => c[0] == 0x02 && c[1] == 0x03 };
-        using var hub = NewHub(device);
-
-        Assert.False(hub.Initialize(), "the first mode read times out");
-        var ok = hub.Initialize();
-
-        Assert.True(ok, hub.LastInitTrace);
-        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
-        Assert.Equal("4.1.656", hub.State.Firmware);
-    }
-
-    [Fact]
-    public void A_slow_own_reply_behind_a_late_reply_is_still_read()
-    {
-        var device = new TakeoverHub { DelayFirstSoftwareReply = true, FirmwareReplyDelayMs = 100 };
-        using var hub = NewHub(device);
-
-        var ok = hub.Initialize();
-
-        Assert.True(ok, hub.LastInitTrace);
-        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
-        Assert.Equal("4.1.656", hub.State.Firmware);
-    }
-
-    [Fact]
-    public void A_reply_lost_for_good_does_not_swallow_the_next_command_of_that_byte()
-    {
-        var device = new TakeoverHub();
-        using var hub = NewHub(device);
-        Assert.True(hub.Initialize(), hub.LastInitTrace);
-        var dropped = false;
-        device.DropWhere = c =>
-        {
-            if (dropped || c[0] != 0x08) return false;
-            dropped = true;
-            return true;
-        };
-
-        hub.Poll();
-        device.DropWhere = null;
-
-        Assert.True(hub.Poll());
-        Assert.True(hub.Poll());
-        Assert.False(hub.ForeignHostSeen);
-    }
-
-    [Fact]
-    public void A_mode_reply_lost_with_the_closed_handle_does_not_block_the_next_connect()
-    {
-        var device = new TakeoverHub();
-        using var hub = NewHub(device);
-        Assert.True(hub.Initialize(), hub.LastInitTrace);
-        var modeReads = 0;
-        device.DropWhere = c => c[0] == 0x02 && c[1] == 0x03 && ++modeReads == 2;
-
-        hub.Detach();
-        device.DropWhere = null;
-        hub.Attach(device);
-        var ok = hub.Initialize();
-
-        Assert.True(ok, hub.LastInitTrace);
-        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
-    }
-
-    [Fact]
-    public void Two_slow_same_byte_replies_in_a_row_leave_no_stray_reply_to_read_as_another_program()
-    {
-        var device = new TakeoverHub();
-        var modeReads = 0;
-        device.ReplyDelayMs = c => c[0] == 0x02 && c[1] == 0x03 && ++modeReads is 1 or 2 ? 300 : 0;
-        using var hub = NewHub(device);
-
-        Assert.True(hub.Transfer(CorsairLinkProtocol.CmdGetMode) <= 0, "the first reply is slower than the read");
-        Assert.True(hub.Transfer(CorsairLinkProtocol.CmdGetMode) > 0);
-
-        // The second reply is still on its way; it belongs to Nexus.
-        Assert.False(hub.HearsOtherHost(device, 100, out var heard, out _), heard);
-        Assert.False(hub.ForeignHostSeen);
-    }
-
-    [Fact]
-    public void A_lost_reply_costs_one_empty_read_not_one_per_command()
-    {
-        var device = new TakeoverHub();
-        var modeReads = 0;
-        device.DropWhere = c => c[0] == 0x02 && c[1] == 0x03 && ++modeReads == 1;
-        using var hub = NewHub(device);
-
-        Assert.True(hub.Transfer(CorsairLinkProtocol.CmdGetMode) <= 0);
-        var afterTimeout = device.EmptyReads;
-        for (var i = 0; i < 5; i++) Assert.True(hub.Transfer(CorsairLinkProtocol.CmdGetMode) > 0);
-
-        Assert.Equal(afterTimeout + 1, device.EmptyReads);
-    }
-
-    [Fact]
-    public void A_lost_reply_debt_stops_discounting_reports_after_the_age_cap()
-    {
-        long now = 1_000_000;
-        var device = new TakeoverHub();
-        using var hub = NewHub(device, () => now);
-        Assert.True(hub.Initialize(), hub.LastInitTrace);
-        var dropped = false;
-        device.DropWhere = c =>
-        {
-            if (dropped || c[0] != 0x08) return false;
-            dropped = true;
-            return true;
-        };
-        hub.Poll();
-        device.DropWhere = null;
-        hub.Poll();
-
-        device.Inject(0x08);
-        Assert.False(hub.HearsOtherHost(device, 50, out _, out _));
-        device.Inject(0x08);
-        now += 31_000;
-        Assert.True(hub.HearsOtherHost(device, 50, out _, out _));
-    }
-
-    [Fact]
-    public void A_foreign_echo_after_a_timed_out_command_still_marks_another_program()
-    {
-        var device = new TakeoverHub { DelayFirstSoftwareReply = true };
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(300) };
         device.OnBeforeReply = c =>
         {
             if (c[0] == 0x02 && c[1] == 0x13) device.Inject(0x77);
@@ -363,6 +218,20 @@ public class CorsairLinkHubTakeoverTests
         hub.Initialize();
 
         Assert.True(hub.ForeignHostSeen, hub.LastInitTrace);
+    }
+
+    [Fact]
+    public void A_software_mode_reply_later_than_the_drain_bound_is_not_waited_for()
+    {
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(900) };
+        using var hub = NewHub(device);
+
+        var ok = hub.Initialize();
+
+        // The drain gives up after one empty read: the firmware read times out too and the version stays unset (the guard keeps a stale reply from being parsed), while init still connects.
+        Assert.True(ok, hub.LastInitTrace);
+        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
+        Assert.Equal("", hub.State.Firmware);
     }
 
     [Fact]

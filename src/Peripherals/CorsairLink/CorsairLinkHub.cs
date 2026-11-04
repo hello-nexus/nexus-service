@@ -107,9 +107,6 @@ public sealed class CorsairLinkHub : IDisposable
     // Commands whose reply timed out on Nexus's side, by command byte; survives Detach and Attach.
     private readonly int[] _owedReplies = new int[256];
     private readonly long[] _owedSinceMs = new long[256];
-    // The same-byte re-read was already paid for this debt, so later commands of that byte do not stall on it again.
-    private readonly bool[] _owedProbed = new bool[256];
-    private readonly byte[] _candidateRaw = new byte[CorsairLinkProtocol.WriteBufferLength];
     private bool _traceQuiet;
 
     /// <summary>Listens without writing for the whole window. A report echoing a command whose reply Nexus is still owed is discounted once and its hex put in <paramref name="ownHeard"/>; any other report is another host and its hex goes in <paramref name="heard"/>.</summary>
@@ -147,10 +144,9 @@ public sealed class CorsairLinkHub : IDisposable
         if (NowMs() - _owedSinceMs[echo] > OwedReplyMaxAgeMs)
         {
             _owedReplies[echo] = 0;
-            _owedProbed[echo] = false;
             return false;
         }
-        if (--_owedReplies[echo] == 0) _owedProbed[echo] = false;
+        _owedReplies[echo]--;
         return true;
     }
 
@@ -333,6 +329,13 @@ public sealed class CorsairLinkHub : IDisposable
         var refused = softwareN > CorsairLinkProtocol.ResponseStatusOffset && Refused(CorsairLinkProtocol.CmdSoftwareMode);
         if (refused) TraceNote("software mode refused");
         _softwareMode = true;
+
+        // A timed-out reply arrives late and would answer the firmware read, shifting every later reply by one.
+        for (var i = 0; softwareN <= 0 && i < 2 && _owedReplies[CorsairLinkProtocol.CmdSoftwareMode[0]] > 0; i++)
+        {
+            if (ReadStrippedLocked(ReadTimeoutMs) <= 0) break;
+            TraceNote("drained late software-mode reply");
+        }
 
         TraceNote("step=firmware");
         var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
@@ -769,10 +772,10 @@ public sealed class CorsairLinkHub : IDisposable
     }
 
     // Bare interrupt-IN read with no command write, report-id stripped like Transfer.
-    private int ReadStrippedLocked()
+    private int ReadStrippedLocked(int timeoutMs = ResyncReadTimeoutMs)
     {
         if (_device == null) return -1;
-        var n = _device.Read(_readRaw, ResyncReadTimeoutMs);
+        var n = _device.Read(_readRaw, timeoutMs);
         if (n <= 0) return n;
         if (_trace != null) TraceNote(_traceQuiet ? $"drain n={n}" : $"drain n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
@@ -832,13 +835,11 @@ public sealed class CorsairLinkHub : IDisposable
         return true;
     }
 
-    internal int Transfer(ReadOnlySpan<byte> command) => Transfer(command, default);
+    private int Transfer(ReadOnlySpan<byte> command) => Transfer(command, default);
 
     private int Transfer(ReadOnlySpan<byte> command, ReadOnlySpan<byte> payload)
     {
         if (_device == null || ForeignHostSeen) return -1;
-        // A reply is owed for this very command byte (an earlier timed-out request): replies arrive in order, so the first one with this echo is that late one.
-        var sameOwed = _owedReplies[command[0]] > 0 && !_owedProbed[command[0]] && NowMs() - _owedSinceMs[command[0]] <= OwedReplyMaxAgeMs;
         Array.Clear(_write);
         _write[1] = 0x00;
         _write[2] = 0x01;
@@ -856,7 +857,10 @@ public sealed class CorsairLinkHub : IDisposable
         if (n <= 0)
         {
             if (_trace != null) TraceNote($"read n={n}");
-            RecordOwedReply(command[0]);
+            var now = NowMs();
+            if (_owedReplies[command[0]] > 0 && now - _owedSinceMs[command[0]] > OwedReplyMaxAgeMs) _owedReplies[command[0]] = 0;
+            if (_owedReplies[command[0]] == 0) _owedSinceMs[command[0]] = now;
+            if (_owedReplies[command[0]] < OwedReplyMaxCount) _owedReplies[command[0]]++;
             return n;
         }
         if (_trace != null)
@@ -866,62 +870,8 @@ public sealed class CorsairLinkHub : IDisposable
         // Windows ReadFile returns the report with the report-id byte at [0]; hidapi
         // (which the parsers mirror) drops it. Strip it and report the stripped length.
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
-        // A late reply to an earlier timed-out command shifts the stream by one; keep
-        // reading until this command's own reply arrives so the shift does not persist.
-        // A same-byte report taken as the late one is held back: if nothing follows,
-        // the earlier reply was lost and that report was this command's own.
-        var candidateLen = 0;
-        for (var i = 0; i < CorsairLinkProtocol.ReadResyncTries; i++)
-        {
-            var isSameByte = sameOwed && _read[CorsairLinkProtocol.ResponseCommandOffset] == command[0];
-            if (!TakeLateReply(command[0], ref sameOwed)) break;
-            candidateLen = isSameByte ? n : 0;
-            if (isSameByte) _readRaw.AsSpan(0, n).CopyTo(_candidateRaw);
-            // This command's own reply may not be produced yet, so it gets the full read timeout.
-            var next = _device.Read(_readRaw, ReadTimeoutMs);
-            if (next <= 0)
-            {
-                if (_trace != null) TraceNote($"read n={next}");
-                if (candidateLen == 0)
-                {
-                    RecordOwedReply(command[0]);
-                    return next;
-                }
-                // Nothing followed: the report may be this command's own, but a slow earlier reply could still be on its way, so the debt stays with its original age.
-                _candidateRaw.AsSpan(0, candidateLen).CopyTo(_readRaw);
-                _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
-                if (_owedReplies[command[0]] < OwedReplyMaxCount) _owedReplies[command[0]]++;
-                _owedProbed[command[0]] = true;
-                break;
-            }
-            n = next;
-            if (_trace != null) TraceNote(_traceQuiet ? $"in n={n} status={_readRaw[1 + CorsairLinkProtocol.ResponseStatusOffset]:x2}" : $"in n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
-            _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
-        }
         NoteEcho(command[0]);
         return n - 1;
-    }
-
-    private void RecordOwedReply(byte cmd)
-    {
-        var now = NowMs();
-        if (_owedReplies[cmd] > 0 && now - _owedSinceMs[cmd] > OwedReplyMaxAgeMs) _owedReplies[cmd] = 0;
-        _owedProbed[cmd] = false;
-        if (_owedReplies[cmd] == 0) _owedSinceMs[cmd] = now;
-        if (_owedReplies[cmd] < OwedReplyMaxCount) _owedReplies[cmd]++;
-    }
-
-    // True when _read holds a late reply Nexus is owed, which it consumes. An echo equal to the sent byte counts only when that byte was already owed before the send.
-    private bool TakeLateReply(byte sent, ref bool sameOwed)
-    {
-        var echo = _read[CorsairLinkProtocol.ResponseCommandOffset];
-        if (echo == 0) return false;
-        if (echo == sent)
-        {
-            if (!sameOwed) return false;
-            sameOwed = false;
-        }
-        return TakeOwedLocked(echo);
     }
 
     public void Dispose()
