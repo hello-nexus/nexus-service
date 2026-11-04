@@ -55,8 +55,7 @@ public sealed class UsbPhoneWatcher : BackgroundService
     private const int DeviceHttpPort = 9400;
     private const int DeviceHttpsPort = 9443;
 
-    private readonly int _hostHttpPort;
-    private readonly int _hostHttpsPort;
+    private readonly PhoneTunnelPorts _tunnelPorts;
     private readonly AdbClient _client;
     private readonly HardwarePresence _presence;
 
@@ -70,11 +69,9 @@ public sealed class UsbPhoneWatcher : BackgroundService
     private bool _adbNotFoundLogged;
     private bool _serverUnavailableLogged;
 
-    public UsbPhoneWatcher(int servicePort, HardwarePresence presence)
+    public UsbPhoneWatcher(PhoneTunnelPorts tunnelPorts, HardwarePresence presence)
     {
-        _hostHttpPort = servicePort;
-        // Mirrors Program.cs httpsPort derivation.
-        _hostHttpsPort = servicePort == 9400 ? 9443 : servicePort + 443;
+        _tunnelPorts = tunnelPorts;
         _presence = presence;
         _client = new AdbClient();
     }
@@ -251,9 +248,15 @@ public sealed class UsbPhoneWatcher : BackgroundService
 
         // remote = device-side endpoint (Android app's fixed ports 9400/9443).
         // local = host-side endpoint (service's actual listen ports).
+        // Only the dedicated phone listeners are ever targeted: reversing onto the
+        // main ports would present the phone as loopback and so as the desktop.
         var allApplied = true;
-        foreach (var (devicePort, hostPort) in new[] { (DeviceHttpPort, _hostHttpPort), (DeviceHttpsPort, _hostHttpsPort) })
+        var applied = new List<string>();
+        foreach (var (devicePort, hostPort) in new[] { (DeviceHttpPort, _tunnelPorts.HttpPort), (DeviceHttpsPort, _tunnelPorts.HttpsPort) })
         {
+            if (hostPort is null)
+                continue; // no listener (HTTPS off, port taken, test host)
+            applied.Add($"tcp:{devicePort}->{hostPort}");
             var remoteSpec = $"tcp:{devicePort}";
             var localSpec = $"tcp:{hostPort}";
             try
@@ -270,7 +273,7 @@ public sealed class UsbPhoneWatcher : BackgroundService
 
         if (allApplied && !_reverseAppliedBySerial.ContainsKey(device.Serial))
         {
-            ServiceLog.Info($"[usb-phone-watcher] reverse applied: {device.Serial} ({device.Model}) tcp:{DeviceHttpPort}->{_hostHttpPort} + tcp:{DeviceHttpsPort}->{_hostHttpsPort}");
+            ServiceLog.Info($"[usb-phone-watcher] reverse applied: {device.Serial} ({device.Model}) {string.Join(" + ", applied)}");
             _reverseAppliedBySerial[device.Serial] = true;
         }
     }

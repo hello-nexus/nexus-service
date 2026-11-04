@@ -98,7 +98,7 @@ public class PanelPhonePairingServiceTests
         var service = NewService(new InMemoryConfigStore());
         service.SetHostDisplayName("Studio Workstation");
 
-        var result = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
+        var result = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
 
         Assert.True(result.Paired);
         Assert.Equal("Studio Workstation", result.MachineName);
@@ -110,7 +110,7 @@ public class PanelPhonePairingServiceTests
         var service = NewService(new InMemoryConfigStore());
         service.SpkiFingerprint = "fp-stub";
 
-        var result = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
+        var result = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
 
         Assert.True(result.Paired);
         Assert.Equal("fp-stub", result.SpkiFingerprint);
@@ -121,7 +121,7 @@ public class PanelPhonePairingServiceTests
     {
         var service = NewService(new InMemoryConfigStore());
 
-        var result = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
+        var result = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
 
         Assert.True(result.Paired);
         Assert.Null(result.SpkiFingerprint);
@@ -144,8 +144,8 @@ public class PanelPhonePairingServiceTests
         var store = new InMemoryConfigStore();
         var service = NewService(store);
 
-        var first = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
-        var second = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
+        var first = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
+        var second = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
 
         var sessions = service.GetSessions(0);
 
@@ -225,8 +225,8 @@ public class PanelPhonePairingServiceTests
         var store = new InMemoryConfigStore();
         var service = NewService(store);
 
-        var first = service.Claim(PairTokenFrom(service.CreatePairQr()), "device-uuid-A", NewContext(UserAgent, "192.168.1.50"));
-        var second = service.Claim(PairTokenFrom(service.CreatePairQr()), "device-uuid-A", NewContext(UserAgent, "192.168.1.51"));
+        var first = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), "device-uuid-A", NewContext(UserAgent, "192.168.1.50"));
+        var second = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), "device-uuid-A", NewContext(UserAgent, "192.168.1.51"));
 
         var sessions = service.GetSessions(0);
 
@@ -248,8 +248,8 @@ public class PanelPhonePairingServiceTests
         var secondCtx = NewContext(UserAgent, "192.168.1.51");
         secondCtx.Request.QueryString = new QueryString("?deviceId=device-uuid-Q");
 
-        var first = service.Claim(PairTokenFrom(service.CreatePairQr()), deviceId: "", firstCtx);
-        var second = service.Claim(PairTokenFrom(service.CreatePairQr()), deviceId: "", secondCtx);
+        var first = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), deviceId: "", firstCtx);
+        var second = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), deviceId: "", secondCtx);
 
         var sessions = service.GetSessions(0);
 
@@ -281,7 +281,7 @@ public class PanelPhonePairingServiceTests
     private static PanelPhonePairingService.ClaimResult ClaimOverRelay(
         PanelPhonePairingService service, string deviceName, string deviceId)
     {
-        return service.ClaimCore(
+        return service.ClaimCoreApproved(
             PairTokenFrom(service.CreatePairQr()),
             deviceName: deviceName,
             userAgent: "",
@@ -295,7 +295,7 @@ public class PanelPhonePairingServiceTests
     public void GetSessions_ReportsDeviceTypeFromUserAgent()
     {
         var service = NewService(new InMemoryConfigStore());
-        var result = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(AndroidUserAgent, "192.168.1.52"));
+        var result = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(AndroidUserAgent, "192.168.1.52"));
 
         var session = Assert.Single(service.GetSessions(0).Sessions);
 
@@ -308,7 +308,7 @@ public class PanelPhonePairingServiceTests
     public void GetSessions_ReportsIphoneForNativeIosUserAgent()
     {
         var service = NewService(new InMemoryConfigStore());
-        var result = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
+        var result = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
 
         var session = Assert.Single(service.GetSessions(0).Sessions);
 
@@ -321,7 +321,7 @@ public class PanelPhonePairingServiceTests
     public void RenameSession_UpdatesAuthorizedDeviceName()
     {
         var service = NewService(new InMemoryConfigStore());
-        service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
+        service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(NativeIosUserAgent, "192.168.1.53"));
         var session = Assert.Single(service.GetSessions(0).Sessions);
 
         var renamed = service.RenameSession(session.Id, "Desk iPhone");
@@ -338,7 +338,7 @@ public class PanelPhonePairingServiceTests
         // An iPad reports a Mac UA; the client passes the detected "iPad" label so
         // both the name and the device type read "iPad", not "Mac".
         var service = NewService(new InMemoryConfigStore());
-        var result = service.Claim(
+        var result = service.ClaimApproved(
             PairTokenFrom(service.CreatePairQr()),
             deviceId: "",
             deviceName: "iPad",
@@ -355,7 +355,7 @@ public class PanelPhonePairingServiceTests
     public void RenameSession_PreservesClientDeviceType()
     {
         var service = NewService(new InMemoryConfigStore());
-        service.Claim(
+        service.ClaimApproved(
             PairTokenFrom(service.CreatePairQr()),
             deviceId: "",
             deviceName: "iPad",
@@ -376,8 +376,8 @@ public class PanelPhonePairingServiceTests
         var store = new InMemoryConfigStore();
         var service = NewService(store);
 
-        var first = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
-        var second = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.51"));
+        var first = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
+        var second = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.51"));
 
         var sessions = service.GetSessions(0);
 
@@ -422,8 +422,8 @@ public class PanelPhonePairingServiceTests
     {
         var store = new InMemoryConfigStore();
         var service = NewService(store);
-        var first = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
-        var second = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.51"));
+        var first = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
+        var second = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.51"));
 
         var removed = await service.RevokeAllSessionsAsync();
 
@@ -442,7 +442,7 @@ public class PanelPhonePairingServiceTests
         await service.SetRemoteControlEnabledAsync(false);
         Assert.False(service.GetRemoteControlEnabled());
 
-        var result = service.Claim(
+        var result = service.ClaimApproved(
             PairTokenFrom(service.CreatePairQr()),
             NewContext(UserAgent, "192.168.1.60"));
 
@@ -450,7 +450,7 @@ public class PanelPhonePairingServiceTests
         Assert.Equal("remote-disabled", result.Error);
 
         await service.SetRemoteControlEnabledAsync(true);
-        var allowed = service.Claim(
+        var allowed = service.ClaimApproved(
             PairTokenFrom(service.CreatePairQr()),
             NewContext(UserAgent, "192.168.1.60"));
         Assert.True(allowed.Paired);
@@ -460,7 +460,7 @@ public class PanelPhonePairingServiceTests
     public void TryValidateSessionToken_ReturnsMatchedSessionId()
     {
         var service = NewService(new InMemoryConfigStore());
-        var claim = service.Claim(
+        var claim = service.ClaimApproved(
             PairTokenFrom(service.CreatePairQr()),
             NewContext(NativeIosUserAgent, "192.168.1.53"));
 
@@ -475,7 +475,7 @@ public class PanelPhonePairingServiceTests
     public void GetSessions_SerializesAuthorizedDevicesWithAppJsonContext()
     {
         var service = NewService(new InMemoryConfigStore());
-        service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
+        service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
 
         var json = JsonSerializer.Serialize(
             service.GetSessions(1),
@@ -492,7 +492,7 @@ public class PanelPhonePairingServiceTests
     public void Validate_HttpClaimedSession_RejectsRequestFromDifferentIp()
     {
         var service = NewService(new InMemoryConfigStore());
-        var claim = service.Claim(
+        var claim = service.ClaimApproved(
             PairTokenFrom(service.CreatePairQr()),
             NewContext(UserAgent, "192.168.1.50", isHttps: false));
         Assert.True(claim.Paired);
@@ -511,7 +511,7 @@ public class PanelPhonePairingServiceTests
     public void Validate_HttpsClaimedSession_AcceptsRequestFromAnyIp()
     {
         var service = NewService(new InMemoryConfigStore());
-        var claim = service.Claim(
+        var claim = service.ClaimApproved(
             PairTokenFrom(service.CreatePairQr()),
             NewContext(NativeIosUserAgent, "192.168.1.50", isHttps: true));
         Assert.True(claim.Paired);
@@ -529,7 +529,7 @@ public class PanelPhonePairingServiceTests
         // without an HttpContext. Don't break them - the bind check only
         // runs when context is provided AND the session was HTTP-claimed.
         var service = NewService(new InMemoryConfigStore());
-        var claim = service.Claim(
+        var claim = service.ClaimApproved(
             PairTokenFrom(service.CreatePairQr()),
             NewContext(NativeIosUserAgent, "192.168.1.50", isHttps: true));
 
@@ -847,147 +847,7 @@ public class PanelPhonePairingServiceTests
     }
 
     [Fact]
-    public void PairRequest_DoesNotRaiseAttention_WhenDashboardSubscribed()
-    {
-        // A connected dashboard renders the modal itself; a notification
-        // would be redundant.
-        var hub = new Nexus.Service.Sockets.MultiplexHub();
-        using var sub = hub.AddTestSubscription(Nexus.Service.Sockets.PanelTopics.PairCodeRequest);
-        var service = NewServiceWithHub(hub);
-        var attentions = 0;
-        service.PairRequestNeedsAttention += _ => attentions++;
-
-        var start = service.StartPairCode();
-        service.SubmitPairCode(start.Code, NewContext(NativeIosUserAgent, "192.168.1.77", isHttps: true));
-
-        Assert.Equal(0, attentions);
-    }
-
-    // -- QR SAS approval gate tests --------------------------------------
-
-    [Fact]
-    public void ClaimCore_NewDevice_HttpsSupportsSas_ReturnsSasGate()
-    {
-        var hub = new Nexus.Service.Sockets.MultiplexHub();
-        var service = new PanelPhonePairingService(new InMemoryConfigStore(), hub)
-        {
-            PublicLinkHost = "",
-            SpkiFingerprint = "fp-stub",
-        };
-        using var sub = hub.AddTestSubscription(Nexus.Service.Sockets.PanelTopics.PairCodeRequest);
-
-        var result = service.ClaimCore(
-            PairTokenFrom(service.CreatePairQr()),
-            deviceName: "iPhone",
-            userAgent: NativeIosUserAgent,
-            remoteAddress: "192.168.1.50",
-            deviceId: "device-uuid-new",
-            overRelay: false,
-            claimedOverHttps: true,
-            supportsSasApproval: true);
-
-        Assert.True(result.Ok);
-        Assert.True(result.NeedsApproval);
-        Assert.Equal("", result.SessionToken);
-        Assert.False(string.IsNullOrEmpty(result.RequestId));
-        Assert.Equal(6, result.Sas.Length);
-        Assert.All(result.Sas, c => Assert.InRange(c, '0', '9'));
-        Assert.Equal("fp-stub", result.Spki);
-        Assert.True(result.ExpiresAt > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        Assert.Equal(0, service.GetSessions(0).AuthorizedCount);
-        Assert.True(hub.TryGetTopicSnapshot(Nexus.Service.Sockets.PanelTopics.PairCodeRequest, out _));
-    }
-
-    [Fact]
-    public void ClaimCore_AlreadyPairedDevice_HttpsSupportsSas_DirectToken()
-    {
-        var store = new InMemoryConfigStore();
-        var service = new PanelPhonePairingService(store, new Nexus.Service.Sockets.MultiplexHub())
-        {
-            PublicLinkHost = "",
-            SpkiFingerprint = "fp-stub",
-        };
-
-        // Seed a live session for device-uuid-A via a relay claim (no fingerprint).
-        var first = service.ClaimCore(
-            PairTokenFrom(service.CreatePairQr()),
-            deviceName: "iPhone",
-            userAgent: NativeIosUserAgent,
-            remoteAddress: "",
-            deviceId: "device-uuid-A",
-            overRelay: true,
-            claimedOverHttps: false);
-        Assert.True(first.Ok);
-        Assert.False(first.NeedsApproval);
-
-        // Same deviceId over HTTPS with SAS opt-in: already paired -> direct mint.
-        var second = service.ClaimCore(
-            PairTokenFrom(service.CreatePairQr()),
-            deviceName: "iPhone",
-            userAgent: NativeIosUserAgent,
-            remoteAddress: "192.168.1.50",
-            deviceId: "device-uuid-A",
-            overRelay: false,
-            claimedOverHttps: true,
-            supportsSasApproval: true);
-
-        Assert.True(second.Ok);
-        Assert.False(second.NeedsApproval);
-        Assert.False(string.IsNullOrEmpty(second.SessionToken));
-    }
-
-    [Fact]
-    public void ClaimCore_SupportsSasFalse_OldClient_DirectToken()
-    {
-        var store = new InMemoryConfigStore();
-        var service = new PanelPhonePairingService(store, new Nexus.Service.Sockets.MultiplexHub())
-        {
-            PublicLinkHost = "",
-            SpkiFingerprint = "fp-stub",
-        };
-
-        var result = service.ClaimCore(
-            PairTokenFrom(service.CreatePairQr()),
-            deviceName: "iPhone",
-            userAgent: NativeIosUserAgent,
-            remoteAddress: "192.168.1.50",
-            deviceId: "device-uuid-legacy",
-            overRelay: false,
-            claimedOverHttps: true,
-            supportsSasApproval: false);
-
-        Assert.True(result.Ok);
-        Assert.False(result.NeedsApproval);
-        Assert.False(string.IsNullOrEmpty(result.SessionToken));
-    }
-
-    [Fact]
-    public void ClaimCore_OverRelay_SupportsSasTrue_DirectToken()
-    {
-        var store = new InMemoryConfigStore();
-        var service = new PanelPhonePairingService(store, new Nexus.Service.Sockets.MultiplexHub())
-        {
-            PublicLinkHost = "",
-            SpkiFingerprint = "fp-stub",
-        };
-
-        var result = service.ClaimCore(
-            PairTokenFrom(service.CreatePairQr()),
-            deviceName: "iPhone",
-            userAgent: "",
-            remoteAddress: "",
-            deviceId: "device-uuid-relay",
-            overRelay: true,
-            claimedOverHttps: false,
-            supportsSasApproval: true);
-
-        Assert.True(result.Ok);
-        Assert.False(result.NeedsApproval);
-        Assert.False(string.IsNullOrEmpty(result.SessionToken));
-    }
-
-    [Fact]
-    public void QrSasApproval_MintsSingleSessionWithDeviceId_AndSkipsApprovalOnReScan()
+    public void QrSasApproval_MintsSingleSessionWithDeviceId_AndReScanNeedsApprovalAgain()
     {
         var store = new InMemoryConfigStore();
         var service = new PanelPhonePairingService(store, new Nexus.Service.Sockets.MultiplexHub())
@@ -1028,7 +888,8 @@ public class PanelPhonePairingServiceTests
         var persistedSession = Assert.Single(persisted);
         Assert.Equal("device-uuid-X", persistedSession.DeviceId);
 
-        // Second claim with the same deviceId: already paired -> fast-path, no approval modal.
+        // A re-scan with the same deviceId but no session token is a new claim:
+        // the spoofable id alone never skips the host's Allow.
         var reScan = service.ClaimCore(
             PairTokenFrom(service.CreatePairQr()),
             deviceName: "iPhone",
@@ -1040,8 +901,8 @@ public class PanelPhonePairingServiceTests
             supportsSasApproval: true);
 
         Assert.True(reScan.Ok);
-        Assert.False(reScan.NeedsApproval);
-        Assert.False(string.IsNullOrEmpty(reScan.SessionToken));
+        Assert.True(reScan.NeedsApproval);
+        Assert.Equal("", reScan.SessionToken);
 
         _ = session; // confirm the local binding is used
     }
@@ -1102,7 +963,7 @@ public class PanelPhonePairingServiceTests
         var telemetry = new RecordingTelemetry();
         var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
 
-        var result = service.Claim(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
+        var result = service.ClaimApproved(PairTokenFrom(service.CreatePairQr()), NewContext(UserAgent, "192.168.1.50"));
 
         Assert.True(result.Paired);
         var e = Assert.Single(telemetry.Events);
@@ -1117,7 +978,7 @@ public class PanelPhonePairingServiceTests
         var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
         var token = PairTokenFrom(service.CreatePairQr());
 
-        var result = service.ClaimCore(token, "Phone", "", "", "relay-device", overRelay: true, claimedOverHttps: false);
+        var result = service.ClaimCoreApproved(token, "Phone", "", "", "relay-device", overRelay: true, claimedOverHttps: false);
 
         Assert.True(result.Ok);
         Assert.Equal(("transport", (object?)"relay"), Assert.Single(Assert.Single(telemetry.Events).Props));
@@ -1129,7 +990,7 @@ public class PanelPhonePairingServiceTests
         var telemetry = new RecordingTelemetry();
         var service = new PanelPhonePairingService(new InMemoryConfigStore(), new Nexus.Service.Sockets.MultiplexHub(), telemetry) { PublicLinkHost = "" };
 
-        var result = service.ClaimCore("not-a-token", "Phone", "", "", "d", overRelay: true, claimedOverHttps: false);
+        var result = service.ClaimCoreApproved("not-a-token", "Phone", "", "", "d", overRelay: true, claimedOverHttps: false);
 
         Assert.False(result.Ok);
         Assert.Empty(telemetry.Events);
