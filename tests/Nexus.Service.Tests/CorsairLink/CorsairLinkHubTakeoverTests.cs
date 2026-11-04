@@ -25,6 +25,8 @@ public class CorsairLinkHubTakeoverTests
         public bool DelayFirstSoftwareReply;
         /// <summary>Withholds the first reply to a command matching this predicate, with the same late delivery.</summary>
         public Func<byte[], bool>? HoldFirstWhere;
+        /// <summary>Commands matching this predicate get no reply at all, as when the reply is lost with a closed handle.</summary>
+        public Func<byte[], bool>? DropWhere;
         /// <summary>Runs after a held reply is queued and before the current command's own reply.</summary>
         public Action<byte[]>? OnBeforeReply;
         /// <summary>Overrides the echoed command byte of the firmware reply.</summary>
@@ -92,6 +94,7 @@ public class CorsairLinkHubTakeoverTests
             resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = isFirmware && FirmwareEcho is { } fe ? fe : cmd[0];
             resp[1 + CorsairLinkProtocol.ResponseStatusOffset] = (byte)status;
             payload.CopyTo(resp, 1 + 4);
+            if (DropWhere?.Invoke(cmd) ?? false) return true;
             lock (_responses)
             {
                 var hold = !_heldOnce
@@ -234,6 +237,46 @@ public class CorsairLinkHubTakeoverTests
         Assert.True(ok, hub.LastInitTrace);
         Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
         Assert.Equal("4.1.656", hub.State.Firmware);
+    }
+
+    [Fact]
+    public void A_reply_lost_for_good_does_not_swallow_the_next_command_of_that_byte()
+    {
+        var device = new TakeoverHub();
+        using var hub = NewHub(device);
+        Assert.True(hub.Initialize(), hub.LastInitTrace);
+        var dropped = false;
+        device.DropWhere = c =>
+        {
+            if (dropped || c[0] != 0x08) return false;
+            dropped = true;
+            return true;
+        };
+
+        hub.Poll();
+        device.DropWhere = null;
+
+        Assert.True(hub.Poll());
+        Assert.True(hub.Poll());
+        Assert.False(hub.ForeignHostSeen);
+    }
+
+    [Fact]
+    public void A_mode_reply_lost_with_the_closed_handle_does_not_block_the_next_connect()
+    {
+        var device = new TakeoverHub();
+        using var hub = NewHub(device);
+        Assert.True(hub.Initialize(), hub.LastInitTrace);
+        var modeReads = 0;
+        device.DropWhere = c => c[0] == 0x02 && c[1] == 0x03 && ++modeReads == 2;
+
+        hub.Detach();
+        device.DropWhere = null;
+        hub.Attach(device);
+        var ok = hub.Initialize();
+
+        Assert.True(ok, hub.LastInitTrace);
+        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
     }
 
     [Fact]

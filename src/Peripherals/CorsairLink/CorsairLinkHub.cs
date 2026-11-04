@@ -864,16 +864,29 @@ public sealed class CorsairLinkHub : IDisposable
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
         // A late reply to an earlier timed-out command shifts the stream by one; keep
         // reading until this command's own reply arrives so the shift does not persist.
-        for (var i = 0; i < CorsairLinkProtocol.ReadResyncTries && TakeLateReply(command[0], ref sameOwed); i++)
+        // A same-byte report taken as the late one is held back: if nothing follows,
+        // the earlier reply was lost and that report was this command's own.
+        byte[]? sameByteCandidate = null;
+        for (var i = 0; i < CorsairLinkProtocol.ReadResyncTries; i++)
         {
+            var isSameByte = sameOwed && _read[CorsairLinkProtocol.ResponseCommandOffset] == command[0];
+            if (!TakeLateReply(command[0], ref sameOwed)) break;
+            sameByteCandidate = isSameByte ? _readRaw.AsSpan(0, n).ToArray() : null;
             // This command's own reply may not be produced yet, so it gets the full read timeout.
-            n = _device.Read(_readRaw, ReadTimeoutMs);
-            if (n <= 0)
+            var next = _device.Read(_readRaw, ReadTimeoutMs);
+            if (next <= 0)
             {
-                if (_trace != null) TraceNote($"read n={n}");
-                RecordOwedReply(command[0]);
-                return n;
+                if (_trace != null) TraceNote($"read n={next}");
+                if (sameByteCandidate == null)
+                {
+                    RecordOwedReply(command[0]);
+                    return next;
+                }
+                sameByteCandidate.CopyTo(_readRaw, 0);
+                _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
+                break;
             }
+            n = next;
             if (_trace != null) TraceNote(_traceQuiet ? $"in n={n} status={_readRaw[1 + CorsairLinkProtocol.ResponseStatusOffset]:x2}" : $"in n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
             _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);
         }
