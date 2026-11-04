@@ -33,11 +33,15 @@ public class CorsairLinkHubTakeoverTests
         public byte? FirmwareEcho;
         /// <summary>The firmware reply is only readable by a read waiting at least this long.</summary>
         public int FirmwareReplyDelayMs;
+        /// <summary>Per-command reply latency; a read shorter than it fails but the time it waited counts toward the next read.</summary>
+        public Func<byte[], int>? ReplyDelayMs;
+        /// <summary>Reads that waited the full timeout and got nothing.</summary>
+        public int EmptyReads;
         private byte[]? _held;
         private bool _heldOnce;
         private bool _hardwareSeen;
         private readonly Dictionary<byte, byte> _resource = new();
-        private readonly Queue<(byte[] Report, int NeedMs)> _responses = new();
+        private readonly List<(byte[] Report, int NeedMs)> _responses = new();
 
         public int VendorId => CorsairLinkProtocol.VendorId;
         public int ProductId => CorsairLinkProtocol.ProductId;
@@ -108,11 +112,11 @@ public class CorsairLinkHubTakeoverTests
                 }
                 if (_held != null)
                 {
-                    _responses.Enqueue((_held, 0));
+                    _responses.Add((_held, 0));
                     _held = null;
                 }
                 OnBeforeReply?.Invoke(cmd);
-                _responses.Enqueue((resp, isFirmware ? FirmwareReplyDelayMs : 0));
+                _responses.Add((resp, Math.Max(isFirmware ? FirmwareReplyDelayMs : 0, ReplyDelayMs?.Invoke(cmd) ?? 0)));
             }
             return true;
         }
@@ -138,7 +142,7 @@ public class CorsairLinkHubTakeoverTests
         {
             var resp = new byte[CorsairLinkProtocol.WriteBufferLength];
             resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = echo;
-            lock (_responses) _responses.Enqueue((resp, 0));
+            lock (_responses) _responses.Add((resp, 0));
         }
 
         public int Read(Span<byte> buffer, int timeoutMs)
@@ -146,8 +150,19 @@ public class CorsairLinkHubTakeoverTests
             byte[] resp;
             lock (_responses)
             {
-                if (_responses.Count == 0 || _responses.Peek().NeedMs > timeoutMs) return 0;
-                resp = _responses.Dequeue().Report;
+                if (_responses.Count == 0)
+                {
+                    EmptyReads++;
+                    return 0;
+                }
+                var head = _responses[0];
+                if (head.NeedMs > timeoutMs)
+                {
+                    _responses[0] = (head.Report, head.NeedMs - timeoutMs);
+                    return 0;
+                }
+                resp = head.Report;
+                _responses.RemoveAt(0);
             }
             resp.CopyTo(buffer);
             return resp.Length;
@@ -277,6 +292,62 @@ public class CorsairLinkHubTakeoverTests
 
         Assert.True(ok, hub.LastInitTrace);
         Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
+    }
+
+    [Fact]
+    public void Two_slow_same_byte_replies_in_a_row_leave_no_stray_reply_to_read_as_another_program()
+    {
+        var device = new TakeoverHub();
+        var modeReads = 0;
+        device.ReplyDelayMs = c => c[0] == 0x02 && c[1] == 0x03 && ++modeReads is 1 or 2 ? 300 : 0;
+        using var hub = NewHub(device);
+
+        Assert.True(hub.Transfer(CorsairLinkProtocol.CmdGetMode) <= 0, "the first reply is slower than the read");
+        Assert.True(hub.Transfer(CorsairLinkProtocol.CmdGetMode) > 0);
+
+        // The second reply is still on its way; it belongs to Nexus.
+        Assert.False(hub.HearsOtherHost(device, 100, out var heard, out _), heard);
+        Assert.False(hub.ForeignHostSeen);
+    }
+
+    [Fact]
+    public void A_lost_reply_costs_one_empty_read_not_one_per_command()
+    {
+        var device = new TakeoverHub();
+        var modeReads = 0;
+        device.DropWhere = c => c[0] == 0x02 && c[1] == 0x03 && ++modeReads == 1;
+        using var hub = NewHub(device);
+
+        Assert.True(hub.Transfer(CorsairLinkProtocol.CmdGetMode) <= 0);
+        var afterTimeout = device.EmptyReads;
+        for (var i = 0; i < 5; i++) Assert.True(hub.Transfer(CorsairLinkProtocol.CmdGetMode) > 0);
+
+        Assert.Equal(afterTimeout + 1, device.EmptyReads);
+    }
+
+    [Fact]
+    public void A_lost_reply_debt_stops_discounting_reports_after_the_age_cap()
+    {
+        long now = 1_000_000;
+        var device = new TakeoverHub();
+        using var hub = NewHub(device, () => now);
+        Assert.True(hub.Initialize(), hub.LastInitTrace);
+        var dropped = false;
+        device.DropWhere = c =>
+        {
+            if (dropped || c[0] != 0x08) return false;
+            dropped = true;
+            return true;
+        };
+        hub.Poll();
+        device.DropWhere = null;
+        hub.Poll();
+
+        device.Inject(0x08);
+        Assert.False(hub.HearsOtherHost(device, 50, out _, out _));
+        device.Inject(0x08);
+        now += 31_000;
+        Assert.True(hub.HearsOtherHost(device, 50, out _, out _));
     }
 
     [Fact]
