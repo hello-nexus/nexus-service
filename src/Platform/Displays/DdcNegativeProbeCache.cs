@@ -20,14 +20,17 @@ internal sealed class DdcNegativeProbeCache
 
     public DdcNegativeProbeCache(Func<long>? nowMs = null) => _nowMs = nowMs ?? (() => Environment.TickCount64);
 
-    /// <summary>True when the display has failed enough probes recently that this poll should not probe it.</summary>
+    /// <summary>True when this poll should not probe the display: a failure was recorded inside the spacing window, or it has failed enough times and the retry interval has not passed.</summary>
     public bool ShouldSkip(string id)
     {
         lock (_lock)
         {
-            return _failures.TryGetValue(id, out var e)
-                && e.Failures >= MaxAttempts
-                && _nowMs() - e.LastMs < (long)RetryInterval.TotalMilliseconds;
+            if (!_failures.TryGetValue(id, out var e))
+                return false;
+            var sinceLast = _nowMs() - e.LastMs;
+            // One probe per spacing window until the threshold, so polls inside it do not each probe.
+            return sinceLast < (long)FailureSpacing.TotalMilliseconds
+                || (e.Failures >= MaxAttempts && sinceLast < (long)RetryInterval.TotalMilliseconds);
         }
     }
 

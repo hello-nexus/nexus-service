@@ -66,9 +66,10 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
 
     public WindowsDisplayBrightnessProvider()
     {
-        DdcGate.Opened += ApplyHeldWrites;
         // A session unlock or settle is the moment a failing display is likely to answer again.
+        // Subscribed first so a throwing ApplyHeldWrites cannot skip it.
         DdcGate.Opened += _negativeProbes.Clear;
+        DdcGate.Opened += ApplyHeldWrites;
     }
 
     private bool Skip(string op, string id)

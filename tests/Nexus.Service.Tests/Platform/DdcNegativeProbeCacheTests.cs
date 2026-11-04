@@ -6,13 +6,33 @@ namespace Nexus.Service.Tests.Platform;
 
 public class DdcNegativeProbeCacheTests
 {
+    private static readonly long SpacingMs = (long)DdcNegativeProbeCache.FailureSpacing.TotalMilliseconds;
+    private static readonly long RetryMs = (long)DdcNegativeProbeCache.RetryInterval.TotalMilliseconds;
+
     private long _now;
     private DdcNegativeProbeCache Cache() => new(() => _now);
 
+    // One poll that is allowed to probe and fails: waits out the spacing first, as a real poll would.
     private void Fail(DdcNegativeProbeCache c, string id)
     {
-        _now += (long)DdcNegativeProbeCache.FailureSpacing.TotalMilliseconds;
+        _now += SpacingMs;
+        Assert.False(c.ShouldSkip(id));
         c.RecordFailure(id);
+    }
+
+    [Fact]
+    public void UnknownDisplay_IsProbed()
+    {
+        Assert.False(Cache().ShouldSkip("a"));
+    }
+
+    [Fact]
+    public void FirstFailures_StillProbeOncePerSpacing_ThenSkipUntilRetry()
+    {
+        var c = Cache();
+        for (var i = 0; i < DdcNegativeProbeCache.MaxAttempts; i++) Fail(c, "a");
+        _now += SpacingMs;
+        Assert.True(c.ShouldSkip("a"));
     }
 
     [Fact]
@@ -24,36 +44,34 @@ public class DdcNegativeProbeCacheTests
             c.RecordFailure("a");
             _now += 100;
         }
+        _now += SpacingMs;
         Assert.False(c.ShouldSkip("a"));
     }
 
     [Fact]
-    public void FailuresSpreadOverTime_TripTheThreshold()
+    public void FailureInsideSpacing_SkipsProbing_UntilSpacingPasses()
     {
         var c = Cache();
-        for (var i = 0; i < DdcNegativeProbeCache.MaxAttempts; i++)
-        {
-            Fail(c, "a");
-        }
+        c.RecordFailure("a");
         Assert.True(c.ShouldSkip("a"));
+        _now += SpacingMs - 1;
+        Assert.True(c.ShouldSkip("a"));
+        _now += 1;
+        Assert.False(c.ShouldSkip("a"));
     }
 
     [Fact]
-    public void UnknownDisplay_IsProbed()
-    {
-        Assert.False(Cache().ShouldSkip("a"));
-    }
-
-    [Fact]
-    public void FirstFailures_StillProbe_ThenSkip()
+    public void DroppedFailure_DoesNotMoveTheCountedTime()
     {
         var c = Cache();
-        for (var i = 0; i < DdcNegativeProbeCache.MaxAttempts - 1; i++)
-        {
-            Fail(c, "a");
-            Assert.False(c.ShouldSkip("a"));
-        }
-        Fail(c, "a");
+        c.RecordFailure("a");
+        _now += SpacingMs / 2;
+        c.RecordFailure("a");
+        _now += SpacingMs - SpacingMs / 2;
+        // Exactly one spacing after the first counted failure: this one counts (the dropped one did not reset the clock).
+        c.RecordFailure("a");
+        for (var i = 2; i < DdcNegativeProbeCache.MaxAttempts; i++) Fail(c, "a");
+        _now += SpacingMs;
         Assert.True(c.ShouldSkip("a"));
     }
 
@@ -62,20 +80,22 @@ public class DdcNegativeProbeCacheTests
     {
         var c = Cache();
         for (var i = 0; i < DdcNegativeProbeCache.MaxAttempts; i++) Fail(c, "a");
-        _now += (long)DdcNegativeProbeCache.RetryInterval.TotalMilliseconds - 1;
+        _now += RetryMs - 1;
         Assert.True(c.ShouldSkip("a"));
         _now += 1;
         Assert.False(c.ShouldSkip("a"));
     }
 
     [Fact]
-    public void FailureAfterInterval_RestartsTheSkipWindow()
+    public void AtCap_RetryIntervalRearmsOneProbe_ThenSkipsAgain()
     {
         var c = Cache();
         for (var i = 0; i < DdcNegativeProbeCache.MaxAttempts; i++) Fail(c, "a");
-        _now += (long)DdcNegativeProbeCache.RetryInterval.TotalMilliseconds;
+        _now += RetryMs;
         Assert.False(c.ShouldSkip("a"));
-        Fail(c, "a");
+        c.RecordFailure("a");
+        Assert.True(c.ShouldSkip("a"));
+        _now += SpacingMs;
         Assert.True(c.ShouldSkip("a"));
     }
 
@@ -86,7 +106,8 @@ public class DdcNegativeProbeCacheTests
         for (var i = 0; i < DdcNegativeProbeCache.MaxAttempts; i++) Fail(c, "a");
         c.RecordSuccess("a");
         Assert.False(c.ShouldSkip("a"));
-        Fail(c, "a");
+        c.RecordFailure("a");
+        c.RecordSuccess("a");
         Assert.False(c.ShouldSkip("a"));
     }
 
