@@ -40,7 +40,6 @@ internal static class LinuxKWinPanelPlacement
     private static string? _loadedConnector;
     private static bool _loaded;
     private static bool _started;
-    private static volatile bool _waitingForBus;
 
     /// <summary>Reloads the script whenever the Y70's connector changes, and after a failed load; "" leaves only the portrait fallback.</summary>
     public static Task EnsureLoadedAsync(DBusConnection dbus, string connector)
@@ -48,7 +47,7 @@ internal static class LinuxKWinPanelPlacement
         _wantedConnector = connector;
         Start(dbus);
         // A watcher parked on a bus that never came up gets another go at each kiosk spawn.
-        if (_waitingForBus) BusChanges.Signal();
+        BusChanges.Signal();
         return LoadAsync(dbus, force: false);
     }
 
@@ -100,6 +99,8 @@ internal static class LinuxKWinPanelPlacement
     // The one task that touches the NameOwnerChanged waiter. It survives bus loss: match rules die with the connection, so it re-arms after each reconnect.
     private static async Task WatchAsync(DBusConnection dbus)
     {
+        // Kept across iterations: re-arming would orphan a live waiter, whose timeout then removes the new one's key.
+        Task<DBusMessage>? next = null;
         while (true)
         {
             var seen = BusChanges.Version;
@@ -109,7 +110,9 @@ internal static class LinuxKWinPanelPlacement
                 await dbus.AddMatchAsync(
                     $"type='signal',sender='{BusName}',interface='{BusName}',member='NameOwnerChanged',arg0='{KWinName}'");
                 // Armed before the owner check so an appearance in between is not missed.
-                var next = dbus.WaitForSignalAsync(BusPath, "NameOwnerChanged", WatchRearmMs);
+                next ??= dbus.WaitForSignalAsync(BusPath, "NameOwnerChanged", WatchRearmMs);
+                // A bus change since the match was added may have left it on a dead connection.
+                if (BusChanges.Version != seen) continue;
                 if (await HasOwnerAsync(dbus))
                     await LoadWithRetryAsync(dbus, force: false);
                 while (true)
@@ -120,15 +123,15 @@ internal static class LinuxKWinPanelPlacement
                     next = dbus.WaitForSignalAsync(BusPath, "NameOwnerChanged", WatchRearmMs);
                     if (signal is not null && KWinAppeared(signal.Body))
                         await LoadWithRetryAsync(dbus, force: true);
+                    if (BusChanges.Version != seen) break;
                 }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[panel-kiosk] KWin watch interrupted: {ex.Message}");
+                next = null;
+                await BusChanges.WaitAfterAsync(seen);
             }
-            _waitingForBus = true;
-            await BusChanges.WaitAfterAsync(seen);
-            _waitingForBus = false;
         }
     }
 
