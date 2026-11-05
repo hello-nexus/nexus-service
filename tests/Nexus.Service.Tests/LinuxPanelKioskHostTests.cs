@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Nexus.Service.Platform.Linux;
+using Nexus.Service.Platform.Linux.DBus;
 using Xunit;
 
 namespace Nexus.Service.Tests;
@@ -294,5 +295,25 @@ public class LinuxPanelKioskHostTests
             LinuxBrowsers.FlatpakAppId("/var/lib/flatpak/exports/bin/com.brave.Browser"));
         Assert.Null(LinuxBrowsers.FlatpakAppId("/usr/bin/chromium"));
         Assert.Null(LinuxBrowsers.FlatpakAppId("/snap/bin/chromium"));
+    }
+
+    [Theory]
+    [InlineData("org.kde.KWin", "", ":1.42", true)]
+    [InlineData("org.kde.KWin", ":1.5", ":1.42", true)]
+    [InlineData("org.kde.KWin", ":1.5", "", false)]
+    [InlineData("org.kde.Other", "", ":1.42", false)]
+    public void KWinAppeared_OnlyWhenKWinGainsOwner(string name, string oldOwner, string newOwner, bool expected)
+    {
+        var w = new DBusWriter();
+        w.WriteString(name);
+        w.WriteString(oldOwner);
+        w.WriteString(newOwner);
+        Assert.Equal(expected, LinuxKWinPanelPlacement.KWinAppeared(w.ToArray()));
+    }
+
+    [Fact]
+    public void KWinAppeared_MalformedBodyIsFalse()
+    {
+        Assert.False(LinuxKWinPanelPlacement.KWinAppeared(Array.Empty<byte>()));
     }
 }
