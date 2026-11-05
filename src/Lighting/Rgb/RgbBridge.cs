@@ -86,8 +86,8 @@ public sealed class RgbBridge : IDisposable
     /// <summary>Watchdog bounces per <see cref="WatchdogWindow"/> before it gives up until the next user rescan.</summary>
     private const int WatchdogMaxBounces = 3;
     private static readonly TimeSpan WatchdogWindow = TimeSpan.FromMinutes(10);
-    /// <summary>A restarted daemon that still lists no controller this long after spawn, with quiet detection, never finished: devices were present before the restart.</summary>
-    private static readonly TimeSpan SettleStallTimeout = TimeSpan.FromSeconds(45);
+    /// <summary>A restarted daemon that still lists no controller this long after spawn, with no detection activity for the quiet window, never finished: devices were present before the restart.</summary>
+    private static readonly TimeSpan SettleStallTimeout = TimeSpan.FromSeconds(30);
     private const string SmbusMutexName = "Global\\Access_SMBUS.HTP.Method";
 
     // Covers the PawnIO install gate LhmComputer waits on plus the open itself.
@@ -1183,13 +1183,7 @@ public sealed class RgbBridge : IDisposable
     /// </summary>
     private bool RecoverSettleStall()
     {
-        var expected = Volatile.Read(ref _expectedDevices);
-        if (expected == 0)
-        {
-            return false;
-        }
-        var sinceSpawn = (DaemonUptimeProbe ?? (() => _proc.SinceLastSpawn))();
-        if (sinceSpawn < SettleStallTimeout || DetectionInProgress())
+        if (!SettleStallDue(out var expected, out var sinceSpawn))
         {
             return false;
         }
@@ -1207,6 +1201,28 @@ public sealed class RgbBridge : IDisposable
         ServiceLog.Warn($"[rgb-bridge] daemon never settled after restart ({detail}); restarting it");
         BounceSubprocess("settle-stall");
         return true;
+    }
+
+    /// <summary>
+    /// Due once devices were known before a restart, the daemon is past the settle timeout and has
+    /// been silent for the quiet window. Deliberately ignores a seen STARTED, which would hold
+    /// <see cref="DetectionInProgress"/> for the whole stall limit.
+    /// </summary>
+    private bool SettleStallDue(out int expected, out TimeSpan sinceSpawn)
+    {
+        expected = Volatile.Read(ref _expectedDevices);
+        sinceSpawn = TimeSpan.Zero;
+        if (expected == 0)
+        {
+            return false;
+        }
+        sinceSpawn = (DaemonUptimeProbe ?? (() => _proc.SinceLastSpawn))();
+        if (sinceSpawn < SettleStallTimeout)
+        {
+            return false;
+        }
+        var last = Interlocked.Read(ref _detectionActivityTicks);
+        return last == 0 || TimeSpan.FromTicks(DateTime.UtcNow.Ticks - last) >= DetectionQuietWindow;
     }
 
     /// <summary>Who holds the SMBus mutex the daemon's DIMM detection waits on without a timeout: held (by another process or thread), free, or n/a.</summary>
@@ -2487,6 +2503,20 @@ public sealed class RgbBridge : IDisposable
     {
         if (DetectionInProgress())
         {
+            if (SettleStallDue(out _, out _))
+            {
+                try
+                {
+                    if ((await _controller.GetControllerAddressesAsync().ConfigureAwait(false)).Count == 0)
+                    {
+                        RecoverSettleStall();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    RecordDaemonFailure("refresh", ex.Message);
+                }
+            }
             return;
         }
         // A COMPLETE can be missed (session dropped mid-pass, or connected after it).

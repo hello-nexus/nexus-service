@@ -27,6 +27,7 @@ public class RgbBridgeWatchdogTests : IDisposable
         public event Action<bool>? DetectionStateChanged;
         public event Action? DetectionProgress;
         public void RaiseProgress() => DetectionProgress?.Invoke();
+        public void StartDetection() => DetectionStateChanged?.Invoke(true);
         public void CompleteDetection() => DetectionStateChanged?.Invoke(false);
         public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
         public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default) =>
@@ -303,5 +304,23 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         await Task.Delay(TimeSpan.FromSeconds(14));
         Assert.Equal(0, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task A_daemon_that_sent_started_then_went_silent_is_restarted_at_the_settle_timeout()
+    {
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        _bridge.DaemonUptimeProbe = () => sw.Elapsed;
+
+        _bridge.OnSystemResume();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1, TimeSpan.FromSeconds(3)));
+        _controller.StartDetection();
+
+        // The STARTED hold alone would last the 60 s stall limit.
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 2, TimeSpan.FromSeconds(42)),
+            "a daemon silent after STARTED was not restarted");
+        Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(29), $"restarted early at {sw.Elapsed}");
     }
 }
