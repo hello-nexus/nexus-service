@@ -56,6 +56,10 @@ public sealed class CorsairLinkHub : IDisposable
     internal const int ColorFailureLogEvery = 100;
     private int _colorFailures;
     private bool _ledCountsLogged;
+    // The next real frame must follow a black frame and settle; set on every colour handle open.
+    private bool _primeDue;
+    private long _lastFailureLogMs = -ColorFailureEpisodeGapMs;
+    internal const int ColorFailureEpisodeGapMs = 10_000;
     internal int DetectionPollMs { get; set; } = CorsairLinkProtocol.DetectionPollMs;
     private bool _disposed;
     private bool _devicesLogged;
@@ -222,6 +226,8 @@ public sealed class CorsairLinkHub : IDisposable
             _colorHandleOpen = false;
             _colorReopenDue = false;
             _colorFailures = 0;
+            _lastFailureLogMs = -ColorFailureEpisodeGapMs;
+            _primeDue = false;
             _ledCountsLogged = false;
             _redetecting = false;
             _redetectRequested = false;
@@ -394,24 +400,24 @@ public sealed class CorsairLinkHub : IDisposable
             return false;
         }
         _colorReopenDue = false;
-        PrimeColorLocked();
+        _primeDue = true;
         _colorPrimed = true;
 
         State.IsConnected = true;
         return true;
     }
 
-    // An all-black frame then a settle after every colour handle open, so the chain
-    // is in a known state before the first real frame. A refused black frame leaves
-    // the reopen flag set for the next frame.
+    // An all-black frame then a settle before the first real frame after every colour
+    // handle open. Run from SendColors so a hub that never streams colours is never
+    // written to. The flag stays set until the black frame was accepted.
     private bool PrimeColorLocked()
     {
         var leds = 0;
         foreach (var d in State.Devices) leds += d.LedCount;
-        var ok = true;
-        if (leds > 0) ok = SendColorFrameLocked(new byte[leds * 3]);
+        if (leds > 0 && !SendColorFrameLocked(new byte[leds * 3])) return false;
         Settle(ColorSettleMs);
-        return ok;
+        _primeDue = false;
+        return true;
     }
 
     // Releases _lock for the wait so a Detach is not held off by the dwell; the entry
@@ -592,8 +598,10 @@ public sealed class CorsairLinkHub : IDisposable
                     return false;
                 }
                 _colorReopenDue = false;
-                if (!PrimeColorLocked()) return false;
+                _primeDue = true;
             }
+
+            if (_primeDue && !PrimeColorLocked()) return false;
 
             return SendColorFrameLocked(rgb);
         }
@@ -634,6 +642,7 @@ public sealed class CorsairLinkHub : IDisposable
             offset += chunk;
             first = false;
         }
+        _colorFailures = 0;
         return true;
     }
 
@@ -641,8 +650,16 @@ public sealed class CorsairLinkHub : IDisposable
     private void NoteColorFailure(string why)
     {
         _colorFailures++;
-        if (_colorFailures == 1) LogWarn($"[corsair] colour write failed ({why})");
-        else if (_colorFailures % ColorFailureLogEvery == 0) LogWarn($"[corsair] colour writes failing: {_colorFailures} so far (last: {why})");
+        var now = NowMs();
+        if (_colorFailures == 1 && now - _lastFailureLogMs >= ColorFailureEpisodeGapMs)
+        {
+            _lastFailureLogMs = now;
+            LogWarn($"[corsair] colour write failed ({why})");
+        }
+        else if (_colorFailures % ColorFailureLogEvery == 0)
+        {
+            LogWarn($"[corsair] colour writes failing: {_colorFailures} so far (last: {why})");
+        }
     }
 
     // Close then open handle 0 on the colour resource; true when the open is accepted.
@@ -726,7 +743,7 @@ public sealed class CorsairLinkHub : IDisposable
             list.Add(dev);
         }
         LogDevicesIfChanged(list);
-        LogLedCountsOnce(list, ledCounts);
+        LogLedCountsOnce(list, ledCounts, ledsResp != null);
         State.Devices = list;
         State.HasLcd = hasLcd;
         State.UnmappedChannels = unmapped;
@@ -734,10 +751,15 @@ public sealed class CorsairLinkHub : IDisposable
     }
 
     // Hub-reported LED count against the model table, once per connect.
-    private void LogLedCountsOnce(List<CorsairLinkDevice> list, int[] hubCounts)
+    private void LogLedCountsOnce(List<CorsairLinkDevice> list, int[] hubCounts, bool ledsRead)
     {
         if (_ledCountsLogged) return;
         _ledCountsLogged = true;
+        if (!ledsRead)
+        {
+            LogWarn("[corsair] led counts: the hub LED read failed, nothing to compare");
+            return;
+        }
         var sb = new System.Text.StringBuilder();
         var mismatches = 0;
         foreach (var d in list)
@@ -746,7 +768,8 @@ public sealed class CorsairLinkHub : IDisposable
             var hub = d.Channel < hubCounts.Length ? hubCounts[d.Channel] : 0;
             if (sb.Length > 0) sb.Append("; ");
             sb.Append("ch").Append(d.Channel).Append(" hub=").Append(hub).Append(" table=").Append(table);
-            if (table > 0 && hub != table)
+            // The hub count is capped, so a larger table count can never match.
+            if (table > 0 && table <= CorsairLinkProtocol.MaxDynamicLeds && hub != table)
             {
                 sb.Append(" MISMATCH");
                 mismatches++;

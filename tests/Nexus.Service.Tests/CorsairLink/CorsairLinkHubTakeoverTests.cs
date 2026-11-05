@@ -33,6 +33,12 @@ public class CorsairLinkHubTakeoverTests
         public bool RefuseColorWrites;
         /// <summary>LED count the hub reports for channel 1; 0 leaves it unreported.</summary>
         public int ReportedLeds;
+        /// <summary>Replaces the one-fan device list with these (type, model) records, on channels 1..n.</summary>
+        public (int Type, int Model)[]? Chain;
+        /// <summary>Makes the LED-count read return nothing.</summary>
+        public bool LedReadFails;
+        /// <summary>Colour writes fail at the HID layer.</summary>
+        public bool DropColorWrites;
         private bool _hardwareSeen;
         private readonly Dictionary<byte, byte> _resource = new();
         private readonly List<(byte[] Report, int NeedMs)> _responses = new();
@@ -49,6 +55,8 @@ public class CorsairLinkHubTakeoverTests
             var cmd = report.Slice(CorsairLinkProtocol.HeaderSize).ToArray();
             lock (Commands) Commands.Add(cmd);
             OnCommand?.Invoke(cmd);
+            if (DropColorWrites && cmd[0] is 0x06 or 0x07) return false;
+            if (LedReadFails && cmd[0] == 0x08 && _resource.TryGetValue(cmd[1], out var ledRes) && ledRes == 0x20) return false;
             var status = 0;
             var payload = Array.Empty<byte>();
             switch (cmd[0])
@@ -106,10 +114,17 @@ public class CorsairLinkHubTakeoverTests
                 ? Array.Empty<byte>()
                 : new byte[] { 0x0f, 0x00, 1, 0, 0, 0, 0, 2, 0, (byte)ReportedLeds, (byte)(ReportedLeds >> 8) };
 
-        private static byte[] ReadResource(byte resource)
+        private byte[] ReadResource(byte resource)
         {
             switch (resource)
             {
+                case 0x36 when Chain is { } chain:
+                    var list = new List<byte> { 0x21, 0x00, (byte)chain.Length };
+                    foreach (var (type, model) in chain)
+                    {
+                        list.AddRange(new byte[] { 0, 0, (byte)type, (byte)model, 0, 0, 0, 1, (byte)'A' });
+                    }
+                    return list.ToArray();
                 case 0x36:
                     var serial = Encoding.ASCII.GetBytes("010018B88203729CFC00014F1F");
                     return new byte[] { 0x21, 0x00, 1, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, (byte)serial.Length }
@@ -648,5 +663,100 @@ public class CorsairLinkHubTakeoverTests
         var failures = warnings.Where(w => w.Contains("colour write")).ToArray();
         Assert.Equal(2, failures.Length);
         Assert.Contains("failed (refused", failures[0]);
+    }
+
+    [Fact]
+    public void A_hub_that_never_gets_colours_never_receives_a_black_frame()
+    {
+        var (hub, device, events, _, _) = ColorHub();
+
+        Assert.True(hub.Initialize());
+
+        Assert.DoesNotContain(device.Commands, IsColorWrite);
+        Assert.DoesNotContain("black", events);
+        Assert.DoesNotContain("settle40", events);
+    }
+
+    [Fact]
+    public void The_black_frame_matches_the_real_frame_length_and_chunking_on_a_long_chain()
+    {
+        var (hub, device, _, _, _) = ColorHub();
+        // AIO, pump LCD cap, then ten fans: 384 LEDs, well past one 508-byte chunk.
+        device.Chain = new[] { (17, 2), (6, 0) }.Concat(Enumerable.Repeat((1, 0), 10)).ToArray();
+        Assert.True(hub.Initialize());
+        var leds = hub.State.Devices.Where(d => d.LedCount > 0).Sum(d => d.LedCount);
+        var bytes = leds * 3;
+        var chunks = (6 + bytes + CorsairLinkProtocol.MaxColorChunk - 1) / CorsairLinkProtocol.MaxColorChunk;
+        Assert.True(chunks > 2);
+
+        Assert.True(hub.SendColors(Enumerable.Repeat((byte)0xFF, bytes).ToArray()));
+
+        List<byte[]> writes;
+        lock (device.Commands) writes = device.Commands.Where(c => c[0] is 0x06 or 0x07).ToList();
+        Assert.Equal(2 * chunks, writes.Count);
+        foreach (var frame in new[] { writes.Take(chunks).ToList(), writes.Skip(chunks).ToList() })
+        {
+            Assert.Equal(0x06, frame[0][0]);
+            Assert.All(frame.Skip(1), c => Assert.Equal(0x07, c[0]));
+            Assert.Equal(bytes + 2, frame[0][2] | (frame[0][3] << 8));
+        }
+    }
+
+    [Fact]
+    public void A_black_frame_that_gets_no_reply_keeps_the_next_frame_primed()
+    {
+        var (hub, device, events, _, _) = ColorHub();
+        Assert.True(hub.Initialize());
+        device.DropColorWrites = true;
+        Assert.False(hub.SendColors(RealFrame()));
+        device.DropColorWrites = false;
+        events.Clear();
+
+        Assert.True(hub.SendColors(RealFrame()));
+
+        Assert.Equal(new[] { "black", "settle40", "color" }, events);
+    }
+
+    [Fact]
+    public void An_unreadable_led_endpoint_is_logged_instead_of_flagging_mismatches()
+    {
+        var (hub, device, _, warnings, _) = ColorHub();
+        device.LedReadFails = true;
+
+        Assert.True(hub.Initialize());
+
+        Assert.Contains(warnings, w => w.Contains("LED read failed"));
+        Assert.DoesNotContain(warnings, w => w.Contains("MISMATCH"));
+    }
+
+    [Fact]
+    public void A_table_count_above_the_hub_cap_is_not_flagged()
+    {
+        var (hub, device, _, warnings, infos) = ColorHub();
+        device.Chain = new[] { (5, 2) };
+        device.ReportedLeds = CorsairLinkProtocol.MaxDynamicLeds;
+
+        Assert.True(hub.Initialize());
+
+        Assert.DoesNotContain(warnings, w => w.Contains("MISMATCH"));
+        Assert.Contains(infos, i => i.Contains("led counts"));
+    }
+
+    [Fact]
+    public void A_new_failure_episode_logs_its_first_failure_again()
+    {
+        long now = 1000;
+        var (hub, device, _, warnings, _) = ColorHub();
+        hub.NowMs = () => now;
+        Assert.True(hub.Initialize());
+        device.RefuseColorWrites = true;
+        hub.SendColors(RealFrame());
+        device.RefuseColorWrites = false;
+        now += CorsairLinkHub.ColorFailureEpisodeGapMs;
+        Assert.True(hub.SendColors(RealFrame()));
+        device.RefuseColorWrites = true;
+        hub.SendColors(RealFrame());
+
+        Assert.Equal(2, warnings.Count(w => w.Contains("colour write failed")));
     }
 }
