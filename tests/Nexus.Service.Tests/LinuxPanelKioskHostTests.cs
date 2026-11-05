@@ -326,4 +326,19 @@ public class LinuxPanelKioskHostTests
     {
         Assert.Equal(expected, LinuxKWinPanelPlacement.NeedsLoad(loaded, loadedConnector, wanted, force));
     }
+
+    [Fact]
+    public async System.Threading.Tasks.Task BusChangeGate_WakesWaiterAndNeverMissesEarlierChange()
+    {
+        var gate = new LinuxKWinPanelPlacement.BusChangeGate();
+        var seen = gate.Version;
+        gate.Signal();
+        Assert.True(gate.WaitAfterAsync(seen).IsCompletedSuccessfully);
+
+        var current = gate.Version;
+        var pending = gate.WaitAfterAsync(current);
+        Assert.False(pending.IsCompleted);
+        gate.Signal();
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
+    }
 }
