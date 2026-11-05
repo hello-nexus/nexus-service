@@ -47,7 +47,7 @@ internal static class LinuxKWinPanelPlacement
         _wantedConnector = connector;
         Start(dbus);
         // A watcher parked on a bus that never came up gets another go at each kiosk spawn.
-        BusChanges.Signal();
+        BusChanges.Signal(busChanged: false);
         return LoadAsync(dbus, force: false);
     }
 
@@ -86,7 +86,7 @@ internal static class LinuxKWinPanelPlacement
     // A new connection or session means a new KWin that has none of our scripts.
     private static void OnBusChanged(DBusConnection dbus)
     {
-        BusChanges.Signal();
+        BusChanges.Signal(busChanged: true);
         _ = Task.Run(async () =>
         {
             await LoadLock.WaitAsync();
@@ -101,14 +101,24 @@ internal static class LinuxKWinPanelPlacement
     {
         // Kept across iterations: re-arming would orphan a live waiter, whose timeout then removes the new one's key.
         Task<DBusMessage>? next = null;
+        var matchedFor = -1;
         while (true)
         {
             var seen = BusChanges.Version;
+            var generation = BusChanges.Generation;
             try
             {
                 await dbus.StartAsync();
-                await dbus.AddMatchAsync(
-                    $"type='signal',sender='{BusName}',interface='{BusName}',member='NameOwnerChanged',arg0='{KWinName}'");
+                // Once per connection: only a bus change invalidates the match rule.
+                if (matchedFor != generation)
+                {
+                    await dbus.AddMatchAsync(
+                        $"type='signal',sender='{BusName}',interface='{BusName}',member='NameOwnerChanged',arg0='{KWinName}'");
+                    matchedFor = generation;
+                }
+                // A waiter faulted by a disconnect belongs to the dead connection; a timed-out one is still re-armable.
+                if (next is { IsFaulted: true } && next.Exception?.InnerException is not TimeoutException)
+                    next = null;
                 // Armed before the owner check so an appearance in between is not missed.
                 next ??= dbus.WaitForSignalAsync(BusPath, "NameOwnerChanged", WatchRearmMs);
                 // A bus change since the match was added may have left it on a dead connection.
@@ -130,6 +140,7 @@ internal static class LinuxKWinPanelPlacement
             {
                 Console.Error.WriteLine($"[panel-kiosk] KWin watch interrupted: {ex.Message}");
                 next = null;
+                matchedFor = -1;
                 await BusChanges.WaitAfterAsync(seen);
             }
         }
@@ -212,18 +223,26 @@ internal static class LinuxKWinPanelPlacement
         private readonly object _lock = new();
         private TaskCompletionSource _next = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _version;
+        private int _generation;
 
         public int Version
         {
             get { lock (_lock) return _version; }
         }
 
-        public void Signal()
+        /// <summary>Counts only real bus changes (reconnect, new session), not spawn wake-ups.</summary>
+        public int Generation
+        {
+            get { lock (_lock) return _generation; }
+        }
+
+        public void Signal(bool busChanged)
         {
             TaskCompletionSource old;
             lock (_lock)
             {
                 _version++;
+                if (busChanged) _generation++;
                 old = _next;
                 _next = new(TaskCreationOptions.RunContinuationsAsynchronously);
             }
