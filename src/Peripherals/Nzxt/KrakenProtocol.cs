@@ -167,13 +167,17 @@ internal static class KrakenProtocol
     /// Backlight level and rotation ride the same command, so a caller changing one must
     /// pass the current value of the other or it will be overwritten.
     /// </summary>
-    public static byte[] EncodeSetBacklight(int brightnessPercent, int orientationQuarterTurns)
+    public static byte[] EncodeSetBacklight(int brightnessPercent, int orientationQuarterTurns, bool camLayout = false)
     {
         var report = NewReport(ReportLcdRequest, LcdSubSetBacklight);
         report[2] = 0x01;
         report[3] = (byte)Math.Clamp(brightnessPercent, 0, 100);
-        report[6] = 0x01;
+        report[6] = camLayout ? (byte)0x00 : (byte)0x01;
         report[7] = (byte)(orientationQuarterTurns & 0x03);
+        if (camLayout)
+        {
+            report[8] = 0x1E;
+        }
         return report;
     }
 

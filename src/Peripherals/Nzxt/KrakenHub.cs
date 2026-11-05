@@ -185,6 +185,9 @@ public sealed class KrakenHub : IDisposable
         }
     }
 
+    private byte[] BacklightReport(int brightnessPercent, int orientationQuarterTurns) =>
+        KrakenProtocol.EncodeSetBacklight(brightnessPercent, orientationQuarterTurns, _model.CamSessionInit);
+
     private void ExitLockSleep()
     {
         lock (_lcdTransferLock)
@@ -208,7 +211,7 @@ public sealed class KrakenHub : IDisposable
                 if (from == _lockSavedBrightness)
                 {
                     _fade = null;
-                    FinishRestoreLocked(WriteLocked(KrakenProtocol.EncodeSetBacklight(_lockSavedBrightness, _snapshot.LcdOrientationQuarterTurns)));
+                    FinishRestoreLocked(WriteLocked(BacklightReport(_lockSavedBrightness, _snapshot.LcdOrientationQuarterTurns)));
                 }
                 else
                 {
@@ -244,7 +247,7 @@ public sealed class KrakenHub : IDisposable
         if (from == to)
         {
             _fade = null;
-            var wrote = WriteLocked(KrakenProtocol.EncodeSetBacklight(to, turns));
+            var wrote = WriteLocked(BacklightReport(to, turns));
             if (to > 0)
             {
                 FinishRestoreLocked(wrote);
@@ -270,7 +273,7 @@ public sealed class KrakenHub : IDisposable
             _fade = null;
             try
             {
-                var wrote = WriteLocked(KrakenProtocol.EncodeSetBacklight(fade.To, _snapshot.LcdOrientationQuarterTurns));
+                var wrote = WriteLocked(BacklightReport(fade.To, _snapshot.LcdOrientationQuarterTurns));
                 if (!fade.Down)
                 {
                     FinishRestoreLocked(wrote);
@@ -305,7 +308,7 @@ public sealed class KrakenHub : IDisposable
             {
                 return true;
             }
-            var wrote = WriteLocked(KrakenProtocol.EncodeSetBacklight(level, _snapshot.LcdOrientationQuarterTurns));
+            var wrote = WriteLocked(BacklightReport(level, _snapshot.LcdOrientationQuarterTurns));
             if (wrote)
             {
                 _fadeLastSent = level;
@@ -330,7 +333,7 @@ public sealed class KrakenHub : IDisposable
         {
             return;
         }
-        if (WriteLocked(KrakenProtocol.EncodeSetBacklight(_lockSavedBrightness, _snapshot.LcdOrientationQuarterTurns)))
+        if (WriteLocked(BacklightReport(_lockSavedBrightness, _snapshot.LcdOrientationQuarterTurns)))
         {
             _lockRestorePending = false;
             _saveRestore?.Invoke(null);
@@ -598,7 +601,7 @@ public sealed class KrakenHub : IDisposable
             var restoreFailed = false;
             if (_model.HasLcd && (sleepNow || restore))
             {
-                var wrote = WriteLocked(KrakenProtocol.EncodeSetBacklight(sleepNow ? 0 : brightness, orientation));
+                var wrote = WriteLocked(BacklightReport(sleepNow ? 0 : brightness, orientation));
                 if (!sleepNow)
                 {
                     if (wrote)
@@ -764,7 +767,7 @@ public sealed class KrakenHub : IDisposable
     {
         // Taken before the transfer lock; the flag only flips under both, so a stale read at
         // worst sends one command that the lock path then corrects.
-        var report = KrakenProtocol.EncodeSetBacklight(brightnessPercent, orientationQuarterTurns);
+        var report = BacklightReport(brightnessPercent, orientationQuarterTurns);
         // A rotation re-uploads the stored frame, which is a full bulk transfer, so this
         // takes the transfer lock first - same order as PushStreamFrame, never the reverse.
         lock (_lcdTransferLock)
@@ -778,7 +781,7 @@ public sealed class KrakenHub : IDisposable
                 _saveRestore?.Invoke(_lockSavedBrightness);
                 // Dark, or the step a fade down is on: the change must not jump the ramp.
                 var shown = _fade is { } running ? running.LevelAt(Clock()) : 0;
-                report = KrakenProtocol.EncodeSetBacklight(shown, orientationQuarterTurns);
+                report = BacklightReport(shown, orientationQuarterTurns);
             }
             else
             {
@@ -1288,6 +1291,8 @@ public sealed class KrakenHub : IDisposable
     private bool _plusStillDirty;
     private int _plusGen;
     private static readonly byte[] PlusBeginSession = KrakenProtocol.EncodeBeginLiveSession();
+    private static readonly byte[] PlusStatusRequest = KrakenProtocol.EncodeStatusRequest();
+    private static readonly byte[] PlusLcdInfoRequest = KrakenProtocol.EncodeLcdInfoRequest();
     private static readonly byte[] PlusCancel = KrakenProtocol.EncodeCancelTransfers();
     private static readonly byte[] PlusStart = KrakenProtocol.EncodeStartDirectTransfer(KrakenProtocol.BulkFormatRgb565);
     private static readonly byte[] PlusEnd = KrakenProtocol.EncodeEndTransfer();
@@ -1512,7 +1517,15 @@ public sealed class KrakenHub : IDisposable
             lcd = _lcd;
             if (!_streamReady)
             {
+                if (_model.CamSessionInit)
+                {
+                    WriteLocked(PlusStatusRequest);
+                }
                 WriteLocked(PlusBeginSession);
+                if (_model.CamSessionInit)
+                {
+                    WriteLocked(PlusLcdInfoRequest);
+                }
                 WriteLocked(PlusCancel);
                 _streamReady = true;
             }

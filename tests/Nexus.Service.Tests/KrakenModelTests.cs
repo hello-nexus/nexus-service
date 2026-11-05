@@ -57,7 +57,8 @@ public class KrakenModelTests
         Assert.Equal("NZXT Kraken Plus V2", plus.Name);
         Assert.False(plus.DirectStream);
         Assert.Equal(0x0B, plus.TelemetryInterval);
-        Assert.All(KrakenModel.All.Where(m => m.ProductId != 0x3014), m => Assert.Equal(0x01, m.TelemetryInterval));
+        Assert.Equal(0x0B, KrakenModel.Find(0x300E)!.TelemetryInterval);
+        Assert.All(KrakenModel.All.Where(m => m.ProductId is not (0x3014 or 0x300E)), m => Assert.Equal(0x01, m.TelemetryInterval));
         Assert.False(KrakenModel.Find(0x300E)!.DirectStream);
     }
 
@@ -104,7 +105,8 @@ public class KrakenModelTests
         Assert.Equal(new[] { 0x3008 }, KrakenModel.All.Where(m => m.StreamRecreatesBuckets).Select(m => m.ProductId));
         Assert.Equal(new[] { 0x3014, 0x300E, 0x3008 }, KrakenModel.All.Where(m => m.HasLcd && m.StreamFps != 30).Select(m => m.ProductId));
         Assert.Equal(15, KrakenModel.Find(0x3008)!.StreamFps);
-        Assert.Equal(20, KrakenModel.Find(0x300E)!.StreamFps);
+        Assert.Equal(26, KrakenModel.Find(0x300E)!.StreamFps);
+        Assert.Equal(20, KrakenModel.Find(0x3014)!.StreamFps);
     }
 
     [Fact]
