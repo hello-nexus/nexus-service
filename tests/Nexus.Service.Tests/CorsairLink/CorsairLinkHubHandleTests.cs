@@ -174,7 +174,7 @@ public class CorsairLinkHubHandleTests
         Assert.True(hub.SendColors(Frame));
 
         Assert.Equal(Colour, device.Handles[0]);
-        Assert.Equal(1, device.AcceptedColourFrames);
+        Assert.Equal(2, device.AcceptedColourFrames);
     }
 
     [Fact]
@@ -201,7 +201,7 @@ public class CorsairLinkHubHandleTests
         var sent = device.Commands.Skip(before).ToList();
         Assert.Equal(30, sent.Count);
         Assert.All(sent, c => Assert.Equal(new byte[] { 0x06, 0x00 }, c.Take(2)));
-        Assert.Equal(30, device.AcceptedColourFrames);
+        Assert.Equal(31, device.AcceptedColourFrames);
     }
 
     [Fact]
@@ -229,7 +229,7 @@ public class CorsairLinkHubHandleTests
         Assert.True(hub.SendColors(Frame));
 
         Assert.Equal(Colour, device.Handles[0]);
-        Assert.Equal(1, device.AcceptedColourFrames);
+        Assert.Equal(2, device.AcceptedColourFrames);
     }
 
     [Theory]
@@ -262,7 +262,7 @@ public class CorsairLinkHubHandleTests
         Assert.True(hub.SendColors(Frame));
 
         Assert.Equal(Colour, device.Handles[0]);
-        Assert.Equal(1, device.AcceptedColourFrames);
+        Assert.Equal(3, device.AcceptedColourFrames);
     }
 
     [Fact]

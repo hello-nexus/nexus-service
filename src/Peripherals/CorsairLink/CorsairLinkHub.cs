@@ -48,6 +48,14 @@ public sealed class CorsairLinkHub : IDisposable
     private long _colorReopenAfterMs;
     internal const int ColorReopenBackoffMs = 1000;
     internal Func<long> NowMs { get; set; } = () => Environment.TickCount64;
+    internal Action<int> Settle { get; set; } = ms => Thread.Sleep(ms);
+    internal Action<string> LogInfo { get; set; } = ServiceLog.Info;
+    internal Action<string> LogWarn { get; set; } = ServiceLog.Warn;
+    // Chained fans drop lighting when the first real frame follows the endpoint open too closely.
+    internal const int ColorSettleMs = 40;
+    internal const int ColorFailureLogEvery = 100;
+    private int _colorFailures;
+    private bool _ledCountsLogged;
     internal int DetectionPollMs { get; set; } = CorsairLinkProtocol.DetectionPollMs;
     private bool _disposed;
     private bool _devicesLogged;
@@ -213,6 +221,8 @@ public sealed class CorsairLinkHub : IDisposable
             _colorPrimed = false;
             _colorHandleOpen = false;
             _colorReopenDue = false;
+            _colorFailures = 0;
+            _ledCountsLogged = false;
             _redetecting = false;
             _redetectRequested = false;
         }
@@ -383,14 +393,25 @@ public sealed class CorsairLinkHub : IDisposable
             ServiceLog.Warn("[corsair] colour handle open refused");
             return false;
         }
-        // Mixed QX+RX chains drop QX lighting without a 40 ms settle after the
-        // first color endpoint open (OpenLinkHub lsh.go:4454).
-        Thread.Sleep(40);
-        _colorPrimed = true;
         _colorReopenDue = false;
+        PrimeColorLocked();
+        _colorPrimed = true;
 
         State.IsConnected = true;
         return true;
+    }
+
+    // An all-black frame then a settle after every colour handle open, so the chain
+    // is in a known state before the first real frame. A refused black frame leaves
+    // the reopen flag set for the next frame.
+    private bool PrimeColorLocked()
+    {
+        var leds = 0;
+        foreach (var d in State.Devices) leds += d.LedCount;
+        var ok = true;
+        if (leds > 0) ok = SendColorFrameLocked(new byte[leds * 3]);
+        Settle(ColorSettleMs);
+        return ok;
     }
 
     // Releases _lock for the wait so a Detach is not held off by the dwell; the entry
@@ -571,38 +592,57 @@ public sealed class CorsairLinkHub : IDisposable
                     return false;
                 }
                 _colorReopenDue = false;
+                if (!PrimeColorLocked()) return false;
             }
 
-            var len = 6 + rgb.Length;
-            if (len > _colorInner.Length) return false;
-
-            var bodyLen = rgb.Length + 2;
-            _colorInner[0] = (byte)(bodyLen & 0xFF);
-            _colorInner[1] = (byte)((bodyLen >> 8) & 0xFF);
-            _colorInner[2] = 0x00;
-            _colorInner[3] = 0x00;
-            _colorInner[4] = CorsairLinkProtocol.DataSetColor[0];
-            _colorInner[5] = CorsairLinkProtocol.DataSetColor[1];
-            rgb.CopyTo(_colorInner.AsSpan(6));
-
-            var offset = 0;
-            var first = true;
-            while (offset < len)
-            {
-                var chunk = Math.Min(CorsairLinkProtocol.MaxColorChunk, len - offset);
-                var cmd = first ? CorsairLinkProtocol.CmdWriteColor : CorsairLinkProtocol.CmdWriteSubColor;
-                if (Transfer(cmd, _colorInner.AsSpan(offset, chunk)) <= 0) return false;
-                if (Refused(cmd))
-                {
-                    _colorReopenDue = true;
-                    _colorReopenAfterMs = NowMs() + ColorReopenBackoffMs;
-                    return false;
-                }
-                offset += chunk;
-                first = false;
-            }
-            return true;
+            return SendColorFrameLocked(rgb);
         }
+    }
+
+    private bool SendColorFrameLocked(ReadOnlySpan<byte> rgb)
+    {
+        var len = 6 + rgb.Length;
+        if (len > _colorInner.Length) return false;
+
+        var bodyLen = rgb.Length + 2;
+        _colorInner[0] = (byte)(bodyLen & 0xFF);
+        _colorInner[1] = (byte)((bodyLen >> 8) & 0xFF);
+        _colorInner[2] = 0x00;
+        _colorInner[3] = 0x00;
+        _colorInner[4] = CorsairLinkProtocol.DataSetColor[0];
+        _colorInner[5] = CorsairLinkProtocol.DataSetColor[1];
+        rgb.CopyTo(_colorInner.AsSpan(6));
+
+        var offset = 0;
+        var first = true;
+        while (offset < len)
+        {
+            var chunk = Math.Min(CorsairLinkProtocol.MaxColorChunk, len - offset);
+            var cmd = first ? CorsairLinkProtocol.CmdWriteColor : CorsairLinkProtocol.CmdWriteSubColor;
+            if (Transfer(cmd, _colorInner.AsSpan(offset, chunk)) <= 0)
+            {
+                NoteColorFailure("no reply");
+                return false;
+            }
+            if (Refused(cmd))
+            {
+                _colorReopenDue = true;
+                _colorReopenAfterMs = NowMs() + ColorReopenBackoffMs;
+                NoteColorFailure($"refused status={_read[CorsairLinkProtocol.ResponseStatusOffset]:x2}");
+                return false;
+            }
+            offset += chunk;
+            first = false;
+        }
+        return true;
+    }
+
+    // First failure, then a running count, so a hub that keeps refusing cannot flood the log.
+    private void NoteColorFailure(string why)
+    {
+        _colorFailures++;
+        if (_colorFailures == 1) LogWarn($"[corsair] colour write failed ({why})");
+        else if (_colorFailures % ColorFailureLogEvery == 0) LogWarn($"[corsair] colour writes failing: {_colorFailures} so far (last: {why})");
     }
 
     // Close then open handle 0 on the colour resource; true when the open is accepted.
@@ -686,10 +726,35 @@ public sealed class CorsairLinkHub : IDisposable
             list.Add(dev);
         }
         LogDevicesIfChanged(list);
+        LogLedCountsOnce(list, ledCounts);
         State.Devices = list;
         State.HasLcd = hasLcd;
         State.UnmappedChannels = unmapped;
         return true;
+    }
+
+    // Hub-reported LED count against the model table, once per connect.
+    private void LogLedCountsOnce(List<CorsairLinkDevice> list, int[] hubCounts)
+    {
+        if (_ledCountsLogged) return;
+        _ledCountsLogged = true;
+        var sb = new System.Text.StringBuilder();
+        var mismatches = 0;
+        foreach (var d in list)
+        {
+            var table = CorsairLinkModels.Lookup(d.Type, d.Model).LedCount;
+            var hub = d.Channel < hubCounts.Length ? hubCounts[d.Channel] : 0;
+            if (sb.Length > 0) sb.Append("; ");
+            sb.Append("ch").Append(d.Channel).Append(" hub=").Append(hub).Append(" table=").Append(table);
+            if (table > 0 && hub != table)
+            {
+                sb.Append(" MISMATCH");
+                mismatches++;
+            }
+        }
+        var line = $"[corsair] led counts: {sb}";
+        if (mismatches > 0) LogWarn(line);
+        else LogInfo(line);
     }
 
     // One line per device-list change (connect, hot-plug), never per refresh.

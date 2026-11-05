@@ -29,6 +29,10 @@ public class CorsairLinkHubTakeoverTests
         public bool FirmwareEchoOnce;
         /// <summary>Per-command reply latency; a read shorter than it fails, but the time it waited counts toward the next read.</summary>
         public Func<byte[], int>? ReplyDelayMs;
+        /// <summary>Answers colour writes with a refusal status.</summary>
+        public bool RefuseColorWrites;
+        /// <summary>LED count the hub reports for channel 1; 0 leaves it unreported.</summary>
+        public int ReportedLeds;
         private bool _hardwareSeen;
         private readonly Dictionary<byte, byte> _resource = new();
         private readonly List<(byte[] Report, int NeedMs)> _responses = new();
@@ -78,9 +82,12 @@ public class CorsairLinkHubTakeoverTests
                         _resource[cmd[1]] = cmd[2];
                     }
                     break;
+                case 0x06 or 0x07:
+                    if (RefuseColorWrites) status = 3;
+                    break;
                 case 0x08:
                     if (!_resource.TryGetValue(cmd[1], out var res) || !OpenHandles.Contains(cmd[1])) status = 3;
-                    else payload = ReadResource(res);
+                    else payload = res == 0x20 ? LedsResource() : ReadResource(res);
                     break;
             }
             var resp = new byte[CorsairLinkProtocol.WriteBufferLength];
@@ -93,6 +100,11 @@ public class CorsairLinkHubTakeoverTests
             lock (_responses) _responses.Add((resp, ReplyDelayMs?.Invoke(cmd) ?? 0));
             return true;
         }
+
+        private byte[] LedsResource() =>
+            ReportedLeds == 0
+                ? Array.Empty<byte>()
+                : new byte[] { 0x0f, 0x00, 1, 0, 0, 0, 0, 2, 0, (byte)ReportedLeds, (byte)(ReportedLeds >> 8) };
 
         private static byte[] ReadResource(byte resource)
         {
@@ -539,5 +551,102 @@ public class CorsairLinkHubTakeoverTests
         hubB.Detach(handBack: true);
         Assert.Equal(CorsairLinkProtocol.ModeHardware, second.Mode);
     }
-}
 
+    private static bool IsColorWrite(byte[] c) => c[0] == 0x06;
+    private static bool IsBlackFrame(byte[] c) => c.Skip(8).Take(3 * 34).All(b => b == 0);
+
+    private static (CorsairLinkHub Hub, TakeoverHub Device, List<string> Events, List<string> Warnings, List<string> Infos) ColorHub()
+    {
+        var device = new TakeoverHub();
+        var events = new List<string>();
+        var warnings = new List<string>();
+        var infos = new List<string>();
+        device.OnCommand = c =>
+        {
+            if (c[0] == 0x0D) events.Add("open");
+            else if (IsColorWrite(c)) events.Add(IsBlackFrame(c) ? "black" : "color");
+        };
+        var hub = NewHub(device);
+        hub.Settle = ms => events.Add($"settle{ms}");
+        hub.LogWarn = warnings.Add;
+        hub.LogInfo = infos.Add;
+        return (hub, device, events, warnings, infos);
+    }
+
+    private static byte[] RealFrame() => Enumerable.Repeat((byte)0xFF, 34 * 3).ToArray();
+
+    [Fact]
+    public void Initial_open_sends_a_black_frame_and_settles_before_the_first_real_frame()
+    {
+        var (hub, _, events, _, _) = ColorHub();
+
+        Assert.True(hub.Initialize());
+        Assert.True(hub.SendColors(RealFrame()));
+
+        var tail = events.Skip(events.LastIndexOf("open")).ToArray();
+        Assert.Equal(new[] { "open", "black", "settle40", "color" }, tail);
+    }
+
+    [Fact]
+    public void Reopen_after_a_refused_write_sends_a_black_frame_and_settles_before_the_next_real_frame()
+    {
+        long now = 1000;
+        var (hub, device, events, _, _) = ColorHub();
+        hub.NowMs = () => now;
+        Assert.True(hub.Initialize());
+        device.RefuseColorWrites = true;
+        Assert.False(hub.SendColors(RealFrame()));
+        device.RefuseColorWrites = false;
+        now += CorsairLinkHub.ColorReopenBackoffMs + 1;
+        events.Clear();
+
+        Assert.True(hub.SendColors(RealFrame()));
+
+        Assert.Equal(new[] { "open", "black", "settle40", "color" }, events);
+    }
+
+    [Fact]
+    public void Led_count_mismatch_against_the_model_table_is_logged_once_per_connect()
+    {
+        var (hub, device, _, warnings, _) = ColorHub();
+        device.ReportedLeds = 18;
+
+        Assert.True(hub.Initialize());
+        hub.Poll();
+
+        var line = Assert.Single(warnings, w => w.Contains("led counts"));
+        Assert.Contains("ch1 hub=18 table=34 MISMATCH", line);
+    }
+
+    [Fact]
+    public void Matching_led_counts_are_logged_without_a_mismatch_flag()
+    {
+        var (hub, device, _, warnings, infos) = ColorHub();
+        device.ReportedLeds = 34;
+
+        Assert.True(hub.Initialize());
+
+        Assert.DoesNotContain(warnings, w => w.Contains("led counts"));
+        Assert.Contains(infos, i => i.Contains("ch1 hub=34 table=34") && !i.Contains("MISMATCH"));
+    }
+
+    [Fact]
+    public void Failed_colour_writes_are_logged_first_then_rate_limited()
+    {
+        long now = 1000;
+        var (hub, device, _, warnings, _) = ColorHub();
+        hub.NowMs = () => now;
+        Assert.True(hub.Initialize());
+        device.RefuseColorWrites = true;
+
+        for (var i = 0; i < CorsairLinkHub.ColorFailureLogEvery; i++)
+        {
+            hub.SendColors(RealFrame());
+            now += CorsairLinkHub.ColorReopenBackoffMs + 1;
+        }
+
+        var failures = warnings.Where(w => w.Contains("colour write")).ToArray();
+        Assert.Equal(2, failures.Length);
+        Assert.Contains("failed (refused", failures[0]);
+    }
+}
