@@ -63,6 +63,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     private readonly object _fadeGate = new();
     private readonly Dictionary<string, LcdFade> _fades = new(StringComparer.Ordinal);
     internal LcdFadeRunner FadeRunner { get; }
+    // Live slider levels not yet persisted, per panel record id; read lock-free from frame threads.
+    // A client holds one by re-posting it while its slider is down; one not refreshed within
+    // PreviewIdleMs is persisted to the record by the sweep. The record write also clears it.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Percent, long AtMs)> _previews = new(StringComparer.Ordinal);
+    internal const long PreviewIdleMs = 5000;
     private readonly LcdLockSleepSet? _lockSleep;
 
     /// <summary>Backlight percent used only when a panel with no stored value never revealed its pre-lock level.</summary>
@@ -80,7 +85,12 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         Func<string, bool>? removePanel = null,
         Func<string, bool>? isCustomized = null)
     {
-        _removePanel = removePanel ?? registry.Remove;
+        var remove = removePanel ?? registry.Remove;
+        _removePanel = id =>
+        {
+            _previews.TryRemove(id, out _);
+            return remove(id);
+        };
         _isCustomized = isCustomized ?? registry.IsCustomized;
         _discoveries = discoveries.ToList();
         _store = store;
@@ -154,6 +164,10 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         if (IsLockSleeping(panelDeviceId))
         {
             return 0;
+        }
+        if (LivePreview(panelDeviceId) is int live)
+        {
+            return live;
         }
         var record = _registry.Get(panelDeviceId);
         return record?.LcdBrightness ?? record?.LockRestoreBrightness;
@@ -294,6 +308,11 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             return null;
         }
+        // A level still being dragged is not the panel's own; it is never kept as the restore level.
+        if (LivePreview(panelDeviceId) is not null)
+        {
+            return UnlockDefaultBrightness;
+        }
         var transport = DimmableTransport(panelDeviceId);
         if (transport?.CurrentBrightness is > 0 and var current)
         {
@@ -352,7 +371,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     // The level to come back to is fixed here, before the first step: an up-fade
                     // caught mid-way reverses from where it is, never from an intermediate level.
                     var record = _registry.Get(id);
-                    var remembered = record?.LcdBrightness ?? record?.LockRestoreBrightness ?? level ?? UnlockDefaultBrightness;
+                    var remembered = LivePreview(id) ?? record?.LcdBrightness ?? record?.LockRestoreBrightness ?? level ?? UnlockDefaultBrightness;
                     var from = ActiveFade(id) is { Down: false } rising ? rising.LevelAt(_nowMs()) : remembered;
                     WriteMarkerForLock(id, level, epoch);
                     if (_lockState is { IsLocked: true } current && current.Epoch == epoch)
@@ -382,7 +401,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             foreach (var id in woken)
             {
                 var record = _registry.Get(id);
-                var target = record?.LcdBrightness ?? record?.LockRestoreBrightness;
+                var target = LivePreview(id) ?? record?.LcdBrightness ?? record?.LockRestoreBrightness;
                 var current = DimmableTransport(id)?.CurrentBrightness;
                 // Up from 0, or from wherever a fade down was caught; a panel the lock never dimmed
                 // stays where it is.
@@ -444,6 +463,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
     internal void TickOnce()
     {
+        SweepLapsedPreviews();
         var changed = false;
         foreach (var discovery in _discoveries)
         {
@@ -476,7 +496,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             {
                 DeviceSession? existing;
                 lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
-                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId), existing.Session.PanelDeviceId, existing);
+                var info = existing is null ? found : WithFpsCap(found, existing.Session.PanelDeviceId, existing);
                 string? remintedPanelId = null;
                 if (existing is not null && !ProfilesEqual(existing.Info.Profile, info.Profile))
                 {
@@ -562,6 +582,78 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ids.UnionWith(_heldByDevice.Values);
         }
         return ids;
+    }
+
+    /// <summary>
+    /// Puts a live slider level on the display without touching the record, so a drag costs one
+    /// device command per step. The level yields to a lock sleep or fade and holds while the
+    /// client keeps refreshing it, and the persisted write that ends the drag clears it.
+    /// </summary>
+    public bool PreviewBrightness(string panelDeviceId, int percent)
+    {
+        _previews[panelDeviceId] = (Math.Clamp(percent, 0, 100), _nowMs());
+        return ApplyBrightness(panelDeviceId);
+    }
+
+    // Expiry is decided by the sweep alone, so a preview never flickers back to the record first.
+    private int? LivePreview(string panelDeviceId) => _previews.TryGetValue(panelDeviceId, out var entry) ? entry.Percent : null;
+
+    /// <summary>Drops a live slider level so the record's value governs again, and re-applies it.</summary>
+    public void ClearBrightnessPreview(string panelDeviceId)
+    {
+        _previews.TryRemove(panelDeviceId, out _);
+        ApplyBrightness(panelDeviceId);
+    }
+
+    // Serializes the sweep's record write against a commit. Taken before the registry's own
+    // lock; nothing on the store side may take it.
+    private readonly object _previewGate = new();
+    internal Action? TestHookBeforePreviewPersist { get; set; }
+
+    /// <summary>
+    /// Runs a record write that carries a backlight level: the live preview is dropped with it,
+    /// so a sweep can never overwrite the committed level, then the level is applied.
+    /// </summary>
+    public T CommitBrightness<T>(string panelDeviceId, Func<T> write)
+    {
+        T result;
+        lock (_previewGate)
+        {
+            result = write();
+            _previews.TryRemove(panelDeviceId, out _);
+        }
+        ApplyBrightness(panelDeviceId);
+        return result;
+    }
+
+    // A preview nobody refreshed was still chosen by the user: it becomes the record's level, so
+    // the record and the display agree and the lock path reads the record as it always has.
+    private void SweepLapsedPreviews()
+    {
+        foreach (var entry in _previews.ToArray())
+        {
+            lock (_previewGate)
+            {
+                if (_nowMs() - entry.Value.AtMs < PreviewIdleMs
+                    || !_previews.TryGetValue(entry.Key, out var current) || current != entry.Value)
+                {
+                    continue;
+                }
+                try
+                {
+                    TestHookBeforePreviewPersist?.Invoke();
+                    _registry.Patch(entry.Key, new PanelDevicePatch { LcdBrightness = entry.Value.Percent });
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Warn($"[streamed-panel] persisting a lapsed backlight preview for {entry.Key} failed: {ex.GetType().Name}: {ex.Message}");
+                    continue;
+                }
+                _previews.TryRemove(entry);
+            }
+            _notifyPanelChanged?.Invoke(entry.Key);
+            ApplyBrightness(entry.Key);
+        }
     }
 
     /// <summary>Applies a persisted panel backlight change without waiting for a frame.</summary>
@@ -770,7 +862,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     PanelDeviceId = ds.Session.PanelDeviceId,
                     CssWidth = p.CssWidth,
                     CssHeight = p.CssHeight,
-                    Dpr = p.Dpr * p.RenderScale,
+                    Dpr = p.Dpr,
                     Fps = p.Fps,
                     BitrateKbps = p.BitrateKbps,
                     Codec = p.Codec == StreamCodec.RawBgra ? "rawBgra" : "h264",
@@ -855,7 +947,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ServiceLog.Error($"[streamed-panel] record allocation failed serial={info.Serial}: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
-        info = WithFpsCap(WithRenderScale(info, panelDeviceId), panelDeviceId);
+        info = WithFpsCap(info, panelDeviceId);
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
         OfferSharedFrames(session);
@@ -877,7 +969,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         // fps/bitrate hand-tune in streamed-panels.json) is visible at a
         // glance when a device misbehaves on supposedly-fixed defaults.
         ServiceLog.Info($"[streamed-panel] session started serial={info.Serial} session={session.SessionId} "
-            + $"panel={panelDeviceId} profile={info.Profile.Kind} {info.Profile.CssWidth}x{info.Profile.CssHeight}@{info.Profile.Fps} {info.Profile.BitrateKbps}kbps render={info.Profile.RenderScale}");
+            + $"panel={panelDeviceId} profile={info.Profile.Kind} {info.Profile.CssWidth}x{info.Profile.CssHeight}@{info.Profile.Fps} {info.Profile.BitrateKbps}kbps");
         // A record's `streamed` flag follows the session, so clients re-read the panel list.
         _notifyPanelChanged?.Invoke(panelDeviceId);
 
@@ -1216,20 +1308,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
     internal static bool IsStrip(StreamedPanelProfile p) => PanelLayoutDefaults.IsStrip(p.Surface, p.CssWidth, p.CssHeight);
 
-    // Toggling the record's HighResolution changes the profile, so the session re-mints at the new size.
-    private StreamedPanelDeviceInfo WithRenderScale(StreamedPanelDeviceInfo info, string panelDeviceId)
-    {
-        var profile = info.Profile;
-        if (!profile.SupportsRenderScale)
-        {
-            return info;
-        }
-        var scale = _registry.Get(panelDeviceId)?.HighResolution == true ? 1.0 : profile.PerformanceRenderScale;
-        return scale.Equals(profile.RenderScale)
-            ? info
-            : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
-    }
-
     // The record's cap is part of the profile, so changing it re-mints live sessions through the "profile changed" path in TickOnce.
     // A session whose record drives the glass as a secondary monitor keeps its rate: re-minting would
     // dispose the transport and recreate the virtual monitor, and the monitor feed re-reads the cap live.
@@ -1250,7 +1328,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
            && a.CssWidth == b.CssWidth
            && a.CssHeight == b.CssHeight
            && a.Dpr.Equals(b.Dpr)
-           && a.RenderScale.Equals(b.RenderScale)
            && a.Fps == b.Fps
            && a.BitrateKbps == b.BitrateKbps
            && a.WriteBatchFrames == b.WriteBatchFrames;
@@ -1263,10 +1340,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         if (!OperatingSystem.IsWindows() || session.Info.Profile.Codec != StreamCodec.RawBgra)
             return;
         var profile = session.Info.Profile;
-        var scale = profile.Dpr * profile.RenderScale;
         // FramePixels matches the overlay's even-rounded render size exactly.
-        var bytes = StreamedPanelProfile.FramePixels(profile.CssWidth, scale)
-            * StreamedPanelProfile.FramePixels(profile.CssHeight, scale) * 4;
+        var bytes = StreamedPanelProfile.FramePixels(profile.CssWidth, profile.Dpr)
+            * StreamedPanelProfile.FramePixels(profile.CssHeight, profile.Dpr) * 4;
         session.OfferSharedFrames(@"Global\NexusPanelStream-" + session.SessionId, bytes);
     }
 

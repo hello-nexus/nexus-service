@@ -33,7 +33,10 @@ public sealed class LightingWriteHealth
     public static readonly TimeSpan ClearAfter = TimeSpan.FromSeconds(20);
 
     /// <summary>The instance drivers report into, which DI also serves; drivers are built outside the container in places.</summary>
-    public static LightingWriteHealth Shared { get; } = new();
+    public static LightingWriteHealth Shared { get; } = new() { Incidents = Nexus.Service.Diagnostics.DeviceIncidentLog.Shared };
+
+    /// <summary>Per-device event rings; null in tests that do not exercise incident capture.</summary>
+    public Nexus.Service.Diagnostics.DeviceIncidentLog? Incidents { get; init; }
 
     private static readonly TimeSpan SuccessMerge = TimeSpan.FromSeconds(1);
 
@@ -82,6 +85,16 @@ public sealed class LightingWriteHealth
         {
             return;
         }
+        // One entry for a mixed window keeps the ring's time coverage; a failure window carries its successes as ok=.
+        if (failures > 0)
+        {
+            Incidents?.Note(key, handlerId, Nexus.Service.Diagnostics.DeviceEventKind.WriteFail, count: failures, okCount: Math.Max(successes, 0));
+        }
+        else
+        {
+            Incidents?.Note(key, handlerId, Nexus.Service.Diagnostics.DeviceEventKind.WriteOk, count: successes);
+        }
+        var flippedFailing = false;
         lock (_lock)
         {
             var now = _now();
@@ -116,7 +129,13 @@ public sealed class LightingWriteHealth
             if ((failures > 0 || st.Failing) && Evaluate(st, now))
             {
                 Volatile.Write(ref _dirty, 1);
+                flippedFailing = st.Failing;
             }
+        }
+        if (flippedFailing && Incidents is { } incidents)
+        {
+            incidents.Note(key, handlerId, Nexus.Service.Diagnostics.DeviceEventKind.Failing);
+            incidents.Snapshot(key, "write failures sustained");
         }
     }
 
@@ -154,9 +173,17 @@ public sealed class LightingWriteHealth
         }
     }
 
-    /// <summary>Drops a key, for a device Nexus no longer controls or that left.</summary>
-    public void Forget(string key)
+    /// <summary>Drops a key, for a device Nexus no longer controls or that left. <paramref name="deviceLeft"/> false (control released) drops the key without recording a drop snapshot.</summary>
+    public void Forget(string key, bool deviceLeft = true)
     {
+        if (deviceLeft && Incidents is { } incidents)
+        {
+            incidents.Disconnect(key, "device left");
+        }
+        else if (Incidents is { } released)
+        {
+            released.Discard(key);
+        }
         lock (_lock)
         {
             if (_states.Remove(key, out var st) && st.Failing)

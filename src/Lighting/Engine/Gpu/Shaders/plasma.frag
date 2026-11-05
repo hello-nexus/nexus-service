@@ -17,7 +17,15 @@ void main() {
     v = v / 3.0 * 0.5 + 0.5;
     vec3 col = tintedPalette(v + t * 0.05);
     col *= 1.0 - 0.25 * smoothstep(0.8, 1.6, length(uv));
+    // Palette contrast relaxed so channels sweep through their mid values, then the
+    // bright hues (green, yellow) are lowered in value, not pulled toward gray.
+    col = col * 0.88 + 0.06;
+    float pl = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    col *= 1.0 - 0.12 * smoothstep(0.45, 0.8, pl);
+    // Pull the colors slightly toward their own luma so a full-rainbow preset reads
+    // as color rather than glare. Hue stays on the wheel.
+    col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, 0.9);
     fragColor = vec4(finalize(col * 1.15), 1.0);
 }
 
-float outGain() { return 1.77; }
+float outGain() { return 1.4; }

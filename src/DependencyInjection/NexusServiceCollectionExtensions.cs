@@ -2643,7 +2643,7 @@ public static class NexusServiceCollectionExtensions
 
         services.AddSingleton<Nexus.Service.Panel.UsbPhoneWatcher>(
             sp => new Nexus.Service.Panel.UsbPhoneWatcher(
-                servicePort,
+                sp.GetRequiredService<Nexus.Service.Panel.PhoneTunnelPorts>(),
                 sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()));
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.UsbPhoneWatcher>());

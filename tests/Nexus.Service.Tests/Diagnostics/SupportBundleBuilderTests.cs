@@ -112,7 +112,7 @@ public class SupportBundleBuilderTests : IDisposable
             UserLogDirectories = dirs,
         }));
 
-        Assert.Contains("logs/user-alice/nexus-overlay.log", entries.Keys);
+        Assert.Contains("logs/user-1/nexus-overlay.log", entries.Keys);
         Assert.DoesNotContain(entries.Keys, k => k.StartsWith("logs/user-bob/"));
     }
 
@@ -145,7 +145,7 @@ public class SupportBundleBuilderTests : IDisposable
             UserLogDirectories = SupportBundleBuilder.UserLogDirectoriesFor(new[] { carol, dave }),
         }));
 
-        Assert.Contains("logs/user-dave/ok.log", entries.Keys);
+        Assert.Contains("logs/user-1/ok.log", entries.Keys);
         Assert.DoesNotContain("logs/user-dave/linked.log", entries.Keys);
         Assert.DoesNotContain(entries.Keys, k => k.StartsWith("logs/user-carol/"));
     }
@@ -178,9 +178,9 @@ public class SupportBundleBuilderTests : IDisposable
         Assert.DoesNotContain("session-bearer", text);
         Assert.DoesNotContain("s3cr3t", text);
         var shipped = JsonSerializer.Deserialize(text, PersistenceJsonContext.Default.NexusSettings)!;
-        Assert.Equal("Moose", shipped.HostDisplayName);
+        Assert.Equal("<redacted>", shipped.HostDisplayName);
         Assert.True(shipped.Auth!.RelayEnabled);
-        Assert.Equal("acct", shipped.Auth.CloudAccounts[0].AccountId);
+        Assert.Equal("account-1", shipped.Auth.CloudAccounts[0].AccountId);
         Assert.Single(shipped.Auth.PanelPhoneSessions);
         Assert.Null(shipped.Auth.PanelPhoneSessions[0].PushTarget);
         Assert.NotNull(settings.Auth.PanelPhoneSessions[0].PushTarget);

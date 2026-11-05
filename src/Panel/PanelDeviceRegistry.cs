@@ -441,8 +441,7 @@ public sealed class PanelDeviceRegistry
             && string.Equals(a.Family, b.Family, StringComparison.Ordinal)
             && a.SupportsBrightness == b.SupportsBrightness
             && a.SupportsSecondaryMonitor == b.SupportsSecondaryMonitor
-            && a.SupportsPortrait == b.SupportsPortrait
-            && a.SupportsRenderScale == b.SupportsRenderScale;
+            && a.SupportsPortrait == b.SupportsPortrait;
     }
 
     public PanelDeviceRecord? FindByDisplayId(string displayId)
@@ -696,7 +695,6 @@ public sealed class PanelDeviceRegistry
             SupportsBrightness = patch.SupportsBrightness ?? existing?.SupportsBrightness,
             SupportsSecondaryMonitor = patch.SupportsSecondaryMonitor ?? existing?.SupportsSecondaryMonitor,
             SupportsPortrait = patch.SupportsPortrait ?? existing?.SupportsPortrait,
-            SupportsRenderScale = patch.SupportsRenderScale ?? existing?.SupportsRenderScale,
         };
     }
 
@@ -857,8 +855,6 @@ public sealed class PanelDeviceRegistry
                 record.SecondaryMonitor = patch.SecondaryMonitor.Value;
             if (patch.Portrait.HasValue)
                 record.Portrait = patch.Portrait.Value;
-            if (patch.HighResolution.HasValue)
-                record.HighResolution = patch.HighResolution.Value;
             if (patch.FpsCap is { } fpsCap)
                 record.FpsCap = fpsCap <= 0 ? null : Math.Min(fpsCap, MaxFpsCap);
             if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.MidLarge or PanelWidgetSizes.Small or PanelWidgetSizes.Medium or PanelWidgetSizes.XSmall or PanelWidgetSizes.Compact)
@@ -991,7 +987,6 @@ public sealed class PanelDeviceRegistry
             record.LockRestoreBrightness = null;
             record.SecondaryMonitor = null;
             record.Portrait = null;
-            record.HighResolution = null;
             record.FpsCap = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
@@ -1327,7 +1322,6 @@ public sealed class PanelDeviceRegistry
             LockRestoreBrightness = r.LockRestoreBrightness,
             SecondaryMonitor = r.SecondaryMonitor,
             Portrait = r.Portrait,
-            HighResolution = r.HighResolution,
             FpsCap = r.FpsCap,
             WidgetSize = r.WidgetSize,
             KioskViewport = r.KioskViewport,

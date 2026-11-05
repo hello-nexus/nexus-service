@@ -14,6 +14,6 @@ public static class PeripheralRoutes
 
         // Static catalog - everything: peripherals + lighting merged and deduped.
         app.MapGet("/peripherals/all-supported", () =>
-            new GetSupportedDevicesResponse { Items = AllSupportedDevices.All.ToList() });
+            new GetSupportedDevicesResponse { Items = AllSupportedDevices.Listed.ToList() });
     }
 }

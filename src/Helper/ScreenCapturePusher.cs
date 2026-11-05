@@ -81,7 +81,7 @@ public sealed class ScreenCapturePusher : IDisposable
                     lock (_lock) { _dxgi = null; }
                     dxgi.Dispose();
                     dxgi = null;
-                    if (!recovering) HelperLog.Write("[screen-capture-pusher] duplication lost; re-creating");
+                    if (!recovering) HelperLog.Warn("[screen-capture-pusher] duplication lost; re-creating");
                     // Lost again before delivering a frame: back off instead of rebuilding every tick.
                     backoff = recovering;
                     recovering = true;
@@ -97,7 +97,7 @@ public sealed class ScreenCapturePusher : IDisposable
                     else
                     {
                         next.Dispose();
-                        if (retryMs == MinRetryMs) HelperLog.Write("[screen-capture-pusher] DXGI init failed; retrying");
+                        if (retryMs == MinRetryMs) HelperLog.Warn("[screen-capture-pusher] DXGI init failed; retrying");
                         recovering = true;
                         backoff = true;
                     }

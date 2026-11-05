@@ -9,11 +9,11 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// <summary>Turns a saved widget into the label and value text the panel shows.</summary>
 public static class GlacialLcdSensors
 {
-    public static (string Label, string Value) Read(ISensorProvider sensors, GlacialLcdSlot slot, int index, SensorSnapshotSources sources = default)
+    public static (string Label, string Value) Read(ISensorProvider sensors, GlacialLcdSlot slot, int index, SensorSnapshotSources sources = default, bool wholeNumbers = false)
     {
         var sensor = Find(sensors, slot, index, sources);
         string label = !string.IsNullOrEmpty(slot.Label) ? slot.Label : sensor?.Name ?? "";
-        return (label, sensor is null ? GlacialLcdScreen.NoReading : GlacialLcdScreen.FormatValue(sensor.Type, sensor.Value));
+        return (label, sensor is null ? GlacialLcdScreen.NoReading : GlacialLcdScreen.FormatValue(sensor.Type, sensor.Value, wholeNumbers));
     }
 
     /// <summary>The category an unpicked widget reads from.</summary>

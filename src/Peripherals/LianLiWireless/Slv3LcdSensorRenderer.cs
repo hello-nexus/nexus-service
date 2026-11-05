@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using Nexus.Service.Rendering;
+using Nexus.Service.Sensors;
 using SkiaSharp;
 
 namespace Nexus.Service.Peripherals.LianLiWireless;
@@ -20,17 +21,21 @@ public static class Slv3LcdSensorRenderer
     private static readonly SKColor DefaultText = SKColors.White;
     private static readonly SKColor TrackColor = new(255, 255, 255, 40);
 
-    public static byte[] Render(string? style, float value, float min, float max, string label, string unit, string? accentHex, string? textHex)
+    public static byte[] Render(string? style, float value, float min, float max, string label, string unit, string? accentHex, string? textHex, string valueType = "", bool wholeNumbers = false)
     {
         var accent = RenderKit.ParseColor(accentHex, DefaultAccent);
         var text = RenderKit.ParseColor(textHex, DefaultText);
         var fraction = Normalize(value, min, max);
-        var valueText = Math.Round(value).ToString("F0", CultureInfo.InvariantCulture);
+        var valueText = FormatValueText(value, valueType, wholeNumbers);
 
         return string.Equals(style, "bar", StringComparison.OrdinalIgnoreCase)
             ? RenderBar(fraction, label, valueText, unit, accent, text)
             : RenderRing(fraction, label, valueText, unit, accent, text);
     }
+
+    internal static string FormatValueText(float value, string valueType, bool wholeNumbers) =>
+        MonitoringDecimals.FormatNumber(value, valueType, wholeNumbers)
+            ?? Math.Round(value).ToString("F0", CultureInfo.InvariantCulture);
 
     private static byte[] RenderRing(float fraction, string label, string valueText, string unit, SKColor accent, SKColor text)
     {

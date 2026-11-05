@@ -74,7 +74,11 @@ internal sealed class MultiRidFakeRelay : IDisposable
                 continue;
             }
             var wsCtx = await ctx.AcceptWebSocketAsync(subProtocol: null).ConfigureAwait(false);
-            _ = Task.Run(() => HostReadLoopAsync(wsCtx.WebSocket, ct));
+            _ = Task.Run(async () =>
+            {
+                try { await HostReadLoopAsync(wsCtx.WebSocket, ct).ConfigureAwait(false); }
+                finally { UnregisterHost(wsCtx.WebSocket); }
+            });
         }
     }
 
@@ -117,11 +121,70 @@ internal sealed class MultiRidFakeRelay : IDisposable
         }
     }
 
+    private readonly Dictionary<string, int> _registrations = new(StringComparer.Ordinal);
+    private readonly List<(string Rid, int AtLeast, TaskCompletionSource<bool> Tcs)> _registrationWaiters = new();
+    private readonly List<(string Rid, TaskCompletionSource<bool> Tcs)> _goneWaiters = new();
+
+    /// <summary>Completes once <paramref name="rid"/> has registered a host socket at least <paramref name="atLeast"/> times in total.</summary>
+    public Task WaitForRegistrationsAsync(string rid, int atLeast, TimeSpan timeout)
+    {
+        lock (_gate)
+        {
+            _registrations.TryGetValue(rid, out var count);
+            if (count >= atLeast)
+                return Task.CompletedTask;
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _registrationWaiters.Add((rid, atLeast, tcs));
+            return tcs.Task.WaitAsync(timeout);
+        }
+    }
+
+    public int RegistrationCount(string rid)
+    {
+        lock (_gate)
+            return _registrations.TryGetValue(rid, out var count) ? count : 0;
+    }
+
+    /// <summary>Completes once no host socket is registered for <paramref name="rid"/> (the host disconnected).</summary>
+    public Task WaitForHostGoneAsync(string rid, TimeSpan timeout)
+    {
+        lock (_gate)
+        {
+            if (!_hostsByRid.ContainsKey(rid))
+                return Task.CompletedTask;
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _goneWaiters.Add((rid, tcs));
+            return tcs.Task.WaitAsync(timeout);
+        }
+    }
+
+    private void UnregisterHost(WebSocket socket)
+    {
+        lock (_gate)
+        {
+            foreach (var rid in _hostsByRid.Where(kv => ReferenceEquals(kv.Value, socket)).Select(kv => kv.Key).ToList())
+            {
+                _hostsByRid.Remove(rid);
+                foreach (var w in _goneWaiters.Where(g => g.Rid == rid).ToList())
+                {
+                    w.Tcs.TrySetResult(true);
+                    _goneWaiters.Remove(w);
+                }
+            }
+        }
+    }
+
     private void RegisterHost(string rid, WebSocket socket)
     {
         lock (_gate)
         {
             _hostsByRid[rid] = socket;
+            _registrations[rid] = _registrations.GetValueOrDefault(rid) + 1;
+            foreach (var waiter in _registrationWaiters.Where(r => r.Rid == rid && _registrations[rid] >= r.AtLeast).ToList())
+            {
+                waiter.Tcs.TrySetResult(true);
+                _registrationWaiters.Remove(waiter);
+            }
             if (_hostWaiters.TryGetValue(rid, out var w))
                 w.TrySetResult(true);
         }
