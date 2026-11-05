@@ -59,6 +59,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
     private volatile bool _disposed;
+    private int _resumeGeneration;
     private readonly bool _testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1";
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
 
@@ -117,6 +118,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             IsBatteryEnabled = true,
             IsPsuEnabled = true,
         };
+        if (!_testHost) Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
         _openTask = Task.Run(async () =>
         {
             // Open() enumerates SuperIO and DIMM SPD exactly once, so a probe
@@ -140,6 +142,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             {
                 Console.Error.WriteLine($"[lhm] conflict wait failed: {ex.Message}");
             }
+            if (!_testHost) LogAsusProcesses("at startup open");
 
             var sw = Stopwatch.StartNew();
             try
@@ -209,6 +212,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             {
                 _computer.IsMotherboardEnabled = false;
                 _computer.IsMotherboardEnabled = true;
+                LogSuperIoReports("after boot reopen");
+                LogLpcReport("after boot reopen");
             }
             var chips = SuperIoChips().Count();
             var stillDead = SuperIoWindowDead();
@@ -219,6 +224,114 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         catch (Exception ex)
         {
             ServiceLog.Warn($"[lhm] superio reopen failed: {ex.Message}");
+        }
+    }
+
+    // Runs under _updateLock: reports read the chip through the ISA bus mutex.
+    private void LogSuperIoReports(string when)
+    {
+        foreach (var chip in SuperIoChips())
+        {
+            try { LogReportLines($"{when} {chip.Identifier}", chip.GetReport()); }
+            catch (Exception ex) { ServiceLog.Warn($"[lhm] superio-report {when} {chip.Identifier} failed: {ex.Message}"); }
+        }
+    }
+
+    private void LogLpcReport(string when)
+    {
+        try
+        {
+            if (!SuperIoChips().Any())
+            {
+                ServiceLog.Warn($"[lhm] superio-report {when}: no Super I/O chip found");
+            }
+            foreach (var hw in _computer.Hardware)
+            {
+                if (hw.HardwareType != HardwareType.Motherboard) continue;
+                var report = hw.GetReport();
+                var start = report.IndexOf("LpcIO", StringComparison.Ordinal);
+                LogReportLines($"{when} lpc", start < 0 ? "no LpcIO detection errors" : report[start..]);
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lhm] superio-report {when} failed: {ex.Message}");
+        }
+    }
+
+    private static void LogReportLines(string label, string report)
+    {
+        foreach (var line in report.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            ServiceLog.Info($"[lhm] superio-report {label}: {line}");
+        }
+    }
+
+    private static void LogAsusProcesses(string when)
+    {
+        try
+        {
+            var names = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in Process.GetProcesses())
+            {
+                using (p)
+                {
+                    if (SuperIoResumePolicy.IsAsusRelatedProcess(p.ProcessName)) names.Add(p.ProcessName);
+                }
+            }
+            ServiceLog.Info($"[lhm] asus processes {when}: {(names.Count == 0 ? "none" : string.Join(", ", names))}");
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lhm] asus processes {when} failed: {ex.Message}");
+        }
+    }
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode != Microsoft.Win32.PowerModes.Resume || _testHost) return;
+        var generation = Interlocked.Increment(ref _resumeGeneration);
+        _ = Task.Run(() => RecheckAfterResumeAsync(generation));
+    }
+
+    // Off the power-event pump and never holding _updateLock across a delay, so the sensor loop keeps running.
+    private async Task RecheckAfterResumeAsync(int generation)
+    {
+        try
+        {
+            if (!_openTask.IsCompletedSuccessfully) return;
+            ServiceLog.Info("[lhm] system resumed, scheduling Super I/O checks");
+            LogAsusProcesses("at resume");
+            lock (_updateLock)
+            {
+                if (_disposed) return;
+                LogSuperIoReports("at resume");
+                LogLpcReport("at resume");
+            }
+            await SuperIoResumePolicy.RunAsync(
+                SuperIoResumePolicy.CheckOffsets,
+                Task.Delay,
+                () => _disposed || generation != Volatile.Read(ref _resumeGeneration),
+                () => { lock (_updateLock) { return !_disposed && SuperIoWindowDead(); } },
+                ReopenSuperIoAfterResume,
+                msg => ServiceLog.Warn($"[lhm] {msg}")).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lhm] resume Super I/O recheck failed: {ex.Message}");
+        }
+    }
+
+    private bool ReopenSuperIoAfterResume()
+    {
+        lock (_updateLock)
+        {
+            if (_disposed) return false;
+            _computer.IsMotherboardEnabled = false;
+            _computer.IsMotherboardEnabled = true;
+            LogSuperIoReports("after reopen");
+            LogLpcReport("after reopen");
+            return SuperIoChips().Any() && !SuperIoWindowDead();
         }
     }
 
@@ -562,6 +675,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     public void Dispose()
     {
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _gate.Changed -= OnControlGateChanged;
         _config.OnChanged -= OnConfigChanged;
         // Wait for the background open to finish before Close(): LHM's
