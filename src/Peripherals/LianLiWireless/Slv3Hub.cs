@@ -78,6 +78,9 @@ public sealed partial class Slv3Hub : IDisposable
     public Func<bool>? UsbAioPresent { get; set; }
     private volatile bool _usbAioPresent;
 
+    // With several unbound HydroShift IIs listed, the USB one cannot be told apart by MAC.
+    private bool _soleUnboundHydroShift;
+
     /// <summary>Tells whether a MAC belongs to a fan that is plugged in over USB and driven by its own handler; the radio never binds, steers or writes to it.</summary>
     public Func<string, bool>? WiredOwned { get; set; }
 
@@ -2396,6 +2399,12 @@ public sealed partial class Slv3Hub : IDisposable
     {
         var records = new List<Slv3DeviceRecord>(_knownChains.Count);
         var fans = new List<Slv3FanInfo>(_knownChains.Count);
+        var unboundHydroShifts = 0;
+        foreach (var chain in _knownChains.Values)
+        {
+            unboundHydroShifts += chain.Record.IsHydroShift && !IsBoundToUsLocked(chain.Record) ? 1 : 0;
+        }
+        _soleUnboundHydroShift = unboundHydroShifts == 1;
         foreach (var key in SortedChainKeysLocked())
         {
             var chain = _knownChains[key];
@@ -2610,7 +2619,7 @@ public sealed partial class Slv3Hub : IDisposable
         UsbConnected = (record.IsHydroShift && _usbAioMac is { } usbMac
             && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase))
             || (IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record)),
-        UsbPresent = record.IsHydroShift && _usbAioMac is null && _usbAioPresent,
+        UsbPresent = record.IsHydroShift && !IsBoundToUsLocked(record) && _soleUnboundHydroShift && _usbAioMac is null && _usbAioPresent,
         WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record),
         RadioDrivesUsb = IsWiredOwned(Convert.ToHexString(record.Mac)) && IsBoundToUsLocked(record),
         CoolantTempC = record.CoolantTempC,

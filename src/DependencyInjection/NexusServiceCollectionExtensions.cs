@@ -1269,8 +1269,10 @@ public static class NexusServiceCollectionExtensions
                 () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>());
             hub.UsbAioMac = () => usbAio.Value?.Params?.Mac;
             var presence = sp.GetService<Nexus.Service.Devices.Detection.HardwarePresence>();
-            var usbAioDriver = new Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver();
-            hub.UsbAioPresent = () => presence?.UsbPresent(usbAioDriver.VendorId, usbAioDriver.ProductIds) == true;
+            hub.UsbAioPresent = () => presence?.UsbPresent(
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.VendorId,
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.ProductIdSquare,
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.ProductIdCircle) == true;
             return new Nexus.Service.Cooling.Slv3CoolingProvider(hub);
         });
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();
