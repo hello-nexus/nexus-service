@@ -496,7 +496,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             {
                 DeviceSession? existing;
                 lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
-                var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId), existing.Session.PanelDeviceId, existing);
+                var info = existing is null ? found : WithFpsCap(found, existing.Session.PanelDeviceId, existing);
                 string? remintedPanelId = null;
                 if (existing is not null && !ProfilesEqual(existing.Info.Profile, info.Profile))
                 {
@@ -862,7 +862,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     PanelDeviceId = ds.Session.PanelDeviceId,
                     CssWidth = p.CssWidth,
                     CssHeight = p.CssHeight,
-                    Dpr = p.Dpr * p.RenderScale,
+                    Dpr = p.Dpr,
                     Fps = p.Fps,
                     BitrateKbps = p.BitrateKbps,
                     Codec = p.Codec == StreamCodec.RawBgra ? "rawBgra" : "h264",
@@ -947,7 +947,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             ServiceLog.Error($"[streamed-panel] record allocation failed serial={info.Serial}: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
-        info = WithFpsCap(WithRenderScale(info, panelDeviceId), panelDeviceId);
+        info = WithFpsCap(info, panelDeviceId);
 
         var session = new StreamSession(NewSessionId(), info, panelDeviceId);
         OfferSharedFrames(session);
@@ -969,7 +969,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         // fps/bitrate hand-tune in streamed-panels.json) is visible at a
         // glance when a device misbehaves on supposedly-fixed defaults.
         ServiceLog.Info($"[streamed-panel] session started serial={info.Serial} session={session.SessionId} "
-            + $"panel={panelDeviceId} profile={info.Profile.Kind} {info.Profile.CssWidth}x{info.Profile.CssHeight}@{info.Profile.Fps} {info.Profile.BitrateKbps}kbps render={info.Profile.RenderScale}");
+            + $"panel={panelDeviceId} profile={info.Profile.Kind} {info.Profile.CssWidth}x{info.Profile.CssHeight}@{info.Profile.Fps} {info.Profile.BitrateKbps}kbps");
         // A record's `streamed` flag follows the session, so clients re-read the panel list.
         _notifyPanelChanged?.Invoke(panelDeviceId);
 
@@ -1308,20 +1308,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
     internal static bool IsStrip(StreamedPanelProfile p) => PanelLayoutDefaults.IsStrip(p.Surface, p.CssWidth, p.CssHeight);
 
-    // Toggling the record's HighResolution changes the profile, so the session re-mints at the new size.
-    private StreamedPanelDeviceInfo WithRenderScale(StreamedPanelDeviceInfo info, string panelDeviceId)
-    {
-        var profile = info.Profile;
-        if (!profile.SupportsRenderScale)
-        {
-            return info;
-        }
-        var scale = _registry.Get(panelDeviceId)?.HighResolution == false ? profile.PerformanceRenderScale : 1.0;
-        return scale.Equals(profile.RenderScale)
-            ? info
-            : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = profile with { RenderScale = scale }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
-    }
-
     // The record's cap is part of the profile, so changing it re-mints live sessions through the "profile changed" path in TickOnce.
     // A session whose record drives the glass as a secondary monitor keeps its rate: re-minting would
     // dispose the transport and recreate the virtual monitor, and the monitor feed re-reads the cap live.
@@ -1342,7 +1328,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
            && a.CssWidth == b.CssWidth
            && a.CssHeight == b.CssHeight
            && a.Dpr.Equals(b.Dpr)
-           && a.RenderScale.Equals(b.RenderScale)
            && a.Fps == b.Fps
            && a.BitrateKbps == b.BitrateKbps
            && a.WriteBatchFrames == b.WriteBatchFrames;
@@ -1355,10 +1340,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         if (!OperatingSystem.IsWindows() || session.Info.Profile.Codec != StreamCodec.RawBgra)
             return;
         var profile = session.Info.Profile;
-        var scale = profile.Dpr * profile.RenderScale;
         // FramePixels matches the overlay's even-rounded render size exactly.
-        var bytes = StreamedPanelProfile.FramePixels(profile.CssWidth, scale)
-            * StreamedPanelProfile.FramePixels(profile.CssHeight, scale) * 4;
+        var bytes = StreamedPanelProfile.FramePixels(profile.CssWidth, profile.Dpr)
+            * StreamedPanelProfile.FramePixels(profile.CssHeight, profile.Dpr) * 4;
         session.OfferSharedFrames(@"Global\NexusPanelStream-" + session.SessionId, bytes);
     }
 

@@ -183,9 +183,6 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
-    /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
-    /// capabilities carry SupportsRenderScale; null = native (high resolution).</summary>
-    public bool? HighResolution { get; set; }
     /// <summary>Frame rate cap for this device: a streamed display's session rate and secondary-monitor pacing, or how often a display-bound panel page draws. Null = the device's own rate.</summary>
     public int? FpsCap { get; set; }
     /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; null = the panel's
@@ -407,8 +404,6 @@ public sealed class PanelDeviceCapabilities
     public bool? SupportsSecondaryMonitor { get; set; }
     /// <summary>The glass can be mounted either way up and the record's Portrait picks the render shape.</summary>
     public bool? SupportsPortrait { get; set; }
-    /// <summary>The stream can render below native and scale back up, so the record's HighResolution applies.</summary>
-    public bool? SupportsRenderScale { get; set; }
 }
 
 /// <summary>
@@ -510,8 +505,8 @@ public sealed class PanelDevicePatch
     /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
-    /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
-    /// capabilities carry SupportsRenderScale; null = native (high resolution).</summary>
+    /// <summary>Obsolete and ignored: every streamed panel renders at native resolution. Still
+    /// accepted so older clients that send it do not break.</summary>
     public bool? HighResolution { get; set; }
     /// <summary>Frame rate cap in fps, clamped to PanelDeviceRegistry.MaxFpsCap; 0 or less clears it (the device's own rate). Null = leave it.</summary>
     public int? FpsCap { get; set; }
