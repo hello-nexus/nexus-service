@@ -316,4 +316,14 @@ public class LinuxPanelKioskHostTests
     {
         Assert.False(LinuxKWinPanelPlacement.KWinAppeared(Array.Empty<byte>()));
     }
+
+    [Theory]
+    [InlineData(false, null, "DP-1", false, true)]
+    [InlineData(true, "DP-1", "DP-1", false, false)]
+    [InlineData(true, "DP-1", "DP-2", false, true)]
+    [InlineData(true, "DP-1", "DP-1", true, true)]
+    public void NeedsLoad_ReloadsOnFailureConnectorChangeOrForce(bool loaded, string? loadedConnector, string wanted, bool force, bool expected)
+    {
+        Assert.Equal(expected, LinuxKWinPanelPlacement.NeedsLoad(loaded, loadedConnector, wanted, force));
+    }
 }

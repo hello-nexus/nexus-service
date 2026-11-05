@@ -29,20 +29,27 @@ internal static class LinuxKWinPanelPlacement
     private const string BusPath = "/org/freedesktop/DBus";
     private const int WatchRearmMs = 600_000;
 
+    private const int ReloadAttempts = 5;
+    private const int ReloadBackoffMs = 250;
+
     private static readonly SemaphoreSlim LoadLock = new(1, 1);
-    private static string? _loadedFor;
     private static string? _wantedConnector;
-    private static int _watching;
+    private static string? _loadedConnector;
+    private static bool _loaded;
+    private static object? _watcher;
+    private static DBusConnection? _subscribedTo;
 
     /// <summary>Reloads the script whenever the Y70's connector changes, and after a failed load; "" leaves only the portrait fallback.</summary>
     public static Task EnsureLoadedAsync(DBusConnection dbus, string connector)
     {
         _wantedConnector = connector;
-        StartWatcher(dbus);
-        if (_loadedFor == connector) return Task.CompletedTask;
-        _loadedFor = connector;
-        return LoadAsync(dbus, connector);
+        Subscribe(dbus);
+        StartWatcher(dbus, replace: false);
+        return LoadAsync(dbus, force: false);
     }
+
+    internal static bool NeedsLoad(bool loaded, string? loadedConnector, string wanted, bool force)
+        => force || !loaded || loadedConnector != wanted;
 
     /// <summary>True when a NameOwnerChanged body says org.kde.KWin gained an owner (first start or restart).</summary>
     internal static bool KWinAppeared(byte[] body)
@@ -61,14 +68,28 @@ internal static class LinuxKWinPanelPlacement
         }
     }
 
-    // The root daemon can reach the session bus before KWin has claimed its
-    // name at cold boot, so the first load fails with ServiceUnknown. Watch
-    // NameOwnerChanged instead of polling: load once KWin appears, and again
-    // if it restarts, since a restart drops every loaded script. The script
-    // re-places windows that already exist, so a late load still moves the kiosk.
-    private static void StartWatcher(DBusConnection dbus)
+    // A new bus connection or session means a new KWin that has none of our scripts.
+    private static void Subscribe(DBusConnection dbus)
     {
-        if (Interlocked.Exchange(ref _watching, 1) == 1) return;
+        if (ReferenceEquals(_subscribedTo, dbus)) return;
+        _subscribedTo = dbus;
+        dbus.Reconnected += () => OnBusChanged(dbus);
+        LinuxSession.SessionAdopted += () => OnBusChanged(dbus);
+    }
+
+    private static void OnBusChanged(DBusConnection dbus)
+    {
+        _loaded = false;
+        StartWatcher(dbus, replace: true);
+        _ = LoadAsync(dbus, force: false);
+    }
+
+    // Loads once KWin owns its name, and again after a KWin restart, which drops every loaded script.
+    private static void StartWatcher(DBusConnection dbus, bool replace)
+    {
+        var me = new object();
+        if (replace) Volatile.Write(ref _watcher, me);
+        else if (Interlocked.CompareExchange(ref _watcher, me, null) is not null) return;
         _ = Task.Run(async () =>
         {
             try
@@ -76,28 +97,24 @@ internal static class LinuxKWinPanelPlacement
                 await dbus.StartAsync();
                 await dbus.AddMatchAsync(
                     $"type='signal',sender='{BusName}',interface='{BusName}',member='NameOwnerChanged',arg0='{KWinName}'");
-                // Armed before the owner check so an appearance between them is not missed.
+                // Armed before the owner check so an appearance in between is not missed.
                 var next = dbus.WaitForSignalAsync(BusPath, "NameOwnerChanged", WatchRearmMs);
-                if (_loadedFor is null && await HasOwnerAsync(dbus))
-                    await ReloadWantedAsync(dbus);
-                while (true)
+                if (await HasOwnerAsync(dbus))
+                    await LoadWithRetryAsync(dbus, force: false);
+                while (ReferenceEquals(Volatile.Read(ref _watcher), me))
                 {
-                    DBusMessage signal;
+                    DBusMessage? signal = null;
                     try { signal = await next; }
-                    catch (TimeoutException)
-                    {
-                        next = dbus.WaitForSignalAsync(BusPath, "NameOwnerChanged", WatchRearmMs);
-                        continue;
-                    }
+                    catch (TimeoutException) { }
                     next = dbus.WaitForSignalAsync(BusPath, "NameOwnerChanged", WatchRearmMs);
-                    if (KWinAppeared(signal.Body))
-                        await ReloadWantedAsync(dbus);
+                    if (signal is not null && KWinAppeared(signal.Body))
+                        await LoadWithRetryAsync(dbus, force: true);
                 }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[panel-kiosk] KWin watch stopped: {ex.Message}");
-                Interlocked.Exchange(ref _watching, 0);
+                Interlocked.CompareExchange(ref _watcher, null, me);
             }
         });
     }
@@ -115,20 +132,27 @@ internal static class LinuxKWinPanelPlacement
         }
     }
 
-    private static Task ReloadWantedAsync(DBusConnection dbus)
+    // KWin may own its name a moment before /Scripting is exported; retry only here, right after it appeared.
+    private static async Task LoadWithRetryAsync(DBusConnection dbus, bool force)
     {
-        var connector = _wantedConnector;
-        if (connector is null) return Task.CompletedTask;
-        _loadedFor = connector;
-        return LoadAsync(dbus, connector);
+        for (var attempt = 1; attempt <= ReloadAttempts; attempt++)
+        {
+            if (await LoadAsync(dbus, force)) return;
+            await Task.Delay(ReloadBackoffMs * attempt);
+        }
     }
 
-    private static async Task LoadAsync(DBusConnection dbus, string connector)
+    private static async Task<bool> LoadAsync(DBusConnection dbus, bool force)
     {
         await LoadLock.WaitAsync();
         try
         {
-            await LoadCoreAsync(dbus, connector);
+            var connector = _wantedConnector;
+            if (connector is null) return true;
+            if (!NeedsLoad(_loaded, _loadedConnector, connector, force)) return true;
+            _loaded = await LoadCoreAsync(dbus, connector);
+            _loadedConnector = _loaded ? connector : null;
+            return _loaded;
         }
         finally
         {
@@ -136,14 +160,10 @@ internal static class LinuxKWinPanelPlacement
         }
     }
 
-    private static async Task LoadCoreAsync(DBusConnection dbus, string connector)
+    private static async Task<bool> LoadCoreAsync(DBusConnection dbus, string connector)
     {
         var scriptPath = WriteScript(connector);
-        if (scriptPath is null)
-        {
-            _loadedFor = null;
-            return;
-        }
+        if (scriptPath is null) return false;
         try
         {
             try { await dbus.StartAsync(); } catch { }
@@ -162,11 +182,12 @@ internal static class LinuxKWinPanelPlacement
             var id = new DBusReader(reply.Body).ReadInt32();
             await dbus.CallAsync(KWinName, $"/Scripting/Script{id}", "org.kde.kwin.Script", "run", "", null);
             Console.Error.WriteLine($"[panel-kiosk] KWin placement script loaded (id {id})");
+            return true;
         }
         catch (Exception ex)
         {
-            _loadedFor = null;
             Console.Error.WriteLine($"[panel-kiosk] KWin placement script not loaded: {ex.Message}");
+            return false;
         }
     }
 
