@@ -419,6 +419,88 @@ public class ThermalGuardEngineTests
         Assert.Equal(30, LastDuty(fans, "f2"));
     }
 
+    private static (CurveEngine Engine, Fans Fans, InMemoryConfigStore Store, long[] Clock, ThermalGuardController Guard) BuildWithGuard()
+    {
+        var fans = new Fans();
+        fans.Channels.Add(new FanChannel { Id = "f1", Name = "Fan 1" });
+        fans.Channels.Add(new FanChannel { Id = "f2", Name = "Fan 2" });
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Cooling.Curves.Add(Flat("f1", 70));
+            s.Cooling.ManualSpeeds["f2"] = 30;
+        });
+        var clock = new long[] { 1_000_000 };
+        var hub = new MultiplexHub();
+        var guard = new ThermalGuardController(fans, store, hub);
+        var engine = new CurveEngine(fans, store, hub, new FeatureGates(store), guard) { Clock = () => clock[0] };
+        return (engine, fans, store, clock, guard);
+    }
+
+    private static void Hold(CurveEngine engine, Fans fans, long[] clock, float tempC, int ticks = 6)
+    {
+        fans.CpuTemp = tempC;
+        for (var i = 0; i < ticks; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+    }
+
+    [Fact]
+    public void FloorBelowEveryGuardedDuty_IsReportedAsNormal_AndChangesNoDuty()
+    {
+        var (engine, fans, store, clock, guard) = BuildWithGuard();
+        store.Update(s => s.Cooling.ManualSpeeds.Remove("f2"));
+        Hold(engine, fans, clock, 85f);
+        Assert.Equal("normal", guard.GetState().State);
+        Assert.True(guard.IdleNeedsGuard(Array.Empty<TemperatureSource>()));
+        Assert.Equal(70, LastDuty(fans, "f1"));
+        Assert.DoesNotContain(fans.Driven, d => d.Duty != 70);
+    }
+
+    [Fact]
+    public void ASingleTickFlip_DoesNotChangeTheReportedState()
+    {
+        var (engine, fans, store, clock, guard) = BuildWithGuard();
+        store.Update(s => s.Cooling.ManualSpeeds.Remove("f2"));
+        Hold(engine, fans, clock, 85f);
+        Assert.Equal("normal", guard.GetState().State);
+        store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 10);
+        Hold(engine, fans, clock, 85f, 1);
+        Assert.Equal("normal", guard.GetState().State);
+        store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 70);
+        Hold(engine, fans, clock, 85f, 1);
+        Assert.Equal("normal", guard.GetState().State);
+        store.Update(s => s.Cooling.Curves[0].Flat!.Speed = 10);
+        Hold(engine, fans, clock, 85f, 6);
+        Assert.Equal("floor", guard.GetState().State);
+    }
+
+    [Fact]
+    public void FloorAboveOneChannelsDuty_IsReportedAsFloor()
+    {
+        var (engine, fans, _, clock, guard) = BuildWithGuard();
+        Hold(engine, fans, clock, 85f);
+        Assert.Equal("floor", guard.GetState().State);
+        Assert.Equal(70, LastDuty(fans, "f1"));
+        Assert.Equal(40, LastDuty(fans, "f2"));
+    }
+
+    [Fact]
+    public void ReportedState_FollowsTheFloorBeatingADutyBothWays()
+    {
+        var (engine, fans, _, clock, guard) = BuildWithGuard();
+        Hold(engine, fans, clock, 80f);
+        Assert.Equal("normal", guard.GetState().State);
+        Hold(engine, fans, clock, 85f);
+        Assert.Equal("floor", guard.GetState().State);
+        Hold(engine, fans, clock, 80f);
+        Assert.Equal("normal", guard.GetState().State);
+        Hold(engine, fans, clock, 50f);
+        Assert.Equal("normal", guard.GetState().State);
+    }
+
     [Fact]
     public void WorkingCurveAtOrAboveSixtyAtTheLimit_IsNeverTouched()
     {

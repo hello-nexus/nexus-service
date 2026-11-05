@@ -46,6 +46,9 @@ public sealed record StreamedPanelProfile
     /// <summary>The panel's transport can hand the glass to Windows as a secondary monitor.</summary>
     public bool SupportsSecondaryMonitor { get; init; }
 
+    /// <summary>The glass reports touch, which the transport hands back to the render host.</summary>
+    public bool SupportsTouch { get; init; }
+
     /// <summary>The panel renders tall when its record's Portrait is on.</summary>
     public bool SupportsPortrait { get; init; }
 
@@ -60,7 +63,7 @@ public sealed record StreamedPanelProfile
     public double Dpr { get; init; } = 1.0;
     public int Fps { get; init; } = 60;
 
-    /// <summary>Panels longer than this on either side render at a lower resolution unless their record asks for high resolution.</summary>
+    /// <summary>Panels longer than this on either side can render at a lower resolution when their record asks for high performance.</summary>
     public const int RenderScaleMinSide = 1000;
 
     public const int PerformanceMinShortSide = 320;
@@ -127,7 +130,7 @@ public sealed record StreamedPanelProfile
         SupportsPortrait = SupportsPortrait ? true : null,
         SupportsRenderScale = SupportsRenderScale ? true : null,
         Dpi = Dpi,
-        Touch = false,
+        Touch = SupportsTouch,
         CssWidth = CssWidth,
         CssHeight = CssHeight,
         Dpr = Dpr,

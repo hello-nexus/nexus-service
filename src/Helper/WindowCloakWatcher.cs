@@ -105,11 +105,11 @@ public sealed class WindowCloakWatcher : IDisposable
         _cloakHookLive = cloak != IntPtr.Zero;
         if (destroy == IntPtr.Zero)
         {
-            Platform.HelperLog.Write($"[window-cloak] destroy hook failed err={destroyErr}");
+            Platform.HelperLog.Warn($"[window-cloak] destroy hook failed err={destroyErr}");
         }
         if (cloak == IntPtr.Zero)
         {
-            Platform.HelperLog.Write($"[window-cloak] cloak hook failed err={cloakErr}; reading DWM every pass");
+            Platform.HelperLog.Warn($"[window-cloak] cloak hook failed err={cloakErr}; reading DWM every pass");
         }
         if (destroy != IntPtr.Zero || cloak != IntPtr.Zero)
         {

@@ -52,6 +52,11 @@ is called out here:
   request/reply, it is one long-lived chunked POST per stream session that
   carries framed H.264 access units or raw BGRA frames for the life of the session (request
   body size and minimum data rate limits are lifted for this route).
+  `GET /panel/streams/{sessionId}/touch` is the reverse direction for a session
+  whose assignment has `touch: true`: one long-lived text/plain response, a line
+  per contact (`<pointerId> <down|move|up> <x> <y>`, x and y fractions of the
+  page), blank keepalive lines, service-token auth like ingest. A newer
+  subscriber supersedes the older one; contacts with no subscriber are dropped.
 - `/diagnostics/*` - health/incident/SMART/GPU/memory snapshots plus
   downloadable support bundle (`/diagnostics/support-bundle/download`) and PDF report
   (`/diagnostics/report.pdf`) endpoints. No WebSocket topic.

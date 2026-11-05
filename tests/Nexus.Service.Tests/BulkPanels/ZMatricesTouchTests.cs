@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Nexus.Service.Peripherals.BulkPanels;
 using Xunit;
@@ -35,8 +36,8 @@ public class ZMatricesTouchTests
 
         Assert.Equal(new[]
         {
-            new ZMatricesTouchReport(0, TouchPhase.Down, 100, 200),
-            new ZMatricesTouchReport(1, TouchPhase.Move, 300, 400),
+            new ZMatricesTouchReport(0, TouchPhase.Down, 100, 200, 540, 1120),
+            new ZMatricesTouchReport(1, TouchPhase.Move, 300, 400, 540, 1120),
         }, reports);
     }
 
@@ -51,7 +52,7 @@ public class ZMatricesTouchTests
         Assert.Empty(reports);
         parser.Feed(packet.AsSpan(7), reports);
 
-        Assert.Equal(new ZMatricesTouchReport(0, TouchPhase.Up, 5, 6), Assert.Single(reports));
+        Assert.Equal(new ZMatricesTouchReport(0, TouchPhase.Up, 5, 6, 540, 1120), Assert.Single(reports));
     }
 
     [Fact]
@@ -68,11 +69,42 @@ public class ZMatricesTouchTests
     [Fact]
     public void Portrait_glass_coordinates_turn_onto_the_landscape_frame()
     {
-        Assert.True(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Down, 0, 0), 1120, 540, out int x, out int y));
+        Assert.True(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Down, 0, 0, 540, 1120), 1120, 540, out int x, out int y));
         Assert.Equal((0, 539), (x, y));
-        Assert.True(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Down, 539, 1119), 1120, 540, out x, out y));
+        Assert.True(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Down, 539, 1119, 540, 1120), 1120, 540, out x, out y));
         Assert.Equal((1119, 0), (x, y));
-        Assert.False(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Down, 540, 10), 1120, 540, out _, out _));
+        Assert.False(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Down, 540, 10, 540, 1120), 1120, 540, out _, out _));
+    }
+
+    // Captured off a MAX E87: its glass is shorter than the span it declares, so X is scaled.
+    private static readonly byte[] MaxE87Down = Convert.FromHexString("AE5A0202004701E00500004F04C701DA");
+    private static readonly byte[] MaxE87Up = Convert.FromHexString("AE5A0201001801E00500FFFFFFFF000B");
+
+    [Fact]
+    public void A_max_e87_report_declares_its_span_and_scales_onto_its_frame()
+    {
+        var parser = new ZMatricesTouchParser();
+        var reports = new List<ZMatricesTouchReport>();
+
+        parser.Feed(MaxE87Down, reports);
+        parser.Feed(MaxE87Up, reports);
+
+        Assert.Equal(2, reports.Count);
+        Assert.Equal(new ZMatricesTouchReport(0, TouchPhase.Down, 79, 1223, 480, 1280), reports[0]);
+        Assert.True(ZMatricesTouchParser.TryMapToFrame(reports[0], 1280, 440, out int x, out int y));
+        Assert.Equal((1223, 367), (x, y));
+        Assert.Equal(TouchPhase.Up, reports[1].Phase);
+        Assert.False(ZMatricesTouchParser.TryMapToFrame(reports[1], 1280, 440, out _, out _));
+    }
+
+    [Fact]
+    public void The_max_e87_span_edges_reach_the_frame_edges()
+    {
+        Assert.True(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Move, 479, 1279, 480, 1280), 1280, 440, out int x, out int y));
+        Assert.Equal((1279, 0), (x, y));
+        Assert.True(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Move, 0, 0, 480, 1280), 1280, 440, out x, out y));
+        Assert.Equal((0, 439), (x, y));
+        Assert.False(ZMatricesTouchParser.TryMapToFrame(new ZMatricesTouchReport(0, TouchPhase.Move, 480, 0, 480, 1280), 1280, 440, out _, out _));
     }
 
     [Fact]

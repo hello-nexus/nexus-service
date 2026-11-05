@@ -27,6 +27,9 @@ public sealed class StreamAssignmentDto
 
     /// <summary>Bytes one frame may occupy in <see cref="FrameSection"/>.</summary>
     public int FrameSectionBytes { get; set; }
+
+    /// <summary>The glass reports touch: the host reads GET /panel/streams/{sessionId}/touch and injects it into the page.</summary>
+    public bool Touch { get; set; }
 }
 
 public sealed class StreamAssignmentsResponse

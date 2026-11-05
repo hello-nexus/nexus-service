@@ -394,9 +394,8 @@ public static class FanProfiles
     /// user explicitly broke out of the shared regime. For the preset half that
     /// means an unpinned fan - a pinned one is off the preset's books either
     /// way, and only weighs on the "off" check above.
-    /// Fans classified as Unresponsive are ignored: they're physically
-    /// disconnected, can't be wired to any curve, and would otherwise force
-    /// every preset check to fail on `fanIds.All(...)`.
+    /// An Unresponsive fan (no tach signal) is still driven, so it counts like
+    /// any other fan.
     /// </summary>
     public static string DerivePresetFromCurves(IConfigStore store, IFanControlProvider fans)
         => DerivePresetFromCurves(store.Load().Cooling, fans.GetFanChannels());
@@ -413,8 +412,7 @@ public static class FanProfiles
         var uncontrolled = cooling.UncontrolledFanChannels;
         var pinOverrides = cooling.FanPinOverrides;
         var fanIds = channels
-            .Where(c => c.Classification != "Unresponsive"
-                && !IsPinned(c, pinOverrides)
+            .Where(c => !IsPinned(c, pinOverrides)
                 && !uncontrolled.Contains(c.Id))
             .Select(c => c.Id)
             .ToHashSet();
@@ -448,8 +446,7 @@ public static class FanProfiles
         // and derives "off" while software still drives the pinned ones.
         // Uncontrolled fans stay out - the write gate keeps them inert whatever
         // a stale attachment says.
-        var pinnedDriven = channels.Any(c => c.Classification != "Unresponsive"
-            && IsPinned(c, pinOverrides)
+        var pinnedDriven = channels.Any(c => IsPinned(c, pinOverrides)
             && !uncontrolled.Contains(c.Id)
             && (cooling.ManualSpeeds.ContainsKey(c.Id)
                 || curves.Any(cv => cv.Outputs.Any(o => o.Id == c.Id))));

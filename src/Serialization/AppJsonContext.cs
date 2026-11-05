@@ -1082,6 +1082,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessOpenLocationResult))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessActivateWindowRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessActivateWindowResult))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessEndSessionRequest))]
+[JsonSerializable(typeof(Nexus.Service.Helper.Domains.ProcessEndSessionResult))]
 // Native file/folder picker (IFileOpenDialog runs in the user-session helper)
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.FileDialogRequest))]
 [JsonSerializable(typeof(Nexus.Service.Helper.Domains.FileDialogResult))]
@@ -1392,6 +1394,7 @@ namespace Nexus.Service.Serialization;
 // Diagnostics app: aggregated health + per-domain detail + bundle export.
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.DiagnosticsHealthResponse))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.SupportInfo))]
+[JsonSerializable(typeof(Nexus.Service.Diagnostics.UsbTopologyReport))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.HealthComponent))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.HealthComponentReason))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.EventLog.DiagnosticIncident))]

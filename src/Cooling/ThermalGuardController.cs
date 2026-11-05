@@ -51,8 +51,17 @@ public sealed class GuardPlan
         {
             return duty;
         }
+        if (Output.FloorDuty > duty)
+        {
+            _floorRaised = true;
+        }
         return Math.Max(duty, Output.FloorDuty);
     }
+
+    private volatile bool _floorRaised;
+
+    /// <summary>True once the floor beat a guarded channel's own duty.</summary>
+    public bool FloorRaised => _floorRaised;
 }
 
 /// <summary>
@@ -101,6 +110,12 @@ public sealed class ThermalGuardController
     private readonly ThermalGuardThresholds _thresholds;
 
     private string _publicState = ThermalGuardStates.Inactive;
+    // Reported-state only: gates read _publicState, which follows the ramp.
+    private const int FloorReportDebounceTicks = 3;
+    private GuardPlan? _tickPlan;
+    private bool _floorApplied;
+    private int _floorStreak;
+    private long? _floorReportedSinceMs;
     private double? _guardTemp;
     // What was detected, and the effective limit (the user's override applied when allowed).
     private ThermalLimit _detected = new(ThermalLimits.GenericDefaultC, ThermalLimitSources.Default);
@@ -215,6 +230,32 @@ public sealed class ThermalGuardController
     {
         _watchdog?.Dispose();
         _watchdog = null;
+    }
+
+    /// <summary>End of tick: debounces whether the floor beat a written duty.</summary>
+    public void CommitFloorApplied()
+    {
+        var flipped = false;
+        lock (_gate)
+        {
+            var raised = _tickPlan?.FloorRaised ?? false;
+            _tickPlan = null;
+            if (_publicState != ThermalGuardStates.Floor || raised == _floorApplied)
+            {
+                _floorStreak = 0;
+            }
+            else if (++_floorStreak >= FloorReportDebounceTicks)
+            {
+                _floorApplied = raised;
+                _floorStreak = 0;
+                _floorReportedSinceMs = _utcNowMs();
+                flipped = true;
+            }
+        }
+        if (flipped && _hub is not null)
+        {
+            PanelTopics.BroadcastCooling(_hub);
+        }
     }
 
     public void TickCompleted()
@@ -600,6 +641,7 @@ public sealed class ThermalGuardController
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
             plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible, hardware);
+            _tickPlan = plan;
             var driving = output.FloorDuty > 0;
             _activeSinceMs = driving ? _activeSinceMs ?? nowMs : null;
             _fansNotResponding = driving
@@ -1011,6 +1053,9 @@ public sealed class ThermalGuardController
         }
         var previous = _publicState;
         _publicState = state;
+        _floorApplied = false;
+        _floorStreak = 0;
+        _floorReportedSinceMs = null;
         _sinceUtcMs = startedUtcMs ?? _utcNowMs();
         Console.Error.WriteLine($"[thermal-guard] {previous} -> {state} (temp {_guardTemp?.ToString("0.#", CultureInfo.InvariantCulture) ?? "n/a"} C, limit {_limit.LimitC:0.#} C {_limit.Source})");
         if (_hub is not null)
@@ -1479,11 +1524,14 @@ public sealed class ThermalGuardController
             }
             else
             {
-                response.State = _publicState;
+                // A floor that beats no duty is reported as normal.
+                response.State = _publicState == ThermalGuardStates.Floor && !_floorApplied ? ThermalGuardStates.Normal : _publicState;
                 response.GuardTempC = _guardTemp;
                 response.LimitC = effective.LimitC;
                 response.LimitSource = effective.Source;
-                response.SinceUtcMs = _sinceUtcMs;
+                response.SinceUtcMs = _publicState == ThermalGuardStates.Floor
+                    ? _floorReportedSinceMs ?? _sinceUtcMs
+                    : _sinceUtcMs;
                 response.FansNotResponding = _fansNotResponding;
             }
             foreach (var kv in _gpuInfo)

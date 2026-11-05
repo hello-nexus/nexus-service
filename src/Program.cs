@@ -324,6 +324,14 @@ if (!testHost)
 }
 Nexus.Service.Lifecycle.BootTimer.Mark("after LocalHttpsCertificate.LoadOrCreate");
 
+// Wired-Android listeners. The phone's adb reverse lands on these instead of the
+// main ports so its traffic is never mistaken for the loopback desktop (see
+// PhoneTunnelPorts). A taken port just leaves that half unreversed.
+var (phoneHttpPortWanted, phoneHttpsPortWanted) = Nexus.Service.Panel.PhoneTunnelPorts.Derive(servicePort);
+var phoneTunnelPorts = new Nexus.Service.Panel.PhoneTunnelPorts(
+    !testHost && IsLoopbackPortFree(phoneHttpPortWanted) ? phoneHttpPortWanted : null,
+    !testHost && localHttpsCertificate is not null && IsLoopbackPortFree(phoneHttpsPortWanted) ? phoneHttpsPortWanted : null);
+
 // Set content root to the exe's directory so wwwroot/ is found
 // regardless of which directory the user double-clicks from.
 var exeDir = AppContext.BaseDirectory;
@@ -370,6 +378,10 @@ builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o => o.Shut
 // Information lines, which otherwise flood nexus-service.log on every internal API call.
 // Keep Microsoft.Hosting.Lifetime at Information for the useful "Now listening" /
 // "Application started/stopping" boot markers.
+// CreateSlimBuilder registers the console provider, which writes two untimestamped, untagged lines per
+// entry. It is replaced with ServiceLog output so ILogger lines match the rest of the file; the other
+// registered provider, ErrorLoggerProvider, is kept.
+Nexus.Service.Platform.ServiceLogLoggerProvider.ReplaceConsoleProvider(builder.Logging);
 builder.Logging.AddFilter("Microsoft", LogLevel.Warning);
 builder.Logging.AddFilter("System", LogLevel.Warning);
 builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);
@@ -397,6 +409,10 @@ builder.WebHost.ConfigureKestrel(k =>
     {
         k.ListenAnyIP(httpsPort, o => o.UseHttps(localHttpsCertificate));
     }
+    if (phoneTunnelPorts.HttpPort is int phoneHttp)
+        k.Listen(System.Net.IPAddress.Loopback, phoneHttp);
+    if (phoneTunnelPorts.HttpsPort is int phoneHttps && localHttpsCertificate is not null)
+        k.Listen(System.Net.IPAddress.Loopback, phoneHttps, o => o.UseHttps(localHttpsCertificate));
     if (panelTunnelMonitor.Port is int tunnelPort)
     {
         // IPv4 loopback only - the adb server's host-side connect is IPv4, and
@@ -504,6 +520,7 @@ Nexus.Service.Lifecycle.BootTimer.Mark("DI: AddNexusStocks");
 builder.Services.AddNexusWidgets();
 Nexus.Service.Lifecycle.BootTimer.Mark("DI: AddNexusWidgets");
 builder.Services.AddSingleton(panelTunnelMonitor);
+builder.Services.AddSingleton(phoneTunnelPorts);
 builder.Services.AddNexusPanel(servicePort);
 Nexus.Service.Lifecycle.BootTimer.Mark("DI: AddNexusPanel");
 builder.Services.AddNexusLinuxDBus();
@@ -610,6 +627,18 @@ if (!testHost)
         await next(ctx);
     });
 }
+
+// Wired-Android requests arrive from loopback too; relabel them before any
+// loopback-trust check (the /pair desktop token, the desktop-token lane) runs.
+app.Use(async (ctx, next) =>
+{
+    if (!phoneTunnelPorts.Reclassify(ctx))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+    await next(ctx);
+});
 
 // Unhandled request exceptions never reach ILogger under every host, so observe them here (report, then rethrow).
 Nexus.Service.Telemetry.ErrorCaptureMiddleware.UseErrorCapture(app, app.Services.GetRequiredService<Nexus.Service.Telemetry.ErrorReporter>());
@@ -793,6 +822,14 @@ if (emitOpenApiPath is not null)
     var pairing = app.Services.GetRequiredService<Nexus.Service.Panel.PanelPhonePairingService>();
     pairing.ServicePort = servicePort;
     pairing.HttpsPort = localHttpsCertificate is not null ? httpsPort : 0;
+    if (!testHost && (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()))
+    {
+        // A new Allow/Deny request brings the desktop window forward so the
+        // dashboard's modal pops from the retained request; an open window is
+        // focused without navigating.
+        var systemActions = app.Services.GetRequiredService<Nexus.Service.Actions.SystemActions>();
+        pairing.PairRequestCreated += () => systemActions.OpenDashboard();
+    }
     pairing.SpkiFingerprint = localHttpsCertificate is not null
         ? Nexus.Service.Security.LocalHttpsCertificate.ComputeSpkiBase64Url(localHttpsCertificate)
         : string.Empty;
@@ -1029,6 +1066,7 @@ static void FastServiceShutdown(WebApplication app)
         Task.Run(() => { try { sp.GetService<Nexus.Service.Sensors.ISpdPageReset>()?.ResetSpdPages(TimeSpan.FromMilliseconds(osShutdown ? 4000 : 1200)); } catch { } }),
         Task.Run(() => { try { ReleaseUniversalScreen88(sp); } catch { } }),
         Task.Run(() => { try { ReleaseCorsairLinkLcd(sp); } catch { } }),
+        Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkConnectionWorker>()?.ReleaseForShutdown(); } catch { } }),
         Task.Run(() => { try { ReleaseGalleonSd(sp); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>()?.ReleaseForShutdown(TimeSpan.FromSeconds(1)); } catch { } }),
         Task.Run(() => { try { sp.GetService<Nexus.Service.Common.ExternalTools.ExternalToolManager>()?.TerminateAll(); } catch { } }),

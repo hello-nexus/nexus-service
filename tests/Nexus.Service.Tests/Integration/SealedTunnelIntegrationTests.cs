@@ -36,8 +36,8 @@ public sealed class SealedTunnelIntegrationTests : IClassFixture<NexusAppFactory
         await Pairing.SetRemoteControlEnabledAsync(true);
         var qr = Pairing.CreatePairQr();
         var pairToken = ExtractPairToken(qr.Url);
-        var claim = Pairing.ClaimCore(
-            pairToken, deviceName: "TestPhone", userAgent: "", remoteAddress: "",
+        var claim = Pairing.ClaimCoreApproved(
+            pairToken, deviceName: "TestPhone", userAgent: "", remoteAddress: "192.168.1.50",
             deviceId: "sealed-tunnel-test", overRelay: false, claimedOverHttps: true);
         Assert.True(claim.Ok, $"claim failed: {claim.Error}");
         return claim.SessionToken;

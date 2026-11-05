@@ -19,7 +19,7 @@ namespace Nexus.Service.Peripherals.Y70;
 ///     brightness through the monitor's DDC/CI RGB video-gain registers -
 ///     reference Y70TouchDevice. The gain registers need a one-time
 ///     per-connection prep (<see cref="EnsureTouchPrepared"/>).
-///   • DDC/CI (Truly / GW): VCP 0x10 (brightness) + 0xD6 (power) via the
+///   • DDC/CI (Truly / GT / GW): VCP 0x10 (brightness) + 0xD6 (power) via the
 ///     platform display-brightness provider, mirroring the reference
 ///     Y70TouchDdcciDeviceBase: brightness and power are independent writes,
 ///     and brightness is raw 0-100 (the serial minimum-brightness floor is a
@@ -87,7 +87,8 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                 Y70DisplayProtocol.VendorId,
                 Y70DisplayProtocol.Y70TouchProductId,
                 Y70DisplayProtocol.Y70InfiniteProductId,
-                Y70DisplayProtocol.Y70TrulyProductId))
+                Y70DisplayProtocol.Y70TrulyProductId,
+                Y70DisplayProtocol.Y70GtProductId))
         {
             return true;
         }
@@ -211,11 +212,14 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     /// version query answers, so the hub connects) but its firmware takes
     /// display control only via DDC/CI - the serial FF CC frame is a silent
     /// no-op there, so a connected hub alone must not select serial. The
-    /// original Touch takes the hybrid path instead.
+    /// original Touch takes the hybrid path instead. The Y70 GT's serial port
+    /// carries only the backlight stream, and its display controls are DDC/CI
+    /// (the reference GT device subclasses Y70TouchDdcciDeviceBase).
     /// </summary>
     private bool SerialTransportSelected =>
         _hub.IsConnected
         && _hub.Variant != Y70DisplayProtocol.VariantTruly
+        && _hub.Variant != Y70DisplayProtocol.VariantGt
         && _hub.Variant != Y70DisplayProtocol.VariantTouch;
 
     private bool TouchTransportSelected =>

@@ -700,6 +700,8 @@ public sealed class UnitsSettings
     public string NumberFormat { get; set; } = "system";
     /// <summary>"system" or a date pattern key such as "yyyy-mm-dd".</summary>
     public string DateFormat { get; set; } = "system";
+    /// <summary>Round temperature, power, percent, flow, noise and frequency readings to integers. Null (absent) means off; stays null until first written so older stores round-trip unchanged.</summary>
+    public bool? MonitoringWholeNumbers { get; set; }
 }
 
 /// <summary>Partial update DTO for the units block of POST /preferences.</summary>
@@ -709,6 +711,7 @@ public sealed class UnitsSettingsPatch
     public string? TimeFormat { get; set; }
     public string? NumberFormat { get; set; }
     public string? DateFormat { get; set; }
+    public bool? MonitoringWholeNumbers { get; set; }
 }
 
 /// <summary>Pin kinds a device can hold; see <see cref="DevicePin"/>.</summary>

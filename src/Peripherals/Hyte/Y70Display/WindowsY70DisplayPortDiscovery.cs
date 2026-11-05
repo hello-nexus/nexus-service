@@ -10,9 +10,9 @@ namespace Nexus.Service.Peripherals.Hyte.Y70Display;
 
 /// <summary>
 /// SetupAPI-based discovery for HYTE Y70 Touch display controllers on Windows.
-/// Mirrors the Q-series/MiniHub discoveries but matches three Y70 PIDs and maps
+/// Mirrors the Q-series/MiniHub discoveries but matches every Y70 serial PID and maps
 /// each to its firmware variant. The PID is parsed out of the hardware id so a
-/// single pass covers Touch (0C00) / Infinite (0C01) / Truly (0C02).
+/// single pass covers Touch (0C00) / Infinite (0C01) / Truly (0C02) / GT (0C06).
 /// </summary>
 public sealed class WindowsY70DisplayPortDiscovery : IY70DisplayPortDiscovery
 {

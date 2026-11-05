@@ -213,7 +213,8 @@ public sealed class RgbBridge : IDisposable
 
     // Dedup + heartbeat, mirroring Slv3LightingFrameWriter's _lastSent /
     // _lastPushTicks. A frame identical to the last one pushed is skipped, but
-    // every device is re-pushed at least every HeartbeatMs regardless, so a
+    // every device except a save-only one (see _physSaveOnly) is re-pushed at
+    // least every HeartbeatMs regardless, so a
     // device that silently lost state - direct-mode timeout, USB
     // re-enumeration, another OpenRGB client writing over us - still self-heals
     // the way the unconditional 30fps push did, just a second later instead of
@@ -222,6 +223,13 @@ public sealed class RgbBridge : IDisposable
     private readonly ConcurrentDictionary<int, RgbColor[]> _lastPushed = new();
     private readonly ConcurrentDictionary<int, long> _lastPushTicks = new();
     private const long HeartbeatMs = 1000;
+    // Physical indices whose per-LED mode saves to device memory: no heartbeat, push on change only. Replaced wholesale on device-set change.
+    private volatile HashSet<int> _physSaveOnly = new();
+    // Stable id -> default cap for devices that blank on every write; a LightingMaxRates entry wins. Replaced wholesale with _physStableIds.
+    private volatile Dictionary<string, int> _defaultRatesHz = new();
+    internal const int EVisionDefaultCapHz = RgbDevice.EVisionDefaultCapHz;
+    internal IReadOnlyDictionary<string, int> DefaultRatesHz => _defaultRatesHz;
+    internal bool IsSaveOnlyPhysical(int physIdx) => _physSaveOnly.Contains(physIdx);
     // Physical index -> user cap in Hz for devices that have one, rebuilt every frame.
     private readonly Dictionary<int, int> _physCapsHz = new();
     // Physical index -> stable OpenRGB device id, the key LightingMaxRates uses. Replaced wholesale on device-set change.
@@ -1916,18 +1924,26 @@ public sealed class RgbBridge : IDisposable
         Redetect("detector-exclusions", detectorsChanged: true);
     }
 
+    /// <summary>Drops the dedup baseline so the next frame always pushes, e.g. when a device re-enters control.</summary>
+    internal void ForgetBaseline(int physIdx)
+    {
+        _lastPushed.TryRemove(physIdx, out _);
+        _lastPushTicks.TryRemove(physIdx, out _);
+    }
+
     /// <summary>True when this device's bytes differ from the last push, or the
-    /// heartbeat is due. Records what it approves as the new baseline.
+    /// heartbeat is due (never for <paramref name="saveOnly"/>: its writes hit
+    /// device memory, so only changed bytes push). Records what it approves as the new baseline.
     /// Compares as bytes: RgbColor has no IEquatable, so Span.SequenceEqual over
     /// the structs themselves would fall back to reflective ValueType.Equals and
     /// cost more than the push it saves.</summary>
-    internal bool ShouldPush(int physIdx, RgbColor[] buf, int capHz = 0, long? nowMs = null)
+    internal bool ShouldPush(int physIdx, RgbColor[] buf, int capHz = 0, long? nowMs = null, bool saveOnly = false)
     {
         var now = nowMs ?? Environment.TickCount64;
         if (_lastPushed.TryGetValue(physIdx, out var last)
             && last.Length == buf.Length
             && _lastPushTicks.TryGetValue(physIdx, out var when)
-            && now - when < HeartbeatMs
+            && (saveOnly || now - when < HeartbeatMs)
             && System.Runtime.InteropServices.MemoryMarshal.AsBytes(buf.AsSpan())
                 .SequenceEqual(System.Runtime.InteropServices.MemoryMarshal.AsBytes(last.AsSpan())))
         {
@@ -1959,10 +1975,11 @@ public sealed class RgbBridge : IDisposable
         IReadOnlySet<string> bridgeFrameIds,
         IReadOnlyDictionary<int, string> physStableIds,
         IReadOnlyDictionary<string, int> maxRates,
-        Dictionary<int, int> caps)
+        Dictionary<int, int> caps,
+        IReadOnlyDictionary<string, int>? defaultRates = null)
     {
         caps.Clear();
-        if (maxRates.Count == 0)
+        if (maxRates.Count == 0 && (defaultRates is null || defaultRates.Count == 0))
         {
             return;
         }
@@ -1970,7 +1987,8 @@ public sealed class RgbBridge : IDisposable
         {
             if (IsBridgeFrame(f, bridgeFrameIds)
                 && physStableIds.TryGetValue(f.PhysicalIndex, out var key)
-                && maxRates.TryGetValue(key, out var hz) && hz > 0)
+                && (maxRates.TryGetValue(key, out var hz) || (defaultRates?.TryGetValue(key, out hz) ?? false))
+                && hz > 0)
             {
                 caps[f.PhysicalIndex] = hz;
             }
@@ -1984,13 +2002,25 @@ public sealed class RgbBridge : IDisposable
         _lastPushTicks.Clear();
         _pushLimiter.Reset();
         var stableIds = new Dictionary<int, string>();
+        var saveOnly = new HashSet<int>();
+        var defaultRates = new Dictionary<string, int>();
         foreach (var d in devices)
         {
             if (d.LedCount > 0)
             {
                 stableIds[d.Address] = d.StableId;
+                if (d.IsSaveOnly)
+                {
+                    saveOnly.Add(d.Address);
+                    if (d.DefaultMaxRateHz is int defaultHz)
+                    {
+                        defaultRates[d.StableId] = defaultHz;
+                    }
+                }
             }
         }
+        _physSaveOnly = saveOnly;
+        _defaultRatesHz = defaultRates;
         _physStableIds = stableIds;
         SizePhysicalBuffers(_physBuffers, devices);
     }
@@ -2616,7 +2646,7 @@ public sealed class RgbBridge : IDisposable
 
         _touchedPhysicals.Clear();
         ComputeFullyUncontrolledPhysicals(deviceFrames, _bridgeFrameIds, uncontrolled, _physFullyUncontrolled);
-        ComputePhysicalCaps(deviceFrames, _bridgeFrameIds, _physStableIds, settings.Devices.LightingMaxRates, _physCapsHz);
+        ComputePhysicalCaps(deviceFrames, _bridgeFrameIds, _physStableIds, settings.Devices.LightingMaxRates, _physCapsHz, _defaultRatesHz);
 
         var deviceCount = frame[pos++];
         for (int d = 0; d < deviceCount && pos + 3 <= frame.Length; d++)
@@ -2654,6 +2684,7 @@ public sealed class RgbBridge : IDisposable
 
             if (uncontrolledCount > 0 && _physFullyUncontrolled.TryGetValue(dev.PhysicalIndex, out var physUncontrolled) && physUncontrolled)
             {
+                ForgetBaseline(dev.PhysicalIndex);
                 pos += rgbSize;
                 continue;
             }
@@ -2755,7 +2786,7 @@ public sealed class RgbBridge : IDisposable
         foreach (var physIdx in _touchedPhysicals)
         {
             if (_physBuffers.TryGetValue(physIdx, out var buf)
-                && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx)))
+                && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx), saveOnly: _physSaveOnly.Contains(physIdx)))
             {
                 _ = _controller.PushFrameAsync(physIdx, buf);
             }

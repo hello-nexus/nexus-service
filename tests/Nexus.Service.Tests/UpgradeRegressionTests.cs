@@ -109,6 +109,9 @@ public class UpgradeRegressionTests : IDisposable
 
             Assert.True(AssertStablePathsSurvive(raw, loadedNode, "settings.json") >= 5);
             store.FlushNow();
+            // A store that never set the preference writes back without the key.
+            var written = JsonNode.Parse(File.ReadAllText(settingsPath))!;
+            Assert.Null(At(written, "units.monitoringWholeNumbers"));
             var profiles = Directory.GetFiles(source, "profile-*.json");
             Assert.NotEmpty(profiles);
             foreach (var file in profiles)

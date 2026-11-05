@@ -11,7 +11,7 @@ namespace Nexus.Service.Panel.Streams;
 /// Buffers to exactly one frame before handing it to the driver, which owns whatever
 /// encoding its panel wants.
 /// </summary>
-public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport, IBrightnessPanelTransport, ISecondaryMonitorTransport
+public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrientablePanelTransport, IBrightnessPanelTransport, ISecondaryMonitorTransport, ITouchPanelTransport
 {
     private const long BrightnessTtlMs = 500;
 
@@ -38,6 +38,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private readonly object _brightnessLock = new();
     private Func<int?>? _brightness;
     private int _brightnessApplied = -1;
+    private readonly BacklightLog _backlightLog = new();
     private int _brightnessPrevious = -1;
     private long _brightnessNextReadMs;
     private bool _brightnessFaultLogged;
@@ -57,6 +58,11 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private const long RenegotiateGapMs = 5_000;
     private int _rejectedRun;
     private long _lastRenegotiateMs;
+
+    // The rendered page's touch reader; the secondary monitor runs its own, and only one may hold the pipe.
+    private readonly object _touchLock = new();
+    private Action<PanelTouchContact>? _touchSink;
+    private BulkPanelTouchReader? _touchReader;
 
     public BulkPanelStreamTransport(BulkPanelHub hub, string serial, IVirtualMonitorHost? monitors = null)
     {
@@ -128,6 +134,8 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             {
                 var feed = new SecondaryMonitorFeed(monitors, _hub, PushFrame, () => _orientationSource(), () => SecondaryMonitorStateChanged?.Invoke(), () => _fpsCapSource?.Invoke());
                 Volatile.Write(ref _monitor, feed);
+                // The monitor reads touch itself; the page's reader lets go of the pipe first.
+                UpdateTouchReader();
                 _monitorStartedMs = Environment.TickCount64;
                 feed.Start();
                 changed = true;
@@ -140,11 +148,52 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             }
         }
         stopped?.Dispose();
+        UpdateTouchReader();
         if (changed)
         {
             ServiceLog.Info($"[{_hub.Driver.HandlerId}] secondary monitor {(want ? "on" : "off")}");
             SecondaryMonitorStateChanged?.Invoke();
         }
+    }
+
+    /// <summary>Ignored for a panel whose glass reports no touch.</summary>
+    public void BindTouch(Action<PanelTouchContact> sink)
+    {
+        if (!_hub.Driver.HasTouch)
+        {
+            return;
+        }
+        lock (_touchLock)
+        {
+            _touchSink = sink;
+        }
+        UpdateTouchReader();
+    }
+
+    // Runs the page's reader while the stream is open and the monitor is off.
+    private void UpdateTouchReader()
+    {
+        BulkPanelTouchReader? stopped = null;
+        lock (_touchLock)
+        {
+            bool want = _opened && !_disposed && _touchSink is not null && Volatile.Read(ref _monitor) is null;
+            if (want && _touchReader is null)
+            {
+                var sink = _touchSink!;
+                _touchReader = new BulkPanelTouchReader(_hub, _width, _height, () => _orientationSource(), injection =>
+                {
+                    sink(new PanelTouchContact(injection.PointerId, injection.Phase, (injection.X + 0.5) / _width, (injection.Y + 0.5) / _height));
+                    return true;
+                }, "panel-touch");
+                _touchReader.Start();
+            }
+            else if (!want && _touchReader is not null)
+            {
+                stopped = _touchReader;
+                _touchReader = null;
+            }
+        }
+        stopped?.Dispose();
     }
 
     private bool SafeWantsMonitor()
@@ -209,13 +258,14 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         // No record value means the panel keeps what it powered up with.
         if (wanted is not int percent || percent == _brightnessApplied)
         {
+            _backlightLog.Settled(_hub.Driver.HandlerId, nowMs);
             return true;
         }
         if (_hub.SetBrightness(percent))
         {
             _brightnessPrevious = _brightnessApplied;
             _brightnessApplied = percent;
-            ServiceLog.Info($"[{_hub.Driver.HandlerId}] backlight {percent}%");
+            _backlightLog.Applied(_hub.Driver.HandlerId, percent, nowMs);
             return true;
         }
         return false;
@@ -237,6 +287,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         _filled = 0;
         _opened = true;
         _hub.Driver.StreamOpened(this);
+        UpdateTouchReader();
         Volatile.Write(ref _lastSendMs, Environment.TickCount64);
         int keepaliveMs = _hub.Driver.KeepaliveMs;
         if (keepaliveMs > 0)
@@ -392,6 +443,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
                 Volatile.Write(ref _monitor, null);
             }
             monitor?.Dispose();
+            UpdateTouchReader();
         }
         finally
         {
