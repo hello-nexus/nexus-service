@@ -29,22 +29,26 @@ internal static class LinuxKWinPanelPlacement
     private const string BusPath = "/org/freedesktop/DBus";
     private const int WatchRearmMs = 600_000;
 
+    // A bound for KWin exporting /Scripting after it claims its name, not a measured latency.
     private const int ReloadAttempts = 5;
     private const int ReloadBackoffMs = 250;
 
     private static readonly SemaphoreSlim LoadLock = new(1, 1);
+    private static readonly BusChangeGate BusChanges = new();
+    private static readonly object SetupGate = new();
     private static string? _wantedConnector;
     private static string? _loadedConnector;
     private static bool _loaded;
-    private static object? _watcher;
-    private static DBusConnection? _subscribedTo;
+    private static bool _started;
+    private static volatile bool _waitingForBus;
 
     /// <summary>Reloads the script whenever the Y70's connector changes, and after a failed load; "" leaves only the portrait fallback.</summary>
     public static Task EnsureLoadedAsync(DBusConnection dbus, string connector)
     {
         _wantedConnector = connector;
-        Subscribe(dbus);
-        StartWatcher(dbus, replace: false);
+        Start(dbus);
+        // A watcher parked on a bus that never came up gets another go at each kiosk spawn.
+        if (_waitingForBus) BusChanges.Signal();
         return LoadAsync(dbus, force: false);
     }
 
@@ -68,30 +72,37 @@ internal static class LinuxKWinPanelPlacement
         }
     }
 
-    // A new bus connection or session means a new KWin that has none of our scripts.
-    private static void Subscribe(DBusConnection dbus)
+    private static void Start(DBusConnection dbus)
     {
-        if (ReferenceEquals(_subscribedTo, dbus)) return;
-        _subscribedTo = dbus;
+        lock (SetupGate)
+        {
+            if (_started) return;
+            _started = true;
+        }
         dbus.Reconnected += () => OnBusChanged(dbus);
         LinuxSession.SessionAdopted += () => OnBusChanged(dbus);
+        _ = Task.Run(() => WatchAsync(dbus));
     }
 
+    // A new connection or session means a new KWin that has none of our scripts.
     private static void OnBusChanged(DBusConnection dbus)
     {
-        _loaded = false;
-        StartWatcher(dbus, replace: true);
-        _ = LoadAsync(dbus, force: false);
-    }
-
-    // Loads once KWin owns its name, and again after a KWin restart, which drops every loaded script.
-    private static void StartWatcher(DBusConnection dbus, bool replace)
-    {
-        var me = new object();
-        if (replace) Volatile.Write(ref _watcher, me);
-        else if (Interlocked.CompareExchange(ref _watcher, me, null) is not null) return;
+        BusChanges.Signal();
         _ = Task.Run(async () =>
         {
+            await LoadLock.WaitAsync();
+            try { _loaded = false; }
+            finally { LoadLock.Release(); }
+            await LoadAsync(dbus, force: false);
+        });
+    }
+
+    // The one task that touches the NameOwnerChanged waiter. It survives bus loss: match rules die with the connection, so it re-arms after each reconnect.
+    private static async Task WatchAsync(DBusConnection dbus)
+    {
+        while (true)
+        {
+            var seen = BusChanges.Version;
             try
             {
                 await dbus.StartAsync();
@@ -101,7 +112,7 @@ internal static class LinuxKWinPanelPlacement
                 var next = dbus.WaitForSignalAsync(BusPath, "NameOwnerChanged", WatchRearmMs);
                 if (await HasOwnerAsync(dbus))
                     await LoadWithRetryAsync(dbus, force: false);
-                while (ReferenceEquals(Volatile.Read(ref _watcher), me))
+                while (true)
                 {
                     DBusMessage? signal = null;
                     try { signal = await next; }
@@ -113,10 +124,12 @@ internal static class LinuxKWinPanelPlacement
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[panel-kiosk] KWin watch stopped: {ex.Message}");
-                Interlocked.CompareExchange(ref _watcher, null, me);
+                Console.Error.WriteLine($"[panel-kiosk] KWin watch interrupted: {ex.Message}");
             }
-        });
+            _waitingForBus = true;
+            await BusChanges.WaitAfterAsync(seen);
+            _waitingForBus = false;
+        }
     }
 
     private static async Task<bool> HasOwnerAsync(DBusConnection dbus)
@@ -132,13 +145,12 @@ internal static class LinuxKWinPanelPlacement
         }
     }
 
-    // KWin may own its name a moment before /Scripting is exported; retry only here, right after it appeared.
     private static async Task LoadWithRetryAsync(DBusConnection dbus, bool force)
     {
         for (var attempt = 1; attempt <= ReloadAttempts; attempt++)
         {
             if (await LoadAsync(dbus, force)) return;
-            await Task.Delay(ReloadBackoffMs * attempt);
+            if (attempt < ReloadAttempts) await Task.Delay(ReloadBackoffMs * attempt);
         }
     }
 
@@ -188,6 +200,36 @@ internal static class LinuxKWinPanelPlacement
         {
             Console.Error.WriteLine($"[panel-kiosk] KWin placement script not loaded: {ex.Message}");
             return false;
+        }
+    }
+
+    /// <summary>Counts bus changes so a waiter that missed one between reading the count and waiting still wakes.</summary>
+    internal sealed class BusChangeGate
+    {
+        private readonly object _lock = new();
+        private TaskCompletionSource _next = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _version;
+
+        public int Version
+        {
+            get { lock (_lock) return _version; }
+        }
+
+        public void Signal()
+        {
+            TaskCompletionSource old;
+            lock (_lock)
+            {
+                _version++;
+                old = _next;
+                _next = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            old.TrySetResult();
+        }
+
+        public Task WaitAfterAsync(int seen)
+        {
+            lock (_lock) return _version != seen ? Task.CompletedTask : _next.Task;
         }
     }
 
