@@ -793,6 +793,8 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             "{\"id\":\"p1\",\"highResolution\":false}",
             Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
         Assert.NotNull(record);
+        Assert.DoesNotContain("highResolution", System.Text.Json.JsonSerializer.Serialize(
+            record, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord));
 
         var allocated = _registry.Allocate("Screen", Caps(PanelSurfaces.Monitor));
         var patched = _registry.Patch(allocated.Id, new PanelDevicePatch { HighResolution = false, DisplayName = "Renamed" })!;

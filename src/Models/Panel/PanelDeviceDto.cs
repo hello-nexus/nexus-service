@@ -505,8 +505,7 @@ public sealed class PanelDevicePatch
     /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
     /// capabilities carry SupportsPortrait; null = landscape.</summary>
     public bool? Portrait { get; set; }
-    /// <summary>Obsolete and ignored: every streamed panel renders at native resolution. Still
-    /// accepted so older clients that send it do not break.</summary>
+    /// <summary>Ignored: every streamed panel renders at native resolution.</summary>
     public bool? HighResolution { get; set; }
     /// <summary>Frame rate cap in fps, clamped to PanelDeviceRegistry.MaxFpsCap; 0 or less clears it (the device's own rate). Null = leave it.</summary>
     public int? FpsCap { get; set; }
