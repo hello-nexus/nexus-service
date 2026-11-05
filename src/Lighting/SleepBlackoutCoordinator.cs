@@ -123,6 +123,14 @@ public sealed class SleepBlackoutCoordinator
     private volatile bool _lockHold;
 
     /// <summary>
+    /// True from the suspend blackout until the resume. Lock-screen input can
+    /// arrive in the seconds before the machine actually sleeps (the lock
+    /// screen is what the user last touched); releasing the hold then relights
+    /// SMBus devices that keep their last frame through sleep.
+    /// </summary>
+    private volatile bool _suspendHold;
+
+    /// <summary>
     /// Serializes clearing <see cref="_lockHold"/> against the idle window
     /// engaging a blackout on it. Without it the timer can pass its check and
     /// then darken a desktop the user has just unlocked - with the hold flag
@@ -264,6 +272,10 @@ public sealed class SleepBlackoutCoordinator
             {
                 return;
             }
+            if (_suspendHold)
+            {
+                return;
+            }
             if (!_store.Load().Lighting.LockBlackout)
             {
                 return;
@@ -363,6 +375,11 @@ public sealed class SleepBlackoutCoordinator
                 return;
             }
 
+            if (reason == "suspend")
+            {
+                _suspendHold = true;
+            }
+
             var deadline = DateTime.UtcNow + budget;
             // A hold already engaged (a second suspend notification, or a
             // shutdown that follows one) is dark or on its way there; re-running
@@ -424,6 +441,7 @@ public sealed class SleepBlackoutCoordinator
     {
         try
         {
+            _suspendHold = false;
             if (!_gates.Lighting)
             {
                 return;

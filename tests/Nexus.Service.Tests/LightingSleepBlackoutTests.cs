@@ -674,6 +674,43 @@ public class LightingSleepBlackoutTests : IDisposable
     }
 
     [Fact]
+    public void LockScreenInput_AfterSuspend_DoesNotReleaseTheBlackout()
+    {
+        // Input at the lock screen can land in the seconds before the machine
+        // sleeps; SMBus devices keep whatever frame the release pushed.
+        using var engine = new LightingEngine();
+        var devices = MakeLitDevices();
+        engine.UpdateDevices(devices);
+        var coordinator = new SleepBlackoutCoordinator(engine, _store, lockWakeTimeout: TimeSpan.FromSeconds(5));
+
+        coordinator.OnSessionLocked();
+        coordinator.OnSuspending();
+        coordinator.OnLockScreenInput();
+
+        Assert.True(engine.Blackout);
+        Assert.False(engine.BlackoutReleasing);
+    }
+
+    [Fact]
+    public void LockScreenInput_AfterResumeWhileLocked_ReleasesTheBlackout()
+    {
+        using var engine = new LightingEngine();
+        var devices = MakeLitDevices();
+        engine.UpdateDevices(devices);
+        var coordinator = new SleepBlackoutCoordinator(engine, _store, lockWakeTimeout: TimeSpan.FromSeconds(5));
+
+        coordinator.OnSessionLocked();
+        coordinator.OnSuspending();
+        coordinator.OnResumed();
+        Assert.True(engine.Blackout);
+
+        // No effect is running, so the release lands at once rather than as a ramp.
+        coordinator.OnLockScreenInput();
+
+        Assert.False(engine.Blackout);
+    }
+
+    [Fact]
     public async Task LockScreenInput_AfterUnlock_IsIgnored()
     {
         // An envelope in flight as the user signs in must not park an idle
