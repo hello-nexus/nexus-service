@@ -74,6 +74,10 @@ public sealed partial class Slv3Hub : IDisposable
     public Func<string?>? UsbAioMac { get; set; }
     private volatile string? _usbAioMac;
 
+    /// <summary>A HydroShift II is enumerated on USB, opened or not; read once per tick, outside the hub lock.</summary>
+    public Func<bool>? UsbAioPresent { get; set; }
+    private volatile bool _usbAioPresent;
+
     /// <summary>Tells whether a MAC belongs to a fan that is plugged in over USB and driven by its own handler; the radio never binds, steers or writes to it.</summary>
     public Func<string, bool>? WiredOwned { get; set; }
 
@@ -989,6 +993,7 @@ public sealed partial class Slv3Hub : IDisposable
     public bool PollTick()
     {
         _usbAioMac = ReadUsbAioMac();
+        _usbAioPresent = ReadUsbAioPresent();
         RefreshLockSetting();
         EnsureOwnedLoaded();
         try
@@ -1013,6 +1018,7 @@ public sealed partial class Slv3Hub : IDisposable
     public bool DriveTick()
     {
         _usbAioMac = ReadUsbAioMac();
+        _usbAioPresent = ReadUsbAioPresent();
         RefreshLockSetting();
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
@@ -1928,6 +1934,19 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
+    private bool ReadUsbAioPresent()
+    {
+        try
+        {
+            return UsbAioPresent?.Invoke() == true;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] USB AIO presence check failed: {ex.Message}");
+            return false;
+        }
+    }
+
     private IReadOnlyDictionary<string, Slv3AioScreen>? ReadAioScreens()
     {
         try
@@ -2591,6 +2610,7 @@ public sealed partial class Slv3Hub : IDisposable
         UsbConnected = (record.IsHydroShift && _usbAioMac is { } usbMac
             && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase))
             || (IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record)),
+        UsbPresent = record.IsHydroShift && _usbAioMac is null && _usbAioPresent,
         WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record),
         RadioDrivesUsb = IsWiredOwned(Convert.ToHexString(record.Mac)) && IsBoundToUsLocked(record),
         CoolantTempC = record.CoolantTempC,
