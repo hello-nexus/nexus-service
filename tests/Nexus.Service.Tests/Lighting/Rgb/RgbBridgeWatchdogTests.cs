@@ -17,6 +17,8 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         public volatile bool Park;
         public volatile bool Fail;
+        // A session that closes under the request: the real controller then answers with an empty list.
+        public volatile bool DropOnList;
         // A daemon whose SDK server is not accepting yet refuses this many connects.
         public int RefuseConnects;
         private volatile bool _connected;
@@ -30,8 +32,15 @@ public class RgbBridgeWatchdogTests : IDisposable
         public void StartDetection() => DetectionStateChanged?.Invoke(true);
         public void CompleteDetection() => DetectionStateChanged?.Invoke(false);
         public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
-        public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default) =>
-            (await GetDevicesAsync(ct)).Select(d => d.Address).ToList();
+        public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default)
+        {
+            if (DropOnList)
+            {
+                _connected = false;
+                return Array.Empty<int>();
+            }
+            return (await GetDevicesAsync(ct)).Select(d => d.Address).ToList();
+        }
         // A wedged daemon: the real request lock wait times out the same way, shortened here.
         public async Task<bool> RescanAsync(CancellationToken ct = default)
         {
@@ -263,64 +272,194 @@ public class RgbBridgeWatchdogTests : IDisposable
         Assert.True(await WaitUntilAsync(() => _bridge.Devices.Count > 0, TimeSpan.FromSeconds(4)), "still waiting out the reconnect cooldown");
     }
 
-    [Fact]
-    public async Task A_resume_restart_that_lists_nothing_is_restarted_again()
+    // Settle-stall tests drive time through these instead of waiting on the wall clock.
+    private long _clockTicks;
+    private TimeSpan _uptime = TimeSpan.FromMinutes(5);
+
+    private void UseFakeClock()
     {
-        await ActivateAndSettleAsync();
-        Assert.Equal(0, _controller.Count("disconnect"));
+        _clockTicks = DateTime.UtcNow.Ticks;
+        _bridge.NowTicks = () => Volatile.Read(ref _clockTicks);
+        _bridge.DaemonUptimeProbe = () => _uptime;
+    }
 
-        // The respawned daemon connects but its detection never produces a device.
-        _controller.Devices = Array.Empty<RgbDevice>();
+    private void Advance(TimeSpan by) => Interlocked.Add(ref _clockTicks, by.Ticks);
+
+    private async Task ResumeAndWaitForBounceAsync(int disconnects)
+    {
         _bridge.OnSystemResume();
-        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1, TimeSpan.FromSeconds(3)),
-            "the resume bounce did not run");
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == disconnects && _controller.IsConnected, TimeSpan.FromSeconds(5)),
+            "the restart did not complete");
+    }
 
-        // A second restart, after the detection hold lapses, and the third settles.
-        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 2, TimeSpan.FromSeconds(20)),
-            "an empty daemon after a resume was left alone");
+    private async Task PollAndExpectBounceAsync(int disconnects)
+    {
+        await _bridge.PollOnceAsync();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == disconnects && _controller.IsConnected, TimeSpan.FromSeconds(5)),
+            "the stalled daemon was not restarted");
+    }
 
-        _controller.Devices = new[] { new RgbDevice { Index = 0, Address = 0, Name = "DRAM", LedCount = 4, Serial = "A1" } };
-        Assert.True(await WaitUntilAsync(() => _bridge.PhysicalBufferCount == 1, TimeSpan.FromSeconds(20)));
+    private async Task PollAndExpectNoBounceAsync(int disconnects)
+    {
+        await _bridge.PollOnceAsync();
+        await Task.Delay(300);
+        Assert.Equal(disconnects, _controller.Count("disconnect"));
     }
 
     [Fact]
-    public async Task A_resume_restart_that_lists_its_devices_is_not_restarted_again()
+    public async Task A_resume_restart_that_lists_nothing_is_restarted_at_the_settle_timeout_even_after_a_silent_started()
     {
+        UseFakeClock();
         await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        _uptime = TimeSpan.Zero;
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.Equal(1, _bridge.ExpectedDevices);
+        _controller.StartDetection();
 
-        _bridge.OnSystemResume();
-        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1, TimeSpan.FromSeconds(3)));
+        _uptime = TimeSpan.FromSeconds(29);
+        Advance(_uptime);
+        await PollAndExpectNoBounceAsync(1);
 
-        await Task.Delay(TimeSpan.FromSeconds(14));
-        Assert.Equal(1, _controller.Count("disconnect"));
+        // The STARTED hold alone would last the 60 s stall limit.
+        _uptime = TimeSpan.FromSeconds(30);
+        Advance(TimeSpan.FromSeconds(1));
+        await PollAndExpectBounceAsync(2);
+    }
+
+    [Fact]
+    public async Task A_second_stall_restart_in_one_arming_respects_the_detection_hold()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+        await PollAndExpectBounceAsync(2);
+
+        // Detection started again and is merely slow: silent 30 s, inside the 60 s hold.
+        _controller.StartDetection();
+        Advance(TimeSpan.FromSeconds(30));
+        await PollAndExpectNoBounceAsync(2);
+
+        // Silent past the stall limit, and past the watchdog floor.
+        Advance(TimeSpan.FromSeconds(40));
+        await PollAndExpectBounceAsync(3);
+    }
+
+    [Fact]
+    public async Task Only_resume_and_watchdog_restarts_arm_the_stall_check()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+
+        _bridge.BounceForManualDevices();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+        Assert.Equal(0, _bridge.ExpectedDevices);
+        Advance(TimeSpan.FromMinutes(5));
+        await PollAndExpectNoBounceAsync(1);
+    }
+
+    [Fact]
+    public async Task A_rescan_that_falls_back_to_a_restart_does_not_arm_the_stall_check()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Fail = true;
+        _bridge.ForceRescan();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+        _controller.Fail = false;
+
+        Assert.Equal(0, _bridge.ExpectedDevices);
+    }
+
+    [Fact]
+    public async Task A_completed_empty_detection_is_the_truth_and_disarms_the_stall_check()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+
+        _controller.CompleteDetection();
+
+        Assert.Equal(0, _bridge.ExpectedDevices);
+        Advance(TimeSpan.FromMinutes(5));
+        await PollAndExpectNoBounceAsync(1);
+    }
+
+    [Fact]
+    public async Task A_restart_that_lists_its_devices_disarms_the_stall_check()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.Equal(1, _bridge.ExpectedDevices);
+
+        // The detection quiet window lapses, then the refresh loop commits the daemon's list.
+        Advance(TimeSpan.FromSeconds(10));
+        Assert.True(await WaitUntilAsync(() => _bridge.ExpectedDevices == 0, TimeSpan.FromSeconds(8)));
+        Advance(TimeSpan.FromMinutes(5));
+        await PollAndExpectNoBounceAsync(1);
+    }
+
+    [Fact]
+    public async Task A_session_that_closes_under_the_request_is_a_reconnect_not_a_stall()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+
+        _controller.DropOnList = true;
+        await PollAndExpectNoBounceAsync(1);
+        _controller.DropOnList = false;
+    }
+
+    [Fact]
+    public async Task Giving_up_the_stall_restarts_stops_expecting_the_devices()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+
+        for (var n = 2; n <= 4; n++)
+        {
+            Advance(TimeSpan.FromSeconds(100));
+            await PollAndExpectBounceAsync(n);
+        }
+        Assert.Equal(1, _bridge.ExpectedDevices);
+
+        Advance(TimeSpan.FromSeconds(100));
+        await PollAndExpectNoBounceAsync(4);
+        Assert.Equal(0, _bridge.ExpectedDevices);
+    }
+
+    [Fact]
+    public async Task Deactivate_disarms_the_stall_check()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.Equal(1, _bridge.ExpectedDevices);
+
+        _bridge.Deactivate();
+
+        Assert.Equal(0, _bridge.ExpectedDevices);
     }
 
     [Fact]
     public async Task A_daemon_that_never_listed_a_device_is_not_restarted_for_listing_none()
     {
+        UseFakeClock();
         _controller.Devices = Array.Empty<RgbDevice>();
         _bridge.Activate();
         Assert.True(await WaitUntilAsync(() => _controller.Count("getDevices") >= 1, TimeSpan.FromSeconds(10)));
 
-        await Task.Delay(TimeSpan.FromSeconds(14));
-        Assert.Equal(0, _controller.Count("disconnect"));
-    }
-
-    [Fact]
-    public async Task A_daemon_that_sent_started_then_went_silent_is_restarted_at_the_settle_timeout()
-    {
-        await ActivateAndSettleAsync();
-        _controller.Devices = Array.Empty<RgbDevice>();
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        _bridge.DaemonUptimeProbe = () => sw.Elapsed;
-
-        _bridge.OnSystemResume();
-        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1, TimeSpan.FromSeconds(3)));
-        _controller.StartDetection();
-
-        // The STARTED hold alone would last the 60 s stall limit.
-        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 2, TimeSpan.FromSeconds(42)),
-            "a daemon silent after STARTED was not restarted");
-        Assert.True(sw.Elapsed >= TimeSpan.FromSeconds(29), $"restarted early at {sw.Elapsed}");
+        Advance(TimeSpan.FromMinutes(5));
+        await PollAndExpectNoBounceAsync(0);
     }
 }
