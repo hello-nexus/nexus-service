@@ -332,13 +332,26 @@ public class LinuxPanelKioskHostTests
     {
         var gate = new LinuxKWinPanelPlacement.BusChangeGate();
         var seen = gate.Version;
-        gate.Signal();
+        gate.Signal(busChanged: true);
         Assert.True(gate.WaitAfterAsync(seen).IsCompletedSuccessfully);
 
         var current = gate.Version;
         var pending = gate.WaitAfterAsync(current);
         Assert.False(pending.IsCompleted);
-        gate.Signal();
+        gate.Signal(busChanged: true);
         await pending.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public void BusChangeGate_SpawnSignalWakesButKeepsGeneration()
+    {
+        var gate = new LinuxKWinPanelPlacement.BusChangeGate();
+        var generation = gate.Generation;
+        var seen = gate.Version;
+        gate.Signal(busChanged: false);
+        Assert.NotEqual(seen, gate.Version);
+        Assert.Equal(generation, gate.Generation);
+        gate.Signal(busChanged: true);
+        Assert.NotEqual(generation, gate.Generation);
     }
 }
