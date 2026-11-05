@@ -711,6 +711,26 @@ public class LightingSleepBlackoutTests : IDisposable
     }
 
     [Fact]
+    public void LockScreenInput_AfterSuspendWithoutResumeThenUnlockAndRelock_ReleasesTheBlackout()
+    {
+        // A dark wake delivers no resume; the next unlock must clear the suspend hold.
+        using var engine = new LightingEngine();
+        var devices = MakeLitDevices();
+        engine.UpdateDevices(devices);
+        var coordinator = new SleepBlackoutCoordinator(engine, _store, lockWakeTimeout: TimeSpan.FromSeconds(5));
+
+        coordinator.OnSessionLocked();
+        coordinator.OnSuspending();
+        coordinator.OnSessionUnlocked();
+        coordinator.OnSessionLocked();
+        Assert.True(engine.Blackout);
+
+        coordinator.OnLockScreenInput();
+
+        Assert.False(engine.Blackout);
+    }
+
+    [Fact]
     public async Task LockScreenInput_AfterUnlock_IsIgnored()
     {
         // An envelope in flight as the user signs in must not park an idle

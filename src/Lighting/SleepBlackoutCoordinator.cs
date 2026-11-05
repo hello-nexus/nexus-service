@@ -233,6 +233,8 @@ public sealed class SleepBlackoutCoordinator
             lock (_lockHoldGate)
             {
                 _lockHold = false;
+                // A suspend with no resume (dark wake) must not leave later lock-screen input dead.
+                _suspendHold = false;
             }
             SetLockInputWatch(false);
             // The session is the user's again, so the idle window has nothing
@@ -268,25 +270,25 @@ public sealed class SleepBlackoutCoordinator
             // Only meaningful while the session is locked. An envelope arriving
             // after an unlock (in flight as the user signed in) must not park a
             // timer that would darken a desktop the user is sitting at.
-            if (!_lockHold)
+            // Under the gate so a suspend blackout cannot slip in between the check and the release.
+            lock (_lockHoldGate)
             {
-                return;
-            }
-            if (_suspendHold)
-            {
-                return;
-            }
-            if (!_store.Load().Lighting.LockBlackout)
-            {
-                return;
-            }
+                if (!_lockHold || _suspendHold)
+                {
+                    return;
+                }
+                if (!_store.Load().Lighting.LockBlackout)
+                {
+                    return;
+                }
 
-            _lockWakeTimer.Change(_lockWakeTimeout, Timeout.InfiniteTimeSpan);
+                _lockWakeTimer.Change(_lockWakeTimeout, Timeout.InfiniteTimeSpan);
 
-            if (_engine.Blackout && !_engine.BlackoutReleasing)
-            {
-                _engine.BeginBlackoutRelease(UnlockFadeDuration);
-                ServiceLog.Info($"[lighting-lock] input at the lock screen - fading in over {(int)UnlockFadeDuration.TotalMilliseconds}ms");
+                if (_engine.Blackout && !_engine.BlackoutReleasing)
+                {
+                    _engine.BeginBlackoutRelease(UnlockFadeDuration);
+                    ServiceLog.Info($"[lighting-lock] input at the lock screen - fading in over {(int)UnlockFadeDuration.TotalMilliseconds}ms");
+                }
             }
         }
         catch (Exception ex)
@@ -377,7 +379,10 @@ public sealed class SleepBlackoutCoordinator
 
             if (reason == "suspend")
             {
-                _suspendHold = true;
+                lock (_lockHoldGate)
+                {
+                    _suspendHold = true;
+                }
             }
 
             var deadline = DateTime.UtcNow + budget;

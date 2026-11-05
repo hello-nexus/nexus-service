@@ -585,17 +585,17 @@ public class HydroShift2Tests
     public void A_wake_wipe_waits_out_its_settle_then_pushes_once()
     {
         var (aio, pipe) = Attached();
-        aio.Tick(1_000);
-        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
-
+        var start = Environment.TickCount64;
+        aio.Tick(start);
         aio.ClearScreenOverlay(HydroShift2Aio.WakeOverlaySettleMs);
-        aio.Tick(1_250);
+
+        aio.Tick(start + HydroShift2Aio.WakeOverlaySettleMs - 500);
         Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
 
-        aio.Tick(Environment.TickCount64 + HydroShift2Aio.WakeOverlaySettleMs + 1_000);
+        aio.Tick(start + HydroShift2Aio.WakeOverlaySettleMs + 1_000);
         Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
 
-        aio.Tick(Environment.TickCount64 + HydroShift2Aio.WakeOverlaySettleMs + 2_000);
+        aio.Tick(start + HydroShift2Aio.WakeOverlaySettleMs + 2_000);
         Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
     }
 
