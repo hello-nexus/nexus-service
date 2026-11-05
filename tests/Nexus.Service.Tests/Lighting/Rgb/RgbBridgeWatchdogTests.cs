@@ -261,4 +261,47 @@ public class RgbBridgeWatchdogTests : IDisposable
         // The reconnect cooldown alone would put the first retry past this bound.
         Assert.True(await WaitUntilAsync(() => _bridge.Devices.Count > 0, TimeSpan.FromSeconds(4)), "still waiting out the reconnect cooldown");
     }
+
+    [Fact]
+    public async Task A_resume_restart_that_lists_nothing_is_restarted_again()
+    {
+        await ActivateAndSettleAsync();
+        Assert.Equal(0, _controller.Count("disconnect"));
+
+        // The respawned daemon connects but its detection never produces a device.
+        _controller.Devices = Array.Empty<RgbDevice>();
+        _bridge.OnSystemResume();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1, TimeSpan.FromSeconds(3)),
+            "the resume bounce did not run");
+
+        // A second restart, after the detection hold lapses, and the third settles.
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 2, TimeSpan.FromSeconds(20)),
+            "an empty daemon after a resume was left alone");
+
+        _controller.Devices = new[] { new RgbDevice { Index = 0, Address = 0, Name = "DRAM", LedCount = 4, Serial = "A1" } };
+        Assert.True(await WaitUntilAsync(() => _bridge.PhysicalBufferCount == 1, TimeSpan.FromSeconds(20)));
+    }
+
+    [Fact]
+    public async Task A_resume_restart_that_lists_its_devices_is_not_restarted_again()
+    {
+        await ActivateAndSettleAsync();
+
+        _bridge.OnSystemResume();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1, TimeSpan.FromSeconds(3)));
+
+        await Task.Delay(TimeSpan.FromSeconds(14));
+        Assert.Equal(1, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task A_daemon_that_never_listed_a_device_is_not_restarted_for_listing_none()
+    {
+        _controller.Devices = Array.Empty<RgbDevice>();
+        _bridge.Activate();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("getDevices") >= 1, TimeSpan.FromSeconds(10)));
+
+        await Task.Delay(TimeSpan.FromSeconds(14));
+        Assert.Equal(0, _controller.Count("disconnect"));
+    }
 }

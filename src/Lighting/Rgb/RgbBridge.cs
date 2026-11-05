@@ -86,6 +86,9 @@ public sealed class RgbBridge : IDisposable
     /// <summary>Watchdog bounces per <see cref="WatchdogWindow"/> before it gives up until the next user rescan.</summary>
     private const int WatchdogMaxBounces = 3;
     private static readonly TimeSpan WatchdogWindow = TimeSpan.FromMinutes(10);
+    /// <summary>A restarted daemon that still lists no controller this long after spawn, with quiet detection, never finished: devices were present before the restart.</summary>
+    private static readonly TimeSpan SettleStallTimeout = TimeSpan.FromSeconds(45);
+    private const string SmbusMutexName = "Global\\Access_SMBUS.HTP.Method";
 
     // Covers the PawnIO install gate LhmComputer waits on plus the open itself.
     private static readonly TimeSpan LhmEnumerationWait = TimeSpan.FromSeconds(30);
@@ -123,6 +126,8 @@ public sealed class RgbBridge : IDisposable
     private long _watchdogWindowStartTicks;
     private int _watchdogBouncesInWindow;
     private bool _watchdogGaveUp;
+    // Devices listed before the last daemon restart that no settled list has replaced yet; Interlocked.
+    private int _expectedDevices;
     /// <summary>Test stand-in for both the watchdog's uptime and the reconnect's time since spawn (the process manager is sealed).</summary>
     internal Func<TimeSpan>? DaemonUptimeProbe { get; set; }
     private long _lastBounceTicks;         // DateTime.UtcNow.Ticks; updated via Interlocked
@@ -524,6 +529,7 @@ public sealed class RgbBridge : IDisposable
             cts = _refreshCts;
             _refreshCts = null;
             _devices = Array.Empty<RgbDevice>();
+            Volatile.Write(ref _expectedDevices, 0);
             // Views counted the emptied list on the restart broadcast; the first refresh after Activate must re-announce even an unchanged set.
             _frameIdSignature = "";
             _directModeApplied = new();
@@ -1074,6 +1080,13 @@ public sealed class RgbBridge : IDisposable
             }
             _loggedResizeOutcomes.Clear();
         }
+        lock (_lock)
+        {
+            if (_devices.Count > Volatile.Read(ref _expectedDevices))
+            {
+                Volatile.Write(ref _expectedDevices, _devices.Count);
+            }
+        }
         ServiceLog.Info($"[rgb-bridge] bouncing subprocess ({reason})");
         Volatile.Write(ref _detectionStartedSeen, 0);
         MarkDetectionActivity();
@@ -1129,22 +1142,108 @@ public sealed class RgbBridge : IDisposable
         }
         Interlocked.Exchange(ref _daemonFailures, 0);
 
+        if (!TryClaimWatchdogBounce(now))
+        {
+            return;
+        }
+        BounceSubprocess("watchdog");
+    }
+
+    /// <summary>Spends one of the shared watchdog restarts: false inside the floor, or once the window's cap is used (then the watchdog gives up until the next rescan).</summary>
+    private bool TryClaimWatchdogBounce(long now)
+    {
         lock (_lock)
         {
+            if (_watchdogWindowStartTicks == 0 || now - _watchdogWindowStartTicks > WatchdogWindow.Ticks)
+            {
+                _watchdogWindowStartTicks = now;
+                _watchdogBouncesInWindow = 0;
+                _watchdogGaveUp = false;
+            }
             if (_lastWatchdogBounceTicks != 0 && now - _lastWatchdogBounceTicks < WatchdogFloor.Ticks)
             {
-                return;
+                return false;
             }
             if (_watchdogBouncesInWindow >= WatchdogMaxBounces)
             {
                 _watchdogGaveUp = true;
                 ServiceLog.Warn($"[rgb-bridge] watchdog: {WatchdogMaxBounces} restarts in {WatchdogWindow.TotalMinutes:F0} min and the daemon keeps wedging; giving up until the next rescan");
-                return;
+                return false;
             }
             _watchdogBouncesInWindow++;
             _lastWatchdogBounceTicks = now;
+            return true;
         }
-        BounceSubprocess("watchdog");
+    }
+
+    /// <summary>
+    /// A daemon restarted with devices known (resume bounce) that is connected, quiet and still lists
+    /// nothing was seen to wedge before its detection finished; the bridge otherwise reads the
+    /// empty list as unchanged and waits forever. Restarts it within the watchdog budget.
+    /// </summary>
+    private bool RecoverSettleStall()
+    {
+        var expected = Volatile.Read(ref _expectedDevices);
+        if (expected == 0)
+        {
+            return false;
+        }
+        var sinceSpawn = (DaemonUptimeProbe ?? (() => _proc.SinceLastSpawn))();
+        if (sinceSpawn < SettleStallTimeout || DetectionInProgress())
+        {
+            return false;
+        }
+        var detail = $"daemon up {sinceSpawn.TotalSeconds:F0}s, 0 controllers listed, {expected} known before the restart, "
+            + $"detection started seen={Volatile.Read(ref _detectionStartedSeen) != 0}, smbus mutex={ProbeSmbusMutex()}";
+        if (!TryClaimWatchdogBounce(DateTime.UtcNow.Ticks))
+        {
+            if (_watchdogGaveUp)
+            {
+                // Out of restarts: the devices may genuinely be gone, so stop expecting them.
+                Interlocked.Exchange(ref _expectedDevices, 0);
+            }
+            return false;
+        }
+        ServiceLog.Warn($"[rgb-bridge] daemon never settled after restart ({detail}); restarting it");
+        BounceSubprocess("settle-stall");
+        return true;
+    }
+
+    /// <summary>Who holds the SMBus mutex the daemon's DIMM detection waits on without a timeout: held (by another process or thread), free, or n/a.</summary>
+    private static string ProbeSmbusMutex()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return "n/a";
+        }
+        try
+        {
+            if (!Mutex.TryOpenExisting(SmbusMutexName, out var mutex))
+            {
+                return "absent";
+            }
+            using (mutex)
+            {
+                try
+                {
+                    if (!mutex.WaitOne(0))
+                    {
+                        return "held";
+                    }
+                }
+                catch (AbandonedMutexException)
+                {
+                    mutex.ReleaseMutex();
+                    return "abandoned";
+                }
+                mutex.ReleaseMutex();
+                return "free";
+            }
+        }
+        catch (Exception ex)
+        {
+            return ex.GetType().Name;
+        }
     }
 
     /// <summary>True while the daemon is detecting. Exposed via /lighting/status for the rescan spinner.</summary>
@@ -1399,6 +1498,10 @@ public sealed class RgbBridge : IDisposable
                     addresses[i] = finalList[i].Address;
                 }
                 _committedAddresses = addresses;
+                if (addresses.Length > 0)
+                {
+                    Volatile.Write(ref _expectedDevices, 0);
+                }
                 // Ids are never reused within a daemon run, so ones gone from the list are dead.
                 _directModeApplied.IntersectWith(addresses);
             }
@@ -2418,6 +2521,10 @@ public sealed class RgbBridge : IDisposable
             return;
         }
         Interlocked.Exchange(ref _daemonFailures, 0);
+        if (addresses.Count == 0 && RecoverSettleStall())
+        {
+            return;
+        }
         bool changed;
         lock (_lock)
         {
