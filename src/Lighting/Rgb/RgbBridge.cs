@@ -128,6 +128,10 @@ public sealed class RgbBridge : IDisposable
     private bool _watchdogGaveUp;
     // Devices listed before the last daemon restart that no settled list has replaced yet; Interlocked.
     private int _expectedDevices;
+    // Settle-stall restarts spent under the current arming of _expectedDevices; Interlocked.
+    private int _settleStallBounces;
+    /// <summary>Clock for the detection-activity and settle-stall gates, replaceable so tests need no wall-clock waits.</summary>
+    internal Func<long> NowTicks { get; set; } = () => DateTime.UtcNow.Ticks;
     /// <summary>Test stand-in for both the watchdog's uptime and the reconnect's time since spawn (the process manager is sealed).</summary>
     internal Func<TimeSpan>? DaemonUptimeProbe { get; set; }
     private long _lastBounceTicks;         // DateTime.UtcNow.Ticks; updated via Interlocked
@@ -529,7 +533,7 @@ public sealed class RgbBridge : IDisposable
             cts = _refreshCts;
             _refreshCts = null;
             _devices = Array.Empty<RgbDevice>();
-            Volatile.Write(ref _expectedDevices, 0);
+            DisarmSettleStall();
             // Views counted the emptied list on the restart broadcast; the first refresh after Activate must re-announce even an unchanged set.
             _frameIdSignature = "";
             _directModeApplied = new();
@@ -953,7 +957,7 @@ public sealed class RgbBridge : IDisposable
 
     private void MarkDetectionActivity()
     {
-        Interlocked.Exchange(ref _detectionActivityTicks, DateTime.UtcNow.Ticks);
+        Interlocked.Exchange(ref _detectionActivityTicks, NowTicks());
         OpenRgbDetectorMap.BeginHold();
     }
 
@@ -963,7 +967,7 @@ public sealed class RgbBridge : IDisposable
         var holdGeneration = OpenRgbDetectorMap.HoldGeneration;
         var last = Interlocked.Read(ref _detectionActivityTicks);
         var holds = last != 0
-            && DetectionHolds(TimeSpan.FromTicks(DateTime.UtcNow.Ticks - last), Volatile.Read(ref _detectionStartedSeen) != 0, _controller.IsConnected);
+            && DetectionHolds(TimeSpan.FromTicks(NowTicks() - last), Volatile.Read(ref _detectionStartedSeen) != 0, _controller.IsConnected);
         if (!holds && OpenRgbDetectorMap.HoldActive)
         {
             OpenRgbDetectorMap.EndHold(holdGeneration);
@@ -1000,6 +1004,8 @@ public sealed class RgbBridge : IDisposable
         OpenRgbDetectorMap.EndHold();
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
+        // A finished pass is the truth for this daemon, even an empty one.
+        DisarmSettleStall();
         string? deferred;
         bool deferredDetectors;
         lock (_lock)
@@ -1080,11 +1086,20 @@ public sealed class RgbBridge : IDisposable
             }
             _loggedResizeOutcomes.Clear();
         }
-        lock (_lock)
+        if (reason is "system-resume" or "watchdog" or "settle-stall")
         {
-            if (_devices.Count > Volatile.Read(ref _expectedDevices))
+            // Only restarts that must bring the same devices back arm the stall check; a manual-device or
+            // detector change can legitimately list fewer, down to none.
+            lock (_lock)
             {
-                Volatile.Write(ref _expectedDevices, _devices.Count);
+                if (_devices.Count > Volatile.Read(ref _expectedDevices))
+                {
+                    Volatile.Write(ref _expectedDevices, _devices.Count);
+                }
+            }
+            if (reason != "settle-stall")
+            {
+                Volatile.Write(ref _settleStallBounces, 0);
             }
         }
         ServiceLog.Info($"[rgb-bridge] bouncing subprocess ({reason})");
@@ -1142,7 +1157,7 @@ public sealed class RgbBridge : IDisposable
         }
         Interlocked.Exchange(ref _daemonFailures, 0);
 
-        if (!TryClaimWatchdogBounce(now))
+        if (!TryClaimWatchdogBounce(now, out _))
         {
             return;
         }
@@ -1150,8 +1165,9 @@ public sealed class RgbBridge : IDisposable
     }
 
     /// <summary>Spends one of the shared watchdog restarts: false inside the floor, or once the window's cap is used (then the watchdog gives up until the next rescan).</summary>
-    private bool TryClaimWatchdogBounce(long now)
+    private bool TryClaimWatchdogBounce(long now, out bool gaveUp)
     {
+        gaveUp = false;
         lock (_lock)
         {
             if (_watchdogWindowStartTicks == 0 || now - _watchdogWindowStartTicks > WatchdogWindow.Ticks)
@@ -1167,6 +1183,7 @@ public sealed class RgbBridge : IDisposable
             if (_watchdogBouncesInWindow >= WatchdogMaxBounces)
             {
                 _watchdogGaveUp = true;
+                gaveUp = true;
                 ServiceLog.Warn($"[rgb-bridge] watchdog: {WatchdogMaxBounces} restarts in {WatchdogWindow.TotalMinutes:F0} min and the daemon keeps wedging; giving up until the next rescan");
                 return false;
             }
@@ -1176,40 +1193,49 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
+    private void DisarmSettleStall()
+    {
+        Volatile.Write(ref _expectedDevices, 0);
+        Volatile.Write(ref _settleStallBounces, 0);
+    }
+
     /// <summary>
-    /// A daemon restarted with devices known (resume bounce) that is connected, quiet and still lists
+    /// A daemon restarted with devices known (resume or watchdog bounce) that is connected and still lists
     /// nothing was seen to wedge before its detection finished; the bridge otherwise reads the
     /// empty list as unchanged and waits forever. Restarts it within the watchdog budget.
     /// </summary>
     private bool RecoverSettleStall()
     {
-        if (!SettleStallDue(out var expected, out var sinceSpawn))
+        if (!SettleStallDue(out var expected, out var sinceSpawn, out var gate))
         {
             return false;
         }
-        var detail = $"daemon up {sinceSpawn.TotalSeconds:F0}s, 0 controllers listed, {expected} known before the restart, "
-            + $"detection started seen={Volatile.Read(ref _detectionStartedSeen) != 0}, smbus mutex={ProbeSmbusMutex()}";
-        if (!TryClaimWatchdogBounce(DateTime.UtcNow.Ticks))
+        if (!TryClaimWatchdogBounce(NowTicks(), out var gaveUp))
         {
-            if (_watchdogGaveUp)
+            if (gaveUp)
             {
                 // Out of restarts: the devices may genuinely be gone, so stop expecting them.
-                Interlocked.Exchange(ref _expectedDevices, 0);
+                DisarmSettleStall();
             }
             return false;
         }
-        ServiceLog.Warn($"[rgb-bridge] daemon never settled after restart ({detail}); restarting it");
+        var attempt = Interlocked.Increment(ref _settleStallBounces);
+        ServiceLog.Warn($"[rgb-bridge] daemon never settled after restart (attempt {attempt}, gate={gate}, daemon up {sinceSpawn.TotalSeconds:F0}s, "
+            + $"0 controllers listed, {expected} known before the restart, detection started seen={Volatile.Read(ref _detectionStartedSeen) != 0}, "
+            + $"smbus mutex={ProbeSmbusMutex()}); restarting it");
         BounceSubprocess("settle-stall");
         return true;
     }
 
     /// <summary>
-    /// Due once devices were known before a restart, the daemon is past the settle timeout and has
-    /// been silent for the quiet window. Deliberately ignores a seen STARTED, which would hold
-    /// <see cref="DetectionInProgress"/> for the whole stall limit.
+    /// Due once devices were known before a restart and the daemon is past the settle timeout. The
+    /// first restart of an arming only needs the quiet window, so a daemon silent after STARTED is
+    /// not held for the stall limit; later ones respect the normal detection hold, so a machine whose
+    /// detection is slow but alive is not killed over and over.
     /// </summary>
-    private bool SettleStallDue(out int expected, out TimeSpan sinceSpawn)
+    private bool SettleStallDue(out int expected, out TimeSpan sinceSpawn, out string gate)
     {
+        gate = "";
         expected = Volatile.Read(ref _expectedDevices);
         sinceSpawn = TimeSpan.Zero;
         if (expected == 0)
@@ -1221,8 +1247,14 @@ public sealed class RgbBridge : IDisposable
         {
             return false;
         }
+        if (Volatile.Read(ref _settleStallBounces) > 0)
+        {
+            gate = "detection-hold";
+            return !DetectionInProgress();
+        }
+        gate = "quiet-window";
         var last = Interlocked.Read(ref _detectionActivityTicks);
-        return last == 0 || TimeSpan.FromTicks(DateTime.UtcNow.Ticks - last) >= DetectionQuietWindow;
+        return last == 0 || TimeSpan.FromTicks(NowTicks() - last) >= DetectionQuietWindow;
     }
 
     /// <summary>Who holds the SMBus mutex the daemon's DIMM detection waits on without a timeout: held (by another process or thread), free, or n/a.</summary>
@@ -1516,7 +1548,7 @@ public sealed class RgbBridge : IDisposable
                 _committedAddresses = addresses;
                 if (addresses.Length > 0)
                 {
-                    Volatile.Write(ref _expectedDevices, 0);
+                    DisarmSettleStall();
                 }
                 // Ids are never reused within a daemon run, so ones gone from the list are dead.
                 _directModeApplied.IntersectWith(addresses);
@@ -2499,15 +2531,21 @@ public sealed class RgbBridge : IDisposable
     /// fetch every tick could. The full fetch runs when the id list moved;
     /// events (list updated, detection complete, a refused write) trigger it too.
     /// </summary>
+    internal Task PollOnceAsync() => PollAsync();
+
+    /// <summary>Devices known before a restart that no completed or committed list has replaced yet.</summary>
+    internal int ExpectedDevices => Volatile.Read(ref _expectedDevices);
+
     private async Task PollAsync()
     {
         if (DetectionInProgress())
         {
-            if (SettleStallDue(out _, out _))
+            if (_refreshSemaphore.CurrentCount != 0 && SettleStallDue(out _, out _, out _))
             {
                 try
                 {
-                    if ((await _controller.GetControllerAddressesAsync().ConfigureAwait(false)).Count == 0)
+                    // A session that dropped mid-call reads as empty; that is the reconnect path, not a stall.
+                    if ((await _controller.GetControllerAddressesAsync().ConfigureAwait(false)).Count == 0 && _controller.IsConnected)
                     {
                         RecoverSettleStall();
                     }
@@ -2551,7 +2589,7 @@ public sealed class RgbBridge : IDisposable
             return;
         }
         Interlocked.Exchange(ref _daemonFailures, 0);
-        if (addresses.Count == 0 && RecoverSettleStall())
+        if (addresses.Count == 0 && _controller.IsConnected && RecoverSettleStall())
         {
             return;
         }
