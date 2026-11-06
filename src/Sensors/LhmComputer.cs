@@ -50,6 +50,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private const long UpdateErrorLogIntervalMs = 60_000;
     private readonly Dictionary<string, long> _updateErrorLoggedAt = new(StringComparer.Ordinal);
     private readonly IConfigStore _config;
+    private readonly Nexus.Service.Peripherals.Nzxt.KrakenHub? _kraken;
     private readonly DeviceControlGate _gate;
     private readonly FeatureGates _gates;
     private readonly Nexus.Service.Sockets.MultiplexHub? _hub;
@@ -73,9 +74,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // floor would feed it the same cached value four times.
     private const long FastFloorMs = 100;
 
-    public LhmComputer(IConfigStore config, DeviceControlGate gate, FeatureGates? gates = null, Nexus.Service.Sockets.MultiplexHub? hub = null)
+    public LhmComputer(IConfigStore config, DeviceControlGate gate, FeatureGates? gates = null, Nexus.Service.Sockets.MultiplexHub? hub = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
         _hub = hub;
+        _kraken = kraken;
         _smartActive = new SmartActiveFlip(() => { if (_hub is not null) Nexus.Service.Sockets.PanelTopics.BroadcastSmartPoll(_hub); });
         _gates = gates ?? FeatureGates.AllEnabled;
         _config = config;
@@ -381,6 +383,12 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // fail the walk for every other device or the routes that triggered it.
     private void TryUpdate(IHardware hw)
     {
+        // LHM's driver for the 2023 Kraken (named plain "NZXT Kraken") sends its own status
+        // request on every walk; while the hub streams that panel, those requests stay off.
+        if (_kraken is { StreamQuiet: true } && hw.HardwareType == HardwareType.Cooler && hw.Name == "NZXT Kraken")
+        {
+            return;
+        }
         try
         {
             hw.Update();

@@ -134,6 +134,9 @@ internal static class KrakenProtocol
 
     public static byte[] EncodeFirmwareRequest() => NewReport(ReportFirmwareRequest, 0x01);
 
+    // The vendor app's session opener and its periodic keepalive while it streams.
+    public static byte[] EncodeSessionKeepAlive() => NewReport(ReportFirmwareRequest, 0x02);
+
     public static byte[] EncodeStatusRequest() => NewReport(ReportStatusRequest, 0x01);
 
     public static byte[] EncodeLightingInfoRequest() => NewReport(ReportLightingInfoRequest, 0x03);
@@ -153,6 +156,14 @@ internal static class KrakenProtocol
     public static byte[] EncodeStartReporting() => NewReport(ReportInit, 0x01);
 
     public static byte[] EncodeLcdInfoRequest() => NewReport(ReportLcdRequest, LcdSubInfo);
+
+    // The vendor's dark step at session open: the enable byte is clear, unlike a real level.
+    public static byte[] EncodeSessionBacklightOff()
+    {
+        var report = NewReport(ReportLcdRequest, LcdSubSetBacklight);
+        report[8] = 0x1E;
+        return report;
+    }
 
     public static byte[] EncodeReadDisplayModeRequest() => NewReport(ReportLcdRequest, LcdSubReadMode);
 
